@@ -78,6 +78,7 @@ export const createTaskTool = {
 export async function createTask(
   client: SupabaseClient,
   projectId: string,
+  userId: string,
   args: {
     title: string;
     status?: string;
@@ -109,6 +110,7 @@ export async function createTask(
       description: args.description ?? null,
       field_values: args.field_values ?? {},
       position: nextPosition,
+      created_by: userId,
     })
     .select()
     .single();
@@ -200,6 +202,7 @@ export const bulkCreateTasksTool = {
 export async function bulkCreateTasks(
   client: SupabaseClient,
   projectId: string,
+  userId: string,
   args: { tasks: Array<{ title: string; status?: string; priority?: string; epic_id?: string; description?: string; field_values?: Record<string, any> }> }
 ) {
   // Get current max positions per status
@@ -227,6 +230,7 @@ export async function bulkCreateTasks(
       description: task.description ?? null,
       field_values: task.field_values ?? {},
       position: pos,
+      created_by: userId,
     };
   });
 

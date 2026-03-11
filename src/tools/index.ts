@@ -27,6 +27,7 @@ export async function handleToolCall(
   args: Record<string, unknown>,
   client: SupabaseClient,
   projectId: string,
+  userId: string,
 ) {
   try {
     let result: unknown;
@@ -44,13 +45,13 @@ export async function handleToolCall(
         result = await getTask(client, projectId, args as any);
         break;
       case 'create_task':
-        result = await createTask(client, projectId, args as any);
+        result = await createTask(client, projectId, userId, args as any);
         break;
       case 'update_task':
         result = await updateTask(client, projectId, args as any);
         break;
       case 'bulk_create_tasks':
-        result = await bulkCreateTasks(client, projectId, args as any);
+        result = await bulkCreateTasks(client, projectId, userId, args as any);
         break;
       case 'create_epic':
         result = await createEpic(client, projectId, args as any);

@@ -26,7 +26,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const client = await createAuthenticatedClient(auth);
   const projectId = auth.getProjectId();
-  return handleToolCall(request.params.name, request.params.arguments ?? {}, client, projectId);
+  const userId = auth.getUserId();
+  return handleToolCall(request.params.name, request.params.arguments ?? {}, client, projectId, userId);
 });
 
 async function main() {

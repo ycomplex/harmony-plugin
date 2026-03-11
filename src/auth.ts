@@ -11,6 +11,7 @@ export class HarmonyAuth {
   private apiToken: string;
   private accessToken: string | null = null;
   private projectId: string | null = null;
+  private userId: string | null = null;
   private expiresAt: number = 0;
 
   constructor(apiToken: string) {
@@ -28,6 +29,11 @@ export class HarmonyAuth {
   getProjectId(): string {
     if (!this.projectId) throw new Error('Not authenticated yet. Call getAccessToken() first.');
     return this.projectId;
+  }
+
+  getUserId(): string {
+    if (!this.userId) throw new Error('Not authenticated yet. Call getAccessToken() first.');
+    return this.userId;
   }
 
   private async exchange(): Promise<void> {
@@ -49,5 +55,10 @@ export class HarmonyAuth {
     this.accessToken = data.access_token;
     this.projectId = data.project_id;
     this.expiresAt = Date.now() + data.expires_in * 1000;
+
+    // Extract user ID from JWT payload (sub claim)
+    const payloadB64 = data.access_token.split('.')[1];
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString());
+    this.userId = payload.sub;
   }
 }
