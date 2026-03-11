@@ -32,6 +32,7 @@ export const createEpicTool = {
 export async function createEpic(
   client: SupabaseClient,
   projectId: string,
+  userId: string,
   args: { name: string; color?: string }
 ) {
   // Get next position
@@ -50,6 +51,7 @@ export async function createEpic(
       name: args.name,
       color: args.color ?? '#6366f1',
       position: nextPosition,
+      created_by: userId,
     })
     .select()
     .single();

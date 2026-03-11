@@ -54,7 +54,7 @@ export async function handleToolCall(
         result = await bulkCreateTasks(client, projectId, userId, args as any);
         break;
       case 'create_epic':
-        result = await createEpic(client, projectId, args as any);
+        result = await createEpic(client, projectId, userId, args as any);
         break;
       default:
         return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };
