@@ -21,7 +21,7 @@ export async function listTasks(
 ) {
   let query = client
     .from('tasks')
-    .select('id, title, status, priority, task_number, assignee_id, epic_id, description, field_values, archived')
+    .select('id, title, status, priority, task_number, assignee_id, epic_id, description, field_values, archived, due_date')
     .eq('project_id', projectId)
     .eq('archived', args.archived ?? false)
     .order('position');
@@ -69,6 +69,7 @@ export const createTaskTool = {
       priority: { type: 'string', enum: ['high', 'medium', 'low'], description: 'Priority. Default medium.' },
       epic_id: { type: 'string', description: 'Epic ID to assign to' },
       description: { type: 'string', description: 'Task description (markdown)' },
+      due_date: { type: 'string', description: 'Due date in YYYY-MM-DD format' },
       field_values: { type: 'object', description: 'Custom field values keyed by field definition ID' },
     },
     required: ['title'],
@@ -85,6 +86,7 @@ export async function createTask(
     priority?: string;
     epic_id?: string;
     description?: string;
+    due_date?: string;
     field_values?: Record<string, any>;
   }
 ) {
@@ -108,6 +110,7 @@ export async function createTask(
       priority: args.priority ?? 'medium',
       epic_id: args.epic_id ?? null,
       description: args.description ?? null,
+      due_date: args.due_date ?? null,
       field_values: args.field_values ?? {},
       position: nextPosition,
       created_by: userId,
@@ -131,6 +134,7 @@ export const updateTaskTool = {
       assignee_id: { type: 'string', description: 'New assignee user ID (null to unassign)' },
       epic_id: { type: 'string', description: 'New epic ID (null to unassign)' },
       description: { type: 'string', description: 'New description' },
+      due_date: { type: 'string', description: 'Due date in YYYY-MM-DD format (null to clear)' },
       archived: { type: 'boolean', description: 'Archive or unarchive' },
       field_values: { type: 'object', description: 'Custom field values to merge (keyed by field definition ID)' },
     },
@@ -188,6 +192,7 @@ export const bulkCreateTasksTool = {
             priority: { type: 'string', enum: ['high', 'medium', 'low'] },
             epic_id: { type: 'string' },
             description: { type: 'string' },
+            due_date: { type: 'string' },
             field_values: { type: 'object' },
           },
           required: ['title'],
@@ -203,7 +208,7 @@ export async function bulkCreateTasks(
   client: SupabaseClient,
   projectId: string,
   userId: string,
-  args: { tasks: Array<{ title: string; status?: string; priority?: string; epic_id?: string; description?: string; field_values?: Record<string, any> }> }
+  args: { tasks: Array<{ title: string; status?: string; priority?: string; epic_id?: string; description?: string; due_date?: string; field_values?: Record<string, any> }> }
 ) {
   // Get current max positions per status
   const { data: allTasks } = await client
@@ -228,6 +233,7 @@ export async function bulkCreateTasks(
       priority: task.priority ?? 'medium',
       epic_id: task.epic_id ?? null,
       description: task.description ?? null,
+      due_date: task.due_date ?? null,
       field_values: task.field_values ?? {},
       position: pos,
       created_by: userId,
