@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { resolveTaskId } from './resolve-task-id.js';
 
 export const listTasksTool = {
   name: 'list_tasks',
@@ -41,17 +42,18 @@ export const getTaskTool = {
   inputSchema: {
     type: 'object' as const,
     properties: {
-      task_id: { type: 'string', description: 'Task ID' },
+      task_id: { type: 'string', description: 'Task identifier — UUID, task number (e.g., 43), or visual ID (e.g., B-43)' },
     },
     required: ['task_id'],
   },
 };
 
 export async function getTask(client: SupabaseClient, projectId: string, args: { task_id: string }) {
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error } = await client
     .from('tasks')
     .select('*')
-    .eq('id', args.task_id)
+    .eq('id', resolvedId)
     .eq('project_id', projectId)
     .single();
   if (error) throw error;
@@ -127,7 +129,7 @@ export const updateTaskTool = {
   inputSchema: {
     type: 'object' as const,
     properties: {
-      task_id: { type: 'string', description: 'Task ID to update' },
+      task_id: { type: 'string', description: 'Task identifier — UUID, task number (e.g., 43), or visual ID (e.g., B-43)' },
       title: { type: 'string', description: 'New title' },
       status: { type: 'string', description: 'New status' },
       priority: { type: 'string', enum: ['high', 'medium', 'low'], description: 'New priority' },
@@ -147,7 +149,8 @@ export async function updateTask(
   projectId: string,
   args: { task_id: string; [key: string]: any }
 ) {
-  const { task_id, field_values, ...updates } = args;
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const { task_id: _discarded, field_values, ...updates } = args;
 
   // If field_values provided, merge with existing
   let payload: Record<string, any> = {};
@@ -159,7 +162,7 @@ export async function updateTask(
     const { data: existing } = await client
       .from('tasks')
       .select('field_values')
-      .eq('id', task_id)
+      .eq('id', resolvedId)
       .eq('project_id', projectId)
       .single();
     payload.field_values = { ...(existing?.field_values ?? {}), ...field_values };
@@ -168,7 +171,7 @@ export async function updateTask(
   const { data, error } = await client
     .from('tasks')
     .update(payload)
-    .eq('id', task_id)
+    .eq('id', resolvedId)
     .eq('project_id', projectId)
     .select()
     .single();
