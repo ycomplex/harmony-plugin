@@ -11,6 +11,7 @@ export const listTasksTool = {
       epic_id: { type: 'string', description: 'Filter by epic ID' },
       assignee_id: { type: 'string', description: 'Filter by assignee user ID' },
       archived: { type: 'boolean', description: 'Include archived tasks. Default false.' },
+      label_ids: { type: 'array', items: { type: 'string' }, description: 'Filter by label IDs (OR logic)' },
     },
   },
 };
@@ -18,11 +19,11 @@ export const listTasksTool = {
 export async function listTasks(
   client: SupabaseClient,
   projectId: string,
-  args: { status?: string; epic_id?: string; assignee_id?: string; archived?: boolean }
+  args: { status?: string; epic_id?: string; assignee_id?: string; archived?: boolean; label_ids?: string[] }
 ) {
   let query = client
     .from('tasks')
-    .select('id, title, status, priority, task_number, assignee_id, epic_id, description, field_values, archived, due_date')
+    .select('id, title, status, priority, task_number, assignee_id, epic_id, description, field_values, archived, due_date, task_labels(labels(id, name, color))')
     .eq('project_id', projectId)
     .eq('archived', args.archived ?? false)
     .order('position');
@@ -33,7 +34,18 @@ export async function listTasks(
 
   const { data, error } = await query;
   if (error) throw error;
-  return data;
+
+  let enriched = (data ?? []).map((t: any) => {
+    const labels = (t.task_labels ?? []).map((tl: any) => tl.labels).filter(Boolean);
+    const { task_labels, ...rest } = t;
+    return { ...rest, labels };
+  });
+
+  if (args.label_ids && args.label_ids.length > 0) {
+    enriched = enriched.filter(t => t.labels.some((l: any) => args.label_ids!.includes(l.id)));
+  }
+
+  return enriched;
 }
 
 export const getTaskTool = {
@@ -52,12 +64,14 @@ export async function getTask(client: SupabaseClient, projectId: string, args: {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error } = await client
     .from('tasks')
-    .select('*')
+    .select('*, task_labels(labels(id, name, color))')
     .eq('id', resolvedId)
     .eq('project_id', projectId)
     .single();
   if (error) throw error;
-  return data;
+  const labels = (data.task_labels ?? []).map((tl: any) => tl.labels).filter(Boolean);
+  const { task_labels, ...rest } = data;
+  return { ...rest, labels };
 }
 
 export const createTaskTool = {
@@ -139,6 +153,11 @@ export const updateTaskTool = {
       due_date: { type: 'string', description: 'Due date in YYYY-MM-DD format (null to clear)' },
       archived: { type: 'boolean', description: 'Archive or unarchive' },
       field_values: { type: 'object', description: 'Custom field values to merge (keyed by field definition ID)' },
+      label_ids: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Label IDs to assign. Replaces all existing labels. Omit to leave unchanged.',
+      },
     },
     required: ['task_id'],
   },
@@ -150,7 +169,7 @@ export async function updateTask(
   args: { task_id: string; [key: string]: any }
 ) {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
-  const { task_id: _discarded, field_values, ...updates } = args;
+  const { task_id: _discarded, field_values, label_ids, ...updates } = args;
 
   // If field_values provided, merge with existing
   let payload: Record<string, any> = {};
@@ -168,15 +187,41 @@ export async function updateTask(
     payload.field_values = { ...(existing?.field_values ?? {}), ...field_values };
   }
 
-  const { data, error } = await client
-    .from('tasks')
-    .update(payload)
-    .eq('id', resolvedId)
-    .eq('project_id', projectId)
-    .select()
-    .single();
-  if (error) throw error;
-  return data;
+  let taskData: any;
+  // Only run task update if there are actual task field changes
+  if (Object.keys(payload).length > 0) {
+    const { data, error } = await client
+      .from('tasks')
+      .update(payload)
+      .eq('id', resolvedId)
+      .eq('project_id', projectId)
+      .select()
+      .single();
+    if (error) throw error;
+    taskData = data;
+  } else {
+    // Fetch current task data if no field updates
+    const { data, error } = await client
+      .from('tasks')
+      .select('*')
+      .eq('id', resolvedId)
+      .eq('project_id', projectId)
+      .single();
+    if (error) throw error;
+    taskData = data;
+  }
+
+  // Sync labels if label_ids provided
+  if (label_ids !== undefined) {
+    await client.from('task_labels').delete().eq('task_id', resolvedId);
+    if (label_ids.length > 0) {
+      await client.from('task_labels').insert(
+        label_ids.map((id: string) => ({ task_id: resolvedId, label_id: id }))
+      );
+    }
+  }
+
+  return taskData;
 }
 
 export const bulkCreateTasksTool = {

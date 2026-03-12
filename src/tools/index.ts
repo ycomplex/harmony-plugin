@@ -8,6 +8,7 @@ import {
   updateTaskTool, updateTask,
   bulkCreateTasksTool, bulkCreateTasks,
 } from './tasks.js';
+import { listLabels, createLabel, listLabelsTool, createLabelTool } from './labels.js';
 
 export function registerTools() {
   return [
@@ -19,6 +20,8 @@ export function registerTools() {
     updateTaskTool,
     bulkCreateTasksTool,
     createEpicTool,
+    listLabelsTool,
+    createLabelTool,
   ];
 }
 
@@ -55,6 +58,12 @@ export async function handleToolCall(
         break;
       case 'create_epic':
         result = await createEpic(client, projectId, userId, args as any);
+        break;
+      case 'list_labels':
+        result = await listLabels(client, projectId);
+        break;
+      case 'create_label':
+        result = await createLabel(client, projectId, userId, args as any);
         break;
       default:
         return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };
