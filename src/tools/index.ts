@@ -10,6 +10,14 @@ import {
 } from './tasks.js';
 import { listLabels, createLabel, listLabelsTool, createLabelTool } from './labels.js';
 import { listSubtasksTool, listSubtasks, manageSubtasksTool, manageSubtasks } from './subtasks.js';
+import { queryTasksTool, queryTasks } from './query-tasks.js';
+import { listCommentsTool, listComments, addCommentTool, addComment } from './comments.js';
+import { manageTaskLabelsTool, manageTaskLabels } from './task-labels.js';
+import { bulkUpdateTasksTool, bulkUpdateTasks } from './bulk-update.js';
+import {
+  listProjectDocumentsTool, listProjectDocuments,
+  getProjectDocumentTool, getProjectDocument,
+} from './documents.js';
 
 export function registerTools() {
   return [
@@ -25,6 +33,13 @@ export function registerTools() {
     createLabelTool,
     listSubtasksTool,
     manageSubtasksTool,
+    queryTasksTool,
+    listCommentsTool,
+    addCommentTool,
+    manageTaskLabelsTool,
+    bulkUpdateTasksTool,
+    listProjectDocumentsTool,
+    getProjectDocumentTool,
   ];
 }
 
@@ -73,6 +88,27 @@ export async function handleToolCall(
         break;
       case 'manage_subtasks':
         result = await manageSubtasks(client, projectId, userId, args as any);
+        break;
+      case 'query_tasks':
+        result = await queryTasks(client, projectId, args as any);
+        break;
+      case 'list_comments':
+        result = await listComments(client, args as any);
+        break;
+      case 'add_comment':
+        result = await addComment(client, userId, args as any);
+        break;
+      case 'manage_labels':
+        result = await manageTaskLabels(client, args as any);
+        break;
+      case 'bulk_update_tasks':
+        result = await bulkUpdateTasks(client, projectId, args as any);
+        break;
+      case 'list_project_documents':
+        result = await listProjectDocuments(client, projectId);
+        break;
+      case 'get_project_document':
+        result = await getProjectDocument(client, projectId, args as any);
         break;
       default:
         return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };
