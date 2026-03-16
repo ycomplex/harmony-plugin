@@ -11,6 +11,7 @@ import {
 import { listLabels, createLabel, listLabelsTool, createLabelTool } from './labels.js';
 import { listSubtasksTool, listSubtasks, manageSubtasksTool, manageSubtasks } from './subtasks.js';
 import { queryTasksTool, queryTasks } from './query-tasks.js';
+import { listCommentsTool, listComments, addCommentTool, addComment } from './comments.js';
 
 export function registerTools() {
   return [
@@ -27,6 +28,8 @@ export function registerTools() {
     listSubtasksTool,
     manageSubtasksTool,
     queryTasksTool,
+    listCommentsTool,
+    addCommentTool,
   ];
 }
 
@@ -78,6 +81,12 @@ export async function handleToolCall(
         break;
       case 'query_tasks':
         result = await queryTasks(client, projectId, args as any);
+        break;
+      case 'list_comments':
+        result = await listComments(client, args as any);
+        break;
+      case 'add_comment':
+        result = await addComment(client, userId, args as any);
         break;
       default:
         return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };
