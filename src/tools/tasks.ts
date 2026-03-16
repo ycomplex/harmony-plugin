@@ -64,14 +64,15 @@ export async function getTask(client: SupabaseClient, projectId: string, args: {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error } = await client
     .from('tasks')
-    .select('*, task_labels(labels(id, name, color))')
+    .select('*, task_labels(labels(id, name, color)), subtasks(id, title, completed, position)')
     .eq('id', resolvedId)
     .eq('project_id', projectId)
     .single();
   if (error) throw error;
   const labels = (data.task_labels ?? []).map((tl: any) => tl.labels).filter(Boolean);
-  const { task_labels, ...rest } = data;
-  return { ...rest, labels };
+  const subtasks = ((data as any).subtasks ?? []).sort((a: any, b: any) => a.position - b.position);
+  const { task_labels, subtasks: _subtasks, ...rest } = data as any;
+  return { ...rest, labels, subtasks };
 }
 
 export const createTaskTool = {
