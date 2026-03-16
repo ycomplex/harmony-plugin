@@ -14,6 +14,10 @@ import { queryTasksTool, queryTasks } from './query-tasks.js';
 import { listCommentsTool, listComments, addCommentTool, addComment } from './comments.js';
 import { manageTaskLabelsTool, manageTaskLabels } from './task-labels.js';
 import { bulkUpdateTasksTool, bulkUpdateTasks } from './bulk-update.js';
+import {
+  listProjectDocumentsTool, listProjectDocuments,
+  getProjectDocumentTool, getProjectDocument,
+} from './documents.js';
 
 export function registerTools() {
   return [
@@ -34,6 +38,8 @@ export function registerTools() {
     addCommentTool,
     manageTaskLabelsTool,
     bulkUpdateTasksTool,
+    listProjectDocumentsTool,
+    getProjectDocumentTool,
   ];
 }
 
@@ -97,6 +103,12 @@ export async function handleToolCall(
         break;
       case 'bulk_update_tasks':
         result = await bulkUpdateTasks(client, projectId, args as any);
+        break;
+      case 'list_project_documents':
+        result = await listProjectDocuments(client, projectId);
+        break;
+      case 'get_project_document':
+        result = await getProjectDocument(client, projectId, args as any);
         break;
       default:
         return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };
