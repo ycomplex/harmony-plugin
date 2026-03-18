@@ -17,6 +17,8 @@ import { bulkUpdateTasksTool, bulkUpdateTasks } from './bulk-update.js';
 import {
   listProjectDocumentsTool, listProjectDocuments,
   getProjectDocumentTool, getProjectDocument,
+  createProjectDocumentTool, createProjectDocument,
+  updateProjectDocumentTool, updateProjectDocument,
 } from './documents.js';
 
 export function registerTools() {
@@ -40,6 +42,8 @@ export function registerTools() {
     bulkUpdateTasksTool,
     listProjectDocumentsTool,
     getProjectDocumentTool,
+    createProjectDocumentTool,
+    updateProjectDocumentTool,
   ];
 }
 
@@ -109,6 +113,12 @@ export async function handleToolCall(
         break;
       case 'get_project_document':
         result = await getProjectDocument(client, projectId, args as any);
+        break;
+      case 'create_project_document':
+        result = await createProjectDocument(client, projectId, userId, args as any);
+        break;
+      case 'update_project_document':
+        result = await updateProjectDocument(client, projectId, args as any);
         break;
       default:
         return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };
