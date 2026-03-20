@@ -20,31 +20,30 @@ import {
   createProjectDocumentTool, createProjectDocument,
   updateProjectDocumentTool, updateProjectDocument,
 } from './documents.js';
+import {
+  listMilestonesTool, listMilestones,
+  createMilestoneTool, createMilestone,
+  updateMilestoneTool, updateMilestone,
+  shipMilestoneTool, shipMilestone,
+} from './milestones.js';
+import { listCyclesTool, listCycles, createCycleTool, createCycle, updateCycleTool, updateCycle } from './cycles.js';
 
-export function registerTools() {
-  return [
-    getProjectTool,
-    listEpicsTool,
-    listTasksTool,
-    getTaskTool,
-    createTaskTool,
-    updateTaskTool,
-    bulkCreateTasksTool,
-    createEpicTool,
-    listLabelsTool,
-    createLabelTool,
-    listSubtasksTool,
-    manageSubtasksTool,
-    queryTasksTool,
-    listCommentsTool,
-    addCommentTool,
-    manageTaskLabelsTool,
-    bulkUpdateTasksTool,
-    listProjectDocumentsTool,
-    getProjectDocumentTool,
-    createProjectDocumentTool,
-    updateProjectDocumentTool,
+export function registerTools(disabledFeatures?: Record<string, boolean>) {
+  const tools = [
+    // Core tools (always visible)
+    getProjectTool, listTasksTool, getTaskTool, createTaskTool, updateTaskTool,
+    bulkCreateTasksTool, bulkUpdateTasksTool, queryTasksTool,
+    listCommentsTool, addCommentTool,
+    listProjectDocumentsTool, getProjectDocumentTool, createProjectDocumentTool, updateProjectDocumentTool,
   ];
+
+  if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool);
+  if (!disabledFeatures?.labels) tools.push(listLabelsTool, createLabelTool, manageTaskLabelsTool);
+  if (!disabledFeatures?.subtasks) tools.push(listSubtasksTool, manageSubtasksTool);
+  if (!disabledFeatures?.cycles) tools.push(listCyclesTool, createCycleTool, updateCycleTool);
+  if (!disabledFeatures?.milestones) tools.push(listMilestonesTool, createMilestoneTool, updateMilestoneTool, shipMilestoneTool);
+
+  return tools;
 }
 
 export async function handleToolCall(
@@ -119,6 +118,27 @@ export async function handleToolCall(
         break;
       case 'update_project_document':
         result = await updateProjectDocument(client, projectId, args as any);
+        break;
+      case 'list_milestones':
+        result = await listMilestones(client, projectId, args as any);
+        break;
+      case 'create_milestone':
+        result = await createMilestone(client, projectId, userId, args as any);
+        break;
+      case 'update_milestone':
+        result = await updateMilestone(client, projectId, args as any);
+        break;
+      case 'ship_milestone':
+        result = await shipMilestone(client, projectId, args as any);
+        break;
+      case 'list_cycles':
+        result = await listCycles(client, projectId, args as any);
+        break;
+      case 'create_cycle':
+        result = await createCycle(client, projectId, userId, args as any);
+        break;
+      case 'update_cycle':
+        result = await updateCycle(client, projectId, args as any);
         break;
       default:
         return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };

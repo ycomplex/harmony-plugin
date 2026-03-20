@@ -88,6 +88,8 @@ export const createTaskTool = {
       description: { type: 'string', description: 'Task description (markdown)' },
       due_date: { type: 'string', description: 'Due date in YYYY-MM-DD format' },
       field_values: { type: 'object', description: 'Custom field values keyed by field definition ID' },
+      cycle_id: { type: 'string', description: 'Assign to a cycle. Optional.' },
+      milestone_id: { type: 'string', description: 'Assign to a milestone. Optional.' },
     },
     required: ['title'],
   },
@@ -105,6 +107,8 @@ export async function createTask(
     description?: string;
     due_date?: string;
     field_values?: Record<string, any>;
+    cycle_id?: string;
+    milestone_id?: string;
   }
 ) {
   // Get next position for the target status
@@ -131,6 +135,8 @@ export async function createTask(
       field_values: args.field_values ?? {},
       position: nextPosition,
       created_by: userId,
+      ...(args.cycle_id !== undefined ? { cycle_id: args.cycle_id } : {}),
+      ...(args.milestone_id !== undefined ? { milestone_id: args.milestone_id } : {}),
     })
     .select()
     .single();
@@ -159,6 +165,8 @@ export const updateTaskTool = {
         items: { type: 'string' },
         description: 'Label IDs to assign. Replaces all existing labels. Omit to leave unchanged.',
       },
+      cycle_id: { type: 'string', description: 'Assign to a cycle. Optional.' },
+      milestone_id: { type: 'string', description: 'Assign to a milestone. Optional.' },
     },
     required: ['task_id'],
   },

@@ -4,6 +4,8 @@ export interface QueryTasksArgs {
   status?: string;
   assignee_id?: string;
   epic_id?: string;
+  cycle_id?: string;
+  milestone_id?: string;
   priority?: string;
   label_ids?: string[];
   due_date_from?: string;
@@ -24,6 +26,8 @@ export const queryTasksTool = {
       status: { type: 'string', description: 'Exact status match (e.g. "To Do", "In Progress")' },
       assignee_id: { type: 'string', description: 'Assignee UUID' },
       epic_id: { type: 'string', description: 'Epic UUID' },
+      cycle_id: { type: 'string', description: 'Filter by cycle ID' },
+      milestone_id: { type: 'string', description: 'Filter by milestone ID' },
       priority: { type: 'string', enum: ['high', 'medium', 'low'], description: 'Priority level' },
       label_ids: {
         type: 'array',
@@ -60,6 +64,8 @@ export async function queryTasks(
   if (args.status) query = query.eq('status', args.status);
   if (args.assignee_id) query = query.eq('assignee_id', args.assignee_id);
   if (args.epic_id) query = query.eq('epic_id', args.epic_id);
+  if (args.cycle_id) query = query.eq('cycle_id', args.cycle_id);
+  if (args.milestone_id) query = query.eq('milestone_id', args.milestone_id);
   if (args.priority) query = query.eq('priority', args.priority);
   if (args.due_date_from) query = query.gte('due_date', args.due_date_from);
   if (args.due_date_to) query = query.lte('due_date', args.due_date_to);

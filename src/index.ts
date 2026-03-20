@@ -19,8 +19,21 @@ const server = new Server(
   { capabilities: { tools: {} } }
 );
 
+let cachedFeatures: Record<string, boolean> | undefined;
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return { tools: registerTools() };
+  if (!cachedFeatures) {
+    const client = await createAuthenticatedClient(auth);
+    const projectId = auth.getProjectId();
+    // Fetch workspace disabled_features via the project
+    const { data } = await client
+      .from('projects')
+      .select('workspace_id, workspaces(disabled_features)')
+      .eq('id', projectId)
+      .single();
+    cachedFeatures = (data as any)?.workspaces?.disabled_features ?? {};
+  }
+  return { tools: registerTools(cachedFeatures) };
 });
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
