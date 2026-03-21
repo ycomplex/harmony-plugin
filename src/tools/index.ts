@@ -14,6 +14,7 @@ import { queryTasksTool, queryTasks } from './query-tasks.js';
 import { listCommentsTool, listComments, addCommentTool, addComment } from './comments.js';
 import { manageTaskLabelsTool, manageTaskLabels } from './task-labels.js';
 import { bulkUpdateTasksTool, bulkUpdateTasks } from './bulk-update.js';
+import { listActivityTool, listActivity } from './activity.js';
 import {
   listProjectDocumentsTool, listProjectDocuments,
   getProjectDocumentTool, getProjectDocument,
@@ -34,6 +35,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     getProjectTool, listTasksTool, getTaskTool, createTaskTool, updateTaskTool,
     bulkCreateTasksTool, bulkUpdateTasksTool, queryTasksTool,
     listCommentsTool, addCommentTool,
+    listActivityTool,
     listProjectDocumentsTool, getProjectDocumentTool, createProjectDocumentTool, updateProjectDocumentTool,
   ];
 
@@ -100,6 +102,9 @@ export async function handleToolCall(
         break;
       case 'add_comment':
         result = await addComment(client, userId, args as any);
+        break;
+      case 'list_activity':
+        result = await listActivity(client, projectId, args as any);
         break;
       case 'manage_labels':
         result = await manageTaskLabels(client, args as any);

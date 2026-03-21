@@ -141,6 +141,13 @@ export async function createTask(
     .select()
     .single();
   if (error) throw error;
+  // Log 'created' activity event
+  await client.from('activity_events').insert({
+    task_id: data.id,
+    project_id: data.project_id,
+    user_id: userId,
+    event_type: 'created',
+  });
   return data;
 }
 
@@ -302,5 +309,14 @@ export async function bulkCreateTasks(
     .insert(rows)
     .select();
   if (error) throw error;
+  // Log 'created' activity event for each task in the batch
+  await client.from('activity_events').insert(
+    (data ?? []).map((task: any) => ({
+      task_id: task.id,
+      project_id: task.project_id,
+      user_id: userId,
+      event_type: 'created',
+    }))
+  );
   return data;
 }
