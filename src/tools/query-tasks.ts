@@ -14,6 +14,7 @@ export interface QueryTasksArgs {
   archived?: boolean;
   sort_by?: 'position' | 'due_date' | 'priority' | 'updated_at';
   limit?: number;
+  offset?: number;
 }
 
 export const queryTasksTool = {
@@ -44,6 +45,7 @@ export const queryTasksTool = {
         description: 'Sort field. Default: position.',
       },
       limit: { type: 'number', description: 'Max results to return. Default 50.' },
+      offset: { type: 'number', description: 'Number of results to skip (for pagination). Default 0.' },
     },
   },
 };
@@ -80,7 +82,9 @@ export async function queryTasks(
   const ascending = sortBy !== 'updated_at'; // updated_at sorts descending (most recent first)
   query = query.order(sortBy, { ascending });
 
-  const { data, error } = await query.limit(args.limit ?? 50);
+  const limit = args.limit ?? 50;
+  const offset = args.offset ?? 0;
+  const { data, error } = await query.range(offset, offset + limit - 1);
   if (error) throw new Error(error.message);
 
   // Flatten task_labels → labels

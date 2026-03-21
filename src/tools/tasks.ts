@@ -12,6 +12,8 @@ export const listTasksTool = {
       assignee_id: { type: 'string', description: 'Filter by assignee user ID' },
       archived: { type: 'boolean', description: 'Include archived tasks. Default false.' },
       label_ids: { type: 'array', items: { type: 'string' }, description: 'Filter by label IDs (OR logic)' },
+      limit: { type: 'number', description: 'Max results to return. Default 50.' },
+      offset: { type: 'number', description: 'Number of results to skip (for pagination). Default 0.' },
     },
   },
 };
@@ -19,14 +21,18 @@ export const listTasksTool = {
 export async function listTasks(
   client: SupabaseClient,
   projectId: string,
-  args: { status?: string; epic_id?: string; assignee_id?: string; archived?: boolean; label_ids?: string[] }
+  args: { status?: string; epic_id?: string; assignee_id?: string; archived?: boolean; label_ids?: string[]; limit?: number; offset?: number }
 ) {
+  const limit = args.limit ?? 50;
+  const offset = args.offset ?? 0;
+
   let query = client
     .from('tasks')
     .select('id, title, status, priority, task_number, assignee_id, epic_id, description, field_values, archived, due_date, task_labels(labels(id, name, color))')
     .eq('project_id', projectId)
     .eq('archived', args.archived ?? false)
-    .order('position');
+    .order('position')
+    .range(offset, offset + limit - 1);
 
   if (args.status) query = query.eq('status', args.status);
   if (args.epic_id) query = query.eq('epic_id', args.epic_id);

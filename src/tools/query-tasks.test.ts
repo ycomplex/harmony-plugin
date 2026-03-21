@@ -10,7 +10,7 @@ function createMockClient(data: any[] | null, error: any = null) {
   chain.gte = vi.fn().mockReturnValue(chain);
   chain.lte = vi.fn().mockReturnValue(chain);
   chain.order = vi.fn().mockReturnValue(chain);
-  chain.limit = vi.fn().mockResolvedValue({ data, error });
+  chain.range = vi.fn().mockResolvedValue({ data, error });
   return chain;
 }
 
@@ -145,18 +145,32 @@ describe('queryTasks', () => {
     expect(client.order).toHaveBeenCalledWith('updated_at', { ascending: false });
   });
 
-  it('applies limit parameter', async () => {
+  it('applies limit parameter via range', async () => {
     const client = createMockClient(baseTasks);
     await queryTasks(client, PROJECT_ID, { limit: 10 });
 
-    expect(client.limit).toHaveBeenCalledWith(10);
+    expect(client.range).toHaveBeenCalledWith(0, 9);
   });
 
   it('uses default limit of 50', async () => {
     const client = createMockClient(baseTasks);
     await queryTasks(client, PROJECT_ID, {});
 
-    expect(client.limit).toHaveBeenCalledWith(50);
+    expect(client.range).toHaveBeenCalledWith(0, 49);
+  });
+
+  it('applies offset for pagination', async () => {
+    const client = createMockClient(baseTasks);
+    await queryTasks(client, PROJECT_ID, { limit: 50, offset: 50 });
+
+    expect(client.range).toHaveBeenCalledWith(50, 99);
+  });
+
+  it('uses default offset of 0', async () => {
+    const client = createMockClient(baseTasks);
+    await queryTasks(client, PROJECT_ID, { limit: 25 });
+
+    expect(client.range).toHaveBeenCalledWith(0, 24);
   });
 
   it('flattens task_labels into labels array', async () => {
