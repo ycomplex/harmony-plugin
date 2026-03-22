@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { resolveTaskId } from './resolve-task-id.js';
 
 export interface ManageTaskLabelsArgs {
   task_id: string;
@@ -15,7 +16,7 @@ export const manageTaskLabelsTool = {
     properties: {
       task_id: {
         type: 'string',
-        description: 'Task UUID',
+        description: 'Task identifier — UUID, task number (e.g., 43), or visual ID (e.g., B-43)',
       },
       add: {
         type: 'array',
@@ -34,8 +35,10 @@ export const manageTaskLabelsTool = {
 
 export async function manageTaskLabels(
   client: SupabaseClient,
+  projectId: string,
   args: ManageTaskLabelsArgs,
 ): Promise<{ added: string[]; removed: string[] }> {
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const results: { added: string[]; removed: string[] } = {
     added: [],
     removed: [],
@@ -44,7 +47,7 @@ export async function manageTaskLabels(
   // Add labels
   if (args.add && args.add.length > 0) {
     const rows = args.add.map((labelId) => ({
-      task_id: args.task_id,
+      task_id: taskId,
       label_id: labelId,
     }));
     const { error } = await client.from('task_labels').insert(rows).select();
@@ -57,7 +60,7 @@ export async function manageTaskLabels(
     const { error } = await client
       .from('task_labels')
       .delete()
-      .eq('task_id', args.task_id)
+      .eq('task_id', taskId)
       .in('label_id', args.remove);
     if (error) throw error;
     results.removed = args.remove;

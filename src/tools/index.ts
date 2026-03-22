@@ -98,16 +98,16 @@ export async function handleToolCall(
         result = await queryTasks(client, projectId, args as any);
         break;
       case 'list_comments':
-        result = await listComments(client, args as any);
+        result = await listComments(client, projectId, args as any);
         break;
       case 'add_comment':
-        result = await addComment(client, userId, args as any);
+        result = await addComment(client, projectId, userId, args as any);
         break;
       case 'list_activity':
         result = await listActivity(client, projectId, args as any);
         break;
       case 'manage_labels':
-        result = await manageTaskLabels(client, args as any);
+        result = await manageTaskLabels(client, projectId, args as any);
         break;
       case 'bulk_update_tasks':
         result = await bulkUpdateTasks(client, projectId, args as any);

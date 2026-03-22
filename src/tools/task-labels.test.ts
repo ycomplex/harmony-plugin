@@ -1,7 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
 import { manageTaskLabels } from './task-labels.js';
 
-const TASK_ID = 'task-abc-123';
+vi.mock('./resolve-task-id.js', () => ({
+  resolveTaskId: vi.fn().mockResolvedValue('task-abc-123'),
+}));
+
+import { resolveTaskId } from './resolve-task-id.js';
+const mockResolveTaskId = vi.mocked(resolveTaskId);
+
+const TASK_UUID = 'task-abc-123';
+const TASK_VISUAL_ID = 'B-42';
+const PROJECT_ID = 'project-xyz-789';
 
 function createMockClient(overrides: {
   insertData?: any;
@@ -36,47 +45,63 @@ function createMockClient(overrides: {
 }
 
 describe('manageTaskLabels', () => {
+  it('resolves visual ID before operating on labels', async () => {
+    mockResolveTaskId.mockResolvedValueOnce(TASK_UUID);
+    const labelsToAdd = ['label-1'];
+    const client = createMockClient({ insertData: [{ task_id: TASK_UUID, label_id: 'label-1' }] });
+
+    await manageTaskLabels(client, PROJECT_ID, { task_id: TASK_VISUAL_ID, add: labelsToAdd });
+
+    expect(mockResolveTaskId).toHaveBeenCalledWith(client, PROJECT_ID, TASK_VISUAL_ID);
+    expect(client.insert).toHaveBeenCalledWith([
+      { task_id: TASK_UUID, label_id: 'label-1' },
+    ]);
+  });
+
   it('adds labels to a task', async () => {
+    mockResolveTaskId.mockResolvedValueOnce(TASK_UUID);
     const labelsToAdd = ['label-1', 'label-2'];
     const insertedRows = [
-      { task_id: TASK_ID, label_id: 'label-1' },
-      { task_id: TASK_ID, label_id: 'label-2' },
+      { task_id: TASK_UUID, label_id: 'label-1' },
+      { task_id: TASK_UUID, label_id: 'label-2' },
     ];
 
     const client = createMockClient({ insertData: insertedRows });
-    const result = await manageTaskLabels(client, {
-      task_id: TASK_ID,
+    const result = await manageTaskLabels(client, PROJECT_ID, {
+      task_id: TASK_UUID,
       add: labelsToAdd,
     });
 
     expect(client.from).toHaveBeenCalledWith('task_labels');
     expect(client.insert).toHaveBeenCalledWith([
-      { task_id: TASK_ID, label_id: 'label-1' },
-      { task_id: TASK_ID, label_id: 'label-2' },
+      { task_id: TASK_UUID, label_id: 'label-1' },
+      { task_id: TASK_UUID, label_id: 'label-2' },
     ]);
     expect(result).toEqual({ added: labelsToAdd, removed: [] });
   });
 
   it('removes labels from a task', async () => {
+    mockResolveTaskId.mockResolvedValueOnce(TASK_UUID);
     const labelsToRemove = ['label-3', 'label-4'];
 
     const client = createMockClient();
-    const result = await manageTaskLabels(client, {
-      task_id: TASK_ID,
+    const result = await manageTaskLabels(client, PROJECT_ID, {
+      task_id: TASK_UUID,
       remove: labelsToRemove,
     });
 
     expect(client.from).toHaveBeenCalledWith('task_labels');
     expect(client.delete).toHaveBeenCalled();
-    expect(client.eq).toHaveBeenCalledWith('task_id', TASK_ID);
+    expect(client.eq).toHaveBeenCalledWith('task_id', TASK_UUID);
     expect(client.in).toHaveBeenCalledWith('label_id', labelsToRemove);
     expect(result).toEqual({ added: [], removed: labelsToRemove });
   });
 
   it('can add and remove in the same call', async () => {
+    mockResolveTaskId.mockResolvedValueOnce(TASK_UUID);
     const labelsToAdd = ['label-1'];
     const labelsToRemove = ['label-2'];
-    const insertedRows = [{ task_id: TASK_ID, label_id: 'label-1' }];
+    const insertedRows = [{ task_id: TASK_UUID, label_id: 'label-1' }];
 
     // Need separate chains for add and remove since they hit different .from() calls
     const insertChain: any = {};
@@ -97,38 +122,41 @@ describe('manageTaskLabels', () => {
       }),
     };
 
-    const result = await manageTaskLabels(client, {
-      task_id: TASK_ID,
+    const result = await manageTaskLabels(client, PROJECT_ID, {
+      task_id: TASK_UUID,
       add: labelsToAdd,
       remove: labelsToRemove,
     });
 
     expect(client.from).toHaveBeenCalledTimes(2);
     expect(insertChain.insert).toHaveBeenCalledWith([
-      { task_id: TASK_ID, label_id: 'label-1' },
+      { task_id: TASK_UUID, label_id: 'label-1' },
     ]);
-    expect(deleteChain.eq).toHaveBeenCalledWith('task_id', TASK_ID);
+    expect(deleteChain.eq).toHaveBeenCalledWith('task_id', TASK_UUID);
     expect(deleteChain.in).toHaveBeenCalledWith('label_id', labelsToRemove);
     expect(result).toEqual({ added: labelsToAdd, removed: labelsToRemove });
   });
 
   it('throws on insert error', async () => {
+    mockResolveTaskId.mockResolvedValueOnce(TASK_UUID);
     const client = createMockClient({ insertError: { message: 'Insert failed' } });
     await expect(
-      manageTaskLabels(client, { task_id: TASK_ID, add: ['label-1'] }),
+      manageTaskLabels(client, PROJECT_ID, { task_id: TASK_UUID, add: ['label-1'] }),
     ).rejects.toThrow('Insert failed');
   });
 
   it('throws on delete error', async () => {
+    mockResolveTaskId.mockResolvedValueOnce(TASK_UUID);
     const client = createMockClient({ deleteError: { message: 'Delete failed' } });
     await expect(
-      manageTaskLabels(client, { task_id: TASK_ID, remove: ['label-1'] }),
+      manageTaskLabels(client, PROJECT_ID, { task_id: TASK_UUID, remove: ['label-1'] }),
     ).rejects.toThrow('Delete failed');
   });
 
   it('returns empty results when neither add nor remove provided', async () => {
+    mockResolveTaskId.mockResolvedValueOnce(TASK_UUID);
     const client = createMockClient();
-    const result = await manageTaskLabels(client, { task_id: TASK_ID });
+    const result = await manageTaskLabels(client, PROJECT_ID, { task_id: TASK_UUID });
 
     expect(client.from).not.toHaveBeenCalled();
     expect(result).toEqual({ added: [], removed: [] });
