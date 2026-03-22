@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+import { resolveAssignee } from './members.js';
 
 export const listTasksTool = {
   name: 'list_tasks',
@@ -90,6 +91,7 @@ export const createTaskTool = {
       title: { type: 'string', description: 'Task title' },
       status: { type: 'string', description: 'Status (e.g. "Backlog", "To Do"). Defaults to first status.' },
       priority: { type: 'string', enum: ['high', 'medium', 'low'], description: 'Priority. Default medium.' },
+      assignee_id: { type: 'string', description: 'Assignee — UUID, display name, or email. Use list_members to find users.' },
       epic_id: { type: 'string', description: 'Epic ID to assign to' },
       description: { type: 'string', description: 'Task description (markdown)' },
       due_date: { type: 'string', description: 'Due date in YYYY-MM-DD format' },
@@ -109,6 +111,7 @@ export async function createTask(
     title: string;
     status?: string;
     priority?: string;
+    assignee_id?: string;
     epic_id?: string;
     description?: string;
     due_date?: string;
@@ -117,6 +120,11 @@ export async function createTask(
     milestone_id?: string;
   }
 ) {
+  // Resolve assignee (accepts name, email, or UUID)
+  const assigneeId = args.assignee_id
+    ? await resolveAssignee(client, projectId, args.assignee_id)
+    : null;
+
   // Get next position for the target status
   const status = args.status ?? 'Backlog';
   const { data: existing } = await client
@@ -135,6 +143,7 @@ export async function createTask(
       title: args.title,
       status,
       priority: args.priority ?? 'medium',
+      assignee_id: assigneeId,
       epic_id: args.epic_id ?? null,
       description: args.description ?? null,
       due_date: args.due_date ?? null,
@@ -167,7 +176,7 @@ export const updateTaskTool = {
       title: { type: 'string', description: 'New title' },
       status: { type: 'string', description: 'New status' },
       priority: { type: 'string', enum: ['high', 'medium', 'low'], description: 'New priority' },
-      assignee_id: { type: 'string', description: 'New assignee user ID (null to unassign)' },
+      assignee_id: { type: 'string', description: 'Assignee — UUID, display name, or email (null to unassign). Use list_members to find users.' },
       epic_id: { type: 'string', description: 'New epic ID (null to unassign)' },
       description: { type: 'string', description: 'New description' },
       due_date: { type: 'string', description: 'Due date in YYYY-MM-DD format (null to clear)' },
@@ -192,6 +201,13 @@ export async function updateTask(
 ) {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { task_id: _discarded, field_values, label_ids, ...updates } = args;
+
+  // Resolve assignee if provided (accepts name, email, or UUID)
+  if (updates.assignee_id && updates.assignee_id !== 'null') {
+    updates.assignee_id = await resolveAssignee(client, projectId, updates.assignee_id);
+  } else if (updates.assignee_id === 'null') {
+    updates.assignee_id = null;
+  }
 
   // If field_values provided, merge with existing
   let payload: Record<string, any> = {};
