@@ -16,7 +16,7 @@ export async function listMilestones(client: SupabaseClient, projectId: string, 
     .from('milestones')
     .select('*')
     .eq('project_id', projectId)
-    .order('created_at');
+    .order('position');
   if (args.status) query = query.eq('status', args.status);
   const { data, error } = await query;
   if (error) throw error;
