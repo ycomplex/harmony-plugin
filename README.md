@@ -26,13 +26,12 @@ A stdio-based MCP server that gives Claude Code direct access to Harmony:
 
 ## Installation
 
-Inside Claude Code, run:
+Inside Claude Code, add the marketplace and install the plugin:
 
 ```
 /plugin marketplace add ycomplex/harmony-plugin
+/plugin install harmony-plugin@ycomplex
 ```
-
-This installs the plugin from GitHub. You'll be prompted to trust and enable it.
 
 ### For development
 
