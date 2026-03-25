@@ -33,6 +33,8 @@ Inside Claude Code, add the marketplace and install the plugin:
 /plugin install harmony-plugin@ycomplex
 ```
 
+To receive automatic updates, enable auto-update for the marketplace: run `/plugin`, go to the **Marketplaces** tab, select **ycomplex**, and enable **auto-update**.
+
 ### For development
 
 ```bash
