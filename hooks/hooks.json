@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && ([ -f dist/index.js ] || (npm install && npx tsc))",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}
