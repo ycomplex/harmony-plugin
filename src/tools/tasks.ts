@@ -210,7 +210,7 @@ export async function updateTask(
   }
 
   // If field_values provided, merge with existing
-  let payload: Record<string, any> = {};
+  const payload: Record<string, any> = {};
   for (const [k, v] of Object.entries(updates)) {
     if (v !== undefined) payload[k] = v;
   }
