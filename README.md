@@ -26,14 +26,32 @@ A stdio-based MCP server that gives Claude Code direct access to Harmony:
 
 ## Installation
 
-Inside Claude Code, add the marketplace and install the plugin:
+1. Inside Claude Code, add the marketplace and install the plugin:
 
-```
-/plugin marketplace add ycomplex/harmony-plugin
-/plugin install harmony-plugin@ycomplex
-```
+   ```
+   /plugin marketplace add ycomplex/harmony-plugin
+   /plugin install harmony-plugin@ycomplex
+   ```
 
-To receive automatic updates, enable auto-update for the marketplace: run `/plugin`, go to the **Marketplaces** tab, select **ycomplex**, and enable **auto-update**.
+2. Restart Claude Code for the hooks and MCP server to take effect:
+
+   ```
+   /exit
+   ```
+
+   Then start `claude` again. On first startup, the plugin automatically installs dependencies and builds the MCP server (~10 seconds).
+
+3. Configure your API token:
+
+   ```
+   /setup
+   ```
+
+   This saves the token to `.claude/settings.local.json` (gitignored) and verifies the connection.
+
+4. Restart Claude Code one more time for the MCP server to pick up the token.
+
+To receive automatic updates, run `/plugin`, go to the **Marketplaces** tab, select **ycomplex**, and enable **auto-update**.
 
 ### For development
 
@@ -42,19 +60,9 @@ git clone git@github.com:ycomplex/harmony-plugin.git
 claude --plugin-dir ./harmony-plugin
 ```
 
-## Configuration
+### Manual token configuration
 
-The MCP server requires a `HARMONY_API_TOKEN` environment variable. Run the setup command to configure it for your project:
-
-```
-/harmony-plugin:setup
-```
-
-This saves the token to `.claude/settings.local.json` (gitignored) and verifies the connection.
-
-### Manual configuration
-
-If you prefer to set the token manually, you have a few options:
+If you prefer to set the token without `/setup`:
 
 **direnv** — Create `.envrc` in your project root:
 ```bash
