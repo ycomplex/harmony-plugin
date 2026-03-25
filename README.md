@@ -42,22 +42,24 @@ claude --plugin-dir ./harmony-plugin
 
 ## Configuration
 
-The MCP server requires a `HARMONY_API_TOKEN` environment variable. Since this typically varies per project, set it in one of these ways:
+The MCP server requires a `HARMONY_API_TOKEN` environment variable. Run the setup command to configure it for your project:
 
-### Option 1: direnv (recommended)
+```
+/harmony-plugin:setup
+```
 
-Create a `.envrc` in your project root:
+This saves the token to `.claude/settings.local.json` (gitignored) and verifies the connection.
 
+### Manual configuration
+
+If you prefer to set the token manually, you have a few options:
+
+**direnv** — Create `.envrc` in your project root:
 ```bash
 export HARMONY_API_TOKEN="hmy_your_token_here"
 ```
 
-Then run `direnv allow`.
-
-### Option 2: Claude Code project settings
-
-Create `.claude/settings.local.json` in your project root:
-
+**Claude Code settings** — Create `.claude/settings.local.json` in your project root:
 ```json
 {
   "env": {
@@ -66,15 +68,7 @@ Create `.claude/settings.local.json` in your project root:
 }
 ```
 
-This file is gitignored by default.
-
-### Option 3: Shell profile
-
-Add to your `~/.zshrc` or `~/.bashrc`:
-
-```bash
-export HARMONY_API_TOKEN="hmy_your_token_here"
-```
+**Shell profile** — Add `export HARMONY_API_TOKEN="hmy_your_token_here"` to `~/.zshrc` or `~/.bashrc`.
 
 ## How it works
 
