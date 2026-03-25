@@ -1,5 +1,5 @@
 ---
-name: setup
+name: harmony-setup
 description: Configure the Harmony plugin for this project — sets the API token and verifies the connection.
 allowed-tools: ["Read", "Write", "Edit", "Bash", "mcp__harmony__list_tasks"]
 ---

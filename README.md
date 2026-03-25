@@ -44,7 +44,7 @@ A stdio-based MCP server that gives Claude Code direct access to Harmony:
 3. Configure your API token:
 
    ```
-   /setup
+   /harmony-setup
    ```
 
    This saves the token to `.claude/settings.local.json` (gitignored) and verifies the connection.
@@ -62,7 +62,7 @@ claude --plugin-dir ./harmony-plugin
 
 ### Manual token configuration
 
-If you prefer to set the token without `/setup`:
+If you prefer to set the token without `/harmony-setup`:
 
 **direnv** — Create `.envrc` in your project root:
 ```bash
