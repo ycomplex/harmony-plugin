@@ -1,9 +1,6 @@
 {
   "harmony": {
     "command": "node",
-    "args": ["${CLAUDE_PLUGIN_ROOT}/dist/index.js"],
-    "env": {
-      "HARMONY_API_TOKEN": "${HARMONY_API_TOKEN}"
-    }
+    "args": ["${CLAUDE_PLUGIN_ROOT}/dist/index.js"]
   }
 }
