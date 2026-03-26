@@ -52,6 +52,37 @@ export async function listTasks(
     enriched = enriched.filter(t => t.labels.some((l: any) => args.label_ids!.includes(l.id)));
   }
 
+  // Fetch acceptance_criteria and test_case counts for returned tasks
+  if (enriched.length > 0) {
+    const taskIds = enriched.map((t: any) => t.id);
+
+    const { data: acCounts } = await client
+      .from('acceptance_criteria')
+      .select('task_id')
+      .in('task_id', taskIds);
+
+    const { data: tcCounts } = await client
+      .from('test_cases')
+      .select('task_id')
+      .in('task_id', taskIds);
+
+    const acByTask: Record<string, number> = {};
+    for (const row of acCounts ?? []) {
+      acByTask[row.task_id] = (acByTask[row.task_id] ?? 0) + 1;
+    }
+
+    const tcByTask: Record<string, number> = {};
+    for (const row of tcCounts ?? []) {
+      tcByTask[row.task_id] = (tcByTask[row.task_id] ?? 0) + 1;
+    }
+
+    enriched = enriched.map((t: any) => ({
+      ...t,
+      acceptance_criteria_count: acByTask[t.id] ?? 0,
+      test_case_count: tcByTask[t.id] ?? 0,
+    }));
+  }
+
   return enriched;
 }
 
@@ -78,8 +109,21 @@ export async function getTask(client: SupabaseClient, projectId: string, args: {
   if (error) throw error;
   const labels = (data.task_labels ?? []).map((tl: any) => tl.labels).filter(Boolean);
   const subtasks = ((data as any).subtasks ?? []).sort((a: any, b: any) => a.position - b.position);
+
+  const { data: acceptanceCriteria } = await client
+    .from('acceptance_criteria')
+    .select('*')
+    .eq('task_id', resolvedId)
+    .order('position');
+
+  const { data: testCases } = await client
+    .from('test_cases')
+    .select('*')
+    .eq('task_id', resolvedId)
+    .order('position');
+
   const { task_labels, subtasks: _subtasks, ...rest } = data as any;
-  return { ...rest, labels, subtasks };
+  return { ...rest, labels, subtasks, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [] };
 }
 
 export const createTaskTool = {
