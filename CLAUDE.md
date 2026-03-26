@@ -19,6 +19,10 @@ This is the Harmony plugin for Claude Code — an MCP server and workflow skills
 
 Both skills depend on the `superpowers` plugin for some functionality (brainstorming, writing-plans, git-worktrees).
 
+## Versioning
+
+Every PR must bump the version in `.claude-plugin/plugin.json`. This is how Claude Code detects plugin updates — without a version bump, users won't pick up the changes.
+
 ## Plugin Structure
 
 ```
