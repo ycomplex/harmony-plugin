@@ -29,6 +29,8 @@ import {
   shipMilestoneTool, shipMilestone,
 } from './milestones.js';
 import { listCyclesTool, listCycles, createCycleTool, createCycle, updateCycleTool, updateCycle } from './cycles.js';
+import { listAcceptanceCriteriaTool, listAcceptanceCriteria, manageAcceptanceCriteriaTool, manageAcceptanceCriteria } from './acceptance-criteria.js';
+import { listTestCasesTool, listTestCases, manageTestCasesTool, manageTestCases } from './test-cases.js';
 
 export function registerTools(disabledFeatures?: Record<string, boolean>) {
   const tools = [
@@ -46,6 +48,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
   if (!disabledFeatures?.subtasks) tools.push(listSubtasksTool, manageSubtasksTool);
   if (!disabledFeatures?.cycles) tools.push(listCyclesTool, createCycleTool, updateCycleTool);
   if (!disabledFeatures?.milestones) tools.push(listMilestonesTool, createMilestoneTool, updateMilestoneTool, shipMilestoneTool);
+  if (!disabledFeatures?.acceptance) tools.push(listAcceptanceCriteriaTool, manageAcceptanceCriteriaTool, listTestCasesTool, manageTestCasesTool);
 
   return tools;
 }
@@ -149,6 +152,18 @@ export async function handleToolCall(
         break;
       case 'update_cycle':
         result = await updateCycle(client, projectId, args as any);
+        break;
+      case 'list_acceptance_criteria':
+        result = await listAcceptanceCriteria(client, projectId, args as any);
+        break;
+      case 'manage_acceptance_criteria':
+        result = await manageAcceptanceCriteria(client, projectId, userId, args as any);
+        break;
+      case 'list_test_cases':
+        result = await listTestCases(client, projectId, args as any);
+        break;
+      case 'manage_test_cases':
+        result = await manageTestCases(client, projectId, userId, args as any);
         break;
       default:
         return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };
