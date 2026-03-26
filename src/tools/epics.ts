@@ -29,6 +29,40 @@ export const createEpicTool = {
   },
 };
 
+export const updateEpicTool = {
+  name: 'update_epic',
+  description: "Update an epic's name or color",
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      epic_id: { type: 'string', description: 'Epic ID' },
+      name: { type: 'string', description: 'New name' },
+      color: { type: 'string', description: 'New hex color (e.g. #6366f1)' },
+    },
+    required: ['epic_id'],
+  },
+};
+
+export async function updateEpic(
+  client: SupabaseClient,
+  projectId: string,
+  args: { epic_id: string; name?: string; color?: string }
+) {
+  const updates: Record<string, unknown> = {};
+  if (args.name !== undefined) updates.name = args.name;
+  if (args.color !== undefined) updates.color = args.color;
+
+  const { data, error } = await client
+    .from('epics')
+    .update(updates)
+    .eq('id', args.epic_id)
+    .eq('project_id', projectId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 export async function createEpic(
   client: SupabaseClient,
   projectId: string,

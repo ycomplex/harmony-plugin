@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getProjectTool, getProject } from './project.js';
-import { listEpicsTool, listEpics, createEpicTool, createEpic } from './epics.js';
+import { listEpicsTool, listEpics, createEpicTool, createEpic, updateEpicTool, updateEpic } from './epics.js';
 import {
   listTasksTool, listTasks,
   getTaskTool, getTask,
@@ -43,7 +43,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listProjectDocumentsTool, getProjectDocumentTool, createProjectDocumentTool, updateProjectDocumentTool,
   ];
 
-  if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool);
+  if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
   if (!disabledFeatures?.labels) tools.push(listLabelsTool, createLabelTool, manageTaskLabelsTool);
   if (!disabledFeatures?.subtasks) tools.push(listSubtasksTool, manageSubtasksTool);
   if (!disabledFeatures?.cycles) tools.push(listCyclesTool, createCycleTool, updateCycleTool);
@@ -86,6 +86,9 @@ export async function handleToolCall(
         break;
       case 'create_epic':
         result = await createEpic(client, projectId, userId, args as any);
+        break;
+      case 'update_epic':
+        result = await updateEpic(client, projectId, args as any);
         break;
       case 'list_labels':
         result = await listLabels(client, projectId);
