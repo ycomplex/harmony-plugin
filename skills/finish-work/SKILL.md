@@ -17,7 +17,13 @@ Before doing anything, verify ALL three conditions. If any fail, stop immediatel
 
 3. **PR created?** Check if the current branch has an open PR using `gh pr view`. If not, error: "No PR found for this branch. Please create a PR before finishing."
 
-If any check fails, stop. Do not proceed. Do not offer to fix it. Just report the issue clearly.
+4. **Acceptance criteria addressed?** (soft check — warning, not a blocker)
+   If the task has acceptance criteria, use `list_acceptance_criteria` to check whether all items are marked as done. If not, warn the user:
+   "N of M acceptance criteria are not yet checked. Proceed anyway?"
+   Similarly check if test cases have been recorded via `list_test_cases`.
+   If either is missing, warn but don't block — the user may have valid reasons to skip.
+
+If any of the first three checks fail, stop. Do not proceed. Do not offer to fix it. Just report the issue clearly. For the fourth check, warn but allow the user to override.
 
 ## Merge sequence
 

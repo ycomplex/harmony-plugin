@@ -148,7 +148,20 @@ Which route? (default: 2)
 
 The user can reply with a number, a word, or just confirm the default.
 
-### 5. Hand off to the chosen route
+### 5. Display acceptance criteria
+
+After fetching the task, check for acceptance criteria:
+- If `get_task` returns acceptance criteria items, display them as part of the execution context:
+  ```
+  This task has N acceptance criteria to address:
+  - [ ] criterion 1
+  - [ ] criterion 2
+  ```
+- In the Execute handoff instructions, include:
+  - Check off AC items via `manage_acceptance_criteria` as you address them
+  - After writing tests, record them via `manage_test_cases` before creating a PR
+
+### 6. Hand off to the chosen route
 
 **Execute:** Start implementing immediately. Do the work, write tests, commit, and create a PR ready for the user to review.
 
