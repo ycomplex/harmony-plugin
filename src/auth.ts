@@ -1,5 +1,5 @@
-const SUPABASE_URL = 'https://lhgljwwetammvsngmbic.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxoZ2xqd3dldGFtbXZzbmdtYmljIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxOTEwNDAsImV4cCI6MjA4Nzc2NzA0MH0.-UDqB58fweVwbfQMT6hUMo9nrpcj2ZfKzTvBhv2NeLc';
+const SUPABASE_URL = process.env.HARMONY_SUPABASE_URL ?? 'https://eioxsunvhakmelhanmnn.supabase.co';
+const SUPABASE_ANON_KEY = process.env.HARMONY_SUPABASE_ANON_KEY ?? 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw';
 
 interface TokenExchangeResult {
   access_token: string;
