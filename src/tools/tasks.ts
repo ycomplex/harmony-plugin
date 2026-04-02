@@ -189,7 +189,7 @@ export async function createTask(
       priority: args.priority ?? 'medium',
       assignee_id: assigneeId,
       epic_id: args.epic_id ?? null,
-      description: args.description ?? null,
+      description: args.description?.replace(/\\n/g, '\n') ?? null,
       due_date: args.due_date ?? null,
       field_values: args.field_values ?? {},
       position: nextPosition,
@@ -251,6 +251,11 @@ export async function updateTask(
     updates.assignee_id = await resolveAssignee(client, projectId, updates.assignee_id);
   } else if (updates.assignee_id === 'null') {
     updates.assignee_id = null;
+  }
+
+  // Normalize escaped newlines in description
+  if (typeof updates.description === 'string') {
+    updates.description = updates.description.replace(/\\n/g, '\n');
   }
 
   // If field_values provided, merge with existing
@@ -362,7 +367,7 @@ export async function bulkCreateTasks(
       status,
       priority: task.priority ?? 'medium',
       epic_id: task.epic_id ?? null,
-      description: task.description ?? null,
+      description: task.description?.replace(/\\n/g, '\n') ?? null,
       due_date: task.due_date ?? null,
       field_values: task.field_values ?? {},
       position: pos,
