@@ -132,6 +132,21 @@ describe('addComment', () => {
     });
   });
 
+  it('normalizes literal \\n sequences to real newlines', async () => {
+    mockResolveTaskId.mockResolvedValueOnce(TASK_UUID);
+    const client = createMockInsertClient(createdComment);
+    await addComment(client, PROJECT_ID, USER_ID, {
+      task_id: TASK_UUID,
+      content: 'line1\\nline2\\nline3',
+    });
+
+    expect(client.insert).toHaveBeenCalledWith({
+      task_id: TASK_UUID,
+      user_id: USER_ID,
+      content: 'line1\nline2\nline3',
+    });
+  });
+
   it('throws on Supabase error', async () => {
     mockResolveTaskId.mockResolvedValueOnce(TASK_UUID);
     const client = createMockInsertClient(null, { message: 'Insert failed' });

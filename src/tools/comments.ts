@@ -62,7 +62,7 @@ export async function addComment(
     .insert({
       task_id: taskId,
       user_id: userId,
-      content: args.content,
+      content: args.content.replace(/\\n/g, '\n'),
     })
     .select()
     .single();
