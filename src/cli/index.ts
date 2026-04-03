@@ -6,6 +6,15 @@ import { registerCommentCommands } from './commands/comments.js';
 import { registerProjectCommands } from './commands/project.js';
 import { registerMemberCommands } from './commands/members.js';
 import { registerActivityCommand } from './commands/activity.js';
+import { registerEpicCommands } from './commands/epics.js';
+import { registerLabelCommands } from './commands/labels.js';
+import { registerMilestoneCommands } from './commands/milestones.js';
+import { registerCycleCommands } from './commands/cycles.js';
+import { registerDocCommands } from './commands/docs.js';
+import { registerSubtaskCommands } from './commands/subtasks.js';
+import { registerAcceptanceCriteriaCommands } from './commands/acceptance-criteria.js';
+import { registerTestCaseCommands } from './commands/test-cases.js';
+import { registerBulkCommands } from './commands/bulk.js';
 
 const program = new Command();
 
@@ -22,5 +31,14 @@ registerCommentCommands(program);
 registerProjectCommands(program);
 registerMemberCommands(program);
 registerActivityCommand(program);
+registerEpicCommands(program);
+registerLabelCommands(program);
+registerMilestoneCommands(program);
+registerCycleCommands(program);
+registerDocCommands(program);
+registerSubtaskCommands(program);
+registerAcceptanceCriteriaCommands(program);
+registerTestCaseCommands(program);
+registerBulkCommands(program);
 
 program.parse();
