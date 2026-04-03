@@ -1,6 +1,24 @@
 # Harmony Plugin for Claude Code
 
-This is the Harmony plugin for Claude Code — an MCP server and workflow skills for Harmony project management.
+This is the Harmony plugin for Claude Code — an MCP server, CLI, and workflow skills for Harmony project management.
+
+## CLI
+
+The `harmony` CLI provides the same functionality as the MCP server for direct terminal use.
+
+- **Binary:** `harmony` (via `npx @harmony/cli` or local `node dist/bin/harmony.js`)
+- **Config:** `~/.harmony/config.json` (multi-project auth tokens)
+- **Output modes:** Human-readable tables (default) or `--json` for scripting
+- **Help:** `harmony --help`, `harmony <command> --help`
+
+### Quick start
+
+```bash
+harmony login --token <your-api-token>
+harmony tasks list
+harmony tasks get B-42
+harmony tasks create --title "New task" --priority high
+```
 
 ## MCP Server
 
@@ -31,7 +49,13 @@ harmony-plugin/
 ├── .mcp.json                    # MCP server config (stdio)
 ├── hooks/hooks.json             # SessionStart: auto-install + build
 ├── skills/                      # Workflow skills
-├── src/                         # MCP server TypeScript source
+├── src/
+│   ├── index.ts                 # MCP server entry point
+│   ├── auth.ts                  # Token exchange (shared)
+│   ├── supabase.ts              # Supabase client (shared)
+│   ├── tools/                   # Handlers — shared core for MCP + CLI
+│   ├── bin/harmony.ts           # CLI binary entry point
+│   └── cli/                     # CLI commands and formatting
 ├── package.json
 └── tsconfig.json
 ```
