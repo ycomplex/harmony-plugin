@@ -3,3 +3,4 @@ dist/
 .DS_Store
 .worktrees/
 coverage/
+.harmony-task.json
