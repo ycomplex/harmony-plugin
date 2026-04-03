@@ -1,12 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CLI = path.resolve(__dirname, '../../dist/bin/harmony.js');
+const ROOT = path.resolve(__dirname, '../..');
+const CLI = path.resolve(ROOT, 'dist/bin/harmony.js');
 
 describe('CLI smoke tests', () => {
+  beforeAll(() => {
+    execFileSync('npm', ['run', 'build'], { cwd: ROOT, encoding: 'utf-8' });
+  });
   it('shows help with exit code 0', () => {
     const output = execFileSync('node', [CLI, '--help'], { encoding: 'utf-8' });
     expect(output).toContain('Harmony project management CLI');
