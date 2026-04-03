@@ -1,5 +1,9 @@
+import { createRequire } from 'node:module';
 import { Command } from 'commander';
 import { registerAuthCommands } from './commands/auth.js';
+
+const require = createRequire(import.meta.url);
+const { version } = require('../../package.json');
 import { registerTaskCommands } from './commands/tasks.js';
 import { registerQueryCommand } from './commands/query.js';
 import { registerCommentCommands } from './commands/comments.js';
@@ -21,7 +25,7 @@ const program = new Command();
 program
   .name('harmony')
   .description('Harmony project management CLI')
-  .version('0.2.0')
+  .version(version)
   .option('--json', 'Output results as JSON', false);
 
 registerAuthCommands(program);

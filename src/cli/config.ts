@@ -33,10 +33,11 @@ export function loadConfig(): HarmonyConfig {
 
 export function saveConfig(config: HarmonyConfig): void {
   const dir = getConfigDir();
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(
     path.join(dir, 'config.json'),
     JSON.stringify(config, null, 2) + '\n',
+    { mode: 0o600 },
   );
 }
 

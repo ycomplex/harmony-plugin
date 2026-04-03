@@ -4,7 +4,7 @@ import { HarmonyAuth } from '../../auth.js';
 import { createAuthenticatedClient } from '../../supabase.js';
 import { getProject } from '../../tools/project.js';
 import { addProject, removeProject, listProjects } from '../config.js';
-import { formatOutput, formatTable } from '../formatter.js';
+import { formatTable } from '../formatter.js';
 
 export function registerAuthCommands(program: Command): void {
   program

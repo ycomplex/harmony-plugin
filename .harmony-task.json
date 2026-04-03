@@ -1,0 +1,7 @@
+{
+  "task_id": "b217a30f-1814-42be-92ce-9abda4c3dcee",
+  "task_number": 241,
+  "visual_id": "B-241",
+  "title": "Build Harmony CLI — add CLI to plugin repo mirroring MCP server functionality",
+  "branch": "feat/harmony-cli"
+}

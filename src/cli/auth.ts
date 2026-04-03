@@ -1,4 +1,4 @@
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { HarmonyAuth } from '../auth.js';
 import { createAuthenticatedClient } from '../supabase.js';
 import { getActiveProject, ProjectConfig } from './config.js';
