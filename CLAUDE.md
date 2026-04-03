@@ -6,7 +6,7 @@ This is the Harmony plugin for Claude Code — an MCP server, CLI, and workflow 
 
 The `harmony` CLI provides the same functionality as the MCP server for direct terminal use.
 
-- **Binary:** `harmony` (via `npx @harmony/cli` or local `node dist/bin/harmony.js`)
+- **Binary:** `harmony` (via `npx @harmony-ad/harmony` or local `node dist/bin/harmony.js`)
 - **Config:** `~/.harmony/config.json` (multi-project auth tokens)
 - **Output modes:** Human-readable tables (default) or `--json` for scripting
 - **Help:** `harmony --help`, `harmony <command> --help`

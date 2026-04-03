@@ -1,13 +1,18 @@
 {
-  "name": "@harmony/cli",
-  "version": "0.2.0",
+  "name": "@harmony-ad/harmony",
+  "version": "0.1.1",
   "description": "Harmony CLI and MCP server for project management",
   "type": "module",
   "bin": {
-    "harmony-mcp": "./dist/index.js",
     "harmony": "./dist/bin/harmony.js"
   },
   "main": "./dist/index.js",
+  "files": [
+    "dist/"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
