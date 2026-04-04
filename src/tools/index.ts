@@ -17,11 +17,12 @@ import { bulkUpdateTasksTool, bulkUpdateTasks } from './bulk-update.js';
 import { listActivityTool, listActivity } from './activity.js';
 import { listMembersTool, listMembers } from './members.js';
 import {
-  listProjectDocumentsTool, listProjectDocuments,
-  getProjectDocumentTool, getProjectDocument,
-  createProjectDocumentTool, createProjectDocument,
-  updateProjectDocumentTool, updateProjectDocument,
-} from './documents.js';
+  queryKnowledgeTool, queryKnowledge,
+  getKnowledgeEntryTool, getKnowledgeEntry,
+  createKnowledgeEntryTool, createKnowledgeEntry,
+  updateKnowledgeEntryTool, updateKnowledgeEntry,
+  supersedeKnowledgeEntryTool, supersedeKnowledgeEntry,
+} from './knowledge.js';
 import {
   listMilestonesTool, listMilestones,
   createMilestoneTool, createMilestone,
@@ -40,7 +41,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listCommentsTool, addCommentTool,
     listActivityTool,
     listMembersTool,
-    listProjectDocumentsTool, getProjectDocumentTool, createProjectDocumentTool, updateProjectDocumentTool,
+    queryKnowledgeTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
   ];
 
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
@@ -123,17 +124,20 @@ export async function handleToolCall(
       case 'bulk_update_tasks':
         result = await bulkUpdateTasks(client, projectId, args as any);
         break;
-      case 'list_project_documents':
-        result = await listProjectDocuments(client, projectId);
+      case 'query_knowledge':
+        result = await queryKnowledge(client, projectId, args as any);
         break;
-      case 'get_project_document':
-        result = await getProjectDocument(client, projectId, args as any);
+      case 'get_knowledge_entry':
+        result = await getKnowledgeEntry(client, projectId, args as any);
         break;
-      case 'create_project_document':
-        result = await createProjectDocument(client, projectId, userId, args as any);
+      case 'create_knowledge_entry':
+        result = await createKnowledgeEntry(client, projectId, userId, args as any);
         break;
-      case 'update_project_document':
-        result = await updateProjectDocument(client, projectId, args as any);
+      case 'update_knowledge_entry':
+        result = await updateKnowledgeEntry(client, projectId, args as any);
+        break;
+      case 'supersede_knowledge_entry':
+        result = await supersedeKnowledgeEntry(client, projectId, userId, args as any);
         break;
       case 'list_milestones':
         result = await listMilestones(client, projectId, args as any);
