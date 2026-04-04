@@ -18,6 +18,7 @@ import { registerSubtaskCommands } from './commands/subtasks.js';
 import { registerAcceptanceCriteriaCommands } from './commands/acceptance-criteria.js';
 import { registerTestCaseCommands } from './commands/test-cases.js';
 import { registerBulkCommands } from './commands/bulk.js';
+import { registerKnowledgeCommands } from './commands/knowledge.js';
 
 const program = new Command();
 
@@ -42,5 +43,6 @@ registerSubtaskCommands(program);
 registerAcceptanceCriteriaCommands(program);
 registerTestCaseCommands(program);
 registerBulkCommands(program);
+registerKnowledgeCommands(program);
 
 program.parse();
