@@ -14,8 +14,10 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
+    "build": "esbuild src/index.ts src/bin/harmony.ts --bundle --platform=node --format=esm --outdir=dist --outbase=src --target=node20 --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
+    "typecheck": "tsc --noEmit",
+    "verify:dist": "rm -rf dist && npm run build && git diff --exit-code dist",
+    "dev": "npm run build -- --watch",
     "start": "node dist/index.js",
     "lint": "eslint .",
     "test": "vitest run",
@@ -31,6 +33,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "esbuild": "^0.27.7",
     "eslint": "^10.1.0",
     "globals": "^17.4.0",
     "typescript": "^5.8.3",

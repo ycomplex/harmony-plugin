@@ -1,6 +1,6 @@
 {
   "name": "harmony-plugin",
-  "version": "0.3.1",
+  "version": "0.4.2",
   "description": "Harmony project management integration for Claude Code — MCP tools and workflow skills",
   "author": {
     "name": "ycomplex"
