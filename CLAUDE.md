@@ -41,6 +41,17 @@ Both skills depend on the `superpowers` plugin for some functionality (brainstor
 
 Every PR must bump the version in `.claude-plugin/plugin.json`. This is how Claude Code detects plugin updates — without a version bump, users won't pick up the changes.
 
+### `dist/` is tracked in git
+
+Because Claude Code plugins aren't npm-installed (the marketplace copies files directly into `~/.claude/plugins/cache/`), the compiled `dist/` output is committed to the repo so the MCP server runs immediately on fresh install.
+
+**Before bumping the version in `.claude-plugin/plugin.json`:**
+1. Run `npm run build`
+2. Verify with `npm run verify:dist` — this rebuilds and fails if committed `dist/` differs from a fresh build
+3. Commit any `dist/` changes alongside the version bump
+
+CI should run `npm run verify:dist` on every PR.
+
 ## Plugin Structure
 
 ```

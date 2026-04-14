@@ -15,6 +15,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "verify:dist": "rm -rf dist && tsc && git diff --exit-code dist",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "lint": "eslint .",
