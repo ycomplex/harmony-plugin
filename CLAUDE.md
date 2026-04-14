@@ -25,9 +25,9 @@ harmony tasks create --title "New task" --priority high
 - **Language:** Node.js / TypeScript
 - **Transport:** stdio
 - **Auth:** Requires `HARMONY_API_TOKEN` environment variable
-- **Build:** `npm run build` (runs `tsc`)
-- **Type-check:** `npx tsc --noEmit`
-- **Module resolution:** Node16 — all imports must use `.js` extensions (even for `.ts` source files)
+- **Build:** `npm run build` (runs `esbuild` — bundles all runtime deps into `dist/` as ESM). The bundled output is self-contained: `node dist/index.js` works with no `node_modules/` present.
+- **Type-check:** `npm run typecheck` (runs `tsc --noEmit`)
+- **Module resolution:** Node16 — source imports must use `.js` extensions (even for `.ts` source files). esbuild resolves them at bundle time.
 - **Dependencies:** `@modelcontextprotocol/sdk`, `@supabase/supabase-js`, `zod`
 
 ## Skills
@@ -43,7 +43,7 @@ Every PR must bump the version in `.claude-plugin/plugin.json`. This is how Clau
 
 ### `dist/` is tracked in git
 
-Because Claude Code plugins aren't npm-installed (the marketplace copies files directly into `~/.claude/plugins/cache/`), the compiled `dist/` output is committed to the repo so the MCP server runs immediately on fresh install.
+Because Claude Code plugins aren't npm-installed (the marketplace copies files directly into `~/.claude/plugins/cache/` without running `npm install`), the compiled `dist/` output is committed so the MCP server runs immediately on fresh install. The bundle is produced by `esbuild --bundle`, so all runtime deps are inlined — no `node_modules/` is needed at runtime.
 
 **Before bumping the version in `.claude-plugin/plugin.json`:**
 1. Run `npm run build`
