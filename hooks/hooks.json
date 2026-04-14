@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && ([ -f dist/index.js ] || (npm install && npx tsc) >&2) && echo '{}'",
-            "timeout": 120
+            "command": "if [ ! -f \"${CLAUDE_PLUGIN_ROOT}/dist/index.js\" ]; then cd \"${CLAUDE_PLUGIN_ROOT}\" && npm install --silent && npx tsc >&2; fi; echo '{}'",
+            "timeout": 180
           }
         ]
       }
