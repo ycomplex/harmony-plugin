@@ -25460,7 +25460,7 @@ async function getWorkspaceId(client, projectId) {
 }
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
-  let query = client.from("workspace_knowledge").select("id, title, type, status, tags, project_id, updated_at").eq("workspace_id", workspaceId);
+  let query = client.from("workspace_knowledge").select("id, title, type, status, tags, project_id, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.status) {
     query = query.eq("status", args.status);
   } else if (!args.include_superseded) {
@@ -25471,9 +25471,6 @@ async function queryKnowledge(client, projectId, args) {
   }
   if (args.tags && args.tags.length > 0) {
     query = query.contains("tags", args.tags);
-  }
-  if (args.project_id) {
-    query = query.or(`project_id.eq.${args.project_id},project_id.is.null`);
   }
   if (args.search) {
     query = query.or(`title.ilike.%${args.search}%,content.ilike.%${args.search}%`);
@@ -25492,7 +25489,7 @@ async function getKnowledgeEntry(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
   let query = client.from("workspace_knowledge").select(
     "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
-  ).eq("workspace_id", workspaceId);
+  ).eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.entry_id) {
     query = query.eq("id", args.entry_id);
   } else {
@@ -25509,6 +25506,7 @@ async function createKnowledgeEntry(client, projectId, userId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
   const record = {
     workspace_id: workspaceId,
+    project_id: projectId,
     title: args.title.trim(),
     content: args.content ?? "",
     type: args.type,
@@ -25516,7 +25514,6 @@ async function createKnowledgeEntry(client, projectId, userId, args) {
     created_by: userId
   };
   if (args.tags !== void 0) record.tags = args.tags;
-  if (args.project_id !== void 0) record.project_id = args.project_id;
   if (args.source_task_id !== void 0) record.source_task_id = args.source_task_id;
   const { data, error } = await client.from("workspace_knowledge").insert(record).select(
     "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
@@ -25546,7 +25543,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
   if (args.type !== void 0) updates.type = args.type;
   if (args.status !== void 0) updates.status = args.status;
   if (args.tags !== void 0) updates.tags = args.tags;
-  let query = client.from("workspace_knowledge").update(updates).eq("workspace_id", workspaceId);
+  let query = client.from("workspace_knowledge").update(updates).eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.entry_id) {
     query = query.eq("id", args.entry_id);
   } else {
@@ -25579,11 +25576,10 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
     type: args.type ?? existing.type,
     status: "accepted",
     tags: args.tags ?? existing.tags,
-    project_id: existing.project_id ?? void 0,
     source_task_id: existing.source_task_id ?? void 0
   });
   const workspaceId = await getWorkspaceId(client, projectId);
-  const { data: supersededData, error } = await client.from("workspace_knowledge").update({ status: "superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("id", existing.id).select(
+  const { data: supersededData, error } = await client.from("workspace_knowledge").update({ status: "superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", existing.id).select(
     "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
   ).single();
   if (error) throw error;
@@ -25647,13 +25643,13 @@ function registerKnowledgeCommands(program3) {
         { label: "Type", value: entry.type },
         { label: "Status", value: entry.status },
         { label: "Tags", value: entry.tags?.length ? entry.tags.join(", ") : "(none)" },
-        { label: "Project", value: entry.project_id ?? "(workspace-wide)" },
+        { label: "Project", value: entry.project_id },
         { label: "Updated", value: formatDate(entry.updated_at) },
         { label: "Content", value: entry.content }
       ])
     );
   });
-  knowledge.command("create").description("Create a new knowledge entry").requiredOption("--title <title>", "Entry title").requiredOption("--content <content>", "Markdown content of the entry").requiredOption("--type <type>", "Entry type: architecture, business, or convention").option("--status <status>", "Status override (default: draft)").option("--tags <tags>", "Comma-separated list of tags").option("--project <id>", "Scope to a specific project (omit for workspace-wide)").option("--source-task <id>", "Task ID that triggered this knowledge entry").action(async (opts) => {
+  knowledge.command("create").description("Create a new knowledge entry").requiredOption("--title <title>", "Entry title").requiredOption("--content <content>", "Markdown content of the entry").requiredOption("--type <type>", "Entry type: architecture, business, or convention").option("--status <status>", "Status override (default: draft)").option("--tags <tags>", "Comma-separated list of tags").option("--source-task <id>", "Task ID that triggered this knowledge entry").action(async (opts) => {
     const tags = opts.tags ? opts.tags.split(",").map((t) => t.trim()).filter(Boolean) : void 0;
     await runCommand(
       program3.opts(),
@@ -25663,7 +25659,6 @@ function registerKnowledgeCommands(program3) {
         type: opts.type,
         status: opts.status,
         tags,
-        project_id: opts.project,
         source_task_id: opts.sourceTask
       }),
       (entry) => `Created knowledge entry: "${entry.title}" (${entry.id})`

@@ -10,14 +10,14 @@ export interface KnowledgeEntrySummary {
   type: string;
   status: string;
   tags: string[];
-  project_id: string | null;
+  project_id: string;
   updated_at: string;
 }
 
 export interface KnowledgeEntryFull {
   id: string;
   workspace_id: string;
-  project_id: string | null;
+  project_id: string;
   title: string;
   content: string;
   type: string;
@@ -37,7 +37,7 @@ export interface KnowledgeEntryFull {
 export const queryKnowledgeTool = {
   name: 'query_knowledge',
   description:
-    'Search the workspace knowledge base for architecture decisions, business decisions, and conventions. Check this before making significant implementation choices. Defaults to accepted entries only.',
+    'Search the knowledge base for architecture decisions, business decisions, and conventions scoped to this project. Check this before making significant implementation choices. Defaults to accepted entries only.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -53,10 +53,6 @@ export const queryKnowledgeTool = {
         type: 'array',
         items: { type: 'string' },
         description: 'Filter entries that contain ALL of these tags',
-      },
-      project_id: {
-        type: 'string',
-        description: 'Filter to entries scoped to this project (also returns workspace-wide entries)',
       },
       search: {
         type: 'string',
@@ -74,7 +70,7 @@ export const queryKnowledgeTool = {
 
 export const getKnowledgeEntryTool = {
   name: 'get_knowledge_entry',
-  description: 'Get the full content of a knowledge entry by ID or title.',
+  description: 'Get the full content of a knowledge entry by ID or title. Scoped to this project.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -87,11 +83,11 @@ export const getKnowledgeEntryTool = {
 export const createKnowledgeEntryTool = {
   name: 'create_knowledge_entry',
   description:
-    'Create a new knowledge entry in the workspace knowledge base. Entries are created as "draft" by default — humans review and accept them. Use for architecture decisions, business decisions, and conventions.',
+    'Create a new knowledge entry in this project. Entries are created as "draft" by default — humans review and accept them. Use for architecture decisions, business decisions, and conventions.',
   inputSchema: {
     type: 'object' as const,
     properties: {
-      title: { type: 'string', description: 'Entry title (must be unique within the workspace)' },
+      title: { type: 'string', description: 'Entry title (must be unique within the project)' },
       content: { type: 'string', description: 'Markdown content of the entry' },
       type: {
         type: 'string',
@@ -106,10 +102,6 @@ export const createKnowledgeEntryTool = {
         items: { type: 'string' },
         description: 'Optional tags',
       },
-      project_id: {
-        type: 'string',
-        description: 'Scope this entry to a specific project (omit for workspace-wide)',
-      },
       source_task_id: {
         type: 'string',
         description: 'Task ID that triggered this knowledge entry',
@@ -121,7 +113,7 @@ export const createKnowledgeEntryTool = {
 
 export const updateKnowledgeEntryTool = {
   name: 'update_knowledge_entry',
-  description: 'Update an existing knowledge entry by ID or title. Can update title, content, type, status, or tags.',
+  description: 'Update an existing knowledge entry in this project by ID or title. Can update title, content, type, status, or tags.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -143,7 +135,7 @@ export const updateKnowledgeEntryTool = {
 export const supersedeKnowledgeEntryTool = {
   name: 'supersede_knowledge_entry',
   description:
-    'Supersede an existing knowledge entry with a new replacement. Marks the old entry as "superseded" and creates the replacement as "accepted", linking them via superseded_by.',
+    'Supersede an existing knowledge entry in this project with a new replacement. Marks the old entry as "superseded" and creates the replacement as "accepted", linking them via superseded_by.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -184,7 +176,6 @@ export interface QueryKnowledgeArgs {
   type?: string;
   status?: string;
   tags?: string[];
-  project_id?: string;
   search?: string;
   include_superseded?: boolean;
   limit?: number;
@@ -201,7 +192,8 @@ export async function queryKnowledge(
   let query = client
     .from('workspace_knowledge')
     .select('id, title, type, status, tags, project_id, updated_at')
-    .eq('workspace_id', workspaceId);
+    .eq('workspace_id', workspaceId)
+    .eq('project_id', projectId);
 
   // Status filtering logic:
   // - explicit status → use it
@@ -219,10 +211,6 @@ export async function queryKnowledge(
 
   if (args.tags && args.tags.length > 0) {
     query = query.contains('tags', args.tags);
-  }
-
-  if (args.project_id) {
-    query = query.or(`project_id.eq.${args.project_id},project_id.is.null`);
   }
 
   if (args.search) {
@@ -258,7 +246,8 @@ export async function getKnowledgeEntry(
     .select(
       'id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at',
     )
-    .eq('workspace_id', workspaceId);
+    .eq('workspace_id', workspaceId)
+    .eq('project_id', projectId);
 
   if (args.entry_id) {
     query = query.eq('id', args.entry_id);
@@ -281,7 +270,6 @@ export interface CreateKnowledgeEntryArgs {
   type: string;
   status?: string;
   tags?: string[];
-  project_id?: string;
   source_task_id?: string;
 }
 
@@ -299,6 +287,7 @@ export async function createKnowledgeEntry(
 
   const record: Record<string, unknown> = {
     workspace_id: workspaceId,
+    project_id: projectId,
     title: args.title.trim(),
     content: args.content ?? '',
     type: args.type,
@@ -307,7 +296,6 @@ export async function createKnowledgeEntry(
   };
 
   if (args.tags !== undefined) record.tags = args.tags;
-  if (args.project_id !== undefined) record.project_id = args.project_id;
   if (args.source_task_id !== undefined) record.source_task_id = args.source_task_id;
 
   const { data, error } = await client
@@ -375,7 +363,8 @@ export async function updateKnowledgeEntry(
   let query = client
     .from('workspace_knowledge')
     .update(updates)
-    .eq('workspace_id', workspaceId);
+    .eq('workspace_id', workspaceId)
+    .eq('project_id', projectId);
 
   if (args.entry_id) {
     query = query.eq('id', args.entry_id);
@@ -423,20 +412,19 @@ export async function supersedeKnowledgeEntry(
     throw new Error('Either entry_id or title must be provided to identify the entry to supersede');
   }
 
-  // Step 1: fetch the existing entry
+  // Step 1: fetch the existing entry (scoped to projectId via getKnowledgeEntry)
   const existing = await getKnowledgeEntry(client, projectId, {
     entry_id: args.entry_id,
     title: args.title,
   });
 
-  // Step 2: create the replacement entry (status='accepted')
+  // Step 2: create the replacement entry (status='accepted'), scoped to the token's project
   const replacement = await createKnowledgeEntry(client, projectId, userId, {
     title: args.new_title,
     content: args.new_content,
     type: args.type ?? existing.type,
     status: 'accepted',
     tags: args.tags ?? existing.tags,
-    project_id: existing.project_id ?? undefined,
     source_task_id: existing.source_task_id ?? undefined,
   });
 
@@ -446,6 +434,7 @@ export async function supersedeKnowledgeEntry(
     .from('workspace_knowledge')
     .update({ status: 'superseded', superseded_by: replacement.id })
     .eq('workspace_id', workspaceId)
+    .eq('project_id', projectId)
     .eq('id', existing.id)
     .select(
       'id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at',

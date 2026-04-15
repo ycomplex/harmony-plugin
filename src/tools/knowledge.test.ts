@@ -12,96 +12,6 @@ const WORKSPACE_ID = 'ws-xyz-456';
 const USER_ID = 'user-abc-123';
 
 // ---------------------------------------------------------------------------
-// Mock factory helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Creates a chainable mock that resolves at .order() (used by queryKnowledge).
- * Also supports .range() as the terminal call if needed.
- */
-function createMockOrderClient(data: any[] | null, error: any = null) {
-  const chain: any = {};
-  chain.from = vi.fn().mockReturnValue(chain);
-  chain.select = vi.fn().mockReturnValue(chain);
-  chain.eq = vi.fn().mockReturnValue(chain);
-  chain.contains = vi.fn().mockReturnValue(chain);
-  chain.or = vi.fn().mockReturnValue(chain);
-  chain.ilike = vi.fn().mockReturnValue(chain);
-  chain.order = vi.fn().mockReturnValue(chain);
-  chain.range = vi.fn().mockResolvedValue({ data, error });
-  return chain;
-}
-
-/** Creates a chainable mock that resolves at .single() */
-function createMockSingleClient(data: any | null, error: any = null) {
-  const chain: any = {};
-  chain.from = vi.fn().mockReturnValue(chain);
-  chain.select = vi.fn().mockReturnValue(chain);
-  chain.eq = vi.fn().mockReturnValue(chain);
-  chain.single = vi.fn().mockResolvedValue({ data, error });
-  return chain;
-}
-
-/** Creates a chainable mock for insert().select().single() */
-function createMockInsertClient(data: any | null, error: any = null) {
-  const chain: any = {};
-  chain.from = vi.fn().mockReturnValue(chain);
-  chain.insert = vi.fn().mockReturnValue(chain);
-  chain.select = vi.fn().mockReturnValue(chain);
-  chain.single = vi.fn().mockResolvedValue({ data, error });
-  return chain;
-}
-
-/** Creates a chainable mock for update().eq().select().single() */
-function createMockUpdateClient(data: any | null, error: any = null) {
-  const chain: any = {};
-  chain.from = vi.fn().mockReturnValue(chain);
-  chain.update = vi.fn().mockReturnValue(chain);
-  chain.eq = vi.fn().mockReturnValue(chain);
-  chain.select = vi.fn().mockReturnValue(chain);
-  chain.single = vi.fn().mockResolvedValue({ data, error });
-  return chain;
-}
-
-/**
- * Creates a multi-call mock client that returns different responses per .from() call.
- * Calls are matched in order against the `responses` array.
- */
-function createMultiCallClient(responses: Array<{ data: any; error?: any }>) {
-  let callIndex = 0;
-
-  const makeChain = (responseIndex: number) => {
-    const chain: any = {};
-    const response = responses[responseIndex] ?? { data: null };
-
-    // Build a universal chain — terminal call resolves with the response
-    chain.from = vi.fn().mockReturnValue(chain);
-    chain.select = vi.fn().mockReturnValue(chain);
-    chain.insert = vi.fn().mockReturnValue(chain);
-    chain.update = vi.fn().mockReturnValue(chain);
-    chain.eq = vi.fn().mockReturnValue(chain);
-    chain.single = vi.fn().mockResolvedValue({ data: response.data, error: response.error ?? null });
-    return chain;
-  };
-
-  const root: any = {
-    from: vi.fn().mockImplementation(() => {
-      const chain = makeChain(callIndex);
-      callIndex++;
-      // re-wire from on chain so subsequent froms also advance
-      chain.from = vi.fn().mockImplementation(() => {
-        const inner = makeChain(callIndex);
-        callIndex++;
-        return inner;
-      });
-      return chain;
-    }),
-  };
-
-  return root;
-}
-
-// ---------------------------------------------------------------------------
 // Sample data
 // ---------------------------------------------------------------------------
 
@@ -114,7 +24,7 @@ const sampleSummaries = [
     type: 'convention',
     status: 'accepted',
     tags: ['typescript'],
-    project_id: null,
+    project_id: PROJECT_ID,
     updated_at: '2026-03-10T00:00:00Z',
   },
   {
@@ -131,7 +41,7 @@ const sampleSummaries = [
 const sampleFullEntry = {
   id: 'ke-1',
   workspace_id: WORKSPACE_ID,
-  project_id: null,
+  project_id: PROJECT_ID,
   title: 'Use TypeScript strict mode',
   content: 'We use TypeScript strict mode across all projects.',
   type: 'convention',
@@ -154,16 +64,13 @@ const sampleFullEntry = {
  *   - second .from('workspace_knowledge')... → resolved by secondChain
  */
 function buildWorkspaceAndQueryClient(secondResponse: { data: any; error?: any }) {
-  // We'll track calls manually
   let fromCallCount = 0;
 
-  // Workspace id chain
   const wsChain: any = {};
   wsChain.select = vi.fn().mockReturnValue(wsChain);
   wsChain.eq = vi.fn().mockReturnValue(wsChain);
   wsChain.single = vi.fn().mockResolvedValue({ data: sampleWorkspaceRow, error: null });
 
-  // Second chain (query / insert / update)
   const secondChain: any = {};
   secondChain.select = vi.fn().mockReturnValue(secondChain);
   secondChain.insert = vi.fn().mockReturnValue(secondChain);
@@ -194,7 +101,7 @@ function buildWorkspaceAndQueryClient(secondResponse: { data: any; error?: any }
 // ---------------------------------------------------------------------------
 
 describe('queryKnowledge', () => {
-  it('applies default filters (status=accepted, no type/tags)', async () => {
+  it('applies default filters (status=accepted, no type/tags) and scopes to token project', async () => {
     const { client, wsChain, secondChain } = buildWorkspaceAndQueryClient({
       data: sampleSummaries,
     });
@@ -206,9 +113,10 @@ describe('queryKnowledge', () => {
     expect(wsChain.select).toHaveBeenCalledWith('workspace_id');
     expect(wsChain.eq).toHaveBeenCalledWith('id', PROJECT_ID);
 
-    // knowledge query
+    // knowledge query — must filter on both workspace_id AND project_id
     expect(client.from).toHaveBeenNthCalledWith(2, 'workspace_knowledge');
     expect(secondChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
+    expect(secondChain.eq).toHaveBeenCalledWith('project_id', PROJECT_ID);
     expect(secondChain.eq).toHaveBeenCalledWith('status', 'accepted');
     expect(secondChain.order).toHaveBeenCalledWith('type', { ascending: true });
     expect(result).toEqual(sampleSummaries);
@@ -239,12 +147,13 @@ describe('queryKnowledge', () => {
     expect(secondChain.contains).toHaveBeenCalledWith('tags', ['typescript']);
   });
 
-  it('applies project_id filter via .or()', async () => {
+  it('never ORs project_id with null (no workspace-wide leak)', async () => {
     const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [] });
-    await queryKnowledge(client, PROJECT_ID, { project_id: 'proj-other' });
-    expect(secondChain.or).toHaveBeenCalledWith(
-      `project_id.eq.proj-other,project_id.is.null`,
-    );
+    await queryKnowledge(client, PROJECT_ID, {});
+    // .or() should not have been called with any project_id.is.null pattern
+    for (const call of secondChain.or.mock.calls) {
+      expect(call[0]).not.toContain('project_id.is.null');
+    }
   });
 
   it('applies search filter via .or() ilike', async () => {
@@ -285,7 +194,7 @@ describe('queryKnowledge', () => {
 // ---------------------------------------------------------------------------
 
 describe('getKnowledgeEntry', () => {
-  it('retrieves entry by entry_id', async () => {
+  it('retrieves entry by entry_id scoped to token project', async () => {
     const { client, wsChain, secondChain } = buildWorkspaceAndQueryClient({
       data: sampleFullEntry,
     });
@@ -296,13 +205,15 @@ describe('getKnowledgeEntry', () => {
     expect(wsChain.eq).toHaveBeenCalledWith('id', PROJECT_ID);
     expect(client.from).toHaveBeenNthCalledWith(2, 'workspace_knowledge');
     expect(secondChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
+    expect(secondChain.eq).toHaveBeenCalledWith('project_id', PROJECT_ID);
     expect(secondChain.eq).toHaveBeenCalledWith('id', 'ke-1');
     expect(result).toEqual(sampleFullEntry);
   });
 
-  it('retrieves entry by title', async () => {
+  it('retrieves entry by title scoped to token project', async () => {
     const { client, secondChain } = buildWorkspaceAndQueryClient({ data: sampleFullEntry });
     await getKnowledgeEntry(client, PROJECT_ID, { title: 'Use TypeScript strict mode' });
+    expect(secondChain.eq).toHaveBeenCalledWith('project_id', PROJECT_ID);
     expect(secondChain.eq).toHaveBeenCalledWith('title', 'Use TypeScript strict mode');
   });
 
@@ -321,7 +232,7 @@ describe('getKnowledgeEntry', () => {
     );
   });
 
-  it('throws on Supabase error', async () => {
+  it('throws on Supabase error (e.g. sibling-project entry returns no rows)', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: null, error: { message: 'Not found' } });
     await expect(getKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-999' })).rejects.toThrow(
       'Not found',
@@ -337,7 +248,7 @@ describe('createKnowledgeEntry', () => {
   const newEntry = {
     id: 'ke-new',
     workspace_id: WORKSPACE_ID,
-    project_id: null,
+    project_id: PROJECT_ID,
     title: 'New Convention',
     content: 'Always use const for variables.',
     type: 'convention',
@@ -350,7 +261,7 @@ describe('createKnowledgeEntry', () => {
     updated_at: '2026-04-01T00:00:00Z',
   };
 
-  it('creates an entry with required fields and defaults status to draft', async () => {
+  it('stamps project_id from the token even when arg is omitted', async () => {
     const { client, secondChain } = buildWorkspaceAndQueryClient({ data: newEntry });
 
     const result = await createKnowledgeEntry(client, PROJECT_ID, USER_ID, {
@@ -363,6 +274,7 @@ describe('createKnowledgeEntry', () => {
     expect(secondChain.insert).toHaveBeenCalledWith(
       expect.objectContaining({
         workspace_id: WORKSPACE_ID,
+        project_id: PROJECT_ID,
         title: 'New Convention',
         content: 'Always use const for variables.',
         type: 'convention',
@@ -373,7 +285,7 @@ describe('createKnowledgeEntry', () => {
     expect(result).toEqual(newEntry);
   });
 
-  it('accepts optional fields: status, tags, project_id, source_task_id', async () => {
+  it('accepts optional fields: status, tags, source_task_id', async () => {
     const { client, secondChain } = buildWorkspaceAndQueryClient({ data: newEntry });
     await createKnowledgeEntry(client, PROJECT_ID, USER_ID, {
       title: 'New Convention',
@@ -381,15 +293,14 @@ describe('createKnowledgeEntry', () => {
       type: 'convention',
       status: 'accepted',
       tags: ['tag1'],
-      project_id: PROJECT_ID,
       source_task_id: 'task-1',
     });
 
     expect(secondChain.insert).toHaveBeenCalledWith(
       expect.objectContaining({
+        project_id: PROJECT_ID,
         status: 'accepted',
         tags: ['tag1'],
-        project_id: PROJECT_ID,
         source_task_id: 'task-1',
       }),
     );
@@ -458,7 +369,7 @@ describe('updateKnowledgeEntry', () => {
     updated_at: '2026-04-01T00:00:00Z',
   };
 
-  it('updates by entry_id', async () => {
+  it('updates by entry_id and scopes to token project', async () => {
     const { client, secondChain } = buildWorkspaceAndQueryClient({ data: updatedEntry });
     const result = await updateKnowledgeEntry(client, PROJECT_ID, {
       entry_id: 'ke-1',
@@ -467,16 +378,19 @@ describe('updateKnowledgeEntry', () => {
 
     expect(client.from).toHaveBeenNthCalledWith(2, 'workspace_knowledge');
     expect(secondChain.update).toHaveBeenCalledWith(expect.objectContaining({ title: 'Updated Title' }));
+    expect(secondChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
+    expect(secondChain.eq).toHaveBeenCalledWith('project_id', PROJECT_ID);
     expect(secondChain.eq).toHaveBeenCalledWith('id', 'ke-1');
     expect(result).toEqual(updatedEntry);
   });
 
-  it('updates by title', async () => {
+  it('updates by title scoped to token project', async () => {
     const { client, secondChain } = buildWorkspaceAndQueryClient({ data: updatedEntry });
     await updateKnowledgeEntry(client, PROJECT_ID, {
       title: 'Use TypeScript strict mode',
       content: 'new content',
     });
+    expect(secondChain.eq).toHaveBeenCalledWith('project_id', PROJECT_ID);
     expect(secondChain.eq).toHaveBeenCalledWith('title', 'Use TypeScript strict mode');
   });
 
@@ -545,6 +459,7 @@ describe('supersedeKnowledgeEntry', () => {
     id: 'ke-new',
     title: 'Use TypeScript strict mode v2',
     status: 'accepted',
+    project_id: PROJECT_ID,
   };
   const supersededEntry = {
     ...sampleFullEntry,
@@ -560,28 +475,28 @@ describe('supersedeKnowledgeEntry', () => {
    * 4. createKnowledgeEntry insert  (workspace_knowledge → insert → single)
    * 5. supersede's own getWorkspaceId  (projects → single)
    * 6. supersede direct update  (workspace_knowledge → update → single)
-   *
-   * We use a call-ordered multi-response client instead of the two-chain helper.
    */
-
-  function buildSupersedeClient() {
-    // Responses in call order (each .from() call gets the next response)
+  function buildSupersedeClient(overrides?: { existing?: any }) {
     const responses = [
-      { data: sampleWorkspaceRow },           // 1. getKnowledgeEntry ws lookup
-      { data: existingEntry },                // 2. getKnowledgeEntry fetch
-      { data: sampleWorkspaceRow },           // 3. createKnowledgeEntry ws lookup
-      { data: replacementEntry },             // 4. createKnowledgeEntry insert
-      { data: sampleWorkspaceRow },           // 5. supersede's own getWorkspaceId
-      { data: supersededEntry },              // 6. supersede direct update
+      { data: sampleWorkspaceRow },
+      { data: overrides?.existing ?? existingEntry },
+      { data: sampleWorkspaceRow },
+      { data: replacementEntry },
+      { data: sampleWorkspaceRow },
+      { data: supersededEntry },
     ];
 
     let fromCallCount = 0;
+    const insertCalls: any[] = [];
 
     const makeChain = (idx: number) => {
       const r = responses[idx] ?? { data: null };
       const c: any = {};
       c.select = vi.fn().mockReturnValue(c);
-      c.insert = vi.fn().mockReturnValue(c);
+      c.insert = vi.fn().mockImplementation((record: any) => {
+        insertCalls.push(record);
+        return c;
+      });
       c.update = vi.fn().mockReturnValue(c);
       c.eq = vi.fn().mockReturnValue(c);
       c.single = vi.fn().mockResolvedValue({ data: r.data, error: (r as any).error ?? null });
@@ -596,11 +511,11 @@ describe('supersedeKnowledgeEntry', () => {
       }),
     };
 
-    return client;
+    return { client, insertCalls };
   }
 
-  it('supersedes old entry and creates replacement', async () => {
-    const client = buildSupersedeClient();
+  it('supersedes old entry and creates replacement scoped to token project', async () => {
+    const { client, insertCalls } = buildSupersedeClient();
 
     const result = await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
       entry_id: 'ke-1',
@@ -612,10 +527,30 @@ describe('supersedeKnowledgeEntry', () => {
     expect(result.superseded.superseded_by).toBe('ke-new');
     expect(result.replacement.id).toBe('ke-new');
     expect(result.replacement.status).toBe('accepted');
+    expect(result.replacement.project_id).toBe(PROJECT_ID);
+
+    // Replacement insert must carry the token's project_id
+    const replacementInsert = insertCalls.find((r) => r.title === 'Use TypeScript strict mode v2');
+    expect(replacementInsert).toBeDefined();
+    expect(replacementInsert.project_id).toBe(PROJECT_ID);
+  });
+
+  it('replacement inherits token project_id even when existing entry has no project_id', async () => {
+    // Simulate a legacy existing entry whose project_id is missing
+    const legacyExisting = { ...existingEntry, project_id: undefined as any };
+    const { client, insertCalls } = buildSupersedeClient({ existing: legacyExisting });
+
+    await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+      entry_id: 'ke-1',
+      new_title: 'Use TypeScript strict mode v2',
+      new_content: 'Updated content.',
+    });
+
+    const replacementInsert = insertCalls.find((r) => r.title === 'Use TypeScript strict mode v2');
+    expect(replacementInsert.project_id).toBe(PROJECT_ID);
   });
 
   it('throws when neither entry_id nor title provided to identify old entry', async () => {
-    // ws lookup will succeed but validation happens before queries
     const { client } = buildWorkspaceAndQueryClient({ data: null });
     await expect(
       supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
