@@ -32975,38 +32975,169 @@ async function listActivity(client, projectId, args) {
   return timeline;
 }
 
-// src/tools/documents.ts
-var listProjectDocumentsTool = {
-  name: "list_project_documents",
-  description: "List all documents for the current project. Returns titles and IDs \u2014 use get_project_document to retrieve full content. Documents contain product context: PRDs, architecture notes, user feedback, etc.",
-  inputSchema: {
-    type: "object",
-    properties: {}
-  }
-};
-async function listProjectDocuments(client, projectId) {
-  const { data, error: error2 } = await client.from("project_documents").select("id, title, updated_at").eq("project_id", projectId).order("title", { ascending: true });
-  if (error2) throw error2;
-  return data;
-}
-var getProjectDocumentTool = {
-  name: "get_project_document",
-  description: "Get the full content of a project document by ID or title. Documents are markdown.",
+// src/tools/knowledge.ts
+var queryKnowledgeTool = {
+  name: "query_knowledge",
+  description: "Search the workspace knowledge base for architecture decisions, business decisions, and conventions. Check this before making significant implementation choices. Defaults to accepted entries only.",
   inputSchema: {
     type: "object",
     properties: {
-      document_id: { type: "string", description: "Document UUID" },
-      title: { type: "string", description: "Document title (exact match)" }
+      type: {
+        type: "string",
+        description: 'Filter by entry type (e.g. "architecture", "business", "convention")'
+      },
+      status: {
+        type: "string",
+        description: 'Filter by status. Default: "accepted".'
+      },
+      tags: {
+        type: "array",
+        items: { type: "string" },
+        description: "Filter entries that contain ALL of these tags"
+      },
+      project_id: {
+        type: "string",
+        description: "Filter to entries scoped to this project (also returns workspace-wide entries)"
+      },
+      search: {
+        type: "string",
+        description: "Search term matched against title and content (case-insensitive)"
+      },
+      include_superseded: {
+        type: "boolean",
+        description: "When true and no explicit status given, return all statuses including superseded. Default false."
+      },
+      limit: { type: "number", description: "Max results to return. Default 50." },
+      offset: { type: "number", description: "Number of results to skip (for pagination). Default 0." }
     }
   }
 };
-async function getProjectDocument(client, projectId, args) {
-  if (!args.document_id && !args.title) {
-    throw new Error("Either document_id or title must be provided");
+var getKnowledgeEntryTool = {
+  name: "get_knowledge_entry",
+  description: "Get the full content of a knowledge entry by ID or title.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      entry_id: { type: "string", description: "Knowledge entry UUID" },
+      title: { type: "string", description: "Entry title (exact match)" }
+    }
   }
-  let query = client.from("project_documents").select("id, title, content, created_at, updated_at").eq("project_id", projectId);
-  if (args.document_id) {
-    query = query.eq("id", args.document_id);
+};
+var createKnowledgeEntryTool = {
+  name: "create_knowledge_entry",
+  description: 'Create a new knowledge entry in the workspace knowledge base. Entries are created as "draft" by default \u2014 humans review and accept them. Use for architecture decisions, business decisions, and conventions.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      title: { type: "string", description: "Entry title (must be unique within the workspace)" },
+      content: { type: "string", description: "Markdown content of the entry" },
+      type: {
+        type: "string",
+        description: 'Entry type: "architecture", "business", or "convention"'
+      },
+      status: {
+        type: "string",
+        description: 'Status override. Default: "draft".'
+      },
+      tags: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional tags"
+      },
+      project_id: {
+        type: "string",
+        description: "Scope this entry to a specific project (omit for workspace-wide)"
+      },
+      source_task_id: {
+        type: "string",
+        description: "Task ID that triggered this knowledge entry"
+      }
+    },
+    required: ["title", "content", "type"]
+  }
+};
+var updateKnowledgeEntryTool = {
+  name: "update_knowledge_entry",
+  description: "Update an existing knowledge entry by ID or title. Can update title, content, type, status, or tags.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      entry_id: { type: "string", description: "Knowledge entry UUID" },
+      title: { type: "string", description: "Current entry title (used to find the entry if entry_id not provided)" },
+      new_title: { type: "string", description: "New title for the entry" },
+      content: { type: "string", description: "New markdown content" },
+      type: { type: "string", description: "New entry type" },
+      status: { type: "string", description: "New status" },
+      tags: {
+        type: "array",
+        items: { type: "string" },
+        description: "Replace tags with this list"
+      }
+    }
+  }
+};
+var supersedeKnowledgeEntryTool = {
+  name: "supersede_knowledge_entry",
+  description: 'Supersede an existing knowledge entry with a new replacement. Marks the old entry as "superseded" and creates the replacement as "accepted", linking them via superseded_by.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      entry_id: { type: "string", description: "UUID of the entry to supersede" },
+      title: { type: "string", description: "Title of the entry to supersede (used if entry_id not provided)" },
+      new_title: { type: "string", description: "Title for the replacement entry" },
+      new_content: { type: "string", description: "Content for the replacement entry" },
+      type: { type: "string", description: "Type for the replacement (defaults to type of superseded entry)" },
+      tags: {
+        type: "array",
+        items: { type: "string" },
+        description: "Tags for the replacement (defaults to tags of superseded entry)"
+      }
+    },
+    required: ["new_title", "new_content"]
+  }
+};
+async function getWorkspaceId(client, projectId) {
+  const { data, error: error2 } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
+  if (error2) throw new Error(`Could not resolve workspace: ${error2.message}`);
+  return data.workspace_id;
+}
+async function queryKnowledge(client, projectId, args) {
+  const workspaceId = await getWorkspaceId(client, projectId);
+  let query = client.from("workspace_knowledge").select("id, title, type, status, tags, project_id, updated_at").eq("workspace_id", workspaceId);
+  if (args.status) {
+    query = query.eq("status", args.status);
+  } else if (!args.include_superseded) {
+    query = query.eq("status", "accepted");
+  }
+  if (args.type) {
+    query = query.eq("type", args.type);
+  }
+  if (args.tags && args.tags.length > 0) {
+    query = query.contains("tags", args.tags);
+  }
+  if (args.project_id) {
+    query = query.or(`project_id.eq.${args.project_id},project_id.is.null`);
+  }
+  if (args.search) {
+    query = query.or(`title.ilike.%${args.search}%,content.ilike.%${args.search}%`);
+  }
+  query = query.order("type", { ascending: true });
+  const limit = args.limit ?? 50;
+  const offset = args.offset ?? 0;
+  const { data, error: error2 } = await query.range(offset, offset + limit - 1);
+  if (error2) throw new Error(error2.message);
+  return data ?? [];
+}
+async function getKnowledgeEntry(client, projectId, args) {
+  if (!args.entry_id && !args.title) {
+    throw new Error("Either entry_id or title must be provided");
+  }
+  const workspaceId = await getWorkspaceId(client, projectId);
+  let query = client.from("workspace_knowledge").select(
+    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+  ).eq("workspace_id", workspaceId);
+  if (args.entry_id) {
+    query = query.eq("id", args.entry_id);
   } else {
     query = query.eq("title", args.title);
   }
@@ -33014,73 +33145,95 @@ async function getProjectDocument(client, projectId, args) {
   if (error2) throw error2;
   return data;
 }
-var createProjectDocumentTool = {
-  name: "create_project_document",
-  description: "Create a new project document. Documents are markdown and must have a unique title within the project. Use for PRDs, architecture notes, meeting notes, etc.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      title: { type: "string", description: "Document title (must be unique within the project)" },
-      content: { type: "string", description: "Markdown content of the document" }
-    },
-    required: ["title", "content"]
-  }
-};
-async function createProjectDocument(client, projectId, userId, args) {
+async function createKnowledgeEntry(client, projectId, userId, args) {
   if (!args.title?.trim()) {
     throw new Error("title is required");
   }
-  const { data, error: error2 } = await client.from("project_documents").insert({
-    project_id: projectId,
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const record2 = {
+    workspace_id: workspaceId,
     title: args.title.trim(),
     content: args.content ?? "",
+    type: args.type,
+    status: args.status ?? "draft",
     created_by: userId
-  }).select("id, title, content, created_at, updated_at").single();
+  };
+  if (args.tags !== void 0) record2.tags = args.tags;
+  if (args.project_id !== void 0) record2.project_id = args.project_id;
+  if (args.source_task_id !== void 0) record2.source_task_id = args.source_task_id;
+  const { data, error: error2 } = await client.from("workspace_knowledge").insert(record2).select(
+    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+  ).single();
   if (error2) {
     if (error2.code === "23505") {
-      throw new Error(`A document titled "${args.title.trim()}" already exists in this project`);
+      throw new Error(
+        `A knowledge entry titled "${args.title.trim()}" already exists in this project`
+      );
     }
     throw error2;
   }
   return data;
 }
-var updateProjectDocumentTool = {
-  name: "update_project_document",
-  description: "Update an existing project document by ID or title. Can update the title, content, or both.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      document_id: { type: "string", description: "Document UUID" },
-      title: { type: "string", description: "Current document title (used to find the document if document_id not provided)" },
-      new_title: { type: "string", description: "New title for the document" },
-      content: { type: "string", description: "New markdown content" }
-    }
+async function updateKnowledgeEntry(client, projectId, args) {
+  if (!args.entry_id && !args.title) {
+    throw new Error("Either entry_id or title must be provided to identify the entry");
   }
-};
-async function updateProjectDocument(client, projectId, args) {
-  if (!args.document_id && !args.title) {
-    throw new Error("Either document_id or title must be provided to identify the document");
+  const hasUpdates = args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0;
+  if (!hasUpdates) {
+    throw new Error("At least one field to update must be provided");
   }
-  if (args.new_title === void 0 && args.content === void 0) {
-    throw new Error("At least one of new_title or content must be provided");
-  }
+  const workspaceId = await getWorkspaceId(client, projectId);
   const updates = {};
   if (args.new_title !== void 0) updates.title = args.new_title.trim();
   if (args.content !== void 0) updates.content = args.content;
-  let query = client.from("project_documents").update(updates).eq("project_id", projectId);
-  if (args.document_id) {
-    query = query.eq("id", args.document_id);
+  if (args.type !== void 0) updates.type = args.type;
+  if (args.status !== void 0) updates.status = args.status;
+  if (args.tags !== void 0) updates.tags = args.tags;
+  let query = client.from("workspace_knowledge").update(updates).eq("workspace_id", workspaceId);
+  if (args.entry_id) {
+    query = query.eq("id", args.entry_id);
   } else {
     query = query.eq("title", args.title);
   }
-  const { data, error: error2 } = await query.select("id, title, content, created_at, updated_at").single();
+  const { data, error: error2 } = await query.select(
+    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+  ).single();
   if (error2) {
     if (error2.code === "23505") {
-      throw new Error(`A document titled "${updates.title}" already exists in this project`);
+      throw new Error(
+        `A knowledge entry titled "${updates.title}" already exists in this project`
+      );
     }
     throw error2;
   }
   return data;
+}
+async function supersedeKnowledgeEntry(client, projectId, userId, args) {
+  if (!args.entry_id && !args.title) {
+    throw new Error("Either entry_id or title must be provided to identify the entry to supersede");
+  }
+  const existing = await getKnowledgeEntry(client, projectId, {
+    entry_id: args.entry_id,
+    title: args.title
+  });
+  const replacement = await createKnowledgeEntry(client, projectId, userId, {
+    title: args.new_title,
+    content: args.new_content,
+    type: args.type ?? existing.type,
+    status: "accepted",
+    tags: args.tags ?? existing.tags,
+    project_id: existing.project_id ?? void 0,
+    source_task_id: existing.source_task_id ?? void 0
+  });
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const { data: supersededData, error: error2 } = await client.from("workspace_knowledge").update({ status: "superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("id", existing.id).select(
+    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+  ).single();
+  if (error2) throw error2;
+  return {
+    superseded: supersededData,
+    replacement
+  };
 }
 
 // src/tools/milestones.ts
@@ -33500,10 +33653,11 @@ function registerTools(disabledFeatures) {
     addCommentTool,
     listActivityTool,
     listMembersTool,
-    listProjectDocumentsTool,
-    getProjectDocumentTool,
-    createProjectDocumentTool,
-    updateProjectDocumentTool
+    queryKnowledgeTool,
+    getKnowledgeEntryTool,
+    createKnowledgeEntryTool,
+    updateKnowledgeEntryTool,
+    supersedeKnowledgeEntryTool
   ];
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
   if (!disabledFeatures?.labels) tools.push(listLabelsTool, createLabelTool, manageTaskLabelsTool);
@@ -33577,17 +33731,20 @@ async function handleToolCall(name, args, client, projectId, userId) {
       case "bulk_update_tasks":
         result = await bulkUpdateTasks(client, projectId, args);
         break;
-      case "list_project_documents":
-        result = await listProjectDocuments(client, projectId);
+      case "query_knowledge":
+        result = await queryKnowledge(client, projectId, args);
         break;
-      case "get_project_document":
-        result = await getProjectDocument(client, projectId, args);
+      case "get_knowledge_entry":
+        result = await getKnowledgeEntry(client, projectId, args);
         break;
-      case "create_project_document":
-        result = await createProjectDocument(client, projectId, userId, args);
+      case "create_knowledge_entry":
+        result = await createKnowledgeEntry(client, projectId, userId, args);
         break;
-      case "update_project_document":
-        result = await updateProjectDocument(client, projectId, args);
+      case "update_knowledge_entry":
+        result = await updateKnowledgeEntry(client, projectId, args);
+        break;
+      case "supersede_knowledge_entry":
+        result = await supersedeKnowledgeEntry(client, projectId, userId, args);
         break;
       case "list_milestones":
         result = await listMilestones(client, projectId, args);
