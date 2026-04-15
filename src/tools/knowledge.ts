@@ -321,7 +321,7 @@ export async function createKnowledgeEntry(
   if (error) {
     if (error.code === '23505') {
       throw new Error(
-        `A knowledge entry titled "${args.title.trim()}" already exists in this workspace`,
+        `A knowledge entry titled "${args.title.trim()}" already exists in this project`,
       );
     }
     throw error;
@@ -392,7 +392,7 @@ export async function updateKnowledgeEntry(
   if (error) {
     if (error.code === '23505') {
       throw new Error(
-        `A knowledge entry titled "${updates.title as string}" already exists in this workspace`,
+        `A knowledge entry titled "${updates.title as string}" already exists in this project`,
       );
     }
     throw error;

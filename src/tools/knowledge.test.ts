@@ -429,7 +429,7 @@ describe('createKnowledgeEntry', () => {
         content: 'x',
         type: 'convention',
       }),
-    ).rejects.toThrow('A knowledge entry titled "Existing" already exists in this workspace');
+    ).rejects.toThrow('A knowledge entry titled "Existing" already exists in this project');
   });
 
   it('throws on other Supabase errors', async () => {
@@ -520,7 +520,7 @@ describe('updateKnowledgeEntry', () => {
     });
     await expect(
       updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', new_title: 'Taken' }),
-    ).rejects.toThrow('A knowledge entry titled "Taken" already exists in this workspace');
+    ).rejects.toThrow('A knowledge entry titled "Taken" already exists in this project');
   });
 
   it('throws on other Supabase errors', async () => {
