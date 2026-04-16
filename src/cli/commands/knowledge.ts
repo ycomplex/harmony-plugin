@@ -15,7 +15,7 @@ export function registerKnowledgeCommands(program: Command): void {
   knowledge
     .command('list')
     .description('List knowledge entries with optional filters')
-    .option('--type <type>', 'Filter by type (e.g. architecture, business, convention)')
+    .option('--type <type>', 'Filter by type (e.g. architecture, business, convention, specification)')
     .option('--status <status>', 'Filter by status')
     .option(
       '--tag <tag>',
@@ -92,7 +92,7 @@ export function registerKnowledgeCommands(program: Command): void {
     .description('Create a new knowledge entry')
     .requiredOption('--title <title>', 'Entry title')
     .requiredOption('--content <content>', 'Markdown content of the entry')
-    .requiredOption('--type <type>', 'Entry type: architecture, business, or convention')
+    .requiredOption('--type <type>', 'Entry type: architecture, business, convention, or specification')
     .option('--status <status>', 'Status override (default: draft)')
     .option('--tags <tags>', 'Comma-separated list of tags')
     .option('--source-task <id>', 'Task ID that triggered this knowledge entry')
