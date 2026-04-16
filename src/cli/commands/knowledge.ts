@@ -95,7 +95,6 @@ export function registerKnowledgeCommands(program: Command): void {
     .requiredOption('--type <type>', 'Entry type: architecture, business, or convention')
     .option('--status <status>', 'Status override (default: draft)')
     .option('--tags <tags>', 'Comma-separated list of tags')
-    .option('--project <id>', 'Scope to a specific project (omit for workspace-wide)')
     .option('--source-task <id>', 'Task ID that triggered this knowledge entry')
     .action(async (opts) => {
       const tags = opts.tags
@@ -113,7 +112,6 @@ export function registerKnowledgeCommands(program: Command): void {
             type: opts.type,
             status: opts.status,
             tags,
-            project_id: opts.project,
             source_task_id: opts.sourceTask,
           }),
         (entry) => `Created knowledge entry: "${entry.title}" (${entry.id})`,

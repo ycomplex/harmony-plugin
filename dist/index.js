@@ -32978,7 +32978,7 @@ async function listActivity(client, projectId, args) {
 // src/tools/knowledge.ts
 var queryKnowledgeTool = {
   name: "query_knowledge",
-  description: "Search the workspace knowledge base for architecture decisions, business decisions, and conventions. Check this before making significant implementation choices. Defaults to accepted entries only.",
+  description: "Search the knowledge base for architecture decisions, business decisions, and conventions scoped to this project. Check this before making significant implementation choices. Defaults to accepted entries only.",
   inputSchema: {
     type: "object",
     properties: {
@@ -32995,10 +32995,6 @@ var queryKnowledgeTool = {
         items: { type: "string" },
         description: "Filter entries that contain ALL of these tags"
       },
-      project_id: {
-        type: "string",
-        description: "Filter to entries scoped to this project (also returns workspace-wide entries)"
-      },
       search: {
         type: "string",
         description: "Search term matched against title and content (case-insensitive)"
@@ -33014,7 +33010,7 @@ var queryKnowledgeTool = {
 };
 var getKnowledgeEntryTool = {
   name: "get_knowledge_entry",
-  description: "Get the full content of a knowledge entry by ID or title.",
+  description: "Get the full content of a knowledge entry by ID or title. Scoped to this project.",
   inputSchema: {
     type: "object",
     properties: {
@@ -33025,11 +33021,11 @@ var getKnowledgeEntryTool = {
 };
 var createKnowledgeEntryTool = {
   name: "create_knowledge_entry",
-  description: 'Create a new knowledge entry in the workspace knowledge base. Entries are created as "draft" by default \u2014 humans review and accept them. Use for architecture decisions, business decisions, and conventions.',
+  description: 'Create a new knowledge entry in this project. Entries are created as "draft" by default \u2014 humans review and accept them. Use for architecture decisions, business decisions, and conventions.',
   inputSchema: {
     type: "object",
     properties: {
-      title: { type: "string", description: "Entry title (must be unique within the workspace)" },
+      title: { type: "string", description: "Entry title (must be unique within the project)" },
       content: { type: "string", description: "Markdown content of the entry" },
       type: {
         type: "string",
@@ -33044,10 +33040,6 @@ var createKnowledgeEntryTool = {
         items: { type: "string" },
         description: "Optional tags"
       },
-      project_id: {
-        type: "string",
-        description: "Scope this entry to a specific project (omit for workspace-wide)"
-      },
       source_task_id: {
         type: "string",
         description: "Task ID that triggered this knowledge entry"
@@ -33058,7 +33050,7 @@ var createKnowledgeEntryTool = {
 };
 var updateKnowledgeEntryTool = {
   name: "update_knowledge_entry",
-  description: "Update an existing knowledge entry by ID or title. Can update title, content, type, status, or tags.",
+  description: "Update an existing knowledge entry in this project by ID or title. Can update title, content, type, status, or tags.",
   inputSchema: {
     type: "object",
     properties: {
@@ -33078,7 +33070,7 @@ var updateKnowledgeEntryTool = {
 };
 var supersedeKnowledgeEntryTool = {
   name: "supersede_knowledge_entry",
-  description: 'Supersede an existing knowledge entry with a new replacement. Marks the old entry as "superseded" and creates the replacement as "accepted", linking them via superseded_by.',
+  description: 'Supersede an existing knowledge entry in this project with a new replacement. Marks the old entry as "superseded" and creates the replacement as "accepted", linking them via superseded_by.',
   inputSchema: {
     type: "object",
     properties: {
@@ -33103,7 +33095,7 @@ async function getWorkspaceId(client, projectId) {
 }
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
-  let query = client.from("workspace_knowledge").select("id, title, type, status, tags, project_id, updated_at").eq("workspace_id", workspaceId);
+  let query = client.from("workspace_knowledge").select("id, title, type, status, tags, project_id, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.status) {
     query = query.eq("status", args.status);
   } else if (!args.include_superseded) {
@@ -33114,9 +33106,6 @@ async function queryKnowledge(client, projectId, args) {
   }
   if (args.tags && args.tags.length > 0) {
     query = query.contains("tags", args.tags);
-  }
-  if (args.project_id) {
-    query = query.or(`project_id.eq.${args.project_id},project_id.is.null`);
   }
   if (args.search) {
     query = query.or(`title.ilike.%${args.search}%,content.ilike.%${args.search}%`);
@@ -33135,7 +33124,7 @@ async function getKnowledgeEntry(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
   let query = client.from("workspace_knowledge").select(
     "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
-  ).eq("workspace_id", workspaceId);
+  ).eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.entry_id) {
     query = query.eq("id", args.entry_id);
   } else {
@@ -33152,6 +33141,7 @@ async function createKnowledgeEntry(client, projectId, userId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
   const record2 = {
     workspace_id: workspaceId,
+    project_id: projectId,
     title: args.title.trim(),
     content: args.content ?? "",
     type: args.type,
@@ -33159,7 +33149,6 @@ async function createKnowledgeEntry(client, projectId, userId, args) {
     created_by: userId
   };
   if (args.tags !== void 0) record2.tags = args.tags;
-  if (args.project_id !== void 0) record2.project_id = args.project_id;
   if (args.source_task_id !== void 0) record2.source_task_id = args.source_task_id;
   const { data, error: error2 } = await client.from("workspace_knowledge").insert(record2).select(
     "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
@@ -33189,7 +33178,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
   if (args.type !== void 0) updates.type = args.type;
   if (args.status !== void 0) updates.status = args.status;
   if (args.tags !== void 0) updates.tags = args.tags;
-  let query = client.from("workspace_knowledge").update(updates).eq("workspace_id", workspaceId);
+  let query = client.from("workspace_knowledge").update(updates).eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.entry_id) {
     query = query.eq("id", args.entry_id);
   } else {
@@ -33222,11 +33211,10 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
     type: args.type ?? existing.type,
     status: "accepted",
     tags: args.tags ?? existing.tags,
-    project_id: existing.project_id ?? void 0,
     source_task_id: existing.source_task_id ?? void 0
   });
   const workspaceId = await getWorkspaceId(client, projectId);
-  const { data: supersededData, error: error2 } = await client.from("workspace_knowledge").update({ status: "superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("id", existing.id).select(
+  const { data: supersededData, error: error2 } = await client.from("workspace_knowledge").update({ status: "superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", existing.id).select(
     "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
   ).single();
   if (error2) throw error2;
