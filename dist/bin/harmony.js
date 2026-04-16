@@ -25592,7 +25592,7 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
 // src/cli/commands/knowledge.ts
 function registerKnowledgeCommands(program3) {
   const knowledge = program3.command("knowledge").description("Manage workspace knowledge base");
-  knowledge.command("list").description("List knowledge entries with optional filters").option("--type <type>", "Filter by type (e.g. architecture, business, convention)").option("--status <status>", "Filter by status").option(
+  knowledge.command("list").description("List knowledge entries with optional filters").option("--type <type>", "Filter by type (e.g. architecture, business, convention, specification)").option("--status <status>", "Filter by status").option(
     "--tag <tag>",
     "Filter by tag (repeat for multiple)",
     (v, prev) => [...prev, v],
@@ -25649,7 +25649,7 @@ function registerKnowledgeCommands(program3) {
       ])
     );
   });
-  knowledge.command("create").description("Create a new knowledge entry").requiredOption("--title <title>", "Entry title").requiredOption("--content <content>", "Markdown content of the entry").requiredOption("--type <type>", "Entry type: architecture, business, or convention").option("--status <status>", "Status override (default: draft)").option("--tags <tags>", "Comma-separated list of tags").option("--source-task <id>", "Task ID that triggered this knowledge entry").action(async (opts) => {
+  knowledge.command("create").description("Create a new knowledge entry").requiredOption("--title <title>", "Entry title").requiredOption("--content <content>", "Markdown content of the entry").requiredOption("--type <type>", "Entry type: architecture, business, convention, or specification").option("--status <status>", "Status override (default: draft)").option("--tags <tags>", "Comma-separated list of tags").option("--source-task <id>", "Task ID that triggered this knowledge entry").action(async (opts) => {
     const tags = opts.tags ? opts.tags.split(",").map((t) => t.trim()).filter(Boolean) : void 0;
     await runCommand(
       program3.opts(),

@@ -285,6 +285,24 @@ describe('createKnowledgeEntry', () => {
     expect(result).toEqual(newEntry);
   });
 
+  it('passes specification as a valid type through to insert', async () => {
+    const specEntry = { ...newEntry, type: 'specification' };
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: specEntry });
+
+    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+      title: 'Spec doc',
+      content: 'Design for feature X',
+      type: 'specification',
+    });
+
+    expect(secondChain.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'specification',
+        project_id: PROJECT_ID,
+      }),
+    );
+  });
+
   it('accepts optional fields: status, tags, source_task_id', async () => {
     const { client, secondChain } = buildWorkspaceAndQueryClient({ data: newEntry });
     await createKnowledgeEntry(client, PROJECT_ID, USER_ID, {

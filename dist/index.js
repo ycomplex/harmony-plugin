@@ -32978,13 +32978,13 @@ async function listActivity(client, projectId, args) {
 // src/tools/knowledge.ts
 var queryKnowledgeTool = {
   name: "query_knowledge",
-  description: "Search the knowledge base for architecture decisions, business decisions, and conventions scoped to this project. Check this before making significant implementation choices. Defaults to accepted entries only.",
+  description: "Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to accepted entries only.",
   inputSchema: {
     type: "object",
     properties: {
       type: {
         type: "string",
-        description: 'Filter by entry type (e.g. "architecture", "business", "convention")'
+        description: 'Filter by entry type (e.g. "architecture", "business", "convention", "specification")'
       },
       status: {
         type: "string",
@@ -33021,7 +33021,7 @@ var getKnowledgeEntryTool = {
 };
 var createKnowledgeEntryTool = {
   name: "create_knowledge_entry",
-  description: 'Create a new knowledge entry in this project. Entries are created as "draft" by default \u2014 humans review and accept them. Use for architecture decisions, business decisions, and conventions.',
+  description: 'Create a new knowledge entry in this project. Entries are created as "draft" by default \u2014 humans review and accept them. Use for architecture decisions, business decisions, conventions, and specifications (spec documents describing work to be built).',
   inputSchema: {
     type: "object",
     properties: {
@@ -33029,7 +33029,7 @@ var createKnowledgeEntryTool = {
       content: { type: "string", description: "Markdown content of the entry" },
       type: {
         type: "string",
-        description: 'Entry type: "architecture", "business", or "convention"'
+        description: 'Entry type: "architecture", "business", "convention", or "specification"'
       },
       status: {
         type: "string",
