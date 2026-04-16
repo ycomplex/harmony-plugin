@@ -10,14 +10,14 @@ export interface KnowledgeEntrySummary {
   type: string;
   status: string;
   tags: string[];
-  project_id: string;
+  project_id: string | null;
   updated_at: string;
 }
 
 export interface KnowledgeEntryFull {
   id: string;
   workspace_id: string;
-  project_id: string;
+  project_id: string | null;
   title: string;
   content: string;
   type: string;

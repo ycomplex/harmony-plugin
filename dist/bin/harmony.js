@@ -25643,7 +25643,7 @@ function registerKnowledgeCommands(program3) {
         { label: "Type", value: entry.type },
         { label: "Status", value: entry.status },
         { label: "Tags", value: entry.tags?.length ? entry.tags.join(", ") : "(none)" },
-        { label: "Project", value: entry.project_id },
+        { label: "Project", value: entry.project_id ?? "(workspace-wide)" },
         { label: "Updated", value: formatDate(entry.updated_at) },
         { label: "Content", value: entry.content }
       ])
