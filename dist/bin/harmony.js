@@ -24339,6 +24339,23 @@ async function updateTask(client, projectId, args) {
   }
   let taskData;
   if (Object.keys(payload).length > 0) {
+    if (payload.status !== void 0) {
+      const { data: projectRow, error: projErr } = await client.from("projects").select("custom_statuses").eq("id", projectId).single();
+      if (projErr) throw projErr;
+      const statuses = projectRow?.custom_statuses ?? [];
+      const terminal = statuses.length > 0 ? statuses[statuses.length - 1] : "Done";
+      if (payload.status === terminal) {
+        const { data: blocked, error: rpcErr } = await client.rpc("task_blocked_from_terminal", {
+          _task_id: resolvedId
+        });
+        if (rpcErr) throw rpcErr;
+        if (blocked === true) {
+          throw new Error(
+            "This task has unresolved blockers and cannot move to the final stage. Use list_dependencies to see them."
+          );
+        }
+      }
+    }
     const { data, error } = await client.from("tasks").update(payload).eq("id", resolvedId).eq("project_id", projectId).select().single();
     if (error) throw error;
     taskData = data;
@@ -25288,6 +25305,109 @@ function registerAcceptanceCriteriaCommands(program3) {
   });
 }
 
+// src/tools/dependencies.ts
+async function listDependencies(client, projectId, args) {
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const [blockedByRes, blockingRes] = await Promise.all([
+    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, blocker:blocked_by_task_id(id, task_number, title, status)").eq("task_id", resolvedId).order("created_at", { ascending: true }),
+    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, downstream:task_id(id, task_number, title, status)").eq("blocked_by_task_id", resolvedId).order("created_at", { ascending: true })
+  ]);
+  if (blockedByRes.error) throw blockedByRes.error;
+  if (blockingRes.error) throw blockingRes.error;
+  return {
+    blocked_by: blockedByRes.data ?? [],
+    blocking: blockingRes.data ?? []
+  };
+}
+async function manageDependencies(client, projectId, userId, args) {
+  const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
+  const result = { added: [], removed: [] };
+  if (args.add && args.add.length > 0) {
+    const blockerIds = await Promise.all(
+      args.add.map((id) => resolveTaskId(client, projectId, id))
+    );
+    for (const bid of blockerIds) {
+      if (bid === resolvedTaskId) {
+        throw new Error("A task cannot block itself.");
+      }
+    }
+    const rows = blockerIds.map((bid) => ({
+      task_id: resolvedTaskId,
+      blocked_by_task_id: bid,
+      created_by: userId
+    }));
+    const { data, error } = await client.from("task_dependencies").insert(rows).select();
+    if (error) throw error;
+    result.added = data ?? [];
+  }
+  if (args.remove && args.remove.length > 0) {
+    const { error } = await client.from("task_dependencies").delete().in("id", args.remove).eq("task_id", resolvedTaskId);
+    if (error) throw error;
+    result.removed = args.remove;
+  }
+  return result;
+}
+
+// src/cli/commands/dependencies.ts
+function registerDependencyCommands(program3) {
+  const deps = program3.command("deps").description("Manage task blockers and dependencies");
+  deps.command("list").description("Show blockers and downstream tasks for a task").argument("<task-id>", "Task ID (UUID, number, or B-123)").action(async (taskId) => {
+    await runCommand(
+      program3.opts(),
+      async (ctx) => listDependencies(ctx.client, ctx.projectId, { task_id: taskId }),
+      (data) => {
+        const blockedByRows = (data.blocked_by ?? []).map((r) => ({
+          id: r.id,
+          task_number: r.blocker?.task_number ?? "?",
+          title: r.blocker?.title ?? "?",
+          status: r.blocker?.status ?? "?"
+        }));
+        const blockingRows = (data.blocking ?? []).map((r) => ({
+          id: r.id,
+          task_number: r.downstream?.task_number ?? "?",
+          title: r.downstream?.title ?? "?",
+          status: r.downstream?.status ?? "?"
+        }));
+        const columns = [
+          { key: "id", header: "Dep ID", width: 38 },
+          { key: "task_number", header: "#" },
+          { key: "title", header: "Title", width: 50 },
+          { key: "status", header: "Status" }
+        ];
+        const blockedByOut = blockedByRows.length === 0 ? "  (none)" : formatTable(blockedByRows, columns);
+        const blockingOut = blockingRows.length === 0 ? "  (none)" : formatTable(blockingRows, columns);
+        return `Blocked by:
+${blockedByOut}
+
+Blocking:
+${blockingOut}`;
+      }
+    );
+  });
+  deps.command("add").description("Add one or more blockers to a task").argument("<task-id>", "Task ID (UUID, number, or B-123) that is blocked").requiredOption("--by <blockers...>", "One or more blocker task IDs").action(async (taskId, opts) => {
+    const blockers = Array.isArray(opts.by) ? opts.by : [opts.by];
+    await runCommand(
+      program3.opts(),
+      async (ctx) => manageDependencies(ctx.client, ctx.projectId, ctx.userId, {
+        task_id: taskId,
+        add: blockers
+      }),
+      (result) => `Added ${result.added.length} blocker(s).`
+    );
+  });
+  deps.command("remove").description("Remove blocker links from a task").argument("<task-id>", "Task ID (UUID, number, or B-123)").requiredOption("--id <dependency-ids...>", "task_dependencies row ID(s) from `deps list`").action(async (taskId, opts) => {
+    const ids = Array.isArray(opts.id) ? opts.id : [opts.id];
+    await runCommand(
+      program3.opts(),
+      async (ctx) => manageDependencies(ctx.client, ctx.projectId, ctx.userId, {
+        task_id: taskId,
+        remove: ids
+      }),
+      (result) => `Removed ${result.removed.length} blocker link(s).`
+    );
+  });
+}
+
 // src/tools/test-cases.ts
 async function listTestCases(client, projectId, args) {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
@@ -25713,6 +25833,7 @@ registerMilestoneCommands(program2);
 registerCycleCommands(program2);
 registerSubtaskCommands(program2);
 registerAcceptanceCriteriaCommands(program2);
+registerDependencyCommands(program2);
 registerTestCaseCommands(program2);
 registerBulkCommands(program2);
 registerKnowledgeCommands(program2);

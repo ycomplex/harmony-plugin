@@ -32491,6 +32491,23 @@ async function updateTask(client, projectId, args) {
   }
   let taskData;
   if (Object.keys(payload).length > 0) {
+    if (payload.status !== void 0) {
+      const { data: projectRow, error: projErr } = await client.from("projects").select("custom_statuses").eq("id", projectId).single();
+      if (projErr) throw projErr;
+      const statuses = projectRow?.custom_statuses ?? [];
+      const terminal = statuses.length > 0 ? statuses[statuses.length - 1] : "Done";
+      if (payload.status === terminal) {
+        const { data: blocked, error: rpcErr } = await client.rpc("task_blocked_from_terminal", {
+          _task_id: resolvedId
+        });
+        if (rpcErr) throw rpcErr;
+        if (blocked === true) {
+          throw new Error(
+            "This task has unresolved blockers and cannot move to the final stage. Use list_dependencies to see them."
+          );
+        }
+      }
+    }
     const { data, error: error2 } = await client.from("tasks").update(payload).eq("id", resolvedId).eq("project_id", projectId).select().single();
     if (error2) throw error2;
     taskData = data;
@@ -33625,6 +33642,87 @@ async function manageTestCases(client, projectId, userId, args) {
   return results;
 }
 
+// src/tools/dependencies.ts
+var listDependenciesTool = {
+  name: "list_dependencies",
+  description: "List blockers (tasks that block this one) and downstream tasks (tasks blocked by this one).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)"
+      }
+    },
+    required: ["task_id"]
+  }
+};
+async function listDependencies(client, projectId, args) {
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const [blockedByRes, blockingRes] = await Promise.all([
+    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, blocker:blocked_by_task_id(id, task_number, title, status)").eq("task_id", resolvedId).order("created_at", { ascending: true }),
+    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, downstream:task_id(id, task_number, title, status)").eq("blocked_by_task_id", resolvedId).order("created_at", { ascending: true })
+  ]);
+  if (blockedByRes.error) throw blockedByRes.error;
+  if (blockingRes.error) throw blockingRes.error;
+  return {
+    blocked_by: blockedByRes.data ?? [],
+    blocking: blockingRes.data ?? []
+  };
+}
+var manageDependenciesTool = {
+  name: "manage_dependencies",
+  description: "Add or remove blockers on a task. Add: provide blocker_task_ids to declare what blocks this task. Remove: provide dependency_ids (returned from list_dependencies) to remove specific links.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "Task identifier \u2014 UUID, task number, or visual ID. This is the task that is BLOCKED."
+      },
+      add: {
+        type: "array",
+        items: { type: "string" },
+        description: "Blocker task identifiers to add. Same resolution rules as task_id."
+      },
+      remove: {
+        type: "array",
+        items: { type: "string" },
+        description: "task_dependencies row IDs to delete (UUIDs from list_dependencies)."
+      }
+    },
+    required: ["task_id"]
+  }
+};
+async function manageDependencies(client, projectId, userId, args) {
+  const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
+  const result = { added: [], removed: [] };
+  if (args.add && args.add.length > 0) {
+    const blockerIds = await Promise.all(
+      args.add.map((id) => resolveTaskId(client, projectId, id))
+    );
+    for (const bid of blockerIds) {
+      if (bid === resolvedTaskId) {
+        throw new Error("A task cannot block itself.");
+      }
+    }
+    const rows = blockerIds.map((bid) => ({
+      task_id: resolvedTaskId,
+      blocked_by_task_id: bid,
+      created_by: userId
+    }));
+    const { data, error: error2 } = await client.from("task_dependencies").insert(rows).select();
+    if (error2) throw error2;
+    result.added = data ?? [];
+  }
+  if (args.remove && args.remove.length > 0) {
+    const { error: error2 } = await client.from("task_dependencies").delete().in("id", args.remove).eq("task_id", resolvedTaskId);
+    if (error2) throw error2;
+    result.removed = args.remove;
+  }
+  return result;
+}
+
 // src/tools/index.ts
 function registerTools(disabledFeatures) {
   const tools = [
@@ -33653,6 +33751,7 @@ function registerTools(disabledFeatures) {
   if (!disabledFeatures?.cycles) tools.push(listCyclesTool, createCycleTool, updateCycleTool);
   if (!disabledFeatures?.milestones) tools.push(listMilestonesTool, createMilestoneTool, updateMilestoneTool, shipMilestoneTool);
   if (!disabledFeatures?.acceptance) tools.push(listAcceptanceCriteriaTool, manageAcceptanceCriteriaTool, listTestCasesTool, manageTestCasesTool);
+  if (!disabledFeatures?.dependencies) tools.push(listDependenciesTool, manageDependenciesTool);
   return tools;
 }
 async function handleToolCall(name, args, client, projectId, userId) {
@@ -33766,6 +33865,12 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "manage_test_cases":
         result = await manageTestCases(client, projectId, userId, args);
+        break;
+      case "list_dependencies":
+        result = await listDependencies(client, projectId, args);
+        break;
+      case "manage_dependencies":
+        result = await manageDependencies(client, projectId, userId, args);
         break;
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
