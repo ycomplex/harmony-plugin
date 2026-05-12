@@ -25308,32 +25308,32 @@ function registerAcceptanceCriteriaCommands(program3) {
 // src/tools/dependencies.ts
 async function listDependencies(client, projectId, args) {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
-  const [blockedByRes, blockingRes] = await Promise.all([
-    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, blocker:blocked_by_task_id(id, task_number, title, status)").eq("task_id", resolvedId).order("created_at", { ascending: true }),
-    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, downstream:task_id(id, task_number, title, status)").eq("blocked_by_task_id", resolvedId).order("created_at", { ascending: true })
+  const [dependsOnRes, blocksRes] = await Promise.all([
+    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, dependency:blocked_by_task_id(id, task_number, title, status)").eq("task_id", resolvedId).order("created_at", { ascending: true }),
+    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, dependent:task_id(id, task_number, title, status)").eq("blocked_by_task_id", resolvedId).order("created_at", { ascending: true })
   ]);
-  if (blockedByRes.error) throw blockedByRes.error;
-  if (blockingRes.error) throw blockingRes.error;
+  if (dependsOnRes.error) throw dependsOnRes.error;
+  if (blocksRes.error) throw blocksRes.error;
   return {
-    blocked_by: blockedByRes.data ?? [],
-    blocking: blockingRes.data ?? []
+    depends_on: dependsOnRes.data ?? [],
+    blocks: blocksRes.data ?? []
   };
 }
 async function manageDependencies(client, projectId, userId, args) {
   const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
   const result = { added: [], removed: [] };
   if (args.add && args.add.length > 0) {
-    const blockerIds = await Promise.all(
+    const dependencyIds = await Promise.all(
       args.add.map((id) => resolveTaskId(client, projectId, id))
     );
-    for (const bid of blockerIds) {
-      if (bid === resolvedTaskId) {
-        throw new Error("A task cannot block itself.");
+    for (const did of dependencyIds) {
+      if (did === resolvedTaskId) {
+        throw new Error("A task cannot depend on itself.");
       }
     }
-    const rows = blockerIds.map((bid) => ({
+    const rows = dependencyIds.map((did) => ({
       task_id: resolvedTaskId,
-      blocked_by_task_id: bid,
+      blocked_by_task_id: did,
       created_by: userId
     }));
     const { data, error } = await client.from("task_dependencies").insert(rows).select();
@@ -25350,23 +25350,23 @@ async function manageDependencies(client, projectId, userId, args) {
 
 // src/cli/commands/dependencies.ts
 function registerDependencyCommands(program3) {
-  const deps = program3.command("deps").description("Manage task blockers and dependencies");
-  deps.command("list").description("Show blockers and downstream tasks for a task").argument("<task-id>", "Task ID (UUID, number, or B-123)").action(async (taskId) => {
+  const deps = program3.command("deps").description("Manage task dependencies");
+  deps.command("list").description("Show a task's dependencies and the tasks that depend on it").argument("<task-id>", "Task ID (UUID, number, or B-123)").action(async (taskId) => {
     await runCommand(
       program3.opts(),
       async (ctx) => listDependencies(ctx.client, ctx.projectId, { task_id: taskId }),
       (data) => {
-        const blockedByRows = (data.blocked_by ?? []).map((r) => ({
+        const dependsOnRows = (data.depends_on ?? []).map((r) => ({
           id: r.id,
-          task_number: r.blocker?.task_number ?? "?",
-          title: r.blocker?.title ?? "?",
-          status: r.blocker?.status ?? "?"
+          task_number: r.dependency?.task_number ?? "?",
+          title: r.dependency?.title ?? "?",
+          status: r.dependency?.status ?? "?"
         }));
-        const blockingRows = (data.blocking ?? []).map((r) => ({
+        const blocksRows = (data.blocks ?? []).map((r) => ({
           id: r.id,
-          task_number: r.downstream?.task_number ?? "?",
-          title: r.downstream?.title ?? "?",
-          status: r.downstream?.status ?? "?"
+          task_number: r.dependent?.task_number ?? "?",
+          title: r.dependent?.title ?? "?",
+          status: r.dependent?.status ?? "?"
         }));
         const columns = [
           { key: "id", header: "Dep ID", width: 38 },
@@ -25374,28 +25374,28 @@ function registerDependencyCommands(program3) {
           { key: "title", header: "Title", width: 50 },
           { key: "status", header: "Status" }
         ];
-        const blockedByOut = blockedByRows.length === 0 ? "  (none)" : formatTable(blockedByRows, columns);
-        const blockingOut = blockingRows.length === 0 ? "  (none)" : formatTable(blockingRows, columns);
-        return `Blocked by:
-${blockedByOut}
+        const dependsOnOut = dependsOnRows.length === 0 ? "  (none)" : formatTable(dependsOnRows, columns);
+        const blocksOut = blocksRows.length === 0 ? "  (none)" : formatTable(blocksRows, columns);
+        return `Depends on:
+${dependsOnOut}
 
-Blocking:
-${blockingOut}`;
+Blocks:
+${blocksOut}`;
       }
     );
   });
-  deps.command("add").description("Add one or more blockers to a task").argument("<task-id>", "Task ID (UUID, number, or B-123) that is blocked").requiredOption("--by <blockers...>", "One or more blocker task IDs").action(async (taskId, opts) => {
-    const blockers = Array.isArray(opts.by) ? opts.by : [opts.by];
+  deps.command("add").description("Add one or more dependencies to a task").argument("<task-id>", "Task ID (UUID, number, or B-123)").requiredOption("--on <dependencies...>", "Task IDs that this task depends on").action(async (taskId, opts) => {
+    const dependencies = Array.isArray(opts.on) ? opts.on : [opts.on];
     await runCommand(
       program3.opts(),
       async (ctx) => manageDependencies(ctx.client, ctx.projectId, ctx.userId, {
         task_id: taskId,
-        add: blockers
+        add: dependencies
       }),
-      (result) => `Added ${result.added.length} blocker(s).`
+      (result) => `Added ${result.added.length} ${result.added.length === 1 ? "dependency" : "dependencies"}.`
     );
   });
-  deps.command("remove").description("Remove blocker links from a task").argument("<task-id>", "Task ID (UUID, number, or B-123)").requiredOption("--id <dependency-ids...>", "task_dependencies row ID(s) from `deps list`").action(async (taskId, opts) => {
+  deps.command("remove").description("Remove dependency links from a task").argument("<task-id>", "Task ID (UUID, number, or B-123)").requiredOption("--id <dependency-ids...>", "task_dependencies row ID(s) from `deps list`").action(async (taskId, opts) => {
     const ids = Array.isArray(opts.id) ? opts.id : [opts.id];
     await runCommand(
       program3.opts(),
@@ -25403,7 +25403,7 @@ ${blockingOut}`;
         task_id: taskId,
         remove: ids
       }),
-      (result) => `Removed ${result.removed.length} blocker link(s).`
+      (result) => `Removed ${result.removed.length} dependency ${result.removed.length === 1 ? "link" : "links"}.`
     );
   });
 }

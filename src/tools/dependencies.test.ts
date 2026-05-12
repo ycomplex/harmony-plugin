@@ -26,7 +26,7 @@ describe('listDependencies', () => {
     const result = await listDependencies(client, 'proj-1', { task_id: 'B-1' });
     expect(client.from).toHaveBeenCalledWith('task_dependencies');
     expect(client.from).toHaveBeenCalledTimes(2);
-    expect(result).toEqual({ blocked_by: [], blocking: [] });
+    expect(result).toEqual({ depends_on: [], blocks: [] });
   });
 });
 
@@ -36,14 +36,14 @@ describe('manageDependencies', () => {
     resolveMock.mockReset();
   });
 
-  it('adds blockers via insert', async () => {
+  it('adds dependencies via insert', async () => {
     const insertSelect = vi.fn().mockResolvedValue({ data: [{ id: 'd1' }], error: null });
     const client: any = {
       from: vi.fn(() => ({
         insert: vi.fn(() => ({ select: insertSelect })),
       })),
     };
-    // We need resolveTaskId to return different values for the task vs its blocker
+    // We need resolveTaskId to return different values for the task vs its dependency
     const resolveMock = (await import('./resolve-task-id.js')).resolveTaskId as ReturnType<typeof vi.fn>;
     resolveMock.mockResolvedValueOnce('task-a').mockResolvedValueOnce('task-b');
 
@@ -55,7 +55,7 @@ describe('manageDependencies', () => {
     expect(result.added).toEqual([{ id: 'd1' }]);
   });
 
-  it('removes blockers by id', async () => {
+  it('removes dependencies by id', async () => {
     const eqSpy = vi.fn().mockResolvedValue({ error: null });
     const client: any = {
       from: vi.fn(() => ({
@@ -71,10 +71,10 @@ describe('manageDependencies', () => {
     expect(result.removed).toEqual(['d1', 'd2']);
   });
 
-  it('rejects self-blocking', async () => {
+  it('rejects self-dependencies', async () => {
     const client: any = { from: vi.fn() };
     const resolveMock = (await import('./resolve-task-id.js')).resolveTaskId as ReturnType<typeof vi.fn>;
-    resolveMock.mockResolvedValue('task-a'); // both task and blocker resolve to same ID
+    resolveMock.mockResolvedValue('task-a'); // both task and dependency resolve to same ID
     await expect(
       manageDependencies(client, 'proj-1', 'user-1', { task_id: 'task-a', add: ['task-a'] }),
     ).rejects.toThrow(/itself/);

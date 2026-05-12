@@ -4,27 +4,27 @@ import { runCommand } from '../run-command.js';
 import { formatTable } from '../formatter.js';
 
 export function registerDependencyCommands(program: Command): void {
-  const deps = program.command('deps').description('Manage task blockers and dependencies');
+  const deps = program.command('deps').description('Manage task dependencies');
 
   deps
     .command('list')
-    .description('Show blockers and downstream tasks for a task')
+    .description("Show a task's dependencies and the tasks that depend on it")
     .argument('<task-id>', 'Task ID (UUID, number, or B-123)')
     .action(async (taskId) => {
       await runCommand(program.opts(), async (ctx) =>
         listDependencies(ctx.client, ctx.projectId, { task_id: taskId }),
         (data) => {
-          const blockedByRows = (data.blocked_by ?? []).map((r: any) => ({
+          const dependsOnRows = (data.depends_on ?? []).map((r: any) => ({
             id: r.id,
-            task_number: r.blocker?.task_number ?? '?',
-            title: r.blocker?.title ?? '?',
-            status: r.blocker?.status ?? '?',
+            task_number: r.dependency?.task_number ?? '?',
+            title: r.dependency?.title ?? '?',
+            status: r.dependency?.status ?? '?',
           }));
-          const blockingRows = (data.blocking ?? []).map((r: any) => ({
+          const blocksRows = (data.blocks ?? []).map((r: any) => ({
             id: r.id,
-            task_number: r.downstream?.task_number ?? '?',
-            title: r.downstream?.title ?? '?',
-            status: r.downstream?.status ?? '?',
+            task_number: r.dependent?.task_number ?? '?',
+            title: r.dependent?.title ?? '?',
+            status: r.dependent?.status ?? '?',
           }));
 
           const columns = [
@@ -34,37 +34,37 @@ export function registerDependencyCommands(program: Command): void {
             { key: 'status', header: 'Status' },
           ];
 
-          const blockedByOut = blockedByRows.length === 0
+          const dependsOnOut = dependsOnRows.length === 0
             ? '  (none)'
-            : formatTable(blockedByRows, columns);
-          const blockingOut = blockingRows.length === 0
+            : formatTable(dependsOnRows, columns);
+          const blocksOut = blocksRows.length === 0
             ? '  (none)'
-            : formatTable(blockingRows, columns);
+            : formatTable(blocksRows, columns);
 
-          return `Blocked by:\n${blockedByOut}\n\nBlocking:\n${blockingOut}`;
+          return `Depends on:\n${dependsOnOut}\n\nBlocks:\n${blocksOut}`;
         },
       );
     });
 
   deps
     .command('add')
-    .description('Add one or more blockers to a task')
-    .argument('<task-id>', 'Task ID (UUID, number, or B-123) that is blocked')
-    .requiredOption('--by <blockers...>', 'One or more blocker task IDs')
+    .description('Add one or more dependencies to a task')
+    .argument('<task-id>', 'Task ID (UUID, number, or B-123)')
+    .requiredOption('--on <dependencies...>', 'Task IDs that this task depends on')
     .action(async (taskId, opts) => {
-      const blockers: string[] = Array.isArray(opts.by) ? opts.by : [opts.by];
+      const dependencies: string[] = Array.isArray(opts.on) ? opts.on : [opts.on];
       await runCommand(program.opts(), async (ctx) =>
         manageDependencies(ctx.client, ctx.projectId, ctx.userId, {
           task_id: taskId,
-          add: blockers,
+          add: dependencies,
         }),
-        (result) => `Added ${result.added.length} blocker(s).`,
+        (result) => `Added ${result.added.length} ${result.added.length === 1 ? 'dependency' : 'dependencies'}.`,
       );
     });
 
   deps
     .command('remove')
-    .description('Remove blocker links from a task')
+    .description('Remove dependency links from a task')
     .argument('<task-id>', 'Task ID (UUID, number, or B-123)')
     .requiredOption('--id <dependency-ids...>', 'task_dependencies row ID(s) from `deps list`')
     .action(async (taskId, opts) => {
@@ -74,7 +74,7 @@ export function registerDependencyCommands(program: Command): void {
           task_id: taskId,
           remove: ids,
         }),
-        (result) => `Removed ${result.removed.length} blocker link(s).`,
+        (result) => `Removed ${result.removed.length} dependency ${result.removed.length === 1 ? 'link' : 'links'}.`,
       );
     });
 }

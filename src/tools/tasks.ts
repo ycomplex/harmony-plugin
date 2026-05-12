@@ -277,9 +277,10 @@ export async function updateTask(
   let taskData: any;
   // Only run task update if there are actual task field changes
   if (Object.keys(payload).length > 0) {
-    // Pre-flight: blocker gate. If caller is changing status, ask the DB whether
-    // this would land in the terminal column on a blocked task. The DB trigger is
-    // still authoritative, but this gives a clearer MCP error message.
+    // Pre-flight: blocker gate. If the caller is changing status, ask the DB
+    // whether this would land in the terminal column on a task with unresolved
+    // dependencies. The DB trigger is still authoritative; this just produces
+    // a clearer MCP error message.
     if (payload.status !== undefined) {
       const { data: projectRow, error: projErr } = await client
         .from('projects')

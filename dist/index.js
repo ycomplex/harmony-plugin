@@ -33645,7 +33645,7 @@ async function manageTestCases(client, projectId, userId, args) {
 // src/tools/dependencies.ts
 var listDependenciesTool = {
   name: "list_dependencies",
-  description: "List blockers (tasks that block this one) and downstream tasks (tasks blocked by this one).",
+  description: "List a task's dependencies (tasks it depends on) and the tasks that depend on it (which it blocks).",
   inputSchema: {
     type: "object",
     properties: {
@@ -33659,31 +33659,31 @@ var listDependenciesTool = {
 };
 async function listDependencies(client, projectId, args) {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
-  const [blockedByRes, blockingRes] = await Promise.all([
-    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, blocker:blocked_by_task_id(id, task_number, title, status)").eq("task_id", resolvedId).order("created_at", { ascending: true }),
-    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, downstream:task_id(id, task_number, title, status)").eq("blocked_by_task_id", resolvedId).order("created_at", { ascending: true })
+  const [dependsOnRes, blocksRes] = await Promise.all([
+    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, dependency:blocked_by_task_id(id, task_number, title, status)").eq("task_id", resolvedId).order("created_at", { ascending: true }),
+    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, dependent:task_id(id, task_number, title, status)").eq("blocked_by_task_id", resolvedId).order("created_at", { ascending: true })
   ]);
-  if (blockedByRes.error) throw blockedByRes.error;
-  if (blockingRes.error) throw blockingRes.error;
+  if (dependsOnRes.error) throw dependsOnRes.error;
+  if (blocksRes.error) throw blocksRes.error;
   return {
-    blocked_by: blockedByRes.data ?? [],
-    blocking: blockingRes.data ?? []
+    depends_on: dependsOnRes.data ?? [],
+    blocks: blocksRes.data ?? []
   };
 }
 var manageDependenciesTool = {
   name: "manage_dependencies",
-  description: "Add or remove blockers on a task. Add: provide blocker_task_ids to declare what blocks this task. Remove: provide dependency_ids (returned from list_dependencies) to remove specific links.",
+  description: "Add or remove a task's dependencies. Add: provide task IDs that this task depends on. Remove: provide dependency_ids (returned from list_dependencies) to remove specific links.",
   inputSchema: {
     type: "object",
     properties: {
       task_id: {
         type: "string",
-        description: "Task identifier \u2014 UUID, task number, or visual ID. This is the task that is BLOCKED."
+        description: "Task identifier \u2014 UUID, task number, or visual ID. This is the task whose dependencies are being managed."
       },
       add: {
         type: "array",
         items: { type: "string" },
-        description: "Blocker task identifiers to add. Same resolution rules as task_id."
+        description: "Task identifiers this task should depend on. Same resolution rules as task_id."
       },
       remove: {
         type: "array",
@@ -33698,17 +33698,17 @@ async function manageDependencies(client, projectId, userId, args) {
   const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
   const result = { added: [], removed: [] };
   if (args.add && args.add.length > 0) {
-    const blockerIds = await Promise.all(
+    const dependencyIds = await Promise.all(
       args.add.map((id) => resolveTaskId(client, projectId, id))
     );
-    for (const bid of blockerIds) {
-      if (bid === resolvedTaskId) {
-        throw new Error("A task cannot block itself.");
+    for (const did of dependencyIds) {
+      if (did === resolvedTaskId) {
+        throw new Error("A task cannot depend on itself.");
       }
     }
-    const rows = blockerIds.map((bid) => ({
+    const rows = dependencyIds.map((did) => ({
       task_id: resolvedTaskId,
-      blocked_by_task_id: bid,
+      blocked_by_task_id: did,
       created_by: userId
     }));
     const { data, error: error2 } = await client.from("task_dependencies").insert(rows).select();
