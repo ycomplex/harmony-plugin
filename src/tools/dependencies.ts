@@ -44,3 +44,72 @@ export async function listDependencies(
     blocking: blockingRes.data ?? [],
   };
 }
+
+export const manageDependenciesTool = {
+  name: 'manage_dependencies',
+  description: 'Add or remove blockers on a task. Add: provide blocker_task_ids to declare what blocks this task. Remove: provide dependency_ids (returned from list_dependencies) to remove specific links.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      task_id: {
+        type: 'string',
+        description: 'Task identifier — UUID, task number, or visual ID. This is the task that is BLOCKED.',
+      },
+      add: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Blocker task identifiers to add. Same resolution rules as task_id.',
+      },
+      remove: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'task_dependencies row IDs to delete (UUIDs from list_dependencies).',
+      },
+    },
+    required: ['task_id'],
+  },
+};
+
+export async function manageDependencies(
+  client: SupabaseClient,
+  projectId: string,
+  userId: string,
+  args: { task_id: string; add?: string[]; remove?: string[] },
+) {
+  const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
+  const result: { added: any[]; removed: string[] } = { added: [], removed: [] };
+
+  if (args.add && args.add.length > 0) {
+    const blockerIds = await Promise.all(
+      args.add.map(id => resolveTaskId(client, projectId, id)),
+    );
+    for (const bid of blockerIds) {
+      if (bid === resolvedTaskId) {
+        throw new Error('A task cannot block itself.');
+      }
+    }
+    const rows = blockerIds.map(bid => ({
+      task_id: resolvedTaskId,
+      blocked_by_task_id: bid,
+      created_by: userId,
+    }));
+    const { data, error } = await client
+      .from('task_dependencies')
+      .insert(rows)
+      .select();
+    if (error) throw error;
+    result.added = data ?? [];
+  }
+
+  if (args.remove && args.remove.length > 0) {
+    const { error } = await client
+      .from('task_dependencies')
+      .delete()
+      .in('id', args.remove)
+      .eq('task_id', resolvedTaskId);
+    if (error) throw error;
+    result.removed = args.remove;
+  }
+
+  return result;
+}
