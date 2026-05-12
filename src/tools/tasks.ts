@@ -277,6 +277,33 @@ export async function updateTask(
   let taskData: any;
   // Only run task update if there are actual task field changes
   if (Object.keys(payload).length > 0) {
+    // Pre-flight: blocker gate. If the caller is changing status, ask the DB
+    // whether this would land in the terminal column on a task with unresolved
+    // dependencies. The DB trigger is still authoritative; this just produces
+    // a clearer MCP error message.
+    if (payload.status !== undefined) {
+      const { data: projectRow, error: projErr } = await client
+        .from('projects')
+        .select('custom_statuses')
+        .eq('id', projectId)
+        .single();
+      if (projErr) throw projErr;
+      const statuses: string[] = (projectRow?.custom_statuses ?? []) as string[];
+      const terminal = statuses.length > 0 ? statuses[statuses.length - 1] : 'Done';
+
+      if (payload.status === terminal) {
+        const { data: blocked, error: rpcErr } = await client.rpc('task_blocked_from_terminal', {
+          _task_id: resolvedId,
+        });
+        if (rpcErr) throw rpcErr;
+        if (blocked === true) {
+          throw new Error(
+            'This task has unresolved blockers and cannot move to the final stage. Use list_dependencies to see them.',
+          );
+        }
+      }
+    }
+
     const { data, error } = await client
       .from('tasks')
       .update(payload)
