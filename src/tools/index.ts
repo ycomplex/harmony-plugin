@@ -33,6 +33,7 @@ import { listCyclesTool, listCycles, createCycleTool, createCycle, updateCycleTo
 import { listAcceptanceCriteriaTool, listAcceptanceCriteria, manageAcceptanceCriteriaTool, manageAcceptanceCriteria } from './acceptance-criteria.js';
 import { listTestCasesTool, listTestCases, manageTestCasesTool, manageTestCases } from './test-cases.js';
 import { listDependenciesTool, listDependencies, manageDependenciesTool, manageDependencies } from './dependencies.js';
+import { listSubtasksTool, listSubtasks, listParentTool, listParent } from './decomposition.js';
 
 export function registerTools(disabledFeatures?: Record<string, boolean>) {
   const tools = [
@@ -52,6 +53,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
   if (!disabledFeatures?.milestones) tools.push(listMilestonesTool, createMilestoneTool, updateMilestoneTool, shipMilestoneTool);
   if (!disabledFeatures?.acceptance) tools.push(listAcceptanceCriteriaTool, manageAcceptanceCriteriaTool, listTestCasesTool, manageTestCasesTool);
   if (!disabledFeatures?.dependencies) tools.push(listDependenciesTool, manageDependenciesTool);
+  if (!disabledFeatures?.decomposition) tools.push(listSubtasksTool, listParentTool);
 
   return tools;
 }
@@ -179,6 +181,12 @@ export async function handleToolCall(
         break;
       case 'manage_dependencies':
         result = await manageDependencies(client, projectId, userId, args as any);
+        break;
+      case 'list_subtasks':
+        result = await listSubtasks(client, projectId, args as any);
+        break;
+      case 'list_parent':
+        result = await listParent(client, projectId, args as any);
         break;
       default:
         return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };
