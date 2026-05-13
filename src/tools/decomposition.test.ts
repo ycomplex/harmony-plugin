@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { listSubtasks, listParent } from './decomposition.js';
+import { listSubtasks, listParent, manageSubtasks } from './decomposition.js';
 
 vi.mock('./resolve-task-id.js', () => ({
   resolveTaskId: vi.fn().mockResolvedValue('root-uuid'),
@@ -55,5 +55,51 @@ describe('listParent', () => {
     };
     const result = await listParent(client, 'proj-1', { task_id: 'B-1' });
     expect(result?.title).toBe('Parent');
+  });
+});
+
+describe('manageSubtasks', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('inherits project and epic when add_new omits them', async () => {
+    const insertSpy = vi.fn(() => ({ select: vi.fn().mockResolvedValue({ data: [{ id: 'c1' }], error: null }) }));
+    const fromMock = vi.fn((table: string) => {
+      if (table !== 'tasks') return { from: vi.fn() };
+      return {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            single: vi.fn().mockResolvedValue({ data: { project_id: 'proj-1', epic_id: 'epic-1' }, error: null }),
+          })),
+        })),
+        insert: insertSpy,
+      };
+    });
+    const client: any = { from: fromMock };
+
+    await manageSubtasks(client, 'proj-1', 'user-1', {
+      task_id: 'parent-1',
+      add_new: [{ title: 'New child' }],
+    });
+
+    const insertedRows = insertSpy.mock.calls[0][0];
+    expect(insertedRows[0].project_id).toBe('proj-1');
+    expect(insertedRows[0].epic_id).toBe('epic-1');
+    expect(insertedRows[0].parent_task_id).toBeDefined();
+  });
+
+  it('rejects self-attach', async () => {
+    const fromMock = vi.fn(() => ({
+      select: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          single: vi.fn().mockResolvedValue({ data: { project_id: 'proj-1', epic_id: null }, error: null }),
+        })),
+      })),
+    }));
+    const client: any = { from: fromMock };
+    const resolveMock = (await import('./resolve-task-id.js')).resolveTaskId as ReturnType<typeof vi.fn>;
+    resolveMock.mockResolvedValue('same-uuid');
+    await expect(
+      manageSubtasks(client, 'proj-1', 'user-1', { task_id: 'p1', add: ['p1'] }),
+    ).rejects.toThrow(/own subtask/);
   });
 });

@@ -233,6 +233,10 @@ export const updateTaskTool = {
       },
       cycle_id: { type: 'string', description: 'Assign to a cycle. Optional.' },
       milestone_id: { type: 'string', description: 'Assign to a milestone. Optional.' },
+      parent_task_id: {
+        type: ['string', 'null'],
+        description: 'New parent task identifier (UUID, task number, or visual ID). Pass `null` to detach.',
+      } as any,
     },
     required: ['task_id'],
   },
@@ -251,6 +255,13 @@ export async function updateTask(
     updates.assignee_id = await resolveAssignee(client, projectId, updates.assignee_id);
   } else if (updates.assignee_id === 'null') {
     updates.assignee_id = null;
+  }
+
+  // Resolve parent_task_id if provided
+  if (updates.parent_task_id !== undefined) {
+    updates.parent_task_id = updates.parent_task_id === null
+      ? null
+      : await resolveTaskId(client, projectId, updates.parent_task_id);
   }
 
   // Normalize escaped newlines in description

@@ -132,4 +132,37 @@ describe('updateTask', () => {
     await updateTask(client, 'proj-1', { task_id: 'B-1', status: 'To Do' });
     expect(client.rpc).not.toHaveBeenCalled();
   });
+
+  it('resolves and passes parent_task_id to update payload', async () => {
+    const resolveMock = (await import('./resolve-task-id.js'))
+      .resolveTaskId as ReturnType<typeof vi.fn>;
+    // First call resolves child task, second resolves the parent
+    resolveMock.mockResolvedValueOnce('child-uuid').mockResolvedValueOnce('parent-uuid');
+
+    const updatePayloadSpy = vi.fn(() => ({
+      eq: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          select: vi.fn(() => ({
+            single: vi.fn().mockResolvedValue({
+              data: { id: 'child-uuid', parent_task_id: 'parent-uuid' },
+              error: null,
+            }),
+          })),
+        })),
+      })),
+    }));
+
+    const client: any = {
+      from: vi.fn(() => ({
+        update: updatePayloadSpy,
+      })),
+      rpc: vi.fn(),
+    };
+
+    await updateTask(client, 'proj-1', { task_id: 'B-2', parent_task_id: 'p1' });
+
+    expect(updatePayloadSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ parent_task_id: 'parent-uuid' }),
+    );
+  });
 });
