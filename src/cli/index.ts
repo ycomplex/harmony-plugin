@@ -20,6 +20,7 @@ import { registerDependencyCommands } from './commands/dependencies.js';
 import { registerTestCaseCommands } from './commands/test-cases.js';
 import { registerBulkCommands } from './commands/bulk.js';
 import { registerKnowledgeCommands } from './commands/knowledge.js';
+import { registerSubtaskCommands } from './commands/subtasks.js';
 
 const program = new Command();
 
@@ -46,5 +47,6 @@ registerDependencyCommands(program);
 registerTestCaseCommands(program);
 registerBulkCommands(program);
 registerKnowledgeCommands(program);
+registerSubtaskCommands(program);
 
 program.parse();
