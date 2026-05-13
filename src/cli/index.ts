@@ -14,12 +14,13 @@ import { registerEpicCommands } from './commands/epics.js';
 import { registerLabelCommands } from './commands/labels.js';
 import { registerMilestoneCommands } from './commands/milestones.js';
 import { registerCycleCommands } from './commands/cycles.js';
-import { registerSubtaskCommands } from './commands/subtasks.js';
+import { registerChecklistCommands } from './commands/checklist.js';
 import { registerAcceptanceCriteriaCommands } from './commands/acceptance-criteria.js';
 import { registerDependencyCommands } from './commands/dependencies.js';
 import { registerTestCaseCommands } from './commands/test-cases.js';
 import { registerBulkCommands } from './commands/bulk.js';
 import { registerKnowledgeCommands } from './commands/knowledge.js';
+import { registerSubtaskCommands } from './commands/subtasks.js';
 
 const program = new Command();
 
@@ -40,11 +41,12 @@ registerEpicCommands(program);
 registerLabelCommands(program);
 registerMilestoneCommands(program);
 registerCycleCommands(program);
-registerSubtaskCommands(program);
+registerChecklistCommands(program);
 registerAcceptanceCriteriaCommands(program);
 registerDependencyCommands(program);
 registerTestCaseCommands(program);
 registerBulkCommands(program);
 registerKnowledgeCommands(program);
+registerSubtaskCommands(program);
 
 program.parse();
