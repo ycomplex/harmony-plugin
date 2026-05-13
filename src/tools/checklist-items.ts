@@ -1,9 +1,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
 
-export const listSubtasksTool = {
-  name: 'list_subtasks',
-  description: 'List subtasks for a task',
+export const listChecklistItemsTool = {
+  name: 'list_checklist_items',
+  description: 'List checklist items for a task',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -16,14 +16,14 @@ export const listSubtasksTool = {
   },
 };
 
-export async function listSubtasks(
+export async function listChecklistItems(
   client: SupabaseClient,
   projectId: string,
   args: { task_id: string },
 ) {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error } = await client
-    .from('subtasks')
+    .from('checklist_items')
     .select('id, title, completed, position, created_by, created_at')
     .eq('task_id', resolvedId)
     .order('position', { ascending: true });
@@ -31,9 +31,9 @@ export async function listSubtasks(
   return data;
 }
 
-export const manageSubtasksTool = {
-  name: 'manage_subtasks',
-  description: 'Add, update, or delete subtasks on a task. Supports batch operations.',
+export const manageChecklistItemsTool = {
+  name: 'manage_checklist_items',
+  description: 'Add, update, or delete checklist items on a task. Supports batch operations.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -46,36 +46,36 @@ export const manageSubtasksTool = {
         items: {
           type: 'object',
           properties: {
-            title: { type: 'string', description: 'Subtask title' },
+            title: { type: 'string', description: 'Checklist item title' },
           },
           required: ['title'],
         },
-        description: 'Subtasks to add (appended in order)',
+        description: 'Checklist items to add (appended in order)',
       },
       update: {
         type: 'array',
         items: {
           type: 'object',
           properties: {
-            id: { type: 'string', description: 'Subtask UUID' },
+            id: { type: 'string', description: 'Checklist item UUID' },
             title: { type: 'string', description: 'New title' },
             completed: { type: 'boolean', description: 'New completion state' },
           },
           required: ['id'],
         },
-        description: 'Subtasks to update',
+        description: 'Checklist items to update',
       },
       delete: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Subtask UUIDs to delete',
+        description: 'Checklist item UUIDs to delete',
       },
     },
     required: ['task_id'],
   },
 };
 
-export async function manageSubtasks(
+export async function manageChecklistItems(
   client: SupabaseClient,
   projectId: string,
   userId: string,
@@ -97,7 +97,7 @@ export async function manageSubtasks(
   let maxPosition = -1;
   if (args.add && args.add.length > 0) {
     const { data: existing } = await client
-      .from('subtasks')
+      .from('checklist_items')
       .select('position')
       .eq('task_id', resolvedTaskId)
       .order('position', { ascending: false })
@@ -105,7 +105,7 @@ export async function manageSubtasks(
     maxPosition = existing?.[0]?.position ?? -1;
   }
 
-  // Add subtasks
+  // Add checklist items
   if (args.add && args.add.length > 0) {
     const rows = args.add.map((item, i) => ({
       task_id: resolvedTaskId,
@@ -114,14 +114,14 @@ export async function manageSubtasks(
       created_by: userId,
     }));
     const { data, error } = await client
-      .from('subtasks')
+      .from('checklist_items')
       .insert(rows)
       .select();
     if (error) throw error;
     results.added = data ?? [];
   }
 
-  // Update subtasks
+  // Update checklist items
   if (args.update && args.update.length > 0) {
     for (const item of args.update) {
       const { id, ...updates } = item;
@@ -131,7 +131,7 @@ export async function manageSubtasks(
       if (Object.keys(payload).length === 0) continue;
 
       const { data, error } = await client
-        .from('subtasks')
+        .from('checklist_items')
         .update(payload)
         .eq('id', id)
         .eq('task_id', resolvedTaskId)
@@ -142,10 +142,10 @@ export async function manageSubtasks(
     }
   }
 
-  // Delete subtasks
+  // Delete checklist items
   if (args.delete && args.delete.length > 0) {
     const { error } = await client
-      .from('subtasks')
+      .from('checklist_items')
       .delete()
       .in('id', args.delete)
       .eq('task_id', resolvedTaskId);

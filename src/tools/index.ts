@@ -9,7 +9,7 @@ import {
   bulkCreateTasksTool, bulkCreateTasks,
 } from './tasks.js';
 import { listLabels, createLabel, listLabelsTool, createLabelTool } from './labels.js';
-import { listSubtasksTool, listSubtasks, manageSubtasksTool, manageSubtasks } from './subtasks.js';
+import { listChecklistItemsTool, listChecklistItems, manageChecklistItemsTool, manageChecklistItems } from './checklist-items.js';
 import { queryTasksTool, queryTasks } from './query-tasks.js';
 import { listCommentsTool, listComments, addCommentTool, addComment } from './comments.js';
 import { manageTaskLabelsTool, manageTaskLabels } from './task-labels.js';
@@ -47,7 +47,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
 
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
   if (!disabledFeatures?.labels) tools.push(listLabelsTool, createLabelTool, manageTaskLabelsTool);
-  if (!disabledFeatures?.subtasks) tools.push(listSubtasksTool, manageSubtasksTool);
+  if (!disabledFeatures?.subtasks) tools.push(listChecklistItemsTool, manageChecklistItemsTool);
   if (!disabledFeatures?.cycles) tools.push(listCyclesTool, createCycleTool, updateCycleTool);
   if (!disabledFeatures?.milestones) tools.push(listMilestonesTool, createMilestoneTool, updateMilestoneTool, shipMilestoneTool);
   if (!disabledFeatures?.acceptance) tools.push(listAcceptanceCriteriaTool, manageAcceptanceCriteriaTool, listTestCasesTool, manageTestCasesTool);
@@ -99,11 +99,11 @@ export async function handleToolCall(
       case 'create_label':
         result = await createLabel(client, projectId, userId, args as any);
         break;
-      case 'list_subtasks':
-        result = await listSubtasks(client, projectId, args as any);
+      case 'list_checklist_items':
+        result = await listChecklistItems(client, projectId, args as any);
         break;
-      case 'manage_subtasks':
-        result = await manageSubtasks(client, projectId, userId, args as any);
+      case 'manage_checklist_items':
+        result = await manageChecklistItems(client, projectId, userId, args as any);
         break;
       case 'query_tasks':
         result = await queryTasks(client, projectId, args as any);
