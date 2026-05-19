@@ -70,14 +70,18 @@ The project root is the repository root (parent of `.worktrees/`).
 
 ### 6. Kill dev servers running in the worktree
 
-Before removing the worktree, find and kill any processes (dev servers, watchers, etc.) whose working directory is inside the worktree. This prevents orphan processes after the directory is deleted.
+Before removing the worktree, kill any long-lived watchers (dev servers, e2e runners, file watchers) that were started during the work. This prevents orphan processes after the directory is deleted.
 
 ```bash
-# Find node/vite processes running inside the worktree
-lsof +D .worktrees/<worktree-name> 2>/dev/null | awk 'NR>1 {print $2}' | sort -u | xargs kill 2>/dev/null
+# Kill watchers by name. Adjust the list to match your stack.
+pkill -f "vite preview" 2>/dev/null
+pkill -f "vite dev" 2>/dev/null
+pkill -f playwright 2>/dev/null
 ```
 
-If no processes are found, continue silently — this step is best-effort.
+If no matching processes are running the commands return non-zero silently — this step is best-effort.
+
+**Don't replace these with `lsof +D <worktree> | xargs kill`.** That scans for every process holding a file open under the worktree, which includes the shell running the cleanup and the Claude Code process itself when its CWD is inside the worktree — the agent self-terminates mid-cleanup and the merge tail (worktree removal, branch deletion, Harmony status move) is left half-done. For new watcher types, add another explicit `pkill -f` line above instead.
 
 ### 7. Clean up worktree and branches
 
