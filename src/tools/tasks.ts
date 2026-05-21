@@ -102,13 +102,13 @@ export async function getTask(client: SupabaseClient, projectId: string, args: {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error } = await client
     .from('tasks')
-    .select('*, task_labels(labels(id, name, color)), subtasks(id, title, completed, position)')
+    .select('*, task_labels(labels(id, name, color)), checklist_items(id, title, completed, position)')
     .eq('id', resolvedId)
     .eq('project_id', projectId)
     .single();
   if (error) throw error;
   const labels = (data.task_labels ?? []).map((tl: any) => tl.labels).filter(Boolean);
-  const subtasks = ((data as any).subtasks ?? []).sort((a: any, b: any) => a.position - b.position);
+  const checklistItems = ((data as any).checklist_items ?? []).sort((a: any, b: any) => a.position - b.position);
 
   const { data: acceptanceCriteria } = await client
     .from('acceptance_criteria')
@@ -122,8 +122,8 @@ export async function getTask(client: SupabaseClient, projectId: string, args: {
     .eq('task_id', resolvedId)
     .order('position');
 
-  const { task_labels, subtasks: _subtasks, ...rest } = data as any;
-  return { ...rest, labels, subtasks, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [] };
+  const { task_labels, checklist_items: _checklistItems, ...rest } = data as any;
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [] };
 }
 
 export const createTaskTool = {

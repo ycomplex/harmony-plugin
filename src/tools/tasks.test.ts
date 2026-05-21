@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { updateTask, createTask } from './tasks.js';
+import { updateTask, createTask, getTask } from './tasks.js';
 
 vi.mock('./resolve-task-id.js', () => ({
   resolveTaskId: vi.fn().mockResolvedValue('resolved-uuid'),
@@ -240,5 +240,55 @@ describe('createTask', () => {
     await createTask(client, 'proj-1', 'user-1', { title: 'Standalone' });
 
     expect(insertSpy.mock.calls[0][0]).toMatchObject({ parent_task_id: null, epic_id: null });
+  });
+});
+
+describe('getTask', () => {
+  beforeEach(async () => {
+    const resolveMock = (await import('./resolve-task-id.js'))
+      .resolveTaskId as ReturnType<typeof vi.fn>;
+    resolveMock.mockReset();
+    resolveMock.mockResolvedValue('resolved-uuid');
+  });
+
+  it('embeds checklist_items (the renamed table) — not the dropped subtasks relation', async () => {
+    const selectSpy = vi.fn();
+    const client: any = {
+      from: vi.fn((table: string) => {
+        if (table === 'tasks') {
+          return {
+            select: (sel: string) => {
+              selectSpy(sel);
+              return {
+                eq: () => ({
+                  eq: () => ({
+                    single: vi.fn().mockResolvedValue({
+                      data: {
+                        id: 'resolved-uuid',
+                        title: 'T',
+                        task_labels: [],
+                        checklist_items: [{ id: 'ci1', title: 'item', completed: false, position: 0 }],
+                      },
+                      error: null,
+                    }),
+                  }),
+                }),
+              };
+            },
+          };
+        }
+        // acceptance_criteria / test_cases: .select().eq().order()
+        return { select: () => ({ eq: () => ({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }) }) };
+      }),
+    };
+
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1' });
+
+    // The embed must target the renamed table, never the dropped `subtasks` relation.
+    expect(selectSpy.mock.calls[0][0]).toContain('checklist_items(');
+    expect(selectSpy.mock.calls[0][0]).not.toContain('subtasks(');
+    // And the result surfaces them under the new field name.
+    expect(result.checklist_items).toHaveLength(1);
+    expect((result as any).subtasks).toBeUndefined();
   });
 });
