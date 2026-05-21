@@ -176,6 +176,22 @@ export async function createTask(
     ? await resolveTaskId(client, projectId, args.parent_task_id)
     : null;
 
+  // A child inherits its parent's epic unless an epic is explicitly provided.
+  // Epics are project-scoped, so only inherit when the parent lives in this
+  // same project (a cross-project parent's epic would be invalid here).
+  let epicId: string | null = args.epic_id ?? null;
+  if (args.epic_id === undefined && parentTaskId) {
+    const { data: parent, error: parentErr } = await client
+      .from('tasks')
+      .select('project_id, epic_id')
+      .eq('id', parentTaskId)
+      .single();
+    if (parentErr) throw parentErr;
+    if (parent?.project_id === projectId) {
+      epicId = parent.epic_id ?? null;
+    }
+  }
+
   // Get next position for the target status
   const status = args.status ?? 'Backlog';
   const { data: existing } = await client
@@ -195,7 +211,7 @@ export async function createTask(
       status,
       priority: args.priority ?? 'medium',
       assignee_id: assigneeId,
-      epic_id: args.epic_id ?? null,
+      epic_id: epicId,
       description: args.description?.replace(/\\n/g, '\n') ?? null,
       due_date: args.due_date ?? null,
       field_values: args.field_values ?? {},
@@ -317,7 +333,7 @@ export async function updateTask(
         if (rpcErr) throw rpcErr;
         if (blocked === true) {
           throw new Error(
-            'This task has unresolved blockers and cannot move to the final stage. Use list_dependencies to see them.',
+            'This task has unfinished dependencies or subtasks and cannot move to the final stage. Use list_dependencies and list_subtasks to see them.',
           );
         }
       }

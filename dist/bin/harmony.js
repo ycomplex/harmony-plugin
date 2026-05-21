@@ -24292,6 +24292,14 @@ async function getTask(client, projectId, args) {
 async function createTask(client, projectId, userId, args) {
   const assigneeId = args.assignee_id ? await resolveAssignee(client, projectId, args.assignee_id) : null;
   const parentTaskId = args.parent_task_id ? await resolveTaskId(client, projectId, args.parent_task_id) : null;
+  let epicId = args.epic_id ?? null;
+  if (args.epic_id === void 0 && parentTaskId) {
+    const { data: parent, error: parentErr } = await client.from("tasks").select("project_id, epic_id").eq("id", parentTaskId).single();
+    if (parentErr) throw parentErr;
+    if (parent?.project_id === projectId) {
+      epicId = parent.epic_id ?? null;
+    }
+  }
   const status = args.status ?? "Backlog";
   const { data: existing } = await client.from("tasks").select("position").eq("project_id", projectId).eq("status", status).order("position", { ascending: false }).limit(1);
   const nextPosition = (existing?.[0]?.position ?? -1) + 1;
@@ -24301,7 +24309,7 @@ async function createTask(client, projectId, userId, args) {
     status,
     priority: args.priority ?? "medium",
     assignee_id: assigneeId,
-    epic_id: args.epic_id ?? null,
+    epic_id: epicId,
     description: args.description?.replace(/\\n/g, "\n") ?? null,
     due_date: args.due_date ?? null,
     field_values: args.field_values ?? {},
@@ -24356,7 +24364,7 @@ async function updateTask(client, projectId, args) {
         if (rpcErr) throw rpcErr;
         if (blocked === true) {
           throw new Error(
-            "This task has unresolved blockers and cannot move to the final stage. Use list_dependencies to see them."
+            "This task has unfinished dependencies or subtasks and cannot move to the final stage. Use list_dependencies and list_subtasks to see them."
           );
         }
       }

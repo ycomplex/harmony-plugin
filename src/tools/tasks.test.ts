@@ -43,7 +43,7 @@ describe('updateTask', () => {
 
     await expect(
       updateTask(client, 'proj-1', { task_id: 'B-1', status: 'Done' }),
-    ).rejects.toThrow(/unresolved blockers/i);
+    ).rejects.toThrow(/unfinished dependencies or subtasks/i);
     expect(client.rpc).toHaveBeenCalledWith('task_blocked_from_terminal', {
       _task_id: 'resolved-uuid',
     });
@@ -175,49 +175,70 @@ describe('createTask', () => {
     resolveMock.mockResolvedValue('resolved-parent-uuid');
   });
 
-  function makeClient(insertSpy: ReturnType<typeof vi.fn>, positionData: any[]) {
+  // `tasks` table is queried two ways inside createTask:
+  //   1. position lookup: .select().eq().eq().order().limit()
+  //   2. parent epic lookup: .select().eq().single()
+  // A single chainable object that resolves at .limit() (position) and
+  // .single() (parent row) satisfies both.
+  function makeClient(insertSpy: ReturnType<typeof vi.fn>, positionData: any[], parentRow: any) {
+    const insertResult = {
+      select: () => ({ single: vi.fn().mockResolvedValue({ data: { id: 'new-id', project_id: 'proj-1' }, error: null }) }),
+    };
     return {
       from: vi.fn((table: string) => {
         if (table === 'tasks') {
+          const chain: any = {
+            eq: () => chain,
+            order: () => chain,
+            limit: vi.fn().mockResolvedValue({ data: positionData, error: null }),
+            single: vi.fn().mockResolvedValue({ data: parentRow, error: null }),
+          };
           return {
-            // position lookup: .select().eq().eq().order().limit()
-            select: () => ({
-              eq: () => ({
-                eq: () => ({
-                  order: () => ({
-                    limit: vi.fn().mockResolvedValue({ data: positionData, error: null }),
-                  }),
-                }),
-              }),
-            }),
-            insert: insertSpy,
+            select: () => chain,
+            insert: (payload: any) => { insertSpy(payload); return insertResult; },
           };
         }
-        // activity_events insert
         return { insert: vi.fn().mockResolvedValue({ data: null, error: null }) };
       }),
     } as any;
   }
 
-  it('resolves and sets parent_task_id on the inserted task', async () => {
-    const insertSpy = vi.fn(() => ({
-      select: () => ({ single: vi.fn().mockResolvedValue({ data: { id: 'new-id', project_id: 'proj-1' }, error: null }) }),
-    }));
-    const client = makeClient(insertSpy, [{ position: 2 }]);
+  it('resolves parent_task_id and inherits the parent epic when none is given', async () => {
+    const insertSpy = vi.fn();
+    const client = makeClient(insertSpy, [{ position: 2 }], { project_id: 'proj-1', epic_id: 'epic-from-parent' });
 
     await createTask(client, 'proj-1', 'user-1', { title: 'Child', parent_task_id: 'C-88' });
 
-    expect(insertSpy.mock.calls[0][0]).toMatchObject({ parent_task_id: 'resolved-parent-uuid' });
+    expect(insertSpy.mock.calls[0][0]).toMatchObject({
+      parent_task_id: 'resolved-parent-uuid',
+      epic_id: 'epic-from-parent',
+    });
   });
 
-  it('defaults parent_task_id to null when omitted', async () => {
-    const insertSpy = vi.fn(() => ({
-      select: () => ({ single: vi.fn().mockResolvedValue({ data: { id: 'new-id', project_id: 'proj-1' }, error: null }) }),
-    }));
-    const client = makeClient(insertSpy, []);
+  it('respects an explicit epic_id over the parent epic', async () => {
+    const insertSpy = vi.fn();
+    const client = makeClient(insertSpy, [], { project_id: 'proj-1', epic_id: 'epic-from-parent' });
+
+    await createTask(client, 'proj-1', 'user-1', { title: 'Child', parent_task_id: 'C-88', epic_id: 'explicit-epic' });
+
+    expect(insertSpy.mock.calls[0][0]).toMatchObject({ epic_id: 'explicit-epic' });
+  });
+
+  it('does not inherit a cross-project parent epic', async () => {
+    const insertSpy = vi.fn();
+    const client = makeClient(insertSpy, [], { project_id: 'other-project', epic_id: 'foreign-epic' });
+
+    await createTask(client, 'proj-1', 'user-1', { title: 'Child', parent_task_id: 'C-88' });
+
+    expect(insertSpy.mock.calls[0][0]).toMatchObject({ epic_id: null });
+  });
+
+  it('defaults parent_task_id and epic_id to null when no parent is given', async () => {
+    const insertSpy = vi.fn();
+    const client = makeClient(insertSpy, [], null);
 
     await createTask(client, 'proj-1', 'user-1', { title: 'Standalone' });
 
-    expect(insertSpy.mock.calls[0][0]).toMatchObject({ parent_task_id: null });
+    expect(insertSpy.mock.calls[0][0]).toMatchObject({ parent_task_id: null, epic_id: null });
   });
 });
