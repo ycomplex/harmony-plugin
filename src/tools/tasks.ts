@@ -142,6 +142,7 @@ export const createTaskTool = {
       field_values: { type: 'object', description: 'Custom field values keyed by field definition ID' },
       cycle_id: { type: 'string', description: 'Assign to a cycle. Optional.' },
       milestone_id: { type: 'string', description: 'Assign to a milestone. Optional.' },
+      parent_task_id: { type: 'string', description: 'Parent task to nest this task under (UUID, task number, or visual ID e.g. B-43). Optional.' },
     },
     required: ['title'],
   },
@@ -162,11 +163,17 @@ export async function createTask(
     field_values?: Record<string, any>;
     cycle_id?: string;
     milestone_id?: string;
+    parent_task_id?: string;
   }
 ) {
   // Resolve assignee (accepts name, email, or UUID)
   const assigneeId = args.assignee_id
     ? await resolveAssignee(client, projectId, args.assignee_id)
+    : null;
+
+  // Resolve parent_task_id if provided (accepts UUID, task number, or visual ID)
+  const parentTaskId = args.parent_task_id
+    ? await resolveTaskId(client, projectId, args.parent_task_id)
     : null;
 
   // Get next position for the target status
@@ -194,6 +201,7 @@ export async function createTask(
       field_values: args.field_values ?? {},
       position: nextPosition,
       created_by: userId,
+      parent_task_id: parentTaskId,
       ...(args.cycle_id !== undefined ? { cycle_id: args.cycle_id } : {}),
       ...(args.milestone_id !== undefined ? { milestone_id: args.milestone_id } : {}),
     })

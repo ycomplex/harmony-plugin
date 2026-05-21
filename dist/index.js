@@ -32409,13 +32409,15 @@ var createTaskTool = {
       due_date: { type: "string", description: "Due date in YYYY-MM-DD format" },
       field_values: { type: "object", description: "Custom field values keyed by field definition ID" },
       cycle_id: { type: "string", description: "Assign to a cycle. Optional." },
-      milestone_id: { type: "string", description: "Assign to a milestone. Optional." }
+      milestone_id: { type: "string", description: "Assign to a milestone. Optional." },
+      parent_task_id: { type: "string", description: "Parent task to nest this task under (UUID, task number, or visual ID e.g. B-43). Optional." }
     },
     required: ["title"]
   }
 };
 async function createTask(client, projectId, userId, args) {
   const assigneeId = args.assignee_id ? await resolveAssignee(client, projectId, args.assignee_id) : null;
+  const parentTaskId = args.parent_task_id ? await resolveTaskId(client, projectId, args.parent_task_id) : null;
   const status = args.status ?? "Backlog";
   const { data: existing } = await client.from("tasks").select("position").eq("project_id", projectId).eq("status", status).order("position", { ascending: false }).limit(1);
   const nextPosition = (existing?.[0]?.position ?? -1) + 1;
@@ -32431,6 +32433,7 @@ async function createTask(client, projectId, userId, args) {
     field_values: args.field_values ?? {},
     position: nextPosition,
     created_by: userId,
+    parent_task_id: parentTaskId,
     ...args.cycle_id !== void 0 ? { cycle_id: args.cycle_id } : {},
     ...args.milestone_id !== void 0 ? { milestone_id: args.milestone_id } : {}
   }).select().single();

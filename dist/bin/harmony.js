@@ -24291,6 +24291,7 @@ async function getTask(client, projectId, args) {
 }
 async function createTask(client, projectId, userId, args) {
   const assigneeId = args.assignee_id ? await resolveAssignee(client, projectId, args.assignee_id) : null;
+  const parentTaskId = args.parent_task_id ? await resolveTaskId(client, projectId, args.parent_task_id) : null;
   const status = args.status ?? "Backlog";
   const { data: existing } = await client.from("tasks").select("position").eq("project_id", projectId).eq("status", status).order("position", { ascending: false }).limit(1);
   const nextPosition = (existing?.[0]?.position ?? -1) + 1;
@@ -24306,6 +24307,7 @@ async function createTask(client, projectId, userId, args) {
     field_values: args.field_values ?? {},
     position: nextPosition,
     created_by: userId,
+    parent_task_id: parentTaskId,
     ...args.cycle_id !== void 0 ? { cycle_id: args.cycle_id } : {},
     ...args.milestone_id !== void 0 ? { milestone_id: args.milestone_id } : {}
   }).select().single();
