@@ -27,6 +27,7 @@ harmony tasks create --title "New task" --priority high
 - **Auth:** Requires `HARMONY_API_TOKEN` environment variable
 - **Build:** `npm run build` (runs `esbuild` — bundles all runtime deps into `dist/` as ESM). The bundled output is self-contained: `node dist/index.js` works with no `node_modules/` present.
 - **Type-check:** `npm run typecheck` (runs `tsc --noEmit`)
+- **Lint:** `npm run lint` (runs `eslint . --max-warnings=0` — enforced 0 warnings; fix or suppress inline with a reason)
 - **Module resolution:** Node16 — source imports must use `.js` extensions (even for `.ts` source files). esbuild resolves them at bundle time.
 - **Dependencies:** `@modelcontextprotocol/sdk`, `@supabase/supabase-js`, `zod`
 
