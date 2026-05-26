@@ -23,8 +23,17 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Typecheck
+        run: npm run typecheck
+
       - name: Test
         run: npm run test
 
       - name: Build
         run: npm run build
+
+      # Rebuilds from scratch and fails if committed `dist/` drifts from source.
+      # Redundant build with the step above (~30ms on this bundle) is intentional —
+      # keeps the explicit "Build" status check that branch protection requires.
+      - name: Verify dist matches source
+        run: npm run verify:dist
