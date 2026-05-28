@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { resolveTaskId } from './resolve-task-id.js';
+import { resolveTaskId, resolveTaskIds } from './resolve-task-id.js';
 
 export const listDependenciesTool = {
   name: 'list_dependencies',
@@ -80,9 +80,7 @@ export async function manageDependencies(
   const result: { added: any[]; removed: string[] } = { added: [], removed: [] };
 
   if (args.add && args.add.length > 0) {
-    const dependencyIds = await Promise.all(
-      args.add.map(id => resolveTaskId(client, projectId, id)),
-    );
+    const dependencyIds = await resolveTaskIds(client, projectId, args.add);
     for (const did of dependencyIds) {
       if (did === resolvedTaskId) {
         throw new Error('A task cannot depend on itself.');
