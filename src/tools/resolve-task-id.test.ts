@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { resolveTaskId } from './resolve-task-id.js';
+import { resolveTaskId, resolveTaskIds } from './resolve-task-id.js';
 
 // Mock getProject
 vi.mock('./project.js', () => ({
@@ -114,5 +114,126 @@ describe('resolveTaskId', () => {
     await expect(resolveTaskId(client, PROJECT_ID, '-1')).rejects.toThrow(
       /Invalid task identifier/
     );
+  });
+});
+
+// Helper to build a mock Supabase client for the batched (.in) query.
+function mockBatchClient(rows: Array<{ id: string; task_number: number }> | null, error: any = null) {
+  const inFn = vi.fn().mockResolvedValue({ data: rows, error });
+  const eq = vi.fn().mockReturnValue({ in: inFn });
+  const select = vi.fn().mockReturnValue({ eq });
+  const from = vi.fn().mockReturnValue({ select });
+  return { from, select, eq, in: inFn } as any;
+}
+
+const TASK_UUID_2 = '66666666-7777-8888-9999-aaaaaaaaaaaa';
+
+describe('resolveTaskIds (batched)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('resolves a batch of bare numbers in a single query, preserving input order', async () => {
+    const client = mockBatchClient([
+      { id: 'id-7', task_number: 7 },
+      { id: 'id-43', task_number: 43 },
+    ]);
+    const result = await resolveTaskIds(client, PROJECT_ID, ['43', '7']);
+    expect(result).toEqual(['id-43', 'id-7']);
+    expect(client.from).toHaveBeenCalledTimes(1);
+    expect(client.from).toHaveBeenCalledWith('tasks');
+    expect(client.select).toHaveBeenCalledWith('id, task_number');
+    expect(client.eq).toHaveBeenCalledWith('project_id', PROJECT_ID);
+    expect(client.in).toHaveBeenCalledWith('task_number', [43, 7]);
+    expect(mockGetProject).not.toHaveBeenCalled();
+  });
+
+  it('passes UUID inputs through without any DB call', async () => {
+    const client = mockBatchClient(null);
+    const result = await resolveTaskIds(client, PROJECT_ID, [TASK_UUID, TASK_UUID_2]);
+    expect(result).toEqual([TASK_UUID, TASK_UUID_2]);
+    expect(client.from).not.toHaveBeenCalled();
+    expect(mockGetProject).not.toHaveBeenCalled();
+  });
+
+  it('resolves a mix of UUID, bare number, and visual ID in order', async () => {
+    mockGetProject.mockResolvedValue({ id: PROJECT_ID, key: 'B' } as any);
+    const client = mockBatchClient([
+      { id: 'id-7', task_number: 7 },
+      { id: 'id-43', task_number: 43 },
+    ]);
+    const result = await resolveTaskIds(client, PROJECT_ID, [TASK_UUID, '7', 'B-43']);
+    expect(result).toEqual([TASK_UUID, 'id-7', 'id-43']);
+    expect(client.in).toHaveBeenCalledWith('task_number', [7, 43]);
+    expect(mockGetProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('validates the project key for visual IDs, fetching the project once', async () => {
+    mockGetProject.mockResolvedValue({ id: PROJECT_ID, key: 'B' } as any);
+    const client = mockBatchClient([
+      { id: 'id-1', task_number: 1 },
+      { id: 'id-2', task_number: 2 },
+    ]);
+    const result = await resolveTaskIds(client, PROJECT_ID, ['B-1', 'B-2']);
+    expect(result).toEqual(['id-1', 'id-2']);
+    expect(mockGetProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('errors (without querying) when a visual ID key does not match the project', async () => {
+    mockGetProject.mockResolvedValue({ id: PROJECT_ID, key: 'B' } as any);
+    const client = mockBatchClient(null);
+    await expect(resolveTaskIds(client, PROJECT_ID, ['7', 'C-43'])).rejects.toThrow(
+      /this token is scoped to project B.*Did you mean B-43/
+    );
+    expect(client.from).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates repeated task numbers in the IN query but keeps per-input output', async () => {
+    mockGetProject.mockResolvedValue({ id: PROJECT_ID, key: 'B' } as any);
+    const client = mockBatchClient([{ id: 'id-7', task_number: 7 }]);
+    const result = await resolveTaskIds(client, PROJECT_ID, ['7', 'B-7', '7']);
+    expect(result).toEqual(['id-7', 'id-7', 'id-7']);
+    expect(client.in).toHaveBeenCalledWith('task_number', [7]);
+  });
+
+  it('issues exactly one tasks query regardless of how many numbers (no N+1)', async () => {
+    const client = mockBatchClient([
+      { id: 'id-1', task_number: 1 },
+      { id: 'id-2', task_number: 2 },
+      { id: 'id-3', task_number: 3 },
+      { id: 'id-4', task_number: 4 },
+      { id: 'id-5', task_number: 5 },
+    ]);
+    const result = await resolveTaskIds(client, PROJECT_ID, ['1', '2', '3', '4', '5']);
+    expect(result).toHaveLength(5);
+    expect(client.from).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns an empty array for empty input without any DB call', async () => {
+    const client = mockBatchClient(null);
+    const result = await resolveTaskIds(client, PROJECT_ID, []);
+    expect(result).toEqual([]);
+    expect(client.from).not.toHaveBeenCalled();
+  });
+
+  it('errors listing task numbers that do not resolve', async () => {
+    const client = mockBatchClient([{ id: 'id-7', task_number: 7 }]);
+    await expect(resolveTaskIds(client, PROJECT_ID, ['7', '999'])).rejects.toThrow(/999/);
+  });
+
+  it('errors (without querying) on an invalid identifier', async () => {
+    const client = mockBatchClient(null);
+    await expect(resolveTaskIds(client, PROJECT_ID, ['7', 'not-valid-at-all'])).rejects.toThrow(
+      /Invalid task identifier.*Use a UUID/
+    );
+    expect(client.from).not.toHaveBeenCalled();
+  });
+
+  it('errors (without querying) on a number exceeding the PostgreSQL integer max', async () => {
+    const client = mockBatchClient(null);
+    await expect(resolveTaskIds(client, PROJECT_ID, ['99999999999999'])).rejects.toThrow(
+      /Invalid task number/
+    );
+    expect(client.from).not.toHaveBeenCalled();
   });
 });

@@ -32280,6 +32280,56 @@ async function resolveTaskId(client, projectId, input) {
   }
   return data.id;
 }
+async function resolveTaskIds(client, projectId, inputs) {
+  const classified = [];
+  let projectKey;
+  for (const input of inputs) {
+    if (UUID_RE.test(input)) {
+      classified.push({ kind: "uuid", id: input });
+      continue;
+    }
+    let taskNumber;
+    const visualMatch = input.match(VISUAL_ID_RE);
+    if (BARE_NUMBER_RE.test(input)) {
+      taskNumber = parseInt(input, 10);
+    } else if (visualMatch) {
+      const [, inputKey, numStr] = visualMatch;
+      taskNumber = parseInt(numStr, 10);
+      if (projectKey === void 0) {
+        projectKey = (await getProject(client, projectId)).key;
+      }
+      if (inputKey.toUpperCase() !== projectKey.toUpperCase()) {
+        throw new Error(
+          `Task ${inputKey.toUpperCase()}-${taskNumber} not found \u2014 this token is scoped to project ${projectKey}. Did you mean ${projectKey}-${taskNumber}?`
+        );
+      }
+    } else {
+      throw new Error(
+        `Invalid task identifier '${input}'. Use a UUID, task number (e.g., 43), or visual ID (e.g., B-43).`
+      );
+    }
+    if (taskNumber <= 0 || taskNumber > PG_INT_MAX || !Number.isSafeInteger(taskNumber)) {
+      throw new Error(
+        `Invalid task number: ${input}. Must be between 1 and ${PG_INT_MAX}.`
+      );
+    }
+    classified.push({ kind: "number", taskNumber });
+  }
+  const neededNumbers = [
+    ...new Set(classified.flatMap((c) => c.kind === "number" ? [c.taskNumber] : []))
+  ];
+  const idByNumber = /* @__PURE__ */ new Map();
+  if (neededNumbers.length > 0) {
+    const { data, error: error2 } = await client.from("tasks").select("id, task_number").eq("project_id", projectId).in("task_number", neededNumbers);
+    if (error2) throw error2;
+    for (const row of data ?? []) idByNumber.set(row.task_number, row.id);
+    const missing = neededNumbers.filter((n) => !idByNumber.has(n));
+    if (missing.length > 0) {
+      throw new Error(`No task(s) with number(s) ${missing.join(", ")} in this project`);
+    }
+  }
+  return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
+}
 
 // src/tools/members.ts
 var listMembersTool = {
@@ -33717,9 +33767,7 @@ async function manageDependencies(client, projectId, userId, args) {
   const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
   const result = { added: [], removed: [] };
   if (args.add && args.add.length > 0) {
-    const dependencyIds = await Promise.all(
-      args.add.map((id) => resolveTaskId(client, projectId, id))
-    );
+    const dependencyIds = await resolveTaskIds(client, projectId, args.add);
     for (const did of dependencyIds) {
       if (did === resolvedTaskId) {
         throw new Error("A task cannot depend on itself.");
