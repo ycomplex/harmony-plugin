@@ -407,16 +407,20 @@ export async function bulkCreateTasks(
   userId: string,
   args: { tasks: Array<{ title: string; status?: string; priority?: string; epic_id?: string; description?: string; due_date?: string; field_values?: Record<string, any> }> }
 ) {
-  // Get current max positions per status
-  const { data: allTasks } = await client
-    .from('tasks')
-    .select('status, position')
-    .eq('project_id', projectId)
-    .order('position', { ascending: false });
-
+  // One scoped max-position lookup per distinct status (not a full project scan),
+  // seeding the in-memory counter the mapping below increments. No rows => -1, so
+  // the first task in an empty status lands at position 0.
+  const statuses = [...new Set(args.tasks.map(t => t.status ?? 'Backlog'))];
   const maxPositions: Record<string, number> = {};
-  for (const t of allTasks ?? []) {
-    if (!(t.status in maxPositions)) maxPositions[t.status] = t.position;
+  for (const status of statuses) {
+    const { data: existing } = await client
+      .from('tasks')
+      .select('position')
+      .eq('project_id', projectId)
+      .eq('status', status)
+      .order('position', { ascending: false })
+      .limit(1);
+    maxPositions[status] = existing?.[0]?.position ?? -1;
   }
 
   const rows = args.tasks.map(task => {
