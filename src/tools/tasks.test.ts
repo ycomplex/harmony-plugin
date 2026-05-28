@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { updateTask, createTask, getTask } from './tasks.js';
+import { updateTask, createTask, getTask, bulkCreateTasks } from './tasks.js';
 
 vi.mock('./resolve-task-id.js', () => ({
   resolveTaskId: vi.fn().mockResolvedValue('resolved-uuid'),
@@ -290,5 +290,133 @@ describe('getTask', () => {
     // And the result surfaces them under the new field name.
     expect(result.checklist_items).toHaveLength(1);
     expect((result as any).subtasks).toBeUndefined();
+  });
+});
+
+describe('bulkCreateTasks', () => {
+  // bulk create queries `tasks` two ways:
+  //   1. position lookup (the thing under test): one scoped query per distinct status —
+  //      .select('position').eq('project_id').eq('status').order().limit(1)
+  //   2. insert: .insert(rows).select()
+  // This mock resolves the position lookup at .limit() with the per-status max, and
+  // captures the inserted rows so positions can be asserted. Spies record the query
+  // shape so we can prove the full-table scan is gone.
+  function makeBulkClient(opts: {
+    maxByStatus: Record<string, number | undefined>;
+    insertSpy: (rows: any[]) => void;
+    selectSpy?: (sel: string) => void;
+    limitSpy?: () => void;
+    statusEqSpy?: (val: string) => void;
+  }) {
+    return {
+      from: vi.fn((table: string) => {
+        if (table === 'tasks') {
+          let capturedStatus: string | undefined;
+          const chain: any = {
+            eq: vi.fn((col: string, val: string) => {
+              if (col === 'status') {
+                capturedStatus = val;
+                opts.statusEqSpy?.(val);
+              }
+              return chain;
+            }),
+            order: vi.fn(() => chain),
+            limit: vi.fn(() => {
+              opts.limitSpy?.();
+              const max = opts.maxByStatus[capturedStatus as string];
+              return Promise.resolve({
+                data: max === undefined ? [] : [{ position: max }],
+                error: null,
+              });
+            }),
+          };
+          return {
+            select: vi.fn((sel: string) => {
+              opts.selectSpy?.(sel);
+              return chain;
+            }),
+            insert: vi.fn((rows: any[]) => {
+              opts.insertSpy(rows);
+              return {
+                select: vi.fn().mockResolvedValue({
+                  data: rows.map((r: any, i: number) => ({ ...r, id: `id-${i}` })),
+                  error: null,
+                }),
+              };
+            }),
+          };
+        }
+        // activity_events insert
+        return { insert: vi.fn().mockResolvedValue({ data: null, error: null }) };
+      }),
+    } as any;
+  }
+
+  it('continues positions sequentially from the existing max for a single status', async () => {
+    const insertSpy = vi.fn();
+    const client = makeBulkClient({ maxByStatus: { Backlog: 2 }, insertSpy });
+
+    await bulkCreateTasks(client, 'proj-1', 'user-1', {
+      tasks: [{ title: 'a' }, { title: 'b' }, { title: 'c' }],
+    });
+
+    const rows = insertSpy.mock.calls[0][0];
+    expect(rows.map((r: any) => r.position)).toEqual([3, 4, 5]);
+  });
+
+  it('seeds each status independently from its own max', async () => {
+    const insertSpy = vi.fn();
+    const client = makeBulkClient({
+      maxByStatus: { 'To Do': 5, Done: undefined },
+      insertSpy,
+    });
+
+    await bulkCreateTasks(client, 'proj-1', 'user-1', {
+      tasks: [
+        { title: 'a', status: 'To Do' },
+        { title: 'b', status: 'To Do' },
+        { title: 'c', status: 'Done' },
+      ],
+    });
+
+    const rows = insertSpy.mock.calls[0][0];
+    const byStatus = (s: string) =>
+      rows.filter((r: any) => r.status === s).map((r: any) => r.position);
+    expect(byStatus('To Do')).toEqual([6, 7]);
+    expect(byStatus('Done')).toEqual([0]);
+  });
+
+  it('starts a status with no existing rows at position 0', async () => {
+    const insertSpy = vi.fn();
+    const client = makeBulkClient({ maxByStatus: {}, insertSpy });
+
+    await bulkCreateTasks(client, 'proj-1', 'user-1', {
+      tasks: [{ title: 'a', status: 'Archived' }],
+    });
+
+    expect(insertSpy.mock.calls[0][0][0].position).toBe(0);
+  });
+
+  it('uses a scoped per-status query, not a full-table scan', async () => {
+    const insertSpy = vi.fn();
+    const selectSpy = vi.fn();
+    const limitSpy = vi.fn();
+    const statusEqSpy = vi.fn();
+    const client = makeBulkClient({
+      maxByStatus: { Backlog: 0 },
+      insertSpy,
+      selectSpy,
+      limitSpy,
+      statusEqSpy,
+    });
+
+    await bulkCreateTasks(client, 'proj-1', 'user-1', { tasks: [{ title: 'a' }] });
+
+    // Regression guard: the old code fetched every row via .select('status, position')
+    // with no status filter and no limit. The fix scopes by status and takes one row.
+    expect(statusEqSpy).toHaveBeenCalledWith('Backlog');
+    expect(limitSpy).toHaveBeenCalled();
+    expect(selectSpy).toHaveBeenCalledWith('position');
+    expect(selectSpy).not.toHaveBeenCalledWith('status, position');
   });
 });
