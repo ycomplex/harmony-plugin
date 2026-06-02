@@ -9,6 +9,7 @@ export interface KnowledgeEntrySummary {
   title: string;
   type: string;
   status: string;
+  domain: string[];
   tags: string[];
   project_id: string | null;
   updated_at: string;
@@ -30,6 +31,53 @@ export interface KnowledgeEntryFull {
   updated_at: string;
 }
 
+export interface KnowledgeDecisionFull {
+  id: string;
+  workspace_id: string;
+  project_id: string | null;
+  title: string;
+  content: string;
+  type: string;
+  status: string;              // Asserted | Accepted | Superseded | Archived
+  domain: string[];
+  confidence: number;
+  review_by: string | null;
+  drift_risk: boolean;
+  superseded_by: string | null;
+  affected_entity_ids: string[];
+  madr: Record<string, unknown> | null;
+  source_type: string;
+  source_id: string | null;
+  source_activity: string | null;
+  tags: string[];
+  source_task_id: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+const DECISION_COLS =
+  'id, workspace_id, project_id, title, content, type, status, domain, confidence, review_by, drift_risk, ' +
+  'superseded_by, affected_entity_ids, madr, source_type, source_id, source_activity, tags, source_task_id, ' +
+  'created_by, created_at, updated_at';
+
+export interface KnowledgeFactFull {
+  id: string; workspace_id: string; project_id: string | null;
+  subject_entity_id: string; predicate: string; object: unknown;
+  confidence: number; status: string; domain: string[];
+  source_type: string; source_id: string | null;
+  valid_from: string; valid_to: string | null; recorded_at: string; created_by: string;
+}
+const FACT_COLS =
+  'id, workspace_id, project_id, subject_entity_id, predicate, object, confidence, status, domain, ' +
+  'source_type, source_id, valid_from, valid_to, recorded_at, created_by';
+
+export interface KnowledgeEntityFull {
+  id: string; workspace_id: string; project_id: string | null;
+  kind: string; name: string; description: string | null; metadata: unknown; created_at: string;
+}
+const ENTITY_COLS = 'id, workspace_id, project_id, kind, name, description, metadata, created_at';
+
 // ---------------------------------------------------------------------------
 // Tool definitions
 // ---------------------------------------------------------------------------
@@ -37,7 +85,7 @@ export interface KnowledgeEntryFull {
 export const queryKnowledgeTool = {
   name: 'query_knowledge',
   description:
-    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to accepted entries only.',
+    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to "Accepted" entries only.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -47,7 +95,16 @@ export const queryKnowledgeTool = {
       },
       status: {
         type: 'string',
-        description: 'Filter by status. Default: "accepted".',
+        description: 'Filter by status. Default: "Accepted".',
+      },
+      domain: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Filter to entries tagged with ANY of these domains: engineering, operations, data, product, customer, process. Query the relevant domain before deciding.',
+      },
+      as_of: {
+        type: 'string',
+        description: 'ISO timestamp — return entries valid at or before this instant (temporal query).',
       },
       tags: {
         type: 'array',
@@ -175,6 +232,8 @@ async function getWorkspaceId(client: SupabaseClient, projectId: string): Promis
 export interface QueryKnowledgeArgs {
   type?: string;
   status?: string;
+  domain?: string[];          // NEW: filter to entries tagged with ANY of these domains
+  as_of?: string;             // NEW: ISO date — entries valid at/before this instant
   tags?: string[];
   search?: string;
   include_superseded?: boolean;
@@ -190,32 +249,22 @@ export async function queryKnowledge(
   const workspaceId = await getWorkspaceId(client, projectId);
 
   let query = client
-    .from('workspace_knowledge')
-    .select('id, title, type, status, tags, project_id, updated_at')
+    .from('knowledge_decisions')
+    .select('id, title, type, status, domain, tags, project_id, updated_at')
     .eq('workspace_id', workspaceId)
     .eq('project_id', projectId);
 
-  // Status filtering logic:
-  // - explicit status → use it
-  // - include_superseded=true with no explicit status → no status filter
-  // - otherwise default to 'accepted'
   if (args.status) {
     query = query.eq('status', args.status);
   } else if (!args.include_superseded) {
-    query = query.eq('status', 'accepted');
+    query = query.eq('status', 'Accepted');          // v1 lifecycle vocab
   }
 
-  if (args.type) {
-    query = query.eq('type', args.type);
-  }
-
-  if (args.tags && args.tags.length > 0) {
-    query = query.contains('tags', args.tags);
-  }
-
-  if (args.search) {
-    query = query.or(`title.ilike.%${args.search}%,content.ilike.%${args.search}%`);
-  }
+  if (args.type) query = query.eq('type', args.type);
+  if (args.domain && args.domain.length > 0) query = query.overlaps('domain', args.domain);
+  if (args.as_of) query = query.lte('valid_from', args.as_of);
+  if (args.tags && args.tags.length > 0) query = query.contains('tags', args.tags);
+  if (args.search) query = query.or(`title.ilike.%${args.search}%,content.ilike.%${args.search}%`);
 
   query = query.order('type', { ascending: true });
 

@@ -22,7 +22,8 @@ const sampleSummaries = [
     id: 'ke-1',
     title: 'Use TypeScript strict mode',
     type: 'convention',
-    status: 'accepted',
+    status: 'Accepted',
+    domain: ['engineering'],
     tags: ['typescript'],
     project_id: PROJECT_ID,
     updated_at: '2026-03-10T00:00:00Z',
@@ -31,7 +32,8 @@ const sampleSummaries = [
     id: 'ke-2',
     title: 'PostgreSQL for all persistence',
     type: 'architecture',
-    status: 'accepted',
+    status: 'Accepted',
+    domain: ['data'],
     tags: ['database'],
     project_id: PROJECT_ID,
     updated_at: '2026-03-12T00:00:00Z',
@@ -77,6 +79,8 @@ function buildWorkspaceAndQueryClient(secondResponse: { data: any; error?: any }
   secondChain.update = vi.fn().mockReturnValue(secondChain);
   secondChain.eq = vi.fn().mockReturnValue(secondChain);
   secondChain.contains = vi.fn().mockReturnValue(secondChain);
+  secondChain.overlaps = vi.fn().mockReturnValue(secondChain);
+  secondChain.lte = vi.fn().mockReturnValue(secondChain);
   secondChain.or = vi.fn().mockReturnValue(secondChain);
   secondChain.order = vi.fn().mockReturnValue(secondChain);
   secondChain.range = vi
@@ -114,10 +118,10 @@ describe('queryKnowledge', () => {
     expect(wsChain.eq).toHaveBeenCalledWith('id', PROJECT_ID);
 
     // knowledge query — must filter on both workspace_id AND project_id
-    expect(client.from).toHaveBeenNthCalledWith(2, 'workspace_knowledge');
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_decisions');
     expect(secondChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
     expect(secondChain.eq).toHaveBeenCalledWith('project_id', PROJECT_ID);
-    expect(secondChain.eq).toHaveBeenCalledWith('status', 'accepted');
+    expect(secondChain.eq).toHaveBeenCalledWith('status', 'Accepted');
     expect(secondChain.order).toHaveBeenCalledWith('type', { ascending: true });
     expect(result).toEqual(sampleSummaries);
   });
@@ -186,6 +190,25 @@ describe('queryKnowledge', () => {
     await expect(queryKnowledge(client, PROJECT_ID, {})).rejects.toThrow(
       'Could not resolve workspace: not found',
     );
+  });
+
+  it('queries knowledge_decisions and filters by domain via .overlaps()', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [] });
+    await queryKnowledge(client, PROJECT_ID, { domain: ['data'] });
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_decisions');
+    expect(secondChain.overlaps).toHaveBeenCalledWith('domain', ['data']);
+  });
+
+  it('defaults status to Accepted (v1 vocab)', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [] });
+    await queryKnowledge(client, PROJECT_ID, {});
+    expect(secondChain.eq).toHaveBeenCalledWith('status', 'Accepted');
+  });
+
+  it('applies as_of temporal filter (valid_from <= as_of)', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [] });
+    await queryKnowledge(client, PROJECT_ID, { as_of: '2026-01-01T00:00:00Z' });
+    expect(secondChain.lte).toHaveBeenCalledWith('valid_from', '2026-01-01T00:00:00Z');
   });
 });
 
