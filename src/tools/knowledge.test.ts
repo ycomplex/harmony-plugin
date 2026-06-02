@@ -7,6 +7,7 @@ import {
   supersedeKnowledgeEntry,
   resolveOrCreateEntity,
   queryEntities,
+  recordDecision,
 } from './knowledge.js';
 
 const PROJECT_ID = 'proj-abc-123';
@@ -657,5 +658,53 @@ describe('queryEntities', () => {
     expect(secondChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
     expect(secondChain.eq).toHaveBeenCalledWith('kind', 'component');
     expect(secondChain.ilike).toHaveBeenCalledWith('name', '%auth%');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordDecision
+// ---------------------------------------------------------------------------
+
+describe('recordDecision', () => {
+  const decisionRow = {
+    id: 'dec-1', workspace_id: WORKSPACE_ID, project_id: PROJECT_ID,
+    title: 'Adopt RRF for hybrid search', content: '', type: 'technical-design',
+    status: 'Asserted', domain: ['engineering'], confidence: 1.0, review_by: null, drift_risk: false,
+    superseded_by: null, affected_entity_ids: [], madr: { context: 'why' },
+    source_type: 'manual', source_id: null, source_activity: 'design-decide',
+    tags: [], source_task_id: null, created_by: USER_ID,
+    created_at: '2026-05-29T00:00:00Z', updated_at: '2026-05-29T00:00:00Z',
+  };
+
+  it('writes a decision defaulting status=Asserted and stamps token project + author', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    const result = await recordDecision(client, PROJECT_ID, USER_ID, {
+      type: 'technical-design',
+      title: 'Adopt RRF for hybrid search',
+      domain: ['engineering'],
+      madr: { context: 'why' },
+      source_activity: 'design-decide',
+    });
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_decisions');
+    expect(secondChain.insert).toHaveBeenCalledWith(expect.objectContaining({
+      workspace_id: WORKSPACE_ID, project_id: PROJECT_ID, type: 'technical-design',
+      title: 'Adopt RRF for hybrid search', status: 'Asserted', domain: ['engineering'],
+      source_activity: 'design-decide', created_by: USER_ID,
+    }));
+    expect(result).toEqual(decisionRow);
+  });
+
+  it('throws when type is missing', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: null });
+    await expect(
+      recordDecision(client, PROJECT_ID, USER_ID, { title: 'x' } as any),
+    ).rejects.toThrow('type is required');
+  });
+
+  it('maps a duplicate-title violation to a friendly error', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: null, error: { code: '23505', message: 'dup' } });
+    await expect(
+      recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'Existing' }),
+    ).rejects.toThrow('A decision titled "Existing" already exists in this project');
   });
 });

@@ -469,6 +469,97 @@ export async function resolveOrCreateEntity(
 }
 
 // ---------------------------------------------------------------------------
+// Handler: recordDecision
+// ---------------------------------------------------------------------------
+
+export interface RecordDecisionArgs {
+  type: string;
+  title: string;
+  content?: string;
+  madr?: Record<string, unknown>;
+  domain?: string[];
+  affected_entity_names?: string[];
+  status?: string;
+  source_type?: string;
+  source_id?: string;
+  source_activity?: string;
+  tags?: string[];
+  source_task_id?: string;
+}
+
+export async function recordDecision(
+  client: SupabaseClient,
+  projectId: string,
+  userId: string,
+  args: RecordDecisionArgs,
+): Promise<KnowledgeDecisionFull> {
+  if (!args.title?.trim()) throw new Error('title is required');
+  if (!args.type) throw new Error('type is required');
+
+  const workspaceId = await getWorkspaceId(client, projectId);
+
+  const affectedIds: string[] = [];
+  for (const name of args.affected_entity_names ?? []) {
+    affectedIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name));
+  }
+
+  const record: Record<string, unknown> = {
+    workspace_id: workspaceId,
+    project_id: projectId,
+    title: args.title.trim(),
+    content: args.content ?? '',
+    type: args.type,
+    status: args.status ?? 'Asserted',
+    domain: args.domain ?? [],
+    madr: args.madr ?? null,
+    affected_entity_ids: affectedIds,
+    source_type: args.source_type ?? 'manual',
+    source_activity: args.source_activity ?? null,
+    created_by: userId,
+  };
+  if (args.source_id !== undefined) record.source_id = args.source_id;
+  if (args.tags !== undefined) record.tags = args.tags;
+  if (args.source_task_id !== undefined) record.source_task_id = args.source_task_id;
+
+  const { data, error } = await client
+    .from('knowledge_decisions')
+    .insert(record)
+    .select(DECISION_COLS)
+    .single();
+  if (error) {
+    if (error.code === '23505') {
+      throw new Error(`A decision titled "${args.title.trim()}" already exists in this project`);
+    }
+    throw error;
+  }
+  return data as KnowledgeDecisionFull;
+}
+
+export const recordDecisionTool = {
+  name: 'record_decision',
+  description:
+    'Record a knowledge decision (MADR-shaped) produced by a gate/skill. Created as "Asserted" by default; a human promotes it to "Accepted". Use type product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      type: { type: 'string', description: 'product-design | technical-design | ux-ui-design | architecture | business | convention | specification | deferral' },
+      title: { type: 'string', description: 'Decision title (unique within the project)' },
+      content: { type: 'string', description: 'Optional human-readable markdown body' },
+      madr: { type: 'object', description: 'Structured MADR body: { context, decision_drivers, considered_options, decision_outcome, consequences }' },
+      domain: { type: 'array', items: { type: 'string' }, description: 'Domains: engineering, operations, data, product, customer, process' },
+      affected_entity_names: { type: 'array', items: { type: 'string' }, description: 'Entity names this decision touches (resolved/created in knowledge_entities)' },
+      status: { type: 'string', description: 'Override status (default "Asserted")' },
+      source_type: { type: 'string', description: "ticket | adr | manual | inferred | research (default 'manual')" },
+      source_id: { type: 'string', description: 'Pointer back to the producing ticket/source' },
+      source_activity: { type: 'string', description: 'The gate/skill that authored it (e.g. design-decide, clarify)' },
+      tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags' },
+      source_task_id: { type: 'string', description: 'Task that triggered this decision' },
+    },
+    required: ['type', 'title'],
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Handler: queryEntities
 // ---------------------------------------------------------------------------
 
