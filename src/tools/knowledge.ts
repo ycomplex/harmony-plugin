@@ -439,6 +439,68 @@ export async function updateKnowledgeEntry(
 }
 
 // ---------------------------------------------------------------------------
+// Helper: resolveOrCreateEntity
+// ---------------------------------------------------------------------------
+
+export async function resolveOrCreateEntity(
+  client: SupabaseClient,
+  workspaceId: string,
+  projectId: string,
+  name: string,
+  kind = 'concept',
+): Promise<string> {
+  const { data: existing, error: lookupErr } = await client
+    .from('knowledge_entities')
+    .select('id')
+    .eq('workspace_id', workspaceId)
+    .eq('kind', kind)
+    .eq('name', name)
+    .maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+  if (existing) return (existing as { id: string }).id;
+
+  const { data, error } = await client
+    .from('knowledge_entities')
+    .insert({ workspace_id: workspaceId, project_id: projectId, kind, name })
+    .select('id')
+    .single();
+  if (error) throw new Error(error.message);
+  return (data as { id: string }).id;
+}
+
+// ---------------------------------------------------------------------------
+// Handler: queryEntities
+// ---------------------------------------------------------------------------
+
+export interface QueryEntitiesArgs { kind?: string; name?: string; }
+
+export async function queryEntities(
+  client: SupabaseClient,
+  projectId: string,
+  args: QueryEntitiesArgs,
+): Promise<KnowledgeEntityFull[]> {
+  const workspaceId = await getWorkspaceId(client, projectId);
+  let query = client.from('knowledge_entities').select(ENTITY_COLS).eq('workspace_id', workspaceId);
+  if (args.kind) query = query.eq('kind', args.kind);
+  if (args.name) query = query.ilike('name', `%${args.name}%`);
+  const { data, error } = await query.order('name', { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as KnowledgeEntityFull[];
+}
+
+export const queryEntitiesTool = {
+  name: 'query_entities',
+  description: 'Resolve or discover knowledge entities (components, features, integrations, concepts) in this workspace by kind and/or name.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      kind: { type: 'string', description: "Entity kind: 'component', 'feature', 'integration', 'concept', 'persona'" },
+      name: { type: 'string', description: 'Case-insensitive substring match on entity name' },
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Handler: supersedeKnowledgeEntry
 // ---------------------------------------------------------------------------
 

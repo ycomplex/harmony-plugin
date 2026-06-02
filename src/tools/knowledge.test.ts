@@ -5,6 +5,8 @@ import {
   createKnowledgeEntry,
   updateKnowledgeEntry,
   supersedeKnowledgeEntry,
+  resolveOrCreateEntity,
+  queryEntities,
 } from './knowledge.js';
 
 const PROJECT_ID = 'proj-abc-123';
@@ -89,6 +91,8 @@ function buildWorkspaceAndQueryClient(secondResponse: { data: any; error?: any }
   secondChain.single = vi
     .fn()
     .mockResolvedValue({ data: secondResponse.data, error: secondResponse.error ?? null });
+  secondChain.maybeSingle = vi.fn().mockResolvedValue({ data: secondResponse.data, error: secondResponse.error ?? null });
+  secondChain.ilike = vi.fn().mockReturnValue(secondChain);
 
   const client: any = {
     from: vi.fn().mockImplementation(() => {
@@ -599,5 +603,59 @@ describe('supersedeKnowledgeEntry', () => {
         new_content: 'content',
       }),
     ).rejects.toThrow('Either entry_id or title must be provided');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveOrCreateEntity
+// ---------------------------------------------------------------------------
+
+describe('resolveOrCreateEntity', () => {
+  it('returns an existing entity id without inserting', async () => {
+    const chain: any = {};
+    chain.select = vi.fn().mockReturnValue(chain);
+    chain.eq = vi.fn().mockReturnValue(chain);
+    chain.maybeSingle = vi.fn().mockResolvedValue({ data: { id: 'ent-1' }, error: null });
+    chain.insert = vi.fn().mockReturnValue(chain);
+    const client: any = { from: vi.fn().mockReturnValue(chain) };
+
+    const id = await resolveOrCreateEntity(client, WORKSPACE_ID, PROJECT_ID, 'auth', 'component');
+    expect(id).toBe('ent-1');
+    expect(chain.insert).not.toHaveBeenCalled();
+  });
+
+  it('inserts and returns a new entity id when none exists', async () => {
+    let call = 0;
+    const lookup: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
+    lookup.select.mockReturnValue(lookup); lookup.eq.mockReturnValue(lookup);
+    lookup.maybeSingle.mockResolvedValue({ data: null, error: null });
+    const ins: any = { insert: vi.fn(), select: vi.fn(), single: vi.fn() };
+    ins.insert.mockReturnValue(ins); ins.select.mockReturnValue(ins);
+    ins.single.mockResolvedValue({ data: { id: 'ent-new' }, error: null });
+    const client: any = { from: vi.fn().mockImplementation(() => (call++ === 0 ? lookup : ins)) };
+
+    const id = await resolveOrCreateEntity(client, WORKSPACE_ID, PROJECT_ID, 'OIDC', 'concept');
+    expect(id).toBe('ent-new');
+    expect(ins.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ workspace_id: WORKSPACE_ID, kind: 'concept', name: 'OIDC' }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// queryEntities
+// ---------------------------------------------------------------------------
+
+describe('queryEntities', () => {
+  it('filters by kind and name and scopes to workspace', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [{ id: 'ent-1', name: 'auth' }] });
+    secondChain.ilike = vi.fn().mockReturnValue(secondChain);
+    // queryEntities terminates on .order() (no .range), so .order must resolve here
+    secondChain.order = vi.fn().mockResolvedValue({ data: [{ id: 'ent-1', name: 'auth' }], error: null });
+    await queryEntities(client, PROJECT_ID, { kind: 'component', name: 'auth' });
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_entities');
+    expect(secondChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
+    expect(secondChain.eq).toHaveBeenCalledWith('kind', 'component');
+    expect(secondChain.ilike).toHaveBeenCalledWith('name', '%auth%');
   });
 });
