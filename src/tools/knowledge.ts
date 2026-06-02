@@ -113,7 +113,7 @@ export const queryKnowledgeTool = {
       },
       search: {
         type: 'string',
-        description: 'Search term matched against title and content (case-insensitive)',
+        description: 'Free-text search query — hybrid semantic + trigram retrieval, ranked by relevance (RRF)',
       },
       include_superseded: {
         type: 'boolean',
@@ -259,6 +259,25 @@ export async function queryKnowledge(
 ): Promise<KnowledgeEntrySummary[]> {
   const workspaceId = await getWorkspaceId(client, projectId);
 
+  // Semantic path: a free-text query => embed it + fuse vector ⊕ trigram via RRF (Phase C).
+  if (args.search) {
+    const queryEmbedding = await embedText(client, args.search);   // may be null -> fn degrades to trigram-only
+    const { data, error } = await (client as any).rpc('knowledge_search_rrf', {
+      _workspace_id: workspaceId,
+      _project_id: projectId,
+      _query_embedding: queryEmbedding,
+      _query_text: args.search,
+      _domain: args.domain && args.domain.length > 0 ? args.domain : null,
+      _match_limit: args.limit ?? 50,
+    });
+    if (error) throw new Error(error.message);
+    return (data ?? []).map((d: any) => ({
+      id: d.id, title: d.title, type: d.type, status: d.status,
+      domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at,
+    })) as KnowledgeEntrySummary[];
+  }
+
+  // Filter-only path: structured filters over knowledge_decisions (no relevance ranking needed).
   let query = client
     .from('knowledge_decisions')
     .select('id, title, type, status, domain, tags, project_id, updated_at')
@@ -268,17 +287,14 @@ export async function queryKnowledge(
   if (args.status) {
     query = query.eq('status', args.status);
   } else if (!args.include_superseded) {
-    query = query.eq('status', 'Accepted');          // v1 lifecycle vocab
+    query = query.eq('status', 'Accepted');
   }
-
   if (args.type) query = query.eq('type', args.type);
   if (args.domain && args.domain.length > 0) query = query.overlaps('domain', args.domain);
   if (args.as_of) query = query.lte('valid_from', args.as_of);
   if (args.tags && args.tags.length > 0) query = query.contains('tags', args.tags);
-  if (args.search) query = query.or(`title.ilike.%${args.search}%,content.ilike.%${args.search}%`);
 
   query = query.order('type', { ascending: true });
-
   const limit = args.limit ?? 50;
   const offset = args.offset ?? 0;
   const { data, error } = await query.range(offset, offset + limit - 1);

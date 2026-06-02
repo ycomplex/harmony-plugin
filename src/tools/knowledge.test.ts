@@ -172,12 +172,26 @@ describe('queryKnowledge', () => {
     }
   });
 
-  it('applies search filter via .or() ilike', async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [] });
-    await queryKnowledge(client, PROJECT_ID, { search: 'postgres' });
-    expect(secondChain.or).toHaveBeenCalledWith(
-      `title.ilike.%postgres%,content.ilike.%postgres%`,
-    );
+  it('uses the RRF rpc path when a search query is given (semantic)', async () => {
+    const wsChain: any = {};
+    wsChain.select = vi.fn().mockReturnValue(wsChain);
+    wsChain.eq = vi.fn().mockReturnValue(wsChain);
+    wsChain.single = vi.fn().mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
+    const client: any = {
+      from: vi.fn().mockReturnValue(wsChain),
+      functions: { invoke: vi.fn().mockResolvedValue({ data: { embedding: [0.1, 0.2] }, error: null }) },
+      rpc: vi.fn().mockResolvedValue({
+        data: [{ id: 'd1', title: 'auth', type: 'architecture', status: 'Accepted', domain: ['engineering'], tags: [], project_id: PROJECT_ID, updated_at: '2026-05-29T00:00:00Z' }],
+        error: null,
+      }),
+    };
+    const result = await queryKnowledge(client, PROJECT_ID, { search: 'session security', domain: ['engineering'] });
+    expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: 'session security' } });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({
+      _workspace_id: WORKSPACE_ID, _project_id: PROJECT_ID, _query_embedding: '[0.1,0.2]',
+      _query_text: 'session security', _domain: ['engineering'],
+    }));
+    expect(result[0].id).toBe('d1');
   });
 
   it('passes limit and offset to .range()', async () => {
