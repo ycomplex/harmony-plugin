@@ -532,7 +532,7 @@ export async function recordDecision(
     }
     throw error;
   }
-  return data as KnowledgeDecisionFull;
+  return data as unknown as KnowledgeDecisionFull;
 }
 
 // ---------------------------------------------------------------------------
@@ -580,7 +580,7 @@ export async function supersedeDecision(
     .select(DECISION_COLS)
     .single();
   if (error) throw error;
-  return { superseded: data as KnowledgeDecisionFull, replacement };
+  return { superseded: data as unknown as KnowledgeDecisionFull, replacement };
 }
 
 export const supersedeDecisionTool = {
@@ -705,7 +705,7 @@ export async function assertFact(
 
   const { data, error } = await client.from('knowledge_facts').insert(record).select(FACT_COLS).single();
   if (error) throw error;
-  return data as KnowledgeFactFull;
+  return data as unknown as KnowledgeFactFull;
 }
 
 export const assertFactTool = {
@@ -749,7 +749,7 @@ export async function invalidateFact(
     .select(FACT_COLS)
     .single();
   if (error) throw error;
-  return data as KnowledgeFactFull;
+  return data as unknown as KnowledgeFactFull;
 }
 
 export const invalidateFactTool = {
@@ -802,7 +802,7 @@ export async function queryFacts(
 
   const { data, error } = await query.order('recorded_at', { ascending: false });
   if (error) throw new Error(error.message);
-  return (data ?? []) as KnowledgeFactFull[];
+  return (data ?? []) as unknown as KnowledgeFactFull[];
 }
 
 export const queryFactsTool = {
