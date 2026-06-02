@@ -714,6 +714,21 @@ describe('recordDecision', () => {
       recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'Existing' }),
     ).rejects.toThrow('A decision titled "Existing" already exists in this project');
   });
+
+  it('embeds the decision on write and includes the pgvector literal', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    (client as any).functions = { invoke: vi.fn().mockResolvedValue({ data: { embedding: [0.1, 0.2], stub: true }, error: null }) };
+    await recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'Adopt RRF' });
+    expect((client as any).functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: expect.stringContaining('Adopt RRF') } });
+    expect(secondChain.insert).toHaveBeenCalledWith(expect.objectContaining({ embedding: '[0.1,0.2]' }));
+  });
+
+  it('still writes the decision when embedding fails (embedding omitted, best-effort)', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    (client as any).functions = { invoke: vi.fn().mockResolvedValue({ data: null, error: { message: 'down' } }) };
+    await recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'Adopt RRF' });
+    expect(secondChain.insert.mock.calls[0][0]).not.toHaveProperty('embedding');
+  });
 });
 
 // ---------------------------------------------------------------------------

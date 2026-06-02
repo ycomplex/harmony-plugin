@@ -212,7 +212,7 @@ export const supersedeKnowledgeEntryTool = {
 };
 
 // ---------------------------------------------------------------------------
-// Internal helper
+// Internal helpers
 // ---------------------------------------------------------------------------
 
 async function getWorkspaceId(client: SupabaseClient, projectId: string): Promise<string> {
@@ -223,6 +223,17 @@ async function getWorkspaceId(client: SupabaseClient, projectId: string): Promis
     .single();
   if (error) throw new Error(`Could not resolve workspace: ${error.message}`);
   return data.workspace_id;
+}
+
+// Best-effort: returns a pgvector literal '[…]' or null. A failed embed never blocks a write.
+async function embedText(client: SupabaseClient, text: string): Promise<string | null> {
+  try {
+    const { data, error } = await (client as any).functions.invoke('embed-knowledge', { body: { text } });
+    if (error || !data?.embedding) return null;
+    return `[${(data.embedding as number[]).join(',')}]`;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +514,8 @@ export async function recordDecision(
     affectedIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name));
   }
 
+  const embedding = await embedText(client, `${args.title}\n${args.content ?? ''}`);
+
   const record: Record<string, unknown> = {
     workspace_id: workspaceId,
     project_id: projectId,
@@ -517,6 +530,7 @@ export async function recordDecision(
     source_activity: args.source_activity ?? null,
     created_by: userId,
   };
+  if (embedding) record.embedding = embedding;
   if (args.source_id !== undefined) record.source_id = args.source_id;
   if (args.tags !== undefined) record.tags = args.tags;
   if (args.source_task_id !== undefined) record.source_task_id = args.source_task_id;
@@ -704,6 +718,8 @@ export async function assertFact(
     client, workspaceId, projectId, args.subject_entity, args.subject_entity_kind ?? 'concept',
   );
 
+  const embedding = await embedText(client, `${args.subject_entity} ${args.predicate} ${JSON.stringify(args.object)}`);
+
   const record: Record<string, unknown> = {
     workspace_id: workspaceId,
     project_id: projectId,
@@ -716,6 +732,7 @@ export async function assertFact(
     source_type: args.source_type,
     created_by: userId,
   };
+  if (embedding) record.embedding = embedding;
   if (args.source_id !== undefined) record.source_id = args.source_id;
 
   const { data, error } = await client.from('knowledge_facts').insert(record).select(FACT_COLS).single();
