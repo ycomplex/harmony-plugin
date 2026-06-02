@@ -25642,21 +25642,17 @@ async function getWorkspaceId(client, projectId) {
 }
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
-  let query = client.from("workspace_knowledge").select("id, title, type, status, tags, project_id, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId);
+  let query = client.from("knowledge_decisions").select("id, title, type, status, domain, tags, project_id, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.status) {
     query = query.eq("status", args.status);
   } else if (!args.include_superseded) {
-    query = query.eq("status", "accepted");
+    query = query.eq("status", "Accepted");
   }
-  if (args.type) {
-    query = query.eq("type", args.type);
-  }
-  if (args.tags && args.tags.length > 0) {
-    query = query.contains("tags", args.tags);
-  }
-  if (args.search) {
-    query = query.or(`title.ilike.%${args.search}%,content.ilike.%${args.search}%`);
-  }
+  if (args.type) query = query.eq("type", args.type);
+  if (args.domain && args.domain.length > 0) query = query.overlaps("domain", args.domain);
+  if (args.as_of) query = query.lte("valid_from", args.as_of);
+  if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
+  if (args.search) query = query.or(`title.ilike.%${args.search}%,content.ilike.%${args.search}%`);
   query = query.order("type", { ascending: true });
   const limit = args.limit ?? 50;
   const offset = args.offset ?? 0;

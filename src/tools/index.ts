@@ -22,6 +22,12 @@ import {
   createKnowledgeEntryTool, createKnowledgeEntry,
   updateKnowledgeEntryTool, updateKnowledgeEntry,
   supersedeKnowledgeEntryTool, supersedeKnowledgeEntry,
+  recordDecisionTool, recordDecision,
+  supersedeDecisionTool, supersedeDecision,
+  queryFactsTool, queryFacts,
+  assertFactTool, assertFact,
+  invalidateFactTool, invalidateFact,
+  queryEntitiesTool, queryEntities,
 } from './knowledge.js';
 import {
   listMilestonesTool, listMilestones,
@@ -44,6 +50,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listActivityTool,
     listMembersTool,
     queryKnowledgeTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
+    recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
   ];
 
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
@@ -142,6 +149,24 @@ export async function handleToolCall(
         break;
       case 'supersede_knowledge_entry':
         result = await supersedeKnowledgeEntry(client, projectId, userId, args as any);
+        break;
+      case 'record_decision':
+        result = await recordDecision(client, projectId, userId, args as any);
+        break;
+      case 'supersede_decision':
+        result = await supersedeDecision(client, projectId, userId, args as any);
+        break;
+      case 'query_facts':
+        result = await queryFacts(client, projectId, args as any);
+        break;
+      case 'assert_fact':
+        result = await assertFact(client, projectId, userId, args as any);
+        break;
+      case 'invalidate_fact':
+        result = await invalidateFact(client, projectId, args as any);
+        break;
+      case 'query_entities':
+        result = await queryEntities(client, projectId, args as any);
         break;
       case 'list_milestones':
         result = await listMilestones(client, projectId, args as any);

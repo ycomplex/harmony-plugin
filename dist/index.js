@@ -33062,9 +33062,12 @@ async function listActivity(client, projectId, args) {
 }
 
 // src/tools/knowledge.ts
+var DECISION_COLS = "id, workspace_id, project_id, title, content, type, status, domain, confidence, review_by, drift_risk, superseded_by, affected_entity_ids, madr, source_type, source_id, source_activity, tags, source_task_id, created_by, created_at, updated_at";
+var FACT_COLS = "id, workspace_id, project_id, subject_entity_id, predicate, object, confidence, status, domain, source_type, source_id, valid_from, valid_to, recorded_at, created_by";
+var ENTITY_COLS = "id, workspace_id, project_id, kind, name, description, metadata, created_at";
 var queryKnowledgeTool = {
   name: "query_knowledge",
-  description: "Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to accepted entries only.",
+  description: 'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to "Accepted" entries only.',
   inputSchema: {
     type: "object",
     properties: {
@@ -33074,7 +33077,16 @@ var queryKnowledgeTool = {
       },
       status: {
         type: "string",
-        description: 'Filter by status. Default: "accepted".'
+        description: 'Filter by status. Default: "Accepted".'
+      },
+      domain: {
+        type: "array",
+        items: { type: "string" },
+        description: "Filter to entries tagged with ANY of these domains: engineering, operations, data, product, customer, process. Query the relevant domain before deciding."
+      },
+      as_of: {
+        type: "string",
+        description: "ISO timestamp \u2014 return entries valid at or before this instant (temporal query)."
       },
       tags: {
         type: "array",
@@ -33181,21 +33193,17 @@ async function getWorkspaceId(client, projectId) {
 }
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
-  let query = client.from("workspace_knowledge").select("id, title, type, status, tags, project_id, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId);
+  let query = client.from("knowledge_decisions").select("id, title, type, status, domain, tags, project_id, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.status) {
     query = query.eq("status", args.status);
   } else if (!args.include_superseded) {
-    query = query.eq("status", "accepted");
+    query = query.eq("status", "Accepted");
   }
-  if (args.type) {
-    query = query.eq("type", args.type);
-  }
-  if (args.tags && args.tags.length > 0) {
-    query = query.contains("tags", args.tags);
-  }
-  if (args.search) {
-    query = query.or(`title.ilike.%${args.search}%,content.ilike.%${args.search}%`);
-  }
+  if (args.type) query = query.eq("type", args.type);
+  if (args.domain && args.domain.length > 0) query = query.overlaps("domain", args.domain);
+  if (args.as_of) query = query.lte("valid_from", args.as_of);
+  if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
+  if (args.search) query = query.or(`title.ilike.%${args.search}%,content.ilike.%${args.search}%`);
   query = query.order("type", { ascending: true });
   const limit = args.limit ?? 50;
   const offset = args.offset ?? 0;
@@ -33283,6 +33291,228 @@ async function updateKnowledgeEntry(client, projectId, args) {
   }
   return data;
 }
+async function resolveOrCreateEntity(client, workspaceId, projectId, name, kind = "concept") {
+  const { data: existing, error: lookupErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).eq("kind", kind).eq("name", name).maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+  if (existing) return existing.id;
+  const { data, error: error2 } = await client.from("knowledge_entities").insert({ workspace_id: workspaceId, project_id: projectId, kind, name }).select("id").single();
+  if (error2) throw new Error(error2.message);
+  return data.id;
+}
+async function recordDecision(client, projectId, userId, args) {
+  if (!args.title?.trim()) throw new Error("title is required");
+  if (!args.type) throw new Error("type is required");
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const affectedIds = [];
+  for (const name of args.affected_entity_names ?? []) {
+    affectedIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name));
+  }
+  const record2 = {
+    workspace_id: workspaceId,
+    project_id: projectId,
+    title: args.title.trim(),
+    content: args.content ?? "",
+    type: args.type,
+    status: args.status ?? "Asserted",
+    domain: args.domain ?? [],
+    madr: args.madr ?? null,
+    affected_entity_ids: affectedIds,
+    source_type: args.source_type ?? "manual",
+    source_activity: args.source_activity ?? null,
+    created_by: userId
+  };
+  if (args.source_id !== void 0) record2.source_id = args.source_id;
+  if (args.tags !== void 0) record2.tags = args.tags;
+  if (args.source_task_id !== void 0) record2.source_task_id = args.source_task_id;
+  const { data, error: error2 } = await client.from("knowledge_decisions").insert(record2).select(DECISION_COLS).single();
+  if (error2) {
+    if (error2.code === "23505") {
+      throw new Error(`A decision titled "${args.title.trim()}" already exists in this project`);
+    }
+    throw error2;
+  }
+  return data;
+}
+async function supersedeDecision(client, projectId, userId, args) {
+  if (!args.old_decision_id) throw new Error("old_decision_id is required");
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const { data: existing, error: fetchErr } = await client.from("knowledge_decisions").select("id").eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.old_decision_id).single();
+  if (fetchErr || !existing) {
+    throw new Error(`Decision ${args.old_decision_id} not found in this project`);
+  }
+  const replacement = await recordDecision(client, projectId, userId, {
+    type: args.type,
+    title: args.title,
+    content: args.content,
+    madr: args.madr,
+    domain: args.domain,
+    affected_entity_names: args.affected_entity_names,
+    status: "Accepted"
+  });
+  const { data, error: error2 } = await client.from("knowledge_decisions").update({ status: "Superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.old_decision_id).select(DECISION_COLS).single();
+  if (error2) throw error2;
+  return { superseded: data, replacement };
+}
+var supersedeDecisionTool = {
+  name: "supersede_decision",
+  description: 'Supersede an existing decision with a new one. Records the replacement as "Accepted", marks the old decision "Superseded" and links them. Tickets referencing the old decision are automatically flagged stale.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      old_decision_id: { type: "string", description: "UUID of the decision being superseded" },
+      type: { type: "string", description: "Type for the replacement decision" },
+      title: { type: "string", description: "Title for the replacement decision" },
+      content: { type: "string", description: "Optional markdown body for the replacement" },
+      madr: { type: "object", description: "Structured MADR body for the replacement" },
+      domain: { type: "array", items: { type: "string" }, description: "Domains for the replacement" },
+      affected_entity_names: { type: "array", items: { type: "string" }, description: "Entities the replacement touches" },
+      reason: { type: "string", description: "Why the old decision is being superseded" }
+    },
+    required: ["old_decision_id", "type", "title"]
+  }
+};
+var recordDecisionTool = {
+  name: "record_decision",
+  description: 'Record a knowledge decision (MADR-shaped) produced by a gate/skill. Created as "Asserted" by default; a human promotes it to "Accepted". Use type product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      type: { type: "string", description: "product-design | technical-design | ux-ui-design | architecture | business | convention | specification | deferral" },
+      title: { type: "string", description: "Decision title (unique within the project)" },
+      content: { type: "string", description: "Optional human-readable markdown body" },
+      madr: { type: "object", description: "Structured MADR body: { context, decision_drivers, considered_options, decision_outcome, consequences }" },
+      domain: { type: "array", items: { type: "string" }, description: "Domains: engineering, operations, data, product, customer, process" },
+      affected_entity_names: { type: "array", items: { type: "string" }, description: "Entity names this decision touches (resolved/created in knowledge_entities)" },
+      status: { type: "string", description: 'Override status (default "Asserted")' },
+      source_type: { type: "string", description: "ticket | adr | manual | inferred | research (default 'manual')" },
+      source_id: { type: "string", description: "Pointer back to the producing ticket/source" },
+      source_activity: { type: "string", description: "The gate/skill that authored it (e.g. design-decide, clarify)" },
+      tags: { type: "array", items: { type: "string" }, description: "Optional tags" },
+      source_task_id: { type: "string", description: "Task that triggered this decision" }
+    },
+    required: ["type", "title"]
+  }
+};
+async function queryEntities(client, projectId, args) {
+  const workspaceId = await getWorkspaceId(client, projectId);
+  let query = client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId);
+  if (args.kind) query = query.eq("kind", args.kind);
+  if (args.name) query = query.ilike("name", `%${args.name}%`);
+  const { data, error: error2 } = await query.order("name", { ascending: true });
+  if (error2) throw new Error(error2.message);
+  return data ?? [];
+}
+var queryEntitiesTool = {
+  name: "query_entities",
+  description: "Resolve or discover knowledge entities (components, features, integrations, concepts) in this workspace by kind and/or name.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      kind: { type: "string", description: "Entity kind: 'component', 'feature', 'integration', 'concept', 'persona'" },
+      name: { type: "string", description: "Case-insensitive substring match on entity name" }
+    }
+  }
+};
+async function assertFact(client, projectId, userId, args) {
+  if (!args.subject_entity?.trim()) throw new Error("subject_entity is required");
+  if (!args.predicate?.trim()) throw new Error("predicate is required");
+  if (!args.source_type) throw new Error("source_type is required");
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const subjectId = await resolveOrCreateEntity(
+    client,
+    workspaceId,
+    projectId,
+    args.subject_entity,
+    args.subject_entity_kind ?? "concept"
+  );
+  const record2 = {
+    workspace_id: workspaceId,
+    project_id: projectId,
+    subject_entity_id: subjectId,
+    predicate: args.predicate,
+    object: args.object,
+    confidence: args.confidence ?? 1,
+    status: "Asserted",
+    domain: args.domain ?? [],
+    source_type: args.source_type,
+    created_by: userId
+  };
+  if (args.source_id !== void 0) record2.source_id = args.source_id;
+  const { data, error: error2 } = await client.from("knowledge_facts").insert(record2).select(FACT_COLS).single();
+  if (error2) throw error2;
+  return data;
+}
+var assertFactTool = {
+  name: "assert_fact",
+  description: 'Assert an atomic fact about an entity (subject-predicate-object) with provenance. Facts enter "Asserted"; research-sourced facts need human promotion before agents act on them autonomously.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      subject_entity: { type: "string", description: "Name of the subject entity (resolved/created in knowledge_entities)" },
+      subject_entity_kind: { type: "string", description: "Kind if the entity must be created (default 'concept')" },
+      predicate: { type: "string", description: "e.g. 'implements', 'depends_on', 'uses'" },
+      object: { description: "Entity ref, scalar, or structured JSON value" },
+      source_type: { type: "string", description: "ticket | adr | manual | inferred | research (required \u2014 provenance)" },
+      source_id: { type: "string", description: "Pointer back to the source ticket/decision" },
+      confidence: { type: "number", description: "0..1 (default 1.0)" },
+      domain: { type: "array", items: { type: "string" }, description: "Domains this fact belongs to" }
+    },
+    required: ["subject_entity", "predicate", "object", "source_type"]
+  }
+};
+async function invalidateFact(client, projectId, args) {
+  if (!args.fact_id) throw new Error("fact_id is required");
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const { data, error: error2 } = await client.from("knowledge_facts").update({ valid_to: (/* @__PURE__ */ new Date()).toISOString(), status: "Superseded" }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.fact_id).select(FACT_COLS).single();
+  if (error2) throw error2;
+  return data;
+}
+var invalidateFactTool = {
+  name: "invalidate_fact",
+  description: "Mark a fact as no longer valid (sets valid_to=now, status=Superseded). Graphiti invalidation pattern \u2014 the fact is retained for temporal queries, not deleted.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      fact_id: { type: "string", description: "UUID of the fact to invalidate" },
+      reason: { type: "string", description: "Why it is no longer valid" }
+    },
+    required: ["fact_id"]
+  }
+};
+async function queryFacts(client, projectId, args) {
+  const workspaceId = await getWorkspaceId(client, projectId);
+  let query = client.from("knowledge_facts").select(FACT_COLS).eq("workspace_id", workspaceId);
+  if (!args.include_invalidated && !args.as_of) query = query.is("valid_to", null);
+  if (args.as_of) {
+    query = query.lte("valid_from", args.as_of).or(`valid_to.is.null,valid_to.gt.${args.as_of}`);
+  }
+  if (args.predicate) query = query.eq("predicate", args.predicate);
+  if (args.min_confidence !== void 0) query = query.gte("confidence", args.min_confidence);
+  if (args.entity) {
+    const { data: ents, error: entErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).ilike("name", args.entity);
+    if (entErr) throw new Error(entErr.message);
+    const ids = (ents ?? []).map((e) => e.id);
+    if (ids.length === 0) return [];
+    query = query.in("subject_entity_id", ids);
+  }
+  const { data, error: error2 } = await query.order("recorded_at", { ascending: false });
+  if (error2) throw new Error(error2.message);
+  return data ?? [];
+}
+var queryFactsTool = {
+  name: "query_facts",
+  description: 'Query facts: "what is true (or was true) about X". Returns currently-valid facts by default; pass as_of for a point-in-time view.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      entity: { type: "string", description: "Subject entity name (case-insensitive exact match)" },
+      predicate: { type: "string", description: "Filter by predicate" },
+      as_of: { type: "string", description: "ISO timestamp \u2014 facts valid at this instant" },
+      min_confidence: { type: "number", description: "Only facts with confidence >= this" },
+      include_invalidated: { type: "boolean", description: "Include facts whose valid_to is set" }
+    }
+  }
+};
 async function supersedeKnowledgeEntry(client, projectId, userId, args) {
   if (!args.entry_id && !args.title) {
     throw new Error("Either entry_id or title must be provided to identify the entry to supersede");
@@ -33947,7 +34177,13 @@ function registerTools(disabledFeatures) {
     getKnowledgeEntryTool,
     createKnowledgeEntryTool,
     updateKnowledgeEntryTool,
-    supersedeKnowledgeEntryTool
+    supersedeKnowledgeEntryTool,
+    recordDecisionTool,
+    supersedeDecisionTool,
+    queryFactsTool,
+    assertFactTool,
+    invalidateFactTool,
+    queryEntitiesTool
   ];
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
   if (!disabledFeatures?.labels) tools.push(listLabelsTool, createLabelTool, manageTaskLabelsTool);
@@ -34037,6 +34273,24 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "supersede_knowledge_entry":
         result = await supersedeKnowledgeEntry(client, projectId, userId, args);
+        break;
+      case "record_decision":
+        result = await recordDecision(client, projectId, userId, args);
+        break;
+      case "supersede_decision":
+        result = await supersedeDecision(client, projectId, userId, args);
+        break;
+      case "query_facts":
+        result = await queryFacts(client, projectId, args);
+        break;
+      case "assert_fact":
+        result = await assertFact(client, projectId, userId, args);
+        break;
+      case "invalidate_fact":
+        result = await invalidateFact(client, projectId, args);
+        break;
+      case "query_entities":
+        result = await queryEntities(client, projectId, args);
         break;
       case "list_milestones":
         result = await listMilestones(client, projectId, args);

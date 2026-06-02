@@ -5,6 +5,13 @@ import {
   createKnowledgeEntry,
   updateKnowledgeEntry,
   supersedeKnowledgeEntry,
+  resolveOrCreateEntity,
+  queryEntities,
+  recordDecision,
+  supersedeDecision,
+  assertFact,
+  invalidateFact,
+  queryFacts,
 } from './knowledge.js';
 
 const PROJECT_ID = 'proj-abc-123';
@@ -22,7 +29,8 @@ const sampleSummaries = [
     id: 'ke-1',
     title: 'Use TypeScript strict mode',
     type: 'convention',
-    status: 'accepted',
+    status: 'Accepted',
+    domain: ['engineering'],
     tags: ['typescript'],
     project_id: PROJECT_ID,
     updated_at: '2026-03-10T00:00:00Z',
@@ -31,7 +39,8 @@ const sampleSummaries = [
     id: 'ke-2',
     title: 'PostgreSQL for all persistence',
     type: 'architecture',
-    status: 'accepted',
+    status: 'Accepted',
+    domain: ['data'],
     tags: ['database'],
     project_id: PROJECT_ID,
     updated_at: '2026-03-12T00:00:00Z',
@@ -77,6 +86,8 @@ function buildWorkspaceAndQueryClient(secondResponse: { data: any; error?: any }
   secondChain.update = vi.fn().mockReturnValue(secondChain);
   secondChain.eq = vi.fn().mockReturnValue(secondChain);
   secondChain.contains = vi.fn().mockReturnValue(secondChain);
+  secondChain.overlaps = vi.fn().mockReturnValue(secondChain);
+  secondChain.lte = vi.fn().mockReturnValue(secondChain);
   secondChain.or = vi.fn().mockReturnValue(secondChain);
   secondChain.order = vi.fn().mockReturnValue(secondChain);
   secondChain.range = vi
@@ -85,6 +96,11 @@ function buildWorkspaceAndQueryClient(secondResponse: { data: any; error?: any }
   secondChain.single = vi
     .fn()
     .mockResolvedValue({ data: secondResponse.data, error: secondResponse.error ?? null });
+  secondChain.maybeSingle = vi.fn().mockResolvedValue({ data: secondResponse.data, error: secondResponse.error ?? null });
+  secondChain.ilike = vi.fn().mockReturnValue(secondChain);
+  secondChain.is = vi.fn().mockReturnValue(secondChain);
+  secondChain.gte = vi.fn().mockReturnValue(secondChain);
+  secondChain.not = vi.fn().mockReturnValue(secondChain);
 
   const client: any = {
     from: vi.fn().mockImplementation(() => {
@@ -114,10 +130,10 @@ describe('queryKnowledge', () => {
     expect(wsChain.eq).toHaveBeenCalledWith('id', PROJECT_ID);
 
     // knowledge query — must filter on both workspace_id AND project_id
-    expect(client.from).toHaveBeenNthCalledWith(2, 'workspace_knowledge');
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_decisions');
     expect(secondChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
     expect(secondChain.eq).toHaveBeenCalledWith('project_id', PROJECT_ID);
-    expect(secondChain.eq).toHaveBeenCalledWith('status', 'accepted');
+    expect(secondChain.eq).toHaveBeenCalledWith('status', 'Accepted');
     expect(secondChain.order).toHaveBeenCalledWith('type', { ascending: true });
     expect(result).toEqual(sampleSummaries);
   });
@@ -186,6 +202,25 @@ describe('queryKnowledge', () => {
     await expect(queryKnowledge(client, PROJECT_ID, {})).rejects.toThrow(
       'Could not resolve workspace: not found',
     );
+  });
+
+  it('queries knowledge_decisions and filters by domain via .overlaps()', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [] });
+    await queryKnowledge(client, PROJECT_ID, { domain: ['data'] });
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_decisions');
+    expect(secondChain.overlaps).toHaveBeenCalledWith('domain', ['data']);
+  });
+
+  it('defaults status to Accepted (v1 vocab)', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [] });
+    await queryKnowledge(client, PROJECT_ID, {});
+    expect(secondChain.eq).toHaveBeenCalledWith('status', 'Accepted');
+  });
+
+  it('applies as_of temporal filter (valid_from <= as_of)', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [] });
+    await queryKnowledge(client, PROJECT_ID, { as_of: '2026-01-01T00:00:00Z' });
+    expect(secondChain.lte).toHaveBeenCalledWith('valid_from', '2026-01-01T00:00:00Z');
   });
 });
 
@@ -576,5 +611,293 @@ describe('supersedeKnowledgeEntry', () => {
         new_content: 'content',
       }),
     ).rejects.toThrow('Either entry_id or title must be provided');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveOrCreateEntity
+// ---------------------------------------------------------------------------
+
+describe('resolveOrCreateEntity', () => {
+  it('returns an existing entity id without inserting', async () => {
+    const chain: any = {};
+    chain.select = vi.fn().mockReturnValue(chain);
+    chain.eq = vi.fn().mockReturnValue(chain);
+    chain.maybeSingle = vi.fn().mockResolvedValue({ data: { id: 'ent-1' }, error: null });
+    chain.insert = vi.fn().mockReturnValue(chain);
+    const client: any = { from: vi.fn().mockReturnValue(chain) };
+
+    const id = await resolveOrCreateEntity(client, WORKSPACE_ID, PROJECT_ID, 'auth', 'component');
+    expect(id).toBe('ent-1');
+    expect(chain.insert).not.toHaveBeenCalled();
+  });
+
+  it('inserts and returns a new entity id when none exists', async () => {
+    let call = 0;
+    const lookup: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
+    lookup.select.mockReturnValue(lookup); lookup.eq.mockReturnValue(lookup);
+    lookup.maybeSingle.mockResolvedValue({ data: null, error: null });
+    const ins: any = { insert: vi.fn(), select: vi.fn(), single: vi.fn() };
+    ins.insert.mockReturnValue(ins); ins.select.mockReturnValue(ins);
+    ins.single.mockResolvedValue({ data: { id: 'ent-new' }, error: null });
+    const client: any = { from: vi.fn().mockImplementation(() => (call++ === 0 ? lookup : ins)) };
+
+    const id = await resolveOrCreateEntity(client, WORKSPACE_ID, PROJECT_ID, 'OIDC', 'concept');
+    expect(id).toBe('ent-new');
+    expect(ins.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ workspace_id: WORKSPACE_ID, kind: 'concept', name: 'OIDC' }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// queryEntities
+// ---------------------------------------------------------------------------
+
+describe('queryEntities', () => {
+  it('filters by kind and name and scopes to workspace', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [{ id: 'ent-1', name: 'auth' }] });
+    secondChain.ilike = vi.fn().mockReturnValue(secondChain);
+    // queryEntities terminates on .order() (no .range), so .order must resolve here
+    secondChain.order = vi.fn().mockResolvedValue({ data: [{ id: 'ent-1', name: 'auth' }], error: null });
+    await queryEntities(client, PROJECT_ID, { kind: 'component', name: 'auth' });
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_entities');
+    expect(secondChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
+    expect(secondChain.eq).toHaveBeenCalledWith('kind', 'component');
+    expect(secondChain.ilike).toHaveBeenCalledWith('name', '%auth%');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordDecision
+// ---------------------------------------------------------------------------
+
+describe('recordDecision', () => {
+  const decisionRow = {
+    id: 'dec-1', workspace_id: WORKSPACE_ID, project_id: PROJECT_ID,
+    title: 'Adopt RRF for hybrid search', content: '', type: 'technical-design',
+    status: 'Asserted', domain: ['engineering'], confidence: 1.0, review_by: null, drift_risk: false,
+    superseded_by: null, affected_entity_ids: [], madr: { context: 'why' },
+    source_type: 'manual', source_id: null, source_activity: 'design-decide',
+    tags: [], source_task_id: null, created_by: USER_ID,
+    created_at: '2026-05-29T00:00:00Z', updated_at: '2026-05-29T00:00:00Z',
+  };
+
+  it('writes a decision defaulting status=Asserted and stamps token project + author', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    const result = await recordDecision(client, PROJECT_ID, USER_ID, {
+      type: 'technical-design',
+      title: 'Adopt RRF for hybrid search',
+      domain: ['engineering'],
+      madr: { context: 'why' },
+      source_activity: 'design-decide',
+    });
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_decisions');
+    expect(secondChain.insert).toHaveBeenCalledWith(expect.objectContaining({
+      workspace_id: WORKSPACE_ID, project_id: PROJECT_ID, type: 'technical-design',
+      title: 'Adopt RRF for hybrid search', status: 'Asserted', domain: ['engineering'],
+      source_activity: 'design-decide', created_by: USER_ID,
+    }));
+    expect(result).toEqual(decisionRow);
+  });
+
+  it('throws when type is missing', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: null });
+    await expect(
+      recordDecision(client, PROJECT_ID, USER_ID, { title: 'x' } as any),
+    ).rejects.toThrow('type is required');
+  });
+
+  it('maps a duplicate-title violation to a friendly error', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: null, error: { code: '23505', message: 'dup' } });
+    await expect(
+      recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'Existing' }),
+    ).rejects.toThrow('A decision titled "Existing" already exists in this project');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// supersedeDecision
+// ---------------------------------------------------------------------------
+
+describe('supersedeDecision', () => {
+  it('creates the replacement then marks the old decision Superseded with superseded_by', async () => {
+    // from() calls: 1 supersede getWorkspaceId -> 2 fetch existing -> 3 recordDecision getWorkspaceId -> 4 recordDecision insert -> 5 update old
+    const replacement = { id: 'dec-2', title: 'v2', status: 'Asserted', type: 'business' };
+    const supersededOld = { id: 'dec-1', status: 'Superseded', superseded_by: 'dec-2' };
+    const responses = [
+      { data: { workspace_id: WORKSPACE_ID } },   // 1 supersede getWorkspaceId
+      { data: { id: 'dec-1' } },                   // 2 fetch existing (found)
+      { data: { workspace_id: WORKSPACE_ID } },    // 3 recordDecision getWorkspaceId
+      { data: replacement },                        // 4 recordDecision insert
+      { data: supersededOld },                      // 5 update old
+    ];
+    let i = 0;
+    const make = (idx: number) => {
+      const r = responses[idx] ?? { data: null };
+      const c: any = {};
+      c.select = vi.fn().mockReturnValue(c);
+      c.insert = vi.fn().mockReturnValue(c);
+      c.update = vi.fn().mockReturnValue(c);
+      c.eq = vi.fn().mockReturnValue(c);
+      c.single = vi.fn().mockResolvedValue({ data: r.data, error: null });
+      return c;
+    };
+    const client: any = { from: vi.fn().mockImplementation(() => make(i++)) };
+
+    const result = await supersedeDecision(client, PROJECT_ID, USER_ID, {
+      old_decision_id: 'dec-1',
+      type: 'business',
+      title: 'v2',
+      reason: 'pricing changed',
+    });
+    expect(result.replacement.id).toBe('dec-2');
+    expect(result.superseded.status).toBe('Superseded');
+    expect(result.superseded.superseded_by).toBe('dec-2');
+  });
+
+  it('throws when old_decision_id is missing', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: null });
+    await expect(
+      supersedeDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'v2' } as any),
+    ).rejects.toThrow('old_decision_id is required');
+  });
+
+  it('throws on a missing old_decision_id without creating an orphan replacement', async () => {
+    const ws: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
+    ws.select.mockReturnValue(ws); ws.eq.mockReturnValue(ws);
+    ws.single.mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
+    const lookup: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
+    lookup.select.mockReturnValue(lookup); lookup.eq.mockReturnValue(lookup);
+    lookup.single.mockResolvedValue({ data: null, error: { code: 'PGRST116', message: 'no rows' } });
+    const insert = vi.fn();
+    let i = 0;
+    const client: any = { from: vi.fn().mockImplementation(() => ([ws, lookup][i++] ?? { insert })) };
+    await expect(
+      supersedeDecision(client, PROJECT_ID, USER_ID, { old_decision_id: 'missing', type: 'business', title: 'v2' }),
+    ).rejects.toThrow('not found');
+    expect(insert).not.toHaveBeenCalled();   // no replacement created
+  });
+});
+
+// ---------------------------------------------------------------------------
+// assertFact
+// ---------------------------------------------------------------------------
+
+describe('assertFact', () => {
+  it('resolves the subject entity then inserts an Asserted fact with provenance', async () => {
+    // from(): 1 getWorkspaceId -> 2 entity lookup(maybeSingle hit) -> 3 fact insert
+    const entityHit: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
+    entityHit.select.mockReturnValue(entityHit); entityHit.eq.mockReturnValue(entityHit);
+    entityHit.maybeSingle.mockResolvedValue({ data: { id: 'ent-1' }, error: null });
+    const ws: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
+    ws.select.mockReturnValue(ws); ws.eq.mockReturnValue(ws);
+    ws.single.mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
+    const factRow = { id: 'fact-1', subject_entity_id: 'ent-1', predicate: 'uses', status: 'Asserted' };
+    const ins: any = { insert: vi.fn(), select: vi.fn(), single: vi.fn() };
+    ins.insert.mockReturnValue(ins); ins.select.mockReturnValue(ins);
+    ins.single.mockResolvedValue({ data: factRow, error: null });
+    let i = 0;
+    const client: any = { from: vi.fn().mockImplementation(() => [ws, entityHit, ins][i++]) };
+
+    const result = await assertFact(client, PROJECT_ID, USER_ID, {
+      subject_entity: 'board', predicate: 'uses', object: 'HSL tokens', source_type: 'ticket', source_id: 'task-9',
+    });
+    expect(ins.insert).toHaveBeenCalledWith(expect.objectContaining({
+      subject_entity_id: 'ent-1', predicate: 'uses', object: 'HSL tokens', source_type: 'ticket', status: 'Asserted', created_by: USER_ID,
+    }));
+    expect(result).toEqual(factRow);
+  });
+
+  it('throws when source_type is missing (provenance is required)', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: null });
+    await expect(
+      assertFact(client, PROJECT_ID, USER_ID, { subject_entity: 'x', predicate: 'uses', object: 1 } as any),
+    ).rejects.toThrow('source_type is required');
+  });
+
+  it('passes a structured (non-scalar) object through to the insert unchanged', async () => {
+    const entityHit: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
+    entityHit.select.mockReturnValue(entityHit); entityHit.eq.mockReturnValue(entityHit);
+    entityHit.maybeSingle.mockResolvedValue({ data: { id: 'ent-1' }, error: null });
+    const ws: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
+    ws.select.mockReturnValue(ws); ws.eq.mockReturnValue(ws);
+    ws.single.mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
+    const ins: any = { insert: vi.fn(), select: vi.fn(), single: vi.fn() };
+    ins.insert.mockReturnValue(ins); ins.select.mockReturnValue(ins);
+    ins.single.mockResolvedValue({ data: { id: 'fact-2' }, error: null });
+    let i = 0;
+    const client: any = { from: vi.fn().mockImplementation(() => [ws, entityHit, ins][i++]) };
+    await assertFact(client, PROJECT_ID, USER_ID, {
+      subject_entity: 'board', predicate: 'configured_by', object: { ref: 'ent-2', weight: 3 }, source_type: 'manual',
+    });
+    expect(ins.insert).toHaveBeenCalledWith(expect.objectContaining({ object: { ref: 'ent-2', weight: 3 } }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// invalidateFact
+// ---------------------------------------------------------------------------
+
+describe('invalidateFact', () => {
+  it('sets valid_to + status Superseded on the fact', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: { id: 'fact-1', status: 'Superseded' } });
+    secondChain.not = vi.fn().mockReturnValue(secondChain);
+    await invalidateFact(client, PROJECT_ID, { fact_id: 'fact-1', reason: 'no longer true' });
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_facts');
+    expect(secondChain.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'Superseded' }));
+    const updateArg = secondChain.update.mock.calls[0][0];
+    expect(updateArg).toHaveProperty('valid_to');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// queryFacts
+// ---------------------------------------------------------------------------
+
+describe('queryFacts', () => {
+  it('filters currently-valid facts by min_confidence and scopes to workspace', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [] });
+    secondChain.is = vi.fn().mockReturnValue(secondChain);
+    secondChain.gte = vi.fn().mockReturnValue(secondChain);
+    // queryFacts terminates on .order() (no .range), so .order must resolve here
+    secondChain.order = vi.fn().mockResolvedValue({ data: [], error: null });
+    await queryFacts(client, PROJECT_ID, { min_confidence: 0.7 });
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_facts');
+    expect(secondChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
+    expect(secondChain.is).toHaveBeenCalledWith('valid_to', null);
+    expect(secondChain.gte).toHaveBeenCalledWith('confidence', 0.7);
+  });
+
+  it('resolves an entity name spanning multiple kinds via .in() (no silent empty, no swallowed error)', async () => {
+    const ws: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
+    ws.select.mockReturnValue(ws); ws.eq.mockReturnValue(ws);
+    ws.single.mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
+    const facts: any = {};
+    facts.select = vi.fn().mockReturnValue(facts);
+    facts.eq = vi.fn().mockReturnValue(facts);
+    facts.is = vi.fn().mockReturnValue(facts);
+    facts.in = vi.fn().mockReturnValue(facts);
+    facts.order = vi.fn().mockResolvedValue({ data: [{ id: 'fact-1' }], error: null });
+    const ents: any = { select: vi.fn(), eq: vi.fn(), ilike: vi.fn() };
+    ents.select.mockReturnValue(ents); ents.eq.mockReturnValue(ents);
+    ents.ilike.mockResolvedValue({ data: [{ id: 'ent-a' }, { id: 'ent-b' }], error: null });
+    let i = 0;
+    const client: any = { from: vi.fn().mockImplementation(() => [ws, facts, ents][i++]) };
+    const result = await queryFacts(client, PROJECT_ID, { entity: 'board' });
+    expect(facts.in).toHaveBeenCalledWith('subject_entity_id', ['ent-a', 'ent-b']);
+    expect(result).toEqual([{ id: 'fact-1' }]);
+  });
+
+  it('applies the as_of two-sided window and suppresses the currently-valid filter', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [] });
+    secondChain.is = vi.fn().mockReturnValue(secondChain);
+    secondChain.lte = vi.fn().mockReturnValue(secondChain);
+    secondChain.or = vi.fn().mockReturnValue(secondChain);
+    secondChain.order = vi.fn().mockResolvedValue({ data: [], error: null });
+    await queryFacts(client, PROJECT_ID, { as_of: '2026-01-01T00:00:00Z' });
+    expect(secondChain.lte).toHaveBeenCalledWith('valid_from', '2026-01-01T00:00:00Z');
+    expect(secondChain.or).toHaveBeenCalledWith('valid_to.is.null,valid_to.gt.2026-01-01T00:00:00Z');
+    expect(secondChain.is).not.toHaveBeenCalled();   // as_of suppresses the valid_to-null filter
   });
 });
