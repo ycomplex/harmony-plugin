@@ -25640,8 +25640,51 @@ async function getWorkspaceId(client, projectId) {
   if (error) throw new Error(`Could not resolve workspace: ${error.message}`);
   return data.workspace_id;
 }
+async function embedText(client, text) {
+  try {
+    const { data, error } = await client.functions.invoke("embed-knowledge", { body: { text } });
+    if (error || !data?.embedding) return null;
+    return `[${data.embedding.join(",")}]`;
+  } catch {
+    return null;
+  }
+}
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
+  if (args.search) {
+    const incompatible = [];
+    if (args.status) incompatible.push("status");
+    if (args.include_superseded) incompatible.push("include_superseded");
+    if (args.type) incompatible.push("type");
+    if (args.tags && args.tags.length > 0) incompatible.push("tags");
+    if (args.as_of) incompatible.push("as_of");
+    if (args.offset) incompatible.push("offset");
+    if (incompatible.length > 0) {
+      throw new Error(
+        `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(", ")}. Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". Omit "search" to use the structured filters.`
+      );
+    }
+    const queryEmbedding = await embedText(client, args.search);
+    const { data: data2, error: error2 } = await client.rpc("knowledge_search_rrf", {
+      _workspace_id: workspaceId,
+      _project_id: projectId,
+      _query_embedding: queryEmbedding,
+      _query_text: args.search,
+      _domain: args.domain && args.domain.length > 0 ? args.domain : null,
+      _match_limit: args.limit ?? 50
+    });
+    if (error2) throw new Error(error2.message);
+    return (data2 ?? []).map((d) => ({
+      id: d.id,
+      title: d.title,
+      type: d.type,
+      status: d.status,
+      domain: d.domain,
+      tags: d.tags,
+      project_id: d.project_id,
+      updated_at: d.updated_at
+    }));
+  }
   let query = client.from("knowledge_decisions").select("id, title, type, status, domain, tags, project_id, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.status) {
     query = query.eq("status", args.status);
@@ -25652,7 +25695,6 @@ async function queryKnowledge(client, projectId, args) {
   if (args.domain && args.domain.length > 0) query = query.overlaps("domain", args.domain);
   if (args.as_of) query = query.lte("valid_from", args.as_of);
   if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
-  if (args.search) query = query.or(`title.ilike.%${args.search}%,content.ilike.%${args.search}%`);
   query = query.order("type", { ascending: true });
   const limit = args.limit ?? 50;
   const offset = args.offset ?? 0;

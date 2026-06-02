@@ -85,17 +85,17 @@ const ENTITY_COLS = 'id, workspace_id, project_id, kind, name, description, meta
 export const queryKnowledgeTool = {
   name: 'query_knowledge',
   description:
-    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to "Accepted" entries only.',
+    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to "Accepted" entries only. When `search` is given, retrieval is semantic (RRF) and composes only with `domain` (+ `limit`); the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       type: {
         type: 'string',
-        description: 'Filter by entry type (e.g. "architecture", "business", "convention", "specification")',
+        description: 'Filter by entry type (e.g. "architecture", "business", "convention", "specification"). (structured-filter path; not combinable with `search`)',
       },
       status: {
         type: 'string',
-        description: 'Filter by status. Default: "Accepted".',
+        description: 'Filter by status. Default: "Accepted". (structured-filter path; not combinable with `search`)',
       },
       domain: {
         type: 'array',
@@ -104,23 +104,23 @@ export const queryKnowledgeTool = {
       },
       as_of: {
         type: 'string',
-        description: 'ISO timestamp — return entries valid at or before this instant (temporal query).',
+        description: 'ISO timestamp — return entries valid at or before this instant (temporal query). (structured-filter path; not combinable with `search`)',
       },
       tags: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Filter entries that contain ALL of these tags',
+        description: 'Filter entries that contain ALL of these tags. (structured-filter path; not combinable with `search`)',
       },
       search: {
         type: 'string',
-        description: 'Search term matched against title and content (case-insensitive)',
+        description: 'Free-text search query — hybrid semantic + trigram retrieval, ranked by relevance (RRF). Composes only with `domain` and `limit`.',
       },
       include_superseded: {
         type: 'boolean',
-        description: 'When true and no explicit status given, return all statuses including superseded. Default false.',
+        description: 'When true and no explicit status given, return all statuses including superseded. Default false. (structured-filter path; not combinable with `search`)',
       },
       limit: { type: 'number', description: 'Max results to return. Default 50.' },
-      offset: { type: 'number', description: 'Number of results to skip (for pagination). Default 0.' },
+      offset: { type: 'number', description: 'Number of results to skip (for pagination). Default 0. (structured-filter path; not combinable with `search`)' },
     },
   },
 };
@@ -212,7 +212,7 @@ export const supersedeKnowledgeEntryTool = {
 };
 
 // ---------------------------------------------------------------------------
-// Internal helper
+// Internal helpers
 // ---------------------------------------------------------------------------
 
 async function getWorkspaceId(client: SupabaseClient, projectId: string): Promise<string> {
@@ -223,6 +223,17 @@ async function getWorkspaceId(client: SupabaseClient, projectId: string): Promis
     .single();
   if (error) throw new Error(`Could not resolve workspace: ${error.message}`);
   return data.workspace_id;
+}
+
+// Best-effort: returns a pgvector literal '[…]' or null. A failed embed never blocks a write.
+async function embedText(client: SupabaseClient, text: string): Promise<string | null> {
+  try {
+    const { data, error } = await (client as any).functions.invoke('embed-knowledge', { body: { text } });
+    if (error || !data?.embedding) return null;
+    return `[${(data.embedding as number[]).join(',')}]`;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +259,43 @@ export async function queryKnowledge(
 ): Promise<KnowledgeEntrySummary[]> {
   const workspaceId = await getWorkspaceId(client, projectId);
 
+  // Semantic path: a free-text query => embed it + fuse vector ⊕ trigram via RRF (Phase C).
+  if (args.search) {
+    // Semantic retrieval (RRF) returns Accepted decisions ranked by relevance, optionally filtered by
+    // `domain` (+ `limit`). It does NOT yet compose with the other structured filters — reject rather than
+    // silently drop them (no silent wrong answer; e.g. search+include_superseded would otherwise return
+    // Accepted-only with no error). Composable semantic+filter search is tracked as a follow-up.
+    const incompatible: string[] = [];
+    if (args.status) incompatible.push('status');
+    if (args.include_superseded) incompatible.push('include_superseded');
+    if (args.type) incompatible.push('type');
+    if (args.tags && args.tags.length > 0) incompatible.push('tags');
+    if (args.as_of) incompatible.push('as_of');
+    if (args.offset) incompatible.push('offset');
+    if (incompatible.length > 0) {
+      throw new Error(
+        `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(', ')}. ` +
+        `Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". ` +
+        `Omit "search" to use the structured filters.`,
+      );
+    }
+    const queryEmbedding = await embedText(client, args.search);   // may be null -> fn degrades to trigram-only
+    const { data, error } = await (client as any).rpc('knowledge_search_rrf', {
+      _workspace_id: workspaceId,
+      _project_id: projectId,
+      _query_embedding: queryEmbedding,
+      _query_text: args.search,
+      _domain: args.domain && args.domain.length > 0 ? args.domain : null,
+      _match_limit: args.limit ?? 50,
+    });
+    if (error) throw new Error(error.message);
+    return (data ?? []).map((d: any) => ({
+      id: d.id, title: d.title, type: d.type, status: d.status,
+      domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at,
+    })) as KnowledgeEntrySummary[];
+  }
+
+  // Filter-only path: structured filters over knowledge_decisions (no relevance ranking needed).
   let query = client
     .from('knowledge_decisions')
     .select('id, title, type, status, domain, tags, project_id, updated_at')
@@ -257,17 +305,14 @@ export async function queryKnowledge(
   if (args.status) {
     query = query.eq('status', args.status);
   } else if (!args.include_superseded) {
-    query = query.eq('status', 'Accepted');          // v1 lifecycle vocab
+    query = query.eq('status', 'Accepted');
   }
-
   if (args.type) query = query.eq('type', args.type);
   if (args.domain && args.domain.length > 0) query = query.overlaps('domain', args.domain);
   if (args.as_of) query = query.lte('valid_from', args.as_of);
   if (args.tags && args.tags.length > 0) query = query.contains('tags', args.tags);
-  if (args.search) query = query.or(`title.ilike.%${args.search}%,content.ilike.%${args.search}%`);
 
   query = query.order('type', { ascending: true });
-
   const limit = args.limit ?? 50;
   const offset = args.offset ?? 0;
   const { data, error } = await query.range(offset, offset + limit - 1);
@@ -503,6 +548,8 @@ export async function recordDecision(
     affectedIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name));
   }
 
+  const embedding = await embedText(client, `${args.title}\n${args.content ?? ''}`);
+
   const record: Record<string, unknown> = {
     workspace_id: workspaceId,
     project_id: projectId,
@@ -517,6 +564,7 @@ export async function recordDecision(
     source_activity: args.source_activity ?? null,
     created_by: userId,
   };
+  if (embedding) record.embedding = embedding;
   if (args.source_id !== undefined) record.source_id = args.source_id;
   if (args.tags !== undefined) record.tags = args.tags;
   if (args.source_task_id !== undefined) record.source_task_id = args.source_task_id;
@@ -704,6 +752,8 @@ export async function assertFact(
     client, workspaceId, projectId, args.subject_entity, args.subject_entity_kind ?? 'concept',
   );
 
+  const embedding = await embedText(client, `${args.subject_entity} ${args.predicate} ${JSON.stringify(args.object)}`);
+
   const record: Record<string, unknown> = {
     workspace_id: workspaceId,
     project_id: projectId,
@@ -716,6 +766,7 @@ export async function assertFact(
     source_type: args.source_type,
     created_by: userId,
   };
+  if (embedding) record.embedding = embedding;
   if (args.source_id !== undefined) record.source_id = args.source_id;
 
   const { data, error } = await client.from('knowledge_facts').insert(record).select(FACT_COLS).single();
