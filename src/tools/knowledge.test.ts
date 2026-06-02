@@ -9,6 +9,9 @@ import {
   queryEntities,
   recordDecision,
   supersedeDecision,
+  assertFact,
+  invalidateFact,
+  queryFacts,
 } from './knowledge.js';
 
 const PROJECT_ID = 'proj-abc-123';
@@ -95,6 +98,9 @@ function buildWorkspaceAndQueryClient(secondResponse: { data: any; error?: any }
     .mockResolvedValue({ data: secondResponse.data, error: secondResponse.error ?? null });
   secondChain.maybeSingle = vi.fn().mockResolvedValue({ data: secondResponse.data, error: secondResponse.error ?? null });
   secondChain.ilike = vi.fn().mockReturnValue(secondChain);
+  secondChain.is = vi.fn().mockReturnValue(secondChain);
+  secondChain.gte = vi.fn().mockReturnValue(secondChain);
+  secondChain.not = vi.fn().mockReturnValue(secondChain);
 
   const client: any = {
     from: vi.fn().mockImplementation(() => {
@@ -754,5 +760,77 @@ describe('supersedeDecision', () => {
     await expect(
       supersedeDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'v2' } as any),
     ).rejects.toThrow('old_decision_id is required');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// assertFact
+// ---------------------------------------------------------------------------
+
+describe('assertFact', () => {
+  it('resolves the subject entity then inserts an Asserted fact with provenance', async () => {
+    // from(): 1 getWorkspaceId -> 2 entity lookup(maybeSingle hit) -> 3 fact insert
+    const entityHit: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
+    entityHit.select.mockReturnValue(entityHit); entityHit.eq.mockReturnValue(entityHit);
+    entityHit.maybeSingle.mockResolvedValue({ data: { id: 'ent-1' }, error: null });
+    const ws: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
+    ws.select.mockReturnValue(ws); ws.eq.mockReturnValue(ws);
+    ws.single.mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
+    const factRow = { id: 'fact-1', subject_entity_id: 'ent-1', predicate: 'uses', status: 'Asserted' };
+    const ins: any = { insert: vi.fn(), select: vi.fn(), single: vi.fn() };
+    ins.insert.mockReturnValue(ins); ins.select.mockReturnValue(ins);
+    ins.single.mockResolvedValue({ data: factRow, error: null });
+    let i = 0;
+    const client: any = { from: vi.fn().mockImplementation(() => [ws, entityHit, ins][i++]) };
+
+    const result = await assertFact(client, PROJECT_ID, USER_ID, {
+      subject_entity: 'board', predicate: 'uses', object: 'HSL tokens', source_type: 'ticket', source_id: 'task-9',
+    });
+    expect(ins.insert).toHaveBeenCalledWith(expect.objectContaining({
+      subject_entity_id: 'ent-1', predicate: 'uses', source_type: 'ticket', status: 'Asserted', created_by: USER_ID,
+    }));
+    expect(result).toEqual(factRow);
+  });
+
+  it('throws when source_type is missing (provenance is required)', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: null });
+    await expect(
+      assertFact(client, PROJECT_ID, USER_ID, { subject_entity: 'x', predicate: 'uses', object: 1 } as any),
+    ).rejects.toThrow('source_type is required');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// invalidateFact
+// ---------------------------------------------------------------------------
+
+describe('invalidateFact', () => {
+  it('sets valid_to + status Superseded on the fact', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: { id: 'fact-1', status: 'Superseded' } });
+    secondChain.not = vi.fn().mockReturnValue(secondChain);
+    await invalidateFact(client, PROJECT_ID, { fact_id: 'fact-1', reason: 'no longer true' });
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_facts');
+    expect(secondChain.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'Superseded' }));
+    const updateArg = secondChain.update.mock.calls[0][0];
+    expect(updateArg).toHaveProperty('valid_to');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// queryFacts
+// ---------------------------------------------------------------------------
+
+describe('queryFacts', () => {
+  it('filters currently-valid facts by min_confidence and scopes to workspace', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [] });
+    secondChain.is = vi.fn().mockReturnValue(secondChain);
+    secondChain.gte = vi.fn().mockReturnValue(secondChain);
+    // queryFacts terminates on .order() (no .range), so .order must resolve here
+    secondChain.order = vi.fn().mockResolvedValue({ data: [], error: null });
+    await queryFacts(client, PROJECT_ID, { min_confidence: 0.7 });
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_facts');
+    expect(secondChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
+    expect(secondChain.is).toHaveBeenCalledWith('valid_to', null);
+    expect(secondChain.gte).toHaveBeenCalledWith('confidence', 0.7);
   });
 });

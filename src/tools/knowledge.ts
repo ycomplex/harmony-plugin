@@ -660,6 +660,167 @@ export const queryEntitiesTool = {
 };
 
 // ---------------------------------------------------------------------------
+// Handler: assertFact
+// ---------------------------------------------------------------------------
+
+export interface AssertFactArgs {
+  subject_entity: string;
+  subject_entity_kind?: string;
+  predicate: string;
+  object: unknown;
+  source_type: string;
+  source_id?: string;
+  confidence?: number;
+  domain?: string[];
+}
+
+export async function assertFact(
+  client: SupabaseClient,
+  projectId: string,
+  userId: string,
+  args: AssertFactArgs,
+): Promise<KnowledgeFactFull> {
+  if (!args.subject_entity?.trim()) throw new Error('subject_entity is required');
+  if (!args.predicate?.trim()) throw new Error('predicate is required');
+  if (!args.source_type) throw new Error('source_type is required');
+
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const subjectId = await resolveOrCreateEntity(
+    client, workspaceId, projectId, args.subject_entity, args.subject_entity_kind ?? 'concept',
+  );
+
+  const record: Record<string, unknown> = {
+    workspace_id: workspaceId,
+    project_id: projectId,
+    subject_entity_id: subjectId,
+    predicate: args.predicate,
+    object: args.object,
+    confidence: args.confidence ?? 1.0,
+    status: 'Asserted',
+    domain: args.domain ?? [],
+    source_type: args.source_type,
+    created_by: userId,
+  };
+  if (args.source_id !== undefined) record.source_id = args.source_id;
+
+  const { data, error } = await client.from('knowledge_facts').insert(record).select(FACT_COLS).single();
+  if (error) throw error;
+  return data as KnowledgeFactFull;
+}
+
+export const assertFactTool = {
+  name: 'assert_fact',
+  description: 'Assert an atomic fact about an entity (subject-predicate-object) with provenance. Facts enter "Asserted"; research-sourced facts need human promotion before agents act on them autonomously.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      subject_entity: { type: 'string', description: 'Name of the subject entity (resolved/created in knowledge_entities)' },
+      subject_entity_kind: { type: 'string', description: "Kind if the entity must be created (default 'concept')" },
+      predicate: { type: 'string', description: "e.g. 'implements', 'depends_on', 'uses'" },
+      object: { description: 'Entity ref, scalar, or structured JSON value' },
+      source_type: { type: 'string', description: 'ticket | adr | manual | inferred | research (required — provenance)' },
+      source_id: { type: 'string', description: 'Pointer back to the source ticket/decision' },
+      confidence: { type: 'number', description: '0..1 (default 1.0)' },
+      domain: { type: 'array', items: { type: 'string' }, description: 'Domains this fact belongs to' },
+    },
+    required: ['subject_entity', 'predicate', 'object', 'source_type'],
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Handler: invalidateFact
+// ---------------------------------------------------------------------------
+
+export interface InvalidateFactArgs { fact_id: string; reason?: string; }
+
+export async function invalidateFact(
+  client: SupabaseClient,
+  projectId: string,
+  args: InvalidateFactArgs,
+): Promise<KnowledgeFactFull> {
+  if (!args.fact_id) throw new Error('fact_id is required');
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const { data, error } = await client
+    .from('knowledge_facts')
+    .update({ valid_to: new Date().toISOString(), status: 'Superseded' })
+    .eq('workspace_id', workspaceId)
+    .eq('project_id', projectId)
+    .eq('id', args.fact_id)
+    .select(FACT_COLS)
+    .single();
+  if (error) throw error;
+  return data as KnowledgeFactFull;
+}
+
+export const invalidateFactTool = {
+  name: 'invalidate_fact',
+  description: 'Mark a fact as no longer valid (sets valid_to=now, status=Superseded). Graphiti invalidation pattern — the fact is retained for temporal queries, not deleted.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      fact_id: { type: 'string', description: 'UUID of the fact to invalidate' },
+      reason: { type: 'string', description: 'Why it is no longer valid' },
+    },
+    required: ['fact_id'],
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Handler: queryFacts
+// ---------------------------------------------------------------------------
+
+export interface QueryFactsArgs {
+  entity?: string;
+  predicate?: string;
+  as_of?: string;
+  min_confidence?: number;
+  include_invalidated?: boolean;
+}
+
+export async function queryFacts(
+  client: SupabaseClient,
+  projectId: string,
+  args: QueryFactsArgs,
+): Promise<KnowledgeFactFull[]> {
+  const workspaceId = await getWorkspaceId(client, projectId);
+  let query = client.from('knowledge_facts').select(FACT_COLS).eq('workspace_id', workspaceId);
+
+  if (!args.include_invalidated && !args.as_of) query = query.is('valid_to', null);  // currently valid
+  if (args.as_of) {
+    query = query.lte('valid_from', args.as_of).or(`valid_to.is.null,valid_to.gt.${args.as_of}`);
+  }
+  if (args.predicate) query = query.eq('predicate', args.predicate);
+  if (args.min_confidence !== undefined) query = query.gte('confidence', args.min_confidence);
+
+  // Entity filter by name -> id (one extra lookup keeps the public API name-based).
+  if (args.entity) {
+    const { data: ent } = await client
+      .from('knowledge_entities').select('id').eq('workspace_id', workspaceId).ilike('name', args.entity).maybeSingle();
+    if (ent) query = query.eq('subject_entity_id', (ent as { id: string }).id);
+    else return [];
+  }
+
+  const { data, error } = await query.order('recorded_at', { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as KnowledgeFactFull[];
+}
+
+export const queryFactsTool = {
+  name: 'query_facts',
+  description: 'Query facts: "what is true (or was true) about X". Returns currently-valid facts by default; pass as_of for a point-in-time view.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      entity: { type: 'string', description: 'Subject entity name (case-insensitive exact match)' },
+      predicate: { type: 'string', description: 'Filter by predicate' },
+      as_of: { type: 'string', description: 'ISO timestamp — facts valid at this instant' },
+      min_confidence: { type: 'number', description: 'Only facts with confidence >= this' },
+      include_invalidated: { type: 'boolean', description: 'Include facts whose valid_to is set' },
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Handler: supersedeKnowledgeEntry
 // ---------------------------------------------------------------------------
 
