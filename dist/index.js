@@ -33067,17 +33067,17 @@ var FACT_COLS = "id, workspace_id, project_id, subject_entity_id, predicate, obj
 var ENTITY_COLS = "id, workspace_id, project_id, kind, name, description, metadata, created_at";
 var queryKnowledgeTool = {
   name: "query_knowledge",
-  description: 'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to "Accepted" entries only.',
+  description: 'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to "Accepted" entries only. When `search` is given, retrieval is semantic (RRF) and composes only with `domain` (+ `limit`); the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
   inputSchema: {
     type: "object",
     properties: {
       type: {
         type: "string",
-        description: 'Filter by entry type (e.g. "architecture", "business", "convention", "specification")'
+        description: 'Filter by entry type (e.g. "architecture", "business", "convention", "specification"). (structured-filter path; not combinable with `search`)'
       },
       status: {
         type: "string",
-        description: 'Filter by status. Default: "Accepted".'
+        description: 'Filter by status. Default: "Accepted". (structured-filter path; not combinable with `search`)'
       },
       domain: {
         type: "array",
@@ -33086,23 +33086,23 @@ var queryKnowledgeTool = {
       },
       as_of: {
         type: "string",
-        description: "ISO timestamp \u2014 return entries valid at or before this instant (temporal query)."
+        description: "ISO timestamp \u2014 return entries valid at or before this instant (temporal query). (structured-filter path; not combinable with `search`)"
       },
       tags: {
         type: "array",
         items: { type: "string" },
-        description: "Filter entries that contain ALL of these tags"
+        description: "Filter entries that contain ALL of these tags. (structured-filter path; not combinable with `search`)"
       },
       search: {
         type: "string",
-        description: "Free-text search query \u2014 hybrid semantic + trigram retrieval, ranked by relevance (RRF)"
+        description: "Free-text search query \u2014 hybrid semantic + trigram retrieval, ranked by relevance (RRF). Composes only with `domain` and `limit`."
       },
       include_superseded: {
         type: "boolean",
-        description: "When true and no explicit status given, return all statuses including superseded. Default false."
+        description: "When true and no explicit status given, return all statuses including superseded. Default false. (structured-filter path; not combinable with `search`)"
       },
       limit: { type: "number", description: "Max results to return. Default 50." },
-      offset: { type: "number", description: "Number of results to skip (for pagination). Default 0." }
+      offset: { type: "number", description: "Number of results to skip (for pagination). Default 0. (structured-filter path; not combinable with `search`)" }
     }
   }
 };
@@ -33203,6 +33203,18 @@ async function embedText(client, text) {
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
   if (args.search) {
+    const incompatible = [];
+    if (args.status) incompatible.push("status");
+    if (args.include_superseded) incompatible.push("include_superseded");
+    if (args.type) incompatible.push("type");
+    if (args.tags && args.tags.length > 0) incompatible.push("tags");
+    if (args.as_of) incompatible.push("as_of");
+    if (args.offset) incompatible.push("offset");
+    if (incompatible.length > 0) {
+      throw new Error(
+        `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(", ")}. Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". Omit "search" to use the structured filters.`
+      );
+    }
     const queryEmbedding = await embedText(client, args.search);
     const { data: data2, error: error3 } = await client.rpc("knowledge_search_rrf", {
       _workspace_id: workspaceId,

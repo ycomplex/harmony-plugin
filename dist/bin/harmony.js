@@ -25652,6 +25652,18 @@ async function embedText(client, text) {
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
   if (args.search) {
+    const incompatible = [];
+    if (args.status) incompatible.push("status");
+    if (args.include_superseded) incompatible.push("include_superseded");
+    if (args.type) incompatible.push("type");
+    if (args.tags && args.tags.length > 0) incompatible.push("tags");
+    if (args.as_of) incompatible.push("as_of");
+    if (args.offset) incompatible.push("offset");
+    if (incompatible.length > 0) {
+      throw new Error(
+        `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(", ")}. Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". Omit "search" to use the structured filters.`
+      );
+    }
     const queryEmbedding = await embedText(client, args.search);
     const { data: data2, error: error2 } = await client.rpc("knowledge_search_rrf", {
       _workspace_id: workspaceId,

@@ -190,8 +190,49 @@ describe('queryKnowledge', () => {
     expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({
       _workspace_id: WORKSPACE_ID, _project_id: PROJECT_ID, _query_embedding: '[0.1,0.2]',
       _query_text: 'session security', _domain: ['engineering'],
+      _match_limit: 50,
     }));
-    expect(result[0].id).toBe('d1');
+    const rpcArg = client.rpc.mock.calls[0][1];
+    expect(rpcArg).not.toHaveProperty('_k');
+    expect(result[0]).toMatchObject({ id: 'd1', title: 'auth', type: 'architecture', status: 'Accepted', domain: ['engineering'] });
+  });
+
+  it('rejects search combined with un-honorable filters (no silent drop)', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: [] });
+    await expect(
+      queryKnowledge(client, PROJECT_ID, { search: 'auth', include_superseded: true }),
+    ).rejects.toThrow(/cannot be combined with/);
+    await expect(
+      queryKnowledge(client, PROJECT_ID, { search: 'auth', type: 'architecture' }),
+    ).rejects.toThrow(/type/);
+  });
+
+  it('allows search combined with domain + limit', async () => {
+    const wsChain: any = {};
+    wsChain.select = vi.fn().mockReturnValue(wsChain);
+    wsChain.eq = vi.fn().mockReturnValue(wsChain);
+    wsChain.single = vi.fn().mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
+    const client: any = {
+      from: vi.fn().mockReturnValue(wsChain),
+      functions: { invoke: vi.fn().mockResolvedValue({ data: { embedding: [0.1, 0.2] }, error: null }) },
+      rpc: vi.fn().mockResolvedValue({ data: [], error: null }),
+    };
+    await queryKnowledge(client, PROJECT_ID, { search: 'auth', domain: ['engineering'], limit: 5 });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({ _match_limit: 5, _domain: ['engineering'] }));
+  });
+
+  it('passes _query_embedding null when embedding fails (trigram-only degrade)', async () => {
+    const wsChain: any = {};
+    wsChain.select = vi.fn().mockReturnValue(wsChain);
+    wsChain.eq = vi.fn().mockReturnValue(wsChain);
+    wsChain.single = vi.fn().mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
+    const client: any = {
+      from: vi.fn().mockReturnValue(wsChain),
+      functions: { invoke: vi.fn().mockResolvedValue({ data: null, error: { message: 'down' } }) },
+      rpc: vi.fn().mockResolvedValue({ data: [], error: null }),
+    };
+    await queryKnowledge(client, PROJECT_ID, { search: 'auth' });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({ _query_embedding: null, _query_text: 'auth', _domain: null }));
   });
 
   it('passes limit and offset to .range()', async () => {
@@ -861,6 +902,26 @@ describe('assertFact', () => {
       subject_entity: 'board', predicate: 'configured_by', object: { ref: 'ent-2', weight: 3 }, source_type: 'manual',
     });
     expect(ins.insert).toHaveBeenCalledWith(expect.objectContaining({ object: { ref: 'ent-2', weight: 3 } }));
+  });
+
+  it('embeds the fact on write and includes the pgvector literal', async () => {
+    const entityHit: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
+    entityHit.select.mockReturnValue(entityHit); entityHit.eq.mockReturnValue(entityHit);
+    entityHit.maybeSingle.mockResolvedValue({ data: { id: 'ent-1' }, error: null });
+    const ws: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
+    ws.select.mockReturnValue(ws); ws.eq.mockReturnValue(ws);
+    ws.single.mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
+    const ins: any = { insert: vi.fn(), select: vi.fn(), single: vi.fn() };
+    ins.insert.mockReturnValue(ins); ins.select.mockReturnValue(ins);
+    ins.single.mockResolvedValue({ data: { id: 'fact-1' }, error: null });
+    let i = 0;
+    const client: any = {
+      from: vi.fn().mockImplementation(() => [ws, entityHit, ins][i++]),
+      functions: { invoke: vi.fn().mockResolvedValue({ data: { embedding: [0.3, 0.4] }, error: null }) },
+    };
+    await assertFact(client, PROJECT_ID, USER_ID, { subject_entity: 'board', predicate: 'uses', object: 'x', source_type: 'manual' });
+    expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', expect.objectContaining({ body: expect.objectContaining({ text: expect.stringContaining('board') }) }));
+    expect(ins.insert).toHaveBeenCalledWith(expect.objectContaining({ embedding: '[0.3,0.4]' }));
   });
 });
 
