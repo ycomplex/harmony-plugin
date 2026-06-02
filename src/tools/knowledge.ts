@@ -535,6 +535,74 @@ export async function recordDecision(
   return data as KnowledgeDecisionFull;
 }
 
+// ---------------------------------------------------------------------------
+// Handler: supersedeDecision
+// ---------------------------------------------------------------------------
+
+export interface SupersedeDecisionArgs {
+  old_decision_id: string;
+  type: string;
+  title: string;
+  content?: string;
+  madr?: Record<string, unknown>;
+  domain?: string[];
+  affected_entity_names?: string[];
+  reason?: string;
+}
+
+export async function supersedeDecision(
+  client: SupabaseClient,
+  projectId: string,
+  userId: string,
+  args: SupersedeDecisionArgs,
+): Promise<{ superseded: KnowledgeDecisionFull; replacement: KnowledgeDecisionFull }> {
+  if (!args.old_decision_id) throw new Error('old_decision_id is required');
+
+  // 1) Create the replacement (Accepted — it is the new ruling decision).
+  const replacement = await recordDecision(client, projectId, userId, {
+    type: args.type,
+    title: args.title,
+    content: args.content,
+    madr: args.madr,
+    domain: args.domain,
+    affected_entity_names: args.affected_entity_names,
+    status: 'Accepted',
+  });
+
+  // 2) Mark the old decision Superseded + link it. The AFTER-UPDATE trigger (A8) flags referencing tickets stale.
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const { data, error } = await client
+    .from('knowledge_decisions')
+    .update({ status: 'Superseded', superseded_by: replacement.id })
+    .eq('workspace_id', workspaceId)
+    .eq('project_id', projectId)
+    .eq('id', args.old_decision_id)
+    .select(DECISION_COLS)
+    .single();
+  if (error) throw error;
+  return { superseded: data as KnowledgeDecisionFull, replacement };
+}
+
+export const supersedeDecisionTool = {
+  name: 'supersede_decision',
+  description:
+    'Supersede an existing decision with a new one. Records the replacement as "Accepted", marks the old decision "Superseded" and links them. Tickets referencing the old decision are automatically flagged stale.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      old_decision_id: { type: 'string', description: 'UUID of the decision being superseded' },
+      type: { type: 'string', description: 'Type for the replacement decision' },
+      title: { type: 'string', description: 'Title for the replacement decision' },
+      content: { type: 'string', description: 'Optional markdown body for the replacement' },
+      madr: { type: 'object', description: 'Structured MADR body for the replacement' },
+      domain: { type: 'array', items: { type: 'string' }, description: 'Domains for the replacement' },
+      affected_entity_names: { type: 'array', items: { type: 'string' }, description: 'Entities the replacement touches' },
+      reason: { type: 'string', description: 'Why the old decision is being superseded' },
+    },
+    required: ['old_decision_id', 'type', 'title'],
+  },
+};
+
 export const recordDecisionTool = {
   name: 'record_decision',
   description:

@@ -8,6 +8,7 @@ import {
   resolveOrCreateEntity,
   queryEntities,
   recordDecision,
+  supersedeDecision,
 } from './knowledge.js';
 
 const PROJECT_ID = 'proj-abc-123';
@@ -706,5 +707,52 @@ describe('recordDecision', () => {
     await expect(
       recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'Existing' }),
     ).rejects.toThrow('A decision titled "Existing" already exists in this project');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// supersedeDecision
+// ---------------------------------------------------------------------------
+
+describe('supersedeDecision', () => {
+  it('creates the replacement then marks the old decision Superseded with superseded_by', async () => {
+    // from() calls: 1 getWorkspaceId(record) -> 2 insert replacement -> 3 getWorkspaceId(update) -> 4 update old
+    const replacement = { id: 'dec-2', title: 'v2', status: 'Asserted', type: 'business' };
+    const supersededOld = { id: 'dec-1', status: 'Superseded', superseded_by: 'dec-2' };
+    const responses = [
+      { data: { workspace_id: WORKSPACE_ID } },
+      { data: replacement },
+      { data: { workspace_id: WORKSPACE_ID } },
+      { data: supersededOld },
+    ];
+    let i = 0;
+    const make = (idx: number) => {
+      const r = responses[idx] ?? { data: null };
+      const c: any = {};
+      c.select = vi.fn().mockReturnValue(c);
+      c.insert = vi.fn().mockReturnValue(c);
+      c.update = vi.fn().mockReturnValue(c);
+      c.eq = vi.fn().mockReturnValue(c);
+      c.single = vi.fn().mockResolvedValue({ data: r.data, error: null });
+      return c;
+    };
+    const client: any = { from: vi.fn().mockImplementation(() => make(i++)) };
+
+    const result = await supersedeDecision(client, PROJECT_ID, USER_ID, {
+      old_decision_id: 'dec-1',
+      type: 'business',
+      title: 'v2',
+      reason: 'pricing changed',
+    });
+    expect(result.replacement.id).toBe('dec-2');
+    expect(result.superseded.status).toBe('Superseded');
+    expect(result.superseded.superseded_by).toBe('dec-2');
+  });
+
+  it('throws when old_decision_id is missing', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: null });
+    await expect(
+      supersedeDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'v2' } as any),
+    ).rejects.toThrow('old_decision_id is required');
   });
 });
