@@ -33335,6 +33335,11 @@ async function recordDecision(client, projectId, userId, args) {
 }
 async function supersedeDecision(client, projectId, userId, args) {
   if (!args.old_decision_id) throw new Error("old_decision_id is required");
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const { data: existing, error: fetchErr } = await client.from("knowledge_decisions").select("id").eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.old_decision_id).single();
+  if (fetchErr || !existing) {
+    throw new Error(`Decision ${args.old_decision_id} not found in this project`);
+  }
   const replacement = await recordDecision(client, projectId, userId, {
     type: args.type,
     title: args.title,
@@ -33344,7 +33349,6 @@ async function supersedeDecision(client, projectId, userId, args) {
     affected_entity_names: args.affected_entity_names,
     status: "Accepted"
   });
-  const workspaceId = await getWorkspaceId(client, projectId);
   const { data, error: error2 } = await client.from("knowledge_decisions").update({ status: "Superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.old_decision_id).select(DECISION_COLS).single();
   if (error2) throw error2;
   return { superseded: data, replacement };
@@ -33485,9 +33489,11 @@ async function queryFacts(client, projectId, args) {
   if (args.predicate) query = query.eq("predicate", args.predicate);
   if (args.min_confidence !== void 0) query = query.gte("confidence", args.min_confidence);
   if (args.entity) {
-    const { data: ent } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).ilike("name", args.entity).maybeSingle();
-    if (ent) query = query.eq("subject_entity_id", ent.id);
-    else return [];
+    const { data: ents, error: entErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).ilike("name", args.entity);
+    if (entErr) throw new Error(entErr.message);
+    const ids = (ents ?? []).map((e) => e.id);
+    if (ids.length === 0) return [];
+    query = query.in("subject_entity_id", ids);
   }
   const { data, error: error2 } = await query.order("recorded_at", { ascending: false });
   if (error2) throw new Error(error2.message);

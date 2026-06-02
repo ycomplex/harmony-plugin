@@ -558,6 +558,22 @@ export async function supersedeDecision(
 ): Promise<{ superseded: KnowledgeDecisionFull; replacement: KnowledgeDecisionFull }> {
   if (!args.old_decision_id) throw new Error('old_decision_id is required');
 
+  const workspaceId = await getWorkspaceId(client, projectId);
+
+  // Fetch-first guard (mirrors supersedeKnowledgeEntry): verify the target exists, scoped to this
+  // workspace+project, BEFORE creating the replacement — so a wrong/foreign/already-gone id can't
+  // leave an orphaned 'Accepted' decision with no superseded_by linkage.
+  const { data: existing, error: fetchErr } = await client
+    .from('knowledge_decisions')
+    .select('id')
+    .eq('workspace_id', workspaceId)
+    .eq('project_id', projectId)
+    .eq('id', args.old_decision_id)
+    .single();
+  if (fetchErr || !existing) {
+    throw new Error(`Decision ${args.old_decision_id} not found in this project`);
+  }
+
   // 1) Create the replacement (Accepted — it is the new ruling decision).
   const replacement = await recordDecision(client, projectId, userId, {
     type: args.type,
@@ -570,7 +586,6 @@ export async function supersedeDecision(
   });
 
   // 2) Mark the old decision Superseded + link it. The AFTER-UPDATE trigger (A8) flags referencing tickets stale.
-  const workspaceId = await getWorkspaceId(client, projectId);
   const { data, error } = await client
     .from('knowledge_decisions')
     .update({ status: 'Superseded', superseded_by: replacement.id })
@@ -792,12 +807,19 @@ export async function queryFacts(
   if (args.predicate) query = query.eq('predicate', args.predicate);
   if (args.min_confidence !== undefined) query = query.gte('confidence', args.min_confidence);
 
-  // Entity filter by name -> id (one extra lookup keeps the public API name-based).
+  // Entity filter by name -> ids. A name can legitimately exist under multiple kinds
+  // (UNIQUE is (workspace_id, kind, name)), so resolve ALL matches and filter with .in(),
+  // and surface a real lookup error rather than masking it as an empty result.
   if (args.entity) {
-    const { data: ent } = await client
-      .from('knowledge_entities').select('id').eq('workspace_id', workspaceId).ilike('name', args.entity).maybeSingle();
-    if (ent) query = query.eq('subject_entity_id', (ent as { id: string }).id);
-    else return [];
+    const { data: ents, error: entErr } = await client
+      .from('knowledge_entities')
+      .select('id')
+      .eq('workspace_id', workspaceId)
+      .ilike('name', args.entity);
+    if (entErr) throw new Error(entErr.message);
+    const ids = (ents ?? []).map((e) => (e as { id: string }).id);
+    if (ids.length === 0) return [];
+    query = query.in('subject_entity_id', ids);
   }
 
   const { data, error } = await query.order('recorded_at', { ascending: false });
