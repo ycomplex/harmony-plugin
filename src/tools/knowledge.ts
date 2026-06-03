@@ -530,6 +530,7 @@ export interface RecordDecisionArgs {
   source_activity?: string;
   tags?: string[];
   source_task_id?: string;
+  review_by?: string;   // ISO timestamp; freshness/decay date (knowledge-model-v1 §3)
 }
 
 export async function recordDecision(
@@ -568,6 +569,7 @@ export async function recordDecision(
   if (args.source_id !== undefined) record.source_id = args.source_id;
   if (args.tags !== undefined) record.tags = args.tags;
   if (args.source_task_id !== undefined) record.source_task_id = args.source_task_id;
+  if (args.review_by !== undefined) record.review_by = args.review_by;
 
   const { data, error } = await client
     .from('knowledge_decisions')
@@ -685,6 +687,7 @@ export const recordDecisionTool = {
       source_activity: { type: 'string', description: 'The gate/skill that authored it (e.g. design-decide, clarify)' },
       tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags' },
       source_task_id: { type: 'string', description: 'Task that triggered this decision' },
+      review_by: { type: 'string', description: 'ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires.' },
     },
     required: ['type', 'title'],
   },
@@ -735,6 +738,7 @@ export interface AssertFactArgs {
   source_id?: string;
   confidence?: number;
   domain?: string[];
+  review_by?: string;   // ISO timestamp; freshness/decay date (knowledge-model-v1 §3)
 }
 
 export async function assertFact(
@@ -768,6 +772,7 @@ export async function assertFact(
   };
   if (embedding) record.embedding = embedding;
   if (args.source_id !== undefined) record.source_id = args.source_id;
+  if (args.review_by !== undefined) record.review_by = args.review_by;
 
   const { data, error } = await client.from('knowledge_facts').insert(record).select(FACT_COLS).single();
   if (error) throw error;
@@ -788,6 +793,7 @@ export const assertFactTool = {
       source_id: { type: 'string', description: 'Pointer back to the source ticket/decision' },
       confidence: { type: 'number', description: '0..1 (default 1.0)' },
       domain: { type: 'array', items: { type: 'string' }, description: 'Domains this fact belongs to' },
+      review_by: { type: 'string', description: 'ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires.' },
     },
     required: ['subject_entity', 'predicate', 'object', 'source_type'],
   },

@@ -784,6 +784,19 @@ describe('recordDecision', () => {
     await recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'Adopt RRF' });
     expect(secondChain.insert.mock.calls[0][0]).not.toHaveProperty('embedding');
   });
+
+  it('persists review_by on the decision row (P4 F2 — research freshness)', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({
+      data: { ...decisionRow, source_type: 'research', review_by: '2026-08-27T00:00:00Z' },
+    });
+    await recordDecision(client, PROJECT_ID, USER_ID, {
+      type: 'specification', title: 'researched finding', source_type: 'research',
+      review_by: '2026-08-27T00:00:00Z',
+    });
+    expect(secondChain.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ review_by: '2026-08-27T00:00:00Z', source_type: 'research' }),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -922,6 +935,27 @@ describe('assertFact', () => {
     await assertFact(client, PROJECT_ID, USER_ID, { subject_entity: 'board', predicate: 'uses', object: 'x', source_type: 'manual' });
     expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', expect.objectContaining({ body: expect.objectContaining({ text: expect.stringContaining('board') }) }));
     expect(ins.insert).toHaveBeenCalledWith(expect.objectContaining({ embedding: '[0.3,0.4]' }));
+  });
+
+  it('persists review_by on the fact row (P4 F2 — research freshness)', async () => {
+    const entityHit: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
+    entityHit.select.mockReturnValue(entityHit); entityHit.eq.mockReturnValue(entityHit);
+    entityHit.maybeSingle.mockResolvedValue({ data: { id: 'ent-1' }, error: null });
+    const ws: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
+    ws.select.mockReturnValue(ws); ws.eq.mockReturnValue(ws);
+    ws.single.mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
+    const ins: any = { insert: vi.fn(), select: vi.fn(), single: vi.fn() };
+    ins.insert.mockReturnValue(ins); ins.select.mockReturnValue(ins);
+    ins.single.mockResolvedValue({ data: { id: 'fact-3' }, error: null });
+    let i = 0;
+    const client: any = { from: vi.fn().mockImplementation(() => [ws, entityHit, ins][i++]) };
+    await assertFact(client, PROJECT_ID, USER_ID, {
+      subject_entity: 'board', predicate: 'uses', object: 'x', source_type: 'research',
+      review_by: '2026-08-27T00:00:00Z',
+    });
+    expect(ins.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ review_by: '2026-08-27T00:00:00Z', source_type: 'research' }),
+    );
   });
 });
 

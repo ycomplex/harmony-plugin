@@ -32174,11 +32174,11 @@ async function createAuthenticatedClient(auth2) {
 // src/tools/project.ts
 var getProjectTool = {
   name: "get_project",
-  description: "Get project details including statuses, field definitions, and epics",
+  description: "Get project details including workflow mode (manual|opinionated), statuses, field definitions, and epics",
   inputSchema: { type: "object", properties: {} }
 };
 async function getProject(client, projectId) {
-  const { data, error: error2 } = await client.from("projects").select("id, name, key, description, custom_statuses, field_definitions, archived").eq("id", projectId).single();
+  const { data, error: error2 } = await client.from("projects").select("id, name, key, description, mode, custom_statuses, field_definitions, archived").eq("id", projectId).single();
   if (error2) throw error2;
   return data;
 }
@@ -32830,6 +32830,10 @@ var queryTasksTool = {
       due_date_from: { type: "string", description: "Due date on or after (YYYY-MM-DD)" },
       due_date_to: { type: "string", description: "Due date on or before (YYYY-MM-DD)" },
       stale_days: { type: "number", description: "Tasks not updated in this many days" },
+      awaiting_human_input: { type: "boolean", description: "Only tasks where the ball is in the human's court (the opinionated-mode queue signal)." },
+      workflow_state: { type: "string", description: 'Opinionated-mode state, e.g. "Built", "Designed".' },
+      workflow_activity: { type: "string", description: 'Opinionated-mode activity in progress, e.g. "building".' },
+      stale: { type: "boolean", description: "Only tasks flagged Stale (a referenced knowledge entry was superseded \u2014 P2 A8 sets this, NOT awaiting_human_input). The queue reads this separately." },
       archived: { type: "boolean", description: "Include archived tasks. Default false." },
       sort_by: {
         type: "string",
@@ -32843,7 +32847,7 @@ var queryTasksTool = {
 };
 async function queryTasks(client, projectId, args) {
   let query = client.from("tasks").select(
-    "id, title, status, priority, task_number, assignee_id, epic_id, description, field_values, archived, due_date, created_at, updated_at, task_labels(labels(id, name, color))"
+    "id, title, status, priority, task_number, assignee_id, epic_id, description, field_values, archived, due_date, created_at, updated_at, workflow_state, workflow_activity, awaiting_human_input, awaiting_human_reason, awaiting_human_ref, stale, task_labels(labels(id, name, color))"
   ).eq("project_id", projectId).eq("archived", args.archived ?? false);
   if (args.status) query = query.eq("status", args.status);
   if (args.assignee_id) query = query.eq("assignee_id", args.assignee_id);
@@ -32851,6 +32855,10 @@ async function queryTasks(client, projectId, args) {
   if (args.cycle_id) query = query.eq("cycle_id", args.cycle_id);
   if (args.milestone_id) query = query.eq("milestone_id", args.milestone_id);
   if (args.priority) query = query.eq("priority", args.priority);
+  if (args.awaiting_human_input !== void 0) query = query.eq("awaiting_human_input", args.awaiting_human_input);
+  if (args.workflow_state) query = query.eq("workflow_state", args.workflow_state);
+  if (args.workflow_activity) query = query.eq("workflow_activity", args.workflow_activity);
+  if (args.stale !== void 0) query = query.eq("stale", args.stale);
   if (args.due_date_from) query = query.gte("due_date", args.due_date_from);
   if (args.due_date_to) query = query.lte("due_date", args.due_date_to);
   if (args.stale_days) {
@@ -33369,6 +33377,7 @@ ${args.content ?? ""}`);
   if (args.source_id !== void 0) record2.source_id = args.source_id;
   if (args.tags !== void 0) record2.tags = args.tags;
   if (args.source_task_id !== void 0) record2.source_task_id = args.source_task_id;
+  if (args.review_by !== void 0) record2.review_by = args.review_by;
   const { data, error: error2 } = await client.from("knowledge_decisions").insert(record2).select(DECISION_COLS).single();
   if (error2) {
     if (error2.code === "23505") {
@@ -33433,7 +33442,8 @@ var recordDecisionTool = {
       source_id: { type: "string", description: "Pointer back to the producing ticket/source" },
       source_activity: { type: "string", description: "The gate/skill that authored it (e.g. design-decide, clarify)" },
       tags: { type: "array", items: { type: "string" }, description: "Optional tags" },
-      source_task_id: { type: "string", description: "Task that triggered this decision" }
+      source_task_id: { type: "string", description: "Task that triggered this decision" },
+      review_by: { type: "string", description: "ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires." }
     },
     required: ["type", "title"]
   }
@@ -33485,6 +33495,7 @@ async function assertFact(client, projectId, userId, args) {
   };
   if (embedding) record2.embedding = embedding;
   if (args.source_id !== void 0) record2.source_id = args.source_id;
+  if (args.review_by !== void 0) record2.review_by = args.review_by;
   const { data, error: error2 } = await client.from("knowledge_facts").insert(record2).select(FACT_COLS).single();
   if (error2) throw error2;
   return data;
@@ -33502,7 +33513,8 @@ var assertFactTool = {
       source_type: { type: "string", description: "ticket | adr | manual | inferred | research (required \u2014 provenance)" },
       source_id: { type: "string", description: "Pointer back to the source ticket/decision" },
       confidence: { type: "number", description: "0..1 (default 1.0)" },
-      domain: { type: "array", items: { type: "string" }, description: "Domains this fact belongs to" }
+      domain: { type: "array", items: { type: "string" }, description: "Domains this fact belongs to" },
+      review_by: { type: "string", description: "ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires." }
     },
     required: ["subject_entity", "predicate", "object", "source_type"]
   }
@@ -34434,6 +34446,96 @@ var resolveBriefTool = {
   }
 };
 
+// src/tools/workflow.ts
+var UNIVERSAL = {
+  parking: "Parked",
+  cancelling: "Cancelled"
+};
+function deriveToState(fromState, activity, transitions) {
+  if (activity === "researching") return fromState;
+  if (activity in UNIVERSAL) return UNIVERSAL[activity];
+  const row = transitions.find((t) => t.from_state === fromState && t.activity === activity);
+  if (!row) {
+    throw new Error(
+      `No workflow transition from '${fromState ?? "(none)"}' via activity '${activity}'`
+    );
+  }
+  return row.to_state;
+}
+var advanceWorkflowTool = {
+  name: "advance_workflow",
+  description: "Advance an opinionated-mode task along the config-led state machine for an AGENT/SYSTEM transition that has no human brief \u2014 e.g. building (Planned->Built) once tests pass, or a revising-* backflow. Derives the target state from the workflow_transitions table; the DB guard validates the edge. For HUMAN-gated transitions use compose_brief + resolve_brief instead. parking/cancelling are accepted; researching records the activity without changing state.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, number, or visual ID (e.g. B-43)" },
+      activity: {
+        type: "string",
+        description: "Workflow activity to apply, e.g. 'building', 'releasing', 'revising-designing', 'researching', 'parking', 'cancelling', 'capturing', 'promoting'."
+      }
+    },
+    required: ["task_id", "activity"]
+  }
+};
+async function advanceWorkflow(client, projectId, args) {
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const { data: task, error: e1 } = await client.from("tasks").select("workflow_state").eq("id", id).eq("project_id", projectId).single();
+  if (e1) throw e1;
+  const { data: transitions, error: e2 } = await client.from("workflow_transitions").select("from_state, activity, to_state");
+  if (e2) throw e2;
+  const fromState = task.workflow_state;
+  const toState = deriveToState(fromState, args.activity, transitions ?? []);
+  const patch = args.activity === "researching" ? { workflow_activity: args.activity } : { workflow_state: toState, workflow_activity: args.activity };
+  const { data: updated, error: e3 } = await client.from("tasks").update(patch).eq("id", id).eq("project_id", projectId).select("id, workflow_state, workflow_activity").single();
+  if (e3) throw e3;
+  return {
+    task_id: id,
+    from_state: fromState,
+    to_state: toState,
+    activity: args.activity,
+    task: updated
+  };
+}
+var referenceKnowledgeTool = {
+  name: "reference_knowledge",
+  description: "Record that a task depends on a knowledge decision (ticket_references_knowledge). This is what makes P2 supersession flag the ticket Stale. Idempotent. Call after record_decision so the gate-authored decision is coupled to its ticket.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, number, or visual ID" },
+      decision_id: { type: "string", description: "knowledge_decisions.id this task references" }
+    },
+    required: ["task_id", "decision_id"]
+  }
+};
+async function referenceKnowledge(client, projectId, args) {
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const { error: error2 } = await client.from("ticket_references_knowledge").upsert({ task_id: id, decision_id: args.decision_id }, { onConflict: "task_id,decision_id", ignoreDuplicates: true });
+  if (error2) throw error2;
+  return { task_id: id, decision_id: args.decision_id, linked: true };
+}
+var listTicketKnowledgeTool = {
+  name: "list_ticket_knowledge",
+  description: "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status. Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket \u2014 query_knowledge has no ticket filter and the compat view hides *-design types.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, number, or visual ID" }
+    },
+    required: ["task_id"]
+  }
+};
+async function listTicketKnowledge(client, projectId, args) {
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const { data, error: error2 } = await client.from("ticket_references_knowledge").select("decision_id, knowledge_decisions(id, type, status, title, domain)").eq("task_id", id);
+  if (error2) throw error2;
+  const rows = data ?? [];
+  return rows.map((r) => ({
+    decision_id: r.decision_id,
+    ...r.knowledge_decisions ?? {}
+  }));
+}
+
 // src/tools/index.ts
 function registerTools(disabledFeatures) {
   const tools = [
@@ -34463,7 +34565,10 @@ function registerTools(disabledFeatures) {
     queryEntitiesTool,
     composeBriefTool,
     getBriefTool,
-    resolveBriefTool
+    resolveBriefTool,
+    advanceWorkflowTool,
+    referenceKnowledgeTool,
+    listTicketKnowledgeTool
   ];
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
   if (!disabledFeatures?.labels) tools.push(listLabelsTool, createLabelTool, manageTaskLabelsTool);
@@ -34628,6 +34733,15 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "resolve_brief":
         result = await resolveBrief(client, projectId, args);
+        break;
+      case "advance_workflow":
+        result = await advanceWorkflow(client, projectId, args);
+        break;
+      case "reference_knowledge":
+        result = await referenceKnowledge(client, projectId, args);
+        break;
+      case "list_ticket_knowledge":
+        result = await listTicketKnowledge(client, projectId, args);
         break;
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
