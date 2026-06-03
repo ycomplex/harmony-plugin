@@ -43,48 +43,62 @@ vi.mock('./resolve-task-id.js', () => ({
   resolveTaskId: vi.fn(async (_c: unknown, _p: string, id: string) => `uuid-${id}`),
 }));
 
+// Returns the client AND the update spy, so tests can assert the PERSISTED patch
+// (not just the derived return value) — the read goes through tasks.select(); the
+// write goes through tasks.update(), whose payload we capture.
 function mockClientFor(currentState: string | null) {
-  // Minimal chainable mock: dispatches by table name.
-  return {
+  const updateSpy = vi.fn((payload: Record<string, unknown>) => ({
+    eq: () => ({
+      eq: () => ({
+        select: () => ({ single: () => Promise.resolve({ data: { id: 'uuid-B-1', ...payload }, error: null }) }),
+      }),
+    }),
+  }));
+  const client = {
     from(table: string) {
       if (table === 'workflow_transitions') {
         return { select: () => Promise.resolve({ data: TRANSITIONS, error: null }) };
       }
       if (table === 'tasks') {
         return {
-          select: (cols: string) => {
-            if (cols.includes('workflow_state') && !cols.includes('workflow_activity')) {
-              // the read
-              return {
-                eq: () => ({
-                  eq: () => ({ single: () => Promise.resolve({ data: { workflow_state: currentState }, error: null }) }),
-                }),
-              };
-            }
-            // the update().select() tail
-            return { single: () => Promise.resolve({ data: { id: 'uuid-B-1', workflow_state: 'Built', workflow_activity: 'building' }, error: null }) };
-          },
-          update: (payload: Record<string, unknown>) => ({
+          // advanceWorkflow's read: select('workflow_state').eq().eq().single()
+          select: () => ({
             eq: () => ({
-              eq: () => ({
-                select: () => ({ single: () => Promise.resolve({ data: { id: 'uuid-B-1', ...payload }, error: null }) }),
-              }),
+              eq: () => ({ single: () => Promise.resolve({ data: { workflow_state: currentState }, error: null }) }),
             }),
           }),
+          update: updateSpy,
         };
       }
       throw new Error(`unexpected table ${table}`);
     },
   } as unknown as import('@supabase/supabase-js').SupabaseClient;
+  return { client, updateSpy };
 }
 
 describe('advanceWorkflow', () => {
   beforeEach(() => vi.clearAllMocks());
-  it('writes the derived target state + activity', async () => {
-    const res = await advanceWorkflow(mockClientFor('Planned'), 'proj', { task_id: 'B-1', activity: 'building' });
+
+  it('writes the derived target state + activity for a forward transition', async () => {
+    const { client, updateSpy } = mockClientFor('Planned');
+    const res = await advanceWorkflow(client, 'proj', { task_id: 'B-1', activity: 'building' });
     expect(res.from_state).toBe('Planned');
     expect(res.to_state).toBe('Built');
     expect(res.activity).toBe('building');
+    // Assert the PERSISTED payload, not just the returned value: a regression that wrote
+    // the wrong column (or nothing) would slip past a return-value-only assertion.
+    expect(updateSpy).toHaveBeenCalledWith({ workflow_state: 'Built', workflow_activity: 'building' });
+  });
+
+  it('records researching as activity-only — never writes workflow_state (F8)', async () => {
+    const { client, updateSpy } = mockClientFor('Designed');
+    const res = await advanceWorkflow(client, 'proj', { task_id: 'B-1', activity: 'researching' });
+    expect(res.to_state).toBe('Designed'); // researching never advances state
+    expect(updateSpy).toHaveBeenCalledWith({ workflow_activity: 'researching' });
+    // The whole point of F8: the patch must omit workflow_state (else a no-op edge for a
+    // stated task, or a NULL→FK violation for an un-stated one). Drop the special-case in
+    // workflow.ts and this goes red.
+    expect(updateSpy.mock.calls[0][0]).not.toHaveProperty('workflow_state');
   });
 });
 
