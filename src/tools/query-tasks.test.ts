@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { queryTasks } from './query-tasks.js';
+import { queryTasks, queryTasksTool } from './query-tasks.js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 // Mock Supabase client builder
 function createMockClient(data: any[] | null, error: any = null) {
@@ -215,5 +216,51 @@ describe('queryTasks', () => {
     await queryTasks(client, PROJECT_ID, { archived: true });
 
     expect(client.eq).toHaveBeenCalledWith('archived', true);
+  });
+});
+
+// Records each builder call so we can assert filters + selected columns.
+function recordingClient(rows: Record<string, unknown>[]) {
+  const calls: { eq: [string, unknown][]; select?: string } = { eq: [] };
+  const builder: Record<string, unknown> = {
+    select(cols: string) { calls.select = cols; return builder; },
+    eq(col: string, val: unknown) { calls.eq.push([col, val]); return builder; },
+    gte() { return builder; },
+    lte() { return builder; },
+    order() { return builder; },
+    range() { return Promise.resolve({ data: rows, error: null }); },
+  };
+  const client = { from: () => builder } as unknown as SupabaseClient;
+  return { client, calls };
+}
+
+describe('query_tasks workflow filters', () => {
+  it('exposes the workflow filters in its schema', () => {
+    const props = queryTasksTool.inputSchema.properties as Record<string, unknown>;
+    expect(props.awaiting_human_input).toBeDefined();
+    expect(props.workflow_state).toBeDefined();
+    expect(props.workflow_activity).toBeDefined();
+    expect(props.stale).toBeDefined();
+  });
+
+  it('selects the P1 workflow columns', async () => {
+    const { client, calls } = recordingClient([]);
+    await queryTasks(client, 'proj', {});
+    expect(calls.select).toContain('workflow_state');
+    expect(calls.select).toContain('awaiting_human_input');
+    expect(calls.select).toContain('awaiting_human_reason');
+  });
+
+  it('filters by awaiting_human_input and workflow_state', async () => {
+    const { client, calls } = recordingClient([]);
+    await queryTasks(client, 'proj', { awaiting_human_input: true, workflow_state: 'Built' });
+    expect(calls.eq).toContainEqual(['awaiting_human_input', true]);
+    expect(calls.eq).toContainEqual(['workflow_state', 'Built']);
+  });
+
+  it('filters by stale (the queue\'s Stale read — F5)', async () => {
+    const { client, calls } = recordingClient([]);
+    await queryTasks(client, 'proj', { stale: true });
+    expect(calls.eq).toContainEqual(['stale', true]);
   });
 });

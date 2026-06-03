@@ -11,6 +11,10 @@ export interface QueryTasksArgs {
   due_date_from?: string;
   due_date_to?: string;
   stale_days?: number;
+  awaiting_human_input?: boolean;
+  workflow_state?: string;
+  workflow_activity?: string;
+  stale?: boolean;
   archived?: boolean;
   sort_by?: 'position' | 'due_date' | 'priority' | 'updated_at';
   limit?: number;
@@ -38,6 +42,10 @@ export const queryTasksTool = {
       due_date_from: { type: 'string', description: 'Due date on or after (YYYY-MM-DD)' },
       due_date_to: { type: 'string', description: 'Due date on or before (YYYY-MM-DD)' },
       stale_days: { type: 'number', description: 'Tasks not updated in this many days' },
+      awaiting_human_input: { type: 'boolean', description: 'Only tasks where the ball is in the human\'s court (the opinionated-mode queue signal).' },
+      workflow_state: { type: 'string', description: 'Opinionated-mode state, e.g. "Built", "Designed".' },
+      workflow_activity: { type: 'string', description: 'Opinionated-mode activity in progress, e.g. "building".' },
+      stale: { type: 'boolean', description: 'Only tasks flagged Stale (a referenced knowledge entry was superseded — P2 A8 sets this, NOT awaiting_human_input). The queue reads this separately.' },
       archived: { type: 'boolean', description: 'Include archived tasks. Default false.' },
       sort_by: {
         type: 'string',
@@ -58,7 +66,7 @@ export async function queryTasks(
   let query = client
     .from('tasks')
     .select(
-      'id, title, status, priority, task_number, assignee_id, epic_id, description, field_values, archived, due_date, created_at, updated_at, task_labels(labels(id, name, color))',
+      'id, title, status, priority, task_number, assignee_id, epic_id, description, field_values, archived, due_date, created_at, updated_at, workflow_state, workflow_activity, awaiting_human_input, awaiting_human_reason, awaiting_human_ref, stale, task_labels(labels(id, name, color))',
     )
     .eq('project_id', projectId)
     .eq('archived', args.archived ?? false);
@@ -69,6 +77,10 @@ export async function queryTasks(
   if (args.cycle_id) query = query.eq('cycle_id', args.cycle_id);
   if (args.milestone_id) query = query.eq('milestone_id', args.milestone_id);
   if (args.priority) query = query.eq('priority', args.priority);
+  if (args.awaiting_human_input !== undefined) query = query.eq('awaiting_human_input', args.awaiting_human_input);
+  if (args.workflow_state) query = query.eq('workflow_state', args.workflow_state);
+  if (args.workflow_activity) query = query.eq('workflow_activity', args.workflow_activity);
+  if (args.stale !== undefined) query = query.eq('stale', args.stale);
   if (args.due_date_from) query = query.gte('due_date', args.due_date_from);
   if (args.due_date_to) query = query.lte('due_date', args.due_date_to);
 
