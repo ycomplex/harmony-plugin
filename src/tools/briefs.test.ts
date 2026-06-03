@@ -1,6 +1,15 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderBrief, lintBrief, composeBrief, getBrief, resolveBrief, type BriefDoc, type BriefItem } from './briefs.js';
 
+// Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
+// mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
+vi.mock('./resolve-task-id.js', () => ({
+  resolveTaskId: vi.fn(async (_client: unknown, _projectId: string, input: string) => input),
+}));
+
+import { resolveTaskId } from './resolve-task-id.js';
+const mockResolveTaskId = vi.mocked(resolveTaskId);
+
 const decision = (over: Partial<BriefItem> = {}): BriefItem => ({
   kind: 'decision', text: 'Pick sidebar placement', recommendation: 'Sub-section under project views', ...over,
 });
@@ -43,6 +52,34 @@ describe('renderBrief', () => {
     expect(md).toContain("I don't know enough yet");
     expect(md).toContain('**Research first:**');
     expect(md).toContain('1. What is the GDPR retention limit?');
+  });
+
+  it('renders the low-confidence (non-cede) suffix', () => {
+    const md = renderBrief(baseDoc({ recommend: { text: 'Option A', confidence: 'low' } }));
+    expect(md).toContain('**Recommend (low confidence — see below):** Option A');
+  });
+
+  it('renders the alternatives and context sections', () => {
+    const md = renderBrief(baseDoc({
+      alternatives: [{ option: 'Top-level nav item', rejection: 'crowds the primary nav' }],
+      context: ['B-187 shipped list-action icons'],
+    }));
+    expect(md).toContain('**Alternatives:**');
+    expect(md).toContain('- Top-level nav item — crowds the primary nav');
+    expect(md).toContain('**Context:**');
+    expect(md).toContain('- B-187 shipped list-action icons');
+  });
+
+  it('renders a custom tail line in place of the default', () => {
+    const md = renderBrief(baseDoc({ tail: 'Reply with your pick.' }));
+    expect(md).toContain('> Reply with your pick.');
+    expect(md).not.toContain('Type `accept`');
+  });
+
+  it('drops derived-constraint items from the rendered "You need to" list', () => {
+    const md = renderBrief(baseDoc({ items: [decision(), { kind: 'derived-constraint', text: 'Confidentiality rule is already fixed' }] }));
+    expect(md).toContain('- [ ] Pick sidebar placement');
+    expect(md).not.toContain('Confidentiality rule is already fixed');
   });
 });
 
@@ -192,6 +229,12 @@ describe('getBrief', () => {
     expect(client.eq).toHaveBeenCalledWith('status', 'active');
     expect(result).toEqual(row);
   });
+
+  it('resolves a visual ID via resolveTaskId before looking up the brief', async () => {
+    const client = makeClient([{ data: { id: 'brief-1', task_id: 'uuid-x', status: 'active' } }]);
+    await getBrief(client, PROJECT_ID, { task_id: 'B-42' });
+    expect(mockResolveTaskId).toHaveBeenCalledWith(client, PROJECT_ID, 'B-42');
+  });
 });
 
 describe('resolveBrief', () => {
@@ -226,5 +269,11 @@ describe('resolveBrief', () => {
     const client = makeRpcClient(null, {});
     await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept' }))
       .rejects.toThrow(/no active brief/i);
+  });
+
+  it('returns the RPC payload verbatim, including the idempotent flag', async () => {
+    const client = makeRpcClient({ id: 'brief-1' }, { brief_id: 'brief-1', command: 'accept', workflow_state: 'Clarified', brief_status: 'accepted', idempotent: true });
+    const result = await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept' });
+    expect(result).toEqual({ brief_id: 'brief-1', command: 'accept', workflow_state: 'Clarified', brief_status: 'accepted', idempotent: true });
   });
 });

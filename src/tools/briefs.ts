@@ -3,6 +3,7 @@
 // canonical doc — so what's checked is exactly what's rendered.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { resolveTaskId } from './resolve-task-id.js';
 
 export interface BriefItem {
   /** §3.2 sort: a decision (always recommended), a content-input (only the human can supply it),
@@ -171,12 +172,15 @@ export async function composeBrief(
     throw new Error(`Brief failed the §3.2 pre-send lint:\n- ${lint.errors.join('\n- ')}`);
   }
 
+  // Resolve the task identifier (UUID / task number / visual ID), matching the sibling task tools.
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+
   // Compose-time guard (fail-fast): a pending_activity must yield a real transition from the current state.
   // Invariant: P1's seed has (from_state, activity) unique, so maybeSingle is exact; if a future seed adds
   // a second to_state for the same (from_state, activity), maybeSingle errors loudly (a safe fail).
   if (args.pending_activity) {
     const { data: task, error: tErr } = await client
-      .from('tasks').select('workflow_state').eq('id', args.task_id).single();
+      .from('tasks').select('workflow_state').eq('id', taskId).single();
     if (tErr) throw new Error(tErr.message);
     const fromState = (task as { workflow_state: string | null } | null)?.workflow_state ?? null;
     let q = client.from('workflow_transitions').select('to_state').eq('activity', args.pending_activity);
@@ -201,7 +205,7 @@ export async function composeBrief(
   // Upsert: update the active brief in place (edit/iterate — §3.2) or insert a new one (compose).
   const { data: existing, error: lookupErr } = await client
     .from('briefs').select('id, iteration')
-    .eq('task_id', args.task_id).eq('status', 'active').maybeSingle();
+    .eq('task_id', taskId).eq('status', 'active').maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
 
   let brief: unknown;
@@ -216,7 +220,7 @@ export async function composeBrief(
   } else {
     const { data, error } = await client
       .from('briefs')
-      .insert({ task_id: args.task_id, created_by: userId, ...payload })
+      .insert({ task_id: taskId, created_by: userId, ...payload })
       .select(BRIEF_COLS).single();
     if (error) throw new Error(error.message);
     brief = data;
@@ -230,7 +234,7 @@ export async function composeBrief(
       awaiting_human_reason: args.reason,
       awaiting_human_ref: { type: 'brief', id: (brief as { id: string }).id },
     })
-    .eq('id', args.task_id);
+    .eq('id', taskId);
   if (taskErr) throw new Error(taskErr.message);
 
   return { brief, lint };
@@ -249,7 +253,7 @@ export const composeBriefTool = {
   inputSchema: {
     type: 'object' as const,
     properties: {
-      task_id: { type: 'string', description: 'The task this brief decides on' },
+      task_id: { type: 'string', description: 'The task this brief decides on — UUID, task number (e.g., 43), or visual ID (e.g., B-43)' },
       reason: { type: 'string', description: 'Gate reason (§6.5): clarification-draft | decomposition-proposal | design-decision-draft | plan-draft | release-decision-pending | verification-ack-pending | stale-patch-review' },
       doc: {
         type: 'object',
@@ -297,10 +301,11 @@ export async function getBrief(
   args: GetBriefArgs,
 ): Promise<unknown> {
   if (!args.task_id) throw new Error('task_id is required');
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   // Unique-lookup guard: the partial unique index guarantees ≤1 active brief, so maybeSingle is exact.
   const { data, error } = await client
     .from('briefs').select(BRIEF_COLS)
-    .eq('task_id', args.task_id).eq('status', 'active').maybeSingle();
+    .eq('task_id', taskId).eq('status', 'active').maybeSingle();
   if (error) throw new Error(error.message);
   return data; // null when no active brief
 }
@@ -316,10 +321,11 @@ export async function resolveBrief(
   if (args.command !== 'accept' && args.command !== 'defer') {
     throw new Error('resolve_brief handles only accept/defer; edit/iterate are skill-side, expand/related are reads on get_brief');
   }
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   // Unique-lookup guard (partial unique index): exactly one active brief, or none.
   const { data: active, error: lookupErr } = await client
     .from('briefs').select('id')
-    .eq('task_id', args.task_id).eq('status', 'active').maybeSingle();
+    .eq('task_id', taskId).eq('status', 'active').maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   if (!active) throw new Error(`no active brief for task ${args.task_id}`);
 
@@ -337,7 +343,7 @@ export const getBriefTool = {
   description: 'Get the active brief for a task (its rendered content blob + canonical doc + pre-generated expand sections + related). Returns null if none is awaiting input.',
   inputSchema: {
     type: 'object' as const,
-    properties: { task_id: { type: 'string', description: 'The task whose active brief to fetch' } },
+    properties: { task_id: { type: 'string', description: 'The task whose active brief to fetch — UUID, task number, or visual ID (e.g., B-43)' } },
     required: ['task_id'],
   },
 };
@@ -348,7 +354,7 @@ export const resolveBriefTool = {
   inputSchema: {
     type: 'object' as const,
     properties: {
-      task_id: { type: 'string', description: 'The task whose active brief to resolve' },
+      task_id: { type: 'string', description: 'The task whose active brief to resolve — UUID, task number, or visual ID (e.g., B-43)' },
       command: { type: 'string', description: "'accept' | 'defer'" },
       detail: { type: 'string', description: 'Optional note (e.g. the defer reason)' },
     },

@@ -34300,8 +34300,9 @@ async function composeBrief(client, projectId, userId, args) {
     throw new Error(`Brief failed the \xA73.2 pre-send lint:
 - ${lint.errors.join("\n- ")}`);
   }
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   if (args.pending_activity) {
-    const { data: task, error: tErr } = await client.from("tasks").select("workflow_state").eq("id", args.task_id).single();
+    const { data: task, error: tErr } = await client.from("tasks").select("workflow_state").eq("id", taskId).single();
     if (tErr) throw new Error(tErr.message);
     const fromState = task?.workflow_state ?? null;
     let q = client.from("workflow_transitions").select("to_state").eq("activity", args.pending_activity);
@@ -34321,7 +34322,7 @@ async function composeBrief(client, projectId, userId, args) {
     pending_activity: args.pending_activity ?? null,
     decision_ref: args.decision_ref ?? null
   };
-  const { data: existing, error: lookupErr } = await client.from("briefs").select("id, iteration").eq("task_id", args.task_id).eq("status", "active").maybeSingle();
+  const { data: existing, error: lookupErr } = await client.from("briefs").select("id, iteration").eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   let brief;
   if (existing) {
@@ -34329,7 +34330,7 @@ async function composeBrief(client, projectId, userId, args) {
     if (error2) throw new Error(error2.message);
     brief = data;
   } else {
-    const { data, error: error2 } = await client.from("briefs").insert({ task_id: args.task_id, created_by: userId, ...payload }).select(BRIEF_COLS).single();
+    const { data, error: error2 } = await client.from("briefs").insert({ task_id: taskId, created_by: userId, ...payload }).select(BRIEF_COLS).single();
     if (error2) throw new Error(error2.message);
     brief = data;
   }
@@ -34337,7 +34338,7 @@ async function composeBrief(client, projectId, userId, args) {
     awaiting_human_input: true,
     awaiting_human_reason: args.reason,
     awaiting_human_ref: { type: "brief", id: brief.id }
-  }).eq("id", args.task_id);
+  }).eq("id", taskId);
   if (taskErr) throw new Error(taskErr.message);
   return { brief, lint };
 }
@@ -34347,7 +34348,7 @@ var composeBriefTool = {
   inputSchema: {
     type: "object",
     properties: {
-      task_id: { type: "string", description: "The task this brief decides on" },
+      task_id: { type: "string", description: "The task this brief decides on \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)" },
       reason: { type: "string", description: "Gate reason (\xA76.5): clarification-draft | decomposition-proposal | design-decision-draft | plan-draft | release-decision-pending | verification-ack-pending | stale-patch-review" },
       doc: {
         type: "object",
@@ -34388,7 +34389,8 @@ var composeBriefTool = {
 };
 async function getBrief(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
-  const { data, error: error2 } = await client.from("briefs").select(BRIEF_COLS).eq("task_id", args.task_id).eq("status", "active").maybeSingle();
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const { data, error: error2 } = await client.from("briefs").select(BRIEF_COLS).eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (error2) throw new Error(error2.message);
   return data;
 }
@@ -34397,7 +34399,8 @@ async function resolveBrief(client, projectId, args) {
   if (args.command !== "accept" && args.command !== "defer") {
     throw new Error("resolve_brief handles only accept/defer; edit/iterate are skill-side, expand/related are reads on get_brief");
   }
-  const { data: active, error: lookupErr } = await client.from("briefs").select("id").eq("task_id", args.task_id).eq("status", "active").maybeSingle();
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const { data: active, error: lookupErr } = await client.from("briefs").select("id").eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   if (!active) throw new Error(`no active brief for task ${args.task_id}`);
   const { data, error: error2 } = await client.rpc("resolve_brief", {
@@ -34413,7 +34416,7 @@ var getBriefTool = {
   description: "Get the active brief for a task (its rendered content blob + canonical doc + pre-generated expand sections + related). Returns null if none is awaiting input.",
   inputSchema: {
     type: "object",
-    properties: { task_id: { type: "string", description: "The task whose active brief to fetch" } },
+    properties: { task_id: { type: "string", description: "The task whose active brief to fetch \u2014 UUID, task number, or visual ID (e.g., B-43)" } },
     required: ["task_id"]
   }
 };
@@ -34423,7 +34426,7 @@ var resolveBriefTool = {
   inputSchema: {
     type: "object",
     properties: {
-      task_id: { type: "string", description: "The task whose active brief to resolve" },
+      task_id: { type: "string", description: "The task whose active brief to resolve \u2014 UUID, task number, or visual ID (e.g., B-43)" },
       command: { type: "string", description: "'accept' | 'defer'" },
       detail: { type: "string", description: "Optional note (e.g. the defer reason)" }
     },
