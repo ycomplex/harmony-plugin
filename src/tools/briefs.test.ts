@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { renderBrief, lintBrief, type BriefDoc, type BriefItem } from './briefs.js';
+import { describe, it, expect, vi } from 'vitest';
+import { renderBrief, lintBrief, composeBrief, type BriefDoc, type BriefItem } from './briefs.js';
 
 const decision = (over: Partial<BriefItem> = {}): BriefItem => ({
   kind: 'decision', text: 'Pick sidebar placement', recommendation: 'Sub-section under project views', ...over,
@@ -93,5 +93,92 @@ describe('lintBrief', () => {
     const r = lint(baseDoc({ why: [Array.from({ length: 350 }, (_, i) => `w${i}`).join(' ')] }));
     expect(r.ok).toBe(true);
     expect(r.warnings.join(' ')).toMatch(/soft budget/i);
+  });
+});
+
+const PROJECT_ID = 'proj-1';
+const USER_ID = 'user-1';
+
+// A chainable supabase mock whose terminal methods (single/maybeSingle) and direct `await` pop a queued
+// response in call order. `then` makes the builder awaitable for the trailing tasks-update.
+function makeClient(responses: Array<{ data: unknown; error?: unknown }>) {
+  let i = 0;
+  const next = () => responses[i++] ?? { data: null, error: null };
+  const chain: any = {};
+  for (const m of ['from', 'select', 'insert', 'update', 'eq', 'is']) chain[m] = vi.fn(() => chain);
+  chain.maybeSingle = vi.fn(async () => next());
+  chain.single = vi.fn(async () => next());
+  chain.then = (resolve: (v: unknown) => unknown) => resolve(next());
+  return chain;
+}
+
+const okDoc = { decide: 'x', recommend: { text: 'y' }, items: [{ kind: 'decision', text: 'Pick', recommendation: 'A' }] };
+
+describe('composeBrief', () => {
+  const briefRow = { id: 'brief-1', task_id: 'task-1', reason: 'clarification-draft', content: 'rendered', status: 'active', iteration: 1 };
+
+  it('renders + lints, validates pending_activity, inserts, then sets awaiting_human_input', async () => {
+    // responses: [task state] -> [transition exists] -> [no active brief] -> [insert row] -> [task update]
+    const client = makeClient([
+      { data: { workflow_state: 'Idea' } },
+      { data: { to_state: 'Clarified' } },
+      { data: null },
+      { data: briefRow },
+      { data: null },
+    ]);
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      pending_activity: 'clarifying', decision_ref: { type: 'decision', id: 'dec-1' },
+    });
+    expect(result.brief).toEqual(briefRow);
+    expect(result.lint.ok).toBe(true);
+    // content is derived (rendered), not passed in
+    expect(client.insert).toHaveBeenCalledWith(expect.objectContaining({
+      task_id: 'task-1', reason: 'clarification-draft', content: expect.stringContaining('## DECIDE: x'),
+    }));
+    expect(client.from).toHaveBeenCalledWith('tasks');
+    expect(client.update).toHaveBeenCalledWith(expect.objectContaining({
+      awaiting_human_input: true, awaiting_human_reason: 'clarification-draft',
+      awaiting_human_ref: { type: 'brief', id: 'brief-1' },
+    }));
+  });
+
+  it('updates the active brief IN PLACE (iterate) and bumps iteration (no pending_activity guard)', async () => {
+    // no pending_activity -> guard skipped. responses: [active found] -> [update row] -> [task update]
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: { ...briefRow, iteration: 2 } }, { data: null }]);
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    });
+    expect(client.update).toHaveBeenCalledWith(expect.objectContaining({ iteration: 2 }));
+    expect((result.brief as any).iteration).toBe(2);
+  });
+
+  it('throws on a lint failure (naked fork) before any DB write', async () => {
+    const client = makeClient([]);
+    await expect(
+      composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'clarification-draft',
+        doc: { decide: 'x', items: [{ kind: 'decision', text: 'Pick' }] } as any, // no recommendation
+      }),
+    ).rejects.toThrow(/pre-send lint/i);
+    expect(client.insert).not.toHaveBeenCalled();
+  });
+
+  it('throws when pending_activity has no transition from the current state', async () => {
+    // responses: [task state] -> [transition lookup returns null]
+    const client = makeClient([{ data: { workflow_state: 'Built' } }, { data: null }]);
+    await expect(
+      composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, pending_activity: 'clarifying',
+      }),
+    ).rejects.toThrow(/no valid transition/i);
+    expect(client.insert).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown reason', async () => {
+    const client = makeClient([]);
+    await expect(
+      composeBrief(client, PROJECT_ID, USER_ID, { task_id: 't', reason: 'bogus' as any, doc: okDoc as any }),
+    ).rejects.toThrow(/reason/i);
   });
 });
