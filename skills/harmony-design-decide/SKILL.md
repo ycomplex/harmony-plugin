@@ -30,7 +30,7 @@ progress). Propose which sub-tracks this ticket *requires* (a backend-only ticke
 state-machine §5); the human can override.
 
 To know which required sub-tracks are already **Accepted for THIS ticket**, use the ticket-scoped read —
-**not** `query_knowledge`, which returns no `source_task_id` and whose compat view hides `*-design` types:
+**not** `query_knowledge`, which has no ticket filter (it returns no `source_task_id`):
 
 ```
 const refs = mcp__harmony__list_ticket_knowledge({ task_id })

@@ -34516,7 +34516,7 @@ async function referenceKnowledge(client, projectId, args) {
 }
 var listTicketKnowledgeTool = {
   name: "list_ticket_knowledge",
-  description: "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status. Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket \u2014 query_knowledge has no ticket filter and the compat view hides *-design types.",
+  description: "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status. Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket \u2014 query_knowledge has no ticket filter (it projects no source_task_id).",
   inputSchema: {
     type: "object",
     properties: {
