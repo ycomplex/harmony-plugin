@@ -32,8 +32,13 @@ describe('start-work skill contract (evolved)', () => {
     const tools = referencedHarmonyTools(skill.body);
     expect(tools).toContain('advance_workflow');   // Planned -> Built on tests pass
     expect(tools).toContain('compose_brief');       // plan-draft + release-decision-pending
+    expect(tools).toContain('resolve_brief');       // Designed -> Planned on plan accept
     expect(skill.body).toContain('plan-draft');
     expect(skill.body).toContain('release-decision-pending');
+    // F4 guard: the release brief must carry pending_activity: null (accept is the human's "go";
+    // Built->Released is SYSTEM-on-deploy via finish-work, not the accept). An inverted body that
+    // set pending_activity:'releasing' here would reintroduce the B-60 "Released before deploy" bug.
+    expect(skill.body).toMatch(/release-decision-pending",\s*pending_activity:\s*null/);
   });
   it('carries the build role profile (can commit; cannot author design knowledge)', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/record_decision/);
