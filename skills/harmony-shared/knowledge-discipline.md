@@ -31,8 +31,8 @@ When you find no entry you *should* be answering from knowledge, flag it. Then c
 - **Load-bearing gap** (high-impact / Type-1 decision you're genuinely out of depth on) →
   **research-first**: set `load_bearing_gap: true` on the brief doc, put the concrete research prompts
   in `research[]`, mark the decision items `deferred: true`, and **lead with the research ask** — never
-  bury it behind `expand`. Then invoke `/harmony-research` to run the relay. (The §3.2 lint enforces
-  this: a load-bearing brief with no research, or still asking a substantive decision, fails to compose.)
+  bury it behind `expand`. Then invoke `/harmony-research` to run the relay. (The gate-ui-conductor §3.2
+  lint enforces this: a load-bearing brief with no research, or still asking a substantive decision, fails to compose.)
 
 "I don't know" is never the end state: fill the gap (write knowledge), accept the guess as precedent,
 or trigger research.
