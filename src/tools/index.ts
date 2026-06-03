@@ -45,6 +45,11 @@ import {
   getBrief, getBriefTool,
   resolveBrief, resolveBriefTool,
 } from './briefs.js';
+import {
+  advanceWorkflowTool, advanceWorkflow,
+  referenceKnowledgeTool, referenceKnowledge,
+  listTicketKnowledgeTool, listTicketKnowledge,
+} from './workflow.js';
 
 export function registerTools(disabledFeatures?: Record<string, boolean>) {
   const tools = [
@@ -57,6 +62,9 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     queryKnowledgeTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     composeBriefTool, getBriefTool, resolveBriefTool,
+    advanceWorkflowTool,
+    referenceKnowledgeTool,
+    listTicketKnowledgeTool,
   ];
 
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
@@ -230,6 +238,15 @@ export async function handleToolCall(
         break;
       case 'resolve_brief':
         result = await resolveBrief(client, projectId, args as any);
+        break;
+      case 'advance_workflow':
+        result = await advanceWorkflow(client, projectId, args as any);
+        break;
+      case 'reference_knowledge':
+        result = await referenceKnowledge(client, projectId, args as any);
+        break;
+      case 'list_ticket_knowledge':
+        result = await listTicketKnowledge(client, projectId, args as any);
         break;
       default:
         return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };

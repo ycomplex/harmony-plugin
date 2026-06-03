@@ -23954,7 +23954,7 @@ async function createAuthenticatedClient(auth) {
 
 // src/tools/project.ts
 async function getProject(client, projectId) {
-  const { data, error } = await client.from("projects").select("id, name, key, description, custom_statuses, field_definitions, archived").eq("id", projectId).single();
+  const { data, error } = await client.from("projects").select("id, name, key, description, mode, custom_statuses, field_definitions, archived").eq("id", projectId).single();
   if (error) throw error;
   return data;
 }
@@ -24590,7 +24590,7 @@ function registerTaskCommands(program3) {
 // src/tools/query-tasks.ts
 async function queryTasks(client, projectId, args) {
   let query = client.from("tasks").select(
-    "id, title, status, priority, task_number, assignee_id, epic_id, description, field_values, archived, due_date, created_at, updated_at, task_labels(labels(id, name, color))"
+    "id, title, status, priority, task_number, assignee_id, epic_id, description, field_values, archived, due_date, created_at, updated_at, workflow_state, workflow_activity, awaiting_human_input, awaiting_human_reason, awaiting_human_ref, stale, task_labels(labels(id, name, color))"
   ).eq("project_id", projectId).eq("archived", args.archived ?? false);
   if (args.status) query = query.eq("status", args.status);
   if (args.assignee_id) query = query.eq("assignee_id", args.assignee_id);
@@ -24598,6 +24598,10 @@ async function queryTasks(client, projectId, args) {
   if (args.cycle_id) query = query.eq("cycle_id", args.cycle_id);
   if (args.milestone_id) query = query.eq("milestone_id", args.milestone_id);
   if (args.priority) query = query.eq("priority", args.priority);
+  if (args.awaiting_human_input !== void 0) query = query.eq("awaiting_human_input", args.awaiting_human_input);
+  if (args.workflow_state) query = query.eq("workflow_state", args.workflow_state);
+  if (args.workflow_activity) query = query.eq("workflow_activity", args.workflow_activity);
+  if (args.stale !== void 0) query = query.eq("stale", args.stale);
   if (args.due_date_from) query = query.gte("due_date", args.due_date_from);
   if (args.due_date_to) query = query.lte("due_date", args.due_date_to);
   if (args.stale_days) {

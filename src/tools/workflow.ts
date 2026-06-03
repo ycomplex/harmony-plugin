@@ -156,7 +156,13 @@ export async function listTicketKnowledge(
     .select('decision_id, knowledge_decisions(id, type, status, title, domain)')
     .eq('task_id', id);
   if (error) throw error;
-  return (data ?? []).map((r: { decision_id: string; knowledge_decisions: Record<string, unknown> | null }) => ({
+  // PostgREST types the embed as an array, but the decision_id->id FK is to-one so it returns a single
+  // object (or null) at runtime — cast through unknown to the real shape.
+  const rows = (data ?? []) as unknown as {
+    decision_id: string;
+    knowledge_decisions: Record<string, unknown> | null;
+  }[];
+  return rows.map((r) => ({
     decision_id: r.decision_id,
     ...(r.knowledge_decisions ?? {}),
   }));
