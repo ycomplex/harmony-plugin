@@ -1,11 +1,80 @@
 ---
 name: finish-work
-description: Use when the user wants to finish, complete, wrap up, land, or merge their current work. Triggers on phrases like "finish", "done", "wrap up", "land this", "merge", "ship it", or "we're done". This is the exit point for ALL development work in this project — it handles the full merge-and-cleanup sequence.
+description: Use when the user wants to finish, complete, wrap up, land, or merge their current work. Triggers on phrases like "finish", "done", "wrap up", "land this", "merge", "ship it", or "we're done". This is the exit point for ALL development work in this project — it handles the full merge-and-cleanup sequence. In opinionated-mode projects it also drives the releasing + verifying activities; in manual-mode projects it behaves exactly as before.
+allowed-tools: mcp__harmony__* Read Grep Glob Bash Bash(gh *)
+disallowed-tools: mcp__harmony__record_decision mcp__harmony__supersede_decision mcp__harmony__update_knowledge_entry
 ---
 
 # Finish Work
 
 Safely land completed work: verify readiness, rebase, squash merge, update main, and clean up the worktree and branch.
+
+## 0. Check project mode
+
+Call `mcp__harmony__get_project`. If `mode !== 'opinionated'`, follow **Manual mode** (the original
+merge-and-cleanup flow below — unchanged). If `mode === 'opinionated'`, follow **Opinionated mode**
+(it wraps the same merge sequence with the release/verify gates).
+
+---
+
+## Opinionated mode (releasing + verifying)
+
+The ticket should be at **Built** with `awaiting_human_reason = 'release-decision-pending'` (set by
+`/harmony-plugin:harmony-build`). This path drives `releasing` (Built → Released) and `verifying`
+(Released → Verified). It does NOT rewrite design knowledge (release role).
+
+### O1. Confirm the release decision (accept clears the gate — it does NOT release yet)
+
+`mcp__harmony__get_task({ task_id })` (read `.harmony-task.json` for the id) and
+`mcp__harmony__get_brief({ task_id })`. Show the `release-decision-pending` brief. On the human's
+**accept**:
+
+```
+mcp__harmony__resolve_brief({ task_id, command: "accept" })   // pending_activity: null → clears the flag, NO state change
+```
+
+The release brief carries `pending_activity: null` (state-machine §6.1 — Built→Released is
+SYSTEM-on-deploy-success, not human-accept). So accept is only the human's "go"; the ticket stays **Built**
+until the deploy actually succeeds (O2). (If the human defers, `resolve_brief({ command: "defer" })` parks
+it — do not merge.)
+
+### O2. Run the merge + deploy, THEN advance to Released
+
+Run the **manual-mode merge sequence below** (pre-flight checks → rebase → force-push → wait for CI →
+squash merge → cleanup). **Only after the deploy actually succeeds:**
+
+```
+mcp__harmony__advance_workflow({ task_id, activity: "releasing" })   // Built -> Released (now reality matches)
+```
+
+If CI/deploy goes red, **do not advance** — the ticket stays Built; fix and retry. This is what keeps
+`Released` meaning "deployed" (state-machine §6.1), so `verifying` (O3) checks against a real deploy
+rather than a state that ran ahead of reality (the B-60 conflation — review F4).
+
+### O3. Verify (Released → Verified)
+
+After deploy, file the verification brief so the human can acknowledge real-world behaviour matches the
+design (state-machine §6.1 — verifying is human-ack by default):
+
+```
+mcp__harmony__compose_brief({
+  task_id, reason: "verification-ack-pending", pending_activity: "verifying",
+  doc: { decide: "Does production behaviour match the design?", items: [{ kind: "decision", text: "Acknowledge verified", recommendation: "verify once confirmed" }] }
+})
+```
+
+On the human's **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept" })` advances
+Released→Verified (terminal-positive). Report completion.
+
+> If post-release the human finds a problem, flag a human-authorised backflow:
+> `mcp__harmony__advance_workflow({ task_id, activity: "revising-building" })` (Released → Built) and
+> hand back to `/harmony-plugin:harmony-build`.
+
+---
+
+## Manual mode
+
+*(everything below is the original finish-work flow — unchanged)*
 
 ## Pre-flight checks
 
