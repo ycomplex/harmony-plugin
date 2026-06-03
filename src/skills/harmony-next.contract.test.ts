@@ -24,13 +24,25 @@ describe('harmony-next skill contract', () => {
     }
   });
   it('restricts inline accept to the pure gates and delegates the side-effecting ones (F1)', () => {
-    // The side-effecting gates must be marked as delegated, not resolved inline.
     expect(skill.body.toLowerCase()).toContain('delegate');
-    for (const r of ['decomposition-proposal', 'release-decision-pending', 'verification-ack-pending']) {
-      expect(skill.body).toContain(r);
-    }
-    // The pure gates are explicitly the inline-accept set.
     expect(skill.body.toLowerCase()).toContain('pure gate');
+    // Token co-occurrence isn't enough: verify the MAPPING. Split the accept section into the
+    // pure-gate segment (inline resolve_brief) and the side-effecting segment (delegated), and
+    // assert each reason lands on the correct side — so an inverted body (a side-effecting gate
+    // listed as inline-accept) fails here, not silently at the acceptance walk.
+    const pureIdx = skill.body.indexOf('Pure gates');
+    const sideIdx = skill.body.indexOf('Side-effecting gates');
+    expect(pureIdx).toBeGreaterThan(-1);
+    expect(sideIdx).toBeGreaterThan(pureIdx);
+    const pureSeg = skill.body.slice(pureIdx, sideIdx);
+    const sideSeg = skill.body.slice(sideIdx);
+    for (const r of ['clarification-draft', 'design-decision-draft', 'plan-draft']) {
+      expect(pureSeg).toContain(r); // pure gates resolve inline
+    }
+    for (const r of ['decomposition-proposal', 'release-decision-pending', 'verification-ack-pending']) {
+      expect(sideSeg).toContain(r); // side-effecting gates are delegated
+      expect(pureSeg).not.toContain(r); // …and must NOT be in the inline-accept set
+    }
   });
   it('routes a Stale ticket to the patch author (F3 — the §6.4 loop is built)', () => {
     expect(skill.body).toContain('harmony-stale-patch');

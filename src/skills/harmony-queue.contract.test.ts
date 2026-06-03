@@ -16,7 +16,7 @@ describe('harmony-queue skill contract', () => {
       expect(REGISTERED.has(tool), `unknown tool mcp__harmony__${tool}`).toBe(true);
     }
   });
-  it('keys off BOTH queue signals — awaiting_human_input AND stale (F5)', () => {
+  it('keys off BOTH queue signals — awaiting_human_input AND stale (state-machine §6.4–§6.5)', () => {
     const tools = referencedHarmonyTools(skill.body);
     expect(tools).toContain('query_tasks');
     expect(tools).toContain('get_brief');
