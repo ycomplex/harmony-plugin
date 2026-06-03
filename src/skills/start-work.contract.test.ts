@@ -1,0 +1,41 @@
+import { describe, it, expect } from 'vitest';
+import { readSkill, referencedHarmonyTools } from './skill-contract.js';
+import { registerTools } from '../tools/index.js';
+
+const REGISTERED = new Set(registerTools().map((t) => t.name));
+
+describe('start-work skill contract (evolved)', () => {
+  const skill = readSkill('start-work');
+
+  it('still has valid frontmatter', () => {
+    expect(skill.frontmatter.name).toBe('start-work');
+    expect(skill.frontmatter.description).toBeTruthy();
+  });
+  it('references only real registered MCP tools', () => {
+    for (const tool of referencedHarmonyTools(skill.body)) {
+      expect(REGISTERED.has(tool), `unknown tool mcp__harmony__${tool}`).toBe(true);
+    }
+  });
+
+  // Regression guard: the manual-mode path is preserved.
+  it('preserves the manual-mode flow', () => {
+    expect(skill.body).toContain('using-git-worktrees');
+    expect(skill.body).toContain('In Progress');
+    expect(skill.body).toContain('.harmony-task.json');
+  });
+
+  // New opinionated path.
+  it('branches on project mode and drives the opinionated lifecycle', () => {
+    expect(skill.body).toContain('get_project');
+    expect(skill.body).toContain('opinionated');
+    expect(skill.body.toLowerCase()).toContain('manual mode');
+    const tools = referencedHarmonyTools(skill.body);
+    expect(tools).toContain('advance_workflow');   // Planned -> Built on tests pass
+    expect(tools).toContain('compose_brief');       // plan-draft + release-decision-pending
+    expect(skill.body).toContain('plan-draft');
+    expect(skill.body).toContain('release-decision-pending');
+  });
+  it('carries the build role profile (can commit; cannot author design knowledge)', () => {
+    expect(skill.frontmatter['disallowed-tools']).toMatch(/record_decision/);
+  });
+});

@@ -1,11 +1,80 @@
 ---
 name: start-work
-description: Use when the user wants to start working on a task, feature, or bug fix. Triggers on phrases like "work on", "start", "pick up", "implement", "fix", or any mention of a Harmony task ID (e.g., B-123). Also use when the user says "let's do X" or describes work they want to begin. This is the entry point for ALL new development work in this project.
+description: Use when the user wants to start working on a task, feature, or bug fix. Triggers on phrases like "work on", "start", "pick up", "implement", "fix", or any mention of a Harmony task ID (e.g., B-123). Also use when the user says "let's do X" or describes work they want to begin. This is the entry point for ALL new development work in this project. In opinionated-mode projects it drives the planning + building activities; in manual-mode projects it behaves exactly as before.
+allowed-tools: mcp__harmony__* Read Grep Glob Write Edit Bash
+disallowed-tools: mcp__harmony__record_decision mcp__harmony__supersede_decision mcp__harmony__update_knowledge_entry
 ---
 
 # Start Work
 
 Set up everything needed to begin a piece of work: find or create the Harmony task, move it to In Progress, create an isolated worktree, and recommend an execution route (Execute, Plan, or Explore) based on task complexity and uncertainty.
+
+## 0. Check project mode
+
+Call `mcp__harmony__get_project`. If `mode !== 'opinionated'`, follow **Manual mode** (the original
+flow below — unchanged). If `mode === 'opinionated'`, follow **Opinionated mode** instead.
+
+---
+
+## Opinionated mode (planning + building)
+
+This path drives `planning` (Designed → Planned) and `building` (Planned → Built) for a ticket that has
+accepted design decisions. It does NOT author design knowledge (build role): if you discover the design
+is wrong, flag a backflow (`mcp__harmony__advance_workflow({ task_id, activity: "revising-designing" })`)
+and hand back to `/harmony-plugin:harmony-design-decide` — don't quietly redesign.
+
+### O1. Load + locate the ticket in the lifecycle
+
+`mcp__harmony__get_task({ task_id })`. Branch on `workflow_state`:
+- **Designed** → write the execution plan (next step), then build.
+- **Planned** → the plan is accepted; go straight to build.
+- Anything earlier → tell the user the ticket isn't ready to build (it needs clarify/decompose/design
+  first) and suggest `/harmony-plugin:harmony-next`.
+
+### O2. Plan (Designed → Planned)
+
+Query `engineering` knowledge (`mcp__harmony__query_knowledge({ domain: ["engineering"] })`) and the
+ticket's accepted design decisions (`query_knowledge({ status: "Accepted" })`). Write the execution plan
+(invoke `superpowers:writing-plans` for anything non-trivial). File it as a plan brief:
+
+```
+mcp__harmony__compose_brief({
+  task_id, reason: "plan-draft", pending_activity: "planning",
+  doc: { decide: "Approve this execution plan?", items: [{ kind: "decision", text: "<plan summary>", recommendation: "proceed" }] }
+})
+```
+
+On **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept" })` advances Designed→Planned.
+The accept IS the "go" to build.
+
+### O3. Build (Planned → Built)
+
+Create the isolated worktree (invoke `superpowers:using-git-worktrees`) and save `.harmony-task.json`
+exactly as in the manual flow. Implement, write tests, self-validate against acceptance criteria
+(`mcp__harmony__manage_acceptance_criteria`, `mcp__harmony__manage_test_cases`). When tests pass:
+
+```
+mcp__harmony__advance_workflow({ task_id, activity: "building" })   // Planned -> Built
+```
+
+Then file the release-decision brief (the ticket is now awaiting the human's release call). Note
+`pending_activity: null` — the human's accept is the "go", but Built→Released is SYSTEM-on-deploy-success
+(state-machine §6.1), advanced by `harmony-release` *after* the deploy, not by the accept (review F4):
+
+```
+mcp__harmony__compose_brief({
+  task_id, reason: "release-decision-pending", pending_activity: null,
+  doc: { decide: "Release <ticket> to production?", items: [{ kind: "decision", text: "Ship the built artefact", recommendation: "release" }] }
+})
+```
+
+Report that the ticket is Built and awaiting release; the human runs `/harmony-plugin:harmony-release`.
+
+---
+
+## Manual mode
+
+*(everything below is the original start-work flow — unchanged)*
 
 ## Flow
 
