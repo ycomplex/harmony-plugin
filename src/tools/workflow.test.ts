@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { deriveToState, advanceWorkflow, referenceKnowledge } from './workflow.js';
+import { deriveToState, advanceWorkflow, referenceKnowledge, listTicketKnowledge } from './workflow.js';
 
 // P1 seed subset (web/supabase/migrations/20260602170200_workflow_transitions.sql)
 const TRANSITIONS = [
@@ -98,5 +98,21 @@ describe('referenceKnowledge', () => {
       { task_id: 'uuid-B-1', decision_id: 'dec-1' },
       { onConflict: 'task_id,decision_id', ignoreDuplicates: true },
     );
+  });
+});
+
+describe('listTicketKnowledge', () => {
+  it('returns this ticket\'s referenced decisions flattened with type + status', async () => {
+    const rows = [
+      { decision_id: 'd1', knowledge_decisions: { id: 'd1', type: 'product-design', status: 'Accepted', title: 'PD' } },
+      { decision_id: 'd2', knowledge_decisions: { id: 'd2', type: 'technical-design', status: 'Asserted', title: 'TD' } },
+    ];
+    const eq = vi.fn(() => Promise.resolve({ data: rows, error: null }));
+    const client = { from: vi.fn(() => ({ select: () => ({ eq }) })) } as unknown as import('@supabase/supabase-js').SupabaseClient;
+    const res = await listTicketKnowledge(client, 'proj', { task_id: 'B-1' });
+    expect(res).toEqual([
+      { decision_id: 'd1', id: 'd1', type: 'product-design', status: 'Accepted', title: 'PD' },
+      { decision_id: 'd2', id: 'd2', type: 'technical-design', status: 'Asserted', title: 'TD' },
+    ]);
   });
 });

@@ -129,3 +129,35 @@ export async function referenceKnowledge(
   if (error) throw error;
   return { task_id: id, decision_id: args.decision_id, linked: true };
 }
+
+export const listTicketKnowledgeTool = {
+  name: 'list_ticket_knowledge',
+  description:
+    "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status. Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket — query_knowledge has no ticket filter and the compat view hides *-design types.",
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      task_id: { type: 'string', description: 'Task identifier — UUID, number, or visual ID' },
+    },
+    required: ['task_id'],
+  },
+};
+
+export async function listTicketKnowledge(
+  client: SupabaseClient,
+  projectId: string,
+  args: { task_id: string },
+) {
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  // Embed the parent decision via the FK ticket_references_knowledge.decision_id -> knowledge_decisions.id.
+  // knowledge_decisions RLS applies to the embed; ticket_references_knowledge is members-rw (P2 plan A6).
+  const { data, error } = await client
+    .from('ticket_references_knowledge')
+    .select('decision_id, knowledge_decisions(id, type, status, title, domain)')
+    .eq('task_id', id);
+  if (error) throw error;
+  return (data ?? []).map((r: { decision_id: string; knowledge_decisions: Record<string, unknown> | null }) => ({
+    decision_id: r.decision_id,
+    ...(r.knowledge_decisions ?? {}),
+  }));
+}
