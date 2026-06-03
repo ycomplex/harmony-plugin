@@ -288,3 +288,70 @@ export const composeBriefTool = {
     required: ['task_id', 'reason', 'doc'],
   },
 };
+
+export interface GetBriefArgs { task_id: string; }
+
+export async function getBrief(
+  client: SupabaseClient,
+  projectId: string,
+  args: GetBriefArgs,
+): Promise<unknown> {
+  if (!args.task_id) throw new Error('task_id is required');
+  // Unique-lookup guard: the partial unique index guarantees ≤1 active brief, so maybeSingle is exact.
+  const { data, error } = await client
+    .from('briefs').select(BRIEF_COLS)
+    .eq('task_id', args.task_id).eq('status', 'active').maybeSingle();
+  if (error) throw new Error(error.message);
+  return data; // null when no active brief
+}
+
+export interface ResolveBriefArgs { task_id: string; command: string; detail?: string; }
+
+export async function resolveBrief(
+  client: SupabaseClient,
+  projectId: string,
+  args: ResolveBriefArgs,
+): Promise<unknown> {
+  if (!args.task_id) throw new Error('task_id is required');
+  if (args.command !== 'accept' && args.command !== 'defer') {
+    throw new Error('resolve_brief handles only accept/defer; edit/iterate are skill-side, expand/related are reads on get_brief');
+  }
+  // Unique-lookup guard (partial unique index): exactly one active brief, or none.
+  const { data: active, error: lookupErr } = await client
+    .from('briefs').select('id')
+    .eq('task_id', args.task_id).eq('status', 'active').maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+  if (!active) throw new Error(`no active brief for task ${args.task_id}`);
+
+  const { data, error } = await client.rpc('resolve_brief', {
+    _brief_id: (active as { id: string }).id,
+    _command: args.command,
+    _detail: args.detail ?? null,
+  });
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+export const getBriefTool = {
+  name: 'get_brief',
+  description: 'Get the active brief for a task (its rendered content blob + canonical doc + pre-generated expand sections + related). Returns null if none is awaiting input.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: { task_id: { type: 'string', description: 'The task whose active brief to fetch' } },
+    required: ['task_id'],
+  },
+};
+
+export const resolveBriefTool = {
+  name: 'resolve_brief',
+  description: "Resolve the active brief on a task. accept = promote the Asserted knowledge entry to Accepted, advance the state machine, clear the flag. defer = park the ticket. Idempotent (re-issuing the same command is safe). (edit/iterate are skill-side LLM work via compose_brief; expand/related are reads via get_brief.)",
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      task_id: { type: 'string', description: 'The task whose active brief to resolve' },
+      command: { type: 'string', description: "'accept' | 'defer'" },
+      detail: { type: 'string', description: 'Optional note (e.g. the defer reason)' },
+    },
+    required: ['task_id', 'command'],
+  },
+};

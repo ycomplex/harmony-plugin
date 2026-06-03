@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderBrief, lintBrief, composeBrief, type BriefDoc, type BriefItem } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, getBrief, resolveBrief, type BriefDoc, type BriefItem } from './briefs.js';
 
 const decision = (over: Partial<BriefItem> = {}): BriefItem => ({
   kind: 'decision', text: 'Pick sidebar placement', recommendation: 'Sub-section under project views', ...over,
@@ -180,5 +180,51 @@ describe('composeBrief', () => {
     await expect(
       composeBrief(client, PROJECT_ID, USER_ID, { task_id: 't', reason: 'bogus' as any, doc: okDoc as any }),
     ).rejects.toThrow(/reason/i);
+  });
+});
+
+describe('getBrief', () => {
+  it('returns the active brief for a task', async () => {
+    const row = { id: 'brief-1', task_id: 'task-1', status: 'active' };
+    const client = makeClient([{ data: row }]);
+    const result = await getBrief(client, PROJECT_ID, { task_id: 'task-1' });
+    expect(client.from).toHaveBeenCalledWith('briefs');
+    expect(client.eq).toHaveBeenCalledWith('status', 'active');
+    expect(result).toEqual(row);
+  });
+});
+
+describe('resolveBrief', () => {
+  function makeRpcClient(active: unknown, rpcResult: unknown) {
+    const chain: any = {};
+    for (const m of ['from', 'select', 'eq']) chain[m] = vi.fn(() => chain);
+    chain.maybeSingle = vi.fn(async () => ({ data: active, error: null }));
+    chain.rpc = vi.fn(async () => ({ data: rpcResult, error: null }));
+    return chain;
+  }
+
+  it('looks up the (unique) active brief then calls the resolve_brief RPC for accept', async () => {
+    const client = makeRpcClient({ id: 'brief-1' }, { brief_id: 'brief-1', workflow_state: 'Clarified', brief_status: 'accepted' });
+    const result = await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept' });
+    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-1', _command: 'accept', _detail: null });
+    expect(result).toEqual({ brief_id: 'brief-1', workflow_state: 'Clarified', brief_status: 'accepted' });
+  });
+
+  it('passes the detail through for defer', async () => {
+    const client = makeRpcClient({ id: 'brief-1' }, { brief_status: 'deferred' });
+    await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'defer', detail: 'later' });
+    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-1', _command: 'defer', _detail: 'later' });
+  });
+
+  it('rejects commands other than accept/defer', async () => {
+    const client = makeRpcClient({ id: 'brief-1' }, {});
+    await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'iterate' as any }))
+      .rejects.toThrow(/only accept\/defer/i);
+  });
+
+  it('throws when there is no active brief', async () => {
+    const client = makeRpcClient(null, {});
+    await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept' }))
+      .rejects.toThrow(/no active brief/i);
   });
 });
