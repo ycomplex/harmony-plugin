@@ -40,6 +40,11 @@ import { listAcceptanceCriteriaTool, listAcceptanceCriteria, manageAcceptanceCri
 import { listTestCasesTool, listTestCases, manageTestCasesTool, manageTestCases } from './test-cases.js';
 import { listDependenciesTool, listDependencies, manageDependenciesTool, manageDependencies } from './dependencies.js';
 import { listSubtasksTool, listSubtasks, listParentTool, listParent, manageSubtasksTool, manageSubtasks } from './decomposition.js';
+import {
+  composeBrief, composeBriefTool,
+  getBrief, getBriefTool,
+  resolveBrief, resolveBriefTool,
+} from './briefs.js';
 
 export function registerTools(disabledFeatures?: Record<string, boolean>) {
   const tools = [
@@ -51,6 +56,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listMembersTool,
     queryKnowledgeTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
+    composeBriefTool, getBriefTool, resolveBriefTool,
   ];
 
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
@@ -215,6 +221,15 @@ export async function handleToolCall(
         break;
       case 'manage_subtasks':
         result = await manageSubtasks(client, projectId, userId, args as any);
+        break;
+      case 'compose_brief':
+        result = await composeBrief(client, projectId, userId, args as any);
+        break;
+      case 'get_brief':
+        result = await getBrief(client, projectId, args as any);
+        break;
+      case 'resolve_brief':
+        result = await resolveBrief(client, projectId, args as any);
         break;
       default:
         return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };
