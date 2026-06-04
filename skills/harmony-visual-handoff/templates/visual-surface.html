@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Harmony visual hand-off — generated surface</title>
+<!--
+  HARMONY VISUAL HAND-OFF SURFACE TEMPLATE (P6).
+  Clone to /tmp/harmony-visual/<task>-<slug>.html and fill the AGENT-FILL blocks for ONE framed
+  UX/UI decision. Throwaway hand-off artefact — never repo source, never committed.
+  Disciplines: skills/harmony-shared/visual-handoff.md (B-328 D1/D2/D3).
+  Provenance: tag every decision-bearing element data-prov="real|invented|illustrative".
+  Keep the preview mode(s) the decision needs (parametric for glanceable; walk+storyboard for a flow);
+  delete the rest.
+-->
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --ink:#e7eaf0; --mut:#9aa3b2; --dim:#6b7280; --accent:#6ea8fe;
+    --invented:#fbbf24; --illustrative:#6b7280;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%}
+  body{background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;gap:24px;padding:28px;min-height:100vh}
+  .controls{width:300px;flex:0 0 300px}
+  .stage{flex:1;min-width:0}
+  h1{font-size:15px;margin:0 0 4px}
+  .sub{color:var(--mut);font-size:12px;margin:0 0 16px}
+
+  /* tier-1 guard-rail banner (D3) — hidden unless #sketch in the URL or the "g" key is pressed */
+  .banner{display:none;background:#2a2310;border:1px solid #5b4a16;color:#f6d98a;border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:12px}
+  body.sketch .banner{display:block}
+
+  .presets,.viewbar{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+  .presets button,.viewbar button{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:5px 11px;font-size:12px;cursor:pointer}
+  .presets button:hover,.viewbar button:hover{border-color:var(--accent)}
+  .viewbar button.on{border-color:var(--accent);color:#fff}
+
+  .opt{display:block;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:6px;cursor:pointer}
+  .opt.sel{border-color:var(--accent)}
+  .opt .rec{font-size:10px;color:var(--accent);margin-left:6px}
+
+  /* tier-2 provenance (D3) — ALWAYS visible (laundering survives normal review; don't gate it behind the banner) */
+  .prov-legend{display:flex;flex-wrap:wrap;gap:12px;font-size:11px;color:var(--mut);margin:12px 0}
+  .prov-legend span{display:inline-flex;align-items:center;gap:5px}
+  .prov-dot{width:9px;height:9px;border-radius:2px;display:inline-block}
+  [data-prov="invented"]{outline:1px dashed var(--invented);outline-offset:2px}
+  [data-prov="illustrative"]{outline:1px dotted var(--illustrative);outline-offset:2px}
+
+  .frame{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px;min-height:240px}
+  .storyboard{display:flex;flex-wrap:wrap;gap:14px}
+  .storyboard .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;width:150px}
+
+  pre{background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:12px;font:12px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;margin-top:14px}
+  .copy{background:var(--accent);color:#08101f;border:0;border-radius:7px;padding:6px 14px;font-size:12px;font-weight:650;cursor:pointer}
+</style>
+</head>
+<body>
+  <aside class="controls">
+    <h1>Decide: <span class="decision-title">&lt;the framed decision&gt;</span></h1>
+    <p class="sub">Adjust controls → see the consequence instantly. Start from <b>Recommended</b>, then explore. Copy the spec back as your decision.</p>
+
+    <div class="viewbar" id="viewbar"></div>
+    <div class="presets" id="presets"></div>
+    <div id="opts"></div>
+
+    <div class="prov-legend">
+      <span><i class="prov-dot" style="background:var(--accent)"></i>real — your config / a product rule</span>
+      <span><i class="prov-dot" style="background:var(--invented)"></i>invented — placeholder, decide it</span>
+      <span><i class="prov-dot" style="background:var(--illustrative)"></i>illustrative — sample data</span>
+    </div>
+  </aside>
+
+  <main class="stage">
+    <div class="banner" id="banner">⚠ <b>Generated sketch.</b> Numbers and copy are illustrative placeholders, not real data — review the structure and substance, not the figures. Dashed = invented (a decision to make); dotted = illustrative.</div>
+    <div id="preview" class="frame"></div>
+    <pre id="spec"></pre>
+    <button class="copy" id="copyBtn">Copy spec</button>
+  </main>
+
+<script>
+  /* tier-1 guard-rail banner — toggle via #sketch in the URL or the "g" key (matches the B-328 artifact) */
+  function setSketch(on){document.body.classList.toggle('sketch', on);}
+  setSketch(location.hash.toLowerCase().includes('sketch'));
+  window.addEventListener('hashchange',()=>setSketch(location.hash.toLowerCase().includes('sketch')));
+  window.addEventListener('keydown',e=>{if(e.key==='g'||e.key==='G')setSketch(!document.body.classList.contains('sketch'));});
+
+  /* ---------- AGENT-FILL: state for ONE decision (this default is a placeholder example) ---------- */
+  const DEFAULTS={ density:'comfortable', emphasis:'metric' };   // the recommended starting point
+  const state={ ...DEFAULTS, view:'parametric', step:0 };
+
+  const OPTIONS={
+    density:[ {v:'comfortable',t:'Comfortable',rec:true}, {v:'compact',t:'Compact'} ],
+    emphasis:[ {v:'metric',t:'Lead with the metric',rec:true}, {v:'trend',t:'Lead with the trend'} ],
+  };
+  const PRESETS={
+    'Recommended':{ density:'comfortable', emphasis:'metric' },
+    'Dense':{ density:'compact', emphasis:'metric' },
+  };
+
+  // AGENT-FILL: for a flow decision, list its steps — the walk + storyboard both render from this.
+  const STEPS=['intro','setup','invite','launch'];
+
+  /* ---------- previews: parametric (glanceable) + walk + storyboard (flow) ---------- */
+  function renderPreview(){
+    const host=document.getElementById('preview');
+    if(state.view==='storyboard'){ host.innerHTML=storyboardHTML(); bindNav(); return; }
+    if(state.view==='walk'){ host.innerHTML=walkHTML(); bindNav(); return; }
+    host.innerHTML=parametricHTML();
+  }
+  function parametricHTML(){
+    // AGENT-FILL: render the glanceable single-frame consequence of `state`.
+    return `<div data-prov="illustrative" style="font-size:48px;font-weight:700">72</div>
+            <div data-prov="invented" style="color:var(--mut)">${state.emphasis==='trend'?'▲ trending up':'team health'} · ${state.density}</div>`;
+  }
+  function walkHTML(){
+    // AGENT-FILL: render STEPS[state.step]; Back/Next navigate the flow (wired by bindNav — copied from the B-328 playground).
+    state.step=Math.max(0,Math.min(state.step,STEPS.length-1));
+    const isFirst=state.step===0, isLast=state.step===STEPS.length-1;
+    return `<div data-prov="invented"><b>Step ${state.step+1} / ${STEPS.length}</b> — ${STEPS[state.step]} &lt;screen&gt;</div>
+      <div class="nav" style="display:flex;gap:8px;margin-top:18px">
+        <button data-act="back" ${isFirst?'disabled':''}>← Back</button>
+        <button data-act="next" ${isLast?'disabled':''}>Next →</button>
+      </div>`;
+  }
+  function storyboardHTML(){
+    // AGENT-FILL: the flow as a glanceable filmstrip; click a frame to walk it.
+    return `<div class="storyboard">${STEPS.map((s,i)=>
+      `<div class="card" data-step="${i}" data-prov="invented">${i+1} · ${s}</div>`).join('')}</div>`;
+  }
+  function bindNav(){
+    document.querySelectorAll('#preview [data-act]').forEach(b=>b.addEventListener('click',()=>{
+      state.step = b.dataset.act==='next' ? state.step+1 : state.step-1;
+      renderPreview();
+    }));
+    document.querySelectorAll('#preview .storyboard [data-step]').forEach(c=>c.addEventListener('click',()=>{
+      state.step=+c.dataset.step; state.view='walk'; buildViewbar(); renderPreview();
+    }));
+  }
+
+  /* ---------- decision-framed copy-out (D2: binds to the framed decision, not every datum) ---------- */
+  function matchesRec(){return Object.keys(DEFAULTS).every(k=>state[k]===DEFAULTS[k]);}
+  function specText(){
+    // AGENT-FILL: state the framed structural choice, then ENUMERATE the decision-bearing elements by
+    // provenance (D3) — NAME the invented ones so a fabrication can't ride downstream as if decided.
+    return `Decision (my pick): density=${state.density}, emphasis=${state.emphasis}.
+${matchesRec()?'→ Matches the recommended starting point.':'→ Diverges from the recommendation.'}
+Provenance —
+  real (your config / product rules): <list them, e.g. the agreed instrument categories, the ≥3 threshold>
+  invented (NOT decided — decide these): the secondary label under the score
+  illustrative (sample only): the 72 score, the trend arrow`;
+  }
+  function updateSpec(){document.getElementById('spec').textContent=specText();}
+
+  /* ---------- controls wiring ---------- */
+  function buildViewbar(){
+    document.getElementById('viewbar').innerHTML=
+      ['parametric','walk','storyboard'].map(v=>`<button data-view="${v}" class="${state.view===v?'on':''}">${v}</button>`).join('');
+    document.querySelectorAll('#viewbar button').forEach(b=>b.addEventListener('click',()=>{state.view=b.dataset.view;state.step=0;buildViewbar();renderPreview();}));
+  }
+  function buildPresets(){
+    document.getElementById('presets').innerHTML=Object.keys(PRESETS).map(n=>`<button data-n="${n}">${n}</button>`).join('');
+    document.querySelectorAll('#presets button').forEach(b=>b.addEventListener('click',()=>{Object.assign(state,PRESETS[b.dataset.n]);buildOpts();updateAll();}));
+  }
+  function buildOpts(){
+    document.getElementById('opts').innerHTML=Object.keys(OPTIONS).map(key=>
+      `<div data-group="${key}">${OPTIONS[key].map(o=>`<label class="opt ${state[key]===o.v?'sel':''}" data-key="${key}" data-v="${o.v}">${o.t}${o.rec?'<span class="rec">REC</span>':''}</label>`).join('')}</div>`
+    ).join('');
+    document.querySelectorAll('.opt').forEach(opt=>opt.addEventListener('click',()=>{state[opt.dataset.key]=opt.dataset.v;buildOpts();updateAll();}));
+  }
+  function updateAll(){renderPreview();updateSpec();}
+
+  document.getElementById('copyBtn').addEventListener('click',e=>{
+    navigator.clipboard.writeText(specText()).then(()=>{const b=e.target;b.textContent='Copied!';setTimeout(()=>b.textContent='Copy spec',1200);})
+      .catch(()=>{const b=e.target;b.textContent='Copy failed — select the spec text manually';setTimeout(()=>b.textContent='Copy spec',1800);});
+  });
+
+  buildViewbar();buildPresets();buildOpts();updateAll();
+</script>
+</body>
+</html>
