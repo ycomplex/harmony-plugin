@@ -79,10 +79,10 @@ For three gates the *real* work (create children / merge+deploy / observe produc
 |---|---|---|
 | `clarification-draft` | inline `resolve_brief` | `/harmony-plugin:harmony-clarify <ticket>` (edit/iterate) |
 | `design-decision-draft` | inline `resolve_brief` | `/harmony-plugin:harmony-design-decide <ticket> --track <sub-track>` |
-| `plan-draft` | inline `resolve_brief` | `/harmony-plugin:harmony-build <ticket>` |
+| `plan-draft` | inline `resolve_brief` | `/harmony-plugin:start-work <ticket>` |
 | `decomposition-proposal` | **delegated** (creates children, then resolves) | `/harmony-plugin:harmony-decompose <ticket>` |
-| `release-decision-pending` | **delegated** (merge+deploy, then advances) | `/harmony-plugin:harmony-release <ticket>` |
-| `verification-ack-pending` | **delegated** (observe prod, then resolves) | `/harmony-plugin:harmony-release <ticket>` (verify step) |
+| `release-decision-pending` | **delegated** (merge+deploy, then advances) | `/harmony-plugin:finish-work <ticket>` |
+| `verification-ack-pending` | **delegated** (observe prod, then resolves) | `/harmony-plugin:finish-work <ticket>` (verify step) |
 | (Stale) | **delegated** — draft the patch, then resolve per the brief (accept applies / defer = knowing-divergence) | `/harmony-plugin:harmony-stale-patch <ticket>` |
 
 ### 5. Confirm the outcome

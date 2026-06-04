@@ -57,7 +57,7 @@ CLARIFICATION
   B-316  Saved Filter state            [Idea]       "Is a saved filter per-user or shared?"   → /harmony-next
 
 RELEASE DECISION
-  B-301  Bulk export to CSV            [Built]      "Release the CSV export to production?"    → /harmony-release B-301
+  B-301  Bulk export to CSV            [Built]      "Release the CSV export to production?"    → /harmony-plugin:finish-work B-301
 
 STALE — KNOWLEDGE CHANGED (agent will draft a patch for review)
   B-288  Deploy webhook                [Released]   superseded: "harmony-web CI/CD…"  → /harmony-next B-288

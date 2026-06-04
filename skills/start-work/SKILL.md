@@ -59,7 +59,7 @@ mcp__harmony__advance_workflow({ task_id, activity: "building" })   // Planned -
 
 Then file the release-decision brief (the ticket is now awaiting the human's release call). Note
 `pending_activity: null` — the human's accept is the "go", but Built→Released is SYSTEM-on-deploy-success
-(state-machine §6.1), advanced by `harmony-release` *after* the deploy, not by the accept (review F4):
+(state-machine §6.1), advanced by the release path (`/harmony-plugin:finish-work`) *after* the deploy, not by the accept (review F4):
 
 ```
 mcp__harmony__compose_brief({
@@ -68,7 +68,7 @@ mcp__harmony__compose_brief({
 })
 ```
 
-Report that the ticket is Built and awaiting release; the human runs `/harmony-plugin:harmony-release`.
+Report that the ticket is Built and awaiting release; the human runs `/harmony-plugin:finish-work`.
 
 ---
 

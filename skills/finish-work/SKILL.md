@@ -20,7 +20,7 @@ merge-and-cleanup flow below — unchanged). If `mode === 'opinionated'`, follow
 ## Opinionated mode (releasing + verifying)
 
 The ticket should be at **Built** with `awaiting_human_reason = 'release-decision-pending'` (set by
-`/harmony-plugin:harmony-build`). This path drives `releasing` (Built → Released) and `verifying`
+`/harmony-plugin:start-work`). This path drives `releasing` (Built → Released) and `verifying`
 (Released → Verified). It does NOT rewrite design knowledge (release role).
 
 ### O1. Confirm the release decision (accept clears the gate — it does NOT release yet)
@@ -68,7 +68,7 @@ Released→Verified (terminal-positive). Report completion.
 
 > If post-release the human finds a problem, flag a human-authorised backflow:
 > `mcp__harmony__advance_workflow({ task_id, activity: "revising-building" })` (Released → Built) and
-> hand back to `/harmony-plugin:harmony-build`.
+> hand back to `/harmony-plugin:start-work`.
 
 ---
 

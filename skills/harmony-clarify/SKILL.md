@@ -17,9 +17,11 @@ records the result back through MCP. It never edits code (discovery role).
 
 ### 1. Load the ticket + check it's ready
 
-`mcp__harmony__get_task({ task_id })`. Confirm `workflow_state === 'Idea'` (or near it). If a brief is
-already active (`mcp__harmony__get_brief` returns one with `reason: 'clarification-draft'`), you're
-iterating — load it and skip to step 4.
+First call `mcp__harmony__get_project`; if `mode !== 'opinionated'`, stop — the discovery gates are an
+opinionated-mode activity (manual-mode projects use the normal board, not the clarify→decompose→design
+lifecycle). Then `mcp__harmony__get_task({ task_id })`. Confirm `workflow_state === 'Idea'` (or near it).
+If a brief is already active (`mcp__harmony__get_brief` returns one with `reason: 'clarification-draft'`),
+you're iterating — load it and skip to step 4.
 
 ### 2. Query domain knowledge BEFORE drafting
 
