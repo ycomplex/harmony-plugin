@@ -46,7 +46,8 @@ describe('harmony-design-decide skill contract', () => {
   });
   it('routes the UX/UI sub-track to the visual hand-off generator (P6)', () => {
     expect(skill.body).toContain('harmony-visual-handoff');
-    // the ux-ui experience decision is decided through a generated, manipulable surface — not prose-only:
-    expect(skill.body.toLowerCase()).toMatch(/generated.*surface|manipulable/);
+    // the ux-ui experience decision is decided through a generated, manipulable surface — not prose-only.
+    // N1: pin the actual phrase (was /generated.*surface|manipulable/ — "manipulable" alone kept this green):
+    expect(skill.body.toLowerCase()).toMatch(/generated,?\s+manipulable\s+surface/);
   });
 });

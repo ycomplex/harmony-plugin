@@ -56,7 +56,10 @@ describe('harmony-visual-handoff skill contract', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/Edit/);
     expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);
     expect(skill.frontmatter['disallowed-tools']).toMatch(/git push/);
+    expect(skill.frontmatter['disallowed-tools']).toMatch(/git merge/);     // N2: assert the merge backstop too, not just commit/push
     expect(skill.body).toContain('/tmp/harmony-visual');                    // surface written to tmp only
-    expect(skill.body.toLowerCase()).toMatch(/never\s+.*repo source|throwaway/);
+    // N1: require BOTH guards (was /never\s+.*repo source|throwaway/ — either arm alone kept this green)
+    expect(skill.body.toLowerCase()).toMatch(/never\s+write\s+repo\s+source/);
+    expect(skill.body.toLowerCase()).toContain('throwaway');
   });
 });
