@@ -19,6 +19,13 @@ Invoke with a sub-track: `--track product` | `--track technical` | `--track ux-u
 | `technical` | `technical-design` | Architecture / implementation approach | `engineering`, `operations`, `data` |
 | `ux-ui` | `ux-ui-design` | Experience design — look, feel, interaction | `product`, `customer` |
 
+> **UX/UI sub-track → visual hand-off (P6).** For `--track ux-ui`, the experience decision is decided through
+> a **generated, manipulable surface + an iterate loop**, not a prose-only brief (B-328). Delegate the whole
+> ux-ui sub-track to `/harmony-plugin:harmony-visual-handoff <task>` — it owns surface generation, the
+> elicit-don't-guess iterate loop, and **files the ux-ui decision** (`record_decision` + `reference_knowledge`
+> + `compose_brief` + `resolve_brief`, advancing to Designed only on the last required sub-track). Do **not**
+> also draft or compose a ux-ui brief here. The Product and Technical sub-tracks continue with the flow below.
+
 > Before deciding, follow `skills/harmony-shared/knowledge-discipline.md`.
 
 ## Flow
