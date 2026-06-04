@@ -16,9 +16,11 @@ Implements the `decomposing` activity (state-machine §4, §8): Clarified → De
 
 ### 1. Load + check readiness
 
-`mcp__harmony__get_task({ task_id })`; confirm `workflow_state === 'Clarified'`. Read the clarification
-(`mcp__harmony__query_knowledge({ type: 'specification' })` or follow `awaiting_human_ref`) — children
-inherit the parent's **clarification**, not design (state-machine §8.1).
+First call `mcp__harmony__get_project`; if `mode !== 'opinionated'`, stop — the discovery gates are an
+opinionated-mode activity (manual-mode projects use the normal board, not the clarify→decompose→design
+lifecycle). Then `mcp__harmony__get_task({ task_id })`; confirm `workflow_state === 'Clarified'`. Read the
+clarification (`mcp__harmony__query_knowledge({ type: 'specification' })` or follow `awaiting_human_ref`) —
+children inherit the parent's **clarification**, not design (state-machine §8.1).
 
 ### 2. Query knowledge + propose the hierarchy
 
