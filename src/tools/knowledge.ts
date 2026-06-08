@@ -236,6 +236,38 @@ async function embedText(client: SupabaseClient, text: string): Promise<string |
   }
 }
 
+/**
+ * Re-embed a knowledge decision by id on the BASE table.
+ *
+ * Why this exists: createKnowledgeEntry / updateKnowledgeEntry write through the
+ * `workspace_knowledge` compat VIEW, whose INSTEAD-OF triggers do NOT touch the
+ * `embedding` column (B-375 / B-401). A view INSERT or content-changing UPDATE
+ * therefore leaves the vector null/stale → the row is invisible to
+ * knowledge_search_rrf (which filters `embedding IS NOT NULL`). The embed-knowledge
+ * edge fn has no DB access, so we compute the vector client-side and persist it
+ * straight to knowledge_decisions, scoped by workspace+project+id.
+ *
+ * Best-effort, mirroring recordDecision: if embedText returns null (key unset / fn
+ * down) we leave the embedding untouched rather than failing the user's write.
+ */
+async function embedDecisionById(
+  client: SupabaseClient,
+  workspaceId: string,
+  projectId: string,
+  id: string,
+  title: string,
+  content: string | null,
+): Promise<void> {
+  const embedding = await embedText(client, `${title}\n${content ?? ''}`);
+  if (!embedding) return;
+  await client
+    .from('knowledge_decisions')
+    .update({ embedding })
+    .eq('workspace_id', workspaceId)
+    .eq('project_id', projectId)
+    .eq('id', id);
+}
+
 // ---------------------------------------------------------------------------
 // Handler: queryKnowledge
 // ---------------------------------------------------------------------------
@@ -408,7 +440,9 @@ export async function createKnowledgeEntry(
     }
     throw error;
   }
-  return data as KnowledgeEntryFull;
+  const created = data as KnowledgeEntryFull;
+  await embedDecisionById(client, workspaceId, projectId, created.id, created.title, created.content);
+  return created;
 }
 
 // ---------------------------------------------------------------------------
@@ -480,7 +514,17 @@ export async function updateKnowledgeEntry(
     }
     throw error;
   }
-  return data as KnowledgeEntryFull;
+
+  // Re-embed only when the embedded text (title\ncontent) actually changed. The view's
+  // INSTEAD-OF UPDATE trigger never touches the embedding column, so without this a
+  // promoted/edited row keeps a stale (or null) vector and is invisible to
+  // knowledge_search_rrf. embedDecisionById writes the fresh vector to the base table
+  // by id, using the merged title/content returned by the view update above.
+  const updated = data as KnowledgeEntryFull;
+  if (args.new_title !== undefined || args.content !== undefined) {
+    await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
+  }
+  return updated;
 }
 
 // ---------------------------------------------------------------------------

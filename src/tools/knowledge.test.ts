@@ -112,6 +112,54 @@ function buildWorkspaceAndQueryClient(secondResponse: { data: any; error?: any }
   return { client, wsChain, secondChain };
 }
 
+/**
+ * Mock that routes client.from(table) by NAME (not call-order), and mocks
+ * functions.invoke for embedText. viewResult may be a single {data,error} or an
+ * ARRAY consumed in sequence by successive .single() calls (for multi-write flows
+ * like supersedeKnowledgeEntry). embedding:null makes the edge fn return an error
+ * (embedText → null), exercising the best-effort path.
+ */
+function buildEmbedAwareClient(opts: {
+  viewResult: { data: any; error?: any } | Array<{ data: any; error?: any }>;
+  embedding?: number[] | null;
+}) {
+  const wsChain: any = {};
+  wsChain.select = vi.fn().mockReturnValue(wsChain);
+  wsChain.eq = vi.fn().mockReturnValue(wsChain);
+  wsChain.single = vi.fn().mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
+
+  const viewQueue = Array.isArray(opts.viewResult) ? [...opts.viewResult] : [opts.viewResult];
+  const viewChain: any = {};
+  viewChain.select = vi.fn().mockReturnValue(viewChain);
+  viewChain.insert = vi.fn().mockReturnValue(viewChain);
+  viewChain.update = vi.fn().mockReturnValue(viewChain);
+  viewChain.eq = vi.fn().mockReturnValue(viewChain);
+  viewChain.single = vi.fn().mockImplementation(() => {
+    const next = viewQueue.length > 1 ? viewQueue.shift()! : viewQueue[0];
+    return Promise.resolve({ data: next.data, error: next.error ?? null });
+  });
+
+  const baseChain: any = {};
+  baseChain.update = vi.fn().mockReturnValue(baseChain);
+  baseChain.eq = vi.fn().mockReturnValue(baseChain); // terminal — awaited directly, no .single()
+
+  const client: any = {
+    from: vi.fn().mockImplementation((table: string) => {
+      if (table === 'projects') return wsChain;
+      if (table === 'knowledge_decisions') return baseChain;
+      return viewChain; // workspace_knowledge
+    }),
+    functions: {
+      invoke: vi.fn().mockResolvedValue(
+        opts.embedding === null
+          ? { data: null, error: { message: 'down' } }
+          : { data: { embedding: opts.embedding ?? [0.1, 0.2] }, error: null },
+      ),
+    },
+  };
+  return { client, wsChain, viewChain, baseChain };
+}
+
 // ---------------------------------------------------------------------------
 // queryKnowledge
 // ---------------------------------------------------------------------------
@@ -464,6 +512,30 @@ describe('createKnowledgeEntry', () => {
       }),
     ).rejects.toThrow('DB failure');
   });
+
+  it('embeds on insert via the base table (sibling of B-401)', async () => {
+    const created = { ...sampleFullEntry, id: 'ke-new', title: 'Brand new', content: 'body' };
+    const { client, baseChain } = buildEmbedAwareClient({ viewResult: { data: created } });
+
+    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'Brand new', content: 'body', type: 'convention' });
+
+    expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: 'Brand new\nbody' } });
+    expect(client.from).toHaveBeenCalledWith('knowledge_decisions');
+    expect(baseChain.update).toHaveBeenCalledWith({ embedding: '[0.1,0.2]' });
+    expect(baseChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
+    expect(baseChain.eq).toHaveBeenCalledWith('project_id', PROJECT_ID);
+    expect(baseChain.eq).toHaveBeenCalledWith('id', 'ke-new');
+  });
+
+  it('returns the created entry even when embedding fails (best-effort)', async () => {
+    const created = { ...sampleFullEntry, id: 'ke-new' };
+    const { client, baseChain } = buildEmbedAwareClient({ viewResult: { data: created }, embedding: null });
+
+    const result = await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention' });
+
+    expect(result).toEqual(created);
+    expect(baseChain.update).not.toHaveBeenCalled(); // null embedding → no base write
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -553,6 +625,41 @@ describe('updateKnowledgeEntry', () => {
     await expect(
       updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', content: 'x' }),
     ).rejects.toThrow('DB failure');
+  });
+
+  it('re-embeds via the base table when content changes (B-401)', async () => {
+    const updated = { ...sampleFullEntry, status: 'accepted', content: 'NEW why-rich content' };
+    const { client, baseChain } = buildEmbedAwareClient({ viewResult: { data: updated } });
+
+    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', content: 'NEW why-rich content', status: 'accepted' });
+
+    expect(client.from).toHaveBeenCalledWith('workspace_knowledge');               // legacy view write unchanged
+    expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: `${updated.title}\nNEW why-rich content` } });
+    expect(client.from).toHaveBeenCalledWith('knowledge_decisions');               // base-table embedding write
+    expect(baseChain.update).toHaveBeenCalledWith({ embedding: '[0.1,0.2]' });
+    expect(baseChain.eq).toHaveBeenCalledWith('id', 'ke-1');
+  });
+
+  it('re-embeds when the title changes', async () => {
+    // content is unchanged — the re-embed must still fire because the title changed
+    const updated = { ...sampleFullEntry, title: 'Renamed title' };
+    const { client, baseChain } = buildEmbedAwareClient({ viewResult: { data: updated } });
+
+    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', new_title: 'Renamed title' });
+
+    expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: `Renamed title\n${sampleFullEntry.content}` } });
+    expect(baseChain.update).toHaveBeenCalledWith({ embedding: '[0.1,0.2]' });
+  });
+
+  it('does NOT re-embed when only status changes (no wasted embed call)', async () => {
+    const updated = { ...sampleFullEntry, status: 'accepted' };
+    const { client, baseChain } = buildEmbedAwareClient({ viewResult: { data: updated } });
+
+    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'accepted' });
+
+    expect(client.from).toHaveBeenCalledWith('workspace_knowledge');   // view update still happens
+    expect(client.functions.invoke).not.toHaveBeenCalled();            // no embed
+    expect(baseChain.update).not.toHaveBeenCalled();                   // no base write
   });
 });
 
@@ -666,6 +773,28 @@ describe('supersedeKnowledgeEntry', () => {
         new_content: 'content',
       }),
     ).rejects.toThrow('Either entry_id or title must be provided');
+  });
+
+  it('embeds the replacement entry (transitive via createKnowledgeEntry) [B-401]', async () => {
+    const existing = { ...sampleFullEntry, id: 'ke-old' };
+    const replacement = { ...sampleFullEntry, id: 'ke-repl', title: 'New ruling', content: 'updated body' };
+    const supersededRow = { ...existing, status: 'superseded', superseded_by: 'ke-repl' };
+    const { client, baseChain } = buildEmbedAwareClient({
+      viewResult: [
+        { data: existing },      // getKnowledgeEntry: fetch the old entry
+        { data: replacement },   // createKnowledgeEntry: insert + return the replacement
+        { data: supersededRow }, // supersede's own update: mark the old entry superseded
+      ],
+    });
+
+    const result = await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+      entry_id: 'ke-old', new_title: 'New ruling', new_content: 'updated body',
+    });
+
+    expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: 'New ruling\nupdated body' } });
+    expect(baseChain.update).toHaveBeenCalledWith({ embedding: '[0.1,0.2]' });
+    expect(baseChain.eq).toHaveBeenCalledWith('id', 'ke-repl');
+    expect(result.replacement.id).toBe('ke-repl');
   });
 });
 
