@@ -514,7 +514,17 @@ export async function updateKnowledgeEntry(
     }
     throw error;
   }
-  return data as KnowledgeEntryFull;
+
+  // Re-embed only when the embedded text (title\ncontent) actually changed. The view's
+  // INSTEAD-OF UPDATE trigger never touches the embedding column, so without this a
+  // promoted/edited row keeps a stale (or null) vector and is invisible to
+  // knowledge_search_rrf. embedDecisionById writes the fresh vector to the base table
+  // by id, using the merged title/content returned by the view update above.
+  const updated = data as KnowledgeEntryFull;
+  if (args.new_title !== undefined || args.content !== undefined) {
+    await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
+  }
+  return updated;
 }
 
 // ---------------------------------------------------------------------------
