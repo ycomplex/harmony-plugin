@@ -236,6 +236,38 @@ async function embedText(client: SupabaseClient, text: string): Promise<string |
   }
 }
 
+/**
+ * Re-embed a knowledge decision by id on the BASE table.
+ *
+ * Why this exists: createKnowledgeEntry / updateKnowledgeEntry write through the
+ * `workspace_knowledge` compat VIEW, whose INSTEAD-OF triggers do NOT touch the
+ * `embedding` column (B-375 / B-401). A view INSERT or content-changing UPDATE
+ * therefore leaves the vector null/stale → the row is invisible to
+ * knowledge_search_rrf (which filters `embedding IS NOT NULL`). The embed-knowledge
+ * edge fn has no DB access, so we compute the vector client-side and persist it
+ * straight to knowledge_decisions, scoped by workspace+project+id.
+ *
+ * Best-effort, mirroring recordDecision: if embedText returns null (key unset / fn
+ * down) we leave the embedding untouched rather than failing the user's write.
+ */
+async function embedDecisionById(
+  client: SupabaseClient,
+  workspaceId: string,
+  projectId: string,
+  id: string,
+  title: string,
+  content: string | null,
+): Promise<void> {
+  const embedding = await embedText(client, `${title}\n${content ?? ''}`);
+  if (!embedding) return;
+  await client
+    .from('knowledge_decisions')
+    .update({ embedding })
+    .eq('workspace_id', workspaceId)
+    .eq('project_id', projectId)
+    .eq('id', id);
+}
+
 // ---------------------------------------------------------------------------
 // Handler: queryKnowledge
 // ---------------------------------------------------------------------------
@@ -408,6 +440,12 @@ export async function createKnowledgeEntry(
     }
     throw error;
   }
+  await embedDecisionById(
+    client, workspaceId, projectId,
+    (data as { id: string }).id,
+    (data as { title: string }).title,
+    (data as { content: string | null }).content,
+  );
   return data as KnowledgeEntryFull;
 }
 
