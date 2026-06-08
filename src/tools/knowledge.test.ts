@@ -565,6 +565,14 @@ describe('createKnowledgeEntry', () => {
     await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention' });
     expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'draft' }));
   });
+
+  it('create returns the authoritative persisted row', async () => {
+    const echoed    = { ...sampleFullEntry, id: 'ke-new', status: 'accepted' };
+    const persisted = { ...sampleFullEntry, id: 'ke-new', status: 'accepted', title: 'persisted title' };
+    const { client } = buildEmbedAwareClient({ viewResult: [{ data: echoed }, { data: persisted }] });
+    const result = await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention' });
+    expect(result.title).toBe('persisted title');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -712,6 +720,14 @@ describe('updateKnowledgeEntry', () => {
     ).rejects.toThrow(/Unsupported status/);
     expect(viewChain.update).not.toHaveBeenCalled();
   });
+
+  it('returns the authoritative persisted row, not the trigger echo (B-415)', async () => {
+    const echoed    = { ...sampleFullEntry, id: 'ke-1', status: 'accepted', updated_at: '2026-01-01T00:00:00Z' }; // stale echo
+    const persisted = { ...sampleFullEntry, id: 'ke-1', status: 'accepted', updated_at: '2026-06-08T12:00:00Z' }; // real
+    const { client } = buildEmbedAwareClient({ viewResult: [{ data: echoed }, { data: persisted }] });
+    const result = await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'Accepted' });
+    expect(result.updated_at).toBe('2026-06-08T12:00:00Z');   // from the re-read, not the echo
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -734,48 +750,32 @@ describe('supersedeKnowledgeEntry', () => {
   };
 
   /**
-   * supersedeKnowledgeEntry makes these .from() calls:
-   * 1. getKnowledgeEntry ws lookup  (projects → single)
-   * 2. getKnowledgeEntry fetch  (workspace_knowledge → single)
-   * 3. createKnowledgeEntry ws lookup  (projects → single)
-   * 4. createKnowledgeEntry insert  (workspace_knowledge → insert → single)
-   * 5. supersede's own getWorkspaceId  (projects → single)
-   * 6. supersede direct update  (workspace_knowledge → update → single)
+   * supersedeKnowledgeEntry makes these view .single() calls (via buildEmbedAwareClient):
+   * 0. getKnowledgeEntry fetch  (workspace_knowledge → single): existing entry
+   * 1. createKnowledgeEntry insert echo  (workspace_knowledge → insert → single): echoed replacement
+   * 2. createKnowledgeEntry re-read  (workspace_knowledge → single, B-415): authoritative replacement
+   * 3. supersede direct update  (workspace_knowledge → update → single): supersededEntry
+   *
+   * wsChain handles all projects lookups (returns WORKSPACE_ID every time).
+   * We capture inserts by spying on viewChain.insert.
    */
   function buildSupersedeClient(overrides?: { existing?: any }) {
-    const responses = [
-      { data: sampleWorkspaceRow },
-      { data: overrides?.existing ?? existingEntry },
-      { data: sampleWorkspaceRow },
-      { data: replacementEntry },
-      { data: sampleWorkspaceRow },
-      { data: supersededEntry },
-    ];
+    const existingRow = overrides?.existing ?? existingEntry;
+    const { client, viewChain } = buildEmbedAwareClient({
+      viewResult: [
+        { data: existingRow },      // 0: getKnowledgeEntry fetch
+        { data: replacementEntry }, // 1: createKnowledgeEntry insert echo
+        { data: replacementEntry }, // 2: createKnowledgeEntry re-read (authoritative — same row is fine for these tests)
+        { data: supersededEntry },  // 3: supersede update
+      ],
+    });
 
-    let fromCallCount = 0;
     const insertCalls: any[] = [];
-
-    const makeChain = (idx: number) => {
-      const r = responses[idx] ?? { data: null };
-      const c: any = {};
-      c.select = vi.fn().mockReturnValue(c);
-      c.insert = vi.fn().mockImplementation((record: any) => {
-        insertCalls.push(record);
-        return c;
-      });
-      c.update = vi.fn().mockReturnValue(c);
-      c.eq = vi.fn().mockReturnValue(c);
-      c.single = vi.fn().mockResolvedValue({ data: r.data, error: (r as any).error ?? null });
-      return c;
-    };
-
-    const client: any = {
-      from: vi.fn().mockImplementation(() => {
-        const chain = makeChain(fromCallCount);
-        fromCallCount++;
-        return chain;
-      }),
-    };
+    const origInsert = viewChain.insert.bind(viewChain);
+    viewChain.insert = vi.fn().mockImplementation((record: any) => {
+      insertCalls.push(record);
+      return origInsert(record);
+    });
 
     return { client, insertCalls };
   }
@@ -833,7 +833,8 @@ describe('supersedeKnowledgeEntry', () => {
     const { client, baseChain } = buildEmbedAwareClient({
       viewResult: [
         { data: existing },      // getKnowledgeEntry: fetch the old entry
-        { data: replacement },   // createKnowledgeEntry: insert + return the replacement
+        { data: replacement },   // createKnowledgeEntry: insert echo
+        { data: replacement },   // createKnowledgeEntry: re-read (B-415) — same row is authoritative here
         { data: supersededRow }, // supersede's own update: mark the old entry superseded
       ],
     });

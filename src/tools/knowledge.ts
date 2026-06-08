@@ -473,7 +473,9 @@ export async function createKnowledgeEntry(
   }
   const created = data as KnowledgeEntryFull;
   await embedDecisionById(client, workspaceId, projectId, created.id, created.title, created.content);
-  return created;
+  // The view's INSTEAD-OF INSERT trigger RETURN NEWs the input, so `created` echoes what we
+  // sent (status vocab, timestamps). Re-read for the authoritative persisted row (B-415).
+  return getKnowledgeEntry(client, projectId, { entry_id: created.id });
 }
 
 // ---------------------------------------------------------------------------
@@ -555,7 +557,9 @@ export async function updateKnowledgeEntry(
   if (args.new_title !== undefined || args.content !== undefined) {
     await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
   }
-  return updated;
+  // Re-read for the authoritative persisted row — the view UPDATE trigger RETURN NEWs the
+  // caller's input (stale updated_at, echoed status), not what actually landed (B-415).
+  return getKnowledgeEntry(client, projectId, { entry_id: updated.id });
 }
 
 // ---------------------------------------------------------------------------
