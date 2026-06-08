@@ -641,7 +641,8 @@ describe('updateKnowledgeEntry', () => {
   });
 
   it('re-embeds when the title changes', async () => {
-    const updated = { ...sampleFullEntry, title: 'Renamed title', content: sampleFullEntry.content };
+    // content is unchanged — the re-embed must still fire because the title changed
+    const updated = { ...sampleFullEntry, title: 'Renamed title' };
     const { client, baseChain } = buildEmbedAwareClient({ viewResult: { data: updated } });
 
     await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', new_title: 'Renamed title' });
@@ -779,7 +780,11 @@ describe('supersedeKnowledgeEntry', () => {
     const replacement = { ...sampleFullEntry, id: 'ke-repl', title: 'New ruling', content: 'updated body' };
     const supersededRow = { ...existing, status: 'superseded', superseded_by: 'ke-repl' };
     const { client, baseChain } = buildEmbedAwareClient({
-      viewResult: [{ data: existing }, { data: replacement }, { data: supersededRow }],
+      viewResult: [
+        { data: existing },      // getKnowledgeEntry: fetch the old entry
+        { data: replacement },   // createKnowledgeEntry: insert + return the replacement
+        { data: supersededRow }, // supersede's own update: mark the old entry superseded
+      ],
     });
 
     const result = await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
