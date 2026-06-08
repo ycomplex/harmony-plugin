@@ -25653,6 +25653,12 @@ async function embedText(client, text) {
     return null;
   }
 }
+async function embedDecisionById(client, workspaceId, projectId, id, title, content) {
+  const embedding = await embedText(client, `${title}
+${content ?? ""}`);
+  if (!embedding) return;
+  await client.from("knowledge_decisions").update({ embedding }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", id);
+}
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
   if (args.search) {
@@ -25750,7 +25756,9 @@ async function createKnowledgeEntry(client, projectId, userId, args) {
     }
     throw error;
   }
-  return data;
+  const created = data;
+  await embedDecisionById(client, workspaceId, projectId, created.id, created.title, created.content);
+  return created;
 }
 async function updateKnowledgeEntry(client, projectId, args) {
   if (!args.entry_id && !args.title) {
@@ -25784,7 +25792,11 @@ async function updateKnowledgeEntry(client, projectId, args) {
     }
     throw error;
   }
-  return data;
+  const updated = data;
+  if (args.new_title !== void 0 || args.content !== void 0) {
+    await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
+  }
+  return updated;
 }
 async function supersedeKnowledgeEntry(client, projectId, userId, args) {
   if (!args.entry_id && !args.title) {
