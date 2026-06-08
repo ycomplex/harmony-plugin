@@ -567,8 +567,8 @@ describe('createKnowledgeEntry', () => {
   });
 
   it('create returns the authoritative persisted row', async () => {
-    const echoed    = { ...sampleFullEntry, id: 'ke-new', status: 'accepted' };
-    const persisted = { ...sampleFullEntry, id: 'ke-new', status: 'accepted', title: 'persisted title' };
+    const echoed    = { ...sampleFullEntry, id: 'ke-new', status: 'accepted' };                          // insert echo
+    const persisted = { ...sampleFullEntry, id: 'ke-new', status: 'accepted', title: 'persisted title' }; // re-read
     const { client } = buildEmbedAwareClient({ viewResult: [{ data: echoed }, { data: persisted }] });
     const result = await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention' });
     expect(result.title).toBe('persisted title');
