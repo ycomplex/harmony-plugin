@@ -522,6 +522,8 @@ describe('createKnowledgeEntry', () => {
     expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: 'Brand new\nbody' } });
     expect(client.from).toHaveBeenCalledWith('knowledge_decisions');
     expect(baseChain.update).toHaveBeenCalledWith({ embedding: '[0.1,0.2]' });
+    expect(baseChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
+    expect(baseChain.eq).toHaveBeenCalledWith('project_id', PROJECT_ID);
     expect(baseChain.eq).toHaveBeenCalledWith('id', 'ke-new');
   });
 

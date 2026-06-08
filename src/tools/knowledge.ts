@@ -440,13 +440,9 @@ export async function createKnowledgeEntry(
     }
     throw error;
   }
-  await embedDecisionById(
-    client, workspaceId, projectId,
-    (data as { id: string }).id,
-    (data as { title: string }).title,
-    (data as { content: string | null }).content,
-  );
-  return data as KnowledgeEntryFull;
+  const created = data as KnowledgeEntryFull;
+  await embedDecisionById(client, workspaceId, projectId, created.id, created.title, created.content);
+  return created;
 }
 
 // ---------------------------------------------------------------------------
