@@ -268,6 +268,36 @@ async function embedDecisionById(
     .eq('id', id);
 }
 
+/**
+ * Normalize a caller-supplied status into the LEGACY lowercase vocab the
+ * `workspace_knowledge` compat view's INSTEAD-OF triggers understand (B-415).
+ *
+ * Why: those triggers map status with a CASE that only recognizes
+ * 'draft' | 'accepted' | 'superseded' (migration 20260602171200…sql). Any v1-
+ * capitalized value ('Accepted', …) falls through ELSE → the UPDATE silently keeps
+ * the old status (no-op) and the INSERT defaults to 'Asserted' — while the trigger's
+ * RETURN NEW echoes the caller's input back as a false success. The rest of the
+ * knowledge layer speaks v1-capitalized vocab, so callers naturally pass 'Accepted'.
+ *
+ * We translate v1 → legacy here (and pass legacy through). Anything unrecognized —
+ * including v1 'Archived', which the legacy view cannot express — is REJECTED loudly
+ * rather than silently dropped.
+ */
+function toLegacyStatus(status: string): string {
+  const map: Record<string, string> = {
+    draft: 'draft', accepted: 'accepted', superseded: 'superseded',
+    Asserted: 'draft', Accepted: 'accepted', Superseded: 'superseded',
+  };
+  const legacy = map[status];
+  if (!legacy) {
+    throw new Error(
+      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, or Superseded/superseded ` +
+      `(Archived is not settable via this tool — it writes the legacy compat view).`,
+    );
+  }
+  return legacy;
+}
+
 // ---------------------------------------------------------------------------
 // Handler: queryKnowledge
 // ---------------------------------------------------------------------------
@@ -417,7 +447,7 @@ export async function createKnowledgeEntry(
     title: args.title.trim(),
     content: args.content ?? '',
     type: args.type,
-    status: args.status ?? 'draft',
+    status: args.status !== undefined ? toLegacyStatus(args.status) : 'draft',
     created_by: userId,
   };
 
@@ -485,7 +515,7 @@ export async function updateKnowledgeEntry(
   if (args.new_title !== undefined) updates.title = args.new_title.trim();
   if (args.content !== undefined) updates.content = args.content;
   if (args.type !== undefined) updates.type = args.type;
-  if (args.status !== undefined) updates.status = args.status;
+  if (args.status !== undefined) updates.status = toLegacyStatus(args.status);
   if (args.tags !== undefined) updates.tags = args.tags;
 
   let query = client

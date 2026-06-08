@@ -536,6 +536,28 @@ describe('createKnowledgeEntry', () => {
     expect(result).toEqual(created);
     expect(baseChain.update).not.toHaveBeenCalled(); // null embedding → no base write
   });
+
+  it('normalizes v1-capitalized status to legacy vocab on insert (B-415 sibling)', async () => {
+    const created = { ...sampleFullEntry, id: 'ke-new', status: 'accepted' };
+    const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: created } });
+    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention', status: 'Accepted' });
+    expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'accepted' }));
+  });
+
+  it('rejects an unrecognized status on create', async () => {
+    const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: sampleFullEntry } });
+    await expect(
+      createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention', status: 'bogus' }),
+    ).rejects.toThrow(/Unsupported status/);
+    expect(viewChain.insert).not.toHaveBeenCalled();
+  });
+
+  it('defaults to draft when no status is given (unchanged)', async () => {
+    const created = { ...sampleFullEntry, id: 'ke-new' };
+    const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: created } });
+    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention' });
+    expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'draft' }));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -660,6 +682,28 @@ describe('updateKnowledgeEntry', () => {
     expect(client.from).toHaveBeenCalledWith('workspace_knowledge');   // view update still happens
     expect(client.functions.invoke).not.toHaveBeenCalled();            // no embed
     expect(baseChain.update).not.toHaveBeenCalled();                   // no base write
+  });
+
+  it('normalizes v1-capitalized status to the legacy vocab the view expects (B-415)', async () => {
+    const updated = { ...sampleFullEntry, status: 'accepted' };
+    const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: updated } });
+    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'Accepted' });
+    expect(viewChain.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'accepted' }));
+  });
+
+  it('passes legacy lowercase status through unchanged', async () => {
+    const updated = { ...sampleFullEntry, status: 'superseded' };
+    const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: updated } });
+    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'superseded' });
+    expect(viewChain.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'superseded' }));
+  });
+
+  it('rejects an unrecognized status instead of silently dropping it', async () => {
+    const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: sampleFullEntry } });
+    await expect(
+      updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'Archived' }),
+    ).rejects.toThrow(/Unsupported status/);
+    expect(viewChain.update).not.toHaveBeenCalled();
   });
 });
 
