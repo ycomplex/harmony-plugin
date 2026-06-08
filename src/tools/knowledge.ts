@@ -268,6 +268,11 @@ async function embedDecisionById(
     .eq('id', id);
 }
 
+const LEGACY_STATUS_MAP: Record<string, string> = {
+  draft: 'draft', accepted: 'accepted', superseded: 'superseded',
+  Asserted: 'draft', Accepted: 'accepted', Superseded: 'superseded',
+};
+
 /**
  * Normalize a caller-supplied status into the LEGACY lowercase vocab the
  * `workspace_knowledge` compat view's INSTEAD-OF triggers understand (B-415).
@@ -284,15 +289,11 @@ async function embedDecisionById(
  * rather than silently dropped.
  */
 function toLegacyStatus(status: string): string {
-  const map: Record<string, string> = {
-    draft: 'draft', accepted: 'accepted', superseded: 'superseded',
-    Asserted: 'draft', Accepted: 'accepted', Superseded: 'superseded',
-  };
-  const legacy = map[status];
-  if (!legacy) {
+  const legacy = LEGACY_STATUS_MAP[status];
+  if (legacy === undefined) {
     throw new Error(
-      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, or Superseded/superseded ` +
-      `(Archived is not settable via this tool — it writes the legacy compat view).`,
+      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, or Superseded/superseded — ` +
+      `Archived cannot be set through this tool, which writes the legacy compat view (no Archived state).`,
     );
   }
   return legacy;

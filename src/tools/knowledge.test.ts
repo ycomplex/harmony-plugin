@@ -544,6 +544,13 @@ describe('createKnowledgeEntry', () => {
     expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'accepted' }));
   });
 
+  it('maps v1 Asserted to legacy draft on insert', async () => {
+    const created = { ...sampleFullEntry, id: 'ke-new', status: 'draft' };
+    const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: created } });
+    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention', status: 'Asserted' });
+    expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'draft' }));
+  });
+
   it('rejects an unrecognized status on create', async () => {
     const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: sampleFullEntry } });
     await expect(
