@@ -25659,6 +25659,23 @@ ${content ?? ""}`);
   if (!embedding) return;
   await client.from("knowledge_decisions").update({ embedding }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", id);
 }
+var LEGACY_STATUS_MAP = {
+  draft: "draft",
+  accepted: "accepted",
+  superseded: "superseded",
+  Asserted: "draft",
+  Accepted: "accepted",
+  Superseded: "superseded"
+};
+function toLegacyStatus(status) {
+  const legacy = LEGACY_STATUS_MAP[status];
+  if (legacy === void 0) {
+    throw new Error(
+      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, or Superseded/superseded \u2014 Archived cannot be set through this tool, which writes the legacy compat view (no Archived state).`
+    );
+  }
+  return legacy;
+}
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
   if (args.search) {
@@ -25740,7 +25757,7 @@ async function createKnowledgeEntry(client, projectId, userId, args) {
     title: args.title.trim(),
     content: args.content ?? "",
     type: args.type,
-    status: args.status ?? "draft",
+    status: args.status !== void 0 ? toLegacyStatus(args.status) : "draft",
     created_by: userId
   };
   if (args.tags !== void 0) record.tags = args.tags;
@@ -25758,7 +25775,7 @@ async function createKnowledgeEntry(client, projectId, userId, args) {
   }
   const created = data;
   await embedDecisionById(client, workspaceId, projectId, created.id, created.title, created.content);
-  return created;
+  return getKnowledgeEntry(client, projectId, { entry_id: created.id });
 }
 async function updateKnowledgeEntry(client, projectId, args) {
   if (!args.entry_id && !args.title) {
@@ -25773,7 +25790,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
   if (args.new_title !== void 0) updates.title = args.new_title.trim();
   if (args.content !== void 0) updates.content = args.content;
   if (args.type !== void 0) updates.type = args.type;
-  if (args.status !== void 0) updates.status = args.status;
+  if (args.status !== void 0) updates.status = toLegacyStatus(args.status);
   if (args.tags !== void 0) updates.tags = args.tags;
   let query = client.from("workspace_knowledge").update(updates).eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.entry_id) {
@@ -25796,7 +25813,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
   if (args.new_title !== void 0 || args.content !== void 0) {
     await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
   }
-  return updated;
+  return getKnowledgeEntry(client, projectId, { entry_id: updated.id });
 }
 async function supersedeKnowledgeEntry(client, projectId, userId, args) {
   if (!args.entry_id && !args.title) {

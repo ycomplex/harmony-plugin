@@ -268,6 +268,37 @@ async function embedDecisionById(
     .eq('id', id);
 }
 
+const LEGACY_STATUS_MAP: Record<string, string> = {
+  draft: 'draft', accepted: 'accepted', superseded: 'superseded',
+  Asserted: 'draft', Accepted: 'accepted', Superseded: 'superseded',
+};
+
+/**
+ * Normalize a caller-supplied status into the LEGACY lowercase vocab the
+ * `workspace_knowledge` compat view's INSTEAD-OF triggers understand (B-415).
+ *
+ * Why: those triggers map status with a CASE that only recognizes
+ * 'draft' | 'accepted' | 'superseded' (migration 20260602171200…sql). Any v1-
+ * capitalized value ('Accepted', …) falls through ELSE → the UPDATE silently keeps
+ * the old status (no-op) and the INSERT defaults to 'Asserted' — while the trigger's
+ * RETURN NEW echoes the caller's input back as a false success. The rest of the
+ * knowledge layer speaks v1-capitalized vocab, so callers naturally pass 'Accepted'.
+ *
+ * We translate v1 → legacy here (and pass legacy through). Anything unrecognized —
+ * including v1 'Archived', which the legacy view cannot express — is REJECTED loudly
+ * rather than silently dropped.
+ */
+function toLegacyStatus(status: string): string {
+  const legacy = LEGACY_STATUS_MAP[status];
+  if (legacy === undefined) {
+    throw new Error(
+      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, or Superseded/superseded — ` +
+      `Archived cannot be set through this tool, which writes the legacy compat view (no Archived state).`,
+    );
+  }
+  return legacy;
+}
+
 // ---------------------------------------------------------------------------
 // Handler: queryKnowledge
 // ---------------------------------------------------------------------------
@@ -417,7 +448,7 @@ export async function createKnowledgeEntry(
     title: args.title.trim(),
     content: args.content ?? '',
     type: args.type,
-    status: args.status ?? 'draft',
+    status: args.status !== undefined ? toLegacyStatus(args.status) : 'draft',
     created_by: userId,
   };
 
@@ -442,7 +473,10 @@ export async function createKnowledgeEntry(
   }
   const created = data as KnowledgeEntryFull;
   await embedDecisionById(client, workspaceId, projectId, created.id, created.title, created.content);
-  return created;
+  // The view's INSTEAD-OF INSERT trigger RETURN NEWs the input, so `created` echoes what we
+  // sent (status vocab, timestamps). Re-read (getKnowledgeEntry: workspace lookup + view select)
+  // for the authoritative persisted row (B-415).
+  return getKnowledgeEntry(client, projectId, { entry_id: created.id });
 }
 
 // ---------------------------------------------------------------------------
@@ -485,7 +519,7 @@ export async function updateKnowledgeEntry(
   if (args.new_title !== undefined) updates.title = args.new_title.trim();
   if (args.content !== undefined) updates.content = args.content;
   if (args.type !== undefined) updates.type = args.type;
-  if (args.status !== undefined) updates.status = args.status;
+  if (args.status !== undefined) updates.status = toLegacyStatus(args.status);
   if (args.tags !== undefined) updates.tags = args.tags;
 
   let query = client
@@ -524,7 +558,10 @@ export async function updateKnowledgeEntry(
   if (args.new_title !== undefined || args.content !== undefined) {
     await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
   }
-  return updated;
+  // Re-read (getKnowledgeEntry: workspace lookup + view select) for the authoritative persisted
+  // row — the view UPDATE trigger RETURN NEWs the caller's input (stale updated_at, echoed
+  // status), not what actually landed (B-415).
+  return getKnowledgeEntry(client, projectId, { entry_id: updated.id });
 }
 
 // ---------------------------------------------------------------------------
