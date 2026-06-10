@@ -170,7 +170,7 @@ export const createKnowledgeEntryTool = {
 
 export const updateKnowledgeEntryTool = {
   name: 'update_knowledge_entry',
-  description: 'Update an existing knowledge entry in this project by ID or title. Can update title, content, type, status, or tags.',
+  description: 'Update an existing knowledge entry in this project by ID or title. Can update title, content, type, status, or tags. Works for all entry types, including the next-gen design types.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -179,7 +179,7 @@ export const updateKnowledgeEntryTool = {
       new_title: { type: 'string', description: 'New title for the entry' },
       content: { type: 'string', description: 'New markdown content' },
       type: { type: 'string', description: 'New entry type' },
-      status: { type: 'string', description: 'New status' },
+      status: { type: 'string', description: 'New status: Asserted, Accepted, Superseded, or Archived (legacy lowercase draft/accepted/superseded also accepted)' },
       tags: {
         type: 'array',
         items: { type: 'string' },
@@ -299,6 +299,31 @@ function toLegacyStatus(status: string): string {
   return legacy;
 }
 
+const BASE_STATUS_MAP: Record<string, string> = {
+  draft: 'Asserted', accepted: 'Accepted', superseded: 'Superseded',
+  Asserted: 'Asserted', Accepted: 'Accepted', Superseded: 'Superseded', Archived: 'Archived',
+};
+
+/**
+ * Normalize a caller-supplied status into the v1-capitalized vocab the
+ * `knowledge_decisions` BASE table's CHECK constraint accepts (B-418).
+ *
+ * Inverse direction of toLegacyStatus: paths that write the base table directly
+ * (updateKnowledgeEntry, supersedeKnowledgeEntry's mark-superseded step) must speak
+ * 'Asserted'|'Accepted'|'Superseded'|'Archived', while legacy callers still pass the
+ * lowercase view vocab. 'Archived' is legal here — only the compat view couldn't
+ * express it. Anything unrecognized is REJECTED loudly rather than silently dropped.
+ */
+function toBaseStatus(status: string): string {
+  const base = BASE_STATUS_MAP[status];
+  if (base === undefined) {
+    throw new Error(
+      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, Superseded/superseded, or Archived.`,
+    );
+  }
+  return base;
+}
+
 // ---------------------------------------------------------------------------
 // Handler: queryKnowledge
 // ---------------------------------------------------------------------------
@@ -398,8 +423,12 @@ export async function getKnowledgeEntry(
 
   const workspaceId = await getWorkspaceId(client, projectId);
 
+  // Read the knowledge_decisions BASE table, not the workspace_knowledge compat view:
+  // the view filters to the legacy four types, so next-gen-typed entries
+  // (technical-design / product-design / ux-ui-design / deferral) are invisible there
+  // → .single() "Cannot coerce" (B-418). Status comes back in v1 vocab ('Accepted').
   let query = client
-    .from('workspace_knowledge')
+    .from('knowledge_decisions')
     .select(
       'id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at',
     )
@@ -474,8 +503,8 @@ export async function createKnowledgeEntry(
   const created = data as KnowledgeEntryFull;
   await embedDecisionById(client, workspaceId, projectId, created.id, created.title, created.content);
   // The view's INSTEAD-OF INSERT trigger RETURN NEWs the input, so `created` echoes what we
-  // sent (status vocab, timestamps). Re-read (getKnowledgeEntry: workspace lookup + view select)
-  // for the authoritative persisted row (B-415).
+  // sent (status vocab, timestamps). Re-read (getKnowledgeEntry: workspace lookup + base-table
+  // select) for the authoritative persisted row (B-415) — status in v1 vocab.
   return getKnowledgeEntry(client, projectId, { entry_id: created.id });
 }
 
@@ -519,11 +548,16 @@ export async function updateKnowledgeEntry(
   if (args.new_title !== undefined) updates.title = args.new_title.trim();
   if (args.content !== undefined) updates.content = args.content;
   if (args.type !== undefined) updates.type = args.type;
-  if (args.status !== undefined) updates.status = toLegacyStatus(args.status);
+  if (args.status !== undefined) updates.status = toBaseStatus(args.status);
   if (args.tags !== undefined) updates.tags = args.tags;
 
+  // Update the knowledge_decisions BASE table, not the workspace_knowledge compat view:
+  // the view's INSTEAD-OF UPDATE never fires for rows outside its WHERE (the legacy four
+  // types), so next-gen-typed entries matched zero rows → "Cannot coerce" — making them
+  // un-editable in place (B-418). The base-table UPDATE … RETURNING is authoritative
+  // (no trigger echo), so the B-415 re-read is unnecessary on this path.
   let query = client
-    .from('workspace_knowledge')
+    .from('knowledge_decisions')
     .update(updates)
     .eq('workspace_id', workspaceId)
     .eq('project_id', projectId);
@@ -549,19 +583,16 @@ export async function updateKnowledgeEntry(
     throw error;
   }
 
-  // Re-embed only when the embedded text (title\ncontent) actually changed. The view's
-  // INSTEAD-OF UPDATE trigger never touches the embedding column, so without this a
-  // promoted/edited row keeps a stale (or null) vector and is invisible to
-  // knowledge_search_rrf. embedDecisionById writes the fresh vector to the base table
-  // by id, using the merged title/content returned by the view update above.
+  // Re-embed only when the embedded text (title\ncontent) actually changed. Nothing in
+  // the DB maintains the embedding column on writes (architecture rule: every knowledge
+  // writer self-embeds), so without this an edited row keeps a stale (or null) vector
+  // and is invisible to knowledge_search_rrf. embedDecisionById writes the fresh vector
+  // by id, using the merged title/content returned by the update above.
   const updated = data as KnowledgeEntryFull;
   if (args.new_title !== undefined || args.content !== undefined) {
     await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
   }
-  // Re-read (getKnowledgeEntry: workspace lookup + view select) for the authoritative persisted
-  // row — the view UPDATE trigger RETURN NEWs the caller's input (stale updated_at, echoed
-  // status), not what actually landed (B-415).
-  return getKnowledgeEntry(client, projectId, { entry_id: updated.id });
+  return updated;
 }
 
 // ---------------------------------------------------------------------------
@@ -1019,11 +1050,14 @@ export async function supersedeKnowledgeEntry(
     source_task_id: existing.source_task_id ?? undefined,
   });
 
-  // Step 3: mark the old entry as superseded and set superseded_by in one update
+  // Step 3: mark the old entry as superseded and set superseded_by in one update.
+  // Must hit the BASE table (v1 vocab): a workspace_knowledge view update silently
+  // matches zero rows for next-gen-typed entries (outside the view's WHERE) and would
+  // error here AFTER step 2 — orphaning the already-created replacement (B-418).
   const workspaceId = await getWorkspaceId(client, projectId);
   const { data: supersededData, error } = await client
-    .from('workspace_knowledge')
-    .update({ status: 'superseded', superseded_by: replacement.id })
+    .from('knowledge_decisions')
+    .update({ status: 'Superseded', superseded_by: replacement.id })
     .eq('workspace_id', workspaceId)
     .eq('project_id', projectId)
     .eq('id', existing.id)

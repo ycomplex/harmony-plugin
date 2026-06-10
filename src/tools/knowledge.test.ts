@@ -54,7 +54,7 @@ const sampleFullEntry = {
   title: 'Use TypeScript strict mode',
   content: 'We use TypeScript strict mode across all projects.',
   type: 'convention',
-  status: 'accepted',
+  status: 'Accepted',
   superseded_by: null,
   tags: ['typescript'],
   source_task_id: null,
@@ -114,13 +114,16 @@ function buildWorkspaceAndQueryClient(secondResponse: { data: any; error?: any }
 
 /**
  * Mock that routes client.from(table) by NAME (not call-order), and mocks
- * functions.invoke for embedText. viewResult may be a single {data,error} or an
- * ARRAY consumed in sequence by successive .single() calls (for multi-write flows
- * like supersedeKnowledgeEntry). embedding:null makes the edge fn return an error
- * (embedText → null), exercising the best-effort path.
+ * functions.invoke for embedText. viewResult/baseResult may be a single
+ * {data,error} or an ARRAY consumed in sequence by successive .single() calls
+ * (for multi-step flows like supersedeKnowledgeEntry). Note the embedding write
+ * in embedDecisionById never calls .single(), so it never consumes the base
+ * queue. embedding:null makes the edge fn return an error (embedText → null),
+ * exercising the best-effort path.
  */
 function buildEmbedAwareClient(opts: {
-  viewResult: { data: any; error?: any } | Array<{ data: any; error?: any }>;
+  viewResult?: { data: any; error?: any } | Array<{ data: any; error?: any }>;
+  baseResult?: { data: any; error?: any } | Array<{ data: any; error?: any }>;
   embedding?: number[] | null;
 }) {
   const wsChain: any = {};
@@ -128,20 +131,22 @@ function buildEmbedAwareClient(opts: {
   wsChain.eq = vi.fn().mockReturnValue(wsChain);
   wsChain.single = vi.fn().mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
 
-  const viewQueue = Array.isArray(opts.viewResult) ? [...opts.viewResult] : [opts.viewResult];
-  const viewChain: any = {};
-  viewChain.select = vi.fn().mockReturnValue(viewChain);
-  viewChain.insert = vi.fn().mockReturnValue(viewChain);
-  viewChain.update = vi.fn().mockReturnValue(viewChain);
-  viewChain.eq = vi.fn().mockReturnValue(viewChain);
-  viewChain.single = vi.fn().mockImplementation(() => {
-    const next = viewQueue.length > 1 ? viewQueue.shift()! : viewQueue[0];
-    return Promise.resolve({ data: next.data, error: next.error ?? null });
-  });
+  function queuedChain(result?: { data: any; error?: any } | Array<{ data: any; error?: any }>) {
+    const queue = result === undefined ? [{ data: null }] : Array.isArray(result) ? [...result] : [result];
+    const chain: any = {};
+    chain.select = vi.fn().mockReturnValue(chain);
+    chain.insert = vi.fn().mockReturnValue(chain);
+    chain.update = vi.fn().mockReturnValue(chain);
+    chain.eq = vi.fn().mockReturnValue(chain);
+    chain.single = vi.fn().mockImplementation(() => {
+      const next = queue.length > 1 ? queue.shift()! : queue[0];
+      return Promise.resolve({ data: next.data, error: next.error ?? null });
+    });
+    return chain;
+  }
 
-  const baseChain: any = {};
-  baseChain.update = vi.fn().mockReturnValue(baseChain);
-  baseChain.eq = vi.fn().mockReturnValue(baseChain); // terminal — awaited directly, no .single()
+  const viewChain = queuedChain(opts.viewResult);
+  const baseChain = queuedChain(opts.baseResult);
 
   const client: any = {
     from: vi.fn().mockImplementation((table: string) => {
@@ -341,11 +346,25 @@ describe('getKnowledgeEntry', () => {
 
     expect(client.from).toHaveBeenNthCalledWith(1, 'projects');
     expect(wsChain.eq).toHaveBeenCalledWith('id', PROJECT_ID);
-    expect(client.from).toHaveBeenNthCalledWith(2, 'workspace_knowledge');
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_decisions');
     expect(secondChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
     expect(secondChain.eq).toHaveBeenCalledWith('project_id', PROJECT_ID);
     expect(secondChain.eq).toHaveBeenCalledWith('id', 'ke-1');
     expect(result).toEqual(sampleFullEntry);
+  });
+
+  it('reads the base table, so next-gen-typed entries are retrievable (B-418)', async () => {
+    // The workspace_knowledge compat view filters to the legacy four types, so a
+    // technical-design row is invisible there → .single() "Cannot coerce" error.
+    const nextGenEntry = { ...sampleFullEntry, id: 'ke-ng', type: 'technical-design' };
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: nextGenEntry });
+
+    const result = await getKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-ng' });
+
+    expect(client.from).not.toHaveBeenCalledWith('workspace_knowledge');
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_decisions');
+    expect(secondChain.eq).toHaveBeenCalledWith('id', 'ke-ng');
+    expect(result).toEqual(nextGenEntry);
   });
 
   it('retrieves entry by title scoped to token project', async () => {
@@ -529,7 +548,11 @@ describe('createKnowledgeEntry', () => {
 
   it('returns the created entry even when embedding fails (best-effort)', async () => {
     const created = { ...sampleFullEntry, id: 'ke-new' };
-    const { client, baseChain } = buildEmbedAwareClient({ viewResult: { data: created }, embedding: null });
+    const { client, baseChain } = buildEmbedAwareClient({
+      viewResult: { data: created },
+      baseResult: { data: created },   // authoritative re-read now hits the base table
+      embedding: null,
+    });
 
     const result = await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention' });
 
@@ -566,12 +589,13 @@ describe('createKnowledgeEntry', () => {
     expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'draft' }));
   });
 
-  it('create returns the authoritative persisted row', async () => {
-    const echoed    = { ...sampleFullEntry, id: 'ke-new', status: 'accepted' };                          // insert echo
-    const persisted = { ...sampleFullEntry, id: 'ke-new', status: 'accepted', title: 'persisted title' }; // re-read
-    const { client } = buildEmbedAwareClient({ viewResult: [{ data: echoed }, { data: persisted }] });
+  it('create returns the authoritative persisted row (re-read from the base table)', async () => {
+    const echoed    = { ...sampleFullEntry, id: 'ke-new', status: 'accepted' };                           // view insert echo
+    const persisted = { ...sampleFullEntry, id: 'ke-new', status: 'Accepted', title: 'persisted title' }; // base re-read
+    const { client } = buildEmbedAwareClient({ viewResult: { data: echoed }, baseResult: { data: persisted } });
     const result = await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention' });
     expect(result.title).toBe('persisted title');
+    expect(result.status).toBe('Accepted');   // base-table (v1) vocab, not the view echo
   });
 });
 
@@ -593,12 +617,26 @@ describe('updateKnowledgeEntry', () => {
       new_title: 'Updated Title',
     });
 
-    expect(client.from).toHaveBeenNthCalledWith(2, 'workspace_knowledge');
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_decisions');
     expect(secondChain.update).toHaveBeenCalledWith(expect.objectContaining({ title: 'Updated Title' }));
     expect(secondChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
     expect(secondChain.eq).toHaveBeenCalledWith('project_id', PROJECT_ID);
     expect(secondChain.eq).toHaveBeenCalledWith('id', 'ke-1');
     expect(result).toEqual(updatedEntry);
+  });
+
+  it('updates a next-gen-typed entry via the base table (B-418)', async () => {
+    // The compat view's INSTEAD-OF UPDATE never fires for rows outside its WHERE
+    // (the legacy four types) → zero rows → "Cannot coerce". The base table sees all types.
+    const nextGen = { ...sampleFullEntry, id: 'ke-ng', type: 'technical-design', tags: ['layer3-nextgen'] };
+    const { client, baseChain, viewChain } = buildEmbedAwareClient({ baseResult: { data: nextGen } });
+
+    const result = await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-ng', tags: ['layer3-nextgen'] });
+
+    expect(viewChain.update).not.toHaveBeenCalled();
+    expect(baseChain.update).toHaveBeenCalledWith({ tags: ['layer3-nextgen'] });
+    expect(baseChain.eq).toHaveBeenCalledWith('id', 'ke-ng');
+    expect(result).toEqual(nextGen);
   });
 
   it('updates by title scoped to token project', async () => {
@@ -611,7 +649,7 @@ describe('updateKnowledgeEntry', () => {
     expect(secondChain.eq).toHaveBeenCalledWith('title', 'Use TypeScript strict mode');
   });
 
-  it('can update content, type, status, and tags', async () => {
+  it('can update content, type, status, and tags (status normalized to base vocab)', async () => {
     const { client, secondChain } = buildWorkspaceAndQueryClient({ data: updatedEntry });
     await updateKnowledgeEntry(client, PROJECT_ID, {
       entry_id: 'ke-1',
@@ -624,7 +662,7 @@ describe('updateKnowledgeEntry', () => {
       expect.objectContaining({
         content: 'new content',
         type: 'business',
-        status: 'accepted',
+        status: 'Accepted',   // base table speaks v1 vocab; legacy lowercase is normalized up
         tags: ['new-tag'],
       }),
     );
@@ -665,14 +703,12 @@ describe('updateKnowledgeEntry', () => {
   });
 
   it('re-embeds via the base table when content changes (B-401)', async () => {
-    const updated = { ...sampleFullEntry, status: 'accepted', content: 'NEW why-rich content' };
-    const { client, baseChain } = buildEmbedAwareClient({ viewResult: { data: updated } });
+    const updated = { ...sampleFullEntry, status: 'Accepted', content: 'NEW why-rich content' };
+    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: updated } });
 
     await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', content: 'NEW why-rich content', status: 'accepted' });
 
-    expect(client.from).toHaveBeenCalledWith('workspace_knowledge');               // legacy view write unchanged
     expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: `${updated.title}\nNEW why-rich content` } });
-    expect(client.from).toHaveBeenCalledWith('knowledge_decisions');               // base-table embedding write
     expect(baseChain.update).toHaveBeenCalledWith({ embedding: '[0.1,0.2]' });
     expect(baseChain.eq).toHaveBeenCalledWith('id', 'ke-1');
   });
@@ -680,7 +716,7 @@ describe('updateKnowledgeEntry', () => {
   it('re-embeds when the title changes', async () => {
     // content is unchanged — the re-embed must still fire because the title changed
     const updated = { ...sampleFullEntry, title: 'Renamed title' };
-    const { client, baseChain } = buildEmbedAwareClient({ viewResult: { data: updated } });
+    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: updated } });
 
     await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', new_title: 'Renamed title' });
 
@@ -689,44 +725,53 @@ describe('updateKnowledgeEntry', () => {
   });
 
   it('does NOT re-embed when only status changes (no wasted embed call)', async () => {
-    const updated = { ...sampleFullEntry, status: 'accepted' };
-    const { client, baseChain } = buildEmbedAwareClient({ viewResult: { data: updated } });
+    const updated = { ...sampleFullEntry, status: 'Accepted' };
+    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: updated } });
 
     await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'accepted' });
 
-    expect(client.from).toHaveBeenCalledWith('workspace_knowledge');   // view update still happens
     expect(client.functions.invoke).not.toHaveBeenCalled();            // no embed
-    expect(baseChain.update).not.toHaveBeenCalled();                   // no base write
+    expect(baseChain.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ embedding: expect.anything() }),       // no embedding write
+    );
   });
 
-  it('normalizes v1-capitalized status to the legacy vocab the view expects (B-415)', async () => {
-    const updated = { ...sampleFullEntry, status: 'accepted' };
-    const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: updated } });
-    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'Accepted' });
-    expect(viewChain.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'accepted' }));
+  it('normalizes legacy lowercase status to the v1 vocab the base table expects (B-418)', async () => {
+    const updated = { ...sampleFullEntry, status: 'Asserted' };
+    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: updated } });
+    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'draft' });
+    expect(baseChain.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'Asserted' }));
   });
 
-  it('passes legacy lowercase status through unchanged', async () => {
-    const updated = { ...sampleFullEntry, status: 'superseded' };
-    const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: updated } });
-    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'superseded' });
-    expect(viewChain.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'superseded' }));
+  it('passes v1-capitalized status through unchanged', async () => {
+    const updated = { ...sampleFullEntry, status: 'Superseded' };
+    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: updated } });
+    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'Superseded' });
+    expect(baseChain.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'Superseded' }));
+  });
+
+  it('allows Archived now that the write hits the base table (view limitation gone)', async () => {
+    const updated = { ...sampleFullEntry, status: 'Archived' };
+    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: updated } });
+    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'Archived' });
+    expect(baseChain.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'Archived' }));
   });
 
   it('rejects an unrecognized status instead of silently dropping it', async () => {
-    const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: sampleFullEntry } });
+    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: sampleFullEntry } });
     await expect(
-      updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'Archived' }),
+      updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'bogus' }),
     ).rejects.toThrow(/Unsupported status/);
-    expect(viewChain.update).not.toHaveBeenCalled();
+    expect(baseChain.update).not.toHaveBeenCalled();
   });
 
-  it('returns the authoritative persisted row, not the trigger echo (B-415)', async () => {
-    const echoed    = { ...sampleFullEntry, id: 'ke-1', status: 'accepted', updated_at: '2026-01-01T00:00:00Z' }; // stale echo
-    const persisted = { ...sampleFullEntry, id: 'ke-1', status: 'accepted', updated_at: '2026-06-08T12:00:00Z' }; // real
-    const { client } = buildEmbedAwareClient({ viewResult: [{ data: echoed }, { data: persisted }] });
+  it('returns the row from the base-table update directly (RETURNING is authoritative — no re-read)', async () => {
+    const persisted = { ...sampleFullEntry, id: 'ke-1', status: 'Accepted', updated_at: '2026-06-08T12:00:00Z' };
+    const { client, baseChain, viewChain } = buildEmbedAwareClient({ baseResult: { data: persisted } });
     const result = await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'Accepted' });
-    expect(result.updated_at).toBe('2026-06-08T12:00:00Z');   // from the re-read, not the echo
+    expect(result).toEqual(persisted);
+    expect(viewChain.single).not.toHaveBeenCalled();          // view never touched
+    expect(baseChain.single).toHaveBeenCalledTimes(1);        // exactly the UPDATE … RETURNING, no extra read
   });
 });
 
@@ -740,33 +785,34 @@ describe('supersedeKnowledgeEntry', () => {
     ...sampleFullEntry,
     id: 'ke-new',
     title: 'Use TypeScript strict mode v2',
-    status: 'accepted',
+    status: 'Accepted',
     project_id: PROJECT_ID,
   };
   const supersededEntry = {
     ...sampleFullEntry,
-    status: 'superseded',
+    status: 'Superseded',
     superseded_by: 'ke-new',
   };
 
   /**
-   * supersedeKnowledgeEntry makes these view .single() calls (via buildEmbedAwareClient):
-   * 0. getKnowledgeEntry fetch  (workspace_knowledge → single): existing entry
-   * 1. createKnowledgeEntry insert echo  (workspace_knowledge → insert → single): echoed replacement
-   * 2. createKnowledgeEntry re-read  (workspace_knowledge → single, B-415): authoritative replacement
-   * 3. supersede direct update  (workspace_knowledge → update → single): supersededEntry
+   * supersedeKnowledgeEntry's .single() calls (via buildEmbedAwareClient):
+   * base 0. getKnowledgeEntry fetch  (knowledge_decisions → single): existing entry
+   * view 0. createKnowledgeEntry insert echo  (workspace_knowledge → insert → single): echoed replacement
+   * base 1. createKnowledgeEntry re-read  (knowledge_decisions → single, B-415): authoritative replacement
+   * base 2. mark-superseded update  (knowledge_decisions → update → single): supersededEntry
+   * (the embedding write never calls .single(), so it doesn't consume the base queue)
    *
    * wsChain handles all projects lookups (returns WORKSPACE_ID every time).
    * We capture inserts by spying on viewChain.insert.
    */
   function buildSupersedeClient(overrides?: { existing?: any }) {
     const existingRow = overrides?.existing ?? existingEntry;
-    const { client, viewChain } = buildEmbedAwareClient({
-      viewResult: [
-        { data: existingRow },      // 0: getKnowledgeEntry fetch
-        { data: replacementEntry }, // 1: createKnowledgeEntry insert echo
-        { data: replacementEntry }, // 2: createKnowledgeEntry re-read (authoritative — same row is fine for these tests)
-        { data: supersededEntry },  // 3: supersede update
+    const { client, viewChain, baseChain } = buildEmbedAwareClient({
+      viewResult: { data: replacementEntry },  // createKnowledgeEntry insert echo
+      baseResult: [
+        { data: existingRow },      // getKnowledgeEntry fetch
+        { data: replacementEntry }, // createKnowledgeEntry re-read (authoritative — same row is fine for these tests)
+        { data: supersededEntry },  // mark-superseded update
       ],
     });
 
@@ -777,11 +823,11 @@ describe('supersedeKnowledgeEntry', () => {
       return origInsert(record);
     });
 
-    return { client, insertCalls };
+    return { client, insertCalls, baseChain };
   }
 
   it('supersedes old entry and creates replacement scoped to token project', async () => {
-    const { client, insertCalls } = buildSupersedeClient();
+    const { client, insertCalls, baseChain } = buildSupersedeClient();
 
     const result = await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
       entry_id: 'ke-1',
@@ -789,11 +835,16 @@ describe('supersedeKnowledgeEntry', () => {
       new_content: 'Updated content for strict mode.',
     });
 
-    expect(result.superseded.status).toBe('superseded');
+    expect(result.superseded.status).toBe('Superseded');
     expect(result.superseded.superseded_by).toBe('ke-new');
     expect(result.replacement.id).toBe('ke-new');
-    expect(result.replacement.status).toBe('accepted');
+    expect(result.replacement.status).toBe('Accepted');
     expect(result.replacement.project_id).toBe(PROJECT_ID);
+
+    // The mark-superseded UPDATE must hit the base table with v1 vocab — a view
+    // update silently matches zero rows for next-gen types and would orphan the
+    // already-created replacement (B-418).
+    expect(baseChain.update).toHaveBeenCalledWith({ status: 'Superseded', superseded_by: 'ke-new' });
 
     // Replacement insert must carry the token's project_id
     const replacementInsert = insertCalls.find((r) => r.title === 'Use TypeScript strict mode v2');
@@ -829,13 +880,13 @@ describe('supersedeKnowledgeEntry', () => {
   it('embeds the replacement entry (transitive via createKnowledgeEntry) [B-401]', async () => {
     const existing = { ...sampleFullEntry, id: 'ke-old' };
     const replacement = { ...sampleFullEntry, id: 'ke-repl', title: 'New ruling', content: 'updated body' };
-    const supersededRow = { ...existing, status: 'superseded', superseded_by: 'ke-repl' };
+    const supersededRow = { ...existing, status: 'Superseded', superseded_by: 'ke-repl' };
     const { client, baseChain } = buildEmbedAwareClient({
-      viewResult: [
+      viewResult: { data: replacement },  // createKnowledgeEntry: insert echo
+      baseResult: [
         { data: existing },      // getKnowledgeEntry: fetch the old entry
-        { data: replacement },   // createKnowledgeEntry: insert echo
         { data: replacement },   // createKnowledgeEntry: re-read (B-415) — same row is authoritative here
-        { data: supersededRow }, // supersede's own update: mark the old entry superseded
+        { data: supersededRow }, // mark the old entry superseded
       ],
     });
 

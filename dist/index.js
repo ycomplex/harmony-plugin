@@ -33156,7 +33156,7 @@ var createKnowledgeEntryTool = {
 };
 var updateKnowledgeEntryTool = {
   name: "update_knowledge_entry",
-  description: "Update an existing knowledge entry in this project by ID or title. Can update title, content, type, status, or tags.",
+  description: "Update an existing knowledge entry in this project by ID or title. Can update title, content, type, status, or tags. Works for all entry types, including the next-gen design types.",
   inputSchema: {
     type: "object",
     properties: {
@@ -33165,7 +33165,7 @@ var updateKnowledgeEntryTool = {
       new_title: { type: "string", description: "New title for the entry" },
       content: { type: "string", description: "New markdown content" },
       type: { type: "string", description: "New entry type" },
-      status: { type: "string", description: "New status" },
+      status: { type: "string", description: "New status: Asserted, Accepted, Superseded, or Archived (legacy lowercase draft/accepted/superseded also accepted)" },
       tags: {
         type: "array",
         items: { type: "string" },
@@ -33231,6 +33231,24 @@ function toLegacyStatus(status) {
   }
   return legacy;
 }
+var BASE_STATUS_MAP = {
+  draft: "Asserted",
+  accepted: "Accepted",
+  superseded: "Superseded",
+  Asserted: "Asserted",
+  Accepted: "Accepted",
+  Superseded: "Superseded",
+  Archived: "Archived"
+};
+function toBaseStatus(status) {
+  const base = BASE_STATUS_MAP[status];
+  if (base === void 0) {
+    throw new Error(
+      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, Superseded/superseded, or Archived.`
+    );
+  }
+  return base;
+}
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
   if (args.search) {
@@ -33289,7 +33307,7 @@ async function getKnowledgeEntry(client, projectId, args) {
     throw new Error("Either entry_id or title must be provided");
   }
   const workspaceId = await getWorkspaceId(client, projectId);
-  let query = client.from("workspace_knowledge").select(
+  let query = client.from("knowledge_decisions").select(
     "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
   ).eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.entry_id) {
@@ -33345,9 +33363,9 @@ async function updateKnowledgeEntry(client, projectId, args) {
   if (args.new_title !== void 0) updates.title = args.new_title.trim();
   if (args.content !== void 0) updates.content = args.content;
   if (args.type !== void 0) updates.type = args.type;
-  if (args.status !== void 0) updates.status = toLegacyStatus(args.status);
+  if (args.status !== void 0) updates.status = toBaseStatus(args.status);
   if (args.tags !== void 0) updates.tags = args.tags;
-  let query = client.from("workspace_knowledge").update(updates).eq("workspace_id", workspaceId).eq("project_id", projectId);
+  let query = client.from("knowledge_decisions").update(updates).eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.entry_id) {
     query = query.eq("id", args.entry_id);
   } else {
@@ -33368,7 +33386,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
   if (args.new_title !== void 0 || args.content !== void 0) {
     await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
   }
-  return getKnowledgeEntry(client, projectId, { entry_id: updated.id });
+  return updated;
 }
 async function resolveOrCreateEntity(client, workspaceId, projectId, name, kind = "concept") {
   const { data: existing, error: lookupErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).eq("kind", kind).eq("name", name).maybeSingle();
@@ -33618,7 +33636,7 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
     source_task_id: existing.source_task_id ?? void 0
   });
   const workspaceId = await getWorkspaceId(client, projectId);
-  const { data: supersededData, error: error2 } = await client.from("workspace_knowledge").update({ status: "superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", existing.id).select(
+  const { data: supersededData, error: error2 } = await client.from("knowledge_decisions").update({ status: "Superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", existing.id).select(
     "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
   ).single();
   if (error2) throw error2;
