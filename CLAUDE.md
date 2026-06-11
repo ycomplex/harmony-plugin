@@ -42,6 +42,22 @@ Both skills depend on the `superpowers` plugin for some functionality (brainstor
 
 Every PR must bump the version in `.claude-plugin/plugin.json`. This is how Claude Code detects plugin updates — without a version bump, users won't pick up the changes.
 
+### Release gate: `main` is dev, `prod` is what ships
+
+The `ycomplex` marketplace pins this plugin to the **`prod`** branch (`source.ref: "prod"`), **not** `main`. So merging to `main` does *not* reach installed plugins on its own — Claude Code's auto-update only advances when the `prod` branch moves.
+
+**Why:** the MCP server selects columns/RPCs from the production Supabase DB, which deploys only from harmony-web's `prod` branch and deliberately lags staging during active schema work. If the plugin tracked `main`, a fresh session could auto-update to a version that selects schema prod doesn't have yet, hard-breaking core tools (the `WITHIN GROUP … mode` / `column tasks.workflow_state does not exist` failures — see Harmony **B-383**).
+
+**Invariant:** `prod` must never select DB columns/RPCs that harmony-web *production* lacks.
+
+**Promotion cadence:** when harmony-web is promoted to production (`git push origin main:prod` in harmony-web), fast-forward this repo the same way, in the same step:
+
+```bash
+git push origin main:prod   # in harmony-plugin
+```
+
+Plugin-only changes with no new schema dependency (skills, CLI, bug fixes) are safe to promote any time; the gate matters specifically for changes that read newly-added schema. To dogfood `main` ahead of prod, set `HARMONY_SUPABASE_URL` to staging so the ahead-of-prod plugin talks to an ahead-of-prod DB.
+
 ### `dist/` is tracked in git
 
 Because Claude Code plugins aren't npm-installed (the marketplace copies files directly into `~/.claude/plugins/cache/` without running `npm install`), the compiled `dist/` output is committed so the MCP server runs immediately on fresh install. The bundle is produced by `esbuild --bundle`, so all runtime deps are inlined — no `node_modules/` is needed at runtime.
