@@ -24336,8 +24336,15 @@ async function getTask(client, projectId, args) {
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
   const { data: acceptanceCriteria } = await client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position");
   const { data: testCases } = await client.from("test_cases").select("*").eq("task_id", resolvedId).order("position");
+  let attachments;
+  try {
+    const { data: rows } = await client.from("attachments").select("id, filename, content_type, byte_size, created_at").eq("task_id", resolvedId).eq("status", "finalized").order("created_at", { ascending: true });
+    attachments = rows ?? [];
+  } catch {
+    attachments = [];
+  }
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [] };
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments };
 }
 async function createTask(client, projectId, userId, args) {
   const assigneeId = args.assignee_id ? await resolveAssignee(client, projectId, args.assignee_id) : null;

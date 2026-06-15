@@ -122,8 +122,28 @@ export async function getTask(client: SupabaseClient, projectId: string, args: {
     .eq('task_id', resolvedId)
     .order('position');
 
+  // B-449: include attachment metadata so an agent reading a task sees its files
+  // (no separate list tool). Additive + RLS-scoped: the `attachments` table's RLS
+  // already restricts visibility to the caller's workspace membership, and when
+  // the attachments module is off the select simply returns nothing — get_task
+  // stays backward-compatible. Only `finalized` rows are surfaced (in-flight
+  // `pending` rows aren't real attachments yet). A select error (e.g. the table
+  // absent on an older DB) is swallowed so get_task never regresses.
+  let attachments: unknown[];
+  try {
+    const { data: rows } = await client
+      .from('attachments')
+      .select('id, filename, content_type, byte_size, created_at')
+      .eq('task_id', resolvedId)
+      .eq('status', 'finalized')
+      .order('created_at', { ascending: true });
+    attachments = rows ?? [];
+  } catch {
+    attachments = [];
+  }
+
   const { task_labels, checklist_items: _checklistItems, ...rest } = data as any;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [] };
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments };
 }
 
 export const createTaskTool = {
