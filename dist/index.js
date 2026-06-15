@@ -2986,7 +2986,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve.call(this, root, ref);
+      let _sch = resolve2.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a = root.localRefs) === null || _a === void 0 ? void 0 : _a[ref];
         const { schemaId } = this.opts;
@@ -3013,7 +3013,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve(root, ref) {
+    function resolve2(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3228,8 +3228,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path) {
-      let input = path;
+    function removeDotSegments(path2) {
+      let input = path2;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3428,8 +3428,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path && path !== "/" ? path : void 0;
+        const [path2, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path2 && path2 !== "/" ? path2 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -3588,7 +3588,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve(baseURI, relativeURI, options) {
+    function resolve2(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const resolved = resolveComponent(parse3(baseURI, schemelessOptions), parse3(relativeURI, schemelessOptions), schemelessOptions, true);
       schemelessOptions.skipEscape = true;
@@ -3815,7 +3815,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve,
+      resolve: resolve2,
       resolveComponent,
       equal,
       serialize,
@@ -6791,12 +6791,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs, exportName) {
+    function addFormats(ajv, list, fs2, exportName) {
       var _a;
       var _b;
       (_a = (_b = ajv.opts.code).formats) !== null && _a !== void 0 ? _a : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs[f]);
+        ajv.addFormat(f, fs2[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -6923,11 +6923,11 @@ function __metadata(metadataKey, metadataValue) {
 }
 function __awaiter(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve) {
-      resolve(value);
+    return value instanceof P ? value : new P(function(resolve2) {
+      resolve2(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve, reject) {
+  return new (P || (P = Promise))(function(resolve2, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -6943,7 +6943,7 @@ function __awaiter(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -7134,14 +7134,14 @@ function __asyncValues(o) {
   }, i);
   function verb(n) {
     i[n] = o[n] && function(v) {
-      return new Promise(function(resolve, reject) {
-        v = o[n](v), settle(resolve, reject, v.done, v.value);
+      return new Promise(function(resolve2, reject) {
+        v = o[n](v), settle(resolve2, reject, v.done, v.value);
       });
     };
   }
-  function settle(resolve, reject, d, v) {
+  function settle(resolve2, reject, d, v) {
     Promise.resolve(v).then(function(v2) {
-      resolve({ value: v2, done: d });
+      resolve2({ value: v2, done: d });
     }, reject);
   }
 }
@@ -7233,13 +7233,13 @@ function __disposeResources(env) {
   }
   return next();
 }
-function __rewriteRelativeImportExtension(path, preserveJsx) {
-  if (typeof path === "string" && /^\.\.?\//.test(path)) {
-    return path.replace(/\.(tsx)$|((?:\.d)?)((?:\.[^./]+?)?)\.([cm]?)ts$/i, function(m, tsx, d, ext, cm) {
+function __rewriteRelativeImportExtension(path2, preserveJsx) {
+  if (typeof path2 === "string" && /^\.\.?\//.test(path2)) {
+    return path2.replace(/\.(tsx)$|((?:\.d)?)((?:\.[^./]+?)?)\.([cm]?)ts$/i, function(m, tsx, d, ext, cm) {
       return tsx ? preserveJsx ? ".jsx" : ".js" : d && (!ext || !cm) ? m : d + ext + "." + cm.toLowerCase() + "js";
     });
   }
-  return path;
+  return path2;
 }
 var extendStatics, __assign, __createBinding, __setModuleDefault, ownKeys, _SuppressedError, tslib_es6_default;
 var init_tslib_es6 = __esm({
@@ -10631,15 +10631,15 @@ var require_RealtimeChannel = __commonJS({
             }
           }
         } else {
-          return new Promise((resolve) => {
+          return new Promise((resolve2) => {
             var _a2, _b2, _c;
             const push = this.channelAdapter.push(args.type, args, opts.timeout || this.timeout);
             if (args.type === "broadcast" && !((_c = (_b2 = (_a2 = this.params) === null || _a2 === void 0 ? void 0 : _a2.config) === null || _b2 === void 0 ? void 0 : _b2.broadcast) === null || _c === void 0 ? void 0 : _c.ack)) {
-              resolve("ok");
+              resolve2("ok");
             }
-            push.receive("ok", () => resolve("ok"));
-            push.receive("error", () => resolve("error"));
-            push.receive("timeout", () => resolve("timed out"));
+            push.receive("ok", () => resolve2("ok"));
+            push.receive("error", () => resolve2("error"));
+            push.receive("timeout", () => resolve2("timed out"));
           });
         }
       }
@@ -10664,8 +10664,8 @@ var require_RealtimeChannel = __commonJS({
        * @category Realtime
        */
       async unsubscribe(timeout = this.timeout) {
-        return new Promise((resolve) => {
-          this.channelAdapter.unsubscribe(timeout).receive("ok", () => resolve("ok")).receive("timeout", () => resolve("timed out")).receive("error", () => resolve("error"));
+        return new Promise((resolve2) => {
+          this.channelAdapter.unsubscribe(timeout).receive("ok", () => resolve2("ok")).receive("timeout", () => resolve2("timed out")).receive("error", () => resolve2("error"));
         });
       }
       /**
@@ -10746,8 +10746,8 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error: error2, leave, join } = constants_1.CHANNEL_EVENTS;
-        const events = [close, error2, leave, join];
+        const { close, error: error2, leave, join: join2 } = constants_1.CHANNEL_EVENTS;
+        const events = [close, error2, leave, join2];
         return ref && events.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
@@ -10859,11 +10859,11 @@ var require_socketAdapter = __commonJS({
         this.socket.connect();
       }
       disconnect(callback, code, reason, timeout = 1e4) {
-        return new Promise((resolve) => {
-          setTimeout(() => resolve("timeout"), timeout);
+        return new Promise((resolve2) => {
+          setTimeout(() => resolve2("timeout"), timeout);
           this.socket.disconnect(() => {
             callback();
-            resolve("ok");
+            resolve2("ok");
           }, code, reason);
         });
       }
@@ -17021,10 +17021,10 @@ function assignProp(target, prop, value) {
     configurable: true
   });
 }
-function getElementAtPath(obj, path) {
-  if (!path)
+function getElementAtPath(obj, path2) {
+  if (!path2)
     return obj;
-  return path.reduce((acc, key) => acc?.[key], obj);
+  return path2.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -17344,11 +17344,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path, issues) {
+function prefixIssues(path2, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path);
+    iss.path.unshift(path2);
     return iss;
   });
 }
@@ -22653,7 +22653,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        await new Promise((resolve2) => setTimeout(resolve2, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -22670,7 +22670,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -22748,7 +22748,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve(parseResult.data);
+            resolve2(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -23009,12 +23009,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve, interval);
+      const timeoutId = setTimeout(resolve2, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -23884,12 +23884,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve) => {
+    return new Promise((resolve2) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve();
+        resolve2();
       } else {
-        this._stdout.once("drain", resolve);
+        this._stdout.once("drain", resolve2);
       }
     });
   }
@@ -28729,8 +28729,8 @@ var IcebergError = class extends Error {
     return this.status === 419;
   }
 };
-function buildUrl(baseUrl, path, query) {
-  const url = new URL(path, baseUrl);
+function buildUrl(baseUrl, path2, query) {
+  const url = new URL(path2, baseUrl);
   if (query) {
     for (const [key, value] of Object.entries(query)) {
       if (value !== void 0) {
@@ -28760,12 +28760,12 @@ function createFetchClient(options) {
   return {
     async request({
       method,
-      path,
+      path: path2,
       query,
       body,
       headers
     }) {
-      const url = buildUrl(options.baseUrl, path, query);
+      const url = buildUrl(options.baseUrl, path2, query);
       const authHeaders = await buildAuthHeaders(options.auth);
       const res = await fetchFn(url, {
         method,
@@ -29378,7 +29378,7 @@ var _getRequestParams = (method, options, parameters, body) => {
   return _objectSpread22(_objectSpread22({}, params), parameters);
 };
 async function _handleRequest(fetcher, method, url, options, parameters, body, namespace) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     fetcher(url, _getRequestParams(method, options, parameters, body)).then((result) => {
       if (!result.ok) throw result;
       if (options === null || options === void 0 ? void 0 : options.noResolveJson) return result;
@@ -29388,7 +29388,7 @@ async function _handleRequest(fetcher, method, url, options, parameters, body, n
         if (!contentType || !contentType.includes("application/json")) return {};
       }
       return result.json();
-    }).then((data) => resolve(data)).catch((error2) => handleError(error2, reject, options, namespace));
+    }).then((data) => resolve2(data)).catch((error2) => handleError(error2, reject, options, namespace));
   });
 }
 function createFetchApi(namespace = "storage") {
@@ -29584,7 +29584,7 @@ var StorageFileApi = class extends BaseApiClient {
   * @param path The relative file path. Should be of the format `folder/subfolder/filename.png`. The bucket must already exist before attempting to upload.
   * @param fileBody The body of the file to be stored in the bucket.
   */
-  async uploadOrUpdate(method, path, fileBody, fileOptions) {
+  async uploadOrUpdate(method, path2, fileBody, fileOptions) {
     var _this = this;
     return _this.handleOperation(async () => {
       let body;
@@ -29608,7 +29608,7 @@ var StorageFileApi = class extends BaseApiClient {
         if ((typeof ReadableStream !== "undefined" && body instanceof ReadableStream || body && typeof body === "object" && "pipe" in body && typeof body.pipe === "function") && !options.duplex) options.duplex = "half";
       }
       if (fileOptions === null || fileOptions === void 0 ? void 0 : fileOptions.headers) headers = _objectSpread22(_objectSpread22({}, headers), fileOptions.headers);
-      const cleanPath = _this._removeEmptyFolders(path);
+      const cleanPath = _this._removeEmptyFolders(path2);
       const _path = _this._getFinalPath(cleanPath);
       const data = await (method == "PUT" ? put : post)(_this.fetch, `${_this.url}/object/${_path}`, body, _objectSpread22({ headers }, (options === null || options === void 0 ? void 0 : options.duplex) ? { duplex: options.duplex } : {}));
       return {
@@ -29662,8 +29662,8 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async upload(path, fileBody, fileOptions) {
-    return this.uploadOrUpdate("POST", path, fileBody, fileOptions);
+  async upload(path2, fileBody, fileOptions) {
+    return this.uploadOrUpdate("POST", path2, fileBody, fileOptions);
   }
   /**
   * Upload a file with a token generated from `createSignedUploadUrl`.
@@ -29696,9 +29696,9 @@ var StorageFileApi = class extends BaseApiClient {
   * }
   * ```
   */
-  async uploadToSignedUrl(path, token, fileBody, fileOptions) {
+  async uploadToSignedUrl(path2, token, fileBody, fileOptions) {
     var _this3 = this;
-    const cleanPath = _this3._removeEmptyFolders(path);
+    const cleanPath = _this3._removeEmptyFolders(path2);
     const _path = _this3._getFinalPath(cleanPath);
     const url = new URL(_this3.url + `/object/upload/sign/${_path}`);
     url.searchParams.set("token", token);
@@ -29754,10 +29754,10 @@ var StorageFileApi = class extends BaseApiClient {
   * }
   * ```
   */
-  async createSignedUploadUrl(path, options) {
+  async createSignedUploadUrl(path2, options) {
     var _this4 = this;
     return _this4.handleOperation(async () => {
-      let _path = _this4._getFinalPath(path);
+      let _path = _this4._getFinalPath(path2);
       const headers = _objectSpread22({}, _this4.headers);
       if (options === null || options === void 0 ? void 0 : options.upsert) headers["x-upsert"] = "true";
       const data = await post(_this4.fetch, `${_this4.url}/object/upload/sign/${_path}`, {}, { headers });
@@ -29766,7 +29766,7 @@ var StorageFileApi = class extends BaseApiClient {
       if (!token) throw new StorageError("No token returned by API");
       return {
         signedUrl: url.toString(),
-        path,
+        path: path2,
         token
       };
     });
@@ -29815,8 +29815,8 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async update(path, fileBody, fileOptions) {
-    return this.uploadOrUpdate("PUT", path, fileBody, fileOptions);
+  async update(path2, fileBody, fileOptions) {
+    return this.uploadOrUpdate("PUT", path2, fileBody, fileOptions);
   }
   /**
   * Moves an existing file to a new path in the same bucket.
@@ -29945,10 +29945,10 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async createSignedUrl(path, expiresIn, options) {
+  async createSignedUrl(path2, expiresIn, options) {
     var _this8 = this;
     return _this8.handleOperation(async () => {
-      let _path = _this8._getFinalPath(path);
+      let _path = _this8._getFinalPath(path2);
       const hasTransform = typeof (options === null || options === void 0 ? void 0 : options.transform) === "object" && options.transform !== null && Object.keys(options.transform).length > 0;
       let data = await post(_this8.fetch, `${_this8.url}/object/sign/${_path}`, _objectSpread22({ expiresIn }, hasTransform ? { transform: options.transform } : {}), { headers: _this8.headers });
       const downloadQueryParam = (options === null || options === void 0 ? void 0 : options.download) ? `&download=${options.download === true ? "" : options.download}` : "";
@@ -30063,11 +30063,11 @@ var StorageFileApi = class extends BaseApiClient {
   *   .download('folder/avatar1.png', {}, { signal: controller.signal })
   * ```
   */
-  download(path, options, parameters) {
+  download(path2, options, parameters) {
     const renderPath = typeof (options === null || options === void 0 ? void 0 : options.transform) !== "undefined" ? "render/image/authenticated" : "object";
     const transformationQuery = this.transformOptsToQueryString((options === null || options === void 0 ? void 0 : options.transform) || {});
     const queryString = transformationQuery ? `?${transformationQuery}` : "";
-    const _path = this._getFinalPath(path);
+    const _path = this._getFinalPath(path2);
     const downloadFn = () => get(this.fetch, `${this.url}/${renderPath}/${_path}${queryString}`, {
       headers: this.headers,
       noResolveJson: true
@@ -30097,9 +30097,9 @@ var StorageFileApi = class extends BaseApiClient {
   * }
   * ```
   */
-  async info(path) {
+  async info(path2) {
     var _this10 = this;
-    const _path = _this10._getFinalPath(path);
+    const _path = _this10._getFinalPath(path2);
     return _this10.handleOperation(async () => {
       return recursiveToCamel(await get(_this10.fetch, `${_this10.url}/object/info/${_path}`, { headers: _this10.headers }));
     });
@@ -30119,9 +30119,9 @@ var StorageFileApi = class extends BaseApiClient {
   *   .exists('folder/avatar1.png')
   * ```
   */
-  async exists(path) {
+  async exists(path2) {
     var _this11 = this;
-    const _path = _this11._getFinalPath(path);
+    const _path = _this11._getFinalPath(path2);
     try {
       await head(_this11.fetch, `${_this11.url}/object/${_path}`, { headers: _this11.headers });
       return {
@@ -30191,8 +30191,8 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  getPublicUrl(path, options) {
-    const _path = this._getFinalPath(path);
+  getPublicUrl(path2, options) {
+    const _path = this._getFinalPath(path2);
     const _queryString = [];
     const downloadQueryParam = (options === null || options === void 0 ? void 0 : options.download) ? `download=${options.download === true ? "" : options.download}` : "";
     if (downloadQueryParam !== "") _queryString.push(downloadQueryParam);
@@ -30319,10 +30319,10 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async list(path, options, parameters) {
+  async list(path2, options, parameters) {
     var _this13 = this;
     return _this13.handleOperation(async () => {
-      const body = _objectSpread22(_objectSpread22(_objectSpread22({}, DEFAULT_SEARCH_OPTIONS), options), {}, { prefix: path || "" });
+      const body = _objectSpread22(_objectSpread22(_objectSpread22({}, DEFAULT_SEARCH_OPTIONS), options), {}, { prefix: path2 || "" });
       return await post(_this13.fetch, `${_this13.url}/object/list/${_this13.bucketId}`, body, { headers: _this13.headers }, parameters);
     });
   }
@@ -30386,11 +30386,11 @@ var StorageFileApi = class extends BaseApiClient {
     if (typeof Buffer !== "undefined") return Buffer.from(data).toString("base64");
     return btoa(data);
   }
-  _getFinalPath(path) {
-    return `${this.bucketId}/${path.replace(/^\/+/, "")}`;
+  _getFinalPath(path2) {
+    return `${this.bucketId}/${path2.replace(/^\/+/, "")}`;
   }
-  _removeEmptyFolders(path) {
-    return path.replace(/^\/|\/$/g, "").replace(/\/+/g, "/");
+  _removeEmptyFolders(path2) {
+    return path2.replace(/^\/|\/$/g, "").replace(/\/+/g, "/");
   }
   transformOptsToQueryString(transform2) {
     const params = [];
@@ -32441,8 +32441,15 @@ async function getTask(client, projectId, args) {
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
   const { data: acceptanceCriteria } = await client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position");
   const { data: testCases } = await client.from("test_cases").select("*").eq("task_id", resolvedId).order("position");
+  let attachments;
+  try {
+    const { data: rows } = await client.from("attachments").select("id, filename, content_type, byte_size, created_at").eq("task_id", resolvedId).eq("status", "finalized").order("created_at", { ascending: true });
+    attachments = rows ?? [];
+  } catch {
+    attachments = [];
+  }
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [] };
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments };
 }
 var createTaskTool = {
   name: "create_task",
@@ -34583,6 +34590,120 @@ async function listTicketKnowledge(client, projectId, args) {
   }));
 }
 
+// src/tools/attachments.ts
+import { promises as fs } from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+async function invokeFn(client, fn, body) {
+  const { data, error: error2 } = await client.functions.invoke(fn, { body });
+  if (error2) {
+    const err = error2;
+    let message = err.message ?? `${fn} failed`;
+    const ctx = err.context;
+    if (ctx && typeof ctx.json === "function") {
+      try {
+        const parsed = await ctx.json();
+        if (parsed?.error) {
+          message = parsed.error;
+        }
+      } catch {
+      }
+    }
+    throw new Error(message);
+  }
+  return data;
+}
+var downloadAttachmentTool = {
+  name: "download_attachment",
+  description: "Download a task attachment to a local file and return its path so you can read it with native file tools. Available to read-only/viewer tokens. Provide the attachment_id (from get_task). Optionally pass output_path (a full file path) or output_dir (a directory; the original filename is used). Defaults to a temp directory.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      attachment_id: { type: "string", description: "Attachment UUID (from get_task)." },
+      output_path: { type: "string", description: "Full local file path to write to. Optional." },
+      output_dir: {
+        type: "string",
+        description: "Local directory to write into (original filename is used). Optional; defaults to a temp dir."
+      }
+    },
+    required: ["attachment_id"]
+  }
+};
+async function downloadAttachment(client, args) {
+  if (!args.attachment_id) throw new Error("attachment_id is required");
+  const meta = await invokeFn(client, "attachments-download", {
+    attachment_id: args.attachment_id
+  });
+  let destPath;
+  if (args.output_path) {
+    destPath = path.resolve(args.output_path);
+  } else {
+    const dir = args.output_dir ? path.resolve(args.output_dir) : await fs.mkdtemp(path.join(os.tmpdir(), "harmony-attachment-"));
+    destPath = path.join(dir, meta.filename || meta.attachment_id);
+  }
+  await fs.mkdir(path.dirname(destPath), { recursive: true });
+  const res = await fetch(meta.signed_url);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch attachment bytes (${res.status})`);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  await fs.writeFile(destPath, buf);
+  return {
+    attachment_id: meta.attachment_id,
+    path: destPath,
+    filename: meta.filename,
+    content_type: meta.content_type,
+    byte_size: buf.byteLength,
+    signed_url: meta.signed_url,
+    expires_in: meta.expires_in
+  };
+}
+var attachFileTool = {
+  name: "attach_file",
+  description: "Attach a local file to a task. Reads the file by path and uploads it via the substrate (server-enforced size cap, file-type allowlist, and magic-byte sniff). Write-role tokens only \u2014 viewers get a clear server error. Provide task_id and file_path; optionally override filename.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)." },
+      file_path: { type: "string", description: "Local path to the file to attach." },
+      filename: { type: "string", description: "Override the stored filename. Optional; defaults to the file basename." }
+    },
+    required: ["task_id", "file_path"]
+  }
+};
+async function attachFile(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  if (!args.file_path) throw new Error("file_path is required");
+  const absPath = path.resolve(args.file_path);
+  const bytes = await fs.readFile(absPath);
+  const filename = args.filename ?? path.basename(absPath);
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const created = await invokeFn(client, "attachments-create-upload", {
+    task_id: resolvedId,
+    filename,
+    byte_size: bytes.byteLength
+  });
+  const putRes = await fetch(created.signed_url, {
+    method: "PUT",
+    body: bytes,
+    headers: { "Content-Type": "application/octet-stream" }
+  });
+  if (!putRes.ok) {
+    throw new Error(`Failed to upload file bytes (${putRes.status})`);
+  }
+  const finalized = await invokeFn(client, "attachments-finalize", {
+    attachment_id: created.attachment_id
+  });
+  return {
+    attachment_id: finalized.attachment_id,
+    task_id: resolvedId,
+    filename,
+    content_type: finalized.content_type,
+    byte_size: finalized.byte_size,
+    status: finalized.status
+  };
+}
+
 // src/tools/index.ts
 function registerTools(disabledFeatures) {
   const tools = [
@@ -34625,6 +34746,7 @@ function registerTools(disabledFeatures) {
   if (!disabledFeatures?.acceptance) tools.push(listAcceptanceCriteriaTool, manageAcceptanceCriteriaTool, listTestCasesTool, manageTestCasesTool);
   if (!disabledFeatures?.dependencies) tools.push(listDependenciesTool, manageDependenciesTool);
   if (!disabledFeatures?.decomposition) tools.push(listSubtasksTool, listParentTool, manageSubtasksTool);
+  if (!disabledFeatures?.attachments) tools.push(downloadAttachmentTool, attachFileTool);
   return tools;
 }
 async function handleToolCall(name, args, client, projectId, userId) {
@@ -34789,6 +34911,12 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "list_ticket_knowledge":
         result = await listTicketKnowledge(client, projectId, args);
+        break;
+      case "download_attachment":
+        result = await downloadAttachment(client, args);
+        break;
+      case "attach_file":
+        result = await attachFile(client, projectId, args);
         break;
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };

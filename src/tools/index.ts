@@ -50,6 +50,10 @@ import {
   referenceKnowledgeTool, referenceKnowledge,
   listTicketKnowledgeTool, listTicketKnowledge,
 } from './workflow.js';
+import {
+  downloadAttachmentTool, downloadAttachment,
+  attachFileTool, attachFile,
+} from './attachments.js';
 
 export function registerTools(disabledFeatures?: Record<string, boolean>) {
   const tools = [
@@ -75,6 +79,11 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
   if (!disabledFeatures?.acceptance) tools.push(listAcceptanceCriteriaTool, manageAcceptanceCriteriaTool, listTestCasesTool, manageTestCasesTool);
   if (!disabledFeatures?.dependencies) tools.push(listDependenciesTool, manageDependenciesTool);
   if (!disabledFeatures?.decomposition) tools.push(listSubtasksTool, listParentTool, manageSubtasksTool);
+  // B-449: attachment tools ship dark — present only when the attachments module
+  // is on (workspaces.disabled_features.attachments !== true). Module-off ⇒ the
+  // tools are absent from the list (not errored). Reuses the existing per-feature
+  // gating path; get_task's attachment metadata is RLS/feature-scoped at the DB.
+  if (!disabledFeatures?.attachments) tools.push(downloadAttachmentTool, attachFileTool);
 
   return tools;
 }
@@ -247,6 +256,12 @@ export async function handleToolCall(
         break;
       case 'list_ticket_knowledge':
         result = await listTicketKnowledge(client, projectId, args as any);
+        break;
+      case 'download_attachment':
+        result = await downloadAttachment(client, args as any);
+        break;
+      case 'attach_file':
+        result = await attachFile(client, projectId, args as any);
         break;
       default:
         return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };

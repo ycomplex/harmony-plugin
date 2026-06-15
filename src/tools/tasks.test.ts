@@ -277,6 +277,29 @@ describe('getTask', () => {
             },
           };
         }
+        if (table === 'attachments') {
+          // B-449: .select().eq('task_id').eq('status').order(...)
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  order: vi.fn().mockResolvedValue({
+                    data: [
+                      {
+                        id: 'att-1',
+                        filename: 'spec.pdf',
+                        content_type: 'application/pdf',
+                        byte_size: 1234,
+                        created_at: '2026-06-15T00:00:00Z',
+                      },
+                    ],
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
         // acceptance_criteria / test_cases: .select().eq().order()
         return { select: () => ({ eq: () => ({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }) }) };
       }),
@@ -290,6 +313,74 @@ describe('getTask', () => {
     // And the result surfaces them under the new field name.
     expect(result.checklist_items).toHaveLength(1);
     expect((result as any).subtasks).toBeUndefined();
+  });
+
+  it('B-449: surfaces attachment metadata (additive, finalized-only)', async () => {
+    const client: any = {
+      from: vi.fn((table: string) => {
+        if (table === 'tasks') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  single: vi.fn().mockResolvedValue({
+                    data: { id: 'resolved-uuid', title: 'T', task_labels: [], checklist_items: [] },
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'attachments') {
+          const orderSpy = vi.fn().mockResolvedValue({
+            data: [
+              { id: 'att-1', filename: 'spec.pdf', content_type: 'application/pdf', byte_size: 1234, created_at: '2026-06-15T00:00:00Z' },
+            ],
+            error: null,
+          });
+          const statusEq = vi.fn(() => ({ order: orderSpy }));
+          const taskEq = vi.fn(() => ({ eq: statusEq }));
+          return { select: vi.fn(() => ({ eq: taskEq })), __statusEq: statusEq };
+        }
+        return { select: () => ({ eq: () => ({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }) }) };
+      }),
+    };
+
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1' });
+
+    expect((result as any).attachments).toHaveLength(1);
+    expect((result as any).attachments[0]).toMatchObject({ id: 'att-1', filename: 'spec.pdf' });
+  });
+
+  it('B-449: tolerates a missing/blocked attachments table — get_task does not regress', async () => {
+    const client: any = {
+      from: vi.fn((table: string) => {
+        if (table === 'tasks') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  single: vi.fn().mockResolvedValue({
+                    data: { id: 'resolved-uuid', title: 'T', task_labels: [], checklist_items: [] },
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'attachments') {
+          // simulate the select chain throwing (e.g. table absent on an old DB)
+          return { select: () => ({ eq: () => ({ eq: () => ({ order: vi.fn().mockRejectedValue(new Error('relation "attachments" does not exist')) }) }) }) };
+        }
+        return { select: () => ({ eq: () => ({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }) }) };
+      }),
+    };
+
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1' });
+    expect((result as any).attachments).toEqual([]);
+    expect(result.title).toBe('T');
   });
 });
 
