@@ -29,12 +29,14 @@ fenced block (it is already BLUF-formatted and lint-clean — do not re-summaris
 **Null brief on a `verification-ack-pending` umbrella (B-471):** `get_brief` can be **null** when
 `awaiting_human_reason = 'verification-ack-pending'`. This is the trigger-surfaced **PR-less umbrella** —
 a decomposed parent that the DB trigger auto-advanced **Decomposed → Released** once all its children
-reached **Verified**; the trigger set the `awaiting_human_input` flag (with
-`awaiting_human_ref = {"kind":"umbrella-auto-verify"}`) but **composed no brief**. Do **NOT** choke on the
-missing brief and do NOT try to render it here. **Delegate to `/harmony-plugin:finish-work <ticket>`
-(verify step)** — it composes the verification brief (via `compose_brief`) and then resolves it. This is
-the same routing-table target as a normal `verification-ack-pending` accept (step 4); the only difference
-is the brief doesn't exist yet, so there is nothing to show inline first.
+reached **Verified**. The authoritative marker for this case is **`awaiting_human_ref.kind ===
+'umbrella-auto-verify'`** (set by the harmony-web Phase-1 trigger alongside `workflow_state = 'Released'`
+and `awaiting_human_reason = 'verification-ack-pending'`); the trigger set the `awaiting_human_input` flag
+via that ref but **composed no brief**. Do **NOT** choke on the missing brief and do NOT try to render it
+here. **Delegate to `/harmony-plugin:finish-work <ticket>` (verify step)** — it composes the verification
+brief (via `compose_brief`) and then resolves it. This is the same routing-table target as a normal
+`verification-ack-pending` accept (step 4); the only difference is the brief doesn't exist yet (recognise
+the umbrella by the `umbrella-auto-verify` marker), so there is nothing to show inline first.
 
 ### 3. Resolve by command — but `accept` is only inline for the PURE gates
 

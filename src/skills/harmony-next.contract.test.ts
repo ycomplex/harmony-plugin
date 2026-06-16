@@ -74,6 +74,10 @@ describe('harmony-next skill contract', () => {
     expect(seg).toContain('verification-ack-pending');
     expect(seg).toContain('finish-work');
     expect(seg.toLowerCase()).toContain('umbrella');
+    // B-471 review fold #1 (MINOR): reference the authoritative marker so the umbrella case is
+    // unambiguous — the SAME purpose-built signal finish-work keys on. Scoped to the null-brief paragraph.
+    expect(seg).toContain('umbrella-auto-verify');
+    expect(seg).toContain('awaiting_human_ref');
   });
   it('is scoped to the read-only discovery role', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);

@@ -58,4 +58,47 @@ describe('finish-work skill contract (evolved)', () => {
     // Edge: a still-Decomposed umbrella (children in flight) is NOT verified.
     expect(body).toContain('Decomposed');
   });
+
+  // B-471 review fold #1 (MINOR): detect the umbrella via the authoritative marker, not a fragile proxy.
+  it('detects the umbrella via the awaiting_human_ref.kind marker as the PRIMARY key (not gh pr view)', () => {
+    const body = skill.body;
+    // The purpose-built marker must be named as the authoritative/primary detection signal — scoped to
+    // the O0 section so a stray mention elsewhere can't satisfy it.
+    const o0Idx = body.indexOf('### O0.');
+    expect(o0Idx).toBeGreaterThan(-1);
+    const o1Idx = body.indexOf('### O1.');
+    expect(o1Idx).toBeGreaterThan(o0Idx);
+    const o0 = body.slice(o0Idx, o1Idx);
+    expect(o0).toContain('umbrella-auto-verify');     // the marker value
+    expect(o0).toContain('awaiting_human_ref');        // …carried on this field
+    expect(o0.toLowerCase()).toMatch(/primary|authoritative/); // …as the primary/authoritative signal
+    expect(referencedHarmonyTools(o0)).toContain('get_task'); // read via get_task, not gh pr view alone
+    // "no open PR" is corroboration only — explicitly demoted from primary signal.
+    expect(o0.toLowerCase()).toMatch(/corroborat|confirmation|not.*primary|unreliable/);
+  });
+
+  // B-471 review fold #2 (MINOR): the still-Decomposed diagnostic must NOT claim list_subtasks reads
+  // workflow_state — it selects kanban `status`. To enumerate un-Verified children, get_task each child.
+  it('does not claim list_subtasks reveals which children are Verified (it selects status, not workflow_state)', () => {
+    const body = skill.body;
+    const o0Idx = body.indexOf('### O0.');
+    const o1Idx = body.indexOf('### O1.');
+    const o0 = body.slice(o0Idx, o1Idx);
+    // The edge bullet must call out that workflow_state (where Verified lives) is NOT on list_subtasks…
+    expect(o0).toContain('workflow_state');
+    expect(o0.toLowerCase()).toMatch(/list_subtasks selects|not.*workflow_state|status.*not.*workflow_state/);
+    // …and that enumerating un-Verified children means get_task per child.
+    expect(o0.toLowerCase()).toMatch(/get_task each child|each child.*get_task|get_task.*child/);
+  });
+
+  // B-471 review fold #3 (NIT): state the umbrella's task_id provenance (ticket id passed to the skill,
+  // NOT .harmony-task.json, since an umbrella has no worktree of its own).
+  it("states the umbrella's task_id comes from the ticket id passed in, not .harmony-task.json", () => {
+    const body = skill.body;
+    const o0Idx = body.indexOf('### O0.');
+    const o1Idx = body.indexOf('### O1.');
+    const o0 = body.slice(o0Idx, o1Idx);
+    expect(o0).toContain('.harmony-task.json');
+    expect(o0.toLowerCase()).toMatch(/no worktree|ticket id (you were invoked with|passed)|do \*\*not\*\* read `task_id`|not.*\.harmony-task\.json/);
+  });
 });
