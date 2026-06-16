@@ -23,6 +23,67 @@ The ticket should be at **Built** with `awaiting_human_reason = 'release-decisio
 `/harmony-plugin:start-work`). This path drives `releasing` (Built → Released) and `verifying`
 (Released → Verified). It does NOT rewrite design knowledge (release role).
 
+### O0. PR-less umbrella? (a decomposed parent whose work shipped in its children — B-471)
+
+**Check this BEFORE the release pre-flight.** A decomposed parent (an "umbrella") has NO branch/PR of its
+own — its real work shipped in its children's PRs. The DB trigger auto-advances such a parent
+**Decomposed → Released** once all active children reach **Verified**, and surfaces verify by setting on
+the parent row `awaiting_human_input = true`, `awaiting_human_reason = 'verification-ack-pending'`,
+`awaiting_human_ref = {"kind":"umbrella-auto-verify"}` — **but it does NOT compose a brief** (so
+`get_brief` returns null for the umbrella until this skill composes one).
+
+**The umbrella's `task_id` is the ticket id passed to this skill** — an umbrella has no worktree of its
+own and therefore no `.harmony-task.json`; the cwd may even hold a *different* ticket's `.harmony-task.json`,
+so do **NOT** read `task_id` from that file for an umbrella. Use the ticket id you were invoked with.
+
+**Detect an umbrella (the authoritative marker is the primary key):**
+
+1. **Primary — the purpose-built marker.** `mcp__harmony__get_task({ task_id })` and check
+   `awaiting_human_ref.kind === 'umbrella-auto-verify'`. The harmony-web Phase-1 trigger sets this on an
+   auto-advanced umbrella parent, alongside `workflow_state = 'Released'`,
+   `awaiting_human_input = true`, and `awaiting_human_reason = 'verification-ack-pending'`. Equivalently:
+   `workflow_state = 'Released'` + `awaiting_human_reason = 'verification-ack-pending'` + it has children.
+   This `awaiting_human_ref.kind` marker is the authoritative, purpose-built signal — prefer it over any
+   proxy.
+2. **Corroboration only — has children, no open PR.** `mcp__harmony__list_subtasks({ task_id })` shows it
+   **has children**, and there is **no open PR for its branch** (`.harmony-task.json` has no `branch`, or
+   `gh pr view` fails). Treat these as confirmation, **not** as the primary signal: an umbrella has no
+   worktree of its own, so `gh pr view` runs against whatever arbitrary branch the cwd happens to be on and
+   is unreliable on its own.
+
+Such an umbrella is already at `workflow_state` **Released** (auto-advanced) with
+`awaiting_human_reason = 'verification-ack-pending'` and `awaiting_human_ref.kind = 'umbrella-auto-verify'`.
+
+**If it is an umbrella → take the umbrella verify path and SKIP O1/O2 entirely** (there is no code to
+merge — the children each shipped their own PR; do NOT run the release-decision gate or the merge/deploy
+sequence, and do NOT touch git):
+
+- **Edge — still Decomposed (not all children Verified):** if `mcp__harmony__get_task` shows the umbrella
+  is still at `Decomposed` (the trigger hasn't fired — and `awaiting_human_ref.kind` is therefore NOT
+  `'umbrella-auto-verify'`), it simply isn't ready: not all active children have reached `Verified`. Do
+  **NOT** verify. Tell the human it is not ready — its children are still in flight — and stop. Note that
+  `list_subtasks` selects each child's kanban `status`, **not** its `workflow_state` (where `Verified`
+  lives), so it cannot tell you which children are un-Verified. If you want to enumerate the un-Verified
+  children, `mcp__harmony__get_task` each child and read its `workflow_state`.
+- **Compose the verify brief if missing:** `mcp__harmony__get_brief({ task_id })`. If it is **null** (the
+  trigger set the flag but composed no brief), compose it:
+
+  ```
+  mcp__harmony__compose_brief({
+    task_id, reason: "verification-ack-pending", pending_activity: "verifying",
+    doc: { decide: "Does the umbrella work end-to-end across its children?", items: [
+      { kind: "decision", text: "Acknowledge the umbrella works end-to-end across its children", recommendation: "verify once confirmed" }
+    ] }
+  })
+  ```
+
+- **Resolve on human ack:** show the brief; on the human's **accept** →
+  `mcp__harmony__resolve_brief({ task_id, command: "accept" })` advances **Released → Verified**
+  (terminal-positive). **No git.** Report completion and stop — do not fall through to O1/O2/O3.
+
+(If `awaiting_human_ref.kind` is not `'umbrella-auto-verify'` — e.g. the ticket has NO children, or it has
+its own open PR/branch — it is a normal ticket: skip this section and continue to O1.)
+
 ### O1. Confirm the release decision (accept clears the gate — it does NOT release yet)
 
 `mcp__harmony__get_task({ task_id })` (read `.harmony-task.json` for the id) and

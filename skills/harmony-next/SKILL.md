@@ -26,6 +26,18 @@ Call `mcp__harmony__get_brief({ task_id })` and display the rendered `content` b
 fenced block (it is already BLUF-formatted and lint-clean — do not re-summarise it). Note the
 `iteration` if > 1.
 
+**Null brief on a `verification-ack-pending` umbrella (B-471):** `get_brief` can be **null** when
+`awaiting_human_reason = 'verification-ack-pending'`. This is the trigger-surfaced **PR-less umbrella** —
+a decomposed parent that the DB trigger auto-advanced **Decomposed → Released** once all its children
+reached **Verified**. The authoritative marker for this case is **`awaiting_human_ref.kind ===
+'umbrella-auto-verify'`** (set by the harmony-web Phase-1 trigger alongside `workflow_state = 'Released'`
+and `awaiting_human_reason = 'verification-ack-pending'`); the trigger set the `awaiting_human_input` flag
+via that ref but **composed no brief**. Do **NOT** choke on the missing brief and do NOT try to render it
+here. **Delegate to `/harmony-plugin:finish-work <ticket>` (verify step)** — it composes the verification
+brief (via `compose_brief`) and then resolves it. This is the same routing-table target as a normal
+`verification-ack-pending` accept (step 4); the only difference is the brief doesn't exist yet (recognise
+the umbrella by the `umbrella-auto-verify` marker), so there is nothing to show inline first.
+
 ### 3. Resolve by command — but `accept` is only inline for the PURE gates
 
 **Critical (review F1):** P3's `resolve_brief` does exactly three things on accept — promote the
@@ -82,7 +94,7 @@ For three gates the *real* work (create children / merge+deploy / observe produc
 | `plan-draft` | inline `resolve_brief` | `/harmony-plugin:start-work <ticket>` |
 | `decomposition-proposal` | **delegated** (creates children, then resolves) | `/harmony-plugin:harmony-decompose <ticket>` |
 | `release-decision-pending` | **delegated** (merge+deploy, then advances) | `/harmony-plugin:finish-work <ticket>` |
-| `verification-ack-pending` | **delegated** (observe prod, then resolves) | `/harmony-plugin:finish-work <ticket>` (verify step) |
+| `verification-ack-pending` | **delegated** (observe prod, then resolves) — also the **PR-less umbrella** path when `get_brief` is null (B-471): delegate the same way, finish-work composes the brief first | `/harmony-plugin:finish-work <ticket>` (verify step) |
 | (Stale) | **delegated** — draft the patch, then resolve per the brief (accept applies / defer = knowing-divergence) | `/harmony-plugin:harmony-stale-patch <ticket>` |
 
 ### 5. Confirm the outcome

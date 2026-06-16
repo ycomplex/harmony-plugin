@@ -55,6 +55,30 @@ describe('harmony-next skill contract', () => {
     // graceful fallback: a defer with no rationale still parks (B-352)
     expect(skill.body.toLowerCase()).toMatch(/still parks|fallback/);
   });
+  it('handles the null-brief verification-ack-pending umbrella by delegating to finish-work (B-471)', () => {
+    const body = skill.body;
+    // A verification-ack-pending item can have a null brief (trigger-surfaced PR-less umbrella).
+    expect(body).toContain('verification-ack-pending');
+    expect(body.toLowerCase()).toContain('umbrella');
+    expect(body.toLowerCase()).toMatch(/null brief|brief.*null|get_brief.*null|null.*get_brief/);
+    // It must NOT choke on the missing brief — it delegates to finish-work (verify step).
+    expect(body).toContain('finish-work');
+    // Tie the null-brief case to the verification reason AND the finish-work delegation, in the SAME
+    // paragraph (the "Null brief …" block, bounded by the next `###` heading) — so a stray "null" or
+    // "finish-work" elsewhere in the body can't satisfy this.
+    const nullIdx = body.indexOf('Null brief');
+    expect(nullIdx).toBeGreaterThan(-1);
+    const after = body.slice(nullIdx);
+    const nextHeading = after.indexOf('\n###');
+    const seg = nextHeading > -1 ? after.slice(0, nextHeading) : after;
+    expect(seg).toContain('verification-ack-pending');
+    expect(seg).toContain('finish-work');
+    expect(seg.toLowerCase()).toContain('umbrella');
+    // B-471 review fold #1 (MINOR): reference the authoritative marker so the umbrella case is
+    // unambiguous — the SAME purpose-built signal finish-work keys on. Scoped to the null-brief paragraph.
+    expect(seg).toContain('umbrella-auto-verify');
+    expect(seg).toContain('awaiting_human_ref');
+  });
   it('is scoped to the read-only discovery role', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
     expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);
