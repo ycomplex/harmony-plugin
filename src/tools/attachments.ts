@@ -170,6 +170,56 @@ interface FinalizeResponse {
   byte_size: number;
 }
 
+// ── extension → MIME (B-481) ─────────────────────────────────────────
+// The `task-attachments` bucket has a curated `allowed_mime_types` allowlist
+// (harmony-web migration 20260612180000_attachments_substrate.sql). It does NOT
+// include `application/octet-stream`, so PUTting bytes with a hardcoded
+// octet-stream Content-Type is rejected by Storage with HTTP 400 for EVERY file
+// type. So the byte PUT must declare a Content-Type that the allowlist accepts.
+//
+// We hand-roll the map (no new npm dep → no lockfile/CI churn) directly from the
+// bucket's allowlist. The Content-Type only needs to be allowlist-acceptable —
+// the authoritative type check is the server-side magic-byte sniff at finalize
+// (defence-in-depth). The "more correct" fix is to have the server thread the
+// content_type through `attachments-create-upload`'s response (single source of
+// truth), but that's cross-repo and out of scope for this fast fix.
+const EXTENSION_MIME: Record<string, string> = {
+  // images
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  // documents
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.csv': 'text/csv',
+  '.html': 'text/html',
+  '.htm': 'text/html',
+  // office (docx / xlsx / pptx)
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+};
+
+// Resolve a filename to an allowlist-acceptable Content-Type for the byte PUT.
+// Throws a clear, pre-PUT error for any extension not on the bucket allowlist —
+// silently sending octet-stream (or any unlisted type) would just reproduce the
+// HTTP-400 rejection with a confusing "Failed to upload file bytes (400)".
+function contentTypeForFilename(filename: string): string {
+  const ext = path.extname(filename).toLowerCase();
+  const mime = EXTENSION_MIME[ext];
+  if (!mime) {
+    const supported = Object.keys(EXTENSION_MIME).join(', ');
+    throw new Error(
+      `Unsupported file type "${ext || '(none)'}" for "${filename}". ` +
+        `The attachment bucket only accepts: ${supported}.`,
+    );
+  }
+  return mime;
+}
+
 export async function attachFile(
   client: SupabaseClient,
   projectId: string,
@@ -183,6 +233,11 @@ export async function attachFile(
   const bytes = await fs.readFile(absPath);
   const filename = args.filename ?? path.basename(absPath);
 
+  // Derive the byte-PUT Content-Type from the filename up front (B-481). Done
+  // BEFORE create-upload so an unsupported type fails fast with a clear message
+  // instead of minting an upload URL only for Storage to 400 the PUT.
+  const contentType = contentTypeForFilename(filename);
+
   // Resolve a visual/number task id to the UUID the edge function expects.
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
 
@@ -195,10 +250,13 @@ export async function attachFile(
   });
 
   // 2) PUT the bytes straight to the signed upload URL (the plugin is the client).
+  //    The Content-Type MUST be an allowlist-acceptable value (B-481) — the bucket
+  //    rejects application/octet-stream → HTTP 400. We send the type derived from
+  //    the filename above; the authoritative check is finalize's magic-byte sniff.
   const putRes = await fetch(created.signed_url, {
     method: 'PUT',
     body: bytes,
-    headers: { 'Content-Type': 'application/octet-stream' },
+    headers: { 'Content-Type': contentType },
   });
   if (!putRes.ok) {
     throw new Error(`Failed to upload file bytes (${putRes.status})`);

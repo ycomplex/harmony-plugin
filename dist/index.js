@@ -34671,12 +34671,43 @@ var attachFileTool = {
     required: ["task_id", "file_path"]
   }
 };
+var EXTENSION_MIME = {
+  // images
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  // documents
+  ".pdf": "application/pdf",
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".csv": "text/csv",
+  ".html": "text/html",
+  ".htm": "text/html",
+  // office (docx / xlsx / pptx)
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+};
+function contentTypeForFilename(filename) {
+  const ext = path.extname(filename).toLowerCase();
+  const mime = EXTENSION_MIME[ext];
+  if (!mime) {
+    const supported = Object.keys(EXTENSION_MIME).join(", ");
+    throw new Error(
+      `Unsupported file type "${ext || "(none)"}" for "${filename}". The attachment bucket only accepts: ${supported}.`
+    );
+  }
+  return mime;
+}
 async function attachFile(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
   if (!args.file_path) throw new Error("file_path is required");
   const absPath = path.resolve(args.file_path);
   const bytes = await fs.readFile(absPath);
   const filename = args.filename ?? path.basename(absPath);
+  const contentType = contentTypeForFilename(filename);
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const created = await invokeFn(client, "attachments-create-upload", {
     task_id: resolvedId,
@@ -34686,7 +34717,7 @@ async function attachFile(client, projectId, args) {
   const putRes = await fetch(created.signed_url, {
     method: "PUT",
     body: bytes,
-    headers: { "Content-Type": "application/octet-stream" }
+    headers: { "Content-Type": contentType }
   });
   if (!putRes.ok) {
     throw new Error(`Failed to upload file bytes (${putRes.status})`);

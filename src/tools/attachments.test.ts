@@ -208,10 +208,15 @@ describe('attachFile', () => {
     // order: create-upload, then finalize (the PUT is the fetch in between)
     expect(invokeCalls).toEqual(['attachments-create-upload', 'attachments-finalize']);
     expect(mockResolveTaskId).toHaveBeenCalledWith(client, PROJECT_ID, 'B-42');
-    // bytes PUT to the signed upload URL
+    // bytes PUT to the signed upload URL with the REAL content-type derived from the
+    // filename (.txt → text/plain). NOT application/octet-stream — the bucket's
+    // allowed_mime_types allowlist rejects octet-stream → HTTP 400 on every upload (B-481).
     expect(putMock).toHaveBeenCalledWith(
       'https://storage.example/upload?token=put',
-      expect.objectContaining({ method: 'PUT' }),
+      expect.objectContaining({
+        method: 'PUT',
+        headers: { 'Content-Type': 'text/plain' },
+      }),
     );
     expect(result).toEqual({
       attachment_id: ATTACHMENT_ID,
@@ -245,6 +250,8 @@ describe('attachFile', () => {
   });
 
   it('surfaces a finalize rejection (blocked type / oversize) after the PUT', async () => {
+    // A spoofed file — an allowlisted extension whose bytes are actually a zip;
+    // it passes the extension map + PUT but the server's magic-byte sniff rejects it.
     fsMock.readFile.mockResolvedValue(Buffer.from('PK\x03\x04junk'));
 
     const client = createInvokeClient(async (fn) => {
@@ -264,7 +271,7 @@ describe('attachFile', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
 
     await expect(
-      attachFile(client, PROJECT_ID, { task_id: TASK_UUID, file_path: '/work/evil.zip' }),
+      attachFile(client, PROJECT_ID, { task_id: TASK_UUID, file_path: '/work/evil.png' }),
     ).rejects.toThrow('File type is not allowed.');
   });
 
@@ -305,6 +312,107 @@ describe('attachFile', () => {
       filename: 'renamed.txt',
     });
     expect(result.filename).toBe('renamed.txt');
+  });
+});
+
+// ── content-type on the byte PUT (B-481) ─────────────────────────────
+// The bucket's allowed_mime_types allowlist does NOT include
+// application/octet-stream, so a hardcoded octet-stream PUT is rejected with
+// HTTP 400 for EVERY file type. The PUT must carry the file's real content-type
+// (derived from the filename) so Storage accepts the bytes; the authoritative
+// type check is still the server-side magic-byte sniff at finalize.
+
+describe('attachFile content-type derivation', () => {
+  // Drive a full create-upload → PUT → finalize run and return the headers the
+  // byte PUT was issued with, so a test can assert the Content-Type.
+  async function putHeadersFor(filePath: string, bytes = 'data') {
+    fsMock.readFile.mockResolvedValue(Buffer.from(bytes));
+    const client = createInvokeClient(async (fn) => {
+      if (fn === 'attachments-create-upload') {
+        return {
+          data: {
+            attachment_id: ATTACHMENT_ID,
+            signed_url: 'https://storage.example/upload',
+            object_key: 'k', token: 't', path: 'k',
+          },
+          error: null,
+        };
+      }
+      return {
+        data: { attachment_id: ATTACHMENT_ID, status: 'finalized', content_type: 'x', byte_size: 4 },
+        error: null,
+      };
+    });
+    const putMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', putMock);
+
+    await attachFile(client, PROJECT_ID, { task_id: TASK_UUID, file_path: filePath });
+
+    return (putMock.mock.calls[0][1] as { headers: Record<string, string> }).headers;
+  }
+
+  // The case that shipped the bug: an .html upload (confirmed broken live).
+  it('PUTs an .html file with Content-Type text/html (not octet-stream)', async () => {
+    const headers = await putHeadersFor('/work/page.html');
+    expect(headers['Content-Type']).toBe('text/html');
+  });
+
+  it('PUTs a .png file with Content-Type image/png', async () => {
+    const headers = await putHeadersFor('/work/diagram.png');
+    expect(headers['Content-Type']).toBe('image/png');
+  });
+
+  // Spot-check the rest of the allowlist + extension aliases.
+  it.each([
+    ['/work/note.txt', 'text/plain'],
+    ['/work/readme.md', 'text/markdown'],
+    ['/work/data.csv', 'text/csv'],
+    ['/work/index.htm', 'text/html'],
+    ['/work/scan.jpg', 'image/jpeg'],
+    ['/work/scan.jpeg', 'image/jpeg'],
+    ['/work/anim.gif', 'image/gif'],
+    ['/work/hero.webp', 'image/webp'],
+    ['/work/report.pdf', 'application/pdf'],
+    ['/work/doc.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['/work/sheet.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ['/work/deck.pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+  ])('maps %s → %s', async (filePath, expected) => {
+    const headers = await putHeadersFor(filePath);
+    expect(headers['Content-Type']).toBe(expected);
+  });
+
+  // Case-insensitive on the extension (e.g. SCREaming-case from some tools).
+  it('lowercases the extension before mapping (.PNG → image/png)', async () => {
+    const headers = await putHeadersFor('/work/SHOUT.PNG');
+    expect(headers['Content-Type']).toBe('image/png');
+  });
+
+  // An extension not in the allowlist must NOT be sent (it would be rejected by
+  // the bucket exactly like octet-stream was) — surface a clear error before the PUT.
+  it('rejects an unsupported extension before the PUT with a clear error', async () => {
+    fsMock.readFile.mockResolvedValue(Buffer.from('PK\x03\x04'));
+    const invokeCalls: string[] = [];
+    const client = createInvokeClient(async (fn) => {
+      invokeCalls.push(fn);
+      return {
+        data: {
+          attachment_id: ATTACHMENT_ID,
+          signed_url: 'https://storage.example/upload',
+          object_key: 'k', token: 't', path: 'k',
+        },
+        error: null,
+      };
+    });
+    const putMock = vi.fn();
+    vi.stubGlobal('fetch', putMock);
+
+    await expect(
+      attachFile(client, PROJECT_ID, { task_id: TASK_UUID, file_path: '/work/archive.zip' }),
+    ).rejects.toThrow(/unsupported file type/i);
+
+    // bailed before minting an upload URL or PUTting bytes
+    expect(invokeCalls).toEqual([]);
+    expect(putMock).not.toHaveBeenCalled();
   });
 });
 
