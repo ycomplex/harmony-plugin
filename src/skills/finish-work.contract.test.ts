@@ -86,9 +86,11 @@ describe('finish-work skill contract (evolved)', () => {
     const o0 = body.slice(o0Idx, o1Idx);
     // The edge bullet must call out that workflow_state (where Verified lives) is NOT on list_subtasks…
     expect(o0).toContain('workflow_state');
-    expect(o0.toLowerCase()).toMatch(/list_subtasks selects|not.*workflow_state|status.*not.*workflow_state/);
+    // Tight anchor on the actual corrected claim ("list_subtasks selects … status … not … workflow_state")
+    // so incidental "…workflow_state…" prose elsewhere in O0 can't satisfy it.
+    expect(o0.toLowerCase()).toMatch(/list_subtasks.{0,15}selects.{0,40}status.{0,25}not.{0,25}workflow_state/);
     // …and that enumerating un-Verified children means get_task per child.
-    expect(o0.toLowerCase()).toMatch(/get_task each child|each child.*get_task|get_task.*child/);
+    expect(o0.toLowerCase()).toMatch(/get_task.{0,15}each child/);
   });
 
   // B-471 review fold #3 (NIT): state the umbrella's task_id provenance (ticket id passed to the skill,
