@@ -39,4 +39,23 @@ describe('finish-work skill contract (evolved)', () => {
   it('carries the release role profile', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/record_decision/);
   });
+
+  // B-471: the PR-less umbrella verify path (a decomposed parent whose work shipped in its children).
+  it('documents the PR-less umbrella verify branch (skip merge; compose + resolve the verify brief)', () => {
+    const body = skill.body;
+    // Detection: has children AND no open PR for its branch.
+    expect(referencedHarmonyTools(body)).toContain('list_subtasks');
+    expect(body.toLowerCase()).toContain('umbrella');
+    // It surfaces via the trigger's verification-ack-pending with a null brief…
+    expect(body).toContain('verification-ack-pending');
+    // …and the merge/deploy steps are skipped (no code to merge — children shipped their own PRs).
+    expect(body.toLowerCase()).toMatch(/skip o1\/o2|skip the (release|merge)|no code to merge|no git/i);
+    // It composes the missing verify brief, then resolves on accept.
+    const tools = referencedHarmonyTools(body);
+    expect(tools).toContain('get_brief');     // detect the null brief
+    expect(tools).toContain('compose_brief'); // compose it when null
+    expect(tools).toContain('resolve_brief'); // accept → Released -> Verified
+    // Edge: a still-Decomposed umbrella (children in flight) is NOT verified.
+    expect(body).toContain('Decomposed');
+  });
 });

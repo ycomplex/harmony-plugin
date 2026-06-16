@@ -23,6 +23,51 @@ The ticket should be at **Built** with `awaiting_human_reason = 'release-decisio
 `/harmony-plugin:start-work`). This path drives `releasing` (Built → Released) and `verifying`
 (Released → Verified). It does NOT rewrite design knowledge (release role).
 
+### O0. PR-less umbrella? (a decomposed parent whose work shipped in its children — B-471)
+
+**Check this BEFORE the release pre-flight.** A decomposed parent (an "umbrella") has NO branch/PR of its
+own — its real work shipped in its children's PRs. The DB trigger auto-advances such a parent
+**Decomposed → Released** once all active children reach **Verified**, and surfaces verify by setting on
+the parent row `awaiting_human_input = true`, `awaiting_human_reason = 'verification-ack-pending'`,
+`awaiting_human_ref = {"kind":"umbrella-auto-verify"}` — **but it does NOT compose a brief** (so
+`get_brief` returns null for the umbrella until this skill composes one).
+
+**Detect an umbrella:**
+
+1. `mcp__harmony__list_subtasks({ task_id })` → it **has children**.
+2. **No open PR for its branch**: `.harmony-task.json` has no `branch`, or `gh pr view` fails (no branch /
+   no PR). The umbrella never had its own branch.
+
+Such an umbrella is typically already at `workflow_state` **Released** (auto-advanced) with
+`awaiting_human_reason = 'verification-ack-pending'`.
+
+**If it is an umbrella → take the umbrella verify path and SKIP O1/O2 entirely** (there is no code to
+merge — the children each shipped their own PR; do NOT run the release-decision gate or the merge/deploy
+sequence, and do NOT touch git):
+
+- **Edge — still Decomposed (not all children Verified):** if `mcp__harmony__get_task` shows the umbrella
+  is still at `Decomposed` (the trigger hasn't fired because some children are still in flight), do **NOT**
+  verify. Tell the human it is not ready — its children are still in flight — and stop. (Confirm via
+  `list_subtasks` which children are not yet Verified.)
+- **Compose the verify brief if missing:** `mcp__harmony__get_brief({ task_id })`. If it is **null** (the
+  trigger set the flag but composed no brief), compose it:
+
+  ```
+  mcp__harmony__compose_brief({
+    task_id, reason: "verification-ack-pending", pending_activity: "verifying",
+    doc: { decide: "Does the umbrella work end-to-end across its children?", items: [
+      { kind: "decision", text: "Acknowledge the umbrella works end-to-end across its children", recommendation: "verify once confirmed" }
+    ] }
+  })
+  ```
+
+- **Resolve on human ack:** show the brief; on the human's **accept** →
+  `mcp__harmony__resolve_brief({ task_id, command: "accept" })` advances **Released → Verified**
+  (terminal-positive). **No git.** Report completion and stop — do not fall through to O1/O2/O3.
+
+(If the ticket has NO children, or it has an open PR for its branch, it is a normal ticket — skip this
+section and continue to O1.)
+
 ### O1. Confirm the release decision (accept clears the gate — it does NOT release yet)
 
 `mcp__harmony__get_task({ task_id })` (read `.harmony-task.json` for the id) and
