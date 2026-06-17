@@ -95,4 +95,42 @@ describe('harmony-conduct skill contract', () => {
     }
     expect(skill.body.toLowerCase()).toMatch(/terminal/);
   });
+
+  it('renders an overall-progress overview via TodoWrite', () => {
+    // TodoWrite must be pre-approved so the loop can render the checklist.
+    expect(skill.frontmatter['allowed-tools']).toMatch(/\bTodoWrite\b/);
+    // The body must actually use TodoWrite (not merely allow it).
+    expect(skill.body).toContain('TodoWrite');
+  });
+
+  it('the progress overview is a DERIVED VIEW from the ticket row, not session-held state', () => {
+    const body = skill.body.toLowerCase();
+    // It must be explicitly derived/regenerated from the ticket row, and explicitly NOT session state.
+    expect(body).toMatch(/derived view|derive(d)? .*from the ticket row|regenerate.*from .*workflow_state/);
+    expect(body).toMatch(/not session.?held state|never session state|not.*session-held/);
+    // Regeneration each iteration is the mechanism that keeps it resumable / non-drifting.
+    expect(body).toMatch(/regenerate|regenerated/);
+    expect(body).toContain('workflow_state');
+    // A fresh re-run must reconstruct it identically from the ticket — no carried session memory.
+    expect(body).toMatch(/identical|fresh re-?run/);
+  });
+
+  it('the progress overview renders the fixed forward path as the checklist', () => {
+    const body = skill.body.toLowerCase();
+    for (const phase of ['clarify', 'decompose', 'design', 'plan', 'build', 'release', 'verify']) {
+      expect(body, `progress checklist missing phase ${phase}`).toContain(phase);
+    }
+    // Each item's status is derived from the current state: before = completed, current = in-progress,
+    // later = pending.
+    expect(body).toMatch(/in_progress|in-progress/);
+    expect(body).toMatch(/completed/);
+    expect(body).toMatch(/pending/);
+  });
+
+  it('the progress overview is rendered at the top of every loop iteration (after the re-read)', () => {
+    const body = skill.body.toLowerCase();
+    // It is tied to the get_task re-read at the top of the loop, on every iteration.
+    expect(body).toMatch(/every iteration|each iteration/);
+    expect(body).toMatch(/after the .*get_task|after the .*re-read|right after the .*re-read/);
+  });
 });

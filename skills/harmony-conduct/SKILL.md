@@ -1,7 +1,7 @@
 ---
 name: harmony-conduct
 description: Drive one ticket through the gate sequence end to end, pausing at every gate for the human's decision. Triggers on "conduct B-123", "harmony conduct", "run B-123 through the flow", "drive this ticket to verified". The controlled-only conductor — generalizes harmony-next's single-step pickup into a continuous loop, with the SAME human decision points; it orchestrates the plumbing BETWEEN gates, never the decisions AT them.
-allowed-tools: mcp__harmony__* Read Grep Glob
+allowed-tools: mcp__harmony__* Read Grep Glob TodoWrite
 disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
 
@@ -59,9 +59,11 @@ B-123 from <state>. I'll pause at every gate for your decision."*
 
 Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see step 5):
 
-1. **Re-read the ticket.** `mcp__harmony__get_task({ task_id })` at the TOP of every iteration — never
-   trust a cached copy. Read `(workflow_state, workflow_activity, awaiting_human_input,
-   awaiting_human_reason, awaiting_human_ref, stale)`.
+1. **Re-read the ticket, then render the progress overview.** `mcp__harmony__get_task({ task_id })` at the
+   TOP of every iteration — never trust a cached copy. Read `(workflow_state, workflow_activity,
+   awaiting_human_input, awaiting_human_reason, awaiting_human_ref, stale)`. **Immediately after the
+   re-read, regenerate and render the progress overview from the ticket row** (see *The progress overview*
+   below). This happens on **every** iteration so the checklist always reflects the just-read state.
 
 2. **If the ticket is already awaiting a human decision → PAUSE immediately.** If `awaiting_human_input`
    is set, a gate has already drafted a brief and the ball is in the human's court. Do **NOT** run another
@@ -113,6 +115,50 @@ after a design sub-track was accepted, that is the normal "more sub-tracks to go
 worktree then files `release-decision-pending`). Invoke it for both states; it branches internally on
 `workflow_state` (its step O1). After the plan is accepted (ticket → Planned), the next loop iteration
 re-invokes `start-work`, which proceeds to build.
+
+### The progress overview — a derived view, never session state
+
+The human reading the loop sees the *current* gate at each pause, but needs an *overview*: where the baton
+is in the whole run. Render that overview as a **Claude Code task list** via `TodoWrite`.
+
+**It MUST be a derived view reconstructed from the ticket row, NOT session-held state.** The loop's only
+memory is the ticket row (§"State-driven and resumable"); a session-held todo list would break
+resumability and drift from the truth. So, on **every** iteration, **right after the `get_task` re-read in
+step 1**, regenerate the list *from scratch* from the current `workflow_state` and call `TodoWrite` to
+render it. Hold nothing between iterations. On a fresh re-run in a new session it must regenerate
+**identically** from the ticket row — there is no carried state to consult.
+
+**The checklist is the fixed forward path**, one item per phase, in lifecycle order:
+
+```
+clarify → decompose → design → plan → build → release → verify
+```
+
+Derive each item's status purely from `workflow_state` — map the state to the phase it is *in*, then:
+
+- phases **before** the current phase → `completed`
+- the current phase → `in_progress`
+- phases **after** → `pending`
+
+| `workflow_state` | Current phase (→ `in_progress`) |
+|---|---|
+| Captured / Idea | clarify |
+| Clarified | decompose |
+| Decomposed | design |
+| Designed | plan |
+| Planned | build |
+| Built | release |
+| Released | verify |
+| Verified | — all `completed` (terminal) |
+| Parked / Cancelled | mark phases through the last-reached one `completed`, leave the rest `pending`; the run is terminal |
+
+For **Verified**, mark every item `completed`. For **Parked**/**Cancelled**, the run is terminal — the
+list shows progress frozen where it stopped (no `in_progress` item). Keep it to this high-level phase map;
+per-design-sub-track granularity is **not** required (if a `design` sub-track is mid-serialization you may
+note it in the design item's text, but only if it stays a cheap, clean read of the ticket row).
+
+This list is purely informational — it never drives a decision and never substitutes for the
+brief-surface pause. It is regenerated, not mutated, so it can never disagree with the ticket row.
 
 ### 3. Run exactly one gate per iteration, then PAUSE
 
