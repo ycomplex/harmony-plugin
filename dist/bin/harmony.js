@@ -23952,11 +23952,28 @@ async function createAuthenticatedClient(auth) {
   });
 }
 
+// src/tools/trust-model.ts
+var LEVELS = ["cautious", "balanced", "autonomous"];
+var DEFAULT_TRUST_LEVEL = "balanced";
+function resolveTrustLevel(raw) {
+  const level = raw?.level;
+  return LEVELS.includes(level) ? level : DEFAULT_TRUST_LEVEL;
+}
+
 // src/tools/project.ts
+var PROJECT_COLS = "id, name, key, description, mode, custom_statuses, field_definitions, archived, workspace:workspaces!projects_workspace_id_fkey(agent_trust)";
 async function getProject(client, projectId) {
-  const { data, error } = await client.from("projects").select("id, name, key, description, mode, custom_statuses, field_definitions, archived").eq("id", projectId).single();
+  const { data, error } = await client.from("projects").select(PROJECT_COLS).eq("id", projectId).single();
   if (error) throw error;
-  return data;
+  const row = data;
+  const ws = Array.isArray(row.workspace) ? row.workspace[0] : row.workspace;
+  const rawTrust = ws?.agent_trust ?? {};
+  const agent_trust = {
+    level: resolveTrustLevel(rawTrust),
+    overrides: rawTrust.overrides ?? {}
+  };
+  const { workspace: _workspace, ...project } = row;
+  return { ...project, agent_trust };
 }
 
 // src/cli/config.ts

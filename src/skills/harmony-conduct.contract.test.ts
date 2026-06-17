@@ -24,19 +24,57 @@ describe('harmony-conduct skill contract', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);
   });
 
-  it('CONTROLLED-ONLY: pauses at every gate and never auto-advances (the core contract)', () => {
+  it('CONTROLLED DEFAULT: the no-flag run pauses at every gate (the core contract, intact in 2b)', () => {
     const body = skill.body.toLowerCase();
-    // It pauses and surfaces every decision.
+    // The default (no flag) route pauses and surfaces every decision — unchanged from phase 2a.
     expect(body).toContain('pause');
     expect(body).toContain('every gate');
-    // Phase 2a is explicitly NOT the autonomy/breaker/risk work.
-    expect(body).toContain('--unattended');
-    expect(body).toMatch(/no .*--unattended|never.*auto-advance|does not auto-advance|not auto-advance/);
-    expect(body).toContain('circuit-breaker');
-    expect(body).toContain('risk signal');
-    // Out-of-scope phases are named so the boundary is unmistakable.
+    // With no flag the skill does not auto-advance — phase 2b is strictly additive over the 2a default.
+    expect(body).toMatch(/no .*--unattended|never.*auto-advance|does not\b.*auto-advance|not auto-advance/);
+    // The controlled-default guarantee is stated explicitly.
+    expect(body).toMatch(/controlled default|default.*controlled|behaviou?rally identical to phase 2a|identical.*to phase 2a/);
+    // The phase boundary is still named so the lineage (2a core) and the later phases are unmistakable.
     expect(body).toContain('2a');
     expect(body).toMatch(/2b|2c|2d/);
+    // The later autonomy/breaker/risk work is still scoped OUT of this phase.
+    expect(body).toContain('circuit-breaker');
+    expect(body).toContain('risk signal');
+  });
+
+  it('PHASE-2B SELECTOR: opt-in per-run delegation via --pause-at / --unattended, never the system\'s call', () => {
+    const body = skill.body.toLowerCase();
+    // The two opt-in delegation flags exist.
+    expect(body).toContain('--unattended');
+    expect(body).toContain('--pause-at');
+    // Delegation is opt-in per run — it is the human's conscious choice, never the conductor's inference.
+    expect(body).toMatch(/opt-in per run|opt-in per-run|per-run delegation|human pass(ed|es) an explicit flag|conscious per-run choice/);
+    // An auto-advanced gate synthesizes the human's accept and records the SAME decision a controlled run would.
+    expect(body).toMatch(/synthesi[sz]e.*accept|auto-advance/);
+    expect(body).toMatch(/same accepted|records? the same|identical to a human accept|parity/);
+    // Bad input is an ERROR, never a silent delegation (the contract-1 guard).
+    expect(body).toMatch(/mutually exclusive/);
+    expect(body).toMatch(/unknown.*gate|misspelled.*gate|error.*never a silent|never a silent delegation/);
+  });
+
+  it('HARD FLOOR: release + verify are never auto-advanced, even unattended', () => {
+    const body = skill.body;
+    expect(body.toLowerCase()).toContain('hard floor');
+    // Release and verify always require a human regardless of any flag.
+    expect(body.toLowerCase()).toMatch(/release.*verify.*(never|always human|stay human|hard floor)|never auto-resolved/);
+    expect(body.toLowerCase()).toMatch(/even .*--unattended|even unattended|always.*human/);
+  });
+
+  it('DIAL CEILING: a cautious workspace dial is a kill-switch that forbids all delegation (announced)', () => {
+    const body = skill.body.toLowerCase();
+    // The conductor reads the resolved workspace agent-trust dial via get_project.
+    expect(referencedHarmonyTools(skill.body)).toContain('get_project');
+    expect(body).toContain('agent_trust');
+    // Cautious = kill-switch: forbids all delegation, run goes controlled, and it is ANNOUNCED (no silent no-op).
+    expect(body).toContain('cautious');
+    expect(body).toMatch(/kill-switch|forbids? all delegation|forbid.*delegation/);
+    expect(body).toMatch(/announce|never silently|never a silent/);
+    // The dial can only restrict (it is a ceiling), never expand the per-run flag.
+    expect(body).toMatch(/ceiling|restrict-only|only restrict|never.*expand/);
   });
 
   it('NEVER resolves a brief itself — the human owns the decision at each gate', () => {
