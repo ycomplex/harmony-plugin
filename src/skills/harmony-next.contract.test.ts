@@ -79,6 +79,24 @@ describe('harmony-next skill contract', () => {
     expect(seg).toContain('umbrella-auto-verify');
     expect(seg).toContain('awaiting_human_ref');
   });
+  it('SURFACES the promote-to-Idea triage decision on a Captured item — does NOT auto-advance (B-490 F2)', () => {
+    const body = skill.body;
+    // harmony-next pulls un-triaged items; promoting (Captured→Idea) is a human triage move, so it
+    // surfaces the decision and stops — the OPPOSITE of harmony-conduct (which auto-advances).
+    expect(body).toContain('Captured');
+    expect(body).toContain('promoting');
+    // Scope to the Captured-handling section so a stray token elsewhere can't satisfy it.
+    const capIdx = body.indexOf("workflow_state === 'Captured'");
+    expect(capIdx).toBeGreaterThan(-1);
+    const after = body.slice(capIdx);
+    const nextHeading = after.indexOf('\n###');
+    const seg = nextHeading > -1 ? after.slice(0, nextHeading) : after;
+    // It must SURFACE / not auto-advance promoting, frame it as triage, and stop (no clarify run).
+    expect(seg.toLowerCase()).toMatch(/surface/);
+    expect(seg.toLowerCase()).toMatch(/do not auto-advance|not auto-advance|don't auto-advance/);
+    expect(seg.toLowerCase()).toMatch(/triage/);
+    expect(seg.toLowerCase()).toMatch(/stop|pause|ball is in the human/);
+  });
   it('is scoped to the read-only discovery role', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
     expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);

@@ -80,6 +80,25 @@ describe('harmony-conduct skill contract', () => {
     expect(skill.body.toLowerCase()).toContain('stale');
   });
 
+  it('auto-advances promoting on a Captured ticket — plumbing, not a pause (B-490 F2)', () => {
+    const body = skill.body;
+    // Captured must be handled (it is the inbox state freshly-created tickets land in).
+    expect(body).toContain('Captured');
+    // The conductor advances promoting itself via advance_workflow — it does NOT compose a brief / pause.
+    expect(referencedHarmonyTools(body)).toContain('advance_workflow');
+    expect(body).toContain('promoting');
+    // Scope the assertion to the Captured-handling step so a stray token elsewhere can't satisfy it:
+    // the SAME paragraph must tie Captured → promoting → advance_workflow and frame it as no-pause plumbing.
+    const capIdx = body.indexOf("workflow_state === 'Captured'");
+    expect(capIdx).toBeGreaterThan(-1);
+    const seg = body.slice(capIdx, capIdx + 900);
+    expect(seg).toContain('promoting');
+    expect(seg).toContain('advance_workflow');
+    expect(seg.toLowerCase()).toMatch(/no .*pause|not a pause|plumbing/);
+    // It must NOT try to file a clarifying brief from Captured (the transition-table gap that broke B-487).
+    expect(seg).toContain('clarifying');
+  });
+
   it('handles the null-brief verification-ack-pending umbrella without choking (B-471)', () => {
     const body = skill.body;
     expect(body).toContain('verification-ack-pending');
@@ -96,11 +115,13 @@ describe('harmony-conduct skill contract', () => {
     expect(skill.body.toLowerCase()).toMatch(/terminal/);
   });
 
-  it('renders an overall-progress overview via TodoWrite', () => {
-    // TodoWrite must be pre-approved so the loop can render the checklist.
-    expect(skill.frontmatter['allowed-tools']).toMatch(/\bTodoWrite\b/);
-    // The body must actually use TodoWrite (not merely allow it).
-    expect(skill.body).toContain('TodoWrite');
+  it('renders the progress overview INLINE — no TodoWrite dependency (F1)', () => {
+    // F1: inline rendering is the design. TodoWrite is NOT an allowed tool — the conduct session
+    // doesn't reliably have it, and the overview is a read-only derived view that needs no task-list tool.
+    expect(skill.frontmatter['allowed-tools']).not.toMatch(/\bTodoWrite\b/);
+    // The body must specify inline rendering as the design.
+    expect(skill.body.toLowerCase()).toMatch(/render.*inline|inline.*render|print the checklist inline|inline is the design/);
+    expect(skill.body.toLowerCase()).toContain('inline');
   });
 
   it('the progress overview is a DERIVED VIEW from the ticket row, not session-held state', () => {
