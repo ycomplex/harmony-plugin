@@ -1,7 +1,7 @@
 ---
 name: harmony-conduct
 description: Drive one ticket through the gate sequence end to end, pausing at every gate for the human's decision. Triggers on "conduct B-123", "harmony conduct", "run B-123 through the flow", "drive this ticket to verified". The controlled-only conductor — generalizes harmony-next's single-step pickup into a continuous loop, with the SAME human decision points; it orchestrates the plumbing BETWEEN gates, never the decisions AT them.
-allowed-tools: mcp__harmony__* Read Grep Glob TodoWrite
+allowed-tools: mcp__harmony__* Read Grep Glob
 disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
 
@@ -57,7 +57,7 @@ B-123 from <state>. I'll pause at every gate for your decision."*
 
 ### 2. The loop
 
-Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see step 5):
+Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see *§5. Terminal conditions*):
 
 1. **Re-read the ticket, then render the progress overview.** `mcp__harmony__get_task({ task_id })` at the
    TOP of every iteration — never trust a cached copy. Read `(workflow_state, workflow_activity,
@@ -68,19 +68,32 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
 2. **If the ticket is already awaiting a human decision → PAUSE immediately.** If `awaiting_human_input`
    is set, a gate has already drafted a brief and the ball is in the human's court. Do **NOT** run another
    gate on top of it (that would overwrite the one active brief — there is one active brief per task). Go
-   to step 4 (Surface + pause). This is the resume case: a re-run that finds an unresolved brief surfaces
-   it and waits.
+   to *§4. Surface the brief + pause*. This is the resume case: a re-run that finds an unresolved brief
+   surfaces it and waits.
 
 3. **If the ticket is `stale` → PAUSE and route to the patch author.** A superseded knowledge decision
    has put the ticket out of sync (state-machine §6.4). This is a human decision, not a forward gate.
    Delegate to `/harmony-plugin:harmony-stale-patch <ticket>` (it drafts the `stale-patch-review` brief),
-   then surface it and pause (step 4) — exactly as `harmony-next` does. The loop does not advance a Stale
-   ticket past the patch decision.
+   then surface it and pause (*§4. Surface the brief + pause*) — exactly as `harmony-next` does. The loop
+   does not advance a Stale ticket past the patch decision.
 
-4. **Otherwise, determine the next forward activity and RUN it** by delegating to the owning gate skill
+4. **If `workflow_state === 'Captured'` → auto-advance `promoting` (plumbing, NOT a pause), then loop
+   again.** A freshly-created ticket lands in `Captured` (the post-B-474 inbox state). `promoting`
+   (Captured→Idea) is a **brief-less AGENT/SYSTEM transition** with no human decision attached — and in the
+   conductor, *choosing to conduct this ticket IS the promote decision* (the human named it; they've
+   already decided it's worth pursuing). So the conductor advances it itself, with **no brief and no
+   pause**: `mcp__harmony__advance_workflow({ task_id, activity: 'promoting' })` (Captured→Idea). Then go
+   back to step 1 (re-read) — the ticket is now `Idea` and the next iteration runs the clarify gate.
+   **Do NOT** try to file a `clarifying` brief from `Captured` — the transition table only allows
+   `('Captured','promoting','Idea')` then `('Idea','clarifying','Clarified')`, so `compose_brief` with
+   `pending_activity: 'clarifying'` would hard-error from `Captured`. (This is the one self-advance the
+   conductor makes; it advances no *human* decision — contrast `harmony-next`, which **surfaces** promoting
+   as a human triage decision because it pulls un-triaged queue items, see harmony-next's routing.)
+
+5. **Otherwise, determine the next forward activity and RUN it** by delegating to the owning gate skill
    (state→activity map below). The gate skill queries knowledge, drafts the decision, and `compose_brief`s
-   — setting `awaiting_human_input`. Then **PAUSE** (step 4 below): the loop does not continue past a fresh
-   brief. *(Side-effecting note: `harmony-decompose` creates children on accept, and `finish-work` does
+   — setting `awaiting_human_input`. Then **PAUSE** (*§4. Surface the brief + pause*): the loop does not
+   continue past a fresh brief. *(Side-effecting note: `harmony-decompose` creates children on accept, and `finish-work` does
    the merge/deploy on accept — but those side effects happen at the human's accept, owned by the gate
    skill, NOT by the conductor. The conductor only invokes the gate skill to produce the brief, then waits.)*
 
@@ -91,7 +104,8 @@ forward one state at a time:
 
 | `workflow_state` | Next activity | Delegate to | Gate is… |
 |---|---|---|---|
-| Captured / Idea | clarifying | `/harmony-plugin:harmony-clarify <ticket>` | pure (accept = `resolve_brief`) |
+| Captured | promoting | (none — `advance_workflow` directly) | **plumbing, not a human pause** — auto-advance Captured→Idea (see below), then loop |
+| Idea | clarifying | `/harmony-plugin:harmony-clarify <ticket>` | pure (accept = `resolve_brief`) |
 | Clarified | decomposing | `/harmony-plugin:harmony-decompose <ticket>` | side-effecting (accept creates children) |
 | Decomposed | designing | `/harmony-plugin:harmony-design-decide <ticket> --track <sub-track>` | pure per sub-track; serialized (one brief at a time) |
 | Designed | planning | `/harmony-plugin:start-work <ticket>` | pure (accept = `resolve_brief`; the accept is "go" to build) |
@@ -116,17 +130,23 @@ worktree then files `release-decision-pending`). Invoke it for both states; it b
 `workflow_state` (its step O1). After the plan is accepted (ticket → Planned), the next loop iteration
 re-invokes `start-work`, which proceeds to build.
 
-### The progress overview — a derived view, never session state
+### The progress overview — an inline derived view, never session state
 
 The human reading the loop sees the *current* gate at each pause, but needs an *overview*: where the baton
-is in the whole run. Render that overview as a **Claude Code task list** via `TodoWrite`.
+is in the whole run. **Render that overview inline, in the chat** — a small Markdown checklist printed in
+your message. **Inline is the design, not a fallback** (F1). The overview is a read-only derived view of
+the ticket row; it has no interactive/persistence semantics that would need a task-list tool, and the
+conduct session does not reliably have `TodoWrite` available. So the spec is: print the checklist inline.
+(`TodoWrite` is **not** an allowed tool of this skill and must not be relied on; if a future session has it
+and you choose to mirror the checklist there, it must degrade **silently** to the inline render — inline is
+authoritative and always rendered.)
 
 **It MUST be a derived view reconstructed from the ticket row, NOT session-held state.** The loop's only
-memory is the ticket row (§"State-driven and resumable"); a session-held todo list would break
+memory is the ticket row (§"State-driven and resumable"); a session-held checklist would break
 resumability and drift from the truth. So, on **every** iteration, **right after the `get_task` re-read in
-step 1**, regenerate the list *from scratch* from the current `workflow_state` and call `TodoWrite` to
-render it. Hold nothing between iterations. On a fresh re-run in a new session it must regenerate
-**identically** from the ticket row — there is no carried state to consult.
+step 1**, regenerate the checklist *from scratch* from the current `workflow_state` and print it inline.
+Hold nothing between iterations. On a fresh re-run in a new session it must regenerate **identically** from
+the ticket row — there is no carried state to consult.
 
 **The checklist is the fixed forward path**, one item per phase, in lifecycle order:
 
@@ -140,6 +160,19 @@ Derive each item's status purely from `workflow_state` — map the state to the 
 - the current phase → `in_progress`
 - phases **after** → `pending`
 
+Render it inline as a simple Markdown checklist, marking each item with its derived status, e.g.:
+
+```
+Progress for B-123 (state: Decomposed):
+- [x] clarify        (completed)
+- [x] decompose      (completed)
+- [ ] design         (in_progress)  ← current gate
+- [ ] plan           (pending)
+- [ ] build          (pending)
+- [ ] release        (pending)
+- [ ] verify         (pending)
+```
+
 | `workflow_state` | Current phase (→ `in_progress`) |
 |---|---|
 | Captured / Idea | clarify |
@@ -152,12 +185,15 @@ Derive each item's status purely from `workflow_state` — map the state to the 
 | Verified | — all `completed` (terminal) |
 | Parked / Cancelled | mark phases through the last-reached one `completed`, leave the rest `pending`; the run is terminal |
 
-For **Verified**, mark every item `completed`. For **Parked**/**Cancelled**, the run is terminal — the
-list shows progress frozen where it stopped (no `in_progress` item). Keep it to this high-level phase map;
-per-design-sub-track granularity is **not** required (if a `design` sub-track is mid-serialization you may
-note it in the design item's text, but only if it stays a cheap, clean read of the ticket row).
+(`Captured` and `Idea` both map to the `clarify` phase — a `Captured` ticket auto-advances `promoting` to
+`Idea` first, §"The loop" step 4, so the very next overview after the promote shows `clarify` as
+`in_progress` exactly as it would from `Idea`.) For **Verified**, mark every item `completed`. For
+**Parked**/**Cancelled**, the run is terminal — the list shows progress frozen where it stopped (no
+`in_progress` item). Keep it to this high-level phase map; per-design-sub-track granularity is **not**
+required (if a `design` sub-track is mid-serialization you may note it in the design item's text, but only
+if it stays a cheap, clean read of the ticket row).
 
-This list is purely informational — it never drives a decision and never substitutes for the
+This checklist is purely informational — it never drives a decision and never substitutes for the
 brief-surface pause. It is regenerated, not mutated, so it can never disagree with the ticket row.
 
 ### 3. Run exactly one gate per iteration, then PAUSE

@@ -20,6 +20,25 @@ queue). If the user named a ticket, `mcp__harmony__get_task({ task_id })`. Other
 `mcp__harmony__query_tasks({ awaiting_human_input: true, sort_by: 'priority', limit: 1 })` and take the
 single result. If the queue is empty, say so and stop.
 
+### 1a. A `Captured` item → SURFACE the promote-to-Idea triage decision, then STOP
+
+If the resolved item's `workflow_state === 'Captured'` (a freshly-created, **un-triaged** inbox ticket —
+the post-B-474 inbox state), **do NOT auto-advance `promoting` and do NOT run clarify.** `promoting`
+(Captured→Idea) is a documented **human triage move** ("is this worth pursuing?"), and `harmony-next`
+pulls *un-triaged* items off the queue — so the promote decision is **the human's**, not something this
+skill makes for them. Surface it and pause:
+
+> *"B-123 is **Captured** (un-triaged). Promote it to Idea — is this worth pursuing? If yes, say so (or
+> `/harmony-plugin:harmony-next B-123` again after promoting) and I'll advance it and start clarifying. If
+> not, defer/cancel it."*
+
+Then **STOP** — the ball is in the human's court for the triage call. (This is the deliberate **opposite**
+of `harmony-conduct`, which auto-advances `promoting` itself because *the human choosing to conduct a
+specific ticket IS the promote decision*. `harmony-next` makes no such assumption: it took the top of the
+queue, the human hasn't triaged it yet, so triage stays theirs.) Only once the human confirms (or once the
+ticket is already past `Captured`) does the normal flow below run: re-read with `get_task`, then the next
+gate from `Idea` is `clarifying`.
+
 ### 2. Show the brief
 
 Call `mcp__harmony__get_brief({ task_id })` and display the rendered `content` blob **verbatim** in a
