@@ -24,19 +24,57 @@ describe('harmony-conduct skill contract', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);
   });
 
-  it('CONTROLLED-ONLY: pauses at every gate and never auto-advances (the core contract)', () => {
+  it('CONTROLLED DEFAULT: the no-flag run pauses at every gate (the core contract, intact in 2b)', () => {
     const body = skill.body.toLowerCase();
-    // It pauses and surfaces every decision.
+    // The default (no flag) route pauses and surfaces every decision — unchanged from phase 2a.
     expect(body).toContain('pause');
     expect(body).toContain('every gate');
-    // Phase 2a is explicitly NOT the autonomy/breaker/risk work.
-    expect(body).toContain('--unattended');
-    expect(body).toMatch(/no .*--unattended|never.*auto-advance|does not auto-advance|not auto-advance/);
-    expect(body).toContain('circuit-breaker');
-    expect(body).toContain('risk signal');
-    // Out-of-scope phases are named so the boundary is unmistakable.
+    // With no flag the skill does not auto-advance — phase 2b is strictly additive over the 2a default.
+    expect(body).toMatch(/no .*--unattended|never.*auto-advance|does not\b.*auto-advance|not auto-advance/);
+    // The controlled-default guarantee is stated explicitly.
+    expect(body).toMatch(/controlled default|default.*controlled|behaviou?rally identical to phase 2a|identical.*to phase 2a/);
+    // The phase boundary is still named so the lineage (2a core) and the later phases are unmistakable.
     expect(body).toContain('2a');
     expect(body).toMatch(/2b|2c|2d/);
+    // The later autonomy/breaker/risk work is still scoped OUT of this phase.
+    expect(body).toContain('circuit-breaker');
+    expect(body).toContain('risk signal');
+  });
+
+  it('PHASE-2B SELECTOR: opt-in per-run delegation via --pause-at / --unattended, never the system\'s call', () => {
+    const body = skill.body.toLowerCase();
+    // The two opt-in delegation flags exist.
+    expect(body).toContain('--unattended');
+    expect(body).toContain('--pause-at');
+    // Delegation is opt-in per run — it is the human's conscious choice, never the conductor's inference.
+    expect(body).toMatch(/opt-in per run|opt-in per-run|per-run delegation|human pass(ed|es) an explicit flag|conscious per-run choice/);
+    // An auto-advanced gate synthesizes the human's accept and records the SAME decision a controlled run would.
+    expect(body).toMatch(/synthesi[sz]e.*accept|auto-advance/);
+    expect(body).toMatch(/same accepted|records? the same|identical to a human accept|parity/);
+    // Bad input is an ERROR, never a silent delegation (the contract-1 guard).
+    expect(body).toMatch(/mutually exclusive/);
+    expect(body).toMatch(/unknown.*gate|misspelled.*gate|error.*never a silent|never a silent delegation/);
+  });
+
+  it('HARD FLOOR: release + verify are never auto-advanced, even unattended', () => {
+    const body = skill.body;
+    expect(body.toLowerCase()).toContain('hard floor');
+    // Release and verify always require a human regardless of any flag.
+    expect(body.toLowerCase()).toMatch(/release.*verify.*(never|always human|stay human|hard floor)|never auto-resolved/);
+    expect(body.toLowerCase()).toMatch(/even .*--unattended|even unattended|always.*human/);
+  });
+
+  it('DIAL CEILING: a cautious workspace dial is a kill-switch that forbids all delegation (announced)', () => {
+    const body = skill.body.toLowerCase();
+    // The conductor reads the resolved workspace agent-trust dial via get_project.
+    expect(referencedHarmonyTools(skill.body)).toContain('get_project');
+    expect(body).toContain('agent_trust');
+    // Cautious = kill-switch: forbids all delegation, run goes controlled, and it is ANNOUNCED (no silent no-op).
+    expect(body).toContain('cautious');
+    expect(body).toMatch(/kill-switch|forbids? all delegation|forbid.*delegation/);
+    expect(body).toMatch(/announce|never silently|never a silent/);
+    // The dial can only restrict (it is a ceiling), never expand the per-run flag.
+    expect(body).toMatch(/ceiling|restrict-only|only restrict|never.*expand/);
   });
 
   it('NEVER resolves a brief itself — the human owns the decision at each gate', () => {
@@ -80,6 +118,25 @@ describe('harmony-conduct skill contract', () => {
     expect(skill.body.toLowerCase()).toContain('stale');
   });
 
+  it('auto-advances promoting on a Captured ticket — plumbing, not a pause (B-490 F2)', () => {
+    const body = skill.body;
+    // Captured must be handled (it is the inbox state freshly-created tickets land in).
+    expect(body).toContain('Captured');
+    // The conductor advances promoting itself via advance_workflow — it does NOT compose a brief / pause.
+    expect(referencedHarmonyTools(body)).toContain('advance_workflow');
+    expect(body).toContain('promoting');
+    // Scope the assertion to the Captured-handling step so a stray token elsewhere can't satisfy it:
+    // the SAME paragraph must tie Captured → promoting → advance_workflow and frame it as no-pause plumbing.
+    const capIdx = body.indexOf("workflow_state === 'Captured'");
+    expect(capIdx).toBeGreaterThan(-1);
+    const seg = body.slice(capIdx, capIdx + 900);
+    expect(seg).toContain('promoting');
+    expect(seg).toContain('advance_workflow');
+    expect(seg.toLowerCase()).toMatch(/no .*pause|not a pause|plumbing/);
+    // It must NOT try to file a clarifying brief from Captured (the transition-table gap that broke B-487).
+    expect(seg).toContain('clarifying');
+  });
+
   it('handles the null-brief verification-ack-pending umbrella without choking (B-471)', () => {
     const body = skill.body;
     expect(body).toContain('verification-ack-pending');
@@ -96,11 +153,13 @@ describe('harmony-conduct skill contract', () => {
     expect(skill.body.toLowerCase()).toMatch(/terminal/);
   });
 
-  it('renders an overall-progress overview via TodoWrite', () => {
-    // TodoWrite must be pre-approved so the loop can render the checklist.
-    expect(skill.frontmatter['allowed-tools']).toMatch(/\bTodoWrite\b/);
-    // The body must actually use TodoWrite (not merely allow it).
-    expect(skill.body).toContain('TodoWrite');
+  it('renders the progress overview INLINE — no TodoWrite dependency (F1)', () => {
+    // F1: inline rendering is the design. TodoWrite is NOT an allowed tool — the conduct session
+    // doesn't reliably have it, and the overview is a read-only derived view that needs no task-list tool.
+    expect(skill.frontmatter['allowed-tools']).not.toMatch(/\bTodoWrite\b/);
+    // The body must specify inline rendering as the design.
+    expect(skill.body.toLowerCase()).toMatch(/render.*inline|inline.*render|print the checklist inline|inline is the design/);
+    expect(skill.body.toLowerCase()).toContain('inline');
   });
 
   it('the progress overview is a DERIVED VIEW from the ticket row, not session-held state', () => {
