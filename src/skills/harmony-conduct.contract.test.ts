@@ -192,4 +192,59 @@ describe('harmony-conduct skill contract', () => {
     expect(body).toMatch(/every iteration|each iteration/);
     expect(body).toMatch(/after the .*get_task|after the .*re-read|right after the .*re-read/);
   });
+
+  it('B-485 AUTO-PICKUP: at a controlled pause the live session can bounded-poll get_task and consume a browser resolution', () => {
+    const body = skill.body.toLowerCase();
+    // The phase is named in the lineage.
+    expect(skill.body).toContain('B-485');
+    expect(body).toContain('auto-pickup');
+    // It is session-held polling-with-backoff — NOT a background daemon (locked param D4).
+    expect(body).toMatch(/session-held/);
+    expect(body).toMatch(/no background daemon|not.*a daemon|never.*a daemon|not\b.*background/);
+    expect(body).toMatch(/poll|polling/);
+    expect(body).toMatch(/backoff/);
+    // It polls get_task (the cheap detector) and reads the resolution.
+    expect(referencedHarmonyTools(skill.body)).toContain('get_task');
+    // On poll-window expiry it degrades to today's persist-and-resume (the no-session degradation).
+    expect(body).toMatch(/poll-window expiry|window expir|watch window/);
+    expect(body).toMatch(/no-session degradation|persists?.*on the ticket row|next .*run/);
+  });
+
+  it("B-485 ORTHOGONALITY: auto-pickup consumes the human's ACTUAL command and never synthesizes a decision", () => {
+    const body = skill.body.toLowerCase();
+    // Auto-pickup only changes WHERE the human answers (browser) — it does not delegate or decide.
+    expect(body).toMatch(/orthogonal/);
+    expect(body).toMatch(/actual.*command|actual.*resolution|human.*actual|actual.*browser/);
+    expect(body).toMatch(/never makes a decision the human did ?n'?t make|does not.*synthesize|never.*synthesize/);
+    // The two detectable browser outcomes: a state-advance (accept/defer) and a pending_resolution (reshape).
+    expect(body).toContain('pending_resolution');
+    expect(body).toMatch(/state advanced|state-advance|advanced/);
+  });
+
+  it('B-485 RESHAPE: a browser reshape runs the LLM iterate (re-compose in place, iteration+1, ball back to the human)', () => {
+    const body = skill.body.toLowerCase();
+    // The reshape marker shape + the iterate run.
+    expect(body).toContain('iterate');
+    expect(body).toMatch(/reshape/);
+    // The LLM iterate re-composes the brief; the conductor references compose_brief as the gate skill's path.
+    expect(skill.body).toContain('compose_brief');
+    expect(body).toMatch(/iteration\s*\+?\s*1|iteration\+1|bumps?.*iteration|iteration.*\+/);
+    // After the re-compose the ball returns to the human (awaiting_human_input=true ⇒ 'Needs human').
+    expect(skill.body).toContain('awaiting_human_input');
+    expect(body).toMatch(/needs human/);
+    // The marker is cleared so it is not re-consumed.
+    expect(body).toMatch(/clear.*pending_resolution|pending_resolution.*clear|not.*re-consumed/);
+  });
+
+  it('B-485 HARD FLOOR (AC7): release/verify are consumed ONLY from a human browser resolution, never synthesized; side effects run in-session', () => {
+    const body = skill.body.toLowerCase();
+    // Even with auto-pickup, release/verify are never conductor-synthesized.
+    expect(body).toMatch(/release\/verify|release.*verify/);
+    expect(body).toMatch(/only.*human-submitted|human-submitted.*resolution|human browser-accept|human is the one accepting|human .*the one accepting/);
+    expect(body).toMatch(/never.*conductor-synthesi[sz]ed|never.*synthesi[sz]e/);
+    // A human's browser-accept of a side-effecting gate triggers its side effect in the running session via finish-work.
+    expect(skill.body).toContain('finish-work');
+    expect(body).toMatch(/in.?session|running session/);
+    expect(body).toMatch(/merge \+ deploy|merge\+deploy|merge and deploy/);
+  });
 });

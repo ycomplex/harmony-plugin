@@ -24307,6 +24307,18 @@ async function resolveAssignee(client, projectId, assignee) {
   throw new Error(`No member found matching "${assignee}". Use list_members to see available members.`);
 }
 
+// src/tools/briefs.ts
+async function fetchPendingResolution(client, taskId) {
+  try {
+    const { data, error } = await client.from("briefs").select("pending_resolution").eq("task_id", taskId).eq("status", "active").maybeSingle();
+    if (error) return null;
+    const pr = data?.pending_resolution;
+    return pr ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // src/tools/tasks.ts
 async function listTasks(client, projectId, args) {
   const limit = args.limit ?? 50;
@@ -24351,17 +24363,23 @@ async function getTask(client, projectId, args) {
   if (error) throw error;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
-  const { data: acceptanceCriteria } = await client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position");
-  const { data: testCases } = await client.from("test_cases").select("*").eq("task_id", resolvedId).order("position");
-  let attachments;
-  try {
-    const { data: rows } = await client.from("attachments").select("id, filename, content_type, byte_size, created_at").eq("task_id", resolvedId).eq("status", "finalized").order("created_at", { ascending: true });
-    attachments = rows ?? [];
-  } catch {
-    attachments = [];
-  }
+  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution] = await Promise.all([
+    client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
+    client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
+    (async () => {
+      try {
+        const { data: rows } = await client.from("attachments").select("id, filename, content_type, byte_size, created_at").eq("task_id", resolvedId).eq("status", "finalized").order("created_at", { ascending: true });
+        return rows ?? [];
+      } catch {
+        return [];
+      }
+    })(),
+    fetchPendingResolution(client, resolvedId)
+  ]);
+  const acceptanceCriteria = acceptanceCriteriaRes.data;
+  const testCases = testCasesRes.data;
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments };
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution };
 }
 async function createTask(client, projectId, userId, args) {
   const assigneeId = args.assignee_id ? await resolveAssignee(client, projectId, args.assignee_id) : null;
