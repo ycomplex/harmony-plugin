@@ -5,7 +5,7 @@ allowed-tools: mcp__harmony__* Read Grep Glob
 disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
 
-# Harmony Conduct (conductor — B-458 phase 2a controlled core + B-489 phase 2b autonomy selector + B-485 browser auto-pickup + B-493 phase 2c risk-class floor & --escalate)
+# Harmony Conduct (conductor — B-458 phase 2a controlled core + B-489 phase 2b autonomy selector + B-485 browser auto-pickup + B-493 phase 2c risk-class floor & --escalate + B-500 auto-watch by default)
 
 The conductor loop. Given a ticket and a "go", it drives the whole gate sequence
 (clarify → decompose → design → plan → build → release → verify) by delegating to the existing gate
@@ -497,18 +497,20 @@ risk-class-floored or escalate-surfaced pause is resolved, re-running with the s
 auto-advancing the *rest* of the run — the floor/judgment is re-evaluated fresh per gate from the ticket
 row, so it neither sticks nor leaks to the next gate.
 
-**The human may instead answer in the BROWSER** — and on this run you can pick that up automatically (B-485,
-§4c). When you reach a controlled pause, **offer to keep the session running and watch for a browser
-resolution** (Accept / Reshape / Deny submitted from the TaskDetailPanel on any device). State it plainly,
-e.g.: *"I'll keep watching for your decision from the browser — resolve it there (Accept / Reshape / Deny)
-and I'll pick it up and continue. Or answer here."* If the human opts to keep the session running, go to
-**§4c (Auto-pickup)**. If the human steps away / declines / the watch window expires, the loop is paused;
-a later `/harmony-plugin:harmony-conduct B-123` resumes from the ticket row (re-pass the flag to resume a
-partial/unattended/escalate run; absent a flag the resumed run is controlled) — this is the **no-session
-degradation**: a browser resolution submitted while no session is running simply **persists on the ticket
-row** and the next run applies it.
+**The human may answer in the BROWSER — and the conductor watches for it automatically (B-485 + B-500, §4c).**
+After surfacing the brief, **do not ask** whether to watch and **do not require a re-run** — auto-watch is the
+**default** (B-500: *don't ask, don't make me re-run*). The conductor automatically enters the §4c watch loop
+and keeps watching the ticket row for the human's resolution (Accept / Reshape / Deny submitted from the
+TaskDetailPanel on any device), continuing the instant it lands. State it plainly, e.g.: *"I'll keep watching
+for your decision — resolve it here in the terminal or from the browser (Accept / Reshape / Deny) and I'll
+continue automatically."* The watch is **bounded (~90 min, idle backoff)** and ends on **any** of three
+co-equal exits: a browser resolution, an in-session/terminal answer, or the ~90-min timeout. On timeout the
+loop is paused with **graceful degradation**: a later `/harmony-plugin:harmony-conduct B-123` resumes from the
+ticket row (re-pass the flag to resume a partial/unattended/escalate run; absent a flag the resumed run is
+controlled) — this is the **no-session degradation**: a browser resolution submitted while no session is
+running simply **persists on the ticket row** and the next run applies it. Go to **§4c (Auto-pickup)**.
 
-### 4c. Auto-pickup — consume a browser resolution in the live session (B-485)
+### 4c. Auto-pickup — consume a browser resolution in the live session (B-485 + B-500)
 
 This is **session-held polling-with-backoff** (locked param **D4: session-held v1; NO background daemon**).
 Auto-pickup is the *live running session* watching for the human's out-of-band browser resolution and
@@ -516,13 +518,18 @@ consuming it — it is **NOT** a daemon and **NOT** a new write path. It changes
 answers (the browser, on any device) versus requiring a session re-run; **it is orthogonal to delegation**
 (§4b) — the human still resolves **every** controlled gate. Auto-pickup never makes a decision the human
 didn't make; it routes the human's **actual** browser command to the owning gate skill, exactly as a
-same-session answer would.
+same-session answer would. **Auto-watch is the default (B-500):** after every controlled pause the conductor
+enters this loop automatically — it does **not** ask the human to opt in and does **not** require a manual
+re-run.
 
-**The poll loop (bounded, idle-backoff).** While the human keeps the session running at this controlled
-pause, re-read `mcp__harmony__get_task({ task_id })` on a bounded schedule with **idle backoff** (e.g. every
-~10s for the first minute, then ~30s, then ~60s, up to a total watch window of a few minutes). Between
-re-reads, simply wait — do not spin. On each re-read, compare against the brief you surfaced and detect
-which of these the human did in the browser:
+**The poll loop (bounded, idle-backoff, default-on).** After surfacing the brief at a controlled pause, the
+conductor **automatically** re-reads `mcp__harmony__get_task({ task_id })` on a bounded schedule with **idle
+backoff** (e.g. every ~10s for the first minute, then ~30s, settling to a coarse ~60s tail) up to a **total
+watch window of ~90 minutes** — a tunable default, long enough for the human to step away and resolve from
+the browser later, bounded so an abandoned session doesn't spin forever. Between re-reads, simply wait — do
+not spin. The watch ends on **any** of three co-equal exits — a browser resolution, an in-session/terminal
+answer, or the ~90-min timeout, whichever lands first. On each re-read, compare against the brief you
+surfaced and detect which of these the human did in the browser:
 
 1. **State advanced — a browser accept/defer was applied** (`resolve_brief` ran from the web). The
    `workflow_state` moved forward (accept) or is now `Parked` (defer/deny), and `awaiting_human_input` is
@@ -542,9 +549,16 @@ which of these the human did in the browser:
    `pending_resolution = { command: 'iterate', detail: <feedback> }`; `awaiting_human_input` is `false`
    (ball → agent) and the active brief is unchanged (the web did NOT advance state — it left the brief
    `active` for you to revise). **Run the LLM iterate in-session** (§4d).
-3. **Nothing changed** within the watch window → **poll-window expiry**: fall back to today's behaviour —
-   the resolution (if any) persists on the ticket row; **end the turn**. The next `/harmony-conduct` run
-   resumes from the ticket row (the no-session degradation). Do not keep an indefinite watch.
+3. **Nothing changed** within the **~90-min** watch window → **poll-window expiry**: fall back to graceful
+   degradation — tell the human to re-run `/harmony-plugin:harmony-conduct <ticket>`; the resolution (if any)
+   persists on the ticket row; **end the turn**. The next run resumes from the ticket row (the no-session
+   degradation). Do not keep an indefinite watch.
+
+**The in-session (terminal) exit (B-500).** The watch also ends the moment the human answers in the **running
+session (the terminal)** — accept / feedback / defer typed here. That is a normal in-session answer: handle it
+via §4's "If the human answers in this same session" path and **stop polling immediately**. The watch must
+never outlive a human who has already responded in-session — in-session and browser answers are **co-equal
+exits**, whichever lands first.
 
 **Hard floor in the consume path (AC7).** release (`release-decision-pending`) and verify
 (`verification-ack-pending`) are consumed **ONLY from a human-submitted browser resolution — NEVER
@@ -634,8 +648,10 @@ Delegation is **opt-in per run**, **dial-capped**, and **floored**:
 
 Browser auto-pickup (B-485) is **orthogonal and equally non-decisional**:
 
-- It is **opt-in at each pause** (the human chooses to keep the session watching) and **session-held**
-  (D4 — no background daemon); on expiry it degrades to today's persist-and-resume.
+- It is the **default at each pause** (B-500 — the conductor auto-watches without asking and without
+  requiring a re-run) and **session-held** (D4 — no background daemon). The watch is **bounded (~90 min, idle
+  backoff)** and ends on **any** of three co-equal exits — a browser resolution, an in-session/terminal
+  answer, or the ~90-min timeout; on timeout it degrades to today's persist-and-resume.
 - It **never makes a decision the human didn't make.** It consumes only the human's *actual* browser verb
   (Accept / Reshape / Deny) and routes it through the same owning-gate-skill path a same-session answer
   takes. Accept ≠ synthesized — it is the human's, just submitted from the browser.
