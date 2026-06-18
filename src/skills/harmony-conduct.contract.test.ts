@@ -36,9 +36,46 @@ describe('harmony-conduct skill contract', () => {
     // The phase boundary is still named so the lineage (2a core) and the later phases are unmistakable.
     expect(body).toContain('2a');
     expect(body).toMatch(/2b|2c|2d/);
-    // The later autonomy/breaker/risk work is still scoped OUT of this phase.
+    // The deterministic risk-class floor ships in 2c; only the quantitative *score* / breaker-tuning is
+    // scoped OUT (2d+). The floor itself is now in-scope, so we assert the deferral is about the SCORE.
     expect(body).toContain('circuit-breaker');
-    expect(body).toContain('risk signal');
+    expect(body).toMatch(/risk score|numeric risk|quantitative risk/);
+  });
+
+  it('RISK-CLASS FLOOR (2c): a non-discretionary, dial-independent floor surfaces delegated gates that touch a risk class', () => {
+    const body = skill.body.toLowerCase();
+    // The four classes are named.
+    for (const cls of ['auth', 'data-migration', 'irreversible-destructive', 'shared-core']) {
+      expect(body, `risk-class floor missing class ${cls}`).toContain(cls);
+    }
+    // It reads risk_classes from the ticket and it is a non-discretionary floor.
+    expect(body).toContain('risk_classes');
+    expect(body).toMatch(/risk-class floor|risk class floor/);
+    expect(body).toMatch(/non-discretionary|regardless of (the )?(per-run )?mode|regardless of mode/);
+    // It is dial-independent: fires at balanced AND autonomous (and even under --unattended/--escalate).
+    expect(body).toMatch(/dial-independent|every dial level|at every (dial )?level|regardless of .*dial/);
+    // The pause names the class that tripped it.
+    expect(body).toMatch(/name.*the class|which class|name the class\(es\)|name the risk class/);
+    // It applies to the EXISTING --unattended/--pause-at runs too, not just --escalate.
+    expect(body).toMatch(/--unattended.*too|existing .*--pause-at.*--unattended|every delegating mode/);
+  });
+
+  it('ESCALATE MODE (2c): --escalate auto-advances but surfaces gates worth a human opinion; cautious vetoes it', () => {
+    const body = skill.body.toLowerCase();
+    // The flag exists and is mutually exclusive with the other delegating flags.
+    expect(body).toContain('--escalate');
+    expect(body).toMatch(/--escalate.*mutually exclusive|mutually exclusive.*--escalate|--pause-at.*--unattended.*--escalate/);
+    // It forms a qualitative judgment (no numeric threshold) over the drafted brief.
+    expect(body).toMatch(/worth (a |an )?(human )?opinion|worth your (eyes|opinion)/);
+    expect(body).toMatch(/qualitative|no numeric threshold|no.*threshold|no score/);
+    // Judgment guidance signals are spelled out.
+    expect(body).toMatch(/low-confidence|knowledge gap|closely-matched|near-tie|novel|precedent|stale.*knowledge|blast radius/);
+    // Routine gate → decide-and-record via the SAME accept path (parity, no new write path).
+    expect(body).toMatch(/decide-and-record|no new write path|same .*accept path|same routing/);
+    // cautious forbids --escalate (kill-switch), announced.
+    expect(body).toMatch(/cautious.*(forbid|veto|ignoring `--escalate`)|--escalate.*(forbid|veto)|vetoes? it/);
+    // The floor sits UNDER the judgment: a risk-class hit floors a gate judged routine.
+    expect(body).toMatch(/floor.*(under|beneath|beats).*judgment|judged routine.*still surfaced|floor beats judgment/);
   });
 
   it('PHASE-2B SELECTOR: opt-in per-run delegation via --pause-at / --unattended, never the system\'s call', () => {
