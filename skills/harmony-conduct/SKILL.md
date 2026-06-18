@@ -5,7 +5,7 @@ allowed-tools: mcp__harmony__* Read Grep Glob
 disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
 
-# Harmony Conduct (conductor — B-458 phase 2a controlled core + B-489 phase 2b autonomy selector)
+# Harmony Conduct (conductor — B-458 phase 2a controlled core + B-489 phase 2b autonomy selector + B-485 browser auto-pickup)
 
 The conductor loop. Given a ticket and a "go", it drives the whole gate sequence
 (clarify → decompose → design → plan → build → release → verify) by delegating to the existing gate
@@ -378,9 +378,98 @@ an edit, only the accept the flag authorized, and never past the floor.)
 **If the human answers in this same session** (e.g. "accept", "looks good", or substantive feedback),
 hand the resolution to the owning gate skill for that `awaiting_human_reason` (the gate skill performs the
 accept/defer/edit and any side effects — same routing as `harmony-next`'s table). Once it reports the new
-state, **resume the loop at step 2** (re-read the ticket, run the next gate). If the human steps away, the
-loop is paused; a later `/harmony-plugin:harmony-conduct B-123` resumes from the ticket row (re-pass the
-flag to resume a partial/unattended run; absent a flag the resumed run is controlled).
+state, **resume the loop at step 2** (re-read the ticket, run the next gate).
+
+**The human may instead answer in the BROWSER** — and on this run you can pick that up automatically (B-485,
+§4c). When you reach a controlled pause, **offer to keep the session running and watch for a browser
+resolution** (Accept / Reshape / Deny submitted from the TaskDetailPanel on any device). State it plainly,
+e.g.: *"I'll keep watching for your decision from the browser — resolve it there (Accept / Reshape / Deny)
+and I'll pick it up and continue. Or answer here."* If the human opts to keep the session running, go to
+**§4c (Auto-pickup)**. If the human steps away / declines / the watch window expires, the loop is paused;
+a later `/harmony-plugin:harmony-conduct B-123` resumes from the ticket row (re-pass the flag to resume a
+partial/unattended run; absent a flag the resumed run is controlled) — this is the **no-session
+degradation**: a browser resolution submitted while no session is running simply **persists on the ticket
+row** and the next run applies it.
+
+### 4c. Auto-pickup — consume a browser resolution in the live session (B-485)
+
+This is **session-held polling-with-backoff** (locked param **D4: session-held v1; NO background daemon**).
+Auto-pickup is the *live running session* watching for the human's out-of-band browser resolution and
+consuming it — it is **NOT** a daemon and **NOT** a new write path. It changes only *where* the human
+answers (the browser, on any device) versus requiring a session re-run; **it is orthogonal to delegation**
+(§4b) — the human still resolves **every** controlled gate. Auto-pickup never makes a decision the human
+didn't make; it routes the human's **actual** browser command to the owning gate skill, exactly as a
+same-session answer would.
+
+**The poll loop (bounded, idle-backoff).** While the human keeps the session running at this controlled
+pause, re-read `mcp__harmony__get_task({ task_id })` on a bounded schedule with **idle backoff** (e.g. every
+~10s for the first minute, then ~30s, then ~60s, up to a total watch window of a few minutes). Between
+re-reads, simply wait — do not spin. On each re-read, compare against the brief you surfaced and detect
+which of these the human did in the browser:
+
+1. **State advanced — a browser accept/defer was applied** (`resolve_brief` ran from the web). The
+   `workflow_state` moved forward (accept) or is now `Parked` (defer/deny), and `awaiting_human_input` is
+   `false`. The web's accept/defer is the **mechanical** half (`resolve_brief` + the B-482 reconciliation
+   guard). What remains is any **side effect** that only runs where the agent runs:
+   - **Pure gate** (clarify `brief-review`, design sub-tracks, plan `plan-draft`): nothing further — the
+     accept fully resolved mechanically. **Continue the loop at step 1** from the new state.
+   - **Side-effecting DECOMPOSE** (`decomposition-proposal`): the web accept advanced Clarified→Decomposed
+     **but created no children** (the web is mechanical-only; it cannot create children). Route the human's
+     **actual** accept to **`/harmony-plugin:harmony-decompose <ticket>`'s child-creating accept path** (the
+     same path §4b uses for a synthesized accept, but here the human already accepted) so the children are
+     created **in this running session**; its `resolve_brief` accept is idempotent on the already-advanced
+     parent. Then continue the loop.
+   - **Defer/deny** → ticket `Parked` ⇒ **TERMINAL** (§5). A browser deny is the human's defer; the
+     conductor never reverses it.
+2. **`pending_resolution` present — a browser reshape (iterate).** `get_task`/`get_brief` returns
+   `pending_resolution = { command: 'iterate', detail: <feedback> }`; `awaiting_human_input` is `false`
+   (ball → agent) and the active brief is unchanged (the web did NOT advance state — it left the brief
+   `active` for you to revise). **Run the LLM iterate in-session** (§4d).
+3. **Nothing changed** within the watch window → **poll-window expiry**: fall back to today's behaviour —
+   the resolution (if any) persists on the ticket row; **end the turn**. The next `/harmony-conduct` run
+   resumes from the ticket row (the no-session degradation). Do not keep an indefinite watch.
+
+**Hard floor in the consume path (AC7).** release (`release-decision-pending`) and verify
+(`verification-ack-pending`) are consumed **ONLY from a human-submitted browser resolution — NEVER
+conductor-synthesized.** Auto-pickup does not change this: the conductor still never *synthesizes* a
+release/verify accept (the §4b auto-advance excludes them in every mode). But when it detects that the
+**human** clicked Accept on a release/verify brief in the browser (the human IS the one accepting — the
+floor holds by construction), it consumes that human decision and runs the side effect **in the running
+session** by routing to `/harmony-plugin:finish-work <ticket>`:
+- **release**: the web accept of the release brief clears the flag but **leaves the ticket at Built**
+  (the release brief carries `pending_activity: null` — Built→Released is SYSTEM-on-deploy-success, not
+  human-accept; see finish-work O1/O2). So on detecting a human browser-accept of release (flag cleared,
+  still `Built`, no `pending_resolution`), route to `finish-work` to run the **merge + deploy** in-session;
+  finish-work advances Built→Released only after the deploy actually succeeds.
+- **verify**: likewise route to `finish-work`'s verify step on a human browser-accept; it advances
+  Released→Verified.
+If the human did NOT act (no browser accept), release/verify stay paused — the conductor waits or the watch
+window expires; it never advances them itself.
+
+### 4d. Run the LLM iterate on a browser reshape (B-485 — AC3)
+
+A browser reshape handed you `pending_resolution = { command: 'iterate', detail: <feedback> }` on the
+**active** brief, with `awaiting_human_input = false`. This is the one piece of model work the browser
+*cannot* do (the mechanical-vs-LLM boundary, `90b17075`): the browser captured the human's intent
+mechanically; **the LLM iterate runs where the agent runs — here**. Consume it:
+
+1. **Re-compose the brief reflecting the feedback.** Re-invoke the **owning gate skill** for the brief's
+   `awaiting_human_reason` (e.g. `harmony-clarify` for `clarification-draft`, `harmony-design-decide` for a
+   design sub-track) so it revises its draft **incorporating `detail`** and re-calls
+   `mcp__harmony__compose_brief` — the same in-place `iterate` path a same-session "iterate <feedback>"
+   takes. `compose_brief` updates the active brief in place and **bumps `iteration` (+1)**, and re-sets
+   `awaiting_human_input = true` (the brief is awaiting the human again ⇒ B-492 **'Needs human'**).
+2. **Clear the consumed marker.** After the re-compose, clear `pending_resolution` on the brief so the same
+   reshape is not re-consumed on the next poll. *(The conductor itself does not own a brief-write tool; the
+   re-compose is the gate skill's job, and clearing `pending_resolution` is part of consuming the reshape —
+   if a future build adds a dedicated `consume_resolution`/`compose_brief`-clears-it path, prefer that. The
+   invariant that matters: the marker must not survive to be re-consumed.)*
+3. **The iterate loop closes through the browser.** The re-composed brief (iteration+1) now reflects the
+   feedback and the ball is back with the human ('Needs human'). **Resume §4 (surface the brief + pause)** —
+   and you may again offer auto-pickup (§4c) so the human iterates entirely from the browser.
+
+The reshape is **not** an accept and **not** a state advance — it is a revise-and-resurface. The conductor
+never accepts on the human's behalf here; it only does the LLM work the browser deferred to the agent.
 
 ### 5. Terminal conditions — when the loop ends (not pauses)
 
@@ -414,6 +503,21 @@ Delegation is **opt-in per run** and **dial-capped**:
 - An auto-advanced gate records the SAME Accepted decision a controlled run would — only the human pause is
   skipped, via the owning gate skill's existing accept path.
 - An unknown/misspelled `--pause-at` gate, or both flags together, is an ERROR — never a silent delegation.
+
+Browser auto-pickup (B-485) is **orthogonal and equally non-decisional**:
+
+- It is **opt-in at each pause** (the human chooses to keep the session watching) and **session-held**
+  (D4 — no background daemon); on expiry it degrades to today's persist-and-resume.
+- It **never makes a decision the human didn't make.** It consumes only the human's *actual* browser verb
+  (Accept / Reshape / Deny) and routes it through the same owning-gate-skill path a same-session answer
+  takes. Accept ≠ synthesized — it is the human's, just submitted from the browser.
+- A reshape runs the LLM `iterate` (re-compose in place, iteration+1, ball back to 'Needs human') — it is
+  **not** an accept and advances no state; the iterate loop closes through the browser.
+- **Hard floor unchanged:** release/verify are consumed ONLY from a human-submitted browser resolution,
+  never conductor-synthesized; their side effects (merge+deploy, prod-observe) run in the running session
+  via `finish-work`.
+- It is **orthogonal to the `--pause-at`/`--unattended` selector** — auto-pickup changes *where* the human
+  answers a controlled gate, not *whether* a gate is controlled.
 
 ## Still out of scope (later phases)
 

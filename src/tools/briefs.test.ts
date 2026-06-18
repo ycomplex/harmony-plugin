@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderBrief, lintBrief, composeBrief, getBrief, resolveBrief, type BriefDoc, type BriefItem } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, getBrief, resolveBrief, fetchPendingResolution, type BriefDoc, type BriefItem } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -221,19 +221,68 @@ describe('composeBrief', () => {
 });
 
 describe('getBrief', () => {
-  it('returns the active brief for a task', async () => {
+  it('returns the active brief for a task, with pending_resolution surfaced (B-485)', async () => {
     const row = { id: 'brief-1', task_id: 'task-1', status: 'active' };
-    const client = makeClient([{ data: row }]);
+    // responses: [brief row] -> [pending_resolution read: none]
+    const client = makeClient([{ data: row }, { data: { pending_resolution: null } }]);
     const result = await getBrief(client, PROJECT_ID, { task_id: 'task-1' });
     expect(client.from).toHaveBeenCalledWith('briefs');
     expect(client.eq).toHaveBeenCalledWith('status', 'active');
-    expect(result).toEqual(row);
+    expect(result).toEqual({ ...row, pending_resolution: null });
+  });
+
+  it('surfaces a browser-submitted reshape marker on pending_resolution (B-485 / AC3)', async () => {
+    const row = { id: 'brief-1', task_id: 'task-1', status: 'active' };
+    const pending = { command: 'iterate', detail: 'narrow the scope' };
+    // responses: [brief row] -> [pending_resolution read: the reshape marker]
+    const client = makeClient([{ data: row }, { data: { pending_resolution: pending } }]);
+    const result = await getBrief(client, PROJECT_ID, { task_id: 'task-1' });
+    expect(result).toEqual({ ...row, pending_resolution: pending });
+  });
+
+  it('returns null (not an enriched object) when there is no active brief', async () => {
+    const client = makeClient([{ data: null }]);
+    const result = await getBrief(client, PROJECT_ID, { task_id: 'task-1' });
+    expect(result).toBeNull();
+  });
+
+  it('degrades pending_resolution to null when the column read errors (older DB, no 400 on the core read)', async () => {
+    const row = { id: 'brief-1', task_id: 'task-1', status: 'active' };
+    // responses: [brief row] -> [pending_resolution read errors: column absent]
+    const client = makeClient([{ data: row }, { data: null, error: { message: 'column briefs.pending_resolution does not exist' } }]);
+    const result = await getBrief(client, PROJECT_ID, { task_id: 'task-1' });
+    expect(result).toEqual({ ...row, pending_resolution: null });
   });
 
   it('resolves a visual ID via resolveTaskId before looking up the brief', async () => {
-    const client = makeClient([{ data: { id: 'brief-1', task_id: 'uuid-x', status: 'active' } }]);
+    const client = makeClient([{ data: { id: 'brief-1', task_id: 'uuid-x', status: 'active' } }, { data: { pending_resolution: null } }]);
     await getBrief(client, PROJECT_ID, { task_id: 'B-42' });
     expect(mockResolveTaskId).toHaveBeenCalledWith(client, PROJECT_ID, 'B-42');
+  });
+});
+
+describe('fetchPendingResolution (B-485 — the conductor auto-pickup detector)', () => {
+  it('returns the reshape marker when the active brief has one', async () => {
+    const pending = { command: 'iterate', detail: 'defer the migration' };
+    const client = makeClient([{ data: { pending_resolution: pending } }]);
+    const result = await fetchPendingResolution(client, 'task-1');
+    expect(result).toEqual(pending);
+    expect(client.eq).toHaveBeenCalledWith('status', 'active');
+  });
+
+  it('returns null when there is no pending reshape', async () => {
+    const client = makeClient([{ data: { pending_resolution: null } }]);
+    expect(await fetchPendingResolution(client, 'task-1')).toBeNull();
+  });
+
+  it('returns null when there is no active brief', async () => {
+    const client = makeClient([{ data: null }]);
+    expect(await fetchPendingResolution(client, 'task-1')).toBeNull();
+  });
+
+  it('returns null (never throws) when the column is absent on an older DB', async () => {
+    const client = makeClient([{ data: null, error: { message: 'column briefs.pending_resolution does not exist' } }]);
+    expect(await fetchPendingResolution(client, 'task-1')).toBeNull();
   });
 });
 

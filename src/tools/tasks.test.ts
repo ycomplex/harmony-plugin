@@ -382,6 +382,88 @@ describe('getTask', () => {
     expect((result as any).attachments).toEqual([]);
     expect(result.title).toBe('T');
   });
+
+  it('B-485: surfaces the active brief pending_resolution so the conductor can poll get_task for a reshape', async () => {
+    const pending = { command: 'iterate', detail: 'narrow to the auth flow' };
+    const client: any = {
+      from: vi.fn((table: string) => {
+        if (table === 'tasks') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  single: vi.fn().mockResolvedValue({
+                    data: { id: 'resolved-uuid', title: 'T', task_labels: [], checklist_items: [], workflow_state: 'Idea', awaiting_human_input: false },
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'briefs') {
+          // fetchPendingResolution: .select('pending_resolution').eq('task_id').eq('status').maybeSingle()
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: vi.fn().mockResolvedValue({ data: { pending_resolution: pending }, error: null }),
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'attachments') {
+          return { select: () => ({ eq: () => ({ eq: () => ({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }) }) }) };
+        }
+        // acceptance_criteria / test_cases
+        return { select: () => ({ eq: () => ({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }) }) };
+      }),
+    };
+
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1' });
+    expect((result as any).pending_resolution).toEqual(pending);
+  });
+
+  it('B-485: pending_resolution is null when the briefs read fails (older DB) — get_task does not regress', async () => {
+    const client: any = {
+      from: vi.fn((table: string) => {
+        if (table === 'tasks') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  single: vi.fn().mockResolvedValue({
+                    data: { id: 'resolved-uuid', title: 'T', task_labels: [], checklist_items: [] },
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'briefs') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: vi.fn().mockResolvedValue({ data: null, error: { message: 'column briefs.pending_resolution does not exist' } }),
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'attachments') {
+          return { select: () => ({ eq: () => ({ eq: () => ({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }) }) }) };
+        }
+        return { select: () => ({ eq: () => ({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }) }) };
+      }),
+    };
+
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1' });
+    expect((result as any).pending_resolution).toBeNull();
+    expect(result.title).toBe('T');
+  });
 });
 
 describe('bulkCreateTasks', () => {

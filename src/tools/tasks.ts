@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
 import { resolveAssignee } from './members.js';
+import { fetchPendingResolution } from './briefs.js';
 
 export const listTasksTool = {
   name: 'list_tasks',
@@ -88,7 +89,7 @@ export async function listTasks(
 
 export const getTaskTool = {
   name: 'get_task',
-  description: 'Get full details of a specific task',
+  description: "Get full details of a specific task. Includes `pending_resolution` — the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup; null when there's no active brief or no pending reshape.",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -142,8 +143,14 @@ export async function getTask(client: SupabaseClient, projectId: string, args: {
     attachments = [];
   }
 
+  // B-485 Phase 2: surface the active brief's `pending_resolution` so a running conductor that polls
+  // get_task can detect a browser-submitted reshape (a `{command:'iterate', detail}` marker) and consume
+  // it — see the auto-pickup loop in skills/harmony-conduct. Defensive (separate guarded read) so a DB
+  // without the Phase-1 column returns null rather than 400-ing the whole get_task read (B-383 class).
+  const pending_resolution = await fetchPendingResolution(client, resolvedId);
+
   const { task_labels, checklist_items: _checklistItems, ...rest } = data as any;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments };
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution };
 }
 
 export const createTaskTool = {

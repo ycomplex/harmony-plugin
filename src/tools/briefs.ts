@@ -293,6 +293,41 @@ export const composeBriefTool = {
   },
 };
 
+// B-485 Phase 2: `briefs.pending_resolution` is a browser-submitted reshape request the running
+// conductor consumes on auto-pickup — shape `{ command: 'iterate', detail: <feedback> }`, or NULL/none.
+// It is added by harmony-web's Phase-1 migration (`20260618…_briefs_pending_resolution.sql`). Until that
+// migration is live on the DB this MCP server talks to, the column does not exist — so we read it on a
+// SEPARATE, defensive select and SWALLOW the error rather than inline it into BRIEF_COLS. Inlining would
+// 400 the whole core read on a DB that lacks the column (the B-383 schema-drift class of break the
+// prod-gate guards against); a separate guarded read degrades to `pending_resolution: null` instead.
+// Promotion is still lockstep (web migration first, then plugin) per the prod-gate.
+export interface PendingResolution {
+  command: string; // 'iterate' in v1 (the browser-submitted reshape)
+  detail?: string | null; // the human's feedback text
+}
+
+/** Fetch the active brief's `pending_resolution` defensively. Returns null on absent column / no brief /
+ *  any error — never throws, so it can never regress get_brief/get_task on a DB without the column. */
+export async function fetchPendingResolution(
+  client: SupabaseClient,
+  taskId: string,
+): Promise<PendingResolution | null> {
+  try {
+    const { data, error } = await client
+      .from('briefs')
+      .select('pending_resolution')
+      .eq('task_id', taskId)
+      .eq('status', 'active')
+      .maybeSingle();
+    if (error) return null;
+    // Cast: the column may be absent from generated types / the deployed schema. Guard for null.
+    const pr = (data as unknown as { pending_resolution?: unknown } | null)?.pending_resolution;
+    return (pr ?? null) as PendingResolution | null;
+  } catch {
+    return null;
+  }
+}
+
 export interface GetBriefArgs { task_id: string; }
 
 export async function getBrief(
@@ -307,7 +342,11 @@ export async function getBrief(
     .from('briefs').select(BRIEF_COLS)
     .eq('task_id', taskId).eq('status', 'active').maybeSingle();
   if (error) throw new Error(error.message);
-  return data; // null when no active brief
+  if (!data) return null; // null when no active brief
+  // B-485: surface the browser-submitted reshape marker so a running conductor can detect+consume it.
+  // Defensive (separate guarded read) so an older DB without the column returns null, not a 400.
+  const pending_resolution = await fetchPendingResolution(client, taskId);
+  return { ...(data as Record<string, unknown>), pending_resolution };
 }
 
 export interface ResolveBriefArgs { task_id: string; command: string; detail?: string; }
@@ -340,7 +379,7 @@ export async function resolveBrief(
 
 export const getBriefTool = {
   name: 'get_brief',
-  description: 'Get the active brief for a task (its rendered content blob + canonical doc + pre-generated expand sections + related). Returns null if none is awaiting input.',
+  description: "Get the active brief for a task (its rendered content blob + canonical doc + pre-generated expand sections + related), plus `pending_resolution` — a browser-submitted reshape request ({command:'iterate', detail:<feedback>}) the running conductor consumes on pickup, or null if none. Returns null if no brief is awaiting input.",
   inputSchema: {
     type: 'object' as const,
     properties: { task_id: { type: 'string', description: 'The task whose active brief to fetch — UUID, task number, or visual ID (e.g., B-43)' } },

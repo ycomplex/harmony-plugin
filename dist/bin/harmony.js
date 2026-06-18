@@ -24307,6 +24307,18 @@ async function resolveAssignee(client, projectId, assignee) {
   throw new Error(`No member found matching "${assignee}". Use list_members to see available members.`);
 }
 
+// src/tools/briefs.ts
+async function fetchPendingResolution(client, taskId) {
+  try {
+    const { data, error } = await client.from("briefs").select("pending_resolution").eq("task_id", taskId).eq("status", "active").maybeSingle();
+    if (error) return null;
+    const pr = data?.pending_resolution;
+    return pr ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // src/tools/tasks.ts
 async function listTasks(client, projectId, args) {
   const limit = args.limit ?? 50;
@@ -24360,8 +24372,9 @@ async function getTask(client, projectId, args) {
   } catch {
     attachments = [];
   }
+  const pending_resolution = await fetchPendingResolution(client, resolvedId);
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments };
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution };
 }
 async function createTask(client, projectId, userId, args) {
   const assigneeId = args.assignee_id ? await resolveAssignee(client, projectId, args.assignee_id) : null;
