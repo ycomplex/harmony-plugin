@@ -32501,19 +32501,48 @@ async function composeBrief(client, projectId, userId, args) {
     expand_sections: args.expand_sections ?? {},
     related: args.related ?? [],
     pending_activity: args.pending_activity ?? null,
-    decision_ref: args.decision_ref ?? null
+    decision_ref: args.decision_ref ?? null,
+    // B-485 Phase 2 (release-review fix): composing/iterating a brief CONSUMES any browser-submitted
+    // reshape, so null out `pending_resolution` as part of the write. The conductor owns no brief-write
+    // tool; a browser `reshape` writes `pending_resolution`, then the running conductor re-composes via
+    // compose_brief (§4d) — this in-place iterate IS the consume moment, so clearing it here is the natural
+    // place. Without it the marker would linger and risk an ambiguous row (a stale reshape coexisting with a
+    // later state-advance). compose_brief is skill-only (the web never composes — see the NOTE below), so
+    // this never clobbers a reshape the web means to keep: on the iterate re-compose the agent IS consuming
+    // it; on a first compose there is no active brief yet, so the write is a harmless no-op. Safe against
+    // schema drift: per the prod-gate the column is present whenever this code runs (web-migration-first,
+    // §3), and the update is wrapped in a guarded fallback below so an older DB degrades instead of 400-ing.
+    pending_resolution: null
   };
   const { data: existing, error: lookupErr } = await client.from("briefs").select("id, iteration").eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
+  const isMissingPendingResolution = (msg) => !!msg && /pending_resolution/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
   let brief;
   if (existing) {
-    const { data, error: error2 } = await client.from("briefs").update({ ...payload, iteration: (existing.iteration ?? 1) + 1 }).eq("id", existing.id).select(BRIEF_COLS).single();
-    if (error2) throw new Error(error2.message);
-    brief = data;
+    const updateRow = { ...payload, iteration: (existing.iteration ?? 1) + 1 };
+    const briefId = existing.id;
+    const { data, error: error2 } = await client.from("briefs").update(updateRow).eq("id", briefId).select(BRIEF_COLS).single();
+    if (error2) {
+      if (!isMissingPendingResolution(error2.message)) throw new Error(error2.message);
+      const { pending_resolution: _drop, ...fallback } = updateRow;
+      const { data: data2, error: error22 } = await client.from("briefs").update(fallback).eq("id", briefId).select(BRIEF_COLS).single();
+      if (error22) throw new Error(error22.message);
+      brief = data2;
+    } else {
+      brief = data;
+    }
   } else {
-    const { data, error: error2 } = await client.from("briefs").insert({ task_id: taskId, created_by: userId, ...payload }).select(BRIEF_COLS).single();
-    if (error2) throw new Error(error2.message);
-    brief = data;
+    const insertRow = { task_id: taskId, created_by: userId, ...payload };
+    const { data, error: error2 } = await client.from("briefs").insert(insertRow).select(BRIEF_COLS).single();
+    if (error2) {
+      if (!isMissingPendingResolution(error2.message)) throw new Error(error2.message);
+      const { pending_resolution: _drop, ...fallback } = insertRow;
+      const { data: data2, error: error22 } = await client.from("briefs").insert(fallback).select(BRIEF_COLS).single();
+      if (error22) throw new Error(error22.message);
+      brief = data2;
+    } else {
+      brief = data;
+    }
   }
   const { error: taskErr } = await client.from("tasks").update({
     awaiting_human_input: true,
@@ -32698,16 +32727,21 @@ async function getTask(client, projectId, args) {
   if (error2) throw error2;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
-  const { data: acceptanceCriteria } = await client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position");
-  const { data: testCases } = await client.from("test_cases").select("*").eq("task_id", resolvedId).order("position");
-  let attachments;
-  try {
-    const { data: rows } = await client.from("attachments").select("id, filename, content_type, byte_size, created_at").eq("task_id", resolvedId).eq("status", "finalized").order("created_at", { ascending: true });
-    attachments = rows ?? [];
-  } catch {
-    attachments = [];
-  }
-  const pending_resolution = await fetchPendingResolution(client, resolvedId);
+  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution] = await Promise.all([
+    client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
+    client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
+    (async () => {
+      try {
+        const { data: rows } = await client.from("attachments").select("id, filename, content_type, byte_size, created_at").eq("task_id", resolvedId).eq("status", "finalized").order("created_at", { ascending: true });
+        return rows ?? [];
+      } catch {
+        return [];
+      }
+    })(),
+    fetchPendingResolution(client, resolvedId)
+  ]);
+  const acceptanceCriteria = acceptanceCriteriaRes.data;
+  const testCases = testCasesRes.data;
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
   return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution };
 }

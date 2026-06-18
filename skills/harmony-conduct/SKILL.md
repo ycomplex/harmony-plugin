@@ -459,11 +459,11 @@ mechanically; **the LLM iterate runs where the agent runs — here**. Consume it
    `mcp__harmony__compose_brief` — the same in-place `iterate` path a same-session "iterate <feedback>"
    takes. `compose_brief` updates the active brief in place and **bumps `iteration` (+1)**, and re-sets
    `awaiting_human_input = true` (the brief is awaiting the human again ⇒ B-492 **'Needs human'**).
-2. **Clear the consumed marker.** After the re-compose, clear `pending_resolution` on the brief so the same
-   reshape is not re-consumed on the next poll. *(The conductor itself does not own a brief-write tool; the
-   re-compose is the gate skill's job, and clearing `pending_resolution` is part of consuming the reshape —
-   if a future build adds a dedicated `consume_resolution`/`compose_brief`-clears-it path, prefer that. The
-   invariant that matters: the marker must not survive to be re-consumed.)*
+2. **The consumed marker is cleared by the re-compose.** `compose_brief` nulls `pending_resolution` on the
+   active brief as part of the in-place iterate write — so re-composing the brief (step 1) *is* the consume,
+   and the same reshape is not re-consumed on the next poll. You do not clear the marker yourself (the
+   conductor owns no brief-write tool); the gate skill's re-compose does it for you. The invariant that
+   matters: the marker must not survive to be re-consumed — and `compose_brief` guarantees it.
 3. **The iterate loop closes through the browser.** The re-composed brief (iteration+1) now reflects the
    feedback and the ball is back with the human ('Needs human'). **Resume §4 (surface the brief + pause)** —
    and you may again offer auto-pickup (§4c) so the human iterates entirely from the browser.

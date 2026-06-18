@@ -200,6 +200,17 @@ export async function composeBrief(
     related: args.related ?? [],
     pending_activity: args.pending_activity ?? null,
     decision_ref: args.decision_ref ?? null,
+    // B-485 Phase 2 (release-review fix): composing/iterating a brief CONSUMES any browser-submitted
+    // reshape, so null out `pending_resolution` as part of the write. The conductor owns no brief-write
+    // tool; a browser `reshape` writes `pending_resolution`, then the running conductor re-composes via
+    // compose_brief (§4d) — this in-place iterate IS the consume moment, so clearing it here is the natural
+    // place. Without it the marker would linger and risk an ambiguous row (a stale reshape coexisting with a
+    // later state-advance). compose_brief is skill-only (the web never composes — see the NOTE below), so
+    // this never clobbers a reshape the web means to keep: on the iterate re-compose the agent IS consuming
+    // it; on a first compose there is no active brief yet, so the write is a harmless no-op. Safe against
+    // schema drift: per the prod-gate the column is present whenever this code runs (web-migration-first,
+    // §3), and the update is wrapped in a guarded fallback below so an older DB degrades instead of 400-ing.
+    pending_resolution: null,
   };
 
   // Upsert: update the active brief in place (edit/iterate — §3.2) or insert a new one (compose).
@@ -208,22 +219,43 @@ export async function composeBrief(
     .eq('task_id', taskId).eq('status', 'active').maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
 
+  // Guarded write: `pending_resolution` is added by harmony-web's Phase-1 migration. On a DB that predates
+  // it, including the column in the write 400s the whole compose (the B-383 schema-drift class). So if the
+  // write fails specifically because that column is absent, retry once without it — the marker can't exist
+  // on a schema that lacks the column, so dropping the null is a faithful no-op. Any other error rethrows.
+  const isMissingPendingResolution = (msg: string | undefined): boolean =>
+    !!msg && /pending_resolution/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
+
   let brief: unknown;
   if (existing) {
+    const updateRow = { ...payload, iteration: ((existing as { iteration: number }).iteration ?? 1) + 1 };
+    const briefId = (existing as { id: string }).id;
     const { data, error } = await client
-      .from('briefs')
-      .update({ ...payload, iteration: ((existing as { iteration: number }).iteration ?? 1) + 1 })
-      .eq('id', (existing as { id: string }).id)
-      .select(BRIEF_COLS).single();
-    if (error) throw new Error(error.message);
-    brief = data;
+      .from('briefs').update(updateRow).eq('id', briefId).select(BRIEF_COLS).single();
+    if (error) {
+      if (!isMissingPendingResolution(error.message)) throw new Error(error.message);
+      const { pending_resolution: _drop, ...fallback } = updateRow;
+      const { data: data2, error: error2 } = await client
+        .from('briefs').update(fallback).eq('id', briefId).select(BRIEF_COLS).single();
+      if (error2) throw new Error(error2.message);
+      brief = data2;
+    } else {
+      brief = data;
+    }
   } else {
+    const insertRow = { task_id: taskId, created_by: userId, ...payload };
     const { data, error } = await client
-      .from('briefs')
-      .insert({ task_id: taskId, created_by: userId, ...payload })
-      .select(BRIEF_COLS).single();
-    if (error) throw new Error(error.message);
-    brief = data;
+      .from('briefs').insert(insertRow).select(BRIEF_COLS).single();
+    if (error) {
+      if (!isMissingPendingResolution(error.message)) throw new Error(error.message);
+      const { pending_resolution: _drop, ...fallback } = insertRow;
+      const { data: data2, error: error2 } = await client
+        .from('briefs').insert(fallback).select(BRIEF_COLS).single();
+      if (error2) throw new Error(error2.message);
+      brief = data2;
+    } else {
+      brief = data;
+    }
   }
 
   // Set the P1 awaiting_human_input context (state-machine §6.5) so the queue/load views surface it.

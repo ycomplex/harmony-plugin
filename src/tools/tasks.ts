@@ -111,43 +111,40 @@ export async function getTask(client: SupabaseClient, projectId: string, args: {
   const labels = (data.task_labels ?? []).map((tl: any) => tl.labels).filter(Boolean);
   const checklistItems = ((data as any).checklist_items ?? []).sort((a: any, b: any) => a.position - b.position);
 
-  const { data: acceptanceCriteria } = await client
-    .from('acceptance_criteria')
-    .select('*')
-    .eq('task_id', resolvedId)
-    .order('position');
-
-  const { data: testCases } = await client
-    .from('test_cases')
-    .select('*')
-    .eq('task_id', resolvedId)
-    .order('position');
-
-  // B-449: include attachment metadata so an agent reading a task sees its files
-  // (no separate list tool). Additive + RLS-scoped: the `attachments` table's RLS
-  // already restricts visibility to the caller's workspace membership, and when
-  // the attachments module is off the select simply returns nothing — get_task
-  // stays backward-compatible. Only `finalized` rows are surfaced (in-flight
-  // `pending` rows aren't real attachments yet). A select error (e.g. the table
-  // absent on an older DB) is swallowed so get_task never regresses.
-  let attachments: unknown[];
-  try {
-    const { data: rows } = await client
-      .from('attachments')
-      .select('id, filename, content_type, byte_size, created_at')
-      .eq('task_id', resolvedId)
-      .eq('status', 'finalized')
-      .order('created_at', { ascending: true });
-    attachments = rows ?? [];
-  } catch {
-    attachments = [];
-  }
-
-  // B-485 Phase 2: surface the active brief's `pending_resolution` so a running conductor that polls
-  // get_task can detect a browser-submitted reshape (a `{command:'iterate', detail}` marker) and consume
-  // it — see the auto-pickup loop in skills/harmony-conduct. Defensive (separate guarded read) so a DB
-  // without the Phase-1 column returns null rather than 400-ing the whole get_task read (B-383 class).
-  const pending_resolution = await fetchPendingResolution(client, resolvedId);
+  // The sibling enrichment reads are independent of one another, so fire them in parallel — get_task is
+  // the hottest read in the system and serializing them would stack their round-trips. Each degrades on
+  // its own (see below); none throws, so Promise.all never rejects on a missing-table/column drift.
+  //
+  // B-449 (attachments): include attachment metadata so an agent reading a task sees its files (no separate
+  //   list tool). Additive + RLS-scoped: the `attachments` table's RLS already restricts visibility to the
+  //   caller's workspace membership, and when the attachments module is off the select simply returns
+  //   nothing. Only `finalized` rows are surfaced (in-flight `pending` rows aren't real attachments yet). A
+  //   select error (e.g. the table absent on an older DB) is swallowed so get_task never regresses.
+  // B-485 Phase 2 (pending_resolution): surface the active brief's `pending_resolution` so a running
+  //   conductor that polls get_task can detect a browser-submitted reshape (a `{command:'iterate', detail}`
+  //   marker) and consume it — see the auto-pickup loop in skills/harmony-conduct. fetchPendingResolution
+  //   reads defensively (separate guarded query) and returns null on an older DB lacking the Phase-1 column
+  //   rather than 400-ing the whole get_task read (B-383 class).
+  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution] = await Promise.all([
+    client.from('acceptance_criteria').select('*').eq('task_id', resolvedId).order('position'),
+    client.from('test_cases').select('*').eq('task_id', resolvedId).order('position'),
+    (async (): Promise<unknown[]> => {
+      try {
+        const { data: rows } = await client
+          .from('attachments')
+          .select('id, filename, content_type, byte_size, created_at')
+          .eq('task_id', resolvedId)
+          .eq('status', 'finalized')
+          .order('created_at', { ascending: true });
+        return rows ?? [];
+      } catch {
+        return [];
+      }
+    })(),
+    fetchPendingResolution(client, resolvedId),
+  ]);
+  const acceptanceCriteria = acceptanceCriteriaRes.data;
+  const testCases = testCasesRes.data;
 
   const { task_labels, checklist_items: _checklistItems, ...rest } = data as any;
   return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution };

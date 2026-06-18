@@ -190,6 +190,43 @@ describe('composeBrief', () => {
     expect((result.brief as any).iteration).toBe(2);
   });
 
+  it('NULLS pending_resolution on the iterate re-compose — consumes the browser reshape (B-485 marker-clear)', async () => {
+    // The in-place iterate IS the consume moment: re-composing must clear any browser-submitted reshape so
+    // it is not re-consumed on the next poll. responses: [active found] -> [update row] -> [task update]
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: { ...briefRow, iteration: 2 } }, { data: null }]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    });
+    // the brief update (not the trailing tasks flag) carries pending_resolution: null
+    expect(client.update).toHaveBeenCalledWith(expect.objectContaining({ pending_resolution: null }));
+  });
+
+  it('NULLS pending_resolution on a first compose too (insert path)', async () => {
+    // responses: [no active brief] -> [insert row] -> [task update]
+    const client = makeClient([{ data: null }, { data: briefRow }, { data: null }]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    });
+    expect(client.insert).toHaveBeenCalledWith(expect.objectContaining({ pending_resolution: null }));
+  });
+
+  it('degrades gracefully if pending_resolution column is absent (older DB) — retries the write without it', async () => {
+    // The first iterate update 400s because the column is missing; compose retries without pending_resolution.
+    // responses: [active found] -> [update errors: column absent] -> [retry update succeeds] -> [task update]
+    const client = makeClient([
+      { data: { id: 'brief-1', iteration: 1 } },
+      { data: null, error: { message: 'column briefs.pending_resolution does not exist' } },
+      { data: { ...briefRow, iteration: 2 } },
+      { data: null },
+    ]);
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    });
+    expect((result.brief as any).iteration).toBe(2);
+    // the retry dropped pending_resolution from the payload
+    expect(client.update).toHaveBeenLastCalledWith(expect.not.objectContaining({ pending_resolution: null }));
+  });
+
   it('throws on a lint failure (naked fork) before any DB write', async () => {
     const client = makeClient([]);
     await expect(
