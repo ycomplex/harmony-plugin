@@ -1,11 +1,11 @@
 ---
 name: harmony-conduct
-description: Drive one ticket through the gate sequence end to end. Default = pause at every gate for the human's decision (controlled). Optional per-run delegation — `--pause-at <gate>` (auto-advance up to a gate) or `--unattended` (auto-advance to the hard floor). Triggers on "conduct B-123", "harmony conduct", "run B-123 through the flow", "drive this ticket to verified". The conductor orchestrates the plumbing BETWEEN gates; at a controlled gate it hands the decision to the human, and an auto-advanced gate still records the SAME Accepted decision a controlled run would.
+description: Drive one ticket through the gate sequence end to end. Default = pause at every gate for the human's decision (controlled). Optional per-run delegation — `--pause-at <gate>` (auto-advance up to a gate), `--unattended` (auto-advance to the hard floor), or `--escalate` (auto-advance, but surface any gate genuinely worth a human opinion). A non-discretionary risk-class FLOOR (auth / data-migration / irreversible-destructive / shared-core) surfaces a delegated gate for a human under EVERY delegating mode, regardless of dial or agent judgment. Triggers on "conduct B-123", "harmony conduct", "run B-123 through the flow", "drive this ticket to verified". The conductor orchestrates the plumbing BETWEEN gates; at a controlled gate it hands the decision to the human, and an auto-advanced gate still records the SAME Accepted decision a controlled run would.
 allowed-tools: mcp__harmony__* Read Grep Glob
 disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
 
-# Harmony Conduct (conductor — B-458 phase 2a controlled core + B-489 phase 2b autonomy selector + B-485 browser auto-pickup)
+# Harmony Conduct (conductor — B-458 phase 2a controlled core + B-489 phase 2b autonomy selector + B-485 browser auto-pickup + B-493 phase 2c risk-class floor & --escalate)
 
 The conductor loop. Given a ticket and a "go", it drives the whole gate sequence
 (clarify → decompose → design → plan → build → release → verify) by delegating to the existing gate
@@ -18,7 +18,12 @@ flag) is **not** a new decision surface — every gate still drafts and `compose
 and the human still answers through the existing brief surface (web UI Accept/Defer/feedback, or the gate
 skill's accept/edit/iterate). Phase 2b adds an **opt-in per-run delegation selector** that lets the human
 hand specific *early* gates to the conductor for the run; it does not change the controlled default and it
-never crosses the hard floor (release + verify stay human).
+never crosses the hard floor (release + verify stay human). Phase 2c (B-493) adds two things on top: a
+**non-discretionary risk-class FLOOR** that surfaces *any* delegated gate whose subject touches a
+high-consequence class (auth / data-migration / irreversible-destructive / shared-core) regardless of mode,
+dial, or agent judgment; and a 4th mode, **`--escalate`**, which auto-advances like `--unattended` but
+**surfaces any gate the conductor judges genuinely worth a human opinion**. Neither weakens the controlled
+default or the hard floor — the floor only ever *adds* pauses, never removes one.
 
 ## The contract this skill obeys (founder-locked — do not relitigate)
 
@@ -35,8 +40,18 @@ never crosses the hard floor (release + verify stay human).
    "accept" — so the gate's decision is *recorded identically*; only the human pause is skipped.
 3. **The HARD FLOOR is always human, regardless of any flag or dial.** The workspace safety rails — the
    **release** gate (merge + deploy: one-way, irreversible) and the **verify** gate (Released→Verified) —
-   are NEVER auto-resolved by the conductor. Even `--unattended` pauses at release and at verify. One-way /
-   irreversible decisions always surface for a human.
+   are NEVER auto-resolved by the conductor. Even `--unattended`/`--escalate` pause at release and at
+   verify. One-way / irreversible decisions always surface for a human.
+3a. **The RISK-CLASS FLOOR is non-discretionary and dial-independent (B-493, phase 2c).** Before
+   auto-advancing ANY delegated gate, the conductor reads `risk_classes` from `get_task` (a deterministic,
+   conservative detector — auth / data-migration / irreversible-destructive / shared-core — over the ticket
+   text + active brief, and over changed paths when known). If it is **non-empty**, the conductor
+   **surfaces the gate + pauses + ANNOUNCES which class tripped it** — regardless of the per-run mode
+   (`--pause-at`/`--unattended`/`--escalate`), the dial level, or any agent/`--escalate` judgment that the
+   gate is "routine". This is part of the hard floor: a risk-class hit floors a gate the same way release
+   and verify are floored. It is **additive** — it can only *add* a pause to a delegated run, never remove
+   one, and it does not change the controlled default (controlled already pauses everywhere). It applies to
+   the **existing** `--pause-at`/`--unattended` runs too, not just `--escalate`.
 4. **The workspace Agent-Trust dial is a restrict-only CEILING.** A per-run flag can only delegate what the
    dial permits. A `cautious` dial is a **kill-switch**: it forbids ALL delegation — the run goes fully
    controlled and the conductor **announces** that the workspace dial overrode the flag (never a silent
@@ -53,10 +68,12 @@ previous session was closed, the human answered in the web UI, or the ticket adv
 This works for the same reason `resolve_brief` is idempotent: each loop iteration is a pure function of
 the ticket row, so it is **idempotent and stateless between pauses**. No new schema, no session file.
 
-**The per-run mode (controlled / `--pause-at <gate>` / `--unattended`) is the ONE piece of run-scoped
-intent the ticket row does NOT carry** — it is supplied by the human's invocation each time. On a re-run
-without a flag the conductor is controlled again (the safe default); to resume an unattended/partial run
-the human re-passes the flag. The conductor never persists a delegation choice — there is nowhere it could,
+**The per-run mode (controlled / `--pause-at <gate>` / `--unattended` / `--escalate`) is the ONE piece of
+run-scoped intent the ticket row does NOT carry** — it is supplied by the human's invocation each time. On a
+re-run without a flag the conductor is controlled again (the safe default); to resume an
+unattended/partial/escalate run the human re-passes the flag. (The risk-class floor needs no persistence
+either — it is recomputed from `risk_classes` on every re-read, so it survives a session boundary
+automatically.) The conductor never persists a delegation choice — there is nowhere it could,
 and persisting it would let the system delegate a future run the human didn't authorize.
 
 ## Flow
@@ -71,10 +88,21 @@ and persisting it would let the system delegate a future run the human didn't au
   `clarify`, `decompose`, `design`, `plan`, `build`, `release`, `verify`.
 - **`--unattended`** → `mode = unattended`. Auto-advance every forward gate up to the hard floor (pause at
   release and at verify).
+- **`--escalate`** → `mode = escalate` (B-493, phase 2c). Auto-advance like `--unattended` (every forward
+  gate up to the hard floor), **except** that before auto-advancing a forward gate the conductor forms a
+  qualitative *"is this gate genuinely worth a human opinion?"* judgment over the gate's drafted brief
+  (see *The escalate judgment* below). Worth it → surface + pause (the gate reverts to controlled for this
+  run); not worth it → decide-and-record via the owning gate skill's accept path (the same write
+  `--unattended` uses). The risk-class floor (§3a) sits **underneath** the judgment: a risk-class hit
+  floors a gate even when the judgment says "routine".
 
 Validation (do this BEFORE touching the ticket):
 
-- `--pause-at` and `--unattended` are **mutually exclusive**. If both are present → **ERROR** and stop.
+- `--pause-at`, `--unattended`, and `--escalate` are **mutually exclusive**. If more than one is present →
+  **ERROR** and stop.
+- An **unknown / misspelled** flag (e.g. `--escalte`, `--unattnded`) → **ERROR** and stop. *Never* treat an
+  unrecognized flag as a delegating mode or silently fall back to controlled — print the allowed flags and
+  stop.
 - An **unknown / misspelled** `<gate>` for `--pause-at` → **ERROR** and stop. *Never* treat an
   unrecognized gate as "delegate everything" or silently fall back to controlled — print the allowed gate
   list and stop. (Silently delegating on a typo is exactly the contract-1 violation this guards.)
@@ -93,14 +121,17 @@ resolved): `agent_trust.level` ∈ `{cautious, balanced, autonomous}` (empty `{}
 Apply the dial **ceiling** to the parsed per-run `mode`:
 
 - **`agent_trust.level === 'cautious'`** (the kill-switch — `autoAdvances == []`): the dial forbids ALL
-  delegation. **Override the per-run mode to `controlled`** and **ANNOUNCE** it plainly, e.g.: *"This
-  workspace's Agent-Trust dial is set to **cautious**, which forbids delegation — I'm ignoring
-  `--unattended` and running B-123 fully controlled (pausing at every gate). Raise the dial to balanced or
-  autonomous in workspace settings to allow per-run delegation."* Never silently drop the flag.
-- **`agent_trust.level === 'balanced'` or `'autonomous'`**: the dial permits per-run forward delegation —
-  honour the parsed `mode` as-is. (In v1 the dial does not further gate *which* forward gates may be
-  delegated beyond the cautious kill-switch; the per-run flag governs that. release/verify stay human
-  regardless of the level, so the dial's release/verify auto-advance classes are moot here.)
+  delegation — **including `--escalate`**. **Override the per-run mode to `controlled`** and **ANNOUNCE** it
+  plainly, e.g.: *"This workspace's Agent-Trust dial is set to **cautious**, which forbids delegation — I'm
+  ignoring `--escalate` and running B-123 fully controlled (pausing at every gate). Raise the dial to
+  balanced or autonomous in workspace settings to allow per-run delegation."* Never silently drop the flag.
+  (`--escalate` is delegation-with-an-escape-hatch, not a softened controlled run, so the cautious
+  kill-switch vetoes it exactly as it vetoes `--unattended`.)
+- **`agent_trust.level === 'balanced'` or `'autonomous'`**: the dial permits per-run forward delegation,
+  including `--escalate` — honour the parsed `mode` as-is. (In v1 the dial does not further gate *which*
+  forward gates may be delegated beyond the cautious kill-switch; the per-run flag governs that.
+  release/verify stay human regardless of the level, so the dial's release/verify auto-advance classes are
+  moot here. The risk-class floor (§3a) applies under *all* permitted modes and at every level.)
 
 A ticket id is **required** — `/harmony-plugin:harmony-conduct B-123 [--pause-at <gate> | --unattended]`.
 (Conducting picks a *specific* ticket to its terminal state; that is different from
@@ -115,6 +146,14 @@ one and stop.
   decision as Accepted.)"*
 - unattended: *"Conducting B-123 from <state> unattended — auto-advancing every forward gate, then pausing
   at **release** (merge + deploy) and **verify** for your decision, which always require a human."*
+- escalate: *"Conducting B-123 from <state> with `--escalate` — auto-advancing forward gates, but pausing
+  on any gate I judge genuinely worth your opinion, on any gate that trips the risk-class floor (auth /
+  data-migration / irreversible-destructive / shared-core), and always at **release** and **verify**.
+  (Auto-advanced gates still record their decision as Accepted.)"*
+
+In **every** delegating mode, also note the floor once up front, e.g.: *"I'll also surface — regardless of
+mode — any gate whose subject touches auth, a data migration, an irreversible/destructive change, or a
+shared-core module."*
 
 ### 2. The loop
 
@@ -128,14 +167,17 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
 
 2. **If the ticket is already awaiting a human decision → handle per mode.** If `awaiting_human_input`
    is set, a gate has already drafted a brief. There is one active brief per task, so do **NOT** run
-   another gate on top of it. Decide whether this gate is **delegated** or **controlled** for this run
-   (see *The delegation test* below):
-   - **Controlled gate** → go to *§4. Surface the brief + pause*. This is the resume case: a re-run that
-     finds an unresolved brief at a controlled gate surfaces it and waits.
+   another gate on top of it. Run *The delegation test* below — which checks, in order, the cautious
+   kill-switch, the hard floor (release/verify), the **risk-class floor** (`risk_classes` non-empty), the
+   `--escalate` judgment, and finally the mode table — to decide whether this gate is **delegated
+   (auto-advanced)** or **controlled (pause)** for this run:
+   - **Controlled / floored / escalate-surfaced gate** → go to *§4. Surface the brief + pause*. This covers
+     the resume case (a re-run that finds an unresolved brief at a controlled gate), a gate the risk-class
+     floor tripped, and a gate the `--escalate` judgment flagged as worth a human opinion.
    - **Delegated (auto-advanced) gate** → go to *§4b. Auto-advance*: synthesize the human's accept and
      route it to the owning gate skill's accept path, then continue the loop. NEVER auto-advance a
-     release/verify gate (hard floor) — those always fall to *§4. Surface the brief + pause* regardless of
-     mode.
+     release/verify gate (hard floor) or a gate with non-empty `risk_classes` (risk-class floor) — those
+     always fall to *§4. Surface the brief + pause* regardless of mode or dial.
 
 3. **If the ticket is `stale` → PAUSE and route to the patch author.** A superseded knowledge decision
    has put the ticket out of sync (state-machine §6.4). This is a human decision, not a forward gate, and
@@ -170,27 +212,76 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
 ### The delegation test — is THIS gate auto-advanced for this run?
 
 Map the just-read `workflow_state` to its **phase** (clarify/decompose/design/plan/build/release/verify;
-use the phase map in *The progress overview*). Then, given the effective `mode`:
+use the phase map in *The progress overview*). Apply these checks **in order** — the FIRST that forces a
+pause wins; only if none force a pause does the gate auto-advance:
 
-| effective `mode` | a gate is **auto-advanced** iff … |
+1. **Cautious kill-switch (dial, §1b).** If the dial overrode the mode to `controlled`, every gate is
+   controlled — pause. (Already handled at §1b; the effective `mode` is `controlled` here.)
+2. **Hard floor (release/verify, contract 3).** If the gate's phase is **release** or **verify**, it is
+   NEVER auto-advanced, in any mode — surface and pause (§4).
+3. **Risk-class FLOOR (contract 3a — NON-DISCRETIONARY, dial-independent, B-493).** Read `risk_classes`
+   from the `get_task` of step-1 (the conductor already re-read the ticket). If it is **non-empty**, the
+   gate is **floored** — surface and pause (§4), **regardless of the per-run mode, the dial level, and any
+   `--escalate` judgment** below. ANNOUNCE which class(es) tripped it (§4 includes the wording). This check
+   sits ABOVE the mode-delegation branch and BELOW the hard floor: it floors a forward gate that the mode
+   table (step 5) would otherwise auto-advance, and it floors a gate that the `--escalate` judgment (step 4)
+   would call routine. It is additive — it can only force a pause, never grant an auto-advance.
+4. **`--escalate` judgment (only in `mode = escalate`, B-493).** If the effective mode is `escalate` and the
+   gate survived steps 1–3 (not floored), form the qualitative *"is this gate genuinely worth a human
+   opinion?"* judgment over the gate's drafted brief (see *The escalate judgment* below). **Worth it →
+   surface and pause (§4)** (revert this gate to controlled for the run). **Not worth it → auto-advance**
+   (fall through to step 5's decide-and-record). In any other mode this step is skipped.
+5. **Mode-delegation branch.** Given the effective `mode`, the gate auto-advances iff:
+
+| effective `mode` | a gate auto-advances iff … |
 |---|---|
 | `controlled` | never — every gate is controlled (pause) |
-| `partial` (`pauseAt = G`) | the gate's phase is **strictly before** `G` in lifecycle order — AND the phase is not release/verify |
-| `unattended` | the gate's phase is a forward gate (clarify/decompose/design/plan/build) — i.e. **not** release/verify |
+| `partial` (`pauseAt = G`) | the gate's phase is **strictly before** `G` in lifecycle order — AND the phase is not release/verify — AND it survived steps 2–3 |
+| `unattended` | the gate's phase is a forward gate (clarify/decompose/design/plan/build) — i.e. **not** release/verify — AND it survived steps 2–3 |
+| `escalate` | the gate's phase is a forward gate — AND it survived steps 2–4 (not floored AND judged routine in step 4) |
 
-**The hard floor wins over everything:** release and verify are NEVER auto-advanced, in any mode. If the
-delegation test above would select a release/verify gate (e.g. `--pause-at` set past them, or
-`--unattended`), it is still controlled — surface and pause (§4). `stale` is likewise never auto-advanced
-(step 3), and a `Captured` ticket always self-advances `promoting` as plumbing (step 4), not via this test.
+**The hard floor wins over everything:** release and verify are NEVER auto-advanced, in any mode (step 2).
+The **risk-class floor (step 3) wins over the mode table and the escalate judgment** — a non-empty
+`risk_classes` always pauses a delegated gate. `stale` is likewise never auto-advanced (loop step 3), and a
+`Captured` ticket always self-advances `promoting` as plumbing (loop step 4), not via this test.
 
 Lifecycle order for "strictly before": `clarify < decompose < design < plan < build < release < verify`.
 
+### The escalate judgment — is THIS gate genuinely worth a human opinion?
+
+Only runs in `mode = escalate`, and only for a gate that already passed the hard floor (step 2) **and** the
+risk-class floor (step 3). It is a **qualitative** call over the gate skill's drafted brief — there is **no
+numeric threshold and no score**. Read the active brief (its `doc` + rendered `content`) and ask whether a
+human would meaningfully change the outcome. Lean toward surfacing when one or more of these hold; lean
+toward auto-advancing (decide-and-record) when none do:
+
+- **Low-confidence recommendation** — the brief hedges, or `doc.recommend` is weakly held / presented as a
+  coin-flip.
+- **Surfaced knowledge gaps** — the gate skill flagged a load-bearing gap (research-first brief, an
+  unresolved open question, an Asserted-not-Accepted dependency it leaned on).
+- **Closely-matched alternatives** — `doc.alternatives` are near-ties; the choice is genuinely contestable
+  rather than obvious.
+- **Novel / precedent-setting decision** — it sets a pattern future tickets will inherit, or there is no
+  prior Accepted decision to anchor on.
+- **Stale underlying knowledge** — the decision rests on knowledge that looks out-of-date or recently
+  churned.
+- **Broad blast radius** — the decision reaches well beyond this ticket (many consumers, cross-cutting
+  surface) even if it did not trip the deterministic shared-core risk class.
+
+If you surface, say *why* (which signal fired), so the human can calibrate. If you auto-advance, the
+decide-and-record path is the **same** owning-gate-skill accept the floor-clean `--unattended` path uses
+(§4b) — no new write path, identical Accepted knowledge (parity, AC7). The risk-class floor still sits
+under this judgment: a gate judged routine here is **still** surfaced if step 3 floored it.
+
 ### 4b. Auto-advance a delegated gate — synthesize the human's accept
 
-When the delegation test selects a gate (and it is past the floor), the conductor **synthesizes the
-human's "accept"** for that brief and routes it to the owning gate skill's accept path — the *same routing*
-the controlled flow uses when the human types "accept" in-session (§controlled pause's "If the human
-answers in this same session"). It does **not** invent a new write path:
+When the delegation test selects a gate to **auto-advance** (it survived the hard floor, the risk-class
+floor, and — in `--escalate` — was judged routine), the conductor **synthesizes the human's "accept"** for
+that brief and routes it to the owning gate skill's accept path — the *same routing* the controlled flow
+uses when the human types "accept" in-session (§controlled pause's "If the human answers in this same
+session"). It is the SAME write in every delegating mode (`--pause-at`, `--unattended`, `--escalate`'s
+decide-and-record) — `--escalate` does **not** introduce a new accept path; it only adds a *pause* decision
+in front of this one. It does **not** invent a new write path:
 
 - **Pure gates** — clarify (`brief-review`), design (`*-design-decision` per sub-track), plan
   (`plan-draft`): the accept is the gate skill's `resolve_brief({ decision: 'accept', … })`. Routing to the
@@ -201,7 +292,8 @@ answers in this same session"). It does **not** invent a new write path:
   skill owns that). Synthesize the accept by routing to `harmony-decompose`'s accept (the same path a human
   "accept" takes), so the children are created and the parent advances.
 - **release / verify**: **NEVER** auto-resolved. (Unreachable here — the delegation test excludes them; the
-  floor is the backstop.)
+  hard floor is the backstop.) Likewise, a gate with non-empty `risk_classes` never reaches §4b — the
+  risk-class floor (delegation test step 3) sends it to §4 first.
 
 **Parity invariant (AC5):** an auto-advanced gate records the **SAME Accepted knowledge** a controlled run
 would. Auto-advance only skips the human *pause* — it does not skip the *decision record*. Because the
@@ -313,12 +405,16 @@ Progress for B-123 (state: Decomposed):
 required (if a `design` sub-track is mid-serialization you may note it in the design item's text, but only
 if it stays a cheap, clean read of the ticket row).
 
-**Annotate the delegation plan (informational).** When the effective mode is `partial` or `unattended`,
-you may annotate each phase item's text with whether it will be **auto-advanced** or **paused** under the
-current mode (e.g. "design — auto-advance", "release — pause (you decide)"), derived from the delegation
-test + the hard floor. This is purely informational — it never drives a decision and never substitutes for
-the controlled pause; it just makes the run's plan legible. Derive it fresh from `mode` each iteration; do
-not store it.
+**Annotate the delegation plan (informational).** When the effective mode is `partial`, `unattended`, or
+`escalate`, you may annotate each phase item's text with whether it will be **auto-advanced** or **paused**
+under the current mode (e.g. "design — auto-advance", "release — pause (you decide)"), derived from the
+delegation test + the hard floor. For `escalate`, a forward gate is best annotated **"auto-advance unless I
+judge it worth your opinion"** (the judgment is per-brief and not known until the gate drafts), and any
+phase is annotated **"pause — risk-class floor"** if you already know it trips the floor. The floor and the
+escalate judgment are both decided per-iteration from the just-read ticket (`risk_classes` + the drafted
+brief), so the annotation is a forward-looking hint, not a guarantee. This is purely informational — it
+never drives a decision and never substitutes for the controlled pause; it just makes the run's plan
+legible. Derive it fresh from `mode` each iteration; do not store it.
 
 This checklist is purely informational — it never drives a decision and never substitutes for the
 brief-surface pause. It is regenerated, not mutated, so it can never disagree with the ticket row.
@@ -332,12 +428,16 @@ After delegating to a gate skill, the loop re-reads at step 1 and the delegation
 
 The controlled flow's forward motion is gated on the human resolving each brief; that is contract item 1.
 The delegated flow's forward motion is the conductor synthesizing the accept the human authorized via the
-per-run flag (contract item 2) — never crossing the hard floor (contract item 3).
+per-run flag (contract item 2) — never crossing the hard floor (contract item 3), never auto-advancing a
+risk-class-floored gate (contract item 3a), and in `--escalate` pausing on any gate it judges worth a human
+opinion.
 
 ### 4. Surface the brief + pause for the human's decision (controlled gate, or the hard floor)
 
 This is the **controlled pause** — reached at every gate in controlled mode, at `pauseAt` and after in
-partial mode, and ALWAYS at release + verify (the hard floor) and at a `stale` patch, in every mode.
+partial mode, at any gate the `--escalate` judgment deems worth your opinion, ALWAYS at release + verify
+(the hard floor) and at a `stale` patch in every mode, and ALWAYS at any delegated gate the **risk-class
+floor** tripped (§3a) in every delegating mode.
 
 Surface the active brief so the human can decide:
 
@@ -359,6 +459,20 @@ say so explicitly —
 > `--unattended` — it's a one-way, irreversible decision. Awaiting your decision: <doc.decide>. Accept /
 > defer / give feedback in the web UI, or here."*
 
+For a gate the **risk-class floor** tripped (§3a), say so explicitly and **name the class(es)** that
+tripped it (from `risk_classes`) — this is non-discretionary and dial-independent, so the human knows it
+was not the conductor's discretion —
+
+> *"B-123 is at the **design** gate. I'd normally auto-advance this under `--unattended`, but its subject
+> touches **auth** (risk-class floor), so I'm surfacing it for you — risk-class hits always require a human
+> regardless of mode or dial. Awaiting your decision: <doc.decide>. Accept / defer / give feedback."*
+
+For a gate the **`--escalate` judgment** flagged as worth your opinion, say which signal fired —
+
+> *"B-123 is at the **design** gate. Running `--escalate`, I judged this one worth your eyes: the
+> recommendation is low-confidence and the two alternatives are near-ties. Awaiting your decision:
+> <doc.decide>. Accept / defer / give feedback. (Re-run with `--escalate` to resume.)"*
+
 For an ordinary controlled gate —
 
 > *"B-123 is at the **<gate>** gate, awaiting your decision: <doc.decide>. Accept / defer / give feedback
@@ -378,7 +492,10 @@ an edit, only the accept the flag authorized, and never past the floor.)
 **If the human answers in this same session** (e.g. "accept", "looks good", or substantive feedback),
 hand the resolution to the owning gate skill for that `awaiting_human_reason` (the gate skill performs the
 accept/defer/edit and any side effects — same routing as `harmony-next`'s table). Once it reports the new
-state, **resume the loop at step 2** (re-read the ticket, run the next gate).
+state, **resume the loop at step 2** (re-read the ticket, run the next gate). After a
+risk-class-floored or escalate-surfaced pause is resolved, re-running with the same flag continues
+auto-advancing the *rest* of the run — the floor/judgment is re-evaluated fresh per gate from the ticket
+row, so it neither sticks nor leaks to the next gate.
 
 **The human may instead answer in the BROWSER** — and on this run you can pick that up automatically (B-485,
 §4c). When you reach a controlled pause, **offer to keep the session running and watch for a browser
@@ -387,7 +504,7 @@ e.g.: *"I'll keep watching for your decision from the browser — resolve it the
 and I'll pick it up and continue. Or answer here."* If the human opts to keep the session running, go to
 **§4c (Auto-pickup)**. If the human steps away / declines / the watch window expires, the loop is paused;
 a later `/harmony-plugin:harmony-conduct B-123` resumes from the ticket row (re-pass the flag to resume a
-partial/unattended run; absent a flag the resumed run is controlled) — this is the **no-session
+partial/unattended/escalate run; absent a flag the resumed run is controlled) — this is the **no-session
 degradation**: a browser resolution submitted while no session is running simply **persists on the ticket
 row** and the next run applies it.
 
@@ -486,23 +603,34 @@ Everything else is a **pause**, not an end: the loop is always resumable from th
 
 ## The controlled contract is intact (phase-2a guarantee)
 
-Phase 2b is **strictly additive**. With **no flag**, this skill behaves *identically* to phase 2a:
+Phases 2b + 2c are **strictly additive**. With **no flag**, this skill behaves *identically* to phase 2a:
 
 - It does **not** auto-advance any gate (the delegation test returns "never" for `mode = controlled`).
 - It does **not** synthesize any accept — every gate goes to the controlled pause (§4).
 - It does **not** call `resolve_brief`, `record_decision`, or any write that makes a gate's decision — it
   delegates those to the owning gate skill, where the human's resolution lives.
 - It does **not** edit code, commit, push, or merge — those are the build/release gate skills' jobs.
+- The risk-class floor and the `--escalate` judgment only ever *add* a pause; with no flag there is nothing
+  to add a pause to (controlled already pauses everywhere), so the no-flag run is byte-for-byte 2a.
 
-Delegation is **opt-in per run** and **dial-capped**:
+Delegation is **opt-in per run**, **dial-capped**, and **floored**:
 
-- It auto-advances a gate ONLY when the human passed an explicit `--pause-at`/`--unattended` flag for this
-  run, AND the workspace dial permits it (a `cautious` dial vetoes all delegation, announced).
+- It auto-advances a gate ONLY when the human passed an explicit `--pause-at`/`--unattended`/`--escalate`
+  flag for this run, AND the workspace dial permits it (a `cautious` dial vetoes all delegation —
+  `--escalate` included — announced).
 - It NEVER crosses the hard floor: release (merge + deploy) and verify always surface for a human, even
-  unattended; one-way/irreversible decisions always require a human.
-- An auto-advanced gate records the SAME Accepted decision a controlled run would — only the human pause is
-  skipped, via the owning gate skill's existing accept path.
-- An unknown/misspelled `--pause-at` gate, or both flags together, is an ERROR — never a silent delegation.
+  under `--unattended`/`--escalate`; one-way/irreversible decisions always require a human.
+- It NEVER auto-advances a delegated gate whose `risk_classes` is non-empty (auth / data-migration /
+  irreversible-destructive / shared-core) — the risk-class floor surfaces it for a human in EVERY
+  delegating mode, at EVERY dial level, even when `--escalate` judged the gate routine; the pause names the
+  class that tripped it.
+- In `--escalate`, a gate the conductor judges genuinely worth a human opinion surfaces (and resumes on the
+  next flagged re-run); a gate judged routine (and floor-clean) is decide-and-recorded with no pause.
+- An auto-advanced / decide-and-recorded gate records the SAME Accepted decision a controlled run would —
+  only the human pause is skipped, via the owning gate skill's existing accept path (no new write path for
+  `--escalate`).
+- An unknown/misspelled flag, an unknown `--pause-at` gate, or more than one delegating flag together, is
+  an ERROR — never a silent delegation.
 
 Browser auto-pickup (B-485) is **orthogonal and equally non-decisional**:
 
@@ -521,8 +649,11 @@ Browser auto-pickup (B-485) is **orthogonal and equally non-decisional**:
 
 ## Still out of scope (later phases)
 
-- **Circuit-breaker / risk signal** (B-458 phases 2c/2d): the conductor does not compute a risk score or
-  raise a circuit-breaker. The hard floor + the dial ceiling are the only guards in 2b.
+- **Quantitative risk *score* / circuit-breaker tuning** (B-458 phase 2d and beyond): the floor here is a
+  deterministic, binary class detector (`detectRiskClasses` in `src/tools/risk-class.ts`) — present/absent
+  per class, conservative by design. The conductor does not compute a numeric risk score, learn a
+  threshold, or trip a rate-limit-style circuit-breaker. The hard floor, the dial ceiling, the risk-class
+  floor, and the `--escalate` judgment are the guards in 2c.
 - **Skills reading the dial generally** (F5 / B-355): the dial mirror here exists for the conductor's
   cautious kill-switch; a shared/db-driven trust source replaces the hand-maintained mirror in
   `src/tools/trust-model.ts` (see its drift-sync note) later.

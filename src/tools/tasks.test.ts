@@ -464,6 +464,85 @@ describe('getTask', () => {
     expect((result as any).pending_resolution).toBeNull();
     expect(result.title).toBe('T');
   });
+
+  // B-493: get_task computes a deterministic `risk_classes` floor signal.
+  // This mock supports the briefs chain (.select().eq().eq().maybeSingle()) so the
+  // active brief's content contributes to the scanned text.
+  const makeRiskClient = (opts: {
+    title: string;
+    description?: string;
+    briefContent?: string;
+  }): any => ({
+    from: vi.fn((table: string) => {
+      if (table === 'tasks') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: vi.fn().mockResolvedValue({
+                  data: {
+                    id: 'resolved-uuid',
+                    title: opts.title,
+                    description: opts.description ?? null,
+                    task_labels: [],
+                    checklist_items: [],
+                  },
+                  error: null,
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === 'briefs') {
+        // .select('content').eq('task_id').eq('status').maybeSingle()
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                maybeSingle: vi.fn().mockResolvedValue({
+                  data: opts.briefContent ? { content: opts.briefContent } : null,
+                  error: null,
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === 'attachments') {
+        return { select: () => ({ eq: () => ({ eq: () => ({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }) }) }) };
+      }
+      // acceptance_criteria / test_cases
+      return { select: () => ({ eq: () => ({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }) }) };
+    }),
+  });
+
+  it('returns risk_classes computed from ticket text + active brief', async () => {
+    // Clean ticket text, but the active brief's drafted decision introduces an RLS policy → auth trips.
+    const client = makeRiskClient({
+      title: 'Improve the dashboard header',
+      description: 'Tidy the copy and spacing.',
+      briefContent: 'Decision: add an RLS policy so the row is only visible to its owner.',
+    });
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1' });
+    expect((result as any).risk_classes).toEqual(['auth']);
+  });
+
+  it('returns an empty risk_classes for a benign ticket with no active brief', async () => {
+    const client = makeRiskClient({ title: 'Add a dropdown', description: 'New menu component.' });
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1' });
+    expect((result as any).risk_classes).toEqual([]);
+  });
+
+  it('accepts optional changed_paths and adds path-based risk matches', async () => {
+    const client = makeRiskClient({ title: 'Refactor a helper', description: 'No behaviour change.' });
+    const result = await getTask(client, 'proj-1', {
+      task_id: 'B-1',
+      changed_paths: ['supabase/migrations/20260618_add_col.sql', 'src/auth.ts'],
+    });
+    // migration path → data-migration; auth.ts path → auth + shared-core; canonical order.
+    expect((result as any).risk_classes).toEqual(['auth', 'data-migration', 'shared-core']);
+  });
 });
 
 describe('bulkCreateTasks', () => {

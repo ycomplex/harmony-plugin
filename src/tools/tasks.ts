@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
 import { resolveAssignee } from './members.js';
 import { fetchPendingResolution } from './briefs.js';
+import { detectRiskClasses } from './risk-class.js';
 
 export const listTasksTool = {
   name: 'list_tasks',
@@ -89,17 +90,26 @@ export async function listTasks(
 
 export const getTaskTool = {
   name: 'get_task',
-  description: "Get full details of a specific task. Includes `pending_resolution` — the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup; null when there's no active brief or no pending reshape.",
+  description: "Get full details of a specific task. Returns `pending_resolution` — the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Also returns `risk_classes` — a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` surfaces a delegated gate for a human even under --unattended/--escalate.",
   inputSchema: {
     type: 'object' as const,
     properties: {
       task_id: { type: 'string', description: 'Task identifier — UUID, task number (e.g., 43), or visual ID (e.g., B-43)' },
+      changed_paths: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Optional changed file paths (e.g. `git diff --name-only` output) the build gate can pass so `risk_classes` also reflects path-based matches (e.g. **/auth/**, **/migrations/**). Additive; omit when unknown.',
+      },
     },
     required: ['task_id'],
   },
 };
 
-export async function getTask(client: SupabaseClient, projectId: string, args: { task_id: string }) {
+export async function getTask(
+  client: SupabaseClient,
+  projectId: string,
+  args: { task_id: string; changed_paths?: string[] },
+) {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error } = await client
     .from('tasks')
@@ -146,8 +156,35 @@ export async function getTask(client: SupabaseClient, projectId: string, args: {
   const acceptanceCriteria = acceptanceCriteriaRes.data;
   const testCases = testCasesRes.data;
 
+  // B-493: compute the conductor's risk-class FLOOR signal. Deterministic + conservative
+  // (over-detects on purpose) — NOT a semantic judgment. The text scanned is the ticket
+  // title/description PLUS the active brief's rendered content (the gate's drafted decision),
+  // so a class the decision introduces (e.g. "we'll add an RLS policy") trips the floor even
+  // if the bare ticket text was clean. The active brief is read defensively: a missing/empty
+  // brief or a select error (e.g. table absent on an older DB) just means no brief text — the
+  // field stays additive and get_task never regresses. `changed_paths` (optional, passed by the
+  // build gate) feeds path-glob matching. Labels feed the explicit-override path.
+  let briefText: string;
+  try {
+    const { data: brief } = await client
+      .from('briefs')
+      .select('content')
+      .eq('task_id', resolvedId)
+      .eq('status', 'active')
+      .maybeSingle();
+    briefText = (brief as { content?: string } | null)?.content ?? '';
+  } catch {
+    briefText = '';
+  }
+  const riskText = [data.title, (data as any).description, briefText].filter(Boolean).join('\n');
+  const risk_classes = detectRiskClasses({
+    text: riskText,
+    changedPaths: Array.isArray(args.changed_paths) ? args.changed_paths : undefined,
+    labels: labels.map((l: any) => l?.name).filter((n: unknown): n is string => typeof n === 'string'),
+  });
+
   const { task_labels, checklist_items: _checklistItems, ...rest } = data as any;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution };
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, risk_classes };
 }
 
 export const createTaskTool = {
