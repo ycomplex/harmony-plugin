@@ -24319,6 +24319,151 @@ async function fetchPendingResolution(client, taskId) {
   }
 }
 
+// src/tools/risk-class.ts
+var RISK_CLASSES = [
+  "auth",
+  "data-migration",
+  "irreversible-destructive",
+  "shared-core"
+];
+var KEYWORD_TABLE = {
+  auth: [
+    // auth / login / logout / session / token / password / oauth / RLS / permission / role
+    /\bauth(?:entication|orization|z|n)?\b/i,
+    /\boauth\b/i,
+    /\blog[\s-]?in\b/i,
+    /\blog[\s-]?out\b/i,
+    /\bsign[\s-]?in\b/i,
+    /\bsign[\s-]?out\b/i,
+    /\bsession\b/i,
+    /\btokens?\b/i,
+    /\bpasswords?\b/i,
+    /\bcredentials?\b/i,
+    /\bRLS\b/i,
+    /\brow[\s-]?level[\s-]?security\b/i,
+    /\bpermissions?\b/i,
+    /\broles?\b/i
+  ],
+  "data-migration": [
+    // migration / schema / ALTER TABLE / backfill / DROP COLUMN
+    /\bmigrations?\b/i,
+    /\bschema\b/i,
+    /\balter\s+table\b/i,
+    /\badd\s+column\b/i,
+    /\bdrop\s+column\b/i,
+    /\bbackfill(?:s|ed|ing)?\b/i,
+    /\bdata[\s-]?migration\b/i
+  ],
+  "irreversible-destructive": [
+    // DROP / DELETE FROM / TRUNCATE / irreversible / hard-delete / purge
+    /\bdrop\s+(?:table|column|database|schema|index|constraint)\b/i,
+    /\bdelete\s+from\b/i,
+    /\btruncate\b/i,
+    /\birreversible\b/i,
+    /\bhard[\s.-]?delete(?:s|d)?\b/i,
+    /\bpurge(?:s|d|ing)?\b/i,
+    /\bdestructive\b/i,
+    /\bunrecoverable\b/i,
+    /\bpermanently\s+(?:delete|remove|destroy)/i
+  ],
+  "shared-core": [
+    // curated shared module names that, if touched, have broad blast radius
+    /\bsupabase\.ts\b/i,
+    /\bauth\.ts\b/i,
+    /\bsrc\/tools\/registry\b/i,
+    /\bsrc\/tools\/index\.ts\b/i,
+    /\bregisterTools\b/i,
+    /\bshared[\s-]?core\b/i
+  ]
+};
+var PATH_GLOB_TABLE = {
+  auth: ["**/auth/**", "**/auth.ts", "**/auth.tsx", "**/*auth*.ts", "**/middleware/auth*", "**/rls/**"],
+  "data-migration": ["**/migrations/**", "**/migration/**", "**/*.sql", "**/schema.sql", "**/supabase/migrations/**"],
+  // No reliably-destructive path signature (destructiveness lives in content, not the path);
+  // kept empty so this class trips on text/labels, never on an innocent path. The conservative
+  // bias is served by the keyword table here, not by over-broad path globs.
+  "irreversible-destructive": [],
+  "shared-core": [
+    "**/supabase.ts",
+    "**/auth.ts",
+    "**/src/tools/index.ts",
+    "**/src/tools/registry*",
+    "**/src/supabase.ts",
+    "**/src/auth.ts"
+  ]
+};
+function globToRegExp(glob) {
+  let re = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") {
+      if (glob[i + 1] === "*") {
+        re += ".*";
+        i++;
+        if (glob[i + 1] === "/") i++;
+      } else {
+        re += "[^/]*";
+      }
+    } else if (c === "?") {
+      re += "[^/]";
+    } else if ("\\^$.|+()[]{}".includes(c)) {
+      re += "\\" + c;
+    } else {
+      re += c;
+    }
+  }
+  return new RegExp("^" + re + "$", "i");
+}
+var PATH_REGEX_TABLE = {
+  auth: PATH_GLOB_TABLE.auth.map(globToRegExp),
+  "data-migration": PATH_GLOB_TABLE["data-migration"].map(globToRegExp),
+  "irreversible-destructive": PATH_GLOB_TABLE["irreversible-destructive"].map(globToRegExp),
+  "shared-core": PATH_GLOB_TABLE["shared-core"].map(globToRegExp)
+};
+function labelToRiskClass(label) {
+  const l = label.trim().toLowerCase().replace(/^risk[:/-]/, "");
+  switch (l) {
+    case "auth":
+      return "auth";
+    case "data-migration":
+    case "migration":
+    case "data migration":
+      return "data-migration";
+    case "irreversible-destructive":
+    case "irreversible":
+    case "destructive":
+      return "irreversible-destructive";
+    case "shared-core":
+    case "shared core":
+    case "core":
+      return "shared-core";
+    default:
+      return null;
+  }
+}
+function detectRiskClasses(input) {
+  const hits = /* @__PURE__ */ new Set();
+  const text = typeof input.text === "string" ? input.text : "";
+  const paths = Array.isArray(input.changedPaths) ? input.changedPaths.filter((p) => typeof p === "string") : [];
+  const labels = Array.isArray(input.labels) ? input.labels.filter((l) => typeof l === "string") : [];
+  for (const label of labels) {
+    const cls = labelToRiskClass(label);
+    if (cls) hits.add(cls);
+  }
+  if (text.length > 0) {
+    for (const cls of RISK_CLASSES) {
+      if (KEYWORD_TABLE[cls].some((re) => re.test(text))) hits.add(cls);
+    }
+  }
+  if (paths.length > 0) {
+    for (const cls of RISK_CLASSES) {
+      const globs = PATH_REGEX_TABLE[cls];
+      if (globs.length > 0 && paths.some((p) => globs.some((re) => re.test(p)))) hits.add(cls);
+    }
+  }
+  return RISK_CLASSES.filter((cls) => hits.has(cls));
+}
+
 // src/tools/tasks.ts
 async function listTasks(client, projectId, args) {
   const limit = args.limit ?? 50;
@@ -24378,8 +24523,21 @@ async function getTask(client, projectId, args) {
   ]);
   const acceptanceCriteria = acceptanceCriteriaRes.data;
   const testCases = testCasesRes.data;
+  let briefText;
+  try {
+    const { data: brief } = await client.from("briefs").select("content").eq("task_id", resolvedId).eq("status", "active").maybeSingle();
+    briefText = brief?.content ?? "";
+  } catch {
+    briefText = "";
+  }
+  const riskText = [data.title, data.description, briefText].filter(Boolean).join("\n");
+  const risk_classes = detectRiskClasses({
+    text: riskText,
+    changedPaths: Array.isArray(args.changed_paths) ? args.changed_paths : void 0,
+    labels: labels.map((l) => l?.name).filter((n) => typeof n === "string")
+  });
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution };
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, risk_classes };
 }
 async function createTask(client, projectId, userId, args) {
   const assigneeId = args.assignee_id ? await resolveAssignee(client, projectId, args.assignee_id) : null;
