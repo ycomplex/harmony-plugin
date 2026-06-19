@@ -5,7 +5,7 @@ allowed-tools: mcp__harmony__* Read Grep Glob
 disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
 
-# Harmony Conduct (conductor — B-458 phase 2a controlled core + B-489 phase 2b autonomy selector + B-485 browser auto-pickup + B-493 phase 2c risk-class floor & --escalate + B-500 auto-watch by default)
+# Harmony Conduct (conductor — B-458 phase 2a controlled core + B-489 phase 2b autonomy selector + B-485 browser auto-pickup + B-493 phase 2c risk-class floor & --escalate + B-500 auto-watch by default + B-506 Decomposed split-umbrella branch)
 
 The conductor loop. Given a ticket and a "go", it drives the whole gate sequence
 (clarify → decompose → design → plan → build → release → verify) by delegating to the existing gate
@@ -200,7 +200,25 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    **surfaces** promoting as a human triage decision because it pulls un-triaged queue items, see
    harmony-next's routing.)
 
-5. **Otherwise, determine the next forward activity and RUN it** by delegating to the owning gate skill
+5. **If `workflow_state === 'Decomposed'`, branch split-umbrella vs no-split BEFORE routing to design.**
+   `mcp__harmony__list_subtasks({ task_id })` (direct children). **≥1 non-archived child ⇒ split umbrella;
+   zero ⇒ no-split.** This is the durable fact the B-471 roll-up itself keys on (children-exist), so it is
+   the detection signal — not a re-read of the decompose decision's split/no-split outcome.
+   - **No-split** (the parent kept the work) → fall through to step 6 and route to `harmony-design-decide`
+     as today. The no-split path is **behaviourally unchanged**.
+   - **Split umbrella** (decompose created children; the work — design + build — lives in the children) →
+     do **NOT** run `harmony-design-decide` on the umbrella. Render the **umbrella report** — list each
+     child's visual ID + title + `workflow_state` — and **end the run on the parent** (*report-and-stop*,
+     see *§5. Terminal conditions*). The parent completes on its own via the **B-471 umbrella-auto-verify
+     roll-up**: once all children reach Verified, the DB trigger forward-advances the parent
+     Decomposed→Released, and finish-work's no-PR verify path (the `umbrella-auto-verify` null-brief
+     handling, §4) carries Released→Verified with a human ack. Tell the human to **conduct the children** to
+     drive it. This branch **advances no state and files no brief** — it is a brief-less, resumable
+     end-of-run; it is **never auto-advanced** and **dial-independent** (there is no decision to delegate, so
+     no mode / flag / floor applies). *(Forward-compatible seam: a later phase — B-508 — may replace
+     report-and-stop with a hand-off that conducts the children; v1 stops and reports.)*
+
+6. **Otherwise, determine the next forward activity and RUN it** by delegating to the owning gate skill
    (state→activity map below). The gate skill queries knowledge, drafts the decision, and `compose_brief`s
    — setting `awaiting_human_input`. Then the loop re-reads at step 1, lands in step 2 (now awaiting), and
    either pauses (controlled gate) or auto-advances (delegated gate). *(Side-effecting note: the gate
@@ -316,7 +334,8 @@ forward one state at a time:
 | Captured | promoting | (none — `advance_workflow` directly) | **plumbing, not a human pause** — auto-advance Captured→Idea (see below), then loop |
 | Idea | clarifying | `/harmony-plugin:harmony-clarify <ticket>` | pure (accept = `resolve_brief`) |
 | Clarified | decomposing | `/harmony-plugin:harmony-decompose <ticket>` | side-effecting (accept creates children) |
-| Decomposed | designing | `/harmony-plugin:harmony-design-decide <ticket> --track <sub-track>` | pure per sub-track; serialized (one brief at a time) |
+| Decomposed **(no-split)** | designing | `/harmony-plugin:harmony-design-decide <ticket> --track <sub-track>` | pure per sub-track; serialized (one brief at a time) |
+| Decomposed **(split umbrella)** | — (no gate) | (none — see *loop step 5*) | **report-and-stop** — the children carry design/build; the B-471 roll-up completes the parent. NOT a forward gate |
 | Designed | planning | `/harmony-plugin:start-work <ticket>` | pure (accept = `resolve_brief`; the accept is "go" to build) |
 | Planned | building | `/harmony-plugin:start-work <ticket>` | build work, then files `release-decision-pending` |
 | Built | releasing | `/harmony-plugin:finish-work <ticket>` | side-effecting (accept → merge+deploy) — **HARD FLOOR, always human** |
@@ -324,7 +343,9 @@ forward one state at a time:
 | Verified | — | (none) | TERMINAL — loop ends |
 | Parked / Cancelled | — | (none) | TERMINAL — loop ends |
 
-**Designing is multi-sub-track and serialized.** `harmony-design-decide` runs ONE sub-track per
+**Designing is multi-sub-track and serialized** (and applies to a **no-split** parent only — loop step 5
+routes a *split umbrella* to report-and-stop instead; you never design an umbrella, its children carry
+design/build). `harmony-design-decide` runs ONE sub-track per
 invocation and there is one active brief per task, so the design phase is several pause/resume cycles:
 file product-design → (pause or auto-advance) → accept → loop re-reads (still Decomposed, no other
 sub-track accepted yet) → file technical-design → … The ticket only advances Decomposed→Designed when the
@@ -404,6 +425,14 @@ Progress for B-123 (state: Decomposed):
 `in_progress` item). Keep it to this high-level phase map; per-design-sub-track granularity is **not**
 required (if a `design` sub-track is mid-serialization you may note it in the design item's text, but only
 if it stays a cheap, clean read of the ticket row).
+
+**Umbrella-aware rendering (split umbrella at Decomposed).** The phase map above maps `Decomposed → design
+in_progress` — correct for a **no-split** parent. For a **split umbrella** (Decomposed *with* children, loop
+step 5), the parent does not carry design/plan/build at all — its children do. So render those three phases
+as **"— carried by children"** and release/verify as **"via roll-up"** (the parent's only forward motion,
+the B-471 auto-advance), and put the current marker on the **umbrella report-and-stop**, not on
+"design in_progress". This stays a cheap derived read: it's keyed on the same `list_subtasks` children-check
+step 5 already made.
 
 **Annotate the delegation plan (informational).** When the effective mode is `partial`, `unattended`, or
 `escalate`, you may annotate each phase item's text with whether it will be **auto-advanced** or **paused**
@@ -613,7 +642,18 @@ The loop **ends** (does not pause for resume) when, after re-reading the ticket 
   the conductor does not author it. Note: a deferral only ever happens at a controlled pause — the
   conductor's synthesized accept never defers.)
 
-Everything else is a **pause**, not an end: the loop is always resumable from the ticket row.
+- `workflow_state === 'Decomposed'` **with children** (split umbrella, loop step 5) → **report-and-stop**:
+  the conductor rendered the umbrella report and ends the run *on the parent*. This is a **third kind** of
+  stop, distinct from the two above and from a brief-pause: it is **not** a true terminal (the parent is not
+  Verified/Parked/Cancelled — it will still complete via the roll-up) and **not** a controlled pause (no
+  brief, `awaiting_human_input` stays false — there is nothing for the human to decide here). It simply ends
+  *this run*, and is **resumable**: re-running `/harmony-conduct <umbrella>` reconstitutes from the ticket
+  row — if the B-471 roll-up has since advanced the parent to Released, the loop resumes at the verify hard
+  floor; to Verified → reports terminal; still Decomposed-with-children → re-renders the umbrella report. The
+  conductor never auto-advances it (dial-independent — no decision to delegate).
+
+Everything else is a **pause**, not an end: the loop is always resumable from the ticket row. (The umbrella
+report-and-stop above ends *the run* but is likewise resumable — it is a stop, not a dead end.)
 
 ## The controlled contract is intact (phase-2a guarantee)
 
