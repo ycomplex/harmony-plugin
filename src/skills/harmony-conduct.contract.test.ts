@@ -155,6 +155,20 @@ describe('harmony-conduct skill contract', () => {
     expect(skill.body.toLowerCase()).toContain('stale');
   });
 
+  it('B-519 REVISE-SCOPE: recognizes a back-up verb at a controlled pause AND surfaces an agent-proposed back-up on iterate — never reverts state itself', () => {
+    const body = skill.body.toLowerCase();
+    // The lineage is named.
+    expect(skill.body).toContain('B-519');
+    // It delegates to the revise-scope skill (both the gate-pause verb and the agent-proposed iterate path).
+    expect(skill.body).toContain('harmony-revise-scope');
+    expect(body).toMatch(/revise-scope|revise scope|back up|back-up/);
+    // Gate-pause verb: alongside accept/edit/iterate/defer at the controlled pause.
+    expect(body).toMatch(/back up.*at this pause|revise-scope.*\/ "?back up"?|alongside accept/);
+    // Agent-proposed path: a recommendation the human accepts like any other — conductor never reverts state.
+    expect(body).toMatch(/recommend|recommendation/);
+    expect(body).toMatch(/conductor never reverts state|never reverts state itself|only a human accept executes/);
+  });
+
   it('auto-advances promoting on a Captured ticket — plumbing, not a pause (B-490 F2)', () => {
     const body = skill.body;
     // Captured must be handled (it is the inbox state freshly-created tickets land in).

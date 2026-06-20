@@ -5,7 +5,7 @@ allowed-tools: mcp__harmony__* Read Grep Glob
 disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
 
-# Harmony Conduct (conductor — B-458 phase 2a controlled core + B-489 phase 2b autonomy selector + B-485 browser auto-pickup + B-493 phase 2c risk-class floor & --escalate + B-500 auto-watch by default + B-506 Decomposed split-umbrella branch)
+# Harmony Conduct (conductor — B-458 phase 2a controlled core + B-489 phase 2b autonomy selector + B-485 browser auto-pickup + B-493 phase 2c risk-class floor & --escalate + B-500 auto-watch by default + B-506 Decomposed split-umbrella branch + B-519 revise-scope / back-up)
 
 The conductor loop. Given a ticket and a "go", it drives the whole gate sequence
 (clarify → decompose → design → plan → build → release → verify) by delegating to the existing gate
@@ -526,6 +526,17 @@ risk-class-floored or escalate-surfaced pause is resolved, re-running with the s
 auto-advancing the *rest* of the run — the floor/judgment is re-evaluated fresh per gate from the ticket
 row, so it neither sticks nor leaks to the next gate.
 
+**If the human asks to `revise-scope` / "back up" at this pause (B-519).** Alongside accept / edit / iterate /
+defer, the human may decide the *upstream* spec was scoped too narrowly and the honest move is to back the run
+up to an earlier discovery gate (clarify/decompose/design) and re-run it against the real scope — rather than
+resolve the current gate. On that verb, **delegate to `/harmony-plugin:harmony-revise-scope <ticket>`** (pass
+`--to <gate>` if the human named a target). That skill drafts the reconciliation (target gate + broadened
+scope + supersede-list vs keep-list) and files a `revise-scope-review` brief; **the human accepts or rejects
+there** — only a human accept executes the back-up (it reverts state via a `revising-*` back-edge; the
+conductor never reverts state itself). After delegating, **resume the loop at step 1** (re-read): on accept
+the ticket is now at the target discovery milestone and the loop drives it forward from there; on reject the
+run is untouched and still paused at this gate.
+
 **The human may answer in the BROWSER — and the conductor watches for it automatically (B-485 + B-500, §4c).**
 After surfacing the brief, **do not ask** whether to watch and **do not require a re-run** — auto-watch is the
 **default** (B-500: *don't ask, don't make me re-run*). The conductor automatically enters the §4c watch loop
@@ -612,6 +623,21 @@ A browser reshape handed you `pending_resolution = { command: 'iterate', detail:
 **active** brief, with `awaiting_human_input = false`. This is the one piece of model work the browser
 *cannot* do (the mechanical-vs-LLM boundary, `90b17075`): the browser captured the human's intent
 mechanically; **the LLM iterate runs where the agent runs — here**. Consume it:
+
+0. **First, check whether the feedback grew the UPSTREAM scope — if so, RECOMMEND a revise-scope back-up
+   instead of cramming it into this gate (B-519, agent-proposed path).** Before re-composing, read whether
+   `detail` (or your own analysis of it) materially expanded the ticket's scope or design beyond what an
+   in-gate iterate can honestly absorb — i.e. the *upstream* spec/decompose decision the current gate built on
+   is now too narrow. If it did, the honest move is to **back up a phase**, not stuff the broadened scope into
+   the current brief. **Surface a revise-scope RECOMMENDATION** by delegating to
+   `/harmony-plugin:harmony-revise-scope <ticket>` (it drafts the target gate + broadened-scope summary +
+   supersede-list vs keep-list and files a `revise-scope-review` brief). This is **a proposal the human
+   accepts like any other recommendation** — same brief surface, same accept verb; **the conductor never
+   reverts state itself** (only a human accept executes the back-up). After delegating, resume the loop at
+   step 1: on accept the ticket is at the target discovery milestone and the loop drives forward from there; on
+   reject the human declined the back-up, so fall through to the in-gate iterate (step 1 below) and address the
+   feedback within the current gate. If the feedback is *within* the current gate's scope (the common case),
+   skip this and just do the in-gate iterate.
 
 1. **Re-compose the brief reflecting the feedback.** Re-invoke the **owning gate skill** for the brief's
    `awaiting_human_reason` (e.g. `harmony-clarify` for `clarification-draft`, `harmony-design-decide` for a

@@ -32467,7 +32467,8 @@ var VALID_REASONS = [
   "plan-draft",
   "release-decision-pending",
   "verification-ack-pending",
-  "stale-patch-review"
+  "stale-patch-review",
+  "revise-scope-review"
 ];
 async function composeBrief(client, projectId, userId, args) {
   if (!args.task_id) throw new Error("task_id is required");
@@ -32559,7 +32560,7 @@ var composeBriefTool = {
     type: "object",
     properties: {
       task_id: { type: "string", description: "The task this brief decides on \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)" },
-      reason: { type: "string", description: "Gate reason (\xA76.5): clarification-draft | decomposition-proposal | design-decision-draft | plan-draft | release-decision-pending | verification-ack-pending | stale-patch-review" },
+      reason: { type: "string", description: "Gate reason (\xA76.5): clarification-draft | decomposition-proposal | design-decision-draft | plan-draft | release-decision-pending | verification-ack-pending | stale-patch-review | revise-scope-review" },
       doc: {
         type: "object",
         description: "The canonical structured BLUF brief. The rendered Markdown blob is derived from this.",
