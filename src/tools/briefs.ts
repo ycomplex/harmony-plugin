@@ -139,6 +139,7 @@ const BRIEF_COLS =
 const VALID_REASONS = [
   'clarification-draft', 'decomposition-proposal', 'design-decision-draft',
   'plan-draft', 'release-decision-pending', 'verification-ack-pending', 'stale-patch-review',
+  'revise-scope-review',
 ];
 
 export interface DecisionRef { type: string; id: string; }
@@ -286,7 +287,7 @@ export const composeBriefTool = {
     type: 'object' as const,
     properties: {
       task_id: { type: 'string', description: 'The task this brief decides on — UUID, task number (e.g., 43), or visual ID (e.g., B-43)' },
-      reason: { type: 'string', description: 'Gate reason (§6.5): clarification-draft | decomposition-proposal | design-decision-draft | plan-draft | release-decision-pending | verification-ack-pending | stale-patch-review' },
+      reason: { type: 'string', description: 'Gate reason (§6.5): clarification-draft | decomposition-proposal | design-decision-draft | plan-draft | release-decision-pending | verification-ack-pending | stale-patch-review | revise-scope-review' },
       doc: {
         type: 'object',
         description: 'The canonical structured BLUF brief. The rendered Markdown blob is derived from this.',
