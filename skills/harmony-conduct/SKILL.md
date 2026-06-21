@@ -500,13 +500,13 @@ For a gate the **`--escalate` judgment** flagged as worth your opinion, say whic
 
 > *"B-123 is at the **design** gate. Running `--escalate`, I judged this one worth your eyes: the
 > recommendation is low-confidence and the two alternatives are near-ties. Awaiting your decision:
-> <doc.decide>. Accept / defer / give feedback. (Re-run with `--escalate` to resume.)"*
+> <doc.decide>. Accept / defer / give feedback. I'll keep watching — resolve here in the terminal or from the browser (Accept / Reshape / Deny) and I'll continue automatically."*
 
 For an ordinary controlled gate —
 
 > *"B-123 is at the **<gate>** gate, awaiting your decision: <doc.decide>. Accept / defer / give feedback
-> in the web UI, or here. Re-run `/harmony-plugin:harmony-conduct B-123 [your flag]` after you've decided
-> and I'll drive the next gate."*
+> in the web UI, or here. I'll keep watching — resolve here in the terminal or from the browser (Accept /
+> Reshape / Deny) and I'll continue automatically."*
 
 **The conductor does not resolve a controlled brief on its own.** Accept/defer/edit/iterate at a controlled
 gate is the human's decision, made through the existing surface (the web UI's Accept/Defer, or the owning
