@@ -56,11 +56,11 @@ describe('harmony-revise-scope skill contract', () => {
 
   it('ACCEPT supersedes (not deletes) only the invalidated decisions and reverts via a revising-* back-edge', () => {
     const tools = referencedHarmonyTools(skill.body);
-    expect(tools).toContain('record_decision');
     expect(tools).toContain('supersede_decision');
     expect(tools).toContain('advance_workflow');
     const body = skill.body.toLowerCase();
-    // the back-edge activities:
+    // the back-edge activities (all three targets):
+    expect(body).toMatch(/revising-promoting/);
     expect(body).toMatch(/revising-clarifying/);
     expect(body).toMatch(/revising-decomposing/);
     // supersede, never delete; preserves the Decision Trail.
@@ -69,6 +69,27 @@ describe('harmony-revise-scope skill contract', () => {
     expect(body).toMatch(/auto-clear|auto-clos/);
     expect(body).toContain('b-482');
     expect(body).toMatch(/stale/);
+  });
+
+  it('B-529: reverts to the gate INPUT for ALL THREE targets (clarify→Idea, decompose→Clarified, design→Decomposed)', () => {
+    const body = skill.body.toLowerCase();
+    // clarify lands at Idea via revising-promoting (the Phase-1 input-edge, not named after a discovery gate)
+    expect(body).toMatch(/clarify.*idea|idea.*clarify/);
+    expect(body).toMatch(/revising-promoting/);
+    // decompose lands at Clarified, design lands at Decomposed (their INPUT states)
+    expect(body).toMatch(/decompose.*clarified|clarified.*decompose/);
+    expect(body).toMatch(/design.*decomposed|decomposed.*design/);
+    // the INPUT-state principle is named, and the landing is the gate's input (NOT its output)
+    expect(body).toMatch(/input[- ]state|gate'?s? input|target'?s? input/);
+  });
+
+  it('B-529: hands off to a NATIVE re-run — does NOT author the revised decision (no fold) for any target', () => {
+    const body = skill.body.toLowerCase();
+    // the skill hands off; the gate re-runs natively and authors the revised decision through its own surface
+    expect(body).toMatch(/native.*re-?run|re-?run.*nativ/);
+    expect(body).toMatch(/not? .*author|does not author|no longer.*author|never.*fold|not folded|no.*fold/);
+    // it must NOT reference record_decision anymore — the revised decision is authored at the re-run gate, not here
+    expect(referencedHarmonyTools(skill.body)).not.toContain('record_decision');
   });
 
   it('REJECT is a no-op — no state change, no supersede, no knowing-divergence record', () => {

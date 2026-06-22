@@ -5,15 +5,22 @@ allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
 
-# Harmony Revise-Scope (B-519)
+# Harmony Revise-Scope (B-519, B-529)
 
 The mid-run **"revise scope / back up"** flow for the opinionated-mode conductor. When a *downstream*
 discovery gate's discussion reveals the *upstream* spec was scoped too narrowly, the run must back up to an
-earlier discovery gate and re-run it against the real scope. This skill is the agent that **drafts a concrete
-reconciliation** and files it as a `revise-scope-review` brief so a human can **accept** (execute the back-up)
-or **reject** (no-op). It is the **stale-patch "agent proposes, human disposes" pattern applied to the
-discovery phase** (sibling to `harmony-stale-patch`), but a *different* trigger, a *different* brief reason,
-and entry points stale-patch lacks.
+earlier discovery gate and **re-run it natively** against the real scope. This skill is the agent that
+**drafts a concrete back-up proposal** and files it as a `revise-scope-review` brief so a human can **accept**
+(execute the back-up) or **reject** (no-op). It is the **stale-patch "agent proposes, human disposes" pattern
+applied to the discovery phase** (sibling to `harmony-stale-patch`), but a *different* trigger, a *different*
+brief reason, and entry points stale-patch lacks.
+
+> **Input-state principle (B-529).** A revise-scope revert lands at the re-targeted gate's **INPUT** state and
+> hands off to a **NATIVE re-run** — the revised upstream decision is authored through that gate's OWN surface,
+> **NOT folded into the revise-scope brief**. The landings are **clarify→`Idea`, decompose→`Clarified`,
+> design→`Decomposed`** (each gate's input, not its output). This skill only **supersedes** the invalidated
+> decisions and reverts; it does **not** author the revised decision — the next `harmony-conduct` re-runs the
+> target gate to author it fresh.
 
 > Before deciding, follow `skills/harmony-shared/knowledge-discipline.md`.
 
@@ -23,8 +30,9 @@ and entry points stale-patch lacks.
    the human or the agent, but it **EXECUTES only on a human accept**. This skill never calls `advance_workflow`
    (the state revert) without a human accept. The agent may *propose* a back-up — it never
    reverts state on its own. The honest trigger is **"human-decided," not "human-initiated."**
-2. **Supersede, never delete.** On accept, the invalidated gate decisions are **superseded** (with the revised
-   upstream decision as successor) — never edited or deleted. The Decision Trail is preserved.
+2. **Supersede, never delete.** On accept, the invalidated gate decisions are **superseded** — never edited or
+   deleted. The Decision Trail is preserved. The revised upstream decision is authored later, by the gate's own
+   native re-run (not by this skill), so the supersede here does not point at a successor this flow created.
 3. **Supersede ONLY what the scope change actually invalidates.** The decisions for unaffected sub-tracks are
    **kept**. The drafted brief lists both (supersede-list vs keep-list) so the human can see exactly what the
    back-up touches.
@@ -75,14 +83,18 @@ drafting.
 ### 3. Decide the target gate (the MINIMAL one) + the supersede-list vs keep-list
 
 Pick the **earliest discovery gate the scope change actually requires reverting to** — no further back than
-necessary:
+necessary. The revert lands at that gate's **INPUT** state (so the gate re-runs natively, B-529):
 
 - the broadened scope changes **what the ticket fundamentally is** (the spec itself) → target **clarify**
-  (revert to `Clarified`).
+  (revert to **`Idea`** — clarify's input).
 - the spec is fine but the broadened scope changes **how the work splits** (the decompose decision) → target
-  **decompose** (revert to `Decomposed`).
+  **decompose** (revert to **`Clarified`** — decompose's input).
 - the spec and the split are fine but the broadened scope invalidates a **design sub-track** decision → target
-  **design** (revert to `Designed`).
+  **design** (revert to **`Decomposed`** — design's input).
+
+(Each landing is the gate's INPUT, NOT its output — the gate re-runs natively from there and authors the
+revised decision through its own surface. This is the B-529 input-state principle; the old behavior reverted
+to each gate's output and folded the revised decision into this flow.)
 
 Honour an explicit `--to <gate>` if it is **no earlier** than the minimal target (a human may choose to back
 up further); if `--to` names a gate *forward of* the minimal target, that target is insufficient — say so and
@@ -94,48 +106,48 @@ Then, from the gate decisions in step 1, split them into:
 - **keep-list** — the decisions for unaffected sub-tracks, preserved (the "supersede only what's invalidated"
   precedent — quick re-accept of unaffected sub-tracks).
 
-### 4. Draft the revised upstream decision(s)
+### 4. Compose the revise-scope-review brief
 
-Draft the *content* of the revised upstream gate decision(s) that capture the broadened scope — concrete
-enough that the human can say yes/no — but do **NOT** author them yet (the human applies on accept, step 6).
-The draft is the new spec / decompose / design decision the re-run will start from.
+File the reconciliation as a brief with the new `revise-scope-review` reason. The brief carries only the
+**back-up proposal** — it does **NOT** carry the revised decision content (that is decided later, at the
+native re-run gate). Set `pending_activity` to the `revising-*` activity whose back-edge lands at the target
+gate's **INPUT** state:
 
-### 5. Compose the revise-scope-review brief
-
-File the reconciliation as a brief with the new `revise-scope-review` reason. Set `pending_activity` to the
-`revising-*` activity that lands at the target milestone (the back-edge the re-run uses):
-
-| target gate | `revising-*` activity | lands at milestone |
+| target gate | `revising-*` activity | lands at (INPUT) |
 |---|---|---|
-| clarify | `revising-clarifying` | `Clarified` |
-| decompose | `revising-decomposing` | `Decomposed` |
-| design | `revising-clarifying` / `revising-decomposing` (whichever earliest milestone the scope needs) | that milestone |
+| clarify | `revising-promoting` | `Idea` |
+| decompose | `revising-clarifying` | `Clarified` |
+| design | `revising-decomposing` | `Decomposed` |
 
-(Backflow semantics: a `revising-X` activity lands at the milestone X produces. The Phase-1 web migration
-seeds the discovery-phase back-edges — `Decomposed→revising-clarifying→Clarified`,
-`Designed→revising-clarifying→Clarified`, `Designed→revising-decomposing→Decomposed` — so `advance_workflow`
-validates them. **This skill's `advance_workflow` hard-errors until that migration is deployed** — promote in
-lockstep.)
+(Backflow semantics, B-529: each `revising-*` activity lands at the re-targeted gate's INPUT state — the
+milestone the gate re-runs FROM, not the one it produces. `revising-promoting` lands at `Idea` (the state the
+forward `promoting` activity produces), so it is **not** named after a discovery gate — see the docs note
+below. The web migration seeds the back-edges — `revising-promoting` is the Phase-1 edge for clarify
+(`{Clarified,Decomposed,Designed}→revising-promoting→Idea`); decompose's `{Decomposed,Designed}→
+revising-clarifying→Clarified` and design's `Designed→revising-decomposing→Decomposed` already exist from
+B-519 — so `advance_workflow` validates them. **This skill's `advance_workflow(revising-promoting)`
+hard-errors until that migration is deployed** — promote in lockstep, web migration first.)
 
 The brief MUST name: the **target upstream gate**, a **one-paragraph broadened-scope summary**, the
 **supersede-list** (accepted decisions to be superseded), and the **keep-list** (decisions kept — unaffected
-sub-tracks).
+sub-tracks). It does NOT contain the revised decision's content.
 
 ```
 mcp__harmony__compose_brief({
   task_id,
   reason: "revise-scope-review",
-  pending_activity: "revising-clarifying",   // or "revising-decomposing" — the back-edge to the target
+  pending_activity: "revising-promoting",   // the back-edge to the target gate's INPUT
+                                            // ("revising-clarifying" for decompose, "revising-decomposing" for design)
   doc: {
     decide: "Back B-123 up to re-clarify against the broadened scope (the design gate revealed the spec was too narrow)?",
-    recommend: { text: "Revert to Clarified and re-run decompose+design against the real scope", confidence: "low" },
+    recommend: { text: "Revert to Idea and re-run clarify natively against the real scope", confidence: "low" },
     why: [
       "The design-gate discussion grew the scope from X to X+Y",
       "The accepted clarify spec + no-split decompose decision assume the narrow scope",
-      "Re-running forward authors fresh downstream decisions against the broadened scope"
+      "Re-running clarify natively authors a fresh spec through the clarify gate's own surface (not folded here)"
     ],
     items: [
-      { kind: "decision", text: "Revert to Clarified; supersede the clarify spec + decompose decision; keep the unaffected product-design sub-track", recommendation: "accept" }
+      { kind: "decision", text: "Revert to Idea and re-run clarify natively; supersede the clarify spec + decompose decision; keep the unaffected product-design sub-track", recommendation: "accept" }
     ]
   }
 })
@@ -148,28 +160,33 @@ ticket surfaces in the human's queue with this decision. The §3.2 lint applies 
 > conductor-proposed back-up through the SAME accept path as any other recommendation. There is no separate
 > UX for the agent-proposed case.
 
-### 6. Display + resolve
+### 5. Display + resolve
 
 Show the rendered `content` verbatim. On the human's command:
 
 - **accept** → execute the back-up, in this order (supersede → revert, so the final guard pass lands the
-  ticket clean):
-  1. **Author the revised upstream decision(s)** as successors (`mcp__harmony__record_decision` — the revised
-     clarify spec / decompose / design decision capturing the broadened scope), and
-     `mcp__harmony__supersede_decision` **each** decision in the supersede-list, pointing it at the new
-     successor. This preserves the Decision Trail; the keep-list is left untouched.
-  2. **Revert state via the back-edge:** `mcp__harmony__advance_workflow({ task_id, activity:
-     'revising-clarifying' | 'revising-decomposing' })`. The DB guard then, in the same pass,
-     **auto-clears the orphaned active downstream brief** (the B-482 reconciliation guard — direction-agnostic,
-     closes any active brief on a state change) **AND auto-clears the `stale` flag** that superseding this
-     ticket's own gate decisions would otherwise self-set (the Phase-1 guard extension clears `stale`/`stale_ref`
-     on a `revising-*` backflow). So this skill does **NOT** manually clear the brief or the stale flag — the
-     guard does both for free. (Order matters: supersede first, then revert, so the final guard pass leaves the
-     ticket clean.)
-  3. **Report** the ticket is now at the target discovery milestone (e.g. `Clarified`), the brief is cleared,
-     ONLY the listed decisions were superseded, and it is **ready to re-conduct forward** against the
-     broadened scope (`/harmony-plugin:harmony-conduct B-123` re-runs from the target gate, authoring fresh
-     downstream decisions).
+  ticket clean). **This flow does NOT author the revised decision** — that is the job of the gate's native
+  re-run (B-529 input-state principle), for ALL targets (clarify / decompose / design):
+  1. **Supersede the invalidated decisions:** `mcp__harmony__supersede_decision` **each** decision in the
+     supersede-list (the target gate's decision + the downstream decisions the scope change invalidates).
+     This preserves the Decision Trail; the keep-list is left untouched. There is NO successor to point at —
+     the revised decision is authored later, by the target gate's native re-run, not here. (This skill no
+     longer calls `record_decision`; superseding without an immediate successor is intentional.)
+  2. **Revert state to the gate's INPUT via the back-edge:** `mcp__harmony__advance_workflow({ task_id,
+     activity })` with the activity that lands at the target's INPUT — `revising-promoting` (→`Idea`) for a
+     clarify target, `revising-clarifying` (→`Clarified`) for decompose, `revising-decomposing` (→`Decomposed`)
+     for design. The DB guard then, in the same pass, **auto-clears the orphaned active downstream brief** (the
+     B-482 reconciliation guard — direction-agnostic, closes any active brief on a state change) **AND
+     auto-clears the `stale` flag** that superseding this ticket's own gate decisions would otherwise self-set
+     (the B-519 guard branch matches `revising-%`, so `revising-promoting` is covered for free with no guard
+     change). So this skill does **NOT** manually clear the brief or the stale flag — the guard does both for
+     free. (Order matters: supersede first, then revert, so the final guard pass leaves the ticket clean.)
+  3. **STOP and report** the ticket is now at the target gate's **INPUT** state (`Idea` for clarify,
+     `Clarified` for decompose, `Decomposed` for design), the brief is cleared, ONLY the listed decisions were
+     superseded, and it is **ready for `harmony-conduct` to re-run the target gate NATIVELY** — the revised
+     decision is authored fresh through that gate's own surface (`/harmony-plugin:harmony-conduct B-123` picks
+     up at the INPUT state and re-runs the target gate, then the gates forward of it). This skill does NOT
+     author the revised decision and does NOT re-run the gate itself.
 
 - **reject** → **no-op.** Abandon the draft. Resolve the revise-scope-review brief WITHOUT any state change,
   WITHOUT superseding anything, and WITHOUT recording a knowing-divergence (that record is only for
@@ -186,8 +203,39 @@ Show the rendered `content` verbatim. On the human's command:
 - **edit** / **iterate** → revise the draft (target gate, scope summary, supersede/keep lists) and re-call
   `compose_brief` (updates in place, bumps `iteration`).
 
-### 7. Report
+### 6. Report
 
-State the outcome: either **accepted** (ticket reverted to <target milestone>; brief cleared; these decisions
-superseded; ready to re-conduct forward) or **rejected** (no-op; run untouched at its current gate; the
-feedback is addressed in-gate). Either way, name the target gate considered so the human has the audit trail.
+State the outcome: either **accepted** (ticket reverted to the target gate's INPUT state — `Idea` for clarify,
+`Clarified` for decompose, `Decomposed` for design; brief cleared; these decisions superseded; ready for
+`harmony-conduct` to re-run the target gate NATIVELY) or **rejected** (no-op; run untouched at its current
+gate; the feedback is addressed in-gate). Either way, name the target gate considered so the human has the
+audit trail.
+
+## The input-state principle + the `revising-promoting` name (B-529)
+
+A revise-scope revert lands at the re-targeted gate's **INPUT** state, never its output, so the gate re-runs
+**natively** and authors the revised decision through its own surface:
+
+| target gate | revert to (INPUT) | back-edge activity |
+|---|---|---|
+| clarify | `Idea` | `revising-promoting` |
+| decompose | `Clarified` | `revising-clarifying` |
+| design | `Decomposed` | `revising-decomposing` |
+
+This is why the revise-scope flow no longer authors the revised decision (the old behavior reverted to each
+gate's *output* and folded the revised decision into the brief — accepting it off-flow, never through the
+gate). Now it only supersedes + reverts; the decision is authored at the native re-run.
+
+**About the name `revising-promoting`.** The discovery back-edges are named after the activity that *produces*
+the milestone they land at: `revising-clarifying`→`Clarified` (clarifying produces Clarified),
+`revising-decomposing`→`Decomposed`. The clarify-target back-edge lands at **`Idea`**, which the forward
+**`promoting`** activity produces — so the back-edge is `revising-promoting`, NOT named after a discovery gate.
+This deliberately breaks the "every `revising-*` is named after a discovery gate" reading; `revising-promoting`
+is the back-edge to clarify's INPUT (`Idea`), and clarify itself re-runs there. It still carries the
+`revising-` prefix, so the B-519 stale-clear guard (`revising-%`) + the B-482 brief-clear apply with no guard
+change.
+
+**Lockstep promotion.** The `revising-promoting → Idea` edges ship in a harmony-web migration (Phase 1) that
+must deploy **before** this skill — `advance_workflow(revising-promoting)` hard-errors until the edge exists.
+Promote web first, then the plugin, in the same step (web before plugin), like B-519. The decompose/design
+back-edges already exist from B-519, so only the clarify edge is new.
