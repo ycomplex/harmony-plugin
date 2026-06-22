@@ -541,7 +541,7 @@ run is untouched and still paused at this gate.
 After surfacing the brief, **do not ask** whether to watch and **do not require a re-run** — auto-watch is the
 **default** (B-500: *don't ask, don't make me re-run*). The conductor automatically enters the §4c watch loop
 and keeps watching the ticket row for the human's resolution (Accept / Reshape / Deny submitted from the
-TaskDetailPanel on any device), continuing the instant it lands. State it plainly, e.g.: *"I'll keep watching
+TaskDetailPanel on any device), continuing the instant it lands. **This is not optional and not automatic: you MUST arm the watch as a concrete action (§4c) before yielding the turn — never end the turn assuming the runtime will re-invoke you. "Surfaced the brief and stopped" is a bug; the only clean end-of-turn at a pause is an in-session answer you just received, or the ~90-min window expiry (graceful degradation).** State it plainly, e.g.: *"I'll keep watching
 for your decision — resolve it here in the terminal or from the browser (Accept / Reshape / Deny) and I'll
 continue automatically."* The watch is **bounded (~90 min, idle backoff)** and ends on **any** of three
 co-equal exits: a browser resolution, an in-session/terminal answer, or the ~90-min timeout. On timeout the
@@ -563,11 +563,26 @@ enters this loop automatically — it does **not** ask the human to opt in and d
 re-run.
 
 **The poll loop (bounded, idle-backoff, default-on).** After surfacing the brief at a controlled pause, the
-conductor **automatically** re-reads `mcp__harmony__get_task({ task_id })` on a bounded schedule with **idle
-backoff** (e.g. every ~10s for the first minute, then ~30s, settling to a coarse ~60s tail) up to a **total
-watch window of ~90 minutes** — a tunable default, long enough for the human to step away and resolve from
-the browser later, bounded so an abandoned session doesn't spin forever. Between re-reads, simply wait — do
-not spin. The watch ends on **any** of three co-equal exits — a browser resolution, an in-session/terminal
+conductor re-reads `mcp__harmony__get_task({ task_id })` on a bounded, idle-backoff schedule up to a **total
+watch window of ~90 minutes** — long enough for the human to step away and resolve from the browser later,
+bounded so an abandoned session doesn't spin forever.
+
+**You MUST ARM the watch — "wait" is NOT automatic.** Polling across turns does not happen on its own: after
+surfacing the brief you must schedule a *self-firing re-invocation* of this conductor before yielding the
+turn, then end the turn. Do **not** just stop and assume the runtime will call you back — it will not, and the
+watch silently dies (this is the B-531 bug). The *behaviour* — arm a self-firing watch after every
+controlled/hard-floor pause — is the **durable contract**; the concrete mechanism below is a **swappable
+recipe** (a later mechanism — B-532's bundled poll script — replaces only the recipe, never the contract).
+
+**Claude Code — how to actually arm (the current recipe).** Call
+`ScheduleWakeup(delaySeconds, prompt: "/harmony-plugin:harmony-conduct <ticket> [<same flag, if any>]")`
+after surfacing the brief, then end the turn. On the wake-up you are re-invoked with that prompt: re-read
+`get_task`, detect what the human did (state advanced / `pending_resolution` reshape / nothing changed),
+consume it per the cases below, and **if it is still pending, ARM AGAIN** with the next backoff delay.
+**Cadence (tunable defaults):** first poll **~120s**; back off but keep each delay **under ~300s** so the
+prompt cache stays warm while the human is likely present; widen to a coarse tail (~900s) once clearly idle;
+stop at the **~90-min** window and degrade (case 3 below). Between wake-ups you do nothing — the scheduled
+wake-up IS the watch. The watch ends on **any** of three co-equal exits — a browser resolution, an in-session/terminal
 answer, or the ~90-min timeout, whichever lands first. On each re-read, compare against the brief you
 surfaced and detect which of these the human did in the browser:
 
