@@ -90,7 +90,7 @@ export async function listTasks(
 
 export const getTaskTool = {
   name: 'get_task',
-  description: "Get full details of a specific task. Returns `pending_resolution` — the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Also returns `risk_classes` — a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` surfaces a delegated gate for a human even under --unattended/--escalate.",
+  description: "Get full details of a specific task. Returns `pending_resolution` — the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Also returns `risk_classes` — a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run — the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate).",
   inputSchema: {
     type: 'object' as const,
     properties: {

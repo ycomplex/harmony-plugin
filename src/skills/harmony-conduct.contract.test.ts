@@ -42,22 +42,41 @@ describe('harmony-conduct skill contract', () => {
     expect(body).toMatch(/risk score|numeric risk|quantitative risk/);
   });
 
-  it('RISK-CLASS FLOOR (2c): a non-discretionary, dial-independent floor surfaces delegated gates that touch a risk class', () => {
+  it('RISK-CLASS FLOOR (2c): a non-discretionary floor that names the risk classes it detects', () => {
     const body = skill.body.toLowerCase();
     // The four classes are named.
     for (const cls of ['auth', 'data-migration', 'irreversible-destructive', 'shared-core']) {
       expect(body, `risk-class floor missing class ${cls}`).toContain(cls);
     }
-    // It reads risk_classes from the ticket and it is a non-discretionary floor.
+    // It reads risk_classes from the ticket and it is a non-discretionary floor (in --escalate).
     expect(body).toContain('risk_classes');
     expect(body).toMatch(/risk-class floor|risk class floor/);
-    expect(body).toMatch(/non-discretionary|regardless of (the )?(per-run )?mode|regardless of mode/);
-    // It is dial-independent: fires at balanced AND autonomous (and even under --unattended/--escalate).
+    expect(body).toMatch(/non-discretionary/);
+    // In --escalate the floor is dial-independent: fires at every dial level, beats the judgment.
     expect(body).toMatch(/dial-independent|every dial level|at every (dial )?level|regardless of .*dial/);
-    // The pause names the class that tripped it.
+    // When it pauses (in --escalate), the pause names the class that tripped it.
     expect(body).toMatch(/name.*the class|which class|name the class\(es\)|name the risk class/);
-    // It applies to the EXISTING --unattended/--pause-at runs too, not just --escalate.
-    expect(body).toMatch(/--unattended.*too|existing .*--pause-at.*--unattended|every delegating mode/);
+  });
+
+  it('B-516 FLOOR SCOPING: the floor PAUSES only in --escalate; in --unattended/--pause-at it is a RELEASE-BRIEF signal, not a mid-run pause', () => {
+    const body = skill.body.toLowerCase();
+    // The B-516 lineage is named.
+    expect(skill.body).toContain('B-516');
+    // The floor pauses ONLY in --escalate.
+    expect(body).toMatch(/pauses?.*only in `?--escalate`?|only in `?--escalate`?.*pause|floor.*pauses? a delegated gate only in `?--escalate`?/);
+    // In --unattended / --pause-at it does NOT pause mid-run.
+    expect(body).toMatch(/does\s*\*?\*?not\*?\*?\s*pause|not.*pause mid-run|won'?t (stop|pause)/);
+    expect(body).toMatch(/--unattended|--pause-at/);
+    // Instead it is recorded + surfaced on the release brief.
+    expect(body).toMatch(/release[- ]brief|release brief signal|surfaced? on the release brief|carried.*release brief/);
+    // No exceptions — not even irreversible-destructive gets a mid-run pause in --unattended.
+    expect(body).toMatch(/no exceptions/);
+    expect(body).toMatch(/not even.*irreversible|even.*irreversible-destructive/);
+    // The rationale is encoded: the hard floor (release+verify) already covers irreversibility.
+    expect(body).toMatch(/nothing executes irreversibly before release|hard floor.*already.*irreversib|already covers irreversib/);
+    // The release-brief signal is computed from the build's changed_paths (path-based, high-precision).
+    expect(skill.body).toContain('changed_paths');
+    expect(body).toMatch(/path-based|path-derived|high-precision/);
   });
 
   it('ESCALATE MODE (2c): --escalate auto-advances but surfaces gates worth a human opinion; cautious vetoes it', () => {
