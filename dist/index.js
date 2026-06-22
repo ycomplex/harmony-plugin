@@ -32664,56 +32664,98 @@ var RISK_CLASSES = [
   "irreversible-destructive",
   "shared-core"
 ];
+var kw = (re, senseOk) => ({ re, senseOk });
+var AUTH_TOKEN_QUALIFIER = /\b(?:auth|access|api|bearer|jwt|session|refresh|csrf)\b/i;
+var STATE_TOKEN_SENSE = /\b(?:gate|state|workflow_state|workflow\s+state)\b/i;
+function tokenIsAuthSense(text, start, end) {
+  const before = text.slice(Math.max(0, start - 24), start);
+  const after = text.slice(end, end + 24);
+  const window2 = before + " " + after;
+  if (STATE_TOKEN_SENSE.test(before) || STATE_TOKEN_SENSE.test(after)) return false;
+  return AUTH_TOKEN_QUALIFIER.test(window2);
+}
 var KEYWORD_TABLE = {
   auth: [
     // auth / login / logout / session / token / password / oauth / RLS / permission / role
-    /\bauth(?:entication|orization|z|n)?\b/i,
-    /\boauth\b/i,
-    /\blog[\s-]?in\b/i,
-    /\blog[\s-]?out\b/i,
-    /\bsign[\s-]?in\b/i,
-    /\bsign[\s-]?out\b/i,
-    /\bsession\b/i,
-    /\btokens?\b/i,
-    /\bpasswords?\b/i,
-    /\bcredentials?\b/i,
-    /\bRLS\b/i,
-    /\brow[\s-]?level[\s-]?security\b/i,
-    /\bpermissions?\b/i,
-    /\broles?\b/i
+    kw(/\bauth(?:entication|orization|z|n)?\b/i),
+    kw(/\boauth\b/i),
+    kw(/\blog[\s-]?in\b/i),
+    kw(/\blog[\s-]?out\b/i),
+    kw(/\bsign[\s-]?in\b/i),
+    kw(/\bsign[\s-]?out\b/i),
+    kw(/\bsession\b/i),
+    kw(/\btokens?\b/i, tokenIsAuthSense),
+    kw(/\bpasswords?\b/i),
+    kw(/\bcredentials?\b/i),
+    kw(/\bRLS\b/i),
+    kw(/\brow[\s-]?level[\s-]?security\b/i),
+    kw(/\bpermissions?\b/i),
+    kw(/\broles?\b/i)
   ],
   "data-migration": [
     // migration / schema / ALTER TABLE / backfill / DROP COLUMN
-    /\bmigrations?\b/i,
-    /\bschema\b/i,
-    /\balter\s+table\b/i,
-    /\badd\s+column\b/i,
-    /\bdrop\s+column\b/i,
-    /\bbackfill(?:s|ed|ing)?\b/i,
-    /\bdata[\s-]?migration\b/i
+    kw(/\bmigrations?\b/i),
+    kw(/\bschema\b/i),
+    kw(/\balter\s+table\b/i),
+    kw(/\badd\s+column\b/i),
+    kw(/\bdrop\s+column\b/i),
+    kw(/\bbackfill(?:s|ed|ing)?\b/i),
+    kw(/\bdata[\s-]?migration\b/i)
   ],
   "irreversible-destructive": [
     // DROP / DELETE FROM / TRUNCATE / irreversible / hard-delete / purge
-    /\bdrop\s+(?:table|column|database|schema|index|constraint)\b/i,
-    /\bdelete\s+from\b/i,
-    /\btruncate\b/i,
-    /\birreversible\b/i,
-    /\bhard[\s.-]?delete(?:s|d)?\b/i,
-    /\bpurge(?:s|d|ing)?\b/i,
-    /\bdestructive\b/i,
-    /\bunrecoverable\b/i,
-    /\bpermanently\s+(?:delete|remove|destroy)/i
+    kw(/\bdrop\s+(?:table|column|database|schema|index|constraint)\b/i),
+    kw(/\bdelete\s+from\b/i),
+    kw(/\btruncate\b/i),
+    kw(/\birreversible\b/i),
+    kw(/\bhard[\s.-]?delete(?:s|d)?\b/i),
+    kw(/\bpurge(?:s|d|ing)?\b/i),
+    kw(/\bdestructive\b/i),
+    kw(/\bunrecoverable\b/i),
+    kw(/\bpermanently\s+(?:delete|remove|destroy)/i)
   ],
   "shared-core": [
     // curated shared module names that, if touched, have broad blast radius
-    /\bsupabase\.ts\b/i,
-    /\bauth\.ts\b/i,
-    /\bsrc\/tools\/registry\b/i,
-    /\bsrc\/tools\/index\.ts\b/i,
-    /\bregisterTools\b/i,
-    /\bshared[\s-]?core\b/i
+    kw(/\bsupabase\.ts\b/i),
+    kw(/\bauth\.ts\b/i),
+    kw(/\bsrc\/tools\/registry\b/i),
+    kw(/\bsrc\/tools\/index\.ts\b/i),
+    kw(/\bregisterTools\b/i),
+    kw(/\bshared[\s-]?core\b/i)
   ]
 };
+var NEGATION_CUES = /* @__PURE__ */ new Set(["no", "not", "without", "zero", "neither", "nor", "none"]);
+var NEGATION_WINDOW = 4;
+function precedingTokens(text, matchStart) {
+  const slice = text.slice(Math.max(0, matchStart - 48), matchStart).toLowerCase();
+  const tokens = slice.match(/[a-z']+/g);
+  return tokens ? tokens.slice(-NEGATION_WINDOW) : [];
+}
+function isNegated(text, start) {
+  for (const tok of precedingTokens(text, start)) {
+    if (NEGATION_CUES.has(tok)) return true;
+    if (tok.endsWith("n't")) return true;
+  }
+  return false;
+}
+function textHitsClass(text, cls) {
+  for (const keyword of KEYWORD_TABLE[cls]) {
+    const g = new RegExp(keyword.re.source, keyword.re.flags.includes("g") ? keyword.re.flags : keyword.re.flags + "g");
+    let m;
+    while ((m = g.exec(text)) !== null) {
+      const start = m.index;
+      const end = m.index + m[0].length;
+      if (m[0].length === 0) {
+        g.lastIndex++;
+        continue;
+      }
+      if (keyword.senseOk && !keyword.senseOk(text, start, end)) continue;
+      if (isNegated(text, start)) continue;
+      return true;
+    }
+  }
+  return false;
+}
 var PATH_GLOB_TABLE = {
   auth: ["**/auth/**", "**/auth.ts", "**/auth.tsx", "**/*auth*.ts", "**/middleware/auth*", "**/rls/**"],
   "data-migration": ["**/migrations/**", "**/migration/**", "**/*.sql", "**/schema.sql", "**/supabase/migrations/**"],
@@ -32779,24 +32821,29 @@ function labelToRiskClass(label) {
       return null;
   }
 }
+function pathHitsClass(paths, cls) {
+  const globs = PATH_REGEX_TABLE[cls];
+  return globs.length > 0 && paths.some((p) => globs.some((re) => re.test(p)));
+}
 function detectRiskClasses(input) {
   const hits = /* @__PURE__ */ new Set();
   const text = typeof input.text === "string" ? input.text : "";
   const paths = Array.isArray(input.changedPaths) ? input.changedPaths.filter((p) => typeof p === "string") : [];
   const labels = Array.isArray(input.labels) ? input.labels.filter((l) => typeof l === "string") : [];
+  const hasDiff = paths.length > 0;
   for (const label of labels) {
     const cls = labelToRiskClass(label);
     if (cls) hits.add(cls);
   }
+  for (const cls of RISK_CLASSES) {
+    if (pathHitsClass(paths, cls)) hits.add(cls);
+  }
   if (text.length > 0) {
     for (const cls of RISK_CLASSES) {
-      if (KEYWORD_TABLE[cls].some((re) => re.test(text))) hits.add(cls);
-    }
-  }
-  if (paths.length > 0) {
-    for (const cls of RISK_CLASSES) {
-      const globs = PATH_REGEX_TABLE[cls];
-      if (globs.length > 0 && paths.some((p) => globs.some((re) => re.test(p)))) hits.add(cls);
+      if (hits.has(cls)) continue;
+      if (!textHitsClass(text, cls)) continue;
+      const demotedByCleanDiff = hasDiff && PATH_GLOB_TABLE[cls].length > 0 && !pathHitsClass(paths, cls);
+      if (!demotedByCleanDiff) hits.add(cls);
     }
   }
   return RISK_CLASSES.filter((cls) => hits.has(cls));

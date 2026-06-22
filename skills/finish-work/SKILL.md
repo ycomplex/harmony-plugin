@@ -87,8 +87,25 @@ its own open PR/branch — it is a normal ticket: skip this section and continue
 ### O1. Confirm the release decision (accept clears the gate — it does NOT release yet)
 
 `mcp__harmony__get_task({ task_id })` (read `.harmony-task.json` for the id) and
-`mcp__harmony__get_brief({ task_id })`. Show the `release-decision-pending` brief. On the human's
-**accept**:
+`mcp__harmony__get_brief({ task_id })`. Show the `release-decision-pending` brief.
+
+**Risk-class signal on the release brief (B-516).** Before surfacing the brief, compute a **path-based**
+risk signal from the build's changed paths and show it as an **attention line** above the decision, so the
+human reviews any high-consequence class at the release gate (the hard floor). This is where the conductor's
+risk-class floor lands for `--unattended`/`--pause-at` runs: those runs do NOT pause mid-flight on a risk
+class — the signal surfaces *here* instead (see harmony-conduct §3a / §4 "release-brief risk signal").
+
+1. Get the build's changed paths (high-precision — path-based, not prose): from the worktree,
+   `git diff --name-only origin/main...HEAD` (the PR diff). For an umbrella with no diff of its own, skip
+   this signal (its children carried the risk at their own release gates).
+2. Pass those paths into `get_task` so `risk_classes` reflects the diff:
+   `mcp__harmony__get_task({ task_id, changed_paths: [<the diff paths>] })`.
+3. If `risk_classes` is **non-empty**, prepend an attention line to what you show the human, e.g.:
+   *"⚠ Risk floor: this change touches **auth + data-migration** — review accordingly before releasing."*
+   (List the classes from `risk_classes`, comma-joined.) If it is empty, show nothing extra.
+
+Prefer this path-derived signal over any prose-derived set — the path signal is high-precision and avoids the
+prose false-positives B-516 fixed. On the human's **accept**:
 
 ```
 mcp__harmony__resolve_brief({ task_id, command: "accept" })   // pending_activity: null → clears the flag, NO state change
