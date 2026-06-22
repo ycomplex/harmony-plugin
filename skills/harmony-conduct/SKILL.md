@@ -559,7 +559,7 @@ For an ordinary controlled gate —
 auto-advanced a forward gate whose `risk_classes` was non-empty (the floor did NOT pause it, §3a), the risk
 is carried forward to the **release** gate rather than lost. At the **release** pause (always controlled — the
 hard floor), `finish-work` composes the `release-decision-pending` brief and **computes a path-based risk
-signal from the build's `changed_paths`** (`git diff --name-only main…HEAD` over the PR, the high-precision
+signal from the build's `changed_paths`** (`git diff --name-only origin/main...HEAD` over the PR, the high-precision
 source — see finish-work O1) and adds it as an **attention line** on the brief, e.g.: *"⚠ Risk floor: this
 change touches **auth + data-migration** — review accordingly."* Prefer the path-derived signal (precise)
 over the accumulated prose set the conductor saw mid-run (the prose set may include down-weighted

@@ -75,9 +75,12 @@ export interface DetectRiskInput {
 //      `data-migration`.
 //   2. WORD-SENSE TIGHTENING — thin keywords carry a per-keyword sense guard
 //      (`senseOk`). The only one tuned so far (evidence-driven, minimal): the
-//      `token` keyword counts for `auth` ONLY with an auth qualifier and NEVER in
-//      a state-machine sense (`gate token` / `state token` / `workflow_state token`).
-//      Repro: "workflow_state gate token" → no `auth`.
+//      `token` keyword counts for `auth` ONLY when an auth qualifier sits adjacent
+//      (`auth|access|api|bearer|jwt|session|refresh|csrf`). The state-machine sense
+//      (`gate token` / `state token` / `workflow_state token`) carries no qualifier,
+//      so it returns false on its own — no separate veto needed. A present auth
+//      qualifier WINS (conservative-on-ambiguity). Repro: "workflow_state gate
+//      token" → no `auth`; "bearer token in the gate handler" → `auth`.
 // ---------------------------------------------------------------------------
 
 /** A keyword entry: a word-boundary regex plus an optional per-keyword word-sense guard.
@@ -90,21 +93,26 @@ interface Keyword {
 
 const kw = (re: RegExp, senseOk?: Keyword['senseOk']): Keyword => ({ re, senseOk });
 
-// Word-sense guard for the thin `token` keyword (B-516, repro Ev1c). `token` is too
-// generic to trip `auth` on its own — Harmony's own domain uses "gate token" /
-// "workflow_state token" (state-machine senses). So `token` counts for `auth` ONLY
-// when an auth qualifier sits adjacent to it, and NEVER when a state-machine word does.
+// Word-sense guard for the thin `token` keyword (B-516, repro Ev1c; hardened B-516-review).
+// `token` is too generic to trip `auth` on its own — Harmony's own domain uses "gate token" /
+// "workflow_state token" (state-machine senses). So `token` counts for `auth` ONLY when an
+// auth qualifier sits adjacent to it.
+//
+// CONSERVATIVE-ON-AMBIGUITY (review fix): a PRESENT auth qualifier WINS. The previous version
+// ran a state-machine veto BEFORE the qualifier check, so a genuine auth concern that merely
+// sat near "gate"/"state" got killed (e.g. "validate the bearer token in the gate handler" →
+// no auth — a false negative the safety floor exists to catch). The auth qualifier is now
+// sufficient: with no qualifier a bare / "gate" / "state" token already returns false (the
+// state-machine senses carry no qualifier), so dropping the unconditional veto re-fires the
+// real auth tokens while keeping every Ev1c state-machine case green.
 const AUTH_TOKEN_QUALIFIER = /\b(?:auth|access|api|bearer|jwt|session|refresh|csrf)\b/i;
-const STATE_TOKEN_SENSE = /\b(?:gate|state|workflow_state|workflow\s+state)\b/i;
 function tokenIsAuthSense(text: string, start: number, end: number): boolean {
   // Look at a tight window on BOTH sides of the `token` hit (qualifiers like
   // "auth token" precede; "token refresh" can follow). ~24 chars ≈ 3-4 words.
   const before = text.slice(Math.max(0, start - 24), start);
   const after = text.slice(end, end + 24);
   const window = before + ' ' + after;
-  // EXCLUDE the state-machine sense outright (deterministic wrong-sense).
-  if (STATE_TOKEN_SENSE.test(before) || STATE_TOKEN_SENSE.test(after)) return false;
-  // REQUIRE an auth qualifier for the auth sense.
+  // A present auth qualifier is SUFFICIENT (and necessary) for the auth sense.
   return AUTH_TOKEN_QUALIFIER.test(window);
 }
 
@@ -160,26 +168,85 @@ const KEYWORD_TABLE: Record<RiskClass, Keyword[]> = {
 };
 
 // ---------------------------------------------------------------------------
-// NEGATION-SCOPING (B-516). For a keyword hit, scan a short PRECEDING token
-// window for a negation cue. Deterministic; conservative-on-ambiguity — it
-// suppresses ONLY a clearly-negated hit, never an ambiguous one.
+// NEGATION-SCOPING (B-516, hardened B-516-review). For a keyword hit, scan a
+// short PRECEDING token window for a negation cue. Deterministic;
+// conservative-on-ambiguity — it suppresses ONLY a clearly-negated hit.
 //
 // Cues: `no`, `not`, `without`, an `n't` contraction (don't/won't/can't…),
-// `zero`, and `neither`/`nor` (which also covers the repeated "no … no …"
-// enumeration — each item's own preceding `no` negates it).
+// `zero`, and `neither`/`nor`/`none`.
+//
+// CLAUSE-BOUNDARY BOUND (review fix): the backward scan STOPS at a clause
+// boundary — a comma / semicolon / colon / period, an em/en dash or a spaced
+// hyphen-dash, or a coordinating conjunction (`and`/`but`/`or`/`then`/`so`/
+// `yet`). A cue only negates the keyword if it is reachable WITHOUT crossing a
+// boundary. This kills the false-negative where a cue negates a DIFFERENT
+// clause's subject, e.g. "with no downtime, run the migration" ('no' negates
+// *downtime*, across the comma → the migration hit fires). The repeated
+// "no schema, no migration" enumeration is unaffected: each item's OWN
+// immediately-preceding `no` sits in the same clause as that item, so it still
+// suppresses.
+//
+// HYPHEN-AWARE TOKENIZATION (review fix): an ASCII hyphen flanked by letters is
+// INTRA-WORD, so `no-op` is ONE token (`no-op` ≠ the cue `no`) — "no-op guard;
+// ALTER TABLE" no longer suppresses. A hyphen/dash that is NOT flanked by letters
+// (a spaced " - " dash, or an em/en dash) is a clause boundary instead. Space-
+// separated "no migration" still tokenizes to `['no','migration']`, so real
+// negations are unaffected.
 // ---------------------------------------------------------------------------
 const NEGATION_CUES = new Set(['no', 'not', 'without', 'zero', 'neither', 'nor', 'none']);
 const NEGATION_WINDOW = 4; // tokens of preceding context to scan
+// Tokens that end the backward scan: a cue past one of these does NOT negate the keyword.
+const CLAUSE_BOUNDARY_TOKENS = new Set(['and', 'but', 'or', 'then', 'so', 'yet']);
+// Punctuation that ends a clause (a cue past one of these does NOT reach the keyword).
+// Includes em/en dashes; a bare ASCII hyphen is handled positionally (intra-word vs spaced dash).
+const CLAUSE_BOUNDARY_PUNCT = /[,;:.–—]/;
+const ASCII_LETTER = /[a-z]/; // (slice is lower-cased before scanning)
 
-/** Tokenize the preceding slice into lowercased word tokens (apostrophes kept so `don't` stays one token). */
+/**
+ * Tokenize the preceding slice into lowercased word tokens, newest-first, STOPPING at the
+ * first clause boundary (punctuation OR a coordinating conjunction). A hyphen counts as
+ * intra-word (so `no-op` stays one token) ONLY when flanked by letters; an unflanked hyphen
+ * or an em/en dash is a clause boundary. Returns at most NEGATION_WINDOW in-clause tokens.
+ */
 function precedingTokens(text: string, matchStart: number): string[] {
-  // A generous char window (≈ NEGATION_WINDOW words, allowing for punctuation/parens) then tokenize.
+  // A generous char window (≈ NEGATION_WINDOW words, allowing for punctuation/parens).
   const slice = text.slice(Math.max(0, matchStart - 48), matchStart).toLowerCase();
-  const tokens = slice.match(/[a-z']+/g);
-  return tokens ? tokens.slice(-NEGATION_WINDOW) : [];
+  // True iff the char at index k is a word char: a letter / apostrophe, or an intra-word
+  // ASCII hyphen (a hyphen with a letter on BOTH sides — `no-op`, not a spaced " - " dash).
+  const isWordChar = (k: number): boolean => {
+    const c = slice[k];
+    if (c === undefined) return false;
+    if (ASCII_LETTER.test(c) || c === "'") return true;
+    if (c === '-') return ASCII_LETTER.test(slice[k - 1] ?? '') && ASCII_LETTER.test(slice[k + 1] ?? '');
+    return false;
+  };
+  // Walk from the END backward; emit word-tokens but HALT at any clause boundary.
+  const inClause: string[] = [];
+  let i = slice.length - 1;
+  while (i >= 0 && inClause.length < NEGATION_WINDOW) {
+    if (CLAUSE_BOUNDARY_PUNCT.test(slice[i])) break; // comma/;/:/./em-/en-dash — stop scanning back
+    if (isWordChar(i)) {
+      // consume a whole word (run of word-chars) going backward
+      let j = i;
+      while (j >= 0 && isWordChar(j)) j--;
+      const word = slice.slice(j + 1, i + 1);
+      i = j;
+      if (word.length === 0) continue;
+      if (CLAUSE_BOUNDARY_TOKENS.has(word)) break; // coordinating conjunction — clause boundary
+      inClause.push(word);
+    } else {
+      // a non-word char that isn't boundary punctuation: whitespace, parens, slash, or a
+      // spaced/unflanked ASCII hyphen-dash. A spaced hyphen-dash is a clause boundary; plain
+      // whitespace/parens are not.
+      if (slice[i] === '-') break; // unflanked hyphen acting as a dash — clause boundary
+      i--; // whitespace / parens / slash / other inert punctuation — skip
+    }
+  }
+  return inClause;
 }
 
-/** True iff the hit at [start) is clearly negated by a cue in its short preceding token window. */
+/** True iff the hit at [start) is clearly negated by a cue reachable in its short preceding,
+ *  clause-bounded token window (the scan already stopped at any clause boundary). */
 function isNegated(text: string, start: number): boolean {
   for (const tok of precedingTokens(text, start)) {
     if (NEGATION_CUES.has(tok)) return true;

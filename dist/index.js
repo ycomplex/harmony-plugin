@@ -32666,12 +32666,10 @@ var RISK_CLASSES = [
 ];
 var kw = (re, senseOk) => ({ re, senseOk });
 var AUTH_TOKEN_QUALIFIER = /\b(?:auth|access|api|bearer|jwt|session|refresh|csrf)\b/i;
-var STATE_TOKEN_SENSE = /\b(?:gate|state|workflow_state|workflow\s+state)\b/i;
 function tokenIsAuthSense(text, start, end) {
   const before = text.slice(Math.max(0, start - 24), start);
   const after = text.slice(end, end + 24);
   const window2 = before + " " + after;
-  if (STATE_TOKEN_SENSE.test(before) || STATE_TOKEN_SENSE.test(after)) return false;
   return AUTH_TOKEN_QUALIFIER.test(window2);
 }
 var KEYWORD_TABLE = {
@@ -32726,10 +32724,36 @@ var KEYWORD_TABLE = {
 };
 var NEGATION_CUES = /* @__PURE__ */ new Set(["no", "not", "without", "zero", "neither", "nor", "none"]);
 var NEGATION_WINDOW = 4;
+var CLAUSE_BOUNDARY_TOKENS = /* @__PURE__ */ new Set(["and", "but", "or", "then", "so", "yet"]);
+var CLAUSE_BOUNDARY_PUNCT = /[,;:.–—]/;
+var ASCII_LETTER = /[a-z]/;
 function precedingTokens(text, matchStart) {
   const slice = text.slice(Math.max(0, matchStart - 48), matchStart).toLowerCase();
-  const tokens = slice.match(/[a-z']+/g);
-  return tokens ? tokens.slice(-NEGATION_WINDOW) : [];
+  const isWordChar = (k) => {
+    const c = slice[k];
+    if (c === void 0) return false;
+    if (ASCII_LETTER.test(c) || c === "'") return true;
+    if (c === "-") return ASCII_LETTER.test(slice[k - 1] ?? "") && ASCII_LETTER.test(slice[k + 1] ?? "");
+    return false;
+  };
+  const inClause = [];
+  let i = slice.length - 1;
+  while (i >= 0 && inClause.length < NEGATION_WINDOW) {
+    if (CLAUSE_BOUNDARY_PUNCT.test(slice[i])) break;
+    if (isWordChar(i)) {
+      let j = i;
+      while (j >= 0 && isWordChar(j)) j--;
+      const word = slice.slice(j + 1, i + 1);
+      i = j;
+      if (word.length === 0) continue;
+      if (CLAUSE_BOUNDARY_TOKENS.has(word)) break;
+      inClause.push(word);
+    } else {
+      if (slice[i] === "-") break;
+      i--;
+    }
+  }
+  return inClause;
 }
 function isNegated(text, start) {
   for (const tok of precedingTokens(text, start)) {
@@ -32905,7 +32929,7 @@ async function listTasks(client, projectId, args) {
 }
 var getTaskTool = {
   name: "get_task",
-  description: "Get full details of a specific task. Returns `pending_resolution` \u2014 the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Also returns `risk_classes` \u2014 a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` surfaces a delegated gate for a human even under --unattended/--escalate.",
+  description: "Get full details of a specific task. Returns `pending_resolution` \u2014 the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Also returns `risk_classes` \u2014 a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run \u2014 the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate).",
   inputSchema: {
     type: "object",
     properties: {

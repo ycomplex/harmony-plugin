@@ -245,6 +245,47 @@ describe('risk-class detector (conductor floor)', () => {
       );
       expect(detectRiskClasses({ text: 'ALTER TABLE tasks ADD COLUMN foo;' })).toContain<RiskClass>('data-migration');
     });
+
+    // -- B-516 review fix: clause-boundary-bounded backward scan + hyphen-aware tokenizer --
+    describe('B-516 review: negation must NOT cross a clause boundary, and hyphenated cues stay intact', () => {
+      it('MUST FIRE — a cue that negates a DIFFERENT clause does not suppress (comma boundary)', () => {
+        // "no" negates *downtime*, not *migration* — the comma stops the backward scan.
+        expect(
+          detectRiskClasses({ text: 'with no downtime, run the migration' }),
+        ).toContain<RiskClass>('data-migration');
+      });
+
+      it('MUST FIRE — `no-op` is one token, not the cue `no` (hyphen-aware tokenizer)', () => {
+        expect(
+          detectRiskClasses({ text: 'no-op guard; ALTER TABLE foo' }),
+        ).toContain<RiskClass>('data-migration');
+      });
+
+      it('MUST FIRE — `none affected; DROP TABLE` — the semicolon stops the scan (none stays safe to keep as a cue)', () => {
+        expect(
+          detectRiskClasses({ text: 'none affected; DROP TABLE staging' }),
+        ).toContain<RiskClass>('irreversible-destructive');
+      });
+
+      it('MUST FIRE — a cue across an em-dash/coordinating-clause boundary does not suppress the next clause', () => {
+        // "no breaking changes" — then "backfill the column" is a fresh clause; the em-dash + the
+        // distance keep `no` out of `backfill`'s in-clause window.
+        expect(
+          detectRiskClasses({ text: 'no breaking changes — backfill the column' }),
+        ).toContain<RiskClass>('data-migration');
+      });
+
+      it('MUST NOT FIRE — the original B-516 enumeration repros stay green (cue is in the SAME clause as the keyword)', () => {
+        expect(
+          detectRiskClasses({ text: 'no schema, no RPC, no migration' }),
+        ).not.toContain<RiskClass>('data-migration');
+        expect(
+          detectRiskClasses({
+            text: 'no second surface (no schema/RPC/DB, no MCP, no migration) to coordinate',
+          }),
+        ).not.toContain<RiskClass>('data-migration');
+      });
+    });
   });
 
   describe('B-516 word-sense tightening (token → auth)', () => {
@@ -278,6 +319,29 @@ describe('risk-class detector (conductor floor)', () => {
     it('the OTHER auth keywords are unaffected by the token guard', () => {
       // "workflow_state gate token" should not fire — but a real login/RLS mention still does.
       expect(detectRiskClasses({ text: 'Tighten the RLS policy on the login flow.' })).toContain<RiskClass>('auth');
+    });
+
+    // -- B-516 review fix: a PRESENT auth qualifier WINS, even when a state word is nearby --
+    describe('B-516 review: a present auth qualifier beats a nearby state word (no over-suppression)', () => {
+      it('MUST FIRE — "validate the bearer token in the gate handler" → auth (bearer qualifier present)', () => {
+        expect(
+          detectRiskClasses({ text: 'validate the bearer token in the gate handler' }),
+        ).toContain<RiskClass>('auth');
+      });
+
+      it('MUST FIRE — "refresh the JWT token used by the state service" → auth (refresh/jwt present)', () => {
+        expect(
+          detectRiskClasses({ text: 'refresh the JWT token used by the state service' }),
+        ).toContain<RiskClass>('auth');
+      });
+
+      it('MUST NOT FIRE — "workflow_state gate token" → not auth (no auth qualifier)', () => {
+        expect(detectRiskClasses({ text: 'workflow_state gate token' })).not.toContain<RiskClass>('auth');
+      });
+
+      it('MUST NOT FIRE — "the gate token advances the state" → not auth (no auth qualifier)', () => {
+        expect(detectRiskClasses({ text: 'the gate token advances the state' })).not.toContain<RiskClass>('auth');
+      });
     });
   });
 
@@ -318,6 +382,25 @@ describe('risk-class detector (conductor floor)', () => {
       expect(
         detectRiskClasses({ text: 'DROP TABLE old_events;', changedPaths: ['src/components/Foo.tsx'] }),
       ).toContain<RiskClass>('irreversible-destructive');
+    });
+
+    // -- B-516 review fix (test gap): the down-weight must also cover shared-core, both directions --
+    it('shared-core: prose mentions a shared-core module but changed_paths touch no shared-core glob → down-weighted', () => {
+      expect(
+        detectRiskClasses({
+          text: 'Edit supabase.ts to add a client option.',
+          changedPaths: ['src/components/Foo.tsx'],
+        }),
+      ).not.toContain<RiskClass>('shared-core');
+    });
+
+    it('shared-core: prose mentions a shared-core module WITH a corroborating shared-core path → still fires', () => {
+      expect(
+        detectRiskClasses({
+          text: 'Edit supabase.ts to add a client option.',
+          changedPaths: ['plugin/src/supabase.ts'],
+        }),
+      ).toContain<RiskClass>('shared-core');
     });
   });
 
