@@ -23,7 +23,7 @@ export interface BriefAlternative {
 /** The canonical structured brief (the BLUF skeleton as data). renderBrief() is its only renderer. */
 export interface BriefDoc {
   decide: string;
-  recommend?: { text: string; confidence?: 'low'; cede?: boolean };
+  recommend?: { text: string; confidence?: 'high' | 'medium' | 'low'; cede?: boolean };
   why?: string[];
   alternatives?: BriefAlternative[];
   context?: string[];
@@ -70,6 +70,8 @@ export function renderBrief(doc: BriefDoc): string {
     let suffix = '';
     if (doc.recommend.cede) suffix = ' (low confidence — this is a values call you should own)';
     else if (doc.recommend.confidence === 'low') suffix = ' (low confidence — see below)';
+    else if (doc.recommend.confidence === 'medium') suffix = ' (moderate confidence)';
+    else if (doc.recommend.confidence === 'high') suffix = ' (high confidence)';
     out.push(`**Recommend${suffix}:** ${doc.recommend.text}`, '');
   }
 
@@ -142,6 +144,14 @@ export function lintBrief(doc: BriefDoc, content: string): BriefLintResult {
   if (words > budget) {
     warnings.push(
       `Brief renders to ${words} words (soft budget ${budget}, tier-aware). Trim noise — but don't amputate reasoning; expose detail via expand instead.`,
+    );
+  }
+
+  // Soft: confidence calibration (B-445 — the signal must be informative, not reflexively absent/low).
+  // Nudge an explicit level on every non-ceded recommendation so confidence carries information.
+  if (doc.recommend && !doc.recommend.cede && !doc.recommend.confidence) {
+    warnings.push(
+      'Recommendation has no confidence level — set an explicit `confidence` (high | medium | low) so the signal carries information; do not leave it unmarked or reflexively low.',
     );
   }
 
@@ -308,7 +318,7 @@ export const composeBriefTool = {
         description: 'The canonical structured BLUF brief. The rendered Markdown blob is derived from this.',
         properties: {
           decide: { type: 'string', description: 'One-line statement of the decision needed' },
-          recommend: { type: 'object', description: '{ text, confidence?: "low", cede?: boolean } — omit when load_bearing_gap (research-first)' },
+          recommend: { type: 'object', description: '{ text, confidence?: "high" | "medium" | "low", cede?: boolean } — omit when load_bearing_gap (research-first)' },
           why: { type: 'array', items: { type: 'string' }, description: '2–3 bullets of reasoning' },
           alternatives: { type: 'array', items: { type: 'object' }, description: '[{ option, rejection }]' },
           context: { type: 'array', items: { type: 'string' }, description: 'Peer decisions / scope / known patterns' },

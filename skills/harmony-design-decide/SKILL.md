@@ -107,7 +107,7 @@ mcp__harmony__compose_brief({
   decision_ref: { type: "technical-design", id: decision.id },
   doc: {
     decide: "Technical approach for the saved-filter store?",
-    recommend: { text: "Reuse the existing per-user settings JSONB column", confidence: "low" },
+    recommend: { text: "Reuse the existing per-user settings JSONB column", confidence: "high" },
     why: ["Existing settings store handles per-user state", "Avoids a new table + RLS"],
     alternatives: [{ option: "New saved_filters table", rejection: "More schema + RLS for v1 scope" }],
     items: [{ kind: "decision", text: "Where saved-filter state lives", recommendation: "settings JSONB" }]

@@ -124,7 +124,7 @@ mcp__harmony__compose_brief({
   decision_ref: { type: "ux-ui-design", id: decision.id },
   doc: {
     decide: "Onboarding setup-depth for the team-barometer first-run?",
-    recommend: { text: "Fixed/standard instrument with a high-friction custom path", confidence: "low" },
+    recommend: { text: "Fixed/standard instrument with a high-friction custom path", confidence: "medium" },
     why: ["Cross-team comparability needs one shared measure", "Lower first-run friction than explicit steps"],
     alternatives: [{ option: "Smart defaults (editable anytime)", rejection: "Optimises easy change; breaks comparability" }],
     items: [{ kind: "decision", text: "Setup-depth = fixed/standard", recommendation: "fixed/standard" }],

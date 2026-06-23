@@ -178,7 +178,7 @@ mcp__harmony__compose_brief({
                                             // ("revising-clarifying" for decompose, "revising-decomposing" for design)
   doc: {
     decide: "Back B-123 up to re-clarify against the broadened scope (the design gate revealed the spec was too narrow)?",
-    recommend: { text: "Revert to Idea and re-run clarify natively against the real scope", confidence: "low" },
+    recommend: { text: "Revert to Idea and re-run clarify natively against the real scope", confidence: "high" },
     why: [
       "The design-gate discussion grew the scope from X to X+Y",
       "The accepted clarify spec + no-split decompose decision assume the narrow scope",
