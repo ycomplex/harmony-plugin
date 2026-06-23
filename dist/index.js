@@ -32632,7 +32632,19 @@ async function resolveBrief(client, projectId, args) {
   const taskId = await resolveTaskId(client, projectId, args.task_id);
   const { data: active, error: lookupErr } = await client.from("briefs").select("id").eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
-  if (!active) throw new Error(`no active brief for task ${args.task_id}`);
+  if (!active) {
+    if (args.command === "accept") {
+      const { data: task, error: taskErr } = await client.from("tasks").select("workflow_state, awaiting_human_reason, awaiting_human_ref").eq("id", taskId).maybeSingle();
+      if (taskErr) throw new Error(taskErr.message);
+      const row = task;
+      if (row?.workflow_state === "Released" && row.awaiting_human_reason === "verification-ack-pending" && row.awaiting_human_ref?.kind === "umbrella-auto-verify") {
+        const { data: data2, error: error3 } = await client.rpc("ack_umbrella_verify", { _task_id: taskId });
+        if (error3) throw new Error(error3.message);
+        return data2;
+      }
+    }
+    throw new Error(`no active brief for task ${args.task_id}`);
+  }
   const { data, error: error2 } = await client.rpc("resolve_brief", {
     _brief_id: active.id,
     _command: args.command,
