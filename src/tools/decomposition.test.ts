@@ -85,6 +85,9 @@ describe('manageSubtasks', () => {
     expect(insertedRows[0].project_id).toBe('proj-1');
     expect(insertedRows[0].epic_id).toBe('epic-1');
     expect(insertedRows[0].parent_task_id).toBeDefined();
+    // B-465: add_new must default status explicitly so the documented example (which omits
+    // status) works without relying on supabase-js dropping undefined + the DB default.
+    expect(insertedRows[0].status).toBe('Backlog');
   });
 
   it('rejects self-attach', async () => {

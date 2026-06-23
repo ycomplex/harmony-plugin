@@ -57,8 +57,10 @@ record a short `specification` decision documenting *why* — then `reference_kn
 Show the rendered `content`. On the human's command:
 - **accept** → first create the children, then advance:
   1. `mcp__harmony__manage_subtasks({ task_id, add_new: [{ title: "...", description: "..." }, ...] })`
-  2. For each new child, bring it to **Idea** (state-machine §8.1 — children start at Idea):
-     `mcp__harmony__advance_workflow({ task_id: <child>, activity: "capturing" })` then
+  2. For each new child, bring it to **Idea** (state-machine §8.1). `manage_subtasks add_new` lands
+     children at **Captured** (the `tasks_default_workflow_state` insert trigger), so promote each one
+     Captured→Idea in a single step — do **not** call `capturing` first (the child is already Captured,
+     so `capturing` has no valid edge and the transition guard rejects it):
      `mcp__harmony__advance_workflow({ task_id: <child>, activity: "promoting" })`.
   3. `mcp__harmony__resolve_brief({ task_id, command: "accept" })` → advances the parent
      Clarified→Decomposed. (For "no decomposition needed", skip 1–2 and just accept.)
