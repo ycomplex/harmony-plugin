@@ -414,7 +414,37 @@ export async function resolveBrief(
     .from('briefs').select('id')
     .eq('task_id', taskId).eq('status', 'active').maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
-  if (!active) throw new Error(`no active brief for task ${args.task_id}`);
+
+  // B-517: a trigger-rolled-up umbrella's verify gate has NO brief (it was auto-released without a
+  // live conductor), so the normal active-brief path can't ack it. When the task is such a brief-less
+  // umbrella-auto-verify sentinel (Released + awaiting verification-ack-pending + ref.kind=
+  // 'umbrella-auto-verify') and the human accepts, advance it Released→Verified via the fixed-contract
+  // RPC instead of erroring. defer/other commands on a brief-less umbrella stay out of scope (still error).
+  if (!active) {
+    if (args.command === 'accept') {
+      const { data: task, error: taskErr } = await client
+        .from('tasks')
+        .select('workflow_state, awaiting_human_reason, awaiting_human_ref')
+        .eq('id', taskId)
+        .maybeSingle();
+      if (taskErr) throw new Error(taskErr.message);
+      const row = task as {
+        workflow_state?: string | null;
+        awaiting_human_reason?: string | null;
+        awaiting_human_ref?: { kind?: string } | null;
+      } | null;
+      if (
+        row?.workflow_state === 'Released' &&
+        row.awaiting_human_reason === 'verification-ack-pending' &&
+        row.awaiting_human_ref?.kind === 'umbrella-auto-verify'
+      ) {
+        const { data, error } = await client.rpc('ack_umbrella_verify', { _task_id: taskId });
+        if (error) throw new Error(error.message);
+        return data;
+      }
+    }
+    throw new Error(`no active brief for task ${args.task_id}`);
+  }
 
   const { data, error } = await client.rpc('resolve_brief', {
     _brief_id: (active as { id: string }).id,

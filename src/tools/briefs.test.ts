@@ -416,3 +416,59 @@ describe('resolveBrief', () => {
     expect(result).toEqual({ brief_id: 'brief-1', command: 'accept', workflow_state: 'Clarified', brief_status: 'accepted', idempotent: true });
   });
 });
+
+// B-517: brief-less umbrella verify-ack. A trigger-rolled-up umbrella's verify gate has no active brief,
+// so the normal path can't ack it; on `accept` of such a sentinel we advance Released→Verified via the
+// fixed-contract ack_umbrella_verify RPC. The normal active-brief path must stay completely unchanged.
+describe('resolveBrief — brief-less umbrella verify-ack (B-517)', () => {
+  // Two queued maybeSingle responses in call order: [active brief lookup] -> [task-row lookup]. rpc returns
+  // its own result. The rpc-name assertions confirm we called the umbrella RPC, not resolve_brief.
+  function makeUmbrellaClient(briefRow: unknown, taskRow: unknown, rpcResult: unknown) {
+    const responses = [{ data: briefRow, error: null }, { data: taskRow, error: null }];
+    let i = 0;
+    const chain: any = {};
+    for (const m of ['from', 'select', 'eq']) chain[m] = vi.fn(() => chain);
+    chain.maybeSingle = vi.fn(async () => responses[i++] ?? { data: null, error: null });
+    chain.rpc = vi.fn(async () => ({ data: rpcResult, error: null }));
+    return chain;
+  }
+
+  const sentinel = {
+    workflow_state: 'Released',
+    awaiting_human_reason: 'verification-ack-pending',
+    awaiting_human_ref: { kind: 'umbrella-auto-verify' },
+  };
+
+  it('on accept with NO active brief, calls ack_umbrella_verify and returns its result', async () => {
+    const rpcResult = { task_id: 'task-1', workflow_state: 'Verified' };
+    const client = makeUmbrellaClient(null, sentinel, rpcResult);
+    const result = await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept' });
+    expect(client.rpc).toHaveBeenCalledWith('ack_umbrella_verify', { _task_id: 'task-1' });
+    // and it did NOT fall through to the resolve_brief RPC
+    expect(client.rpc).not.toHaveBeenCalledWith('resolve_brief', expect.anything());
+    expect(result).toEqual(rpcResult);
+  });
+
+  it('leaves the normal active-brief accept path UNCHANGED — still calls resolve_brief, never ack_umbrella_verify', async () => {
+    // active brief present -> umbrella branch is never entered.
+    const client = makeUmbrellaClient({ id: 'brief-1' }, sentinel, { brief_status: 'accepted' });
+    await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept' });
+    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-1', _command: 'accept', _detail: null });
+    expect(client.rpc).not.toHaveBeenCalledWith('ack_umbrella_verify', expect.anything());
+  });
+
+  it('still errors (no ack) when the brief-less task is NOT an umbrella-auto-verify sentinel', async () => {
+    const notSentinel = { workflow_state: 'Built', awaiting_human_reason: null, awaiting_human_ref: null };
+    const client = makeUmbrellaClient(null, notSentinel, { task_id: 'task-1' });
+    await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept' }))
+      .rejects.toThrow(/no active brief/i);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('does NOT ack a brief-less umbrella on defer — that stays out of scope (still errors)', async () => {
+    const client = makeUmbrellaClient(null, sentinel, { task_id: 'task-1' });
+    await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'defer', detail: 'later' }))
+      .rejects.toThrow(/no active brief/i);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+});
