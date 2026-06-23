@@ -37,6 +37,23 @@ When you find no entry you *should* be answering from knowledge, flag it. Then c
 "I don't know" is never the end state: fill the gap (write knowledge), accept the guess as precedent,
 or trigger research.
 
+## Calibrate confidence honestly — the level carries information (B-445)
+
+A recommendation's `confidence` is a SIGNAL, not boilerplate. Set an explicit level on every (non-ceded)
+recommendation, chosen from the strength of your grounding — never reflexively `low`, never left unmarked:
+
+- **`high`** — strong Accepted + fresh knowledge backs it and the answer is obvious; a human would very
+  likely agree without changes.
+- **`medium`** — reasonable grounding but a real judgement call, or one load-bearing assumption you're
+  comfortable with; worth a glance.
+- **`low`** — thin / conflicting knowledge, a genuine hedge, or a values-heavy call. (For a pure
+  values-call, prefer `cede: true`, which already renders its own low-confidence values line.)
+
+If everything you produce is `low`, the signal carries no information and trains the human to ignore it —
+the exact failure B-445 fixed. The brief lint emits a soft warning when a recommendation has no level, to
+nudge an honest choice. (The dial's auto-advance thresholds that consume this level are a separate,
+deferred decision — ad59f7d5; do not invent numbers.)
+
 ## Deferral is knowledge (§5a — "parked with an alarm clock")
 
 When the human **defers** a brief (the `defer` command), a "not now" is itself a decision worth keeping —

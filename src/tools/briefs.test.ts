@@ -59,6 +59,16 @@ describe('renderBrief', () => {
     expect(md).toContain('**Recommend (low confidence — see below):** Option A');
   });
 
+  it('renders the high-confidence suffix (B-445)', () => {
+    const md = renderBrief(baseDoc({ recommend: { text: 'Option A', confidence: 'high' } }));
+    expect(md).toContain('**Recommend (high confidence):** Option A');
+  });
+
+  it('renders the moderate-confidence suffix (B-445)', () => {
+    const md = renderBrief(baseDoc({ recommend: { text: 'Option A', confidence: 'medium' } }));
+    expect(md).toContain('**Recommend (moderate confidence):** Option A');
+  });
+
   it('renders the alternatives and context sections', () => {
     const md = renderBrief(baseDoc({
       alternatives: [{ option: 'Top-level nav item', rejection: 'crowds the primary nav' }],
@@ -88,9 +98,10 @@ describe('lintBrief', () => {
   const filler = (n: number) => [Array.from({ length: n }, (_, i) => `w${i}`).join(' ')];
 
   it('passes a well-formed decision brief', () => {
-    const r = lint(baseDoc());
+    const r = lint(baseDoc({ recommend: { text: 'Sub-section under project views.', confidence: 'high' } }));
     expect(r.ok).toBe(true);
     expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual([]);
   });
 
   it('flags a naked fork: a decision item with no recommendation', () => {
@@ -161,6 +172,27 @@ describe('lintBrief', () => {
     const r = lint(baseDoc({ items, why: filler(800) }));       // ~860 rendered words > 700
     expect(r.ok).toBe(true);
     expect(r.warnings.join(' ')).toMatch(/soft budget 700/);
+  });
+
+  it('warns (does not fail) when a recommendation has no confidence level (B-445)', () => {
+    const r = lint(baseDoc()); // baseDoc recommend has no confidence level
+    expect(r.ok).toBe(true);
+    expect(r.warnings.join(' ')).toMatch(/no confidence level/i);
+  });
+
+  it('does not nag when an explicit confidence level is set (B-445)', () => {
+    const r = lint(baseDoc({ recommend: { text: 'x', confidence: 'medium' } }));
+    expect(r.warnings.join(' ')).not.toMatch(/no confidence level/i);
+  });
+
+  it('does not nag for a confidence level on a ceded values-call (B-445)', () => {
+    const r = lint(baseDoc({ recommend: { text: 'x', cede: true } }));
+    expect(r.warnings.join(' ')).not.toMatch(/no confidence level/i);
+  });
+
+  it('does not nag for a confidence level on a research-first brief with no recommend (B-445)', () => {
+    const r = lint(baseDoc({ recommend: undefined, load_bearing_gap: true, research: ['Q?'], items: [decision({ deferred: true })] }));
+    expect(r.warnings.join(' ')).not.toMatch(/no confidence level/i);
   });
 });
 

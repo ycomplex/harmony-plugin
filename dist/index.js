@@ -32406,6 +32406,8 @@ function renderBrief(doc) {
     let suffix = "";
     if (doc.recommend.cede) suffix = " (low confidence \u2014 this is a values call you should own)";
     else if (doc.recommend.confidence === "low") suffix = " (low confidence \u2014 see below)";
+    else if (doc.recommend.confidence === "medium") suffix = " (moderate confidence)";
+    else if (doc.recommend.confidence === "high") suffix = " (high confidence)";
     out.push(`**Recommend${suffix}:** ${doc.recommend.text}`, "");
   }
   if (doc.why?.length) {
@@ -32462,6 +32464,11 @@ function lintBrief(doc, content) {
   if (words > budget) {
     warnings.push(
       `Brief renders to ${words} words (soft budget ${budget}, tier-aware). Trim noise \u2014 but don't amputate reasoning; expose detail via expand instead.`
+    );
+  }
+  if (doc.recommend && !doc.recommend.cede && !doc.recommend.confidence) {
+    warnings.push(
+      "Recommendation has no confidence level \u2014 set an explicit `confidence` (high | medium | low) so the signal carries information; do not leave it unmarked or reflexively low."
     );
   }
   return { ok: errors.length === 0, errors, warnings };
@@ -32573,7 +32580,7 @@ var composeBriefTool = {
         description: "The canonical structured BLUF brief. The rendered Markdown blob is derived from this.",
         properties: {
           decide: { type: "string", description: "One-line statement of the decision needed" },
-          recommend: { type: "object", description: '{ text, confidence?: "low", cede?: boolean } \u2014 omit when load_bearing_gap (research-first)' },
+          recommend: { type: "object", description: '{ text, confidence?: "high" | "medium" | "low", cede?: boolean } \u2014 omit when load_bearing_gap (research-first)' },
           why: { type: "array", items: { type: "string" }, description: "2\u20133 bullets of reasoning" },
           alternatives: { type: "array", items: { type: "object" }, description: "[{ option, rejection }]" },
           context: { type: "array", items: { type: "string" }, description: "Peer decisions / scope / known patterns" },

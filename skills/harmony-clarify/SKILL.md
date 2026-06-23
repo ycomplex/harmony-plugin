@@ -74,7 +74,7 @@ mcp__harmony__compose_brief({
   decision_ref: { type: "specification", id: decision.id },
   doc: {
     decide: "Is a 'Saved Filter' per-user or shared at project scope?",
-    recommend: { text: "Per-user, project-scoped — matches existing filter UX", confidence: "low" },
+    recommend: { text: "Per-user, project-scoped — matches existing filter UX", confidence: "medium" },
     why: ["Existing filters are per-user", "No product entry on filter sharing yet"],
     items: [
       { kind: "decision", text: "Scope of a saved filter", recommendation: "Per-user, project-scoped" },
