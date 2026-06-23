@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderBrief, lintBrief, composeBrief, getBrief, resolveBrief, fetchPendingResolution, type BriefDoc, type BriefItem } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, getBrief, resolveBrief, fetchPendingResolution, type BriefDoc, type BriefItem } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -254,6 +254,28 @@ describe('composeBrief', () => {
     await expect(
       composeBrief(client, PROJECT_ID, USER_ID, { task_id: 't', reason: 'bogus' as any, doc: okDoc as any }),
     ).rejects.toThrow(/reason/i);
+  });
+
+  // B-466: a literal pending_activity:null must be accepted and treated as "field omitted".
+  it('advertises pending_activity as nullable so a literal null is a valid input (B-466 — the defect site)', () => {
+    // The defect: the advertised JSON Schema typed pending_activity as 'string', so the MCP client/harness
+    // rejected a literal null before the (already null-safe) handler ran. The contract must permit null.
+    const t = (composeBriefTool.inputSchema.properties as any).pending_activity.type;
+    expect(t).toEqual(['string', 'null']);
+  });
+
+  it('treats pending_activity:null identically to omitting it — writes null, skips the transition guard (B-466 parity)', async () => {
+    // Parity regression-lock: the handler is already null-safe (if(pending_activity) guard + ?? null), so a
+    // literal null must behave exactly like an omitted field — accept advances no state. Insert path only:
+    // [no active brief] -> [insert row] -> [task update]; the transition guard (workflow_transitions) must
+    // NOT be queried.
+    const client = makeClient([{ data: null }, { data: briefRow }, { data: null }]);
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, pending_activity: null as any,
+    });
+    expect(result.lint.ok).toBe(true);
+    expect(client.insert).toHaveBeenCalledWith(expect.objectContaining({ pending_activity: null }));
+    expect(client.from).not.toHaveBeenCalledWith('workflow_transitions');
   });
 });
 
