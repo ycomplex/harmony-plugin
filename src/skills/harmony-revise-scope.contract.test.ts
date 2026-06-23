@@ -106,6 +106,25 @@ describe('harmony-revise-scope skill contract', () => {
     expect(body).toMatch(/re-conduct|re-run.*forward|ready to.*conduct|drives? .*forward/);
   });
 
+  it('B-473: guards child disposition for reverts that cross the decompose gate (two-tier)', () => {
+    const tools = referencedHarmonyTools(skill.body);
+    const body = skill.body.toLowerCase();
+    // detection + execution substrate (get_task already required above)
+    expect(tools).toContain('list_subtasks');     // read the children
+    expect(tools).toContain('update_task');        // archive a child (recoverable)
+    expect(tools).toContain('manage_subtasks');    // reparent a child
+    // the two-tier disposition policy is spelled out
+    expect(body).toMatch(/child[- ]disposition|disposition/);
+    expect(body).toMatch(/archive/);
+    expect(body).toMatch(/reparent/);
+    expect(body).toMatch(/work-?less/);              // Tier 1
+    expect(body).toMatch(/has work|work-?bearing/);  // Tier 2
+    // recoverable archive, never a delete
+    expect(skill.body).toContain('archived: true');
+    // only crosses the gate for clarify/decompose targets (design does not)
+    expect(body).toMatch(/cross.*decompose|decompose.*cross|before .{0,4}decomposed/);
+  });
+
   it('carries the read-only discovery role profile', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
     expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);

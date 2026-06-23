@@ -36,6 +36,14 @@ brief reason, and entry points stale-patch lacks.
 3. **Supersede ONLY what the scope change actually invalidates.** The decisions for unaffected sub-tracks are
    **kept**. The drafted brief lists both (supersede-list vs keep-list) so the human can see exactly what the
    back-up touches.
+4. **Never silently orphan children (B-473).** A revert that **crosses the decompose gate** — a target of
+   **clarify** (→`Idea`) or **decompose** (→`Clarified`), landing *before* `Decomposed`, which supersedes the
+   decompose decision that created this ticket's children — must dispose of those children **explicitly and
+   recoverably**, never leave them orphaned under a re-gated parent. Two tiers: **auto-archive** children with
+   no work; **block + require an explicit per-child disposition** (archive / reparent / cancel) when any child
+   has work. Archive is recoverable (`archived: true`), never a delete. A **design**-target revert lands at
+   `Decomposed` with the decompose decision intact, so it does NOT cross the gate and does NOT trigger this
+   guard.
 
 ## Three ways it gets RAISED; one authority DECIDES it (human accept)
 
@@ -106,6 +114,27 @@ Then, from the gate decisions in step 1, split them into:
 - **keep-list** — the decisions for unaffected sub-tracks, preserved (the "supersede only what's invalidated"
   precedent — quick re-accept of unaffected sub-tracks).
 
+### 3a. Child disposition — only when the target crosses the decompose gate (B-473)
+
+A target of **clarify** (→`Idea`) or **decompose** (→`Clarified`) reverts the ticket to *before* `Decomposed`,
+superseding the decompose decision that **created** this ticket's children — so those children would be
+orphaned. (A **design** target lands at `Decomposed` with the decompose decision intact, so it does **not**
+cross the gate — skip this step.)
+
+When the target crosses the gate, read the children and classify them by whether they have work:
+
+```
+const children = mcp__harmony__list_subtasks({ task_id })   // returns kanban `status`, NOT workflow_state
+// "has work" lives in workflow_state, which list_subtasks does NOT return — so read each non-archived child:
+for (const child of children) {
+  const c = mcp__harmony__get_task({ task_id: child.id })   // c.workflow_state, c.archived
+}
+```
+
+A non-archived child **has work** iff `workflow_state ∉ {Captured, Idea}` (a gate decision was made on it) OR
+it has ≥1 non-archived child of its own. Partition into **work-less** (Tier 1) and **work-bearing** (Tier 2);
+the brief (step 4) and the accept (step 5) act on this partition.
+
 ### 4. Compose the revise-scope-review brief
 
 File the reconciliation as a brief with the new `revise-scope-review` reason. The brief carries only the
@@ -131,6 +160,15 @@ hard-errors until that migration is deployed** — promote in lockstep, web migr
 The brief MUST name: the **target upstream gate**, a **one-paragraph broadened-scope summary**, the
 **supersede-list** (accepted decisions to be superseded), and the **keep-list** (decisions kept — unaffected
 sub-tracks). It does NOT contain the revised decision's content.
+
+**Child disposition (when the target crosses the decompose gate, §3a).** The brief MUST also state the
+disposition of this ticket's children:
+- **Tier 1 — no child has work:** state that the back-up will **auto-archive** the N work-less children
+  (recoverable). No per-child input needed.
+- **Tier 2 — ≥1 child has work:** **list each work-bearing child** (visual ID + title + `workflow_state`) and
+  **gate the accept** on an explicit per-child disposition — **archive** (recoverable), **reparent
+  <new-parent>** (move the work), or **cancel** (abandon the revert). The accept does **not** execute until
+  every work-bearing child has a disposition.
 
 ```
 mcp__harmony__compose_brief({
@@ -164,9 +202,17 @@ ticket surfaces in the human's queue with this decision. The §3.2 lint applies 
 
 Show the rendered `content` verbatim. On the human's command:
 
-- **accept** → execute the back-up, in this order (supersede → revert, so the final guard pass lands the
-  ticket clean). **This flow does NOT author the revised decision** — that is the job of the gate's native
-  re-run (B-529 input-state principle), for ALL targets (clarify / decompose / design):
+- **accept** → execute the back-up, in this order (**dispose children → supersede → revert**, so the final
+  guard pass lands the ticket clean). **This flow does NOT author the revised decision** — that is the job of
+  the gate's native re-run (B-529 input-state principle), for ALL targets (clarify / decompose / design):
+  0. **Dispose of the children FIRST (decompose-crossing targets only — §3a; skip for a design target):**
+     - **archive** (Tier-1 auto, or a Tier-2 choice): `mcp__harmony__update_task({ task_id: <child>, archived: true })`
+       — recoverable; never a delete (the accepted arch rule: a destructive cascade belongs to archive, not delete).
+     - **reparent** (Tier-2 choice): `mcp__harmony__manage_subtasks({ task_id: <new-parent>, add: [<child>] })`
+       — re-points the child's `parent_task_id` so its work survives the re-gate.
+     - **cancel** (Tier-2 choice): abort the whole back-up — do **NOT** supersede, do **NOT** revert; the run
+       stays at the current gate (same as reject).
+     Record each disposition in the resolution detail (the Decision Trail) — supersede-never-delete consistent.
   1. **Supersede the invalidated decisions:** `mcp__harmony__supersede_decision` **each** decision in the
      supersede-list (the target gate's decision + the downstream decisions the scope change invalidates).
      This preserves the Decision Trail; the keep-list is left untouched. There is NO successor to point at —
