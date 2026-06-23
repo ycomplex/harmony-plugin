@@ -18,6 +18,7 @@ import { listActivityTool, listActivity } from './activity.js';
 import { listMembersTool, listMembers } from './members.js';
 import {
   queryKnowledgeTool, queryKnowledge,
+  searchTicketIntentsTool, searchTicketIntents,
   getKnowledgeEntryTool, getKnowledgeEntry,
   createKnowledgeEntryTool, createKnowledgeEntry,
   updateKnowledgeEntryTool, updateKnowledgeEntry,
@@ -63,7 +64,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listCommentsTool, addCommentTool,
     listActivityTool,
     listMembersTool,
-    queryKnowledgeTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
+    queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     composeBriefTool, getBriefTool, resolveBriefTool,
     advanceWorkflowTool,
@@ -160,6 +161,9 @@ export async function handleToolCall(
         break;
       case 'query_knowledge':
         result = await queryKnowledge(client, projectId, args as any);
+        break;
+      case 'search_ticket_intents':
+        result = await searchTicketIntents(client, projectId, args as any);
         break;
       case 'get_knowledge_entry':
         result = await getKnowledgeEntry(client, projectId, args as any);

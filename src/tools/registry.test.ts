@@ -8,4 +8,9 @@ describe('tool registry', () => {
     expect(names).toContain('reference_knowledge');
     expect(names).toContain('list_ticket_knowledge');
   });
+
+  it('registers the B-551 intent-only retrieval tool', () => {
+    const names = registerTools().map((t) => t.name);
+    expect(names).toContain('search_ticket_intents');
+  });
 });
