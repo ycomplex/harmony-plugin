@@ -26287,7 +26287,8 @@ async function manageSubtasks(client, projectId, userId, args) {
       title: input.title,
       description: input.description,
       priority: input.priority ?? "medium",
-      status: input.status,
+      status: input.status ?? "Backlog",
+      // B-465: default explicitly (matches the DB default; don't rely on supabase-js dropping undefined)
       assignee_id: input.assignee_id,
       due_date: input.due_date,
       project_id: input.project_id ?? parent.project_id,
