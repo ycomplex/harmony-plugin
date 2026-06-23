@@ -34744,7 +34744,7 @@ async function listSubtasks(client, projectId, args) {
   let frontier = [rootId];
   let level = 0;
   while (frontier.length > 0 && (depth === -1 || level < depth)) {
-    const { data, error: error2 } = await client.from("tasks").select("id, parent_task_id, task_number, title, status, project_id, archived, created_at").in("parent_task_id", frontier).order("created_at", { ascending: true });
+    const { data, error: error2 } = await client.from("tasks").select("id, parent_task_id, task_number, title, status, workflow_state, awaiting_human_input, awaiting_human_reason, stale, project_id, archived, created_at").in("parent_task_id", frontier).order("created_at", { ascending: true });
     if (error2) throw error2;
     const rows = data ?? [];
     if (rows.length === 0) break;
@@ -34770,7 +34770,7 @@ async function listParent(client, projectId, args) {
   const { data: task, error: taskErr } = await client.from("tasks").select("parent_task_id").eq("id", resolvedId).single();
   if (taskErr) throw taskErr;
   if (!task?.parent_task_id) return null;
-  const { data: parent, error: parentErr } = await client.from("tasks").select("id, task_number, title, status, project_id, archived").eq("id", task.parent_task_id).single();
+  const { data: parent, error: parentErr } = await client.from("tasks").select("id, task_number, title, status, workflow_state, awaiting_human_input, awaiting_human_reason, stale, project_id, archived").eq("id", task.parent_task_id).single();
   if (parentErr) throw parentErr;
   return parent;
 }

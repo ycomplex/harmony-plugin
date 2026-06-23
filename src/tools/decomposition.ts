@@ -29,7 +29,7 @@ export async function listSubtasks(
   while (frontier.length > 0 && (depth === -1 || level < depth)) {
     const { data, error } = await client
       .from('tasks')
-      .select('id, parent_task_id, task_number, title, status, project_id, archived, created_at')
+      .select('id, parent_task_id, task_number, title, status, workflow_state, awaiting_human_input, awaiting_human_reason, stale, project_id, archived, created_at')
       .in('parent_task_id', frontier)
       .order('created_at', { ascending: true });
     if (error) throw error;
@@ -70,7 +70,7 @@ export async function listParent(
 
   const { data: parent, error: parentErr } = await client
     .from('tasks')
-    .select('id, task_number, title, status, project_id, archived')
+    .select('id, task_number, title, status, workflow_state, awaiting_human_input, awaiting_human_reason, stale, project_id, archived')
     .eq('id', task.parent_task_id)
     .single();
   if (parentErr) throw parentErr;
