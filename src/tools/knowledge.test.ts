@@ -8,6 +8,7 @@ import {
   resolveOrCreateEntity,
   queryEntities,
   recordDecision,
+  recordDecisionTool,
   supersedeDecision,
   assertFact,
   invalidateFact,
@@ -1028,6 +1029,39 @@ describe('recordDecision', () => {
     expect(secondChain.insert).toHaveBeenCalledWith(
       expect.objectContaining({ review_by: '2026-08-27T00:00:00Z', source_type: 'research' }),
     );
+  });
+
+  it('persists the realization axis when provided (B-400)', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({
+      data: { ...decisionRow, realization: 'agreed' },
+    });
+    await recordDecision(client, PROJECT_ID, USER_ID, {
+      type: 'technical-design', title: 'decided not yet built', realization: 'agreed',
+    });
+    expect(secondChain.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ realization: 'agreed' }),
+    );
+  });
+
+  it('omits realization from the insert when not provided (NULL ≡ live, B-400)', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    await recordDecision(client, PROJECT_ID, USER_ID, {
+      type: 'business', title: 'no realization given',
+    });
+    expect(secondChain.insert.mock.calls[0][0]).not.toHaveProperty('realization');
+  });
+});
+
+describe('recordDecisionTool schema', () => {
+  it('exposes the realization property with its enum (B-400)', () => {
+    const props = recordDecisionTool.inputSchema.properties as Record<string, any>;
+    expect(props.realization).toBeDefined();
+    expect(props.realization.enum).toEqual(['agreed', 'live', 'deprecating', 'retired']);
+  });
+
+  it('does not require realization (callers opt in)', () => {
+    const required = (recordDecisionTool.inputSchema as any).required as string[];
+    expect(required).not.toContain('realization');
   });
 });
 

@@ -39,6 +39,7 @@ export interface KnowledgeDecisionFull {
   content: string;
   type: string;
   status: string;              // Asserted | Accepted | Superseded | Archived
+  realization?: string | null;  // null ≡ live | agreed | live | deprecating | retired (orthogonal to status)
   domain: string[];
   confidence: number;
   review_by: string | null;
@@ -57,7 +58,7 @@ export interface KnowledgeDecisionFull {
 }
 
 const DECISION_COLS =
-  'id, workspace_id, project_id, title, content, type, status, domain, confidence, review_by, drift_risk, ' +
+  'id, workspace_id, project_id, title, content, type, status, realization, domain, confidence, review_by, drift_risk, ' +
   'superseded_by, affected_entity_ids, madr, source_type, source_id, source_activity, tags, source_task_id, ' +
   'created_by, created_at, updated_at';
 
@@ -430,7 +431,7 @@ export async function getKnowledgeEntry(
   let query = client
     .from('knowledge_decisions')
     .select(
-      'id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at',
+      'id, workspace_id, project_id, title, content, type, status, realization, superseded_by, tags, source_task_id, created_by, created_at, updated_at',
     )
     .eq('workspace_id', workspaceId)
     .eq('project_id', projectId);
@@ -643,6 +644,7 @@ export interface RecordDecisionArgs {
   tags?: string[];
   source_task_id?: string;
   review_by?: string;   // ISO timestamp; freshness/decay date (knowledge-model-v1 §3)
+  realization?: string; // implementation state (orthogonal to status); omit ⇒ NULL ≡ live. agreed | live | deprecating | retired
 }
 
 export async function recordDecision(
@@ -682,6 +684,7 @@ export async function recordDecision(
   if (args.tags !== undefined) record.tags = args.tags;
   if (args.source_task_id !== undefined) record.source_task_id = args.source_task_id;
   if (args.review_by !== undefined) record.review_by = args.review_by;
+  if (args.realization !== undefined) record.realization = args.realization;
 
   const { data, error } = await client
     .from('knowledge_decisions')
@@ -794,6 +797,7 @@ export const recordDecisionTool = {
       domain: { type: 'array', items: { type: 'string' }, description: 'Domains: engineering, operations, data, product, customer, process' },
       affected_entity_names: { type: 'array', items: { type: 'string' }, description: 'Entity names this decision touches (resolved/created in knowledge_entities)' },
       status: { type: 'string', description: 'Override status (default "Asserted")' },
+      realization: { type: 'string', enum: ['agreed', 'live', 'deprecating', 'retired'], description: 'Implementation/realization state (orthogonal to status); omit ⇒ NULL ≡ live; "agreed" = decided-not-yet-built' },
       source_type: { type: 'string', description: "ticket | adr | manual | inferred | research (default 'manual')" },
       source_id: { type: 'string', description: 'Pointer back to the producing ticket/source' },
       source_activity: { type: 'string', description: 'The gate/skill that authored it (e.g. design-decide, clarify)' },
