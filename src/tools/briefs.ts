@@ -39,7 +39,20 @@ export interface BriefLintResult {
   warnings: string[];
 }
 
-const WORD_BUDGET = 300; // §3.2 soft budget (~250–300)
+// §3.2 soft budget — TIER-AWARE (B-467). A flat ~300 cap false-flagged legitimately-larger briefs
+// (a medium-tier brief hit 390w live); scale the budget by the brief's own structural size
+// (decisions + alternatives) so the warning fires on bloat-for-tier, not mere length. Soft: warns,
+// never fails — preserves the expose-expand-not-amputate convention.
+const WORD_BUDGET_BASE = 300;
+const WORD_BUDGET_PER_UNIT = 75;
+const WORD_BUDGET_MAX = 700;
+
+/** Tier-aware soft word budget: base + per-unit × (decisions + alternatives), clamped to a max. */
+function softWordBudget(doc: BriefDoc): number {
+  const units = doc.items.length + (doc.alternatives?.length ?? 0);
+  return Math.min(WORD_BUDGET_BASE + WORD_BUDGET_PER_UNIT * units, WORD_BUDGET_MAX);
+}
+
 const DEFAULT_TAIL = 'Type `accept`, `edit`, `iterate <feedback>`, or `defer`.';
 
 /** Render the canonical doc to the §3.1 BLUF Markdown blob, deterministically. */
@@ -122,11 +135,13 @@ export function lintBrief(doc: BriefDoc, content: string): BriefLintResult {
     }
   }
 
-  // Soft: word budget (§3.2 — soft, not enforced: trim noise, don't amputate reasoning).
+  // Soft: word budget (§3.2 — soft, not enforced: trim noise, don't amputate reasoning). Tier-aware
+  // (B-467): the budget scales with the brief's structural size so larger decisions aren't false-flagged.
   const words = content.trim().split(/\s+/).filter(Boolean).length;
-  if (words > WORD_BUDGET) {
+  const budget = softWordBudget(doc);
+  if (words > budget) {
     warnings.push(
-      `Brief renders to ${words} words (soft budget ${WORD_BUDGET}). Trim noise — but don't amputate reasoning; expose detail via expand instead.`,
+      `Brief renders to ${words} words (soft budget ${budget}, tier-aware). Trim noise — but don't amputate reasoning; expose detail via expand instead.`,
     );
   }
 

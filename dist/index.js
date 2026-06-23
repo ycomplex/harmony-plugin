@@ -32386,7 +32386,13 @@ async function resolveAssignee(client, projectId, assignee) {
 }
 
 // src/tools/briefs.ts
-var WORD_BUDGET = 300;
+var WORD_BUDGET_BASE = 300;
+var WORD_BUDGET_PER_UNIT = 75;
+var WORD_BUDGET_MAX = 700;
+function softWordBudget(doc) {
+  const units = doc.items.length + (doc.alternatives?.length ?? 0);
+  return Math.min(WORD_BUDGET_BASE + WORD_BUDGET_PER_UNIT * units, WORD_BUDGET_MAX);
+}
 var DEFAULT_TAIL = "Type `accept`, `edit`, `iterate <feedback>`, or `defer`.";
 function renderBrief(doc) {
   const out = [];
@@ -32452,9 +32458,10 @@ function lintBrief(doc, content) {
     }
   }
   const words = content.trim().split(/\s+/).filter(Boolean).length;
-  if (words > WORD_BUDGET) {
+  const budget = softWordBudget(doc);
+  if (words > budget) {
     warnings.push(
-      `Brief renders to ${words} words (soft budget ${WORD_BUDGET}). Trim noise \u2014 but don't amputate reasoning; expose detail via expand instead.`
+      `Brief renders to ${words} words (soft budget ${budget}, tier-aware). Trim noise \u2014 but don't amputate reasoning; expose detail via expand instead.`
     );
   }
   return { ok: errors.length === 0, errors, warnings };
