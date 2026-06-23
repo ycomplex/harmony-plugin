@@ -26024,7 +26024,7 @@ async function getKnowledgeEntry(client, projectId, args) {
   }
   const workspaceId = await getWorkspaceId(client, projectId);
   let query = client.from("knowledge_decisions").select(
-    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+    "id, workspace_id, project_id, title, content, type, status, realization, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
   ).eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.entry_id) {
     query = query.eq("id", args.entry_id);

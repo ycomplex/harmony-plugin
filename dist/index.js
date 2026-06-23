@@ -33606,7 +33606,7 @@ async function listActivity(client, projectId, args) {
 }
 
 // src/tools/knowledge.ts
-var DECISION_COLS = "id, workspace_id, project_id, title, content, type, status, domain, confidence, review_by, drift_risk, superseded_by, affected_entity_ids, madr, source_type, source_id, source_activity, tags, source_task_id, created_by, created_at, updated_at";
+var DECISION_COLS = "id, workspace_id, project_id, title, content, type, status, realization, domain, confidence, review_by, drift_risk, superseded_by, affected_entity_ids, madr, source_type, source_id, source_activity, tags, source_task_id, created_by, created_at, updated_at";
 var FACT_COLS = "id, workspace_id, project_id, subject_entity_id, predicate, object, confidence, status, domain, source_type, source_id, valid_from, valid_to, recorded_at, created_by";
 var ENTITY_COLS = "id, workspace_id, project_id, kind, name, description, metadata, created_at";
 var queryKnowledgeTool = {
@@ -33844,7 +33844,7 @@ async function getKnowledgeEntry(client, projectId, args) {
   }
   const workspaceId = await getWorkspaceId(client, projectId);
   let query = client.from("knowledge_decisions").select(
-    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+    "id, workspace_id, project_id, title, content, type, status, realization, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
   ).eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.entry_id) {
     query = query.eq("id", args.entry_id);
@@ -33961,6 +33961,7 @@ ${args.content ?? ""}`);
   if (args.tags !== void 0) record2.tags = args.tags;
   if (args.source_task_id !== void 0) record2.source_task_id = args.source_task_id;
   if (args.review_by !== void 0) record2.review_by = args.review_by;
+  if (args.realization !== void 0) record2.realization = args.realization;
   const { data, error: error2 } = await client.from("knowledge_decisions").insert(record2).select(DECISION_COLS).single();
   if (error2) {
     if (error2.code === "23505") {
@@ -34021,6 +34022,7 @@ var recordDecisionTool = {
       domain: { type: "array", items: { type: "string" }, description: "Domains: engineering, operations, data, product, customer, process" },
       affected_entity_names: { type: "array", items: { type: "string" }, description: "Entity names this decision touches (resolved/created in knowledge_entities)" },
       status: { type: "string", description: 'Override status (default "Asserted")' },
+      realization: { type: "string", enum: ["agreed", "live", "deprecating", "retired"], description: 'Implementation/realization state (orthogonal to status); omit \u21D2 NULL \u2261 live; "agreed" = decided-not-yet-built' },
       source_type: { type: "string", description: "ticket | adr | manual | inferred | research (default 'manual')" },
       source_id: { type: "string", description: "Pointer back to the producing ticket/source" },
       source_activity: { type: "string", description: "The gate/skill that authored it (e.g. design-decide, clarify)" },
