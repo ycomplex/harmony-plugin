@@ -410,6 +410,79 @@ export async function queryKnowledge(
 }
 
 // ---------------------------------------------------------------------------
+// Handler: searchTicketIntents (B-551 Phase 2 — the intent-only retrieval surface)
+// ---------------------------------------------------------------------------
+
+export interface TicketIntentMatch {
+  id: string;              // the knowledge_decisions intent-row id
+  source_task_id: string;  // the originating TICKET (what the caller actually wants)
+  content: string;         // title + description (raw ticket intent)
+  score: number;           // RRF fusion score (higher = more relevant)
+}
+
+export interface SearchTicketIntentsArgs {
+  query: string;
+  limit?: number;
+}
+
+/**
+ * B-551 Phase 2 (READ half): find tickets whose raw intent overlaps a query, via the
+ * intent-only retrieval surface (search_ticket_intents). This is the MIRROR IMAGE of
+ * query_knowledge's RRF search — same hybrid pgvector ⊕ pg_trgm RRF mechanism — but it
+ * returns ONLY type='intent' rows (status-agnostic), surfacing the originating ticket.
+ *
+ * Unlike query_knowledge (Accepted-only design-grounding, physically intent-free), this
+ * surface never returns a design/spec/convention decision and never bleeds into the design
+ * corpus. Its purpose is dedup-on-create / "is someone already asking for this?" (B-475).
+ *
+ * NULL-embedding tolerant (mirrors queryKnowledge): we best-effort embed the query; if the
+ * embed fn is down we pass null and the RPC degrades to trigram-only. A freshly-created,
+ * not-yet-embedded intent is still found by lexical overlap on its content.
+ */
+export async function searchTicketIntents(
+  client: SupabaseClient,
+  projectId: string,
+  args: SearchTicketIntentsArgs,
+): Promise<TicketIntentMatch[]> {
+  if (!args.query?.trim()) throw new Error('query is required');
+
+  const workspaceId = await getWorkspaceId(client, projectId);
+
+  const queryEmbedding = await embedText(client, args.query);   // may be null -> RPC degrades to trigram-only
+  const { data, error } = await (client as any).rpc('search_ticket_intents', {
+    _workspace_id: workspaceId,
+    _project_id: projectId,
+    _query_embedding: queryEmbedding,
+    _query_text: args.query,
+    _match_limit: args.limit ?? 50,
+  });
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as Array<Record<string, unknown>>).map((d) => ({
+    id: d.id,
+    source_task_id: d.source_task_id,
+    content: d.content,
+    score: d.score,
+  })) as unknown as TicketIntentMatch[];
+}
+
+export const searchTicketIntentsTool = {
+  name: 'search_ticket_intents',
+  description:
+    'Find existing TICKETS whose raw intent (title + description) overlaps a query — the intent-only retrieval surface (hybrid semantic + trigram RRF, ranked by relevance). Use this to check whether a ticket already captures what someone is about to ask for (dedup / "is this already requested?"). This is SEPARATE from query_knowledge: it returns ONLY ticket-intent rows (status-agnostic) and never a design/spec/convention decision, so the two corpora never bleed. Returns each match as { source_task_id, content, score }; resolve source_task_id with get_task to inspect the ticket.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      query: {
+        type: 'string',
+        description: 'Free-text query describing the intent to look for — matched against ticket title+description via hybrid semantic + trigram retrieval (RRF).',
+      },
+      limit: { type: 'number', description: 'Max matches to return. Default 50.' },
+    },
+    required: ['query'],
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Handler: getKnowledgeEntry
 // ---------------------------------------------------------------------------
 

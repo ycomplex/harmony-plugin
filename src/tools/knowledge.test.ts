@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   queryKnowledge,
+  searchTicketIntents,
+  searchTicketIntentsTool,
   getKnowledgeEntry,
   createKnowledgeEntry,
   updateKnowledgeEntry,
@@ -330,6 +332,108 @@ describe('queryKnowledge', () => {
     const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [] });
     await queryKnowledge(client, PROJECT_ID, { as_of: '2026-01-01T00:00:00Z' });
     expect(secondChain.lte).toHaveBeenCalledWith('valid_from', '2026-01-01T00:00:00Z');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// searchTicketIntents (B-551 Phase 2 — intent-only retrieval surface)
+// ---------------------------------------------------------------------------
+
+// Build a client whose .from('projects') resolves the workspace, a functions.invoke for
+// embedText, and an .rpc() stub for search_ticket_intents.
+function buildIntentSearchClient(opts: {
+  rpcData?: any;
+  rpcError?: any;
+  embedding?: number[] | null;
+}) {
+  const wsChain: any = {};
+  wsChain.select = vi.fn().mockReturnValue(wsChain);
+  wsChain.eq = vi.fn().mockReturnValue(wsChain);
+  wsChain.single = vi.fn().mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
+  const client: any = {
+    from: vi.fn().mockReturnValue(wsChain),
+    functions: {
+      invoke: vi.fn().mockResolvedValue(
+        opts.embedding === null
+          ? { data: null, error: { message: 'down' } }
+          : { data: { embedding: opts.embedding ?? [0.1, 0.2] }, error: null },
+      ),
+    },
+    rpc: vi.fn().mockResolvedValue({ data: opts.rpcData ?? [], error: opts.rpcError ?? null }),
+  };
+  return { client, wsChain };
+}
+
+describe('searchTicketIntents', () => {
+  const sampleIntentRows = [
+    { id: 'kd-intent-1', source_task_id: 'task-aaa', content: 'Add dark mode toggle\n\nUsers want a dark theme', score: 0.0333 },
+    { id: 'kd-intent-2', source_task_id: 'task-bbb', content: 'Theme switcher in settings\n\nLight/dark', score: 0.0163 },
+  ];
+
+  it('calls the search_ticket_intents RPC and maps source_task_id + content + score', async () => {
+    const { client } = buildIntentSearchClient({ rpcData: sampleIntentRows });
+    const result = await searchTicketIntents(client, PROJECT_ID, { query: 'dark theme' });
+
+    expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: 'dark theme' } });
+    expect(client.rpc).toHaveBeenCalledWith('search_ticket_intents', expect.objectContaining({
+      _workspace_id: WORKSPACE_ID,
+      _project_id: PROJECT_ID,
+      _query_embedding: '[0.1,0.2]',
+      _query_text: 'dark theme',
+      _match_limit: 50,
+    }));
+    expect(result).toEqual([
+      { id: 'kd-intent-1', source_task_id: 'task-aaa', content: 'Add dark mode toggle\n\nUsers want a dark theme', score: 0.0333 },
+      { id: 'kd-intent-2', source_task_id: 'task-bbb', content: 'Theme switcher in settings\n\nLight/dark', score: 0.0163 },
+    ]);
+  });
+
+  it('passes the caller limit through as _match_limit', async () => {
+    const { client } = buildIntentSearchClient({ rpcData: [] });
+    await searchTicketIntents(client, PROJECT_ID, { query: 'export', limit: 5 });
+    expect(client.rpc).toHaveBeenCalledWith('search_ticket_intents', expect.objectContaining({ _match_limit: 5 }));
+  });
+
+  it('degrades to trigram-only (null embedding) when the embed fn is down', async () => {
+    const { client } = buildIntentSearchClient({ rpcData: [], embedding: null });
+    await searchTicketIntents(client, PROJECT_ID, { query: 'webhook retry' });
+    expect(client.rpc).toHaveBeenCalledWith('search_ticket_intents', expect.objectContaining({
+      _query_embedding: null,
+      _query_text: 'webhook retry',
+    }));
+  });
+
+  it('does NOT pass a status / type / domain arg (intent-only, status-agnostic by design)', async () => {
+    const { client } = buildIntentSearchClient({ rpcData: [] });
+    await searchTicketIntents(client, PROJECT_ID, { query: 'anything' });
+    const rpcArg = client.rpc.mock.calls[0][1];
+    expect(rpcArg).not.toHaveProperty('_domain');
+    expect(rpcArg).not.toHaveProperty('_status');
+    expect(rpcArg).not.toHaveProperty('_type');
+  });
+
+  it('requires a non-empty query', async () => {
+    const { client } = buildIntentSearchClient({ rpcData: [] });
+    await expect(searchTicketIntents(client, PROJECT_ID, { query: '   ' })).rejects.toThrow('query is required');
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an RPC error', async () => {
+    const { client } = buildIntentSearchClient({ rpcData: null, rpcError: { message: 'boom' } });
+    await expect(searchTicketIntents(client, PROJECT_ID, { query: 'dark' })).rejects.toThrow('boom');
+  });
+
+  it('returns [] when the RPC yields no matches', async () => {
+    const { client } = buildIntentSearchClient({ rpcData: [] });
+    const result = await searchTicketIntents(client, PROJECT_ID, { query: 'nothing matches' });
+    expect(result).toEqual([]);
+  });
+
+  it('exposes a tool definition with query required and a limit param', () => {
+    expect(searchTicketIntentsTool.name).toBe('search_ticket_intents');
+    expect(searchTicketIntentsTool.inputSchema.required).toEqual(['query']);
+    expect(searchTicketIntentsTool.inputSchema.properties).toHaveProperty('query');
+    expect(searchTicketIntentsTool.inputSchema.properties).toHaveProperty('limit');
   });
 });
 

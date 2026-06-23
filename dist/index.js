@@ -33864,6 +33864,40 @@ async function queryKnowledge(client, projectId, args) {
   if (error2) throw new Error(error2.message);
   return data ?? [];
 }
+async function searchTicketIntents(client, projectId, args) {
+  if (!args.query?.trim()) throw new Error("query is required");
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const queryEmbedding = await embedText(client, args.query);
+  const { data, error: error2 } = await client.rpc("search_ticket_intents", {
+    _workspace_id: workspaceId,
+    _project_id: projectId,
+    _query_embedding: queryEmbedding,
+    _query_text: args.query,
+    _match_limit: args.limit ?? 50
+  });
+  if (error2) throw new Error(error2.message);
+  return (data ?? []).map((d) => ({
+    id: d.id,
+    source_task_id: d.source_task_id,
+    content: d.content,
+    score: d.score
+  }));
+}
+var searchTicketIntentsTool = {
+  name: "search_ticket_intents",
+  description: 'Find existing TICKETS whose raw intent (title + description) overlaps a query \u2014 the intent-only retrieval surface (hybrid semantic + trigram RRF, ranked by relevance). Use this to check whether a ticket already captures what someone is about to ask for (dedup / "is this already requested?"). This is SEPARATE from query_knowledge: it returns ONLY ticket-intent rows (status-agnostic) and never a design/spec/convention decision, so the two corpora never bleed. Returns each match as { source_task_id, content, score }; resolve source_task_id with get_task to inspect the ticket.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "Free-text query describing the intent to look for \u2014 matched against ticket title+description via hybrid semantic + trigram retrieval (RRF)."
+      },
+      limit: { type: "number", description: "Max matches to return. Default 50." }
+    },
+    required: ["query"]
+  }
+};
 async function getKnowledgeEntry(client, projectId, args) {
   if (!args.entry_id && !args.title) {
     throw new Error("Either entry_id or title must be provided");
@@ -35080,6 +35114,7 @@ function registerTools(disabledFeatures) {
     listActivityTool,
     listMembersTool,
     queryKnowledgeTool,
+    searchTicketIntentsTool,
     getKnowledgeEntryTool,
     createKnowledgeEntryTool,
     updateKnowledgeEntryTool,
@@ -35174,6 +35209,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "query_knowledge":
         result = await queryKnowledge(client, projectId, args);
+        break;
+      case "search_ticket_intents":
+        result = await searchTicketIntents(client, projectId, args);
         break;
       case "get_knowledge_entry":
         result = await getKnowledgeEntry(client, projectId, args);
