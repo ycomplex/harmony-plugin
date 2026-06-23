@@ -150,7 +150,7 @@ export interface ComposeBriefArgs {
   doc: BriefDoc;
   expand_sections?: Record<string, string>;
   related?: unknown[];
-  pending_activity?: string;
+  pending_activity?: string | null;
   decision_ref?: DecisionRef;
 }
 
@@ -319,7 +319,7 @@ export const composeBriefTool = {
       },
       expand_sections: { type: 'object', description: 'Pre-generated expand content keyed by section: reasoning/alternatives/history' },
       related: { type: 'array', description: 'Pre-generated related decisions/tickets/knowledge' },
-      pending_activity: { type: 'string', description: 'The workflow activity `accept` applies (e.g. clarifying, decomposing, releasing, verifying). Validated against the transition table. Omit if accept advances no state.' },
+      pending_activity: { type: ['string', 'null'], description: 'The workflow activity `accept` applies (e.g. clarifying, decomposing, releasing, verifying). A real activity is validated against the transition table; null or omitted ⇒ accept advances no state.' },
       decision_ref: { type: 'object', description: 'The Asserted knowledge entry to promote on accept: { type: "decision", id: "<uuid>" }' },
     },
     required: ['task_id', 'reason', 'doc'],
