@@ -68,7 +68,7 @@ mcp__harmony__compose_brief({
 })
 ```
 
-Report that the ticket is Built and awaiting release; the human runs `/harmony-plugin:finish-work`.
+Report that the ticket is Built and awaiting release; the human runs the **release gate** (`/harmony-plugin:finish-work`) — see `skills/harmony-shared/gate-routing.md` for the gate vocabulary.
 
 ---
 

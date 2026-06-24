@@ -152,21 +152,25 @@ describe('harmony-conduct skill contract', () => {
     expect(skill.body).toContain('awaiting_human_input');
   });
 
-  it('walks the full forward path by delegating to each owning gate skill in order', () => {
-    // Every gate skill in the lifecycle must be a delegation target.
-    for (const gate of [
-      'harmony-clarify',
-      'harmony-decompose',
-      'harmony-design-decide',
-      'start-work',
-      'finish-work',
-    ]) {
-      expect(skill.body, `missing delegation to ${gate}`).toContain(gate);
-    }
-    // The forward states it routes on (the §6.1 path).
+  it('B-545: reads the canonical routing from harmony-shared/gate-routing.md (not a hand-copied map)', () => {
+    // The routing FACTS (owning skill per gate, pure/side-effecting, hard floor) live in the shared
+    // SSoT and are asserted in shared.test.ts. Here we assert the conductor REFERENCES that doc rather
+    // than restating the gate table inline — removing the B-526 drift hazard B-545 targets.
+    expect(skill.body).toContain('harmony-shared/gate-routing.md');
+    // It reads that table keyed by workflow_state (its projection) and still names the forward path.
+    expect(skill.body).toContain('workflow_state');
     for (const state of ['Idea', 'Clarified', 'Decomposed', 'Designed', 'Planned', 'Built', 'Released', 'Verified']) {
-      expect(skill.body, `missing state ${state} in the map`).toContain(state);
+      expect(skill.body, `missing forward state ${state}`).toContain(state);
     }
+  });
+
+  it('B-545: keeps its conduct-SPECIFIC handling inline (the deliberate divergence from harmony-next is NOT shared)', () => {
+    const body = skill.body.toLowerCase();
+    // Captured → auto-advance promoting as plumbing (the OPPOSITE of harmony-next's triage-stop).
+    expect(skill.body).toContain('promoting');
+    expect(body).toMatch(/auto-advance.*promoting|promoting.*plumbing|plumbing, not a pause/);
+    // Decomposed split-umbrella → report-and-stop (the B-471/B-506 branch).
+    expect(body).toMatch(/report-and-stop|split umbrella|report and stop/);
   });
 
   it('routes a Stale ticket to the patch author rather than advancing it', () => {

@@ -23,6 +23,13 @@ describe('harmony-next skill contract', () => {
       expect(skill.body).toContain(r);
     }
   });
+
+  it('B-545: reads the canonical owning-skill routing from harmony-shared/gate-routing.md (not a hand-copied map)', () => {
+    // The gate->owning-skill map is no longer hand-copied here (it mirrored harmony-conduct's map — the
+    // B-526 drift hazard). harmony-next references the shared SSoT and keeps only its OWN handling: the
+    // pure-vs-delegate accept classification (asserted in the next test) and the Captured triage-stop.
+    expect(skill.body).toContain('harmony-shared/gate-routing.md');
+  });
   it('restricts inline accept to the pure gates and delegates the side-effecting ones (F1)', () => {
     expect(skill.body.toLowerCase()).toContain('delegate');
     expect(skill.body.toLowerCase()).toContain('pure gate');
