@@ -364,6 +364,15 @@ After the synthesized accept, briefly note it for the human's audit trail, e.g.:
 **<gate>** gate (accepted on your behalf per `--unattended`); recorded its decision. Continuing…"* Then
 **resume the loop at step 1** (re-read the ticket; the gate skill has advanced the state). Do not pause.
 
+**Build evidence lands as part of the build/release/verify accept side-effects (B-560).** Just as a gate
+skill's accept records its Accepted knowledge, the build/release/verify gates LAND build evidence on the
+ticket as part of their accept: `start-work` records test cases + checks the satisfied ACs at build,
+`finish-work` comments the PR→merge→deploy trail at release and the verify result at verify, and the verify
+brief ALWAYS carries a mechanical evidence-status line from `get_build_evidence_status` (like the §4
+release-brief risk signal). This holds identically whether the gate was controlled or auto-advanced — see
+those gate skills and `skills/harmony-shared/gate-routing.md`. (A split-umbrella roll-up is exempt: its
+evidence is carried by its children.)
+
 ### The state → activity map (the §6.1 forward path)
 
 Branch on `workflow_state` to pick the next gate. **The canonical gate→owning-skill routing — which skill

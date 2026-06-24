@@ -35135,6 +35135,69 @@ async function attachFile(client, projectId, args) {
   };
 }
 
+// src/tools/evidence-status.ts
+var COMMENT_TRAIL_RE = /\b(?:prs?|pull requests?|ci|merg\w*|deploy\w*|#\d+)\b/i;
+var getBuildEvidenceStatusTool = {
+  name: "get_build_evidence_status",
+  description: "Read-only. The CANONICAL definition (single source of truth) of whether a conducted ticket carries the build evidence required by Verified. Derives \u2014 never writes \u2014 from the ticket's own records: `has_test_cases` (>=1 test case), `all_acs_checked` (>=1 acceptance criterion AND every one checked), `has_comment_trail` (>=1 comment mentioning a PR/merge/deploy/CI signal). `is_umbrella` is true when the task has >=1 non-archived child; an umbrella is EXEMPT (its evidence is carried by its children \u2014 e.g. a B-471 split-umbrella roll-up), so `complete` is true and `exempt_reason` is set. For a leaf ticket carrying its own build, `complete` = has_test_cases && all_acs_checked && has_comment_trail, and `missing` lists the gaps in human-readable form. Used by finish-work's verify brief to render a mechanical evidence-status line (like the B-516 release-brief risk signal) and reusable by the Decision Trail.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)"
+      }
+    },
+    required: ["task_id"]
+  }
+};
+async function getBuildEvidenceStatus(client, projectId, args) {
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const [childrenRes, testCasesRes, acsRes, commentsRes] = await Promise.all([
+    client.from("tasks").select("id, archived").eq("parent_task_id", resolvedId),
+    client.from("test_cases").select("id").eq("task_id", resolvedId),
+    client.from("acceptance_criteria").select("id, checked").eq("task_id", resolvedId),
+    client.from("task_comments").select("content").eq("task_id", resolvedId)
+  ]);
+  if (childrenRes.error) throw childrenRes.error;
+  if (testCasesRes.error) throw testCasesRes.error;
+  if (acsRes.error) throw acsRes.error;
+  if (commentsRes.error) throw commentsRes.error;
+  const children = childrenRes.data ?? [];
+  const testCases = testCasesRes.data ?? [];
+  const acs = acsRes.data ?? [];
+  const comments = commentsRes.data ?? [];
+  const is_umbrella = children.some((c) => c.archived !== true);
+  const has_test_cases = testCases.length >= 1;
+  const all_acs_checked = acs.length >= 1 && acs.every((a) => a.checked === true);
+  const has_comment_trail = comments.some((c) => typeof c.content === "string" && COMMENT_TRAIL_RE.test(c.content));
+  const complete = is_umbrella ? true : has_test_cases && all_acs_checked && has_comment_trail;
+  const exempt_reason = is_umbrella ? "umbrella \u2014 evidence carried by children" : null;
+  const missing = [];
+  if (!complete && !is_umbrella) {
+    if (!has_test_cases) missing.push("test cases");
+    if (!all_acs_checked) {
+      const unchecked = acs.filter((a) => a.checked !== true).length;
+      if (acs.length === 0) {
+        missing.push("acceptance criteria (none created)");
+      } else {
+        missing.push(`${unchecked} unchecked acceptance criteria`);
+      }
+    }
+    if (!has_comment_trail) missing.push("PR/merge/deploy comment trail");
+  }
+  return {
+    task_id: resolvedId,
+    is_umbrella,
+    has_test_cases,
+    all_acs_checked,
+    has_comment_trail,
+    complete,
+    exempt_reason,
+    missing
+  };
+}
+
 // src/tools/index.ts
 function registerTools(disabledFeatures) {
   const tools = [
@@ -35169,7 +35232,8 @@ function registerTools(disabledFeatures) {
     resolveBriefTool,
     advanceWorkflowTool,
     referenceKnowledgeTool,
-    listTicketKnowledgeTool
+    listTicketKnowledgeTool,
+    getBuildEvidenceStatusTool
   ];
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
   if (!disabledFeatures?.labels) tools.push(listLabelsTool, createLabelTool, manageTaskLabelsTool);
@@ -35350,6 +35414,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "list_ticket_knowledge":
         result = await listTicketKnowledge(client, projectId, args);
+        break;
+      case "get_build_evidence_status":
+        result = await getBuildEvidenceStatus(client, projectId, args);
         break;
       case "download_attachment":
         result = await downloadAttachment(client, args);

@@ -51,7 +51,21 @@ The accept IS the "go" to build.
 
 Create the isolated worktree (invoke `superpowers:using-git-worktrees`) and save `.harmony-task.json`
 exactly as in the manual flow. Implement, write tests, self-validate against acceptance criteria
-(`mcp__harmony__manage_acceptance_criteria`, `mcp__harmony__manage_test_cases`). When tests pass:
+(`mcp__harmony__manage_acceptance_criteria`, `mcp__harmony__manage_test_cases`).
+
+**When the build completes, LAND the build evidence on the ticket BEFORE advancing — ORDERED &
+NON-OPTIONAL (B-560).** Gates only advance `workflow_state`; a delegated/worktree build never touches the
+ticket, so the evidence must be recorded here or it is lost (B-551 reached Verified with zero build trail).
+Do these two steps, in order, before composing the release brief:
+
+1. **Record the test cases** from the build's tests — `mcp__harmony__manage_test_cases({ task_id, add: [...] })`
+   (one entry per test/spec the build added or relies on; `type: "integration"` / `"e2e"`).
+2. **Check the acceptance criteria the build satisfies** — `mcp__harmony__manage_acceptance_criteria({ task_id, update: [{ id, checked: true }, ...] })`
+   for each AC the work now meets (create any missing ACs first via `add`). By Built, the ACs the build
+   satisfied should be checked.
+
+(This is the canonical evidence the verify gate's mechanical evidence-status line reads — see
+`get_build_evidence_status` and finish-work O3.) Then advance:
 
 ```
 mcp__harmony__advance_workflow({ task_id, activity: "building" })   // Planned -> Built
