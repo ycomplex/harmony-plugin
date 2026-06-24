@@ -12,13 +12,21 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 //      to pass as _query_embedding (else NULL → trigram-only degrade).
 //   2. Route 2 (intent semantic+lexical): search_ticket_intents RPC (B-551).
 //      Route 1 (lexical content): search_tasks RPC (B-552) — catches exact/near dupes.
+//      Both RPCs return rows in ranked order, so the array index IS the rank. We FUSE
+//      the two routes with Reciprocal Rank Fusion (RRF) — a task's combined score is the
+//      SUM over the routes that surfaced it of 1/(K + rank), K=60 (B-574). RRF fuses by
+//      RANK, not raw value, so the two incommensurable score scales (route-2 RRF ~0.01–0.03
+//      vs route-1 trigram similarity ~0–1) can no longer let one route dominate the other.
 //   3. Self-exclude the subject ticket.
 //   4. Enrich each candidate via a tasks lookup → visual_id, title, workflow_state,
-//      milestone_id, archived. Drop archived candidates.
-//   5. Rank by score; cap at limit (default 5).
-//   6. Flag unmilestoned = (milestone_id IS NULL); SORT unmilestoned first (a flag/
-//      sort, NOT a filter — milestoned candidates are still returned). NOT keyed on
-//      any 'Tech Debt' epic (project-specific, non-portable).
+//      milestone_id, archived. Drop archived AND terminal-dead (Cancelled / Parked)
+//      candidates. KEEP Verified / Released — they are valid dedup signals (already
+//      delivered), not fold targets.
+//   5. Rank PURELY by combined RRF score (DESC); cap at limit (default 5). No
+//      unmilestoned-first reordering — relevance order is authoritative (B-574).
+//   6. Flag unmilestoned = (milestone_id IS NULL) for the renderer to BADGE (not a
+//      filter and NOT a sort key — milestoned candidates are still returned in
+//      relevance order). NOT keyed on any 'Tech Debt' epic (project-specific, non-portable).
 //   7. Empty → explicit empty set (caller renders "none found"). Route-2 error/
 //      unavailable → degrade gracefully (return route-1 results, mark degraded:true;
 //      NEVER throw out of the clarify gate).
@@ -35,8 +43,8 @@ export interface RelatedTicketCandidate {
   title: string;
   workflow_state: string | null;
   milestone_id: string | null;
-  unmilestoned: boolean;            // milestone_id IS NULL (elevated; sorted first)
-  score: number;                    // best route score (RRF for route 2, similarity for route 1)
+  unmilestoned: boolean;            // milestone_id IS NULL (a renderer BADGE flag, NOT a sort key)
+  score: number;                    // combined cross-route RRF score: SUM of 1/(K+rank) over routes (K=60)
   routes: string[];                 // which route(s) surfaced it: 'intent' and/or 'lexical'
 }
 
@@ -47,6 +55,10 @@ export interface FindRelatedTicketsResult {
 }
 
 const DEFAULT_LIMIT = 5;
+
+// Reciprocal Rank Fusion constant. Matches the codebase RRF constant (`_k DEFAULT 60`
+// in the search_ticket_intents RPC). RRF combines route ranks as 1/(K + rank).
+const RRF_K = 60;
 
 /**
  * B-475 P1: find tickets related to / duplicating / overlapping a subject ticket.
@@ -83,7 +95,7 @@ export async function findRelatedTickets(
   const workspaceId = await getWorkspaceId(client, projectId);
   const subjectEmbedding = await resolveIntentEmbedding(client, workspaceId, projectId, subjectId);
 
-  // accumulate best score + routes per candidate task id
+  // accumulate combined cross-route RRF score + routes per candidate task id
   const byTask = new Map<string, { score: number; routes: Set<string> }>();
   let degraded = false;
 
@@ -100,11 +112,13 @@ export async function findRelatedTickets(
     if (error) {
       degraded = true;
     } else {
-      for (const row of (data ?? []) as Array<Record<string, unknown>>) {
+      // Rows are already ranked (ORDER BY score DESC) — the array index IS the rank.
+      const rows = (data ?? []) as Array<Record<string, unknown>>;
+      rows.forEach((row, i) => {
         const tid = row.source_task_id as string | null;
-        if (!tid) continue;
-        accumulate(byTask, tid, Number(row.score ?? 0), 'intent');
-      }
+        if (!tid) return;
+        accumulateRrf(byTask, tid, i + 1, 'intent');
+      });
     }
   } catch {
     // route 2 unavailable — degrade gracefully, never throw out of the clarify gate
@@ -122,11 +136,13 @@ export async function findRelatedTickets(
         _include_archived: false,
       });
       if (!error) {
-        for (const row of (data ?? []) as Array<Record<string, unknown>>) {
+        // Rows are already ranked (similarity DESC) — the array index IS the rank.
+        const rows = (data ?? []) as Array<Record<string, unknown>>;
+        rows.forEach((row, i) => {
           const tid = row.task_id as string | null;
-          if (!tid) continue;
-          accumulate(byTask, tid, Number(row.similarity ?? 0), 'lexical');
-        }
+          if (!tid) return;
+          accumulateRrf(byTask, tid, i + 1, 'lexical');
+        });
       }
     } catch {
       // route 1 unavailable — keep route 2's contribution
@@ -140,7 +156,9 @@ export async function findRelatedTickets(
     return { subject_task_id: subjectId, candidates: [], degraded };
   }
 
-  // 4. Enrich each candidate via a tasks lookup. Drop archived candidates.
+  // 4. Enrich each candidate via a tasks lookup. Drop archived AND terminal-dead
+  //    (Cancelled / Parked) candidates — neither foldable nor a useful signal. KEEP
+  //    Verified / Released — they are valid dedup signals (already delivered).
   const candidateIds = [...byTask.keys()];
   const { data: rows, error: enrichErr } = await client
     .from('tasks')
@@ -151,7 +169,8 @@ export async function findRelatedTickets(
 
   const candidates: RelatedTicketCandidate[] = [];
   for (const r of (rows ?? []) as Array<Record<string, any>>) {
-    if (r.archived) continue;                    // drop archived candidates
+    if (r.archived) continue;                            // drop archived candidates
+    if (DEAD_WORKFLOW_STATES.has(r.workflow_state)) continue;  // drop Cancelled / Parked (dead)
     const agg = byTask.get(r.id);
     if (!agg) continue;
     const projectKey = r.projects?.key ?? '?';
@@ -162,18 +181,15 @@ export async function findRelatedTickets(
       title: r.title,
       workflow_state: r.workflow_state ?? null,
       milestone_id: r.milestone_id ?? null,
-      unmilestoned: r.milestone_id == null,      // elevation FLAG (not a filter)
+      unmilestoned: r.milestone_id == null,      // renderer BADGE flag (not a filter, not a sort key)
       score: agg.score,
       routes: [...agg.routes].sort(),
     });
   }
 
-  // 5 + 6. Rank by score, then SORT unmilestoned-first (flag elevates, never filters —
-  //        milestoned candidates remain in the set). Cap at limit.
-  candidates.sort((a, b) => {
-    if (a.unmilestoned !== b.unmilestoned) return a.unmilestoned ? -1 : 1;  // unmilestoned first
-    return b.score - a.score;                                               // then score DESC
-  });
+  // 5. Rank PURELY by combined RRF score (DESC) — relevance order is authoritative.
+  //    The unmilestoned flag is carried for the renderer to badge, NOT reordered. Cap at limit.
+  candidates.sort((a, b) => b.score - a.score);
 
   return {
     subject_task_id: subjectId,
@@ -184,18 +200,27 @@ export async function findRelatedTickets(
 
 // --- helpers ---------------------------------------------------------------
 
-function accumulate(
+// Terminal-dead states dropped from the candidate set (neither foldable nor a useful
+// dedup signal). Verified / Released are deliberately NOT here — they are valid dedup
+// signals ("already delivered") and must still surface.
+const DEAD_WORKFLOW_STATES = new Set(['Cancelled', 'Parked']);
+
+/** Add a route's Reciprocal Rank Fusion contribution for a task. A task surfaced by
+ *  both routes accumulates a contribution from each (SUM), fusing the two routes by
+ *  RANK — not by raw value — so incommensurable score scales can't dominate each other. */
+function accumulateRrf(
   byTask: Map<string, { score: number; routes: Set<string> }>,
   taskId: string,
-  score: number,
+  rank: number,
   route: string,
 ): void {
+  const contribution = 1 / (RRF_K + rank);
   const existing = byTask.get(taskId);
   if (existing) {
-    existing.score = Math.max(existing.score, score);
+    existing.score += contribution;
     existing.routes.add(route);
   } else {
-    byTask.set(taskId, { score, routes: new Set([route]) });
+    byTask.set(taskId, { score: contribution, routes: new Set([route]) });
   }
 }
 
@@ -278,7 +303,7 @@ async function resolveTaskId(
 export const findRelatedTicketsTool = {
   name: 'find_related_tickets',
   description:
-    'Surface tickets related to / duplicating / overlapping a subject ticket — the dedup pipeline used at the clarify gate. Runs intent retrieval (semantic+lexical over ticket intents) UNIONed with lexical content matching over tasks, self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), drops archived, ranks by score and SORTS unmilestoned candidates first (an elevation flag — milestoned candidates are still returned, never filtered out). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. Degrades gracefully (returns lexical-only results with degraded:true) if intent retrieval is unavailable.',
+    'Surface tickets related to / duplicating / overlapping a subject ticket — the dedup pipeline used at the clarify gate. Runs intent retrieval (semantic+lexical over ticket intents) FUSED with lexical content matching over tasks via Reciprocal Rank Fusion (RRF by rank across the two routes — not a raw max — so the routes’ incommensurable score scales can’t dominate each other), self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), and ranks PURELY by relevance (combined RRF score). Excludes archived + Cancelled + Parked candidates; KEEPS Verified / Released (valid dedup signals — already delivered). Unmilestoned candidates are FLAGGED (`unmilestoned: true`) for the renderer to badge — they are NOT reordered (relevance order is authoritative). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. Degrades gracefully (returns lexical-only results with degraded:true) if intent retrieval is unavailable.',
   inputSchema: {
     type: 'object' as const,
     properties: {

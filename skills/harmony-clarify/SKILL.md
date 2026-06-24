@@ -72,14 +72,18 @@ dedup pipeline:
 mcp__harmony__find_related_tickets({ task_id })   // top ~5; pass limit to widen
 ```
 
-Render a **"Related / duplicate / overlapping tickets"** card from the result. One row
-per candidate, **unmilestoned candidates grouped first** (they are elevated, not
-filtered — milestoned candidates still appear below them), each row showing:
+Render a **"Related / duplicate / overlapping tickets"** card from the result as a
+**SINGLE relevance-ranked list** — the candidates arrive in relevance order (RRF fused
+across the intent + lexical routes), and **that order is authoritative**. Do NOT group,
+section, or reorder. One row per candidate, each row showing:
 
 - **id** (visual id, e.g. `B-123`) + **title**
 - **state** (`workflow_state`) and **milestone** — or the literal **"unmilestoned"** when `milestone_id` is null
 - a **one-line relatedness reason** (why it overlaps — paraphrase the shared intent; note which routes surfaced it, `intent` and/or `lexical`)
 - a **recommended disposition**: `fold` (this ticket should be absorbed into that umbrella), `dedupe` (that ticket is the same ask — absorb this one into it), or `ignore` (related but distinct)
+- **badges** (salience only — they NEVER reorder the list; relevance order stays authoritative):
+  - **"⚠ deferred — fold while you're here"** for any candidate with `unmilestoned: true`
+  - **"⚠ may already be delivered"** for any candidate whose `workflow_state` is `Verified` or `Released` (a dedup signal — *not* a fold target)
 
 If `candidates` is empty, render **"Related tickets: none found"** explicitly. If the
 result has `degraded: true`, note that intent retrieval was unavailable and the list is

@@ -33487,6 +33487,7 @@ var searchTasksTool = {
 
 // src/tools/find-related-tickets.ts
 var DEFAULT_LIMIT = 5;
+var RRF_K = 60;
 async function findRelatedTickets(client, projectId, args) {
   if (!args.task_id?.trim()) throw new Error("task_id is required");
   const limit = args.limit ?? DEFAULT_LIMIT;
@@ -33513,11 +33514,12 @@ async function findRelatedTickets(client, projectId, args) {
     if (error2) {
       degraded = true;
     } else {
-      for (const row of data ?? []) {
+      const rows2 = data ?? [];
+      rows2.forEach((row, i) => {
         const tid = row.source_task_id;
-        if (!tid) continue;
-        accumulate(byTask, tid, Number(row.score ?? 0), "intent");
-      }
+        if (!tid) return;
+        accumulateRrf(byTask, tid, i + 1, "intent");
+      });
     }
   } catch {
     degraded = true;
@@ -33531,11 +33533,12 @@ async function findRelatedTickets(client, projectId, args) {
         _include_archived: false
       });
       if (!error2) {
-        for (const row of data ?? []) {
+        const rows2 = data ?? [];
+        rows2.forEach((row, i) => {
           const tid = row.task_id;
-          if (!tid) continue;
-          accumulate(byTask, tid, Number(row.similarity ?? 0), "lexical");
-        }
+          if (!tid) return;
+          accumulateRrf(byTask, tid, i + 1, "lexical");
+        });
       }
     } catch {
     }
@@ -33550,6 +33553,7 @@ async function findRelatedTickets(client, projectId, args) {
   const candidates = [];
   for (const r of rows ?? []) {
     if (r.archived) continue;
+    if (DEAD_WORKFLOW_STATES.has(r.workflow_state)) continue;
     const agg = byTask.get(r.id);
     if (!agg) continue;
     const projectKey = r.projects?.key ?? "?";
@@ -33561,28 +33565,27 @@ async function findRelatedTickets(client, projectId, args) {
       workflow_state: r.workflow_state ?? null,
       milestone_id: r.milestone_id ?? null,
       unmilestoned: r.milestone_id == null,
-      // elevation FLAG (not a filter)
+      // renderer BADGE flag (not a filter, not a sort key)
       score: agg.score,
       routes: [...agg.routes].sort()
     });
   }
-  candidates.sort((a, b) => {
-    if (a.unmilestoned !== b.unmilestoned) return a.unmilestoned ? -1 : 1;
-    return b.score - a.score;
-  });
+  candidates.sort((a, b) => b.score - a.score);
   return {
     subject_task_id: subjectId,
     candidates: candidates.slice(0, limit),
     degraded
   };
 }
-function accumulate(byTask, taskId, score, route) {
+var DEAD_WORKFLOW_STATES = /* @__PURE__ */ new Set(["Cancelled", "Parked"]);
+function accumulateRrf(byTask, taskId, rank, route) {
+  const contribution = 1 / (RRF_K + rank);
   const existing = byTask.get(taskId);
   if (existing) {
-    existing.score = Math.max(existing.score, score);
+    existing.score += contribution;
     existing.routes.add(route);
   } else {
-    byTask.set(taskId, { score, routes: /* @__PURE__ */ new Set([route]) });
+    byTask.set(taskId, { score: contribution, routes: /* @__PURE__ */ new Set([route]) });
   }
 }
 async function getWorkspaceId(client, projectId) {
@@ -33621,7 +33624,7 @@ async function resolveTaskId2(client, projectId, input) {
 }
 var findRelatedTicketsTool = {
   name: "find_related_tickets",
-  description: "Surface tickets related to / duplicating / overlapping a subject ticket \u2014 the dedup pipeline used at the clarify gate. Runs intent retrieval (semantic+lexical over ticket intents) UNIONed with lexical content matching over tasks, self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), drops archived, ranks by score and SORTS unmilestoned candidates first (an elevation flag \u2014 milestoned candidates are still returned, never filtered out). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. Degrades gracefully (returns lexical-only results with degraded:true) if intent retrieval is unavailable.",
+  description: "Surface tickets related to / duplicating / overlapping a subject ticket \u2014 the dedup pipeline used at the clarify gate. Runs intent retrieval (semantic+lexical over ticket intents) FUSED with lexical content matching over tasks via Reciprocal Rank Fusion (RRF by rank across the two routes \u2014 not a raw max \u2014 so the routes\u2019 incommensurable score scales can\u2019t dominate each other), self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), and ranks PURELY by relevance (combined RRF score). Excludes archived + Cancelled + Parked candidates; KEEPS Verified / Released (valid dedup signals \u2014 already delivered). Unmilestoned candidates are FLAGGED (`unmilestoned: true`) for the renderer to badge \u2014 they are NOT reordered (relevance order is authoritative). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. Degrades gracefully (returns lexical-only results with degraded:true) if intent retrieval is unavailable.",
   inputSchema: {
     type: "object",
     properties: {
