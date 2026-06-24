@@ -33485,6 +33485,235 @@ var searchTasksTool = {
   }
 };
 
+// src/tools/find-related-tickets.ts
+var DEFAULT_LIMIT = 5;
+async function findRelatedTickets(client, projectId, args) {
+  if (!args.task_id?.trim()) throw new Error("task_id is required");
+  const limit = args.limit ?? DEFAULT_LIMIT;
+  const subjectId = await resolveTaskId2(client, projectId, args.task_id);
+  const { data: subject, error: subjectErr } = await client.from("tasks").select("id, title, description").eq("project_id", projectId).eq("id", subjectId).single();
+  if (subjectErr || !subject) {
+    throw new Error(`Could not resolve subject ticket: ${subjectErr?.message ?? "not found"}`);
+  }
+  const queryText = `${subject.title ?? ""} ${subject.description ?? ""}`.trim();
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const subjectEmbedding = await resolveIntentEmbedding(client, workspaceId, projectId, subjectId);
+  const byTask = /* @__PURE__ */ new Map();
+  let degraded = false;
+  try {
+    const { data, error: error2 } = await client.rpc("search_ticket_intents", {
+      _workspace_id: workspaceId,
+      _project_id: projectId,
+      _query_embedding: subjectEmbedding,
+      // may be null → trigram-only
+      _query_text: queryText || subject.title || "",
+      // over-fetch so self-exclusion + archived-drop don't starve the top-N
+      _match_limit: Math.max(limit * 4, 20)
+    });
+    if (error2) {
+      degraded = true;
+    } else {
+      for (const row of data ?? []) {
+        const tid = row.source_task_id;
+        if (!tid) continue;
+        accumulate(byTask, tid, Number(row.score ?? 0), "intent");
+      }
+    }
+  } catch {
+    degraded = true;
+  }
+  if (queryText) {
+    try {
+      const { data, error: error2 } = await client.rpc("search_tasks", {
+        _project_id: projectId,
+        _query_text: queryText,
+        _match_limit: Math.max(limit * 4, 20),
+        _include_archived: false
+      });
+      if (!error2) {
+        for (const row of data ?? []) {
+          const tid = row.task_id;
+          if (!tid) continue;
+          accumulate(byTask, tid, Number(row.similarity ?? 0), "lexical");
+        }
+      }
+    } catch {
+    }
+  }
+  byTask.delete(subjectId);
+  if (byTask.size === 0) {
+    return { subject_task_id: subjectId, candidates: [], degraded };
+  }
+  const candidateIds = [...byTask.keys()];
+  const { data: rows, error: enrichErr } = await client.from("tasks").select("id, task_number, title, workflow_state, milestone_id, archived, projects(key)").eq("project_id", projectId).in("id", candidateIds);
+  if (enrichErr) throw new Error(`Could not enrich candidates: ${enrichErr.message}`);
+  const candidates = [];
+  for (const r of rows ?? []) {
+    if (r.archived) continue;
+    const agg = byTask.get(r.id);
+    if (!agg) continue;
+    const projectKey = r.projects?.key ?? "?";
+    candidates.push({
+      id: r.id,
+      task_number: r.task_number,
+      visual_id: `${projectKey}-${r.task_number}`,
+      title: r.title,
+      workflow_state: r.workflow_state ?? null,
+      milestone_id: r.milestone_id ?? null,
+      unmilestoned: r.milestone_id == null,
+      // elevation FLAG (not a filter)
+      score: agg.score,
+      routes: [...agg.routes].sort()
+    });
+  }
+  candidates.sort((a, b) => {
+    if (a.unmilestoned !== b.unmilestoned) return a.unmilestoned ? -1 : 1;
+    return b.score - a.score;
+  });
+  return {
+    subject_task_id: subjectId,
+    candidates: candidates.slice(0, limit),
+    degraded
+  };
+}
+function accumulate(byTask, taskId, score, route) {
+  const existing = byTask.get(taskId);
+  if (existing) {
+    existing.score = Math.max(existing.score, score);
+    existing.routes.add(route);
+  } else {
+    byTask.set(taskId, { score, routes: /* @__PURE__ */ new Set([route]) });
+  }
+}
+async function getWorkspaceId(client, projectId) {
+  const { data, error: error2 } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
+  if (error2) throw new Error(`Could not resolve workspace: ${error2.message}`);
+  return data.workspace_id;
+}
+async function resolveIntentEmbedding(client, workspaceId, projectId, taskId) {
+  try {
+    const { data, error: error2 } = await client.from("knowledge_decisions").select("embedding").eq("workspace_id", workspaceId).eq("project_id", projectId).eq("source_task_id", taskId).eq("type", "intent").not("embedding", "is", null).limit(1).maybeSingle();
+    if (error2 || !data?.embedding) return null;
+    return typeof data.embedding === "string" ? data.embedding : `[${data.embedding.join(",")}]`;
+  } catch {
+    return null;
+  }
+}
+var UUID_RE2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+var BARE_NUMBER_RE2 = /^\d+$/;
+var VISUAL_ID_RE2 = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
+async function resolveTaskId2(client, projectId, input) {
+  if (UUID_RE2.test(input)) return input;
+  let taskNumber;
+  const visualMatch = input.match(VISUAL_ID_RE2);
+  if (BARE_NUMBER_RE2.test(input)) {
+    taskNumber = parseInt(input, 10);
+  } else if (visualMatch) {
+    taskNumber = parseInt(visualMatch[2], 10);
+  } else {
+    throw new Error(
+      `Invalid task identifier '${input}'. Use a UUID, task number (e.g., 43), or visual ID (e.g., B-43).`
+    );
+  }
+  const { data, error: error2 } = await client.from("tasks").select("id").eq("project_id", projectId).eq("task_number", taskNumber).single();
+  if (error2 || !data) throw new Error(`No task with number ${taskNumber} in this project`);
+  return data.id;
+}
+var findRelatedTicketsTool = {
+  name: "find_related_tickets",
+  description: "Surface tickets related to / duplicating / overlapping a subject ticket \u2014 the dedup pipeline used at the clarify gate. Runs intent retrieval (semantic+lexical over ticket intents) UNIONed with lexical content matching over tasks, self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), drops archived, ranks by score and SORTS unmilestoned candidates first (an elevation flag \u2014 milestoned candidates are still returned, never filtered out). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. Degrades gracefully (returns lexical-only results with degraded:true) if intent retrieval is unavailable.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "The subject ticket \u2014 UUID, task number (e.g. 475), or visual ID (e.g. B-475). Its title+description is the query and its intent embedding (if any) grounds semantic retrieval."
+      },
+      limit: { type: "number", description: "Max candidates to return. Default 5." }
+    },
+    required: ["task_id"]
+  }
+};
+
+// src/tools/subsume-task.ts
+async function subsumeTask(client, projectId, args) {
+  if (!args.task_id?.trim()) throw new Error("task_id is required");
+  if (!args.subsumed_by_task_id?.trim()) throw new Error("subsumed_by_task_id is required");
+  const absorbedId = await resolveTaskId3(client, projectId, args.task_id);
+  const umbrellaId = await resolveTaskId3(client, projectId, args.subsumed_by_task_id);
+  if (absorbedId === umbrellaId) {
+    throw new Error("A ticket cannot be subsumed by itself");
+  }
+  const { data: absorbed, error: absorbedErr } = await client.from("tasks").select("id, project_id, subsumed_by_task_id, archived").eq("project_id", projectId).eq("id", absorbedId).single();
+  if (absorbedErr || !absorbed) {
+    throw new Error(`Could not load ticket to subsume: ${absorbedErr?.message ?? "not found"}`);
+  }
+  if (absorbed.subsumed_by_task_id === umbrellaId && absorbed.archived) {
+    return {
+      task_id: absorbedId,
+      subsumed_by_task_id: umbrellaId,
+      archived: true,
+      already_subsumed: true,
+      ...args.reason ? { reason: args.reason } : {}
+    };
+  }
+  const { data: umbrella, error: umbrellaErr } = await client.from("tasks").select("id").eq("project_id", projectId).eq("id", umbrellaId).single();
+  if (umbrellaErr || !umbrella) {
+    throw new Error(`Umbrella ticket not found in this project: ${umbrellaErr?.message ?? umbrellaId}`);
+  }
+  const { error: updateErr } = await client.from("tasks").update({ subsumed_by_task_id: umbrellaId, archived: true }).eq("project_id", projectId).eq("id", absorbedId);
+  if (updateErr) throw new Error(`Could not subsume ticket: ${updateErr.message}`);
+  return {
+    task_id: absorbedId,
+    subsumed_by_task_id: umbrellaId,
+    archived: true,
+    already_subsumed: false,
+    ...args.reason ? { reason: args.reason } : {}
+  };
+}
+var UUID_RE3 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+var BARE_NUMBER_RE3 = /^\d+$/;
+var VISUAL_ID_RE3 = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
+async function resolveTaskId3(client, projectId, input) {
+  if (UUID_RE3.test(input)) return input;
+  let taskNumber;
+  const visualMatch = input.match(VISUAL_ID_RE3);
+  if (BARE_NUMBER_RE3.test(input)) {
+    taskNumber = parseInt(input, 10);
+  } else if (visualMatch) {
+    taskNumber = parseInt(visualMatch[2], 10);
+  } else {
+    throw new Error(
+      `Invalid task identifier '${input}'. Use a UUID, task number (e.g., 43), or visual ID (e.g., B-43).`
+    );
+  }
+  const { data, error: error2 } = await client.from("tasks").select("id").eq("project_id", projectId).eq("task_number", taskNumber).single();
+  if (error2 || !data) throw new Error(`No task with number ${taskNumber} in this project`);
+  return data.id;
+}
+var subsumeTaskTool = {
+  name: "subsume_task",
+  description: `Mark a ticket as SUBSUMED BY (absorbed into) an umbrella ticket \u2014 the fold/dedupe disposition from the clarify gate. Sets the absorbed ticket's subsumed_by_task_id pointer, archives it, and logs a task_subsumed activity event, in one call. Idempotent: re-running with the same umbrella is a no-op. EXPLICIT-ACTION ONLY \u2014 call this only when a human chose to fold/dedupe a related ticket; it is never invoked automatically by find_related_tickets. Does NOT create a dependency edge (wrong semantics \u2014 "subsumed by" is absorption, not blocking).`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "The ticket being absorbed/folded \u2014 UUID, task number, or visual ID (e.g. B-475)."
+      },
+      subsumed_by_task_id: {
+        type: "string",
+        description: "The umbrella ticket that absorbs it \u2014 UUID, task number, or visual ID."
+      },
+      reason: {
+        type: "string",
+        description: "Optional human-supplied rationale for the fold (recorded on the activity event)."
+      }
+    },
+    required: ["task_id", "subsumed_by_task_id"]
+  }
+};
+
 // src/tools/comments.ts
 var listCommentsTool = {
   name: "list_comments",
@@ -33794,7 +34023,7 @@ var supersedeKnowledgeEntryTool = {
     required: ["new_title", "new_content"]
   }
 };
-async function getWorkspaceId(client, projectId) {
+async function getWorkspaceId2(client, projectId) {
   const { data, error: error2 } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
   if (error2) throw new Error(`Could not resolve workspace: ${error2.message}`);
   return data.workspace_id;
@@ -33850,7 +34079,7 @@ function toBaseStatus(status) {
   return base;
 }
 async function queryKnowledge(client, projectId, args) {
-  const workspaceId = await getWorkspaceId(client, projectId);
+  const workspaceId = await getWorkspaceId2(client, projectId);
   if (args.search) {
     const incompatible = [];
     if (args.status) incompatible.push("status");
@@ -33904,7 +34133,7 @@ async function queryKnowledge(client, projectId, args) {
 }
 async function searchTicketIntents(client, projectId, args) {
   if (!args.query?.trim()) throw new Error("query is required");
-  const workspaceId = await getWorkspaceId(client, projectId);
+  const workspaceId = await getWorkspaceId2(client, projectId);
   const queryEmbedding = await embedText(client, args.query);
   const { data, error: error2 } = await client.rpc("search_ticket_intents", {
     _workspace_id: workspaceId,
@@ -33940,7 +34169,7 @@ async function getKnowledgeEntry(client, projectId, args) {
   if (!args.entry_id && !args.title) {
     throw new Error("Either entry_id or title must be provided");
   }
-  const workspaceId = await getWorkspaceId(client, projectId);
+  const workspaceId = await getWorkspaceId2(client, projectId);
   let query = client.from("knowledge_decisions").select(
     "id, workspace_id, project_id, title, content, type, status, realization, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
   ).eq("workspace_id", workspaceId).eq("project_id", projectId);
@@ -33957,7 +34186,7 @@ async function createKnowledgeEntry(client, projectId, userId, args) {
   if (!args.title?.trim()) {
     throw new Error("title is required");
   }
-  const workspaceId = await getWorkspaceId(client, projectId);
+  const workspaceId = await getWorkspaceId2(client, projectId);
   const record2 = {
     workspace_id: workspaceId,
     project_id: projectId,
@@ -33992,7 +34221,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
   if (!hasUpdates) {
     throw new Error("At least one field to update must be provided");
   }
-  const workspaceId = await getWorkspaceId(client, projectId);
+  const workspaceId = await getWorkspaceId2(client, projectId);
   const updates = {};
   if (args.new_title !== void 0) updates.title = args.new_title.trim();
   if (args.content !== void 0) updates.content = args.content;
@@ -34033,7 +34262,7 @@ async function resolveOrCreateEntity(client, workspaceId, projectId, name, kind 
 async function recordDecision(client, projectId, userId, args) {
   if (!args.title?.trim()) throw new Error("title is required");
   if (!args.type) throw new Error("type is required");
-  const workspaceId = await getWorkspaceId(client, projectId);
+  const workspaceId = await getWorkspaceId2(client, projectId);
   const affectedIds = [];
   for (const name of args.affected_entity_names ?? []) {
     affectedIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name));
@@ -34071,7 +34300,7 @@ ${args.content ?? ""}`);
 }
 async function supersedeDecision(client, projectId, userId, args) {
   if (!args.old_decision_id) throw new Error("old_decision_id is required");
-  const workspaceId = await getWorkspaceId(client, projectId);
+  const workspaceId = await getWorkspaceId2(client, projectId);
   const { data: existing, error: fetchErr } = await client.from("knowledge_decisions").select("id").eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.old_decision_id).single();
   if (fetchErr || !existing) {
     throw new Error(`Decision ${args.old_decision_id} not found in this project`);
@@ -34132,7 +34361,7 @@ var recordDecisionTool = {
   }
 };
 async function queryEntities(client, projectId, args) {
-  const workspaceId = await getWorkspaceId(client, projectId);
+  const workspaceId = await getWorkspaceId2(client, projectId);
   let query = client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId);
   if (args.kind) query = query.eq("kind", args.kind);
   if (args.name) query = query.ilike("name", `%${args.name}%`);
@@ -34155,7 +34384,7 @@ async function assertFact(client, projectId, userId, args) {
   if (!args.subject_entity?.trim()) throw new Error("subject_entity is required");
   if (!args.predicate?.trim()) throw new Error("predicate is required");
   if (!args.source_type) throw new Error("source_type is required");
-  const workspaceId = await getWorkspaceId(client, projectId);
+  const workspaceId = await getWorkspaceId2(client, projectId);
   const subjectId = await resolveOrCreateEntity(
     client,
     workspaceId,
@@ -34204,7 +34433,7 @@ var assertFactTool = {
 };
 async function invalidateFact(client, projectId, args) {
   if (!args.fact_id) throw new Error("fact_id is required");
-  const workspaceId = await getWorkspaceId(client, projectId);
+  const workspaceId = await getWorkspaceId2(client, projectId);
   const { data, error: error2 } = await client.from("knowledge_facts").update({ valid_to: (/* @__PURE__ */ new Date()).toISOString(), status: "Superseded" }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.fact_id).select(FACT_COLS).single();
   if (error2) throw error2;
   return data;
@@ -34222,7 +34451,7 @@ var invalidateFactTool = {
   }
 };
 async function queryFacts(client, projectId, args) {
-  const workspaceId = await getWorkspaceId(client, projectId);
+  const workspaceId = await getWorkspaceId2(client, projectId);
   let query = client.from("knowledge_facts").select(FACT_COLS).eq("workspace_id", workspaceId);
   if (!args.include_invalidated && !args.as_of) query = query.is("valid_to", null);
   if (args.as_of) {
@@ -34271,7 +34500,7 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
     tags: args.tags ?? existing.tags,
     source_task_id: existing.source_task_id ?? void 0
   });
-  const workspaceId = await getWorkspaceId(client, projectId);
+  const workspaceId = await getWorkspaceId2(client, projectId);
   const { data: supersededData, error: error2 } = await client.from("knowledge_decisions").update({ status: "Superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", existing.id).select(
     "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
   ).single();
@@ -35211,6 +35440,8 @@ function registerTools(disabledFeatures) {
     bulkUpdateTasksTool,
     queryTasksTool,
     searchTasksTool,
+    findRelatedTicketsTool,
+    subsumeTaskTool,
     listCommentsTool,
     addCommentTool,
     listActivityTool,
@@ -35294,6 +35525,12 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "search_tasks":
         result = await searchTasks(client, projectId, args);
+        break;
+      case "find_related_tickets":
+        result = await findRelatedTickets(client, projectId, args);
+        break;
+      case "subsume_task":
+        result = await subsumeTask(client, projectId, args);
         break;
       case "list_comments":
         result = await listComments(client, projectId, args);
