@@ -90,23 +90,73 @@ describe('findRelatedTickets', () => {
         knowledge_decisions: intentEmbedRow(),
       },
       rpc: {
-        search_ticket_intents: { data: enriched.map((e, i) => ({ source_task_id: e.id, content: 'x', score: i / 10 })), error: null },
+        // The RPC returns rows in RANKED order (ORDER BY score DESC) — array index IS the rank.
+        // cand-0 at rank 1 → highest RRF contribution, cand-7 at rank 8 → lowest.
+        search_ticket_intents: { data: enriched.map((e, i) => ({ source_task_id: e.id, content: 'x', score: (8 - i) / 10 })), error: null },
         search_tasks: { data: [], error: null },
       },
     });
     const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID, limit: 3 });
     expect(res.candidates).toHaveLength(3);                  // capped at limit
-    // all milestoned (same flag), so sort is by score DESC: cand-7, cand-6, cand-5
-    expect(res.candidates[0].id).toBe('cand-7');
-    expect(res.candidates[0].visual_id).toBe('B-107');       // enriched: visual id
-    expect(res.candidates[0].title).toBe('Cand 7');
+    // ranked-order input → RRF score DESC preserves rank: cand-0, cand-1, cand-2
+    expect(res.candidates[0].id).toBe('cand-0');
+    expect(res.candidates[0].visual_id).toBe('B-100');       // enriched: visual id
+    expect(res.candidates[0].title).toBe('Cand 0');
     expect(res.candidates[0].score).toBeGreaterThan(res.candidates[1].score);
   });
 
-  it('TC3: sorts unmilestoned-first (flag not filter — milestoned still present)', async () => {
+  it('TC3 (B-563 outcome): ranks genuine relatives above a generic-vocab false-positive; excludes Cancelled', async () => {
+    // Models B-563's situation: two genuine relatives (B-561 Verified, B-499 Decomposed)
+    // are ranked HIGH by the routes; a generic-vocab false-positive (B-540, unmilestoned)
+    // is ranked LOW; a Cancelled ticket (B-249) appears in the route results.
     const enriched = [
-      { id: 'milestoned-hi', task_number: 1, title: 'Milestoned high score', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
-      { id: 'unmilestoned-lo', task_number: 2, title: 'Unmilestoned low score', workflow_state: 'Idea', milestone_id: null, archived: false, projects: { key: 'B' } },
+      { id: 'b561', task_number: 561, title: 'Fix dead lexical/trigram arm', workflow_state: 'Verified', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'b499', task_number: 499, title: 'Conduct → split umbrella', workflow_state: 'Decomposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'b540', task_number: 540, title: 'Generic vocab overlap', workflow_state: 'Idea', milestone_id: null, archived: false, projects: { key: 'B' } },
+      { id: 'b249', task_number: 249, title: 'Cancelled relative', workflow_state: 'Cancelled', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+    ];
+    const client = makeClient({
+      tableResults: {
+        tasks: [...subjectRows(), { data: enriched }],
+        projects: projectRows(),
+        knowledge_decisions: intentEmbedRow(),
+      },
+      rpc: {
+        // Route 2 (intent) ranked order: genuine relatives high, false-positive low, Cancelled present.
+        search_ticket_intents: { data: [
+          { source_task_id: 'b561', content: 'x', score: 0.03 },  // rank 1
+          { source_task_id: 'b499', content: 'x', score: 0.02 },  // rank 2
+          { source_task_id: 'b249', content: 'x', score: 0.015 }, // rank 3 (Cancelled)
+          { source_task_id: 'b540', content: 'x', score: 0.005 }, // rank 4 (generic false-pos)
+        ], error: null },
+        // Route 1 (lexical) reinforces the two genuine relatives.
+        search_tasks: { data: [
+          { task_id: 'b561', similarity: 0.9 }, // rank 1
+          { task_id: 'b499', similarity: 0.7 }, // rank 2
+        ], error: null },
+      },
+    });
+    const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
+    const ids = res.candidates.map((c) => c.id);
+    // Genuine relatives present (Verified one kept — valid dedup signal)...
+    expect(ids).toContain('b561');
+    expect(ids).toContain('b499');
+    // ...Cancelled excluded...
+    expect(ids).not.toContain('b249');
+    // ...and the generic-vocab false-positive ranks BELOW the genuine relatives.
+    expect(ids.indexOf('b540')).toBeGreaterThan(ids.indexOf('b561'));
+    expect(ids.indexOf('b540')).toBeGreaterThan(ids.indexOf('b499'));
+  });
+
+  it('TC3b (RRF fusion): a both-routes hit outranks an equal-rank single-route hit; no Math.max dominance', async () => {
+    // 'both' is surfaced at rank 1 by BOTH routes; 'one' only by route 2 at rank 1.
+    // RRF: both = 2*(1/61), one = 1/61 → both outranks one purely from cross-route reinforcement.
+    // Separately, a high-`similarity` route-1-only task ('lex-hi') is surfaced at rank 2 lexically,
+    // so its huge raw similarity (0.99) does NOT let it dominate (no Math.max behavior).
+    const enriched = [
+      { id: 'both', task_number: 1, title: 'Both routes #1', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'one', task_number: 2, title: 'Route-2 only #1', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'lex-hi', task_number: 3, title: 'Route-1 only, huge similarity', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
     ];
     const client = makeClient({
       tableResults: {
@@ -116,19 +166,85 @@ describe('findRelatedTickets', () => {
       },
       rpc: {
         search_ticket_intents: { data: [
-          { source_task_id: 'milestoned-hi', content: 'x', score: 0.9 },   // higher score
-          { source_task_id: 'unmilestoned-lo', content: 'x', score: 0.1 }, // lower score
+          { source_task_id: 'both', content: 'x', score: 0.03 }, // rank 1
+          { source_task_id: 'one', content: 'x', score: 0.02 },  // rank 1 among route-2-only? rank 2 overall
+        ], error: null },
+        search_tasks: { data: [
+          { task_id: 'both', similarity: 0.5 },   // rank 1
+          { task_id: 'lex-hi', similarity: 0.99 },  // rank 2 — huge raw value, but only rank 2
+        ], error: null },
+      },
+    });
+    const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
+    const ids = res.candidates.map((c) => c.id);
+    // both-routes hit outranks the single-route hits.
+    expect(ids[0]).toBe('both');
+    expect(res.candidates.find((c) => c.id === 'both')!.routes).toEqual(['intent', 'lexical']);
+    // the huge-similarity route-1-only task does NOT dominate (no Math.max): it sits below 'both'.
+    expect(ids.indexOf('lex-hi')).toBeGreaterThan(ids.indexOf('both'));
+    const lexHi = res.candidates.find((c) => c.id === 'lex-hi')!;
+    expect(lexHi.score).toBeCloseTo(1 / 62, 10);  // rank 2, single route — NOT 0.99
+  });
+
+  it('TC3c (no reorder): an unmilestoned LOW-relevance candidate ranks BELOW a milestoned HIGH-relevance candidate', async () => {
+    // The inverse of the deleted "unmilestoned-first" test: relevance order is authoritative,
+    // the unmilestoned flag is carried for badging only — never reordered.
+    const enriched = [
+      { id: 'milestoned-hi', task_number: 1, title: 'Milestoned high relevance', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'unmilestoned-lo', task_number: 2, title: 'Unmilestoned low relevance', workflow_state: 'Idea', milestone_id: null, archived: false, projects: { key: 'B' } },
+    ];
+    const client = makeClient({
+      tableResults: {
+        tasks: [...subjectRows(), { data: enriched }],
+        projects: projectRows(),
+        knowledge_decisions: intentEmbedRow(),
+      },
+      rpc: {
+        search_ticket_intents: { data: [
+          { source_task_id: 'milestoned-hi', content: 'x', score: 0.9 },   // rank 1 (high relevance)
+          { source_task_id: 'unmilestoned-lo', content: 'x', score: 0.1 }, // rank 2 (low relevance)
         ], error: null },
         search_tasks: { data: [], error: null },
       },
     });
     const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
-    // unmilestoned sorts FIRST despite its lower score (elevation flag)...
-    expect(res.candidates[0].id).toBe('unmilestoned-lo');
-    expect(res.candidates[0].unmilestoned).toBe(true);
-    // ...and the milestoned one is STILL PRESENT (flag, not filter)
-    expect(res.candidates.map((c) => c.id)).toContain('milestoned-hi');
+    // milestoned high-relevance ranks FIRST; unmilestoned low-relevance is NOT elevated.
+    expect(res.candidates[0].id).toBe('milestoned-hi');
+    expect(res.candidates[1].id).toBe('unmilestoned-lo');
+    // the unmilestoned flag is still carried (for the renderer to badge), just not reordered.
+    expect(res.candidates.find((c) => c.id === 'unmilestoned-lo')!.unmilestoned).toBe(true);
     expect(res.candidates.find((c) => c.id === 'milestoned-hi')!.unmilestoned).toBe(false);
+  });
+
+  it('TC3d (terminal exclusion): drops Cancelled + Parked; retains Verified + Released', async () => {
+    const enriched = [
+      { id: 'verified', task_number: 10, title: 'Already delivered', workflow_state: 'Verified', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'released', task_number: 11, title: 'Shipped', workflow_state: 'Released', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'cancelled', task_number: 12, title: 'Cancelled', workflow_state: 'Cancelled', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'parked', task_number: 13, title: 'Parked', workflow_state: 'Parked', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+    ];
+    const client = makeClient({
+      tableResults: {
+        tasks: [...subjectRows(), { data: enriched }],
+        projects: projectRows(),
+        knowledge_decisions: intentEmbedRow(),
+      },
+      rpc: {
+        search_ticket_intents: { data: [
+          { source_task_id: 'verified', content: 'x', score: 0.4 },
+          { source_task_id: 'released', content: 'x', score: 0.3 },
+          { source_task_id: 'cancelled', content: 'x', score: 0.2 },
+          { source_task_id: 'parked', content: 'x', score: 0.1 },
+        ], error: null },
+        search_tasks: { data: [], error: null },
+      },
+    });
+    const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
+    const ids = res.candidates.map((c) => c.id);
+    expect(ids).toContain('verified');   // retained — valid dedup signal
+    expect(ids).toContain('released');   // retained — valid dedup signal
+    expect(ids).not.toContain('cancelled'); // dropped — terminal dead
+    expect(ids).not.toContain('parked');    // dropped — terminal dead
   });
 
   it('TC4: empty result → explicit empty "none found" shape', async () => {
@@ -229,7 +345,9 @@ describe('findRelatedTickets', () => {
     const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
     expect(res.candidates).toHaveLength(1);
     expect(res.candidates[0].routes).toEqual(['intent', 'lexical']);
-    expect(res.candidates[0].score).toBe(0.8);  // max across routes
+    // RRF: surfaced #1 by BOTH routes → SUM of each route's 1/(K+rank) = 2 * (1/61),
+    // NOT a Math.max of the raw scores (0.4 vs 0.8).
+    expect(res.candidates[0].score).toBeCloseTo(2 * (1 / 61), 10);
   });
 
   it('throws when task_id is missing/blank', async () => {
