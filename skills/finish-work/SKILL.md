@@ -66,7 +66,9 @@ sequence, and do NOT touch git):
   lives), so it cannot tell you which children are un-Verified. If you want to enumerate the un-Verified
   children, `mcp__harmony__get_task` each child and read its `workflow_state`.
 - **Compose the verify brief if missing:** `mcp__harmony__get_brief({ task_id })`. If it is **null** (the
-  trigger set the flag but composed no brief), compose it:
+  trigger set the flag but composed no brief), compose it. **Also render the B-560 evidence-status line**
+  (call `mcp__harmony__get_build_evidence_status({ task_id })` first, prepend it to the brief — for an
+  umbrella it renders `Evidence: N/A (umbrella — carried by children)`, the explicit AC4 exemption):
 
   ```
   mcp__harmony__compose_brief({
@@ -125,6 +127,15 @@ squash merge → cleanup). **Only after the deploy actually succeeds:**
 mcp__harmony__advance_workflow({ task_id, activity: "releasing" })   // Built -> Released (now reality matches)
 ```
 
+**Land the release trail on the ticket (B-560) — NON-OPTIONAL.** Immediately after the deploy
+succeeds and the state advances, comment the build→release→deploy trail so the ticket carries it as
+durable evidence (gates only advance `workflow_state`; a delegated/worktree build never touches the
+ticket, so without this the trail is lost — B-551 hit Verified with zero build trail):
+
+```
+mcp__harmony__add_comment({ task_id, content: "Released via PR #<number> — squash-merged to main; deploy succeeded (<run-id/url>)." })
+```
+
 If CI/deploy goes red, **do not advance** — the ticket stays Built; fix and retry. This is what keeps
 `Released` meaning "deployed" (state-machine §6.1), so `verifying` (O3) checks against a real deploy
 rather than a state that ran ahead of reality (the B-60 conflation — review F4).
@@ -132,7 +143,22 @@ rather than a state that ran ahead of reality (the B-60 conflation — review F4
 ### O3. Verify (Released → Verified)
 
 After deploy, file the verification brief so the human can acknowledge real-world behaviour matches the
-design (state-machine §6.1 — verifying is human-ack by default):
+design (state-machine §6.1 — verifying is human-ack by default).
+
+**Evidence-status line on the verify brief (B-560) — ALWAYS PRESENT, mechanical by construction.**
+Before composing the brief, call `mcp__harmony__get_build_evidence_status({ task_id })` — the canonical
+single-source-of-truth definition of whether this conducted ticket carries the build evidence we require
+by Verified (test cases + all ACs checked + a PR/merge/deploy comment trail; an umbrella is exempt). Render
+its result as a **one-line evidence-status line** prepended to the brief — never optional prose. Frame it
+exactly like the B-516 release-brief risk signal: present on every verify brief, computed mechanically, so
+a missing piece is surfaced on the brief the human accepts (it does NOT block accept — it informs it):
+
+- `complete && !is_umbrella` → `✓ Evidence: complete (N test cases, M/M ACs checked, comment trail present)`
+- `is_umbrella` → `Evidence: N/A (umbrella — carried by children)`
+- otherwise → `⚠ Evidence incomplete: <missing joined by ", ">` (e.g. *"⚠ Evidence incomplete: test cases, 2 unchecked acceptance criteria"*)
+
+(If incomplete and the build genuinely had its own work, land the missing evidence first — record the test
+cases via `manage_test_cases`, check the ACs via `manage_acceptance_criteria` — then recompute the line.)
 
 ```
 mcp__harmony__compose_brief({
@@ -142,7 +168,17 @@ mcp__harmony__compose_brief({
 ```
 
 On the human's **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept" })` advances
-Released→Verified (terminal-positive). Report completion.
+Released→Verified (terminal-positive).
+
+**Land the verify result on the ticket (B-560) — NON-OPTIONAL.** Immediately after the accept, comment
+the verify outcome so the ticket carries the closing leg of the build→release→verify trail as durable
+evidence:
+
+```
+mcp__harmony__add_comment({ task_id, content: "Verified — production behaviour matches the design (human-acked <date>)." })
+```
+
+Report completion.
 
 > If post-release the human finds a problem, flag a human-authorised backflow:
 > `mcp__harmony__advance_workflow({ task_id, activity: "revising-building" })` (Released → Built) and

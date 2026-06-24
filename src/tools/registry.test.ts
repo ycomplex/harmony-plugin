@@ -18,4 +18,9 @@ describe('tool registry', () => {
     const names = registerTools().map((t) => t.name);
     expect(names).toContain('search_tasks');
   });
+
+  it('registers the B-560 build-evidence-status tool', () => {
+    const names = registerTools().map((t) => t.name);
+    expect(names).toContain('get_build_evidence_status');
+  });
 });

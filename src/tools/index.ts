@@ -56,6 +56,9 @@ import {
   downloadAttachmentTool, downloadAttachment,
   attachFileTool, attachFile,
 } from './attachments.js';
+import {
+  getBuildEvidenceStatusTool, getBuildEvidenceStatus,
+} from './evidence-status.js';
 
 export function registerTools(disabledFeatures?: Record<string, boolean>) {
   const tools = [
@@ -71,6 +74,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     advanceWorkflowTool,
     referenceKnowledgeTool,
     listTicketKnowledgeTool,
+    getBuildEvidenceStatusTool,
   ];
 
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
@@ -264,6 +268,9 @@ export async function handleToolCall(
         break;
       case 'list_ticket_knowledge':
         result = await listTicketKnowledge(client, projectId, args as any);
+        break;
+      case 'get_build_evidence_status':
+        result = await getBuildEvidenceStatus(client, projectId, args as any);
         break;
       case 'download_attachment':
         result = await downloadAttachment(client, args as any);

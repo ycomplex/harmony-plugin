@@ -35,6 +35,14 @@ performs the work in the correct order.
 **The hard floor.** The **release** and **verify** gates are one-way / irreversible and **always require a
 human** — never auto-resolved, under any flag or dial.
 
+**Evidence-landing side-effect (B-560).** The **build**, **release**, and **verify** gates each LAND build
+evidence on the ticket as part of their accept side-effects, so a conducted ticket reaches Verified with a
+legible build trail (gates otherwise only advance `workflow_state`): **build** records test cases + checks
+the satisfied ACs (`start-work` O3), **release** comments the PR→merge→deploy trail, and **verify** comments
+the verify result AND its brief always carries a mechanical evidence-status line from
+`get_build_evidence_status` (`finish-work` O2/O3). A split-umbrella roll-up is **exempt** — its evidence is
+carried by its children.
+
 ## Human-facing vocabulary (B-446)
 
 When pointing a human forward, name the **release gate** and the **verify gate** by those gate names;
