@@ -22,6 +22,11 @@ export function readSkill(name: string): ParsedSkill {
   return { frontmatter, body: m[2], raw };
 }
 
+/** Read a shared reference doc skills/harmony-shared/<name>.md (plain markdown, no frontmatter). */
+export function readSharedDoc(name: string): string {
+  return readFileSync(join(SKILLS_ROOT, 'harmony-shared', `${name}.md`), 'utf8');
+}
+
 /** Every distinct mcp__harmony__<tool> referenced in a body. */
 export function referencedHarmonyTools(body: string): string[] {
   const set = new Set<string>();

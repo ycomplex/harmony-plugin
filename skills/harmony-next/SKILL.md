@@ -104,17 +104,19 @@ For three gates the *real* work (create children / merge+deploy / observe produc
   author ran earlier — it shows in both the `awaiting_human_input` and `stale` reads, de-dup by id), show the
   brief and resolve inline without re-invoking the author.
 
-### 4. Routing table (used for `accept`-delegation on side-effecting gates AND for edit/iterate)
+### 4. Routing: the owning skill per gate (used for `accept`-delegation on side-effecting gates AND for edit/iterate)
 
-| `awaiting_human_reason` | accept is… | Hand off to |
-|---|---|---|
-| `clarification-draft` | inline `resolve_brief` | `/harmony-plugin:harmony-clarify <ticket>` (edit/iterate) |
-| `design-decision-draft` | inline `resolve_brief` | `/harmony-plugin:harmony-design-decide <ticket> --track <sub-track>` |
-| `plan-draft` | inline `resolve_brief` | `/harmony-plugin:start-work <ticket>` |
-| `decomposition-proposal` | **delegated** (creates children, then resolves) | `/harmony-plugin:harmony-decompose <ticket>` |
-| `release-decision-pending` | **delegated** (merge+deploy, then advances) | `/harmony-plugin:finish-work <ticket>` |
-| `verification-ack-pending` | **delegated** (observe prod, then resolves) — also the **PR-less umbrella** path when `get_brief` is null (B-471): delegate the same way, finish-work composes the brief first | `/harmony-plugin:finish-work <ticket>` (verify step) |
-| (Stale) | **delegated** — draft the patch, then resolve per the brief (accept applies / defer = knowing-divergence) | `/harmony-plugin:harmony-stale-patch <ticket>` |
+**The canonical gate→owning-skill routing lives in `skills/harmony-shared/gate-routing.md`. Consult it; do
+not restate it here.** `harmony-next` reads that table keyed by `awaiting_human_reason` (the reason on the
+brief you are resolving) to pick the hand-off skill; `harmony-conduct` reads the same table keyed by
+`workflow_state`. The pure-vs-side-effecting split in step 3 (which gates resolve inline vs which delegate)
+is the same fact, recorded canonically there — edit/iterate always hands off to the owning skill named in
+the table.
+
+For the **release** and **verify** gates, point the human at *the release gate* / *the verify gate* (the
+B-446 human-facing vocabulary in `gate-routing.md`); `/harmony-plugin:finish-work` is the skill that
+*implements* them — including the **PR-less umbrella** verify path when `get_brief` is null (B-471, step 2).
+A **Stale** ticket routes off the forward path to `/harmony-plugin:harmony-stale-patch` (step 3).
 
 ### 5. Confirm the outcome
 

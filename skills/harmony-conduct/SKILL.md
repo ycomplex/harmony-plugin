@@ -366,22 +366,23 @@ After the synthesized accept, briefly note it for the human's audit trail, e.g.:
 
 ### The state → activity map (the §6.1 forward path)
 
-Branch on `workflow_state` to pick the next gate. This mirrors `harmony-next`'s routing table, walked
-forward one state at a time:
+Branch on `workflow_state` to pick the next gate. **The canonical gate→owning-skill routing — which skill
+owns each gate, whether accept is pure or side-effecting, and where the hard floor sits — lives in
+`skills/harmony-shared/gate-routing.md`. Consult it; do not restate it here.** The conductor reads that
+table keyed by `workflow_state` (walking forward one state at a time); `harmony-next` reads the same table
+keyed by `awaiting_human_reason` (resolving an existing brief). The forward path it walks: `Idea` →
+`Clarified` → `Decomposed` → `Designed` → `Planned` → `Built` → `Released` → `Verified`.
 
-| `workflow_state` | Next activity | Delegate to | Gate is… |
-|---|---|---|---|
-| Captured | promoting | (none — `advance_workflow` directly) | **plumbing, not a human pause** — auto-advance Captured→Idea (see below), then loop |
-| Idea | clarifying | `/harmony-plugin:harmony-clarify <ticket>` | pure (accept = `resolve_brief`) |
-| Clarified | decomposing | `/harmony-plugin:harmony-decompose <ticket>` | side-effecting (accept creates children) |
-| Decomposed **(no-split)** | designing | `/harmony-plugin:harmony-design-decide <ticket> --track <sub-track>` | pure per sub-track; serialized (one brief at a time) |
-| Decomposed **(split umbrella)** | — (no gate) | (none — see *loop step 5*) | **report-and-stop** — the children carry design/build; the B-471 roll-up completes the parent. NOT a forward gate |
-| Designed | planning | `/harmony-plugin:start-work <ticket>` | pure (accept = `resolve_brief`; the accept is "go" to build) |
-| Planned | building | `/harmony-plugin:start-work <ticket>` | build work, then files `release-decision-pending` |
-| Built | releasing | `/harmony-plugin:finish-work <ticket>` | side-effecting (accept → merge+deploy) — **HARD FLOOR, always human** |
-| Released | verifying | `/harmony-plugin:finish-work <ticket>` (verify step) | side-effecting (observe prod); also the PR-less umbrella path — **HARD FLOOR, always human** |
-| Verified | — | (none) | TERMINAL — loop ends |
-| Parked / Cancelled | — | (none) | TERMINAL — loop ends |
+What is **conduct-specific** (NOT in the shared table — this is the conductor's *handling*, not the routing
+facts; this is the deliberate other half of B-490's "same routing, opposite handling"):
+
+| `workflow_state` | Conductor's handling |
+|---|---|
+| Captured | auto-advance `promoting` (Captured→Idea) as **plumbing, not a pause** — see loop step 4 (the OPPOSITE of `harmony-next`, which surfaces promoting as a triage decision) |
+| Decomposed **(split umbrella)** | **report-and-stop** — the children carry design/build; the B-471 roll-up completes the parent (loop step 5). NOT a forward gate |
+| Decomposed **(no-split)** | run the **design** gate (owning skill per `gate-routing.md`); serialized per sub-track (see below) |
+| Built / Released | the **release** / **verify** gates — **HARD FLOOR, always human** (gate-routing.md marks these); never auto-advanced |
+| Verified / Parked / Cancelled | TERMINAL — loop ends |
 
 **Designing is multi-sub-track and serialized** (and applies to a **no-split** parent only — loop step 5
 routes a *split umbrella* to report-and-stop instead; you never design an umbrella, its children carry
