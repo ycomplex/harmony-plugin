@@ -13,4 +13,9 @@ describe('tool registry', () => {
     const names = registerTools().map((t) => t.name);
     expect(names).toContain('search_ticket_intents');
   });
+
+  it('registers the B-552 lexical ticket-search tool', () => {
+    const names = registerTools().map((t) => t.name);
+    expect(names).toContain('search_tasks');
+  });
 });

@@ -33447,6 +33447,44 @@ async function queryTasks(client, projectId, args) {
   return enriched;
 }
 
+// src/tools/search-tasks.ts
+async function searchTasks(client, projectId, args) {
+  if (!args.query?.trim()) throw new Error("query is required");
+  const { data, error: error2 } = await client.rpc("search_tasks", {
+    _project_id: projectId,
+    _query_text: args.query,
+    _match_limit: args.limit ?? 20,
+    _include_archived: args.include_archived ?? false
+  });
+  if (error2) throw new Error(error2.message);
+  return (data ?? []).map((r) => ({
+    id: r.task_id,
+    task_number: r.task_number,
+    visual_id: `${r.project_key}-${r.task_number}`,
+    title: r.title,
+    workflow_state: r.workflow_state,
+    status: r.status,
+    archived: r.archived,
+    similarity: r.similarity
+  }));
+}
+var searchTasksTool = {
+  name: "search_tasks",
+  description: 'Search tasks by content (title + description) using lexical/trigram matching \u2014 finds near-duplicate or related tickets. Project-scoped to the current project; excludes archived tasks by default. Returns matches ranked by similarity (higher = closer); each match has its visual ID (e.g. "B-552"), title, workflow_state and similarity score so an agent can dedup. Lexical-only \u2014 for semantic/intent retrieval use search_ticket_intents instead.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "The content to search for \u2014 matched against task title+description via lexical/trigram similarity."
+      },
+      limit: { type: "number", description: "Max matches to return. Default 20." },
+      include_archived: { type: "boolean", description: "Include archived tasks. Default false." }
+    },
+    required: ["query"]
+  }
+};
+
 // src/tools/comments.ts
 var listCommentsTool = {
   name: "list_comments",
@@ -35109,6 +35147,7 @@ function registerTools(disabledFeatures) {
     bulkCreateTasksTool,
     bulkUpdateTasksTool,
     queryTasksTool,
+    searchTasksTool,
     listCommentsTool,
     addCommentTool,
     listActivityTool,
@@ -35188,6 +35227,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "query_tasks":
         result = await queryTasks(client, projectId, args);
+        break;
+      case "search_tasks":
+        result = await searchTasks(client, projectId, args);
         break;
       case "list_comments":
         result = await listComments(client, projectId, args);
