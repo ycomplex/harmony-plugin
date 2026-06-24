@@ -62,6 +62,33 @@ research prompts in `research[]`, decision items marked `deferred: true`, then i
 `/harmony-plugin:harmony-research <ticket>` to run the v1 relay. Re-query knowledge after research
 returns, then resume step 3.
 
+### 3c. Surface related / duplicate / overlapping tickets
+
+After drafting the clarification (and before composing the brief), check whether this
+work already exists or overlaps an open ticket — dedup-on-clarify (B-475). Call the
+dedup pipeline:
+
+```
+mcp__harmony__find_related_tickets({ task_id })   // top ~5; pass limit to widen
+```
+
+Render a **"Related / duplicate / overlapping tickets"** card from the result. One row
+per candidate, **unmilestoned candidates grouped first** (they are elevated, not
+filtered — milestoned candidates still appear below them), each row showing:
+
+- **id** (visual id, e.g. `B-123`) + **title**
+- **state** (`workflow_state`) and **milestone** — or the literal **"unmilestoned"** when `milestone_id` is null
+- a **one-line relatedness reason** (why it overlaps — paraphrase the shared intent; note which routes surfaced it, `intent` and/or `lexical`)
+- a **recommended disposition**: `fold` (this ticket should be absorbed into that umbrella), `dedupe` (that ticket is the same ask — absorb this one into it), or `ignore` (related but distinct)
+
+If `candidates` is empty, render **"Related tickets: none found"** explicitly. If the
+result has `degraded: true`, note that intent retrieval was unavailable and the list is
+lexical-only (so it may be incomplete) — never let this fail the clarify gate.
+
+**This card is SURFACE-ONLY.** Surfacing it does not change any ticket's scope or status.
+Act on a disposition ONLY on the human's explicit command (step 5) — never auto-fold,
+auto-dedupe, or auto-subsume.
+
 ### 4. Compose the brief
 
 Build the BLUF `BriefDoc` and file it — this sets `awaiting_human_input` and lints the doc:
@@ -111,3 +138,25 @@ Show the rendered `content` verbatim. On the human's command:
 - **expand** / **related** → show the pre-generated sections from `get_brief`.
 - **edit** / **iterate** → revise the `doc` per the human's input and re-call `compose_brief` (updates
   in place, bumps `iteration`).
+
+#### Acting on a related-ticket disposition (B-475)
+
+When the human picks a `fold`/`dedupe` disposition on a surfaced candidate, record the
+subsume — **only on that explicit command** (surface-only guardrail; never automatic):
+
+- **dedupe** (this ticket duplicates an existing umbrella → absorb THIS ticket into it):
+  ```
+  mcp__harmony__subsume_task({ task_id, subsumed_by_task_id: "<umbrella visual id>", reason: "<why>" })
+  ```
+  This sets `subsumed_by_task_id` + archives this ticket + logs a `task_subsumed` event (idempotent).
+- **fold** (a related candidate should be absorbed INTO this ticket as the umbrella):
+  ```
+  mcp__harmony__subsume_task({ task_id: "<candidate visual id>", subsumed_by_task_id: task_id, reason: "<why>" })
+  ```
+  Then **edit this (umbrella) ticket's clarification** to absorb the folded candidate's
+  requirement — re-call `record_decision`/`compose_brief` with the broadened spec so the
+  umbrella now covers what the folded ticket asked for.
+- **ignore** → no-op (the candidate is related but distinct; leave both tickets as-is).
+
+`subsume_task` is idempotent and requires BOTH the absorbed id and the umbrella id, so it
+can never run without an explicit human-chosen target.

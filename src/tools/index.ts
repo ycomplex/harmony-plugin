@@ -12,6 +12,8 @@ import { listLabels, createLabel, listLabelsTool, createLabelTool } from './labe
 import { listChecklistItemsTool, listChecklistItems, manageChecklistItemsTool, manageChecklistItems } from './checklist-items.js';
 import { queryTasksTool, queryTasks } from './query-tasks.js';
 import { searchTasksTool, searchTasks } from './search-tasks.js';
+import { findRelatedTicketsTool, findRelatedTickets } from './find-related-tickets.js';
+import { subsumeTaskTool, subsumeTask } from './subsume-task.js';
 import { listCommentsTool, listComments, addCommentTool, addComment } from './comments.js';
 import { manageTaskLabelsTool, manageTaskLabels } from './task-labels.js';
 import { bulkUpdateTasksTool, bulkUpdateTasks } from './bulk-update.js';
@@ -65,6 +67,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     // Core tools (always visible)
     getProjectTool, listTasksTool, getTaskTool, createTaskTool, updateTaskTool,
     bulkCreateTasksTool, bulkUpdateTasksTool, queryTasksTool, searchTasksTool,
+    findRelatedTicketsTool, subsumeTaskTool,
     listCommentsTool, addCommentTool,
     listActivityTool,
     listMembersTool,
@@ -148,6 +151,12 @@ export async function handleToolCall(
         break;
       case 'search_tasks':
         result = await searchTasks(client, projectId, args as any);
+        break;
+      case 'find_related_tickets':
+        result = await findRelatedTickets(client, projectId, args as any);
+        break;
+      case 'subsume_task':
+        result = await subsumeTask(client, projectId, args as any);
         break;
       case 'list_comments':
         result = await listComments(client, projectId, args as any);
