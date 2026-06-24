@@ -11,6 +11,7 @@ import {
 import { listLabels, createLabel, listLabelsTool, createLabelTool } from './labels.js';
 import { listChecklistItemsTool, listChecklistItems, manageChecklistItemsTool, manageChecklistItems } from './checklist-items.js';
 import { queryTasksTool, queryTasks } from './query-tasks.js';
+import { searchTasksTool, searchTasks } from './search-tasks.js';
 import { listCommentsTool, listComments, addCommentTool, addComment } from './comments.js';
 import { manageTaskLabelsTool, manageTaskLabels } from './task-labels.js';
 import { bulkUpdateTasksTool, bulkUpdateTasks } from './bulk-update.js';
@@ -60,7 +61,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
   const tools = [
     // Core tools (always visible)
     getProjectTool, listTasksTool, getTaskTool, createTaskTool, updateTaskTool,
-    bulkCreateTasksTool, bulkUpdateTasksTool, queryTasksTool,
+    bulkCreateTasksTool, bulkUpdateTasksTool, queryTasksTool, searchTasksTool,
     listCommentsTool, addCommentTool,
     listActivityTool,
     listMembersTool,
@@ -140,6 +141,9 @@ export async function handleToolCall(
         break;
       case 'query_tasks':
         result = await queryTasks(client, projectId, args as any);
+        break;
+      case 'search_tasks':
+        result = await searchTasks(client, projectId, args as any);
         break;
       case 'list_comments':
         result = await listComments(client, projectId, args as any);
