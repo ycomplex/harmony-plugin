@@ -117,10 +117,12 @@ describe('findRelatedTickets', () => {
     expect(res.candidates[0].score).toBeGreaterThan(res.candidates[1].score);
   });
 
-  it('TC3 (B-563 outcome): ranks genuine relatives above a generic-vocab false-positive; excludes Cancelled', async () => {
-    // Models B-563's situation: two genuine relatives (B-561 Verified, B-499 Decomposed)
-    // are ranked HIGH by the routes; a generic-vocab false-positive (B-540, unmilestoned)
-    // is ranked LOW; a Cancelled ticket (B-249) appears in the route results.
+  it('TC3 (B-563 outcome): ranks the OPEN genuine relative above a generic-vocab false-positive; excludes Cancelled + Verified (done)', async () => {
+    // Models B-563's situation. Two route-surfaced "relatives": B-561 (now Verified → done
+    // → EXCLUDED by B-581) and B-499 (Decomposed → OPEN → the genuine foldable relative,
+    // KEPT). A generic-vocab false-positive (B-540, unmilestoned) is ranked LOW; a Cancelled
+    // ticket (B-249) appears in the route results. The fold list returns only OPEN work, so
+    // the only genuine relative left to rank against the false-positive is B-499.
     const enriched = [
       { id: 'b561', task_number: 561, title: 'Fix dead lexical/trigram arm', workflow_state: 'Verified', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
       { id: 'b499', task_number: 499, title: 'Conduct → split umbrella', workflow_state: 'Decomposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
@@ -134,14 +136,14 @@ describe('findRelatedTickets', () => {
         knowledge_decisions: intentEmbedRow(),
       },
       rpc: {
-        // Route 2 (intent) ranked order: genuine relatives high, false-positive low, Cancelled present.
+        // Route 2 (intent) ranked order: relatives high, false-positive low, Cancelled present.
         search_ticket_intents: { data: [
-          { source_task_id: 'b561', content: 'x', score: 0.03 },  // rank 1
-          { source_task_id: 'b499', content: 'x', score: 0.02 },  // rank 2
-          { source_task_id: 'b249', content: 'x', score: 0.015 }, // rank 3 (Cancelled)
+          { source_task_id: 'b561', content: 'x', score: 0.03 },  // rank 1 (Verified — excluded)
+          { source_task_id: 'b499', content: 'x', score: 0.02 },  // rank 2 (Decomposed — kept)
+          { source_task_id: 'b249', content: 'x', score: 0.015 }, // rank 3 (Cancelled — excluded)
           { source_task_id: 'b540', content: 'x', score: 0.005 }, // rank 4 (generic false-pos)
         ], error: null },
-        // Route 1 (lexical) reinforces the two genuine relatives.
+        // Route 1 (lexical) reinforces both relatives (b499 must rank high enough to be in top-N).
         search_tasks: { data: [
           { task_id: 'b561', similarity: 0.9 }, // rank 1
           { task_id: 'b499', similarity: 0.7 }, // rank 2
@@ -150,13 +152,13 @@ describe('findRelatedTickets', () => {
     });
     const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
     const ids = res.candidates.map((c) => c.id);
-    // Genuine relatives present (Verified one kept — valid dedup signal)...
-    expect(ids).toContain('b561');
+    // Verified relative excluded — done, not foldable (B-581 reversed B-574's keep-terminal)...
+    expect(ids).not.toContain('b561');
+    // ...the OPEN genuine relative is kept...
     expect(ids).toContain('b499');
     // ...Cancelled excluded...
     expect(ids).not.toContain('b249');
-    // ...and the generic-vocab false-positive ranks BELOW the genuine relatives.
-    expect(ids.indexOf('b540')).toBeGreaterThan(ids.indexOf('b561'));
+    // ...and the generic-vocab false-positive ranks BELOW the kept OPEN relative.
     expect(ids.indexOf('b540')).toBeGreaterThan(ids.indexOf('b499'));
   });
 
@@ -295,12 +297,17 @@ describe('findRelatedTickets', () => {
     expect(res.candidates.find((c) => c.id === 'milestoned-hi')!.unmilestoned).toBe(false);
   });
 
-  it('TC3d (terminal exclusion): drops Cancelled + Parked; retains Verified + Released', async () => {
+  it('TC3d (terminal+done exclusion): drops Cancelled + Parked + Verified + Released; keeps OPEN candidates', async () => {
+    // B-581: every NON-FOLDABLE state is excluded — terminal-dead (Cancelled / Parked)
+    // AND done (Verified / Released). Only OPEN / foldable candidates survive. An OPEN
+    // candidate of comparable relevance ('open') proves the filter drops by state, not by
+    // relevance.
     const enriched = [
       { id: 'verified', task_number: 10, title: 'Already delivered', workflow_state: 'Verified', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
       { id: 'released', task_number: 11, title: 'Shipped', workflow_state: 'Released', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
       { id: 'cancelled', task_number: 12, title: 'Cancelled', workflow_state: 'Cancelled', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
       { id: 'parked', task_number: 13, title: 'Parked', workflow_state: 'Parked', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'open', task_number: 14, title: 'Open foldable relative', workflow_state: 'Decomposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
     ];
     const client = makeClient({
       tableResults: {
@@ -311,7 +318,8 @@ describe('findRelatedTickets', () => {
       rpc: {
         search_ticket_intents: { data: [
           { source_task_id: 'verified', content: 'x', score: 0.4 },
-          { source_task_id: 'released', content: 'x', score: 0.3 },
+          { source_task_id: 'released', content: 'x', score: 0.35 },
+          { source_task_id: 'open', content: 'x', score: 0.3 },     // OPEN, comparable relevance
           { source_task_id: 'cancelled', content: 'x', score: 0.2 },
           { source_task_id: 'parked', content: 'x', score: 0.1 },
         ], error: null },
@@ -320,10 +328,11 @@ describe('findRelatedTickets', () => {
     });
     const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
     const ids = res.candidates.map((c) => c.id);
-    expect(ids).toContain('verified');   // retained — valid dedup signal
-    expect(ids).toContain('released');   // retained — valid dedup signal
+    expect(ids).not.toContain('verified');  // dropped — done (B-581)
+    expect(ids).not.toContain('released');  // dropped — done (B-581)
     expect(ids).not.toContain('cancelled'); // dropped — terminal dead
     expect(ids).not.toContain('parked');    // dropped — terminal dead
+    expect(ids).toContain('open');          // OPEN candidate of comparable relevance is kept
   });
 
   it('TC4: empty result → explicit empty "none found" shape', async () => {
