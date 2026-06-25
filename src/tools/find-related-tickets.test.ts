@@ -7,14 +7,26 @@ const SUBJECT_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
 // A tiny chainable Supabase mock. `.from(table)` returns a builder whose terminal
 // (`.single`/`.maybeSingle`) or awaited result is taken from `tableResults[table]`,
-// shifted FIFO so successive same-table reads can return different rows. `.rpc(name)`
-// returns `rpcResults[name]`.
+// shifted FIFO so successive same-table reads can return different rows.
+//
+// `.rpc(name)` returns `rpc[name]`. Because `search_tasks` is now called TWICE per run
+// (once with the FULL title+description query, then once with the TITLE-only query),
+// an rpc entry may be an ARRAY of results, shifted FIFO per call — index 0 = the FULL
+// framing, index 1 = the TITLE framing. A single (non-array) value is REUSED for every
+// call of that name (so the title call sees the same list as the full call — the
+// existing single-result tests still exercise both framings). A drained queue falls
+// back to `{ data: null, error: null }` (contributes nothing).
+type RpcResult = { data: any; error?: any } | (() => never);
 function makeClient(opts: {
   tableResults: Record<string, Array<{ data: any; error?: any }>>;
-  rpc: Record<string, { data: any; error?: any } | (() => never)>;
+  rpc: Record<string, RpcResult | RpcResult[]>;
 }) {
   const rpc = vi.fn((name: string) => {
-    const r = opts.rpc[name];
+    let r = opts.rpc[name];
+    if (Array.isArray(r)) {
+      // FIFO queue: shift per call; once drained, contribute nothing.
+      r = r.length ? r.shift()! : { data: null, error: null };
+    }
     if (typeof r === 'function') return r();      // throw path
     return Promise.resolve(r ?? { data: null, error: null });
   });
@@ -149,10 +161,12 @@ describe('findRelatedTickets', () => {
   });
 
   it('TC3b (RRF fusion): a both-routes hit outranks an equal-rank single-route hit; no Math.max dominance', async () => {
-    // 'both' is surfaced at rank 1 by BOTH routes; 'one' only by route 2 at rank 1.
-    // RRF: both = 2*(1/61), one = 1/61 → both outranks one purely from cross-route reinforcement.
-    // Separately, a high-`similarity` route-1-only task ('lex-hi') is surfaced at rank 2 lexically,
-    // so its huge raw similarity (0.99) does NOT let it dominate (no Math.max behavior).
+    // 'both' is surfaced at rank 1 by route 2 AND by both route-1 framings (full + title);
+    // 'one' only by route 2 at rank 2. RRF (K=10): both outranks one purely from
+    // cross-route reinforcement. Separately, a high-`similarity` route-1-only task
+    // ('lex-hi') is surfaced at rank 2 lexically, so its huge raw similarity (0.99) does
+    // NOT let it dominate (no Math.max behavior). The single search_tasks value is reused
+    // for BOTH framings, so route-1 contributes TWICE here (full + title).
     const enriched = [
       { id: 'both', task_number: 1, title: 'Both routes #1', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
       { id: 'one', task_number: 2, title: 'Route-2 only #1', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
@@ -167,8 +181,9 @@ describe('findRelatedTickets', () => {
       rpc: {
         search_ticket_intents: { data: [
           { source_task_id: 'both', content: 'x', score: 0.03 }, // rank 1
-          { source_task_id: 'one', content: 'x', score: 0.02 },  // rank 1 among route-2-only? rank 2 overall
+          { source_task_id: 'one', content: 'x', score: 0.02 },  // rank 2 overall
         ], error: null },
+        // single value → reused for the full AND title framings (route 1 fires twice).
         search_tasks: { data: [
           { task_id: 'both', similarity: 0.5 },   // rank 1
           { task_id: 'lex-hi', similarity: 0.99 },  // rank 2 — huge raw value, but only rank 2
@@ -180,10 +195,74 @@ describe('findRelatedTickets', () => {
     // both-routes hit outranks the single-route hits.
     expect(ids[0]).toBe('both');
     expect(res.candidates.find((c) => c.id === 'both')!.routes).toEqual(['intent', 'lexical']);
+    // 'both': intent rank1 + lexical(full) rank1 + lexical(title) rank1 = 3 * 1/(10+1).
+    expect(res.candidates.find((c) => c.id === 'both')!.score).toBeCloseTo(3 * (1 / 11), 10);
+    // 'one': route 2 only, rank 2 = 1/(10+2).
+    expect(res.candidates.find((c) => c.id === 'one')!.score).toBeCloseTo(1 / 12, 10);
     // the huge-similarity route-1-only task does NOT dominate (no Math.max): it sits below 'both'.
     expect(ids.indexOf('lex-hi')).toBeGreaterThan(ids.indexOf('both'));
     const lexHi = res.candidates.find((c) => c.id === 'lex-hi')!;
-    expect(lexHi.score).toBeCloseTo(1 / 62, 10);  // rank 2, single route — NOT 0.99
+    // 'lex-hi': lexical(full) rank2 + lexical(title) rank2 = 2 * 1/(10+2) — NOT 0.99 (no max).
+    expect(lexHi.score).toBeCloseTo(2 * (1 / 12), 10);
+  });
+
+  it('TC3e (multi-query fusion): a TITLE-only hit surfaces (recall); a multi-list hit outranks a single-list hit; no Math.max dominance', async () => {
+    // THREE distinct ranked lists — route-1 FULL framing, route-1 TITLE framing, route-2
+    // intent — fused by RRF (K=10). This is the whole point of the multi-query change
+    // (single-query buried B-563's sibling B-551 at #14). The FIFO array gives the full
+    // and title search_tasks calls DIFFERENT results.
+    //   route-1 FULL  : [multi@1, lexhi@2]        (lexhi has huge raw similarity 0.99)
+    //   route-1 TITLE : [titleonly@1, multi@2]    (titleonly appears in NO other list)
+    //   route-2 intent: [multi@1, soloIntent@2]
+    const enriched = [
+      { id: 'multi', task_number: 1, title: 'In every list', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'titleonly', task_number: 2, title: 'Only the title framing finds me', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'soloIntent', task_number: 3, title: 'Only intent finds me', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'lexhi', task_number: 4, title: 'Only full framing, huge similarity', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+    ];
+    const client = makeClient({
+      tableResults: {
+        tasks: [...subjectRows(), { data: enriched }],
+        projects: projectRows(),
+        knowledge_decisions: intentEmbedRow(),
+      },
+      rpc: {
+        search_ticket_intents: { data: [
+          { source_task_id: 'multi', content: 'x', score: 0.03 },      // rank 1
+          { source_task_id: 'soloIntent', content: 'x', score: 0.02 }, // rank 2
+        ], error: null },
+        // FIFO: first call = FULL framing, second call = TITLE framing (DIFFERENT lists).
+        search_tasks: [
+          { data: [
+            { task_id: 'multi', similarity: 0.5 },   // full rank 1
+            { task_id: 'lexhi', similarity: 0.99 },  // full rank 2 — huge raw value, only this list
+          ], error: null },
+          { data: [
+            { task_id: 'titleonly', similarity: 0.6 }, // title rank 1 — in NO other list (recall!)
+            { task_id: 'multi', similarity: 0.4 },     // title rank 2
+          ], error: null },
+        ],
+      },
+    });
+    const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
+    const ids = res.candidates.map((c) => c.id);
+
+    // (a) RECALL: the title-only hit surfaces at all — the single-query framing missed it.
+    expect(ids).toContain('titleonly');
+
+    // (b) a multi-list hit outranks a single-list hit at the same per-list rank: 'multi'
+    //     (intent r1 + full r1 + title r2 = 2/11 + 1/12) beats 'titleonly' (title r1 = 1/11).
+    const score = (id: string) => res.candidates.find((c) => c.id === id)!.score;
+    expect(score('multi')).toBeCloseTo(2 * (1 / 11) + 1 / 12, 10);
+    expect(score('titleonly')).toBeCloseTo(1 / 11, 10);
+    expect(score('multi')).toBeGreaterThan(score('titleonly'));
+    expect(ids[0]).toBe('multi');
+    expect(res.candidates.find((c) => c.id === 'multi')!.routes).toEqual(['intent', 'lexical']);
+
+    // (c) no Math.max: the single-list rank-2 hit with a 0.99 raw similarity does NOT
+    //     dominate — its RRF score is just 1/(10+2), well below 'multi'.
+    expect(score('lexhi')).toBeCloseTo(1 / 12, 10);
+    expect(ids.indexOf('lexhi')).toBeGreaterThan(ids.indexOf('multi'));
   });
 
   it('TC3c (no reorder): an unmilestoned LOW-relevance candidate ranks BELOW a milestoned HIGH-relevance candidate', async () => {
@@ -345,9 +424,10 @@ describe('findRelatedTickets', () => {
     const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
     expect(res.candidates).toHaveLength(1);
     expect(res.candidates[0].routes).toEqual(['intent', 'lexical']);
-    // RRF: surfaced #1 by BOTH routes → SUM of each route's 1/(K+rank) = 2 * (1/61),
-    // NOT a Math.max of the raw scores (0.4 vs 0.8).
-    expect(res.candidates[0].score).toBeCloseTo(2 * (1 / 61), 10);
+    // RRF (K=10): surfaced #1 by route 2 AND by both route-1 framings (full + title — the
+    // single search_tasks value is reused for both calls) → SUM of three 1/(K+rank)
+    // contributions = 3 * (1/11), NOT a Math.max of the raw scores (0.4 vs 0.8).
+    expect(res.candidates[0].score).toBeCloseTo(3 * (1 / 11), 10);
   });
 
   it('throws when task_id is missing/blank', async () => {
