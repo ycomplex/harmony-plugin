@@ -89,7 +89,7 @@ export async function updateMilestone(
 
 export const shipMilestoneTool = {
   name: 'ship_milestone',
-  description: "Ship a milestone. Non-Done tasks are removed from the milestone (returned in response). Done tasks become hidden from board/list views.",
+  description: "Ship a milestone. Non-done tasks (mode-aware: in opinionated mode a task is done when its workflow_state is Verified or its status is the terminal status; in manual mode when its status is the terminal status) are removed from the milestone (returned in response). Done tasks become hidden from board/list views.",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -103,23 +103,37 @@ export async function shipMilestone(
   client: SupabaseClient, projectId: string,
   args: { milestone_id: string }
 ) {
-  // Get project statuses to determine what "Done" means
+  // Get project statuses to determine what "Done" means, plus the project mode.
+  // In opinionated mode the legacy `status` column is inert (read-only) and completion
+  // lives in `workflow_state` (terminal = 'Verified'); in manual mode `status` governs.
   const { data: project } = await client
     .from('projects')
-    .select('custom_statuses')
+    .select('custom_statuses, mode')
     .eq('id', projectId)
     .single();
   const statuses = project?.custom_statuses ?? ['Backlog', 'To Do', 'In Progress', 'In Review', 'Done'];
   const doneStatus = statuses[statuses.length - 1];
+  const isOpinionated = project?.mode === 'opinionated';
 
-  // Get tasks in this milestone
+  // Get tasks in this milestone. Carry `workflow_state` so opinionated-mode completion
+  // can be read off the lifecycle, not the inert legacy `status` (B-571).
   const { data: tasks } = await client
     .from('tasks')
-    .select('id, status, title')
-    .eq('milestone_id', args.milestone_id);
+    .select('id, status, title, workflow_state')
+    .eq('milestone_id', args.milestone_id) as unknown as {
+      data: Array<{ id: string; status: string; title: string; workflow_state: string }> | null;
+    };
 
-  const nonDone = (tasks ?? []).filter(t => t.status !== doneStatus);
-  const done = (tasks ?? []).filter(t => t.status === doneStatus);
+  // Mode-aware union: opinionated-mode treats a task as done when its workflow_state is
+  // Verified OR its status is terminal (covers Manual→Opinionated tasks whose terminal
+  // status predates the lifecycle); manual-mode is purely status === doneStatus.
+  const isDone = (t: { status: string; workflow_state: string }) =>
+    isOpinionated
+      ? (t.workflow_state === 'Verified' || t.status === doneStatus)
+      : (t.status === doneStatus);
+
+  const nonDone = (tasks ?? []).filter(t => !isDone(t));
+  const done = (tasks ?? []).filter(t => isDone(t));
 
   // Remove non-Done tasks from milestone
   if (nonDone.length > 0) {

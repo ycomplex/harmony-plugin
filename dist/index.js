@@ -34577,7 +34577,7 @@ async function updateMilestone(client, projectId, args) {
 }
 var shipMilestoneTool = {
   name: "ship_milestone",
-  description: "Ship a milestone. Non-Done tasks are removed from the milestone (returned in response). Done tasks become hidden from board/list views.",
+  description: "Ship a milestone. Non-done tasks (mode-aware: in opinionated mode a task is done when its workflow_state is Verified or its status is the terminal status; in manual mode when its status is the terminal status) are removed from the milestone (returned in response). Done tasks become hidden from board/list views.",
   inputSchema: {
     type: "object",
     properties: {
@@ -34587,12 +34587,14 @@ var shipMilestoneTool = {
   }
 };
 async function shipMilestone(client, projectId, args) {
-  const { data: project } = await client.from("projects").select("custom_statuses").eq("id", projectId).single();
+  const { data: project } = await client.from("projects").select("custom_statuses, mode").eq("id", projectId).single();
   const statuses = project?.custom_statuses ?? ["Backlog", "To Do", "In Progress", "In Review", "Done"];
   const doneStatus = statuses[statuses.length - 1];
-  const { data: tasks } = await client.from("tasks").select("id, status, title").eq("milestone_id", args.milestone_id);
-  const nonDone = (tasks ?? []).filter((t) => t.status !== doneStatus);
-  const done = (tasks ?? []).filter((t) => t.status === doneStatus);
+  const isOpinionated = project?.mode === "opinionated";
+  const { data: tasks } = await client.from("tasks").select("id, status, title, workflow_state").eq("milestone_id", args.milestone_id);
+  const isDone = (t) => isOpinionated ? t.workflow_state === "Verified" || t.status === doneStatus : t.status === doneStatus;
+  const nonDone = (tasks ?? []).filter((t) => !isDone(t));
+  const done = (tasks ?? []).filter((t) => isDone(t));
   if (nonDone.length > 0) {
     await client.from("tasks").update({ milestone_id: null }).in("id", nonDone.map((t) => t.id));
   }
