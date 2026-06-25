@@ -33487,7 +33487,7 @@ var searchTasksTool = {
 
 // src/tools/find-related-tickets.ts
 var DEFAULT_LIMIT = 5;
-var RRF_K = 60;
+var RRF_K = 10;
 async function findRelatedTickets(client, projectId, args) {
   if (!args.task_id?.trim()) throw new Error("task_id is required");
   const limit = args.limit ?? DEFAULT_LIMIT;
@@ -33501,45 +33501,55 @@ async function findRelatedTickets(client, projectId, args) {
   const subjectEmbedding = await resolveIntentEmbedding(client, workspaceId, projectId, subjectId);
   const byTask = /* @__PURE__ */ new Map();
   let degraded = false;
+  const matchLimit = Math.max(limit * 4, 50);
+  const fullText = queryText;
+  const titleText = (subject.title ?? "").trim();
+  const ingest = (rows2, idKey, route) => {
+    (rows2 ?? []).forEach((row, i) => {
+      const tid = row[idKey];
+      if (!tid) return;
+      accumulateRrf(byTask, tid, i + 1, route);
+    });
+  };
   try {
     const { data, error: error2 } = await client.rpc("search_ticket_intents", {
       _workspace_id: workspaceId,
       _project_id: projectId,
       _query_embedding: subjectEmbedding,
       // may be null → trigram-only
-      _query_text: queryText || subject.title || "",
+      _query_text: fullText || titleText || "",
       // over-fetch so self-exclusion + archived-drop don't starve the top-N
-      _match_limit: Math.max(limit * 4, 20)
+      _match_limit: matchLimit
     });
     if (error2) {
       degraded = true;
     } else {
-      const rows2 = data ?? [];
-      rows2.forEach((row, i) => {
-        const tid = row.source_task_id;
-        if (!tid) return;
-        accumulateRrf(byTask, tid, i + 1, "intent");
-      });
+      ingest(data ?? [], "source_task_id", "intent");
     }
   } catch {
     degraded = true;
   }
-  if (queryText) {
+  if (fullText) {
     try {
       const { data, error: error2 } = await client.rpc("search_tasks", {
         _project_id: projectId,
-        _query_text: queryText,
-        _match_limit: Math.max(limit * 4, 20),
+        _query_text: fullText,
+        _match_limit: matchLimit,
         _include_archived: false
       });
-      if (!error2) {
-        const rows2 = data ?? [];
-        rows2.forEach((row, i) => {
-          const tid = row.task_id;
-          if (!tid) return;
-          accumulateRrf(byTask, tid, i + 1, "lexical");
-        });
-      }
+      if (!error2) ingest(data ?? [], "task_id", "lexical");
+    } catch {
+    }
+  }
+  if (titleText && titleText !== fullText) {
+    try {
+      const { data, error: error2 } = await client.rpc("search_tasks", {
+        _project_id: projectId,
+        _query_text: titleText,
+        _match_limit: matchLimit,
+        _include_archived: false
+      });
+      if (!error2) ingest(data ?? [], "task_id", "lexical");
     } catch {
     }
   }
@@ -33624,7 +33634,7 @@ async function resolveTaskId2(client, projectId, input) {
 }
 var findRelatedTicketsTool = {
   name: "find_related_tickets",
-  description: "Surface tickets related to / duplicating / overlapping a subject ticket \u2014 the dedup pipeline used at the clarify gate. Runs intent retrieval (semantic+lexical over ticket intents) FUSED with lexical content matching over tasks via Reciprocal Rank Fusion (RRF by rank across the two routes \u2014 not a raw max \u2014 so the routes\u2019 incommensurable score scales can\u2019t dominate each other), self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), and ranks PURELY by relevance (combined RRF score). Excludes archived + Cancelled + Parked candidates; KEEPS Verified / Released (valid dedup signals \u2014 already delivered). Unmilestoned candidates are FLAGGED (`unmilestoned: true`) for the renderer to badge \u2014 they are NOT reordered (relevance order is authoritative). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. Degrades gracefully (returns lexical-only results with degraded:true) if intent retrieval is unavailable.",
+  description: "Surface tickets related to / duplicating / overlapping a subject ticket \u2014 the dedup pipeline used at the clarify gate. MULTI-QUERY retrieval fused by Reciprocal Rank Fusion (RRF by rank, not a raw max, so the routes\u2019 incommensurable score scales can\u2019t dominate each other) over THREE ranked lists: lexical content match on title+description (route 1, full), a SECOND lexical match on the title ALONE (route 1, title \u2014 rescues siblings the full-text framing dilutes), and intent retrieval (route 2, semantic+lexical over ticket intents). Self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), and ranks PURELY by relevance (combined RRF score). Excludes archived + Cancelled + Parked candidates; KEEPS Verified / Released (valid dedup signals \u2014 already delivered). Unmilestoned candidates are FLAGGED (`unmilestoned: true`) for the renderer to badge \u2014 they are NOT reordered (relevance order is authoritative). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. Degrades gracefully (returns lexical-only results with degraded:true) if intent retrieval is unavailable.",
   inputSchema: {
     type: "object",
     properties: {
