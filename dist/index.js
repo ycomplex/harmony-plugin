@@ -34945,8 +34945,8 @@ var listDependenciesTool = {
 async function listDependencies(client, projectId, args) {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const [dependsOnRes, blocksRes] = await Promise.all([
-    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, dependency:blocked_by_task_id(id, task_number, title, status)").eq("task_id", resolvedId).order("created_at", { ascending: true }),
-    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, dependent:task_id(id, task_number, title, status)").eq("blocked_by_task_id", resolvedId).order("created_at", { ascending: true })
+    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, dependency:blocked_by_task_id(id, task_number, title, status, workflow_state, awaiting_human_input, awaiting_human_reason, stale)").eq("task_id", resolvedId).order("created_at", { ascending: true }),
+    client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, dependent:task_id(id, task_number, title, status, workflow_state, awaiting_human_input, awaiting_human_reason, stale)").eq("blocked_by_task_id", resolvedId).order("created_at", { ascending: true })
   ]);
   if (dependsOnRes.error) throw dependsOnRes.error;
   if (blocksRes.error) throw blocksRes.error;
