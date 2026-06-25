@@ -83,7 +83,6 @@ section, or reorder. One row per candidate, each row showing:
 - a **recommended disposition**: `fold` (this ticket should be absorbed into that umbrella), `dedupe` (that ticket is the same ask — absorb this one into it), or `ignore` (related but distinct)
 - **badges** (salience only — they NEVER reorder the list; relevance order stays authoritative):
   - **"⚠ deferred — fold while you're here"** for any candidate with `unmilestoned: true`
-  - **"⚠ may already be delivered"** for any candidate whose `workflow_state` is `Verified` or `Released` (a dedup signal — *not* a fold target)
 
 If `candidates` is empty, render **"Related tickets: none found"** explicitly. If the
 result has `degraded: true`, note that intent retrieval was unavailable and the list is

@@ -33563,7 +33563,7 @@ async function findRelatedTickets(client, projectId, args) {
   const candidates = [];
   for (const r of rows ?? []) {
     if (r.archived) continue;
-    if (DEAD_WORKFLOW_STATES.has(r.workflow_state)) continue;
+    if (EXCLUDED_WORKFLOW_STATES.has(r.workflow_state)) continue;
     const agg = byTask.get(r.id);
     if (!agg) continue;
     const projectKey = r.projects?.key ?? "?";
@@ -33587,7 +33587,7 @@ async function findRelatedTickets(client, projectId, args) {
     degraded
   };
 }
-var DEAD_WORKFLOW_STATES = /* @__PURE__ */ new Set(["Cancelled", "Parked"]);
+var EXCLUDED_WORKFLOW_STATES = /* @__PURE__ */ new Set(["Cancelled", "Parked", "Verified", "Released"]);
 function accumulateRrf(byTask, taskId, rank, route) {
   const contribution = 1 / (RRF_K + rank);
   const existing = byTask.get(taskId);
@@ -33634,7 +33634,7 @@ async function resolveTaskId2(client, projectId, input) {
 }
 var findRelatedTicketsTool = {
   name: "find_related_tickets",
-  description: "Surface tickets related to / duplicating / overlapping a subject ticket \u2014 the dedup pipeline used at the clarify gate. MULTI-QUERY retrieval fused by Reciprocal Rank Fusion (RRF by rank, not a raw max, so the routes\u2019 incommensurable score scales can\u2019t dominate each other) over THREE ranked lists: lexical content match on title+description (route 1, full), a SECOND lexical match on the title ALONE (route 1, title \u2014 rescues siblings the full-text framing dilutes), and intent retrieval (route 2, semantic+lexical over ticket intents). Self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), and ranks PURELY by relevance (combined RRF score). Excludes archived + Cancelled + Parked candidates; KEEPS Verified / Released (valid dedup signals \u2014 already delivered). Unmilestoned candidates are FLAGGED (`unmilestoned: true`) for the renderer to badge \u2014 they are NOT reordered (relevance order is authoritative). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. Degrades gracefully (returns lexical-only results with degraded:true) if intent retrieval is unavailable.",
+  description: "Surface tickets related to / duplicating / overlapping a subject ticket \u2014 the dedup pipeline used at the clarify gate. MULTI-QUERY retrieval fused by Reciprocal Rank Fusion (RRF by rank, not a raw max, so the routes\u2019 incommensurable score scales can\u2019t dominate each other) over THREE ranked lists: lexical content match on title+description (route 1, full), a SECOND lexical match on the title ALONE (route 1, title \u2014 rescues siblings the full-text framing dilutes), and intent retrieval (route 2, semantic+lexical over ticket intents). Self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), and ranks PURELY by relevance (combined RRF score). Returns only OPEN / foldable candidates \u2014 excludes archived + Cancelled + Parked + Verified + Released (the clarify card folds/subsumes only open work; B-581 reversed B-574\u2019s keep-terminal decision). Unmilestoned candidates are FLAGGED (`unmilestoned: true`) for the renderer to badge \u2014 they are NOT reordered (relevance order is authoritative). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. Degrades gracefully (returns lexical-only results with degraded:true) if intent retrieval is unavailable.",
   inputSchema: {
     type: "object",
     properties: {
