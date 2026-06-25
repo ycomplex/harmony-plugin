@@ -29,6 +29,62 @@ describe('listDependencies', () => {
     expect(client.from).toHaveBeenCalledTimes(2);
     expect(result).toEqual({ depends_on: [], blocks: [] });
   });
+
+  // B-572: list_dependencies must expose each related task's real workflow_state (+ the
+  // awaiting/stale lifecycle fields) on BOTH directions — depends_on (the dependency embed)
+  // and blocks (the dependent embed) — not just the legacy status, which is inert in
+  // opinionated mode (B-487). Mirrors B-556 for list_subtasks/list_parent.
+  it('selects the lifecycle fields on BOTH embeds and passes workflow_state through (B-572)', async () => {
+    const selectSpy = vi.fn().mockReturnThis();
+    const dependsOnRow = {
+      id: 'link-1', task_id: 'resolved-uuid', blocked_by_task_id: 'dep-1',
+      created_at: '2026-01-01', created_by: 'user-1',
+      dependency: {
+        id: 'dep-1', task_number: 10, title: 'Upstream',
+        status: 'In Progress', workflow_state: 'Designed',
+        awaiting_human_input: false, awaiting_human_reason: null, stale: false,
+      },
+    };
+    const blocksRow = {
+      id: 'link-2', task_id: 'dependent-1', blocked_by_task_id: 'resolved-uuid',
+      created_at: '2026-01-02', created_by: 'user-1',
+      dependent: {
+        id: 'dependent-1', task_number: 20, title: 'Downstream',
+        status: 'Backlog', workflow_state: 'Built',
+        awaiting_human_input: true, awaiting_human_reason: 'release-decision-pending', stale: false,
+      },
+    };
+    let call = 0;
+    const directional = {
+      select: selectSpy,
+      eq: vi.fn().mockReturnThis(),
+      order: vi.fn().mockImplementation(() => {
+        call += 1;
+        // first call = depends_on direction, second = blocks direction
+        return Promise.resolve({ data: call === 1 ? [dependsOnRow] : [blocksRow], error: null });
+      }),
+    };
+    client = { from: vi.fn(() => directional) };
+
+    const result = await listDependencies(client, 'proj-1', { task_id: 'B-1' });
+
+    // BOTH selects must carry the lifecycle columns (additive — status retained)
+    const dependsOnCols = selectSpy.mock.calls[0][0] as string;
+    const blocksCols = selectSpy.mock.calls[1][0] as string;
+    for (const cols of [dependsOnCols, blocksCols]) {
+      expect(cols).toContain('workflow_state');
+      expect(cols).toContain('awaiting_human_input');
+      expect(cols).toContain('awaiting_human_reason');
+      expect(cols).toContain('stale');
+      expect(cols).toContain('status'); // legacy field retained (back-compat)
+    }
+
+    // workflow_state passes through alongside the retained status on both directions
+    expect(result.depends_on[0].dependency.workflow_state).toBe('Designed');
+    expect(result.depends_on[0].dependency.status).toBe('In Progress');
+    expect(result.blocks[0].dependent.workflow_state).toBe('Built');
+    expect(result.blocks[0].dependent.status).toBe('Backlog');
+  });
 });
 
 describe('manageDependencies', () => {
