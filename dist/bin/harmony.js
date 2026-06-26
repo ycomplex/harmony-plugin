@@ -26072,7 +26072,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
   if (!args.entry_id && !args.title) {
     throw new Error("Either entry_id or title must be provided to identify the entry");
   }
-  const hasUpdates = args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0;
+  const hasUpdates = args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
   if (!hasUpdates) {
     throw new Error("At least one field to update must be provided");
   }
@@ -26083,6 +26083,10 @@ async function updateKnowledgeEntry(client, projectId, args) {
   if (args.type !== void 0) updates.type = args.type;
   if (args.status !== void 0) updates.status = toBaseStatus(args.status);
   if (args.tags !== void 0) updates.tags = args.tags;
+  if (args.domain !== void 0) updates.domain = args.domain;
+  if (args.madr !== void 0) updates.madr = args.madr;
+  if (args.realization !== void 0) updates.realization = args.realization;
+  if (args.review_by !== void 0) updates.review_by = args.review_by;
   let query = client.from("knowledge_decisions").update(updates).eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.entry_id) {
     query = query.eq("id", args.entry_id);
@@ -26090,7 +26094,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
     query = query.eq("title", args.title);
   }
   const { data, error } = await query.select(
-    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at, domain, madr, realization, review_by"
   ).single();
   if (error) {
     if (error.code === "23505") {
@@ -26208,8 +26212,15 @@ function registerKnowledgeCommands(program3) {
       (entry) => `Created knowledge entry: "${entry.title}" (${entry.id})`
     );
   });
-  knowledge.command("update").description("Update an existing knowledge entry").argument("<id>", "Entry UUID").option("--title <title>", "New title").option("--content <content>", "New markdown content").option("--type <type>", "New entry type").option("--status <status>", "New status").option("--tags <tags>", "Comma-separated list of tags (replaces existing tags)").action(async (id, opts) => {
+  knowledge.command("update").description("Update an existing knowledge entry").argument("<id>", "Entry UUID").option("--title <title>", "New title").option("--content <content>", "New markdown content").option("--type <type>", "New entry type").option("--status <status>", "New status").option("--tags <tags>", "Comma-separated list of tags (replaces existing tags)").option(
+    "--domain <domain>",
+    "Domain (repeat for multiple): engineering, operations, data, product, customer, process",
+    (v, prev) => [...prev, v],
+    []
+  ).option("--madr <json>", "Structured MADR body as a JSON object (full-object replace)").option("--realization <state>", "Realization state: agreed, live, deprecating, or retired").option("--review-by <iso>", "ISO timestamp; freshness/decay date").action(async (id, opts) => {
     const tags = opts.tags ? opts.tags.split(",").map((t) => t.trim()).filter(Boolean) : void 0;
+    const domain = opts.domain && opts.domain.length > 0 ? opts.domain : void 0;
+    const madr = opts.madr ? JSON.parse(opts.madr) : void 0;
     await runCommand(
       program3.opts(),
       async (ctx) => updateKnowledgeEntry(ctx.client, ctx.projectId, {
@@ -26218,7 +26229,11 @@ function registerKnowledgeCommands(program3) {
         content: opts.content,
         type: opts.type,
         status: opts.status,
-        tags
+        tags,
+        domain,
+        madr,
+        realization: opts.realization,
+        review_by: opts.reviewBy
       }),
       (entry) => `Updated knowledge entry: "${entry.title}" (${entry.id})`
     );

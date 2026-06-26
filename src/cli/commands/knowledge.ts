@@ -127,6 +127,15 @@ export function registerKnowledgeCommands(program: Command): void {
     .option('--type <type>', 'New entry type')
     .option('--status <status>', 'New status')
     .option('--tags <tags>', 'Comma-separated list of tags (replaces existing tags)')
+    .option(
+      '--domain <domain>',
+      'Domain (repeat for multiple): engineering, operations, data, product, customer, process',
+      (v: string, prev: string[]) => [...prev, v],
+      [] as string[],
+    )
+    .option('--madr <json>', 'Structured MADR body as a JSON object (full-object replace)')
+    .option('--realization <state>', 'Realization state: agreed, live, deprecating, or retired')
+    .option('--review-by <iso>', 'ISO timestamp; freshness/decay date')
     .action(async (id, opts) => {
       const tags = opts.tags
         ? opts.tags
@@ -134,6 +143,8 @@ export function registerKnowledgeCommands(program: Command): void {
             .map((t: string) => t.trim())
             .filter(Boolean)
         : undefined;
+      const domain = opts.domain && opts.domain.length > 0 ? opts.domain : undefined;
+      const madr = opts.madr ? JSON.parse(opts.madr) : undefined;
       await runCommand(
         program.opts(),
         async (ctx) =>
@@ -144,6 +155,10 @@ export function registerKnowledgeCommands(program: Command): void {
             type: opts.type,
             status: opts.status,
             tags,
+            domain,
+            madr,
+            realization: opts.realization,
+            review_by: opts.reviewBy,
           }),
         (entry) => `Updated knowledge entry: "${entry.title}" (${entry.id})`,
       );

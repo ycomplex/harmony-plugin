@@ -29,6 +29,13 @@ export interface KnowledgeEntryFull {
   created_by: string;
   created_at: string;
   updated_at: string;
+  // Optional decision-axis columns the base table carries (B-468): editable through
+  // updateKnowledgeEntry and echoed back when present. Not selected by every read
+  // path (getKnowledgeEntry / create echo omit them), hence optional.
+  domain?: string[];
+  madr?: Record<string, unknown> | null;
+  realization?: string | null;
+  review_by?: string | null;
 }
 
 export interface KnowledgeDecisionFull {
@@ -171,7 +178,7 @@ export const createKnowledgeEntryTool = {
 
 export const updateKnowledgeEntryTool = {
   name: 'update_knowledge_entry',
-  description: 'Update an existing knowledge entry in this project by ID or title. Can update title, content, type, status, or tags. Works for all entry types, including the next-gen design types.',
+  description: 'Update an existing knowledge entry in this project by ID or title. Can update title, content, type, status, tags, domain, madr, realization, or review_by. Works for all entry types, including the next-gen design types.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -186,6 +193,21 @@ export const updateKnowledgeEntryTool = {
         items: { type: 'string' },
         description: 'Replace tags with this list',
       },
+      domain: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Replace domains with this list: engineering, operations, data, product, customer, process',
+      },
+      madr: {
+        type: 'object',
+        description: 'Replace the structured MADR body (full-object replace, not a key-merge): { context, decision_drivers, considered_options, decision_outcome, consequences }',
+      },
+      realization: {
+        type: 'string',
+        enum: ['agreed', 'live', 'deprecating', 'retired'],
+        description: 'Implementation/realization state (orthogonal to status); NULL ≡ live; "agreed" = decided-not-yet-built',
+      },
+      review_by: { type: 'string', description: 'ISO timestamp; freshness/decay date (knowledge-model-v1 §3)' },
     },
   },
 };
@@ -594,6 +616,10 @@ export interface UpdateKnowledgeEntryArgs {
   type?: string;
   status?: string;
   tags?: string[];
+  domain?: string[];
+  madr?: Record<string, unknown>;
+  realization?: string;
+  review_by?: string;
 }
 
 export async function updateKnowledgeEntry(
@@ -610,7 +636,11 @@ export async function updateKnowledgeEntry(
     args.content !== undefined ||
     args.type !== undefined ||
     args.status !== undefined ||
-    args.tags !== undefined;
+    args.tags !== undefined ||
+    args.domain !== undefined ||
+    args.madr !== undefined ||
+    args.realization !== undefined ||
+    args.review_by !== undefined;
 
   if (!hasUpdates) {
     throw new Error('At least one field to update must be provided');
@@ -624,6 +654,13 @@ export async function updateKnowledgeEntry(
   if (args.type !== undefined) updates.type = args.type;
   if (args.status !== undefined) updates.status = toBaseStatus(args.status);
   if (args.tags !== undefined) updates.tags = args.tags;
+  // Decision-axis columns recordDecision already writes but this path omitted (B-468).
+  // Pass-through only (mirrors recordDecision — no strict validation; the DB CHECK/FK
+  // constraints are the backstop). madr is a FULL-OBJECT replace, not a key-merge.
+  if (args.domain !== undefined) updates.domain = args.domain;
+  if (args.madr !== undefined) updates.madr = args.madr;
+  if (args.realization !== undefined) updates.realization = args.realization;
+  if (args.review_by !== undefined) updates.review_by = args.review_by;
 
   // Update the knowledge_decisions BASE table, not the workspace_knowledge compat view:
   // the view's INSTEAD-OF UPDATE never fires for rows outside its WHERE (the legacy four
@@ -644,7 +681,7 @@ export async function updateKnowledgeEntry(
 
   const { data, error } = await query
     .select(
-      'id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at',
+      'id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at, domain, madr, realization, review_by',
     )
     .single();
 
