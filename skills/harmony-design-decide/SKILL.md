@@ -84,7 +84,7 @@ const decision = mcp__harmony__record_decision({
   type: "technical-design",            // or product-design / ux-ui-design
   title: "<ticket>: <sub-track> — <decision>",
   content: "<the decision + rationale>",
-  madr: { context: "...", drivers: ["..."], options: ["..."], outcome: "...", consequences: ["..."] },
+  madr: { context: "...", decision_drivers: ["..."], considered_options: ["..."], decision_outcome: "...", consequences: ["..."] },
   domain: ["engineering", "operations"],
   source_type: "manual",
   source_activity: "design-decide",

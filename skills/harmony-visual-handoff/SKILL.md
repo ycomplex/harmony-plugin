@@ -92,9 +92,9 @@ const decision = mcp__harmony__record_decision({
     + "Surface: /tmp/harmony-visual/B-412-onboarding-setup.html.",
   madr: {
     context: "Manager first-run; cross-team comparability is the driver.",
-    drivers: ["Comparable measures across teams/org", "Low first-run friction"],
-    options: ["Explicit steps", "Smart defaults (editable)", "Fixed/standard (high-friction change)"],
-    outcome: "Fixed/standard instrument; change gated behind friction.",
+    decision_drivers: ["Comparable measures across teams/org", "Low first-run friction"],
+    considered_options: ["Explicit steps", "Smart defaults (editable)", "Fixed/standard (high-friction change)"],
+    decision_outcome: "Fixed/standard instrument; change gated behind friction.",
     consequences: ["Teams stay comparable", "Power users must request a custom setup"],
   },
   domain: ["product", "customer"],
