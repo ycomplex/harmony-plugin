@@ -272,9 +272,13 @@ describe('harmony-conduct skill contract', () => {
     // The phase is named in the lineage.
     expect(skill.body).toContain('B-485');
     expect(body).toContain('auto-pickup');
-    // It is session-held polling-with-backoff — NOT a background daemon (locked param D4).
-    expect(body).toMatch(/session-held/);
-    expect(body).toMatch(/no background daemon|not.*a daemon|never.*a daemon|not\b.*background/);
+    // It is a session-scoped poll-with-backoff (locked param D4). B-532 REFINED D4: a session-/window-scoped
+    // background poll that DIES WITH THE SESSION is now permitted (the bundled dist/bin/poll.js, launched via
+    // Bash(run_in_background)); a PERSISTENT / cross-session daemon is still excluded (v2). The guarantee the
+    // test pins: session-scoped is OK, the watch dies with the session, and a cross-session daemon stays out.
+    expect(body).toMatch(/session-held|session-scoped/);
+    expect(body).toMatch(/dies with the session/);
+    expect(body).toMatch(/persistent\s*\/?\s*cross-session daemon|cross-session daemon|persistent.*daemon.*v2|persistent.*daemon.*still/);
     expect(body).toMatch(/poll|polling/);
     expect(body).toMatch(/backoff/);
     // It polls get_task (the cheap detector) and reads the resolution.
