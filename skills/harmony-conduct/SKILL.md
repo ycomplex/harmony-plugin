@@ -621,9 +621,12 @@ running simply **persists on the ticket row** and the next run applies it. Go to
 
 ### 4c. Auto-pickup — consume a browser resolution in the live session (B-485 + B-500)
 
-This is **session-held polling-with-backoff** (locked param **D4: session-held v1; NO background daemon**).
-Auto-pickup is the *live running session* watching for the human's out-of-band browser resolution and
-consuming it — it is **NOT** a daemon and **NOT** a new write path. It changes only *where* the human
+This is a **session-scoped watch with backoff** (locked param **D4**: a **session-/window-scoped background
+poll that dies with the session** is permitted — *session-held v1*; a **persistent / cross-session daemon**
+is still v2). Auto-pickup is the *running session* watching for the human's out-of-band browser resolution
+and consuming it. The watch runs as a **background poll the session launches** (B-532), but it is bound to
+the session's lifetime — it **dies with the session** (`pkill`ed on re-arm and on session end) and is
+**NOT** a persistent/cross-session daemon and **NOT** a new write path. It changes only *where* the human
 answers (the browser, on any device) versus requiring a session re-run; **it is orthogonal to delegation**
 (§4b) — the human still resolves **every** controlled gate. Auto-pickup never makes a decision the human
 didn't make; it routes the human's **actual** browser command to the owning gate skill, exactly as a
@@ -641,19 +644,35 @@ surfacing the brief you must schedule a *self-firing re-invocation* of this cond
 turn, then end the turn. Do **not** just stop and assume the runtime will call you back — it will not, and the
 watch silently dies (this is the B-531 bug). The *behaviour* — arm a self-firing watch after every
 controlled/hard-floor pause — is the **durable contract**; the concrete mechanism below is a **swappable
-recipe** (a later mechanism — B-532's bundled poll script — replaces only the recipe, never the contract).
+recipe** (B-532 swapped the earlier Claude-Code `ScheduleWakeup` recipe for the bundled background poll
+script below — the *recipe* changed, the *contract* did not; a persistent cross-session daemon would be a
+further, separate change, still out of scope).
 
-**Claude Code — how to actually arm (the current recipe).** Call
-`ScheduleWakeup(delaySeconds, prompt: "/harmony-plugin:harmony-conduct <ticket> [<same flag, if any>]")`
-after surfacing the brief, then end the turn. On the wake-up you are re-invoked with that prompt: re-read
-`get_task`, detect what the human did (state advanced / `pending_resolution` reshape / nothing changed),
-consume it per the cases below, and **if it is still pending, ARM AGAIN** with the next backoff delay.
-**Cadence (tunable defaults):** first poll **~120s**; back off but keep each delay **under ~300s** so the
-prompt cache stays warm while the human is likely present; widen to a coarse tail (~900s) once clearly idle;
-stop at the **~90-min** window and degrade (case 3 below). Between wake-ups you do nothing — the scheduled
-wake-up IS the watch. The watch ends on **any** of three co-equal exits — a browser resolution, an in-session/terminal
-answer, or the ~90-min timeout, whichever lands first. On each re-read, compare against the brief you
-surfaced and detect which of these the human did in the browser:
+**Claude Code — how to actually arm (the current recipe, B-532).** The watch is a **plugin-bundled
+background poll script** — `dist/bin/poll.js`. It reads the ticket **IN-PROCESS** via the shared-core
+`get_task` (`getTask`) — **not** MCP, **not** the CLI subprocess, **not** the self-executing committed
+`dist/index.js` — with auth + project **pinned once at launch from `HARMONY_API_TOKEN`** (immune to a
+mid-watch `~/.harmony` active-project switch), and it exits the instant it detects a change (state advanced /
+`pending_resolution` reshape / `Parked`) or the ~90-min window expires. To arm it, after surfacing the brief
+**launch it in the background and end the turn**:
+
+1. **`pkill -f "dist/bin/poll.js <ticket>"`** first, to kill any prior poll still watching THIS ticket
+   (idempotent re-arm). Also run this on session end so no poll outlives the session — the watch is
+   session-scoped and must die with the session.
+2. **`Bash(run_in_background)`** → `node ${CLAUDE_PLUGIN_ROOT}/dist/bin/poll.js <ticket>`. The ticket id is
+   in the argv (greppable) precisely so `pkill -f` can target exactly this watch and so the watch self-cleans.
+3. **End the turn.** The background process IS the watch — you do nothing between now and its exit.
+
+On the script's exit your `run_in_background` re-invocation fires: **re-read `get_task` yourself** — the
+script's stdout/exit code are *diagnostic only*; the conductor re-reads the ticket row and is the source of
+truth. Detect what the human did (state advanced / `pending_resolution` reshape / nothing changed), consume
+it per the cases below, and **if it is still pending, ARM AGAIN** (pkill the prior poll, re-launch, end the
+turn). The poll script owns the **cadence (tunable):** first poll **~120s**; back off but keep each delay
+**under ~300s** while the human is likely present; widen to a coarse tail (~900s) once clearly idle; stop at
+the **~90-min** window and degrade (case 3 below). Between launch and exit you do nothing — the background
+poll IS the watch. The watch ends on **any** of three co-equal exits — a browser resolution, an
+in-session/terminal answer, or the ~90-min timeout, whichever lands first. On each re-read, compare against
+the brief you surfaced and detect which of these the human did in the browser:
 
 1. **State advanced — a browser accept/defer was applied** (`resolve_brief` ran from the web). The
    `workflow_state` moved forward (accept) or is now `Parked` (defer/deny), and `awaiting_human_input` is
@@ -803,9 +822,11 @@ Delegation is **opt-in per run**, **dial-capped**, and **floored**:
 Browser auto-pickup (B-485) is **orthogonal and equally non-decisional**:
 
 - It is the **default at each pause** (B-500 — the conductor auto-watches without asking and without
-  requiring a re-run) and **session-held** (D4 — no background daemon). The watch is **bounded (~90 min, idle
-  backoff)** and ends on **any** of three co-equal exits — a browser resolution, an in-session/terminal
-  answer, or the ~90-min timeout; on timeout it degrades to today's persist-and-resume.
+  requiring a re-run) and **session-scoped** (D4 — a session-/window-scoped background poll that **dies with
+  the session** is permitted, via B-532's bundled `dist/bin/poll.js`; a persistent/cross-session daemon is
+  still v2). The watch is **bounded (~90 min, idle backoff)** and ends on **any** of three co-equal exits — a
+  browser resolution, an in-session/terminal answer, or the ~90-min timeout; on timeout it degrades to
+  today's persist-and-resume.
 - It **never makes a decision the human didn't make.** It consumes only the human's *actual* browser verb
   (Accept / Reshape / Deny) and routes it through the same owning-gate-skill path a same-session answer
   takes. Accept ≠ synthesized — it is the human's, just submitted from the browser.
