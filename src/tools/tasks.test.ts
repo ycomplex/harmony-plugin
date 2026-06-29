@@ -3,6 +3,7 @@ import { updateTask, createTask, getTask, bulkCreateTasks } from './tasks.js';
 
 vi.mock('./resolve-task-id.js', () => ({
   resolveTaskId: vi.fn().mockResolvedValue('resolved-uuid'),
+  resolveTaskIds: vi.fn(),
 }));
 
 vi.mock('./members.js', () => ({
@@ -559,6 +560,9 @@ describe('bulkCreateTasks', () => {
     selectSpy?: (sel: string) => void;
     limitSpy?: () => void;
     statusEqSpy?: (val: string) => void;
+    // B-447: rows the parent-metadata lookup (.select('id, project_id, epic_id').in('id', uuids))
+    // resolves to, so epic inheritance can be asserted.
+    parentRows?: any[];
   }) {
     return {
       from: vi.fn((table: string) => {
@@ -581,6 +585,8 @@ describe('bulkCreateTasks', () => {
                 error: null,
               });
             }),
+            // B-447: parent-metadata batch lookup terminates at .in('id', uuids).
+            in: vi.fn(() => Promise.resolve({ data: opts.parentRows ?? [], error: null })),
           };
           return {
             select: vi.fn((sel: string) => {
@@ -603,6 +609,17 @@ describe('bulkCreateTasks', () => {
       }),
     } as any;
   }
+
+  beforeEach(async () => {
+    // Default: resolveTaskIds echoes each input to a predictable `resolved-<input>` UUID,
+    // preserving order (the real impl resolves an array in one query and keeps order).
+    const resolveIdsMock = (await import('./resolve-task-id.js'))
+      .resolveTaskIds as ReturnType<typeof vi.fn>;
+    resolveIdsMock.mockReset();
+    resolveIdsMock.mockImplementation(async (_c: any, _p: any, inputs: string[]) =>
+      inputs.map(i => `resolved-${i}`),
+    );
+  });
 
   it('continues positions sequentially from the existing max for a single status', async () => {
     const insertSpy = vi.fn();
@@ -670,5 +687,131 @@ describe('bulkCreateTasks', () => {
     expect(limitSpy).toHaveBeenCalled();
     expect(selectSpy).toHaveBeenCalledWith('position');
     expect(selectSpy).not.toHaveBeenCalledWith('status, position');
+  });
+
+  // B-447: bulk_create_tasks gains per-item parent_task_id, reaching parity with create_task.
+  it('B-447: stamps the resolved parent_task_id on a row given a valid parent', async () => {
+    const insertSpy = vi.fn();
+    const client = makeBulkClient({
+      maxByStatus: { Backlog: -1 },
+      insertSpy,
+      parentRows: [{ id: 'resolved-C-88', project_id: 'proj-1', epic_id: 'epic-from-parent' }],
+    });
+
+    await bulkCreateTasks(client, 'proj-1', 'user-1', {
+      tasks: [{ title: 'child', parent_task_id: 'C-88' }],
+    });
+
+    const rows = insertSpy.mock.calls[0][0];
+    expect(rows[0]).toMatchObject({ parent_task_id: 'resolved-C-88', epic_id: 'epic-from-parent' });
+  });
+
+  it('B-447: nests multiple items under the same parent and items under different parents', async () => {
+    const insertSpy = vi.fn();
+    const client = makeBulkClient({
+      maxByStatus: { Backlog: -1 },
+      insertSpy,
+      parentRows: [
+        { id: 'resolved-P-1', project_id: 'proj-1', epic_id: 'epic-1' },
+        { id: 'resolved-P-2', project_id: 'proj-1', epic_id: 'epic-2' },
+      ],
+    });
+
+    await bulkCreateTasks(client, 'proj-1', 'user-1', {
+      tasks: [
+        { title: 'a', parent_task_id: 'P-1' },
+        { title: 'b', parent_task_id: 'P-1' },
+        { title: 'c', parent_task_id: 'P-2' },
+      ],
+    });
+
+    const rows = insertSpy.mock.calls[0][0];
+    expect(rows.map((r: any) => r.parent_task_id)).toEqual([
+      'resolved-P-1',
+      'resolved-P-1',
+      'resolved-P-2',
+    ]);
+    // Each item inherits its own parent's epic.
+    expect(rows.map((r: any) => r.epic_id)).toEqual(['epic-1', 'epic-1', 'epic-2']);
+  });
+
+  it('B-447: an item omitting parent_task_id gets parent_task_id null (no regression)', async () => {
+    const insertSpy = vi.fn();
+    const client = makeBulkClient({ maxByStatus: { Backlog: -1 }, insertSpy });
+
+    await bulkCreateTasks(client, 'proj-1', 'user-1', {
+      tasks: [{ title: 'standalone' }],
+    });
+
+    const resolveIdsMock = (await import('./resolve-task-id.js'))
+      .resolveTaskIds as ReturnType<typeof vi.fn>;
+    // No parent inputs → resolveTaskIds is never called.
+    expect(resolveIdsMock).not.toHaveBeenCalled();
+    expect(insertSpy.mock.calls[0][0][0]).toMatchObject({ parent_task_id: null, epic_id: null });
+  });
+
+  it('B-447: inherits the same-project parent epic when no epic_id is given', async () => {
+    const insertSpy = vi.fn();
+    const client = makeBulkClient({
+      maxByStatus: { Backlog: -1 },
+      insertSpy,
+      parentRows: [{ id: 'resolved-C-88', project_id: 'proj-1', epic_id: 'inherited-epic' }],
+    });
+
+    await bulkCreateTasks(client, 'proj-1', 'user-1', {
+      tasks: [{ title: 'child', parent_task_id: 'C-88' }],
+    });
+
+    expect(insertSpy.mock.calls[0][0][0]).toMatchObject({ epic_id: 'inherited-epic' });
+  });
+
+  it('B-447: an explicit epic_id wins over the inherited parent epic', async () => {
+    const insertSpy = vi.fn();
+    const client = makeBulkClient({
+      maxByStatus: { Backlog: -1 },
+      insertSpy,
+      parentRows: [{ id: 'resolved-C-88', project_id: 'proj-1', epic_id: 'epic-from-parent' }],
+    });
+
+    await bulkCreateTasks(client, 'proj-1', 'user-1', {
+      tasks: [{ title: 'child', parent_task_id: 'C-88', epic_id: 'explicit-epic' }],
+    });
+
+    expect(insertSpy.mock.calls[0][0][0]).toMatchObject({ epic_id: 'explicit-epic' });
+  });
+
+  it('B-447: does not inherit a cross-project parent epic (epic_id null)', async () => {
+    const insertSpy = vi.fn();
+    const client = makeBulkClient({
+      maxByStatus: { Backlog: -1 },
+      insertSpy,
+      parentRows: [{ id: 'resolved-C-88', project_id: 'other-project', epic_id: 'foreign-epic' }],
+    });
+
+    await bulkCreateTasks(client, 'proj-1', 'user-1', {
+      tasks: [{ title: 'child', parent_task_id: 'C-88' }],
+    });
+
+    expect(insertSpy.mock.calls[0][0][0]).toMatchObject({
+      parent_task_id: 'resolved-C-88',
+      epic_id: null,
+    });
+  });
+
+  it('B-447: rejects the whole call (no insert) when a parent_task_id is invalid', async () => {
+    const insertSpy = vi.fn();
+    const resolveIdsMock = (await import('./resolve-task-id.js'))
+      .resolveTaskIds as ReturnType<typeof vi.fn>;
+    resolveIdsMock.mockReset();
+    resolveIdsMock.mockRejectedValueOnce(new Error('No task(s) with number(s) 999 in this project'));
+
+    const client = makeBulkClient({ maxByStatus: { Backlog: -1 }, insertSpy });
+
+    await expect(
+      bulkCreateTasks(client, 'proj-1', 'user-1', {
+        tasks: [{ title: 'a', parent_task_id: 'C-999' }],
+      }),
+    ).rejects.toThrow(/No task\(s\) with number/);
+    expect(insertSpy).not.toHaveBeenCalled();
   });
 });

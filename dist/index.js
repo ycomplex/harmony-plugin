@@ -33173,7 +33173,8 @@ var bulkCreateTasksTool = {
             epic_id: { type: "string" },
             description: { type: "string" },
             due_date: { type: "string" },
-            field_values: { type: "object" }
+            field_values: { type: "object" },
+            parent_task_id: { type: "string", description: "Parent task to nest this item under (UUID, task number, or visual ID e.g. B-43). Optional." }
           },
           required: ["title"]
         },
@@ -33184,6 +33185,21 @@ var bulkCreateTasksTool = {
   }
 };
 async function bulkCreateTasks(client, projectId, userId, args) {
+  const parentInputs = args.tasks.map((t) => t.parent_task_id).filter((p) => p !== void 0 && p !== null);
+  const resolvedByInput = /* @__PURE__ */ new Map();
+  if (parentInputs.length > 0) {
+    const resolved = await resolveTaskIds(client, projectId, parentInputs);
+    parentInputs.forEach((input, i) => resolvedByInput.set(input, resolved[i]));
+  }
+  const distinctParentUuids = [...new Set(resolvedByInput.values())];
+  const parentMeta = /* @__PURE__ */ new Map();
+  if (distinctParentUuids.length > 0) {
+    const { data: parents, error: parentsErr } = await client.from("tasks").select("id, project_id, epic_id").in("id", distinctParentUuids);
+    if (parentsErr) throw parentsErr;
+    for (const p of parents ?? []) {
+      parentMeta.set(p.id, { project_id: p.project_id, epic_id: p.epic_id ?? null });
+    }
+  }
   const statuses = [...new Set(args.tasks.map((t) => t.status ?? "Backlog"))];
   const maxPositions = {};
   for (const status of statuses) {
@@ -33194,17 +33210,20 @@ async function bulkCreateTasks(client, projectId, userId, args) {
     const status = task.status ?? "Backlog";
     const pos = (maxPositions[status] ?? -1) + 1;
     maxPositions[status] = pos;
+    const parentTaskId = task.parent_task_id != null ? resolvedByInput.get(task.parent_task_id) ?? null : null;
+    const parent = parentTaskId ? parentMeta.get(parentTaskId) : void 0;
     return {
       project_id: projectId,
       title: task.title,
       status,
       priority: task.priority ?? "medium",
-      epic_id: task.epic_id ?? null,
+      epic_id: task.epic_id ?? (parent && parent.project_id === projectId ? parent.epic_id : null) ?? null,
       description: task.description?.replace(/\\n/g, "\n") ?? null,
       due_date: task.due_date ?? null,
       field_values: task.field_values ?? {},
       position: pos,
-      created_by: userId
+      created_by: userId,
+      parent_task_id: parentTaskId
     };
   });
   const { data, error: error2 } = await client.from("tasks").insert(rows).select();
