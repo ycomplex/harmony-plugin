@@ -19,9 +19,17 @@ flow below — unchanged). If `mode === 'opinionated'`, follow **Opinionated mod
 ## Opinionated mode (planning + building)
 
 This path drives `planning` (Designed → Planned) and `building` (Planned → Built) for a ticket that has
-accepted design decisions. It does NOT author design knowledge (build role): if you discover the design
-is wrong, flag a backflow (`mcp__harmony__advance_workflow({ task_id, activity: "revising-designing" })`)
-and hand back to `/harmony-plugin:harmony-design-decide` — don't quietly redesign.
+accepted design decisions. It does NOT author design knowledge (build role): if you discover the accepted
+design is wrong, do **not** quietly redesign and do **not** revert state yourself. Instead **raise a
+revise-scope recommendation** — delegate to `/harmony-plugin:harmony-revise-scope <ticket> --to design`. That
+skill drafts a `revise-scope-review` brief; on a **human accept** it supersedes the invalidated design
+decision and reverts `Designed → Decomposed` via `revising-decomposing`, after which design re-runs natively.
+The revert is **human-ratified** (contract-1) — never auto-executed, even under `--unattended`. Do not call
+`advance_workflow` yourself to back up design (`start-work` can't supersede design knowledge anyway —
+`record_decision`/`supersede_decision` are disallowed here). Activity-name note: `revising-decomposing`
+(→`Decomposed`) re-opens **design**; the similarly-named `revising-designing` (→`Designed`) re-opens the
+**plan** gate, not design — which is why the old recipe errored from `Designed`. The plan-gate case (ticket
+at `Designed`) is supported today; the build-time `Planned`/`Built` case is tracked in **B-609**.
 
 ### O1. Load + locate the ticket in the lifecycle
 
