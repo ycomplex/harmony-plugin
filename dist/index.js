@@ -33998,7 +33998,7 @@ var createKnowledgeEntryTool = {
 };
 var updateKnowledgeEntryTool = {
   name: "update_knowledge_entry",
-  description: "Update an existing knowledge entry in this project by ID or title. Can update title, content, type, status, or tags. Works for all entry types, including the next-gen design types.",
+  description: "Update an existing knowledge entry in this project by ID or title. Can update title, content, type, status, tags, domain, madr, realization, or review_by. Works for all entry types, including the next-gen design types.",
   inputSchema: {
     type: "object",
     properties: {
@@ -34012,7 +34012,22 @@ var updateKnowledgeEntryTool = {
         type: "array",
         items: { type: "string" },
         description: "Replace tags with this list"
-      }
+      },
+      domain: {
+        type: "array",
+        items: { type: "string" },
+        description: "Replace domains with this list: engineering, operations, data, product, customer, process"
+      },
+      madr: {
+        type: "object",
+        description: "Replace the structured MADR body (full-object replace, not a key-merge): { context, decision_drivers, considered_options, decision_outcome, consequences }"
+      },
+      realization: {
+        type: "string",
+        enum: ["agreed", "live", "deprecating", "retired"],
+        description: 'Implementation/realization state (orthogonal to status); NULL \u2261 live; "agreed" = decided-not-yet-built'
+      },
+      review_by: { type: "string", description: "ISO timestamp; freshness/decay date (knowledge-model-v1 \xA73)" }
     }
   }
 };
@@ -34230,7 +34245,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
   if (!args.entry_id && !args.title) {
     throw new Error("Either entry_id or title must be provided to identify the entry");
   }
-  const hasUpdates = args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0;
+  const hasUpdates = args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
   if (!hasUpdates) {
     throw new Error("At least one field to update must be provided");
   }
@@ -34241,6 +34256,10 @@ async function updateKnowledgeEntry(client, projectId, args) {
   if (args.type !== void 0) updates.type = args.type;
   if (args.status !== void 0) updates.status = toBaseStatus(args.status);
   if (args.tags !== void 0) updates.tags = args.tags;
+  if (args.domain !== void 0) updates.domain = args.domain;
+  if (args.madr !== void 0) updates.madr = args.madr;
+  if (args.realization !== void 0) updates.realization = args.realization;
+  if (args.review_by !== void 0) updates.review_by = args.review_by;
   let query = client.from("knowledge_decisions").update(updates).eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.entry_id) {
     query = query.eq("id", args.entry_id);
@@ -34248,7 +34267,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
     query = query.eq("title", args.title);
   }
   const { data, error: error2 } = await query.select(
-    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at, domain, madr, realization, review_by"
   ).single();
   if (error2) {
     if (error2.code === "23505") {

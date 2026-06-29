@@ -878,6 +878,64 @@ describe('updateKnowledgeEntry', () => {
     expect(viewChain.single).not.toHaveBeenCalled();          // view never touched
     expect(baseChain.single).toHaveBeenCalledTimes(1);        // exactly the UPDATE … RETURNING, no extra read
   });
+
+  // B-468 (+B-494): the decision-axis columns recordDecision writes but the update path
+  // historically omitted — domain / madr / realization / review_by — are now editable.
+  it('updates domain only (no throw from hasUpdates; passed through to the base update)', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({
+      data: { ...updatedEntry, domain: ['engineering', 'data'] },
+    });
+    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', domain: ['engineering', 'data'] });
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_decisions');
+    expect(secondChain.update).toHaveBeenCalledWith({ domain: ['engineering', 'data'] });
+  });
+
+  it('updates madr only as a full-object replace (not a key-merge)', async () => {
+    const madr = { context: 'new ctx', decision_outcome: 'do X' };
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: { ...updatedEntry, madr } });
+    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', madr });
+    // the WHOLE madr object is set — exact-match, no merged-in extra keys
+    expect(secondChain.update).toHaveBeenCalledWith({ madr });
+  });
+
+  it('updates realization + review_by together', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({
+      data: { ...updatedEntry, realization: 'live', review_by: '2026-09-01T00:00:00Z' },
+    });
+    await updateKnowledgeEntry(client, PROJECT_ID, {
+      entry_id: 'ke-1', realization: 'live', review_by: '2026-09-01T00:00:00Z',
+    });
+    expect(secondChain.update).toHaveBeenCalledWith(
+      expect.objectContaining({ realization: 'live', review_by: '2026-09-01T00:00:00Z' }),
+    );
+  });
+
+  it('hasUpdates accepts each new field alone (a domain/madr/realization/review_by-only call does not throw)', async () => {
+    for (const args of [
+      { entry_id: 'ke-1', domain: ['engineering'] },
+      { entry_id: 'ke-1', madr: { context: 'c' } },
+      { entry_id: 'ke-1', realization: 'agreed' },
+      { entry_id: 'ke-1', review_by: '2026-09-01T00:00:00Z' },
+    ]) {
+      const { client } = buildWorkspaceAndQueryClient({ data: updatedEntry });
+      await expect(updateKnowledgeEntry(client, PROJECT_ID, args)).resolves.toBeDefined();
+    }
+  });
+
+  it('does NOT re-embed when only the new decision-axis fields change (B-504 freshness-guard safety)', async () => {
+    // Editing madr/domain/realization/review_by leaves title+content (the embedded text)
+    // untouched, so the re-embed must NOT fire — the DB freshness-guard trigger keys only
+    // on title/content, so the embedding is never nulled by these edits.
+    const updated = { ...sampleFullEntry, domain: ['engineering'], realization: 'live' };
+    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: updated } });
+    await updateKnowledgeEntry(client, PROJECT_ID, {
+      entry_id: 'ke-1', domain: ['engineering'], madr: { context: 'c' }, realization: 'live', review_by: '2026-09-01T00:00:00Z',
+    });
+    expect(client.functions.invoke).not.toHaveBeenCalled();        // no embed-knowledge call
+    expect(baseChain.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ embedding: expect.anything() }),    // no embedding write
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
