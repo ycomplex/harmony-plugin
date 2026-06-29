@@ -217,7 +217,11 @@ Show the rendered `content` verbatim. On the human's command:
      supersede-list (the target gate's decision + the downstream decisions the scope change invalidates).
      This preserves the Decision Trail; the keep-list is left untouched. There is NO successor to point at —
      the revised decision is authored later, by the target gate's native re-run, not here. (This skill no
-     longer calls `record_decision`; superseding without an immediate successor is intentional.)
+     longer calls `record_decision`; superseding without an immediate successor is intentional.) Call it in
+     **retire-mode (B-534): OMIT both `type` and `title`** — e.g.
+     `mcp__harmony__supersede_decision({ old_decision_id: <id>, reason: "<why>" })`. That marks the old
+     decision `Superseded` with `superseded_by=null` and creates NO successor decision (providing exactly one
+     of type/title is rejected; provide both only to supersede-with-successor, which this flow never does).
   2. **Revert state to the gate's INPUT via the back-edge:** `mcp__harmony__advance_workflow({ task_id,
      activity })` with the activity that lands at the target's INPUT — `revising-promoting` (→`Idea`) for a
      clarify target, `revising-clarifying` (→`Clarified`) for decompose, `revising-decomposing` (→`Decomposed`)

@@ -34351,12 +34351,20 @@ ${args.content ?? ""}`);
 }
 async function supersedeDecision(client, projectId, userId, args) {
   if (!args.old_decision_id) throw new Error("old_decision_id is required");
+  const hasType = !!args.type;
+  const hasTitle = !!args.title?.trim();
+  if (hasType !== hasTitle) {
+    throw new Error(
+      "supersede_decision: provide BOTH type and title to supersede with a successor, or NEITHER to retire the decision without a successor (retire-mode). Exactly one of type/title is ambiguous."
+    );
+  }
+  const retire = !hasType;
   const workspaceId = await getWorkspaceId2(client, projectId);
   const { data: existing, error: fetchErr } = await client.from("knowledge_decisions").select("id").eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.old_decision_id).single();
   if (fetchErr || !existing) {
     throw new Error(`Decision ${args.old_decision_id} not found in this project`);
   }
-  const replacement = await recordDecision(client, projectId, userId, {
+  const replacement = retire ? null : await recordDecision(client, projectId, userId, {
     type: args.type,
     title: args.title,
     content: args.content,
@@ -34365,26 +34373,26 @@ async function supersedeDecision(client, projectId, userId, args) {
     affected_entity_names: args.affected_entity_names,
     status: "Accepted"
   });
-  const { data, error: error2 } = await client.from("knowledge_decisions").update({ status: "Superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.old_decision_id).select(DECISION_COLS).single();
+  const { data, error: error2 } = await client.from("knowledge_decisions").update({ status: "Superseded", superseded_by: replacement ? replacement.id : null }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.old_decision_id).select(DECISION_COLS).single();
   if (error2) throw error2;
   return { superseded: data, replacement };
 }
 var supersedeDecisionTool = {
   name: "supersede_decision",
-  description: 'Supersede an existing decision with a new one. Records the replacement as "Accepted", marks the old decision "Superseded" and links them. Tickets referencing the old decision are automatically flagged stale.',
+  description: 'Supersede an existing decision. Two modes. (1) SUCCESSOR \u2014 provide BOTH type and title: records the replacement as "Accepted", marks the old decision "Superseded" and links them bidirectionally. (2) RETIRE \u2014 omit BOTH type and title: marks the old decision "Superseded" with superseded_by=null and creates NO successor (use when the replacement is authored later, e.g. revise-scope backing a ticket up to a gate that re-authors the decision natively). Providing exactly one of type/title is rejected. Either way, tickets referencing the old decision are automatically flagged stale.',
   inputSchema: {
     type: "object",
     properties: {
       old_decision_id: { type: "string", description: "UUID of the decision being superseded" },
-      type: { type: "string", description: "Type for the replacement decision" },
-      title: { type: "string", description: "Title for the replacement decision" },
-      content: { type: "string", description: "Optional markdown body for the replacement" },
-      madr: { type: "object", description: "Structured MADR body for the replacement" },
-      domain: { type: "array", items: { type: "string" }, description: "Domains for the replacement" },
-      affected_entity_names: { type: "array", items: { type: "string" }, description: "Entities the replacement touches" },
+      type: { type: "string", description: "Type for the replacement decision. Omit BOTH type and title to retire the decision without a successor (retire-mode)." },
+      title: { type: "string", description: "Title for the replacement decision. Omit BOTH type and title to retire the decision without a successor (retire-mode)." },
+      content: { type: "string", description: "Optional markdown body for the replacement (successor-mode only)" },
+      madr: { type: "object", description: "Structured MADR body for the replacement (successor-mode only)" },
+      domain: { type: "array", items: { type: "string" }, description: "Domains for the replacement (successor-mode only)" },
+      affected_entity_names: { type: "array", items: { type: "string" }, description: "Entities the replacement touches (successor-mode only)" },
       reason: { type: "string", description: "Why the old decision is being superseded" }
     },
-    required: ["old_decision_id", "type", "title"]
+    required: ["old_decision_id"]
   }
 };
 var recordDecisionTool = {
