@@ -23,13 +23,15 @@ accepted design decisions. It does NOT author design knowledge (build role): if 
 design is wrong, do **not** quietly redesign and do **not** revert state yourself. Instead **raise a
 revise-scope recommendation** — delegate to `/harmony-plugin:harmony-revise-scope <ticket> --to design`. That
 skill drafts a `revise-scope-review` brief; on a **human accept** it supersedes the invalidated design
-decision and reverts `Designed → Decomposed` via `revising-decomposing`, after which design re-runs natively.
-The revert is **human-ratified** (contract-1) — never auto-executed, even under `--unattended`. Do not call
-`advance_workflow` yourself to back up design (`start-work` can't supersede design knowledge anyway —
-`record_decision`/`supersede_decision` are disallowed here). Activity-name note: `revising-decomposing`
-(→`Decomposed`) re-opens **design**; the similarly-named `revising-designing` (→`Designed`) re-opens the
-**plan** gate, not design — which is why the old recipe errored from `Designed`. The plan-gate case (ticket
-at `Designed`) is supported today; the build-time `Planned`/`Built` case is tracked in **B-609**.
+decision and reverts the ticket to `Decomposed` via `revising-decomposing` (from `Designed`, `Planned`, or
+`Built`), after which design re-runs natively. The revert is **human-ratified** (contract-1) — never
+auto-executed, even under `--unattended`. Do not call `advance_workflow` yourself to back up design
+(`start-work` can't supersede design knowledge anyway — `record_decision`/`supersede_decision` are disallowed
+here). Activity-name note: `revising-decomposing` (→`Decomposed`) re-opens **design**; the similarly-named
+`revising-designing` (→`Designed`) re-opens the **plan** gate, not design — which is why the old recipe errored
+from `Designed`. Both the plan-gate case (ticket at `Designed`) and the build-time `Planned`/`Built` case are
+now supported (the latter via **B-609** — the `revise-scope --to design` guard accepts a build-state source and
+the B-609 web migration seeds the `Planned`/`Built` → `revising-decomposing` → `Decomposed` back-edges).
 
 ### O1. Load + locate the ticket in the lifecycle
 
