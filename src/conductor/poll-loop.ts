@@ -15,6 +15,7 @@
 export interface Taskish {
   workflow_state?: string | null;
   pending_resolution?: PendingResolutionish | null;
+  awaiting_human_input?: boolean | null;
 }
 
 /** The browser-submitted reshape marker (`briefs.pending_resolution`); shape mirrors PendingResolution. */
@@ -27,10 +28,16 @@ export interface PendingResolutionish {
 export interface PollBaseline {
   workflowState?: string | null;
   pendingResolution?: PendingResolutionish | null;
+  awaitingHumanInput?: boolean | null;
 }
 
-/** Which of the three watched signals fired. Mirrors the §4c consume cases. */
-export type ChangeTrigger = 'state-advanced' | 'pending_resolution' | 'parked';
+/**
+ * What the human did, CLASSIFIED after the exit gate fires (B-611). The sole exit gate is the canonical
+ * `awaiting_human_input` true→false transition; these four are a post-gate classification mirroring the §4c
+ * consume cases. `resolved` is the non-advancing case (the flag cleared with no state advance / reshape /
+ * park — e.g. a design sub-track accept composed with `pending_activity: null`).
+ */
+export type ChangeTrigger = 'state-advanced' | 'pending_resolution' | 'parked' | 'resolved';
 
 export interface ChangeDetail {
   trigger: ChangeTrigger;
@@ -85,21 +92,36 @@ function samePending(
 
 /**
  * Compare a freshly-read task against the launch baseline and report what (if anything) the human did.
- * Returns the matching ChangeDetail, or null when nothing watch-worthy changed. The three signals mirror
- * the §4c consume cases:
- *   1. `parked`          — the ticket is now Parked (a browser defer/deny). Surfaced explicitly because it
- *                          is terminal and must not be mistaken for a forward advance.
- *   2. `state-advanced`  — `workflow_state` differs from the baseline (a browser accept advanced the gate).
+ *
+ * GATE-THEN-CLASSIFY (B-611). The SOLE exit signal is the canonical "human resolved" primitive:
+ * `awaiting_human_input` transitioning true→false (the baseline was awaiting; the fresh read no longer is).
+ * Until that flag clears, nothing the human could have done is consumable yet — so we return null and keep
+ * polling regardless of any incidental state / pending_resolution difference. Once the gate fires, we
+ * CLASSIFY what the human did, in priority order (mirrors the §4c consume cases):
+ *   1. `parked`             — the ticket is now Parked (a browser defer/deny). Surfaced explicitly because it
+ *                             is terminal and must not be mistaken for a forward advance.
+ *   2. `state-advanced`     — `workflow_state` differs from the baseline (a browser accept advanced the gate).
  *   3. `pending_resolution` — a browser reshape left a (new/changed) `pending_resolution` marker on the
- *                          active brief with the state unchanged.
+ *                             active brief with the state unchanged.
+ *   4. `resolved`           — the flag cleared but state is unchanged and there is no new `pending_resolution`:
+ *                             a NON-ADVANCING accept (the B-611 case — a design sub-track brief composed with
+ *                             `pending_activity: null` clears `awaiting_human_input` without advancing /
+ *                             reshaping / parking). A real resolution to continue the loop on, NOT a timeout.
  * Order matters: Parked is checked before the generic state-diff so a defer/deny reports `parked`, and the
  * pending_resolution check requires the marker to be genuinely new (present and not equal to the baseline
- * marker) so a pre-existing marker can't false-trigger an immediate exit.
+ * marker) so a pre-existing marker can't change the classification.
  */
 export function detectChange(baseline: PollBaseline, task: Taskish): ChangeDetail | null {
+  // GATE (B-611): the SOLE exit signal is awaiting_human_input transitioning true→false. Until the human
+  // resolves (the flag drops), nothing is consumable — keep polling no matter what else looks different.
+  if (!(baseline.awaitingHumanInput === true && task.awaiting_human_input === false)) {
+    return null;
+  }
+
   const state = task.workflow_state ?? null;
   const baseState = baseline.workflowState ?? null;
 
+  // CLASSIFY (post-gate) in §4c priority order.
   if (state === 'Parked') {
     return { trigger: 'parked', workflow_state: state };
   }
@@ -110,7 +132,22 @@ export function detectChange(baseline: PollBaseline, task: Taskish): ChangeDetai
   if (pendingPresent(pr) && !samePending(pr, baseline.pendingResolution)) {
     return { trigger: 'pending_resolution', workflow_state: state, pending_resolution: pr };
   }
-  return null;
+  // The flag cleared with no advance / reshape / park — a non-advancing sub-track accept (B-611).
+  return { trigger: 'resolved', workflow_state: state };
+}
+
+/**
+ * The "no change" shape a transient read error degrades to: the baseline projected back as a fresh read.
+ * Correctness-critical (B-611): it carries `awaiting_human_input` from the baseline, so a failed poll reads
+ * as "still awaiting" and the exit gate cannot false-trip on it — a transient read error must NEVER look
+ * like a human resolution. Extracted as a pure helper so the fallback shape is unit-testable.
+ */
+export function baselineReadFallback(baseline: PollBaseline): Taskish {
+  return {
+    workflow_state: baseline.workflowState,
+    pending_resolution: baseline.pendingResolution,
+    awaiting_human_input: baseline.awaitingHumanInput,
+  };
 }
 
 export interface PollLoopOpts {

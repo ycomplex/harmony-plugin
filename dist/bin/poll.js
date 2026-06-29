@@ -18692,6 +18692,9 @@ function samePending(a, b) {
   return a.command === b.command && (a.detail ?? null) === (b.detail ?? null);
 }
 function detectChange(baseline, task) {
+  if (!(baseline.awaitingHumanInput === true && task.awaiting_human_input === false)) {
+    return null;
+  }
   const state = task.workflow_state ?? null;
   const baseState = baseline.workflowState ?? null;
   if (state === "Parked") {
@@ -18704,7 +18707,14 @@ function detectChange(baseline, task) {
   if (pendingPresent(pr) && !samePending(pr, baseline.pendingResolution)) {
     return { trigger: "pending_resolution", workflow_state: state, pending_resolution: pr };
   }
-  return null;
+  return { trigger: "resolved", workflow_state: state };
+}
+function baselineReadFallback(baseline) {
+  return {
+    workflow_state: baseline.workflowState,
+    pending_resolution: baseline.pendingResolution,
+    awaiting_human_input: baseline.awaitingHumanInput
+  };
 }
 async function runPollLoop(opts) {
   const windowMs = opts.windowMs ?? WATCH_WINDOW_MS;
@@ -18750,14 +18760,15 @@ async function main() {
   const baselineTask = await getTask(client, projectId, { task_id: ticket });
   const baseline = {
     workflowState: baselineTask.workflow_state ?? null,
-    pendingResolution: baselineTask.pending_resolution ?? null
+    pendingResolution: baselineTask.pending_resolution ?? null,
+    awaitingHumanInput: baselineTask.awaiting_human_input ?? null
   };
   const launchStamp = Date.now();
   const readTask = async () => {
     try {
       return await getTask(client, projectId, { task_id: ticket });
     } catch {
-      return { workflow_state: baseline.workflowState, pending_resolution: baseline.pendingResolution };
+      return baselineReadFallback(baseline);
     }
   };
   const result = await runPollLoop({
