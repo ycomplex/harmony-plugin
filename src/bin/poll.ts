@@ -6,9 +6,11 @@
 //
 //     node ${CLAUDE_PLUGIN_ROOT}/dist/bin/poll.js <ticket>
 //
-// It watches one Harmony ticket IN-PROCESS and exits the moment the human acts (a browser accept/defer
-// advances workflow_state, a deny Parks it, or a reshape leaves a pending_resolution) — or after a bounded
-// ~90-minute window. The conductor's `run_in_background` re-invocation on exit re-reads get_task itself and
+// It watches one Harmony ticket IN-PROCESS and exits the moment the human acts. The canonical exit signal is
+// `awaiting_human_input` clearing (true→false); the poll then classifies what the human did — a browser
+// accept advances workflow_state, a deny Parks it, a reshape leaves a pending_resolution, and a non-advancing
+// sub-track accept simply clears the flag (B-611) — or it exits after a bounded ~90-minute window. The
+// conductor's `run_in_background` re-invocation on exit re-reads get_task itself and
 // consumes the change per §4c; this script's stdout/exit code are DIAGNOSTIC only (the conductor does not
 // trust them as the source of truth).
 //
@@ -24,7 +26,13 @@
 import { HarmonyAuth } from '../auth.js';
 import { createAuthenticatedClient } from '../supabase.js';
 import { getTask } from '../tools/tasks.js';
-import { runPollLoop, WATCH_WINDOW_MS, type Taskish, type PollBaseline } from '../conductor/poll-loop.js';
+import {
+  runPollLoop,
+  baselineReadFallback,
+  WATCH_WINDOW_MS,
+  type Taskish,
+  type PollBaseline,
+} from '../conductor/poll-loop.js';
 
 /** Real setTimeout-based sleep — injected into the otherwise-pure loop. */
 function sleep(ms: number): Promise<void> {
@@ -61,18 +69,21 @@ async function main(): Promise<number> {
   const baseline: PollBaseline = {
     workflowState: baselineTask.workflow_state ?? null,
     pendingResolution: baselineTask.pending_resolution ?? null,
+    awaitingHumanInput: baselineTask.awaiting_human_input ?? null,
   };
 
   // Anchor the window to a single launch stamp (B-548): elapsed is always measured against this.
   const launchStamp = Date.now();
 
-  // A transient read error must NOT kill the watch — degrade that poll to "no change" (return the
-  // baseline shape) so the loop keeps watching; the bounded window still ends it.
+  // A transient read error must NOT kill the watch — degrade that poll to "no change" (return the baseline
+  // shape via baselineReadFallback) so the loop keeps watching; the bounded window still ends it. The
+  // fallback carries awaiting_human_input from the baseline (still "awaiting"), so the B-611 exit gate
+  // cannot false-trip on a transient error.
   const readTask = async (): Promise<Taskish> => {
     try {
       return (await getTask(client, projectId, { task_id: ticket })) as Taskish;
     } catch {
-      return { workflow_state: baseline.workflowState, pending_resolution: baseline.pendingResolution };
+      return baselineReadFallback(baseline);
     }
   };
 

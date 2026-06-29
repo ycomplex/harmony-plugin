@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   runPollLoop,
   detectChange,
+  baselineReadFallback,
   defaultCadence,
   POLL_CADENCE,
   WATCH_WINDOW_MS,
@@ -37,21 +38,44 @@ function readTaskAfter(n: number, before: Taskish, after: Taskish): { read: () =
 }
 
 describe('detectChange', () => {
-  const baseline: PollBaseline = { workflowState: 'Built', pendingResolution: null };
+  // The poll is armed while the conductor is awaiting the human, so the baseline is "awaiting" (flag true).
+  const baseline: PollBaseline = { workflowState: 'Built', pendingResolution: null, awaitingHumanInput: true };
 
-  it('returns null when nothing changed', () => {
-    expect(detectChange(baseline, { workflow_state: 'Built', pending_resolution: null })).toBeNull();
+  it('returns null when nothing changed (flag still set — still awaiting)', () => {
+    expect(
+      detectChange(baseline, { workflow_state: 'Built', pending_resolution: null, awaiting_human_input: true }),
+    ).toBeNull();
   });
 
-  it('reports a forward state advance', () => {
-    expect(detectChange({ workflowState: 'Clarified' }, { workflow_state: 'Decomposed' })).toEqual({
+  it('GATE (B-611): returns null until awaiting_human_input clears, even if other fields look different', () => {
+    // The flag is the SOLE exit gate: a state/marker difference WITHOUT the flag clearing is not an exit.
+    expect(
+      detectChange(
+        { workflowState: 'Decomposed', awaitingHumanInput: true },
+        { workflow_state: 'Designed', awaiting_human_input: true },
+      ),
+    ).toBeNull();
+  });
+
+  it('reports a forward state advance (gate fires true→false)', () => {
+    expect(
+      detectChange(
+        { workflowState: 'Clarified', awaitingHumanInput: true },
+        { workflow_state: 'Decomposed', awaiting_human_input: false },
+      ),
+    ).toEqual({
       trigger: 'state-advanced',
       workflow_state: 'Decomposed',
     });
   });
 
   it('reports Parked (browser defer/deny) with the parked trigger, not a generic advance', () => {
-    expect(detectChange({ workflowState: 'Designed' }, { workflow_state: 'Parked' })).toEqual({
+    expect(
+      detectChange(
+        { workflowState: 'Designed', awaitingHumanInput: true },
+        { workflow_state: 'Parked', awaiting_human_input: false },
+      ),
+    ).toEqual({
       trigger: 'parked',
       workflow_state: 'Parked',
     });
@@ -61,6 +85,7 @@ describe('detectChange', () => {
     const change = detectChange(baseline, {
       workflow_state: 'Built',
       pending_resolution: { command: 'iterate', detail: 'tighten the scope' },
+      awaiting_human_input: false,
     });
     expect(change).toEqual({
       trigger: 'pending_resolution',
@@ -69,17 +94,53 @@ describe('detectChange', () => {
     });
   });
 
-  it('does NOT re-trigger on a pending_resolution identical to the baseline marker', () => {
+  it('B-611: reports `resolved` on a non-advancing accept (flag cleared, state unchanged, no pending_resolution)', () => {
+    // The B-611 case: a design sub-track brief composed with `pending_activity: null` clears the flag
+    // without advancing state / reshaping / parking. This is a real resolution, not a timeout.
+    expect(
+      detectChange(
+        { workflowState: 'Decomposed', awaitingHumanInput: true },
+        { workflow_state: 'Decomposed', awaiting_human_input: false },
+      ),
+    ).toEqual({ trigger: 'resolved', workflow_state: 'Decomposed' });
+  });
+
+  it('does NOT classify a pending_resolution identical to the baseline marker as a fresh reshape (flag still set)', () => {
     const pr = { command: 'iterate', detail: 'x' };
-    expect(detectChange({ workflowState: 'Built', pendingResolution: pr }, { workflow_state: 'Built', pending_resolution: pr })).toBeNull();
+    expect(
+      detectChange(
+        { workflowState: 'Built', pendingResolution: pr, awaitingHumanInput: true },
+        { workflow_state: 'Built', pending_resolution: pr, awaiting_human_input: true },
+      ),
+    ).toBeNull();
   });
 
   it('triggers when the pending_resolution detail changes from the baseline', () => {
     const change = detectChange(
-      { workflowState: 'Built', pendingResolution: { command: 'iterate', detail: 'a' } },
-      { workflow_state: 'Built', pending_resolution: { command: 'iterate', detail: 'b' } },
+      { workflowState: 'Built', pendingResolution: { command: 'iterate', detail: 'a' }, awaitingHumanInput: true },
+      { workflow_state: 'Built', pending_resolution: { command: 'iterate', detail: 'b' }, awaiting_human_input: false },
     );
     expect(change?.trigger).toBe('pending_resolution');
+  });
+});
+
+describe('baselineReadFallback (B-611 — a transient read error must not false-trip the exit gate)', () => {
+  it('projects the baseline back as a fresh read, carrying awaiting_human_input', () => {
+    const baseline: PollBaseline = {
+      workflowState: 'Decomposed',
+      pendingResolution: { command: 'iterate', detail: 'x' },
+      awaitingHumanInput: true,
+    };
+    expect(baselineReadFallback(baseline)).toEqual({
+      workflow_state: 'Decomposed',
+      pending_resolution: { command: 'iterate', detail: 'x' },
+      awaiting_human_input: true,
+    });
+  });
+
+  it('detectChange returns null for the fallback shape — a degraded poll never reads as a resolution', () => {
+    const baseline: PollBaseline = { workflowState: 'Decomposed', pendingResolution: null, awaitingHumanInput: true };
+    expect(detectChange(baseline, baselineReadFallback(baseline))).toBeNull();
   });
 });
 
@@ -101,11 +162,15 @@ describe('defaultCadence', () => {
 });
 
 describe('runPollLoop', () => {
-  const baseline: PollBaseline = { workflowState: 'Clarified', pendingResolution: null };
+  const baseline: PollBaseline = { workflowState: 'Clarified', pendingResolution: null, awaitingHumanInput: true };
 
   it('exits changed when workflow_state advances', async () => {
     const clock = makeClock();
-    const reader = readTaskAfter(3, { workflow_state: 'Clarified' }, { workflow_state: 'Decomposed' });
+    const reader = readTaskAfter(
+      3,
+      { workflow_state: 'Clarified', awaiting_human_input: true },
+      { workflow_state: 'Decomposed', awaiting_human_input: false },
+    );
     const res = await runPollLoop({
       readTask: reader.read,
       now: clock.now,
@@ -117,12 +182,65 @@ describe('runPollLoop', () => {
     expect(reader.count()).toBe(3);
   });
 
+  it('B-611: exits changed with `resolved` on a non-advancing accept (flag cleared, state unchanged)', async () => {
+    const clock = makeClock();
+    const reader = readTaskAfter(
+      3,
+      { workflow_state: 'Decomposed', awaiting_human_input: true },
+      { workflow_state: 'Decomposed', awaiting_human_input: false },
+    );
+    const res = await runPollLoop({
+      readTask: reader.read,
+      now: clock.now,
+      sleep: clock.sleep,
+      launchStamp: 0,
+      baseline: { workflowState: 'Decomposed', awaitingHumanInput: true },
+    });
+    expect(res).toEqual({ reason: 'changed', detail: { trigger: 'resolved', workflow_state: 'Decomposed' } });
+    expect(reader.count()).toBe(3);
+  });
+
+  it('B-611 no false exit: keeps watching to timeout while awaiting_human_input stays true', async () => {
+    const clock = makeClock();
+    let reads = 0;
+    const res = await runPollLoop({
+      readTask: async () => {
+        reads += 1;
+        return { workflow_state: 'Decomposed', awaiting_human_input: true }; // never resolved
+      },
+      now: clock.now,
+      sleep: clock.sleep,
+      launchStamp: 0,
+      baseline: { workflowState: 'Decomposed', awaitingHumanInput: true },
+    });
+    expect(res).toEqual({ reason: 'timeout' });
+    expect(reads).toBeGreaterThan(3);
+  });
+
+  it('B-611 read-error path: a reader that always degrades to the fallback runs to timeout, never false-exits', async () => {
+    const clock = makeClock();
+    const base: PollBaseline = { workflowState: 'Decomposed', pendingResolution: null, awaitingHumanInput: true };
+    let reads = 0;
+    const res = await runPollLoop({
+      readTask: async () => {
+        reads += 1;
+        return baselineReadFallback(base); // every poll degraded to the transient-error fallback
+      },
+      now: clock.now,
+      sleep: clock.sleep,
+      launchStamp: 0,
+      baseline: base,
+    });
+    expect(res).toEqual({ reason: 'timeout' });
+    expect(reads).toBeGreaterThan(3);
+  });
+
   it('exits changed when a browser reshape leaves a pending_resolution', async () => {
     const clock = makeClock();
     const reader = readTaskAfter(
       2,
-      { workflow_state: 'Clarified', pending_resolution: null },
-      { workflow_state: 'Clarified', pending_resolution: { command: 'iterate', detail: 'broaden' } },
+      { workflow_state: 'Clarified', pending_resolution: null, awaiting_human_input: true },
+      { workflow_state: 'Clarified', pending_resolution: { command: 'iterate', detail: 'broaden' }, awaiting_human_input: false },
     );
     const res = await runPollLoop({
       readTask: reader.read,
@@ -140,13 +258,17 @@ describe('runPollLoop', () => {
 
   it('exits changed when the ticket is Parked (browser defer/deny)', async () => {
     const clock = makeClock();
-    const reader = readTaskAfter(2, { workflow_state: 'Designed' }, { workflow_state: 'Parked' });
+    const reader = readTaskAfter(
+      2,
+      { workflow_state: 'Designed', awaiting_human_input: true },
+      { workflow_state: 'Parked', awaiting_human_input: false },
+    );
     const res = await runPollLoop({
       readTask: reader.read,
       now: clock.now,
       sleep: clock.sleep,
       launchStamp: 0,
-      baseline: { workflowState: 'Designed' },
+      baseline: { workflowState: 'Designed', awaitingHumanInput: true },
     });
     expect(res).toEqual({ reason: 'changed', detail: { trigger: 'parked', workflow_state: 'Parked' } });
   });
@@ -154,7 +276,7 @@ describe('runPollLoop', () => {
   it('catches a change on the FIRST read, before any sleep', async () => {
     const clock = makeClock();
     const res = await runPollLoop({
-      readTask: async () => ({ workflow_state: 'Decomposed' }),
+      readTask: async () => ({ workflow_state: 'Decomposed', awaiting_human_input: false }),
       now: clock.now,
       sleep: clock.sleep,
       launchStamp: 0,
@@ -170,12 +292,12 @@ describe('runPollLoop', () => {
     const res = await runPollLoop({
       readTask: async () => {
         reads += 1;
-        return { workflow_state: 'Built' }; // never changes
+        return { workflow_state: 'Built', awaiting_human_input: true }; // never resolves
       },
       now: clock.now,
       sleep: clock.sleep,
       launchStamp: 0,
-      baseline: { workflowState: 'Built' },
+      baseline: { workflowState: 'Built', awaitingHumanInput: true },
     });
     expect(res).toEqual({ reason: 'timeout' });
     // The window is elapsed-anchored: the clock advanced to EXACTLY one window, never overshooting.
@@ -192,13 +314,13 @@ describe('runPollLoop', () => {
     const launchStamp = 1_700_000_000_000;
     let t = launchStamp;
     const res = await runPollLoop({
-      readTask: async () => ({ workflow_state: 'Built' }),
+      readTask: async () => ({ workflow_state: 'Built', awaiting_human_input: true }),
       now: () => t,
       sleep: async (ms: number) => {
         t += ms;
       },
       launchStamp,
-      baseline: { workflowState: 'Built' },
+      baseline: { workflowState: 'Built', awaitingHumanInput: true },
     });
     expect(res.reason).toBe('timeout');
     expect(t - launchStamp).toBe(WATCH_WINDOW_MS);
@@ -207,11 +329,11 @@ describe('runPollLoop', () => {
   it('follows the backoff schedule: first ~120s, a steady <300s middle, a coarse ~900s tail', async () => {
     const clock = makeClock();
     await runPollLoop({
-      readTask: async () => ({ workflow_state: 'Built' }), // never changes → runs the full schedule
+      readTask: async () => ({ workflow_state: 'Built', awaiting_human_input: true }), // never changes → runs the full schedule
       now: clock.now,
       sleep: clock.sleep,
       launchStamp: 0,
-      baseline: { workflowState: 'Built' },
+      baseline: { workflowState: 'Built', awaitingHumanInput: true },
     });
     // First delay is the tight early poll.
     expect(clock.sleeps[0]).toBe(POLL_CADENCE.firstDelayMs);
@@ -233,12 +355,12 @@ describe('runPollLoop', () => {
     const res = await runPollLoop({
       readTask: async () => {
         reads += 1;
-        return { workflow_state: 'Built' };
+        return { workflow_state: 'Built', awaiting_human_input: true };
       },
       now: clock.now,
       sleep: clock.sleep,
       launchStamp: 0,
-      baseline: { workflowState: 'Built' },
+      baseline: { workflowState: 'Built', awaitingHumanInput: true },
       windowMs: 1_000,
       cadence: () => 100,
     });
