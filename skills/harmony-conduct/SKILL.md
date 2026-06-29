@@ -652,9 +652,10 @@ further, separate change, still out of scope).
 background poll script** — `dist/bin/poll.js`. It reads the ticket **IN-PROCESS** via the shared-core
 `get_task` (`getTask`) — **not** MCP, **not** the CLI subprocess, **not** the self-executing committed
 `dist/index.js` — with auth + project **pinned once at launch from `HARMONY_API_TOKEN`** (immune to a
-mid-watch `~/.harmony` active-project switch), and it exits the instant it detects a change (state advanced /
-`pending_resolution` reshape / `Parked`) or the ~90-min window expires. To arm it, after surfacing the brief
-**launch it in the background and end the turn**:
+mid-watch `~/.harmony` active-project switch). It exits the instant the human resolves — the **canonical exit
+signal is `awaiting_human_input` clearing (true→false)** (B-611), after which it classifies what the human did
+(state advanced / `pending_resolution` reshape / `Parked` / a non-advancing sub-track accept) — or the ~90-min
+window expires. To arm it, after surfacing the brief **launch it in the background and end the turn**:
 
 1. **`pkill -f "dist/bin/poll.js <ticket>"`** first, to kill any prior poll still watching THIS ticket
    (idempotent re-arm). Also run this on session end so no poll outlives the session — the watch is
@@ -665,14 +666,16 @@ mid-watch `~/.harmony` active-project switch), and it exits the instant it detec
 
 On the script's exit your `run_in_background` re-invocation fires: **re-read `get_task` yourself** — the
 script's stdout/exit code are *diagnostic only*; the conductor re-reads the ticket row and is the source of
-truth. Detect what the human did (state advanced / `pending_resolution` reshape / nothing changed), consume
-it per the cases below, and **if it is still pending, ARM AGAIN** (pkill the prior poll, re-launch, end the
-turn). The poll script owns the **cadence (tunable):** first poll **~120s**; back off but keep each delay
-**under ~300s** while the human is likely present; widen to a coarse tail (~900s) once clearly idle; stop at
-the **~90-min** window and degrade (case 3 below). Between launch and exit you do nothing — the background
-poll IS the watch. The watch ends on **any** of three co-equal exits — a browser resolution, an
-in-session/terminal answer, or the ~90-min timeout, whichever lands first. On each re-read, compare against
-the brief you surfaced and detect which of these the human did in the browser:
+truth. The **canonical signal a human resolved is `awaiting_human_input` clearing (true→false)**; once it
+clears, classify what they did (state advanced / `pending_resolution` reshape / a non-advancing sub-track
+accept / nothing changed), consume it per the cases below, and **if it is still pending, ARM AGAIN** (pkill
+the prior poll, re-launch, end the turn). The poll script owns the **cadence (tunable):** first poll
+**~120s**; back off but keep each delay **under ~300s** while the human is likely present; widen to a coarse
+tail (~900s) once clearly idle; stop at the **~90-min** window and degrade (case 4 below). Between launch and
+exit you do nothing — the background poll IS the watch. The watch ends on **any** of three co-equal exits — a
+browser resolution, an in-session/terminal answer, or the ~90-min timeout, whichever lands first. On each
+re-read, the **exit gate is `awaiting_human_input` going true→false** — the moment that flag drops the human
+resolved (in the browser or terminal); classify which resolution it was:
 
 1. **State advanced — a browser accept/defer was applied** (`resolve_brief` ran from the web). The
    `workflow_state` moved forward (accept) or is now `Parked` (defer/deny), and `awaiting_human_input` is
@@ -692,10 +695,21 @@ the brief you surfaced and detect which of these the human did in the browser:
    `pending_resolution = { command: 'iterate', detail: <feedback> }`; `awaiting_human_input` is `false`
    (ball → agent) and the active brief is unchanged (the web did NOT advance state — it left the brief
    `active` for you to revise). **Run the LLM iterate in-session** (§4d).
-3. **Nothing changed** within the **~90-min** watch window → **poll-window expiry**: fall back to graceful
-   degradation — tell the human to re-run `/harmony-plugin:harmony-conduct <ticket>`; the resolution (if any)
-   persists on the ticket row; **end the turn**. The next run resumes from the ticket row (the no-session
-   degradation). Do not keep an indefinite watch.
+3. **Flag cleared, state unchanged, no `pending_resolution` — a non-advancing accept (B-611).**
+   `awaiting_human_input` went `false` but `workflow_state` did NOT move and there is no reshape marker. This
+   is a **design sub-track accept** whose brief was composed with `pending_activity: null` — it records the
+   sub-track decision **without advancing state** (state advances to `Designed` only once *all* required
+   sub-tracks are accepted; an accepted non-last sub-track clears the flag but leaves the ticket at
+   `Decomposed`/`Designed`-in-progress). This is a **real resolution, NOT a timeout**: **continue the loop at
+   step 1** — re-invoke the design gate (`/harmony-plugin:harmony-design-decide <ticket>`) to file the **next**
+   required sub-track, which re-sets `awaiting_human_input = true` and re-arms the watch. (Before B-611 the
+   poll watched only the three *consequences* — advance / reshape / park — so this flag-only clear was missed
+   and the watch false-timed-out at ~90 min.)
+4. **Nothing changed** within the **~90-min** watch window (`awaiting_human_input` still `true`) →
+   **poll-window expiry**: fall back to graceful degradation — tell the human to re-run
+   `/harmony-plugin:harmony-conduct <ticket>`; the resolution (if any) persists on the ticket row; **end the
+   turn**. The next run resumes from the ticket row (the no-session degradation). Do not keep an indefinite
+   watch.
 
 **The in-session (terminal) exit (B-500).** The watch also ends the moment the human answers in the **running
 session (the terminal)** — accept / feedback / defer typed here. That is a normal in-session answer: handle it
