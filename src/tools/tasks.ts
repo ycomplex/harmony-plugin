@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { resolveTaskId } from './resolve-task-id.js';
+import { resolveTaskId, resolveTaskIds } from './resolve-task-id.js';
 import { resolveAssignee } from './members.js';
 import { fetchPendingResolution } from './briefs.js';
 import { detectRiskClasses } from './risk-class.js';
@@ -452,6 +452,7 @@ export const bulkCreateTasksTool = {
             description: { type: 'string' },
             due_date: { type: 'string' },
             field_values: { type: 'object' },
+            parent_task_id: { type: 'string', description: 'Parent task to nest this item under (UUID, task number, or visual ID e.g. B-43). Optional.' },
           },
           required: ['title'],
         },
@@ -466,8 +467,39 @@ export async function bulkCreateTasks(
   client: SupabaseClient,
   projectId: string,
   userId: string,
-  args: { tasks: Array<{ title: string; status?: string; priority?: string; epic_id?: string; description?: string; due_date?: string; field_values?: Record<string, any> }> }
+  args: { tasks: Array<{ title: string; status?: string; priority?: string; epic_id?: string; description?: string; due_date?: string; field_values?: Record<string, any>; parent_task_id?: string }> }
 ) {
+  // Resolve every per-item parent_task_id up front, mirroring create_task's parent
+  // handling but in ONE query (resolveTaskIds). It validates + resolves the whole
+  // batch and throws on any invalid/cross-project id — so a bad parent fails the
+  // entire call with no partial insert. We map each raw input back to its resolved
+  // UUID by position (resolveTaskIds preserves order).
+  const parentInputs = args.tasks
+    .map(t => t.parent_task_id)
+    .filter((p): p is string => p !== undefined && p !== null);
+  const resolvedByInput = new Map<string, string>();
+  if (parentInputs.length > 0) {
+    const resolved = await resolveTaskIds(client, projectId, parentInputs);
+    parentInputs.forEach((input, i) => resolvedByInput.set(input, resolved[i]));
+  }
+
+  // Epic inheritance: a child inherits its parent's epic unless an epic is
+  // explicitly provided, and only when the parent lives in this same project
+  // (epics are project-scoped). Fetch the distinct resolved parents' project/epic
+  // in ONE query, mirroring create_task's per-task lookup.
+  const distinctParentUuids = [...new Set(resolvedByInput.values())];
+  const parentMeta = new Map<string, { project_id: string; epic_id: string | null }>();
+  if (distinctParentUuids.length > 0) {
+    const { data: parents, error: parentsErr } = await client
+      .from('tasks')
+      .select('id, project_id, epic_id')
+      .in('id', distinctParentUuids);
+    if (parentsErr) throw parentsErr;
+    for (const p of parents ?? []) {
+      parentMeta.set(p.id, { project_id: p.project_id, epic_id: p.epic_id ?? null });
+    }
+  }
+
   // One scoped max-position lookup per distinct status (not a full project scan),
   // seeding the in-memory counter the mapping below increments. No rows => -1, so
   // the first task in an empty status lands at position 0.
@@ -488,17 +520,22 @@ export async function bulkCreateTasks(
     const status = task.status ?? 'Backlog';
     const pos = (maxPositions[status] ?? -1) + 1;
     maxPositions[status] = pos;
+    const parentTaskId = task.parent_task_id != null
+      ? resolvedByInput.get(task.parent_task_id) ?? null
+      : null;
+    const parent = parentTaskId ? parentMeta.get(parentTaskId) : undefined;
     return {
       project_id: projectId,
       title: task.title,
       status,
       priority: task.priority ?? 'medium',
-      epic_id: task.epic_id ?? null,
+      epic_id: task.epic_id ?? (parent && parent.project_id === projectId ? parent.epic_id : null) ?? null,
       description: task.description?.replace(/\\n/g, '\n') ?? null,
       due_date: task.due_date ?? null,
       field_values: task.field_values ?? {},
       position: pos,
       created_by: userId,
+      parent_task_id: parentTaskId,
     };
   });
 
