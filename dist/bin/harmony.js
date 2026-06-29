@@ -26267,7 +26267,7 @@ function registerKnowledgeCommands(program3) {
         type: opts.type,
         tags
       }),
-      ({ superseded, replacement }) => `Superseded "${superseded.title}" \u2192 created "${replacement.title}" (${replacement.id})`
+      ({ superseded, replacement }) => replacement ? `Superseded "${superseded.title}" \u2192 created "${replacement.title}" (${replacement.id})` : `Retired "${superseded.title}" (no successor)`
     );
   });
 }

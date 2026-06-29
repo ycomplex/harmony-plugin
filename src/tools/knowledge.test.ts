@@ -12,6 +12,7 @@ import {
   recordDecision,
   recordDecisionTool,
   supersedeDecision,
+  supersedeDecisionTool,
   assertFact,
   invalidateFact,
   queryFacts,
@@ -1288,6 +1289,70 @@ describe('supersedeDecision', () => {
       supersedeDecision(client, PROJECT_ID, USER_ID, { old_decision_id: 'missing', type: 'business', title: 'v2' }),
     ).rejects.toThrow('not found');
     expect(insert).not.toHaveBeenCalled();   // no replacement created
+  });
+
+  it('retire-mode (B-534): omitting BOTH type+title marks the old decision Superseded with superseded_by=null and creates NO successor', async () => {
+    // from() calls in retire-mode: 1 getWorkspaceId -> 2 fetch existing -> 3 update old.
+    // recordDecision is NEVER called (no successor), so there is no .insert and no extra getWorkspaceId.
+    const supersededOld = { id: 'dec-1', status: 'Superseded', superseded_by: null };
+    const responses = [
+      { data: { workspace_id: WORKSPACE_ID } },   // 1 getWorkspaceId
+      { data: { id: 'dec-1' } },                   // 2 fetch existing (found)
+      { data: supersededOld },                     // 3 update old
+    ];
+    const inserts: any[] = [];
+    const updates: any[] = [];
+    let i = 0;
+    const make = (idx: number) => {
+      const r = responses[idx] ?? { data: null };
+      const c: any = {};
+      c.select = vi.fn().mockReturnValue(c);
+      c.insert = vi.fn().mockImplementation((row: any) => { inserts.push(row); return c; });
+      c.update = vi.fn().mockImplementation((row: any) => { updates.push(row); return c; });
+      c.eq = vi.fn().mockReturnValue(c);
+      c.single = vi.fn().mockResolvedValue({ data: r.data, error: null });
+      return c;
+    };
+    const client: any = { from: vi.fn().mockImplementation(() => make(i++)) };
+
+    const result = await supersedeDecision(client, PROJECT_ID, USER_ID, {
+      old_decision_id: 'dec-1',
+      reason: 'backing the ticket up to re-clarify natively — successor authored later, not here',
+    });
+
+    expect(result.replacement).toBeNull();                                   // NO successor
+    expect(result.superseded.status).toBe('Superseded');
+    expect(result.superseded.superseded_by).toBeNull();
+    expect(inserts).toHaveLength(0);                                         // recordDecision never ran
+    expect(updates[0]).toEqual({ status: 'Superseded', superseded_by: null });
+    expect(client.from).toHaveBeenCalledTimes(3);                           // getWorkspaceId + fetch + update only
+  });
+
+  it('throws when exactly ONE of type/title is provided (ambiguous — B-534), before touching the DB', async () => {
+    const client: any = { from: vi.fn() };
+    await expect(
+      supersedeDecision(client, PROJECT_ID, USER_ID, { old_decision_id: 'dec-1', type: 'business' }),
+    ).rejects.toThrow(/exactly one of type\/title|retire/i);
+    await expect(
+      supersedeDecision(client, PROJECT_ID, USER_ID, { old_decision_id: 'dec-1', title: 'v2' }),
+    ).rejects.toThrow(/exactly one of type\/title|retire/i);
+    expect(client.from).not.toHaveBeenCalled();   // validation precedes any DB access
+  });
+});
+
+describe('supersedeDecisionTool schema (B-534 retire-mode)', () => {
+  it('requires only old_decision_id (type/title optional to allow retire-mode)', () => {
+    const required = (supersedeDecisionTool.inputSchema as any).required as string[];
+    expect(required).toEqual(['old_decision_id']);
+    expect(required).not.toContain('type');
+    expect(required).not.toContain('title');
+  });
+
+  it('documents retire-mode (omit both type and title) in the tool + type/title descriptions', () => {
+    expect(supersedeDecisionTool.description.toLowerCase()).toContain('retire');
+    const props = supersedeDecisionTool.inputSchema.properties as Record<string, any>;
+    expect(props.type.description.toLowerCase()).toContain('retire');
+    expect(props.title.description.toLowerCase()).toContain('retire');
   });
 });
 

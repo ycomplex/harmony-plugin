@@ -816,8 +816,9 @@ export async function recordDecision(
 
 export interface SupersedeDecisionArgs {
   old_decision_id: string;
-  type: string;
-  title: string;
+  // type+title are BOTH required for successor-mode, BOTH omitted for retire-mode (B-534).
+  type?: string;
+  title?: string;
   content?: string;
   madr?: Record<string, unknown>;
   domain?: string[];
@@ -830,8 +831,26 @@ export async function supersedeDecision(
   projectId: string,
   userId: string,
   args: SupersedeDecisionArgs,
-): Promise<{ superseded: KnowledgeDecisionFull; replacement: KnowledgeDecisionFull }> {
+): Promise<{ superseded: KnowledgeDecisionFull; replacement: KnowledgeDecisionFull | null }> {
   if (!args.old_decision_id) throw new Error('old_decision_id is required');
+
+  // Two modes (B-534):
+  //   - SUCCESSOR (both type+title): create the Accepted replacement and link it bidirectionally
+  //     (the long-standing behaviour).
+  //   - RETIRE   (neither type nor title): supersede WITHOUT a successor — mark the old decision
+  //     Superseded with superseded_by=null and create NO replacement. This is what harmony-revise-
+  //     scope's no-successor supersede needs: the revised decision is authored LATER, by the target
+  //     gate's native re-run (B-529), not here.
+  // Exactly one of type/title is ambiguous → reject loudly rather than guess the caller's intent.
+  const hasType = !!args.type;
+  const hasTitle = !!args.title?.trim();
+  if (hasType !== hasTitle) {
+    throw new Error(
+      'supersede_decision: provide BOTH type and title to supersede with a successor, or NEITHER ' +
+      'to retire the decision without a successor (retire-mode). Exactly one of type/title is ambiguous.',
+    );
+  }
+  const retire = !hasType;
 
   const workspaceId = await getWorkspaceId(client, projectId);
 
@@ -849,21 +868,25 @@ export async function supersedeDecision(
     throw new Error(`Decision ${args.old_decision_id} not found in this project`);
   }
 
-  // 1) Create the replacement (Accepted — it is the new ruling decision).
-  const replacement = await recordDecision(client, projectId, userId, {
-    type: args.type,
-    title: args.title,
-    content: args.content,
-    madr: args.madr,
-    domain: args.domain,
-    affected_entity_names: args.affected_entity_names,
-    status: 'Accepted',
-  });
+  // 1) Create the replacement (Accepted — it is the new ruling decision) UNLESS this is a retire,
+  //    in which case there is no successor to author here.
+  const replacement = retire
+    ? null
+    : await recordDecision(client, projectId, userId, {
+        type: args.type!,
+        title: args.title!,
+        content: args.content,
+        madr: args.madr,
+        domain: args.domain,
+        affected_entity_names: args.affected_entity_names,
+        status: 'Accepted',
+      });
 
-  // 2) Mark the old decision Superseded + link it. The AFTER-UPDATE trigger (A8) flags referencing tickets stale.
+  // 2) Mark the old decision Superseded + link it (superseded_by=null in retire-mode). The
+  //    AFTER-UPDATE trigger (A8) flags referencing tickets stale in BOTH modes.
   const { data, error } = await client
     .from('knowledge_decisions')
-    .update({ status: 'Superseded', superseded_by: replacement.id })
+    .update({ status: 'Superseded', superseded_by: replacement ? replacement.id : null })
     .eq('workspace_id', workspaceId)
     .eq('project_id', projectId)
     .eq('id', args.old_decision_id)
@@ -876,20 +899,25 @@ export async function supersedeDecision(
 export const supersedeDecisionTool = {
   name: 'supersede_decision',
   description:
-    'Supersede an existing decision with a new one. Records the replacement as "Accepted", marks the old decision "Superseded" and links them. Tickets referencing the old decision are automatically flagged stale.',
+    'Supersede an existing decision. Two modes. (1) SUCCESSOR — provide BOTH type and title: records the ' +
+    'replacement as "Accepted", marks the old decision "Superseded" and links them bidirectionally. ' +
+    '(2) RETIRE — omit BOTH type and title: marks the old decision "Superseded" with superseded_by=null and ' +
+    'creates NO successor (use when the replacement is authored later, e.g. revise-scope backing a ticket up ' +
+    'to a gate that re-authors the decision natively). Providing exactly one of type/title is rejected. ' +
+    'Either way, tickets referencing the old decision are automatically flagged stale.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       old_decision_id: { type: 'string', description: 'UUID of the decision being superseded' },
-      type: { type: 'string', description: 'Type for the replacement decision' },
-      title: { type: 'string', description: 'Title for the replacement decision' },
-      content: { type: 'string', description: 'Optional markdown body for the replacement' },
-      madr: { type: 'object', description: 'Structured MADR body for the replacement' },
-      domain: { type: 'array', items: { type: 'string' }, description: 'Domains for the replacement' },
-      affected_entity_names: { type: 'array', items: { type: 'string' }, description: 'Entities the replacement touches' },
+      type: { type: 'string', description: 'Type for the replacement decision. Omit BOTH type and title to retire the decision without a successor (retire-mode).' },
+      title: { type: 'string', description: 'Title for the replacement decision. Omit BOTH type and title to retire the decision without a successor (retire-mode).' },
+      content: { type: 'string', description: 'Optional markdown body for the replacement (successor-mode only)' },
+      madr: { type: 'object', description: 'Structured MADR body for the replacement (successor-mode only)' },
+      domain: { type: 'array', items: { type: 'string' }, description: 'Domains for the replacement (successor-mode only)' },
+      affected_entity_names: { type: 'array', items: { type: 'string' }, description: 'Entities the replacement touches (successor-mode only)' },
       reason: { type: 'string', description: 'Why the old decision is being superseded' },
     },
-    required: ['old_decision_id', 'type', 'title'],
+    required: ['old_decision_id'],
   },
 };
 

@@ -190,7 +190,9 @@ export function registerKnowledgeCommands(program: Command): void {
             tags,
           }),
         ({ superseded, replacement }) =>
-          `Superseded "${superseded.title}" → created "${replacement.title}" (${replacement.id})`,
+          replacement
+            ? `Superseded "${superseded.title}" → created "${replacement.title}" (${replacement.id})`
+            : `Retired "${superseded.title}" (no successor)`,
       );
     });
 }
