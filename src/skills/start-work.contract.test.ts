@@ -43,4 +43,15 @@ describe('start-work skill contract (evolved)', () => {
   it('carries the build role profile (can commit; cannot author design knowledge)', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/record_decision/);
   });
+
+  // B-554: the "design is wrong" recipe must route through the human-ratified revise-scope
+  // flow (harmony-revise-scope --to design), NOT a raw advance_workflow(revising-designing) —
+  // which both named the wrong activity (revising-designing re-opens PLAN, not design) and
+  // bypassed human ratification + the supersession decision-trail.
+  it('routes a design-reopen through harmony-revise-scope, not a raw advance_workflow(revising-designing) [B-554]', () => {
+    expect(skill.body).not.toMatch(/advance_workflow\([^)]*revising-designing/);
+    expect(skill.body).not.toMatch(/activity:\s*["']revising-designing["']/);
+    expect(skill.body).toContain('harmony-revise-scope');
+    expect(skill.body).toMatch(/--to\s+design/);
+  });
 });
