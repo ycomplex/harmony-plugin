@@ -136,6 +136,13 @@ ticket, so without this the trail is lost — B-551 hit Verified with zero build
 mcp__harmony__add_comment({ task_id, content: "Released via PR #<number> — squash-merged to main; deploy succeeded (<run-id/url>)." })
 ```
 
+**Post the per-parent "Follow-ups rollup" comment (B-585).** If out-of-scope items surfaced during this run
+(adjacent bugs, refactors, review nits) that weren't fix-first'd into the PR, post — alongside the release trail
+above — ONE consolidated **"Follow-ups rollup"** comment accumulated in-session (tags
+`do-now`/`defer-with-trigger`/`drop`), then run **triage-and-consolidate**: `find_related_tickets` → prefer
+**fold** (`subsume_task`) or **dedupe** over minting; mint a new ticket only when genuinely novel. See
+`skills/harmony-shared/disposition-discipline.md`. (Skip if nothing surfaced.)
+
 If CI/deploy goes red, **do not advance** — the ticket stays Built; fix and retry. This is what keeps
 `Released` meaning "deployed" (state-machine §6.1), so `verifying` (O3) checks against a real deploy
 rather than a state that ran ahead of reality (the B-60 conflation — review F4).
@@ -177,6 +184,12 @@ evidence:
 ```
 mcp__harmony__add_comment({ task_id, content: "Verified — production behaviour matches the design (human-acked <date>)." })
 ```
+
+**Post the per-parent "Follow-ups rollup" comment (B-585) — if not already posted at the release gate (O2).**
+Any out-of-scope items surfaced this run (including during verify) that weren't fix-first'd go into ONE
+consolidated **"Follow-ups rollup"** comment (tags `do-now`/`defer-with-trigger`/`drop`), followed by
+**triage-and-consolidate** (`find_related_tickets` → fold/dedupe over mint; mint only if genuinely novel) per
+`skills/harmony-shared/disposition-discipline.md`. (Skip if nothing surfaced, or it was already posted at O2.)
 
 Report completion.
 

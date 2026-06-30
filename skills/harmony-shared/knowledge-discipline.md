@@ -23,7 +23,9 @@ The six domains: `engineering`, `operations`, `data`, `product`, `customer`, `pr
 
 ## Surface gaps — and calibrate by impact × ignorance
 
-When you find no entry you *should* be answering from knowledge, flag it. Then calibrate:
+When you find no entry you *should* be answering from knowledge, flag it. A **thin or tangential** result —
+a hit that doesn't actually answer what you're deciding — counts the same as an empty one: it is itself a
+knowledge-gap finding worth surfacing, not grounding. Then calibrate:
 
 - **Mild gap** → recommend with explicit low confidence:
   `**Recommend (low confidence — no \`operations\` knowledge for X yet):** …` and put it in the brief

@@ -52,6 +52,22 @@ Decide what reconciliation the supersession actually requires. Two (non-exclusiv
 
 The patch is a **proposal**, concrete enough that the human can say yes/no — not a vague "this is stale."
 
+**Amend-in-place vs supersede — separate the invariant's goal from its mechanism (B-585).** When the
+reconciliation REVISES a governing invariant, do not reflexively `supersede_decision` (which cascades Stale onto
+every dependent). Distinguish:
+- **REVISES-in-part** — the patch reverses/refines *one clause* of a multi-clause Accepted decision (especially
+  on a Verified ticket): the invariant's **goal** stands; only a **mechanism** clause changes. → propose
+  `update_knowledge_entry` + a dated **"REVISED by <ticket>"** banner, and **keep status Accepted** — no Stale
+  cascade onto dependents.
+- **RETIRES** — the whole decision is replaced: → `supersede_decision` (the §6.4 successor path that flagged
+  this ticket in the first place).
+
+Present amend-in-place vs supersede as the human's **explicit choice** in the brief, not an assumed default
+(b460 amend-not-supersede; b581 partial-reversal-of-a-multi-clause-decision; `f80ce0f6`). **Role boundary:**
+`start-work` / `finish-work` have `update_knowledge_entry` **revoked** (`skills/harmony-shared/role-profiles.md`),
+so this reconciliation lands in discovery / stale-patch only — a build/release gate that hits it must hand back
+here, never amend knowledge itself.
+
 ### 4. Compose the stale-patch-review brief
 
 File the patch as a brief. Setting `pending_activity` to a `revising-*` activity **iff the patch reverts
