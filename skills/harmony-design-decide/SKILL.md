@@ -115,6 +115,21 @@ mcp__harmony__compose_brief({
 })
 ```
 
+### 5a. De-risk the decision
+
+A read-through is **NOT** a de-risk. For any load-bearing integration / auth / cross-surface handshake, before
+you write *"no adapter needed"* / *"this just works"*:
+
+1. **Trace the EXACT mechanism on BOTH sides and name them** — what token *format*, what verification *method*,
+   not just "a JWT." Name the concrete contract each side actually speaks.
+2. **Where feasible, RUN the smallest *live* call** — a real request, not a mock. The functional smoke **IS** the
+   de-risk; a passing one-shot beats a confident paragraph.
+3. **If you can't run it at design time, record it as an explicit build/verify gate** — never as "de-risked."
+
+A read-through can launder a confidently-wrong conclusion into Accepted knowledge. This **sharpens** the existing
+convention `6b12ee67` ("de-risk with the cheapest highest-information experiment before building"): for a
+load-bearing handshake the cheapest *high-information* experiment is the live smoke, not another read.
+
 ### 5. Display + resolve
 
 Show the rendered `content`. On the human's command:
@@ -143,3 +158,10 @@ Show the rendered `content`. On the human's command:
 If the decision has scope beyond this ticket (state-machine §8.3 — `this-ticket-and-descendants` /
 `named-peers`), note it in the decision `content` so a later supersession knows what it affects. (Full
 scope-propagation automation is deferred.)
+
+**Amend vs supersede when this decision REVISES a governing invariant (B-585).** Separate the invariant's
+**goal** from its **mechanism**. If this decision **revises-in-part** (reverses/refines *one clause* of a
+multi-clause Accepted decision, especially on a Verified ticket) → `update_knowledge_entry` + a dated
+"REVISED by <ticket>" banner and **keep status Accepted** (no Stale cascade onto dependents). If it **retires**
+the governing decision wholesale → `supersede_decision`. Present amend-in-place vs supersede as the human's
+explicit choice. The full reconciliation recipe lives in `harmony-stale-patch` §3 (b460 / b581 / `f80ce0f6`).

@@ -373,6 +373,15 @@ release-brief risk signal). This holds identically whether the gate was controll
 those gate skills and `skills/harmony-shared/gate-routing.md`. (A split-umbrella roll-up is exempt: its
 evidence is carried by its children.)
 
+**Out-of-scope items surfaced during the run are NOT auto-minted (B-585).** A conduct run surfaces adjacent
+bugs, refactors, nice-to-haves and review nits that aren't in the ticket's accepted scope. Do **NOT** reflexively
+mint a standalone ticket for each — that is the largest source of board bloat. Force a disposition per
+`skills/harmony-shared/disposition-discipline.md`: fix-first if trivial/in-scope/same-PR, else accumulate the
+item in-session. At the **release/verify** gate (alongside the B-560 evidence comments above) the main session
+posts ONE consolidated **"Follow-ups rollup"** comment (tags `do-now`/`defer-with-trigger`/`drop`) and runs
+**triage-and-consolidate** — `find_related_tickets` → prefer **fold** (`subsume_task` into an existing/umbrella
+ticket) or **dedupe**, minting a new ticket only when genuinely novel.
+
 ### The state → activity map (the §6.1 forward path)
 
 Branch on `workflow_state` to pick the next gate. **The canonical gate→owning-skill routing — which skill
@@ -412,6 +421,12 @@ go" case — keep looping.
 worktree then files `release-decision-pending`). Invoke it for both states; it branches internally on
 `workflow_state` (its step O1). After the plan is accepted (ticket → Planned), the next loop iteration
 re-invokes `start-work`, which proceeds to build.
+
+- **Plan gate (B-585):** before accepting a plan that rests on a load-bearing integration / auth / cross-surface
+  assumption, confirm it was **de-risked by running** — not just read through — per `harmony-design-decide` §5a.
+- **Build gate (B-585):** a build scoped *relative to* "how it works today" (a fix/refinement, or a
+  `CREATE OR REPLACE` of a redefined DB object) must **verify the base** against the current code before building,
+  per `start-work` O3.
 
 ### The progress overview — an inline derived view, never session state
 

@@ -63,6 +63,16 @@ Create the isolated worktree (invoke `superpowers:using-git-worktrees`) and save
 exactly as in the manual flow. Implement, write tests, self-validate against acceptance criteria
 (`mcp__harmony__manage_acceptance_criteria`, `mcp__harmony__manage_test_cases`).
 
+**Verify the base before building (B-585) — NON-OPTIONAL for a redefine or a "relative-to-today" change.**
+Before a `CREATE OR REPLACE` of a DB function / trigger / view that has been redefined across migrations, find
+the **LIVE** body: grep every migration for `CREATE OR REPLACE FUNCTION <name>` → the **LAST by timestamp** is
+the base to rebase onto (never copy an arbitrary older one). A green test on a stale base is a **false
+negative** — add a regression assertion for the preserved-but-otherwise-untested behavior. This generalizes:
+whenever a ticket is scoped *relative to* "how it works today" (a fix / refinement / "unchanged elsewhere"
+claim), **READ the current code to confirm that baseline before building** — the spec's premise about the
+status quo is frequently wrong, and the build gate is where to catch it (sharpens `a58907f1` — plans grounded
+against real code, never from memory).
+
 **When the build completes, LAND the build evidence on the ticket BEFORE advancing — ORDERED &
 NON-OPTIONAL (B-560).** Gates only advance `workflow_state`; a delegated/worktree build never touches the
 ticket, so the evidence must be recorded here or it is lost (B-551 reached Verified with zero build trail).
