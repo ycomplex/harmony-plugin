@@ -924,7 +924,7 @@ export const supersedeDecisionTool = {
 export const recordDecisionTool = {
   name: 'record_decision',
   description:
-    'Record a knowledge decision (MADR-shaped) produced by a gate/skill. Created as "Asserted" by default; a human promotes it to "Accepted". Use type product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral.',
+    'Record a knowledge decision produced by a gate/skill. Author ONE ATOMIC claim, not a document — shape the `content` as Decision · Why · How-to-apply · Scope. Pick the NARROWEST fitting `type` (product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral) and multi-tag every `domain` a querying skill would filter on (engineering, operations, data, product, customer, process). Lifecycle: enters "Asserted" by default and a HUMAN promotes it to "Accepted" — never pre-mark a replacement Accepted before the decision is made. To retire an entry, SUPERSEDE it (do not edit it into irrelevance); for an in-part repair use update_knowledge_entry plus a dated banner. Migration window: supersede the old decision at decision-time, keep the old fact valid until cutover, and mark in-flight state with `realization`.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -1035,7 +1035,8 @@ export async function assertFact(
 
 export const assertFactTool = {
   name: 'assert_fact',
-  description: 'Assert an atomic fact about an entity (subject-predicate-object) with provenance. Facts enter "Asserted"; research-sourced facts need human promotion before agents act on them autonomously.',
+  description:
+    'Assert ONE ATOMIC fact about an entity (subject-predicate-object) with provenance — a single claim, not a bundle. Use a precise `predicate` and multi-tag every `domain` a querying skill would filter on. Facts enter "Asserted"; a human promotes before agents act on them autonomously (research-sourced facts especially). Do not edit a fact into irrelevance — invalidate it; during a migration window keep the old fact valid until cutover (bi-temporal).',
   inputSchema: {
     type: 'object' as const,
     properties: {

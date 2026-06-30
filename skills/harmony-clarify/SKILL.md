@@ -13,6 +13,8 @@ records the result back through MCP. It never edits code (discovery role).
 
 > Before deciding, follow `skills/harmony-shared/knowledge-discipline.md`.
 
+> **Product legibility (B-434).** The `clarifying` activity IS the product-legibility transformation. Agent-filed findings may enter at Captured in a raw working-context register, but the clarification must render the ticket in the **product register**: title = product-visible outcome (not mechanism); plain-language first paragraph; mechanism + searchable keywords under a `## Technical` heading. See the *ticket two-audience register* doctrine and `create_task`'s description.
+
 ## Flow
 
 ### 1. Load the ticket + check it's ready
