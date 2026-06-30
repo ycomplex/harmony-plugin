@@ -41,13 +41,15 @@ export interface BriefLintResult {
 
 // §3.2 soft budget — TIER-AWARE (B-467). A flat ~300 cap false-flagged legitimately-larger briefs
 // (a medium-tier brief hit 390w live); scale the budget by the brief's own structural size
-// (decisions + alternatives) so the warning fires on bloat-for-tier, not mere length. Soft: warns,
+// (items + alternatives) so the warning fires on bloat-for-tier, not mere length. Soft: warns,
 // never fails — preserves the expose-expand-not-amputate convention.
-const WORD_BUDGET_BASE = 300;
-const WORD_BUDGET_PER_UNIT = 75;
-const WORD_BUDGET_MAX = 700;
+// B-541: BASE raised 300->600 (founder-confirmed ~2× base) so briefs read as self-contained
+// artifacts; MAX raised 700->1400 so the clamp doesn't re-squeeze normal complex briefs.
+const WORD_BUDGET_BASE = 600;
+const WORD_BUDGET_PER_UNIT = 75;   // unchanged
+const WORD_BUDGET_MAX = 1400;
 
-/** Tier-aware soft word budget: base + per-unit × (decisions + alternatives), clamped to a max. */
+/** Tier-aware soft word budget: base + per-unit × (items + alternatives), clamped to a max. */
 function softWordBudget(doc: BriefDoc): number {
   const units = doc.items.length + (doc.alternatives?.length ?? 0);
   return Math.min(WORD_BUDGET_BASE + WORD_BUDGET_PER_UNIT * units, WORD_BUDGET_MAX);

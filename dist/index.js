@@ -32386,9 +32386,9 @@ async function resolveAssignee(client, projectId, assignee) {
 }
 
 // src/tools/briefs.ts
-var WORD_BUDGET_BASE = 300;
+var WORD_BUDGET_BASE = 600;
 var WORD_BUDGET_PER_UNIT = 75;
-var WORD_BUDGET_MAX = 700;
+var WORD_BUDGET_MAX = 1400;
 function softWordBudget(doc) {
   const units = doc.items.length + (doc.alternatives?.length ?? 0);
   return Math.min(WORD_BUDGET_BASE + WORD_BUDGET_PER_UNIT * units, WORD_BUDGET_MAX);

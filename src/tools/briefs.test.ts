@@ -139,18 +139,19 @@ describe('lintBrief', () => {
   });
 
   it('warns (does not fail) when the rendered brief exceeds the soft word budget', () => {
-    const r = lint(baseDoc({ why: filler(400) })); // 1 item -> tier budget 375; ~430 rendered words
+    const r = lint(baseDoc({ why: filler(700) })); // 1 item -> tier budget 675; ~730 rendered words
     expect(r.ok).toBe(true);
     expect(r.warnings.join(' ')).toMatch(/soft budget/i);
   });
 
   it('scales the budget by structure (B-467): a length that warns for a minimal brief is tolerated by a larger one', () => {
-    const small = lint(baseDoc({ why: filler(400) })); // 1 item -> budget 375
+    const small = lint(baseDoc({ why: filler(700) })); // 1 item -> budget 675; ~730 rendered words
+
     expect(small.warnings.join(' ')).toMatch(/soft budget/i);
 
     const large = lint(baseDoc({
-      items: [decision(), decision(), decision(), decision()], // 4 units -> budget 300 + 75*4 = 600
-      why: filler(400),
+      items: [decision(), decision(), decision(), decision()], // 4 units -> budget 600 + 75*4 = 900
+      why: filler(700),
     }));
     expect(large.warnings.join(' ')).not.toMatch(/soft budget/i);
     expect(large.ok).toBe(true);
@@ -160,7 +161,7 @@ describe('lintBrief', () => {
     const r = lint(baseDoc({
       alternatives: [
         { option: 'A', rejection: 'x' }, { option: 'B', rejection: 'y' }, { option: 'C', rejection: 'z' },
-      ], // 1 item + 3 alternatives = 4 units -> budget 600
+      ], // 1 item + 3 alternatives = 4 units -> budget 900
       why: filler(400),
     }));
     expect(r.warnings.join(' ')).not.toMatch(/soft budget/i);
@@ -168,10 +169,10 @@ describe('lintBrief', () => {
   });
 
   it('caps the tier budget and still warns past the cap (B-467)', () => {
-    const items = Array.from({ length: 6 }, () => decision()); // 6 units -> 300 + 75*6 = 750 -> capped 700
-    const r = lint(baseDoc({ items, why: filler(800) }));       // ~860 rendered words > 700
+    const items = Array.from({ length: 11 }, () => decision()); // 11 units -> 600 + 75*11 = 1425 -> capped 1400
+    const r = lint(baseDoc({ items, why: filler(1500) }));      // ~1660 rendered words > 1400
     expect(r.ok).toBe(true);
-    expect(r.warnings.join(' ')).toMatch(/soft budget 700/);
+    expect(r.warnings.join(' ')).toMatch(/soft budget 1400/);
   });
 
   it('warns (does not fail) when a recommendation has no confidence level (B-445)', () => {
