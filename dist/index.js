@@ -32497,16 +32497,17 @@ async function composeBrief(client, projectId, userId, args) {
 - ${lint.errors.join("\n- ")}`);
   }
   const taskId = await resolveTaskId(client, projectId, args.task_id);
-  if (args.pending_activity) {
+  const pendingActivity = typeof args.pending_activity === "string" && args.pending_activity.trim().toLowerCase() === "null" ? null : args.pending_activity;
+  if (pendingActivity) {
     const { data: task, error: tErr } = await client.from("tasks").select("workflow_state").eq("id", taskId).single();
     if (tErr) throw new Error(tErr.message);
     const fromState = task?.workflow_state ?? null;
-    let q = client.from("workflow_transitions").select("to_state").eq("activity", args.pending_activity);
+    let q = client.from("workflow_transitions").select("to_state").eq("activity", pendingActivity);
     q = fromState === null ? q.is("from_state", null) : q.eq("from_state", fromState);
     const { data: tr, error: trErr } = await q.maybeSingle();
     if (trErr) throw new Error(trErr.message);
     if (!tr) {
-      throw new Error(`pending_activity '${args.pending_activity}' has no valid transition from state '${fromState ?? "NULL"}'`);
+      throw new Error(`pending_activity '${pendingActivity}' has no valid transition from state '${fromState ?? "NULL"}'`);
     }
   }
   const payload = {
@@ -32515,7 +32516,7 @@ async function composeBrief(client, projectId, userId, args) {
     content,
     expand_sections: args.expand_sections ?? {},
     related: args.related ?? [],
-    pending_activity: args.pending_activity ?? null,
+    pending_activity: pendingActivity ?? null,
     decision_ref: args.decision_ref ?? null,
     // B-485 Phase 2 (release-review fix): composing/iterating a brief CONSUMES any browser-submitted
     // reshape, so null out `pending_resolution` as part of the write. The conductor owns no brief-write
