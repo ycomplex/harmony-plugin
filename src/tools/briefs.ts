@@ -201,20 +201,29 @@ export async function composeBrief(
   // Resolve the task identifier (UUID / task number / visual ID), matching the sibling task tools.
   const taskId = await resolveTaskId(client, projectId, args.task_id);
 
+  // B-625: a literal-string "null" (case-insensitive, trimmed) is the string-serialized form of JSON null
+  // — treat it as omitted (parity with B-466's null≡omitted), advancing no state. Narrow: ONLY the exact
+  // "null" token; any other unknown activity still hits the transition guard below (a typo'd "buildng" must
+  // keep erroring — that error is doing its job; resolve_brief's own lookup is B-373, out of scope).
+  const pendingActivity =
+    typeof args.pending_activity === 'string' && args.pending_activity.trim().toLowerCase() === 'null'
+      ? null
+      : args.pending_activity;
+
   // Compose-time guard (fail-fast): a pending_activity must yield a real transition from the current state.
   // Invariant: P1's seed has (from_state, activity) unique, so maybeSingle is exact; if a future seed adds
   // a second to_state for the same (from_state, activity), maybeSingle errors loudly (a safe fail).
-  if (args.pending_activity) {
+  if (pendingActivity) {
     const { data: task, error: tErr } = await client
       .from('tasks').select('workflow_state').eq('id', taskId).single();
     if (tErr) throw new Error(tErr.message);
     const fromState = (task as { workflow_state: string | null } | null)?.workflow_state ?? null;
-    let q = client.from('workflow_transitions').select('to_state').eq('activity', args.pending_activity);
+    let q = client.from('workflow_transitions').select('to_state').eq('activity', pendingActivity);
     q = fromState === null ? q.is('from_state', null) : q.eq('from_state', fromState);
     const { data: tr, error: trErr } = await q.maybeSingle();
     if (trErr) throw new Error(trErr.message);
     if (!tr) {
-      throw new Error(`pending_activity '${args.pending_activity}' has no valid transition from state '${fromState ?? 'NULL'}'`);
+      throw new Error(`pending_activity '${pendingActivity}' has no valid transition from state '${fromState ?? 'NULL'}'`);
     }
   }
 
@@ -224,7 +233,7 @@ export async function composeBrief(
     content,
     expand_sections: args.expand_sections ?? {},
     related: args.related ?? [],
-    pending_activity: args.pending_activity ?? null,
+    pending_activity: pendingActivity ?? null,
     decision_ref: args.decision_ref ?? null,
     // B-485 Phase 2 (release-review fix): composing/iterating a brief CONSUMES any browser-submitted
     // reshape, so null out `pending_resolution` as part of the write. The conductor owns no brief-write

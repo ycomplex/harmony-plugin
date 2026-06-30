@@ -340,6 +340,60 @@ describe('composeBrief', () => {
     expect(client.insert).toHaveBeenCalledWith(expect.objectContaining({ pending_activity: null }));
     expect(client.from).not.toHaveBeenCalledWith('workflow_transitions');
   });
+
+  // B-625: a literal-STRING "null" is the string-serialized form of JSON null — it must be normalized to
+  // omitted (parity with B-466's null≡omitted), not fed to the transition guard (where 'null' has no row).
+  it('treats the literal string "null" as omitted — writes null, skips the transition guard (B-625)', async () => {
+    // Insert path only: [no active brief] -> [insert row] -> [task update]; workflow_transitions must NOT be queried.
+    const client = makeClient([{ data: null }, { data: briefRow }, { data: null }]);
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, pending_activity: 'null',
+    });
+    expect(result.lint.ok).toBe(true);
+    expect(client.insert).toHaveBeenCalledWith(expect.objectContaining({ pending_activity: null }));
+    expect(client.from).not.toHaveBeenCalledWith('workflow_transitions');
+  });
+
+  // B-625: the normalization is case-insensitive and whitespace-trimmed — these variants must behave identically.
+  it.each(['NULL', 'Null', ' null '])('normalizes the case/whitespace variant %j to omitted (B-625)', async (variant) => {
+    const client = makeClient([{ data: null }, { data: briefRow }, { data: null }]);
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, pending_activity: variant,
+    });
+    expect(result.lint.ok).toBe(true);
+    expect(client.insert).toHaveBeenCalledWith(expect.objectContaining({ pending_activity: null }));
+    expect(client.from).not.toHaveBeenCalledWith('workflow_transitions');
+  });
+
+  // B-625 over-reach guard: a REAL activity must still validate against workflow_transitions and write through.
+  it('still validates a real pending_activity — the "null" normalization does not over-reach (B-625)', async () => {
+    // responses: [task state] -> [transition exists] -> [no active brief] -> [insert row] -> [task update]
+    const client = makeClient([
+      { data: { workflow_state: 'Idea' } },
+      { data: { to_state: 'Clarified' } },
+      { data: null },
+      { data: briefRow },
+      { data: null },
+    ]);
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, pending_activity: 'clarifying',
+    });
+    expect(result.lint.ok).toBe(true);
+    expect(client.from).toHaveBeenCalledWith('workflow_transitions');
+    expect(client.insert).toHaveBeenCalledWith(expect.objectContaining({ pending_activity: 'clarifying' }));
+  });
+
+  // B-625 over-reach guard: a genuine typo is NOT "null" — it must still hit the guard and throw.
+  it('still throws on a typo\'d unknown activity — only the exact "null" token is normalized (B-625)', async () => {
+    // responses: [task state] -> [transition lookup returns null]
+    const client = makeClient([{ data: { workflow_state: 'Built' } }, { data: null }]);
+    await expect(
+      composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, pending_activity: 'buildng',
+      }),
+    ).rejects.toThrow(/no valid transition/i);
+    expect(client.insert).not.toHaveBeenCalled();
+  });
 });
 
 describe('getBrief', () => {
