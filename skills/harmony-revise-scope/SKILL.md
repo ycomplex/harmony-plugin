@@ -68,9 +68,35 @@ omitted, infer the **minimal** target the scope change requires (see step 3).
 
 `mcp__harmony__get_task({ task_id })`. Read the current `workflow_state` and `workflow_activity`, the active
 brief (`awaiting_human_input` / `awaiting_human_reason` — the downstream brief that surfaced the scope
-mismatch), and the work done so far. The ticket should be at a discovery-phase state (`Decomposed` or
-`Designed`) with an active downstream brief; if it is already at the earliest discovery state (`Idea`) there
-is nothing to back up to — say so and stop.
+mismatch, **if any**), and the work done so far.
+
+**Step-1 guard — the accepted source states depend on the TARGET gate** (`--to`, or the minimal target
+inferred in step 3). Two phases of source are accepted: the discovery phase (`Decomposed` / `Designed`) for
+any target, and — new in **B-609** — the build phase (`Planned` / `Built`) for a **design target only**:
+
+- **`--to design`** (revert to **`Decomposed`**): accept a source of `Decomposed`, `Designed`, **`Planned`, or
+  `Built`**. The build states are the build-time "the design is wrong" case — a discovery surfaced *after* the
+  plan/build gate that invalidates a design decision. The `revising-decomposing` back-edge lands at
+  `Decomposed` from any of these (the B-609 web migration seeds `Planned`/`Built` → `revising-decomposing` →
+  `Decomposed`; `Designed` already exists from B-519). NO guard/activity change — the `revising-%` stale-clear
+  and the B-482 brief-clear apply for free.
+- **`--to decompose`** (→`Clarified`) **or `--to clarify`** (→`Idea`): accept ONLY `Decomposed` or `Designed`.
+  A **build-state source (`Planned`/`Built`) is REJECTED** for these targets (AC4). Say so and give the
+  **compose-pointer**: *"A build-state ticket can only back up `--to design` (to `Decomposed`) — the
+  build-phase back-edge lands only at `Decomposed`. Back up `--to design` to `Decomposed` first, then revert
+  further from `Decomposed` to re-decompose/re-clarify."* Build states are accepted **only** for a design
+  target.
+- **`Released` / `Verified` source:** this extension does **NOT** apply — post-release backflow is human-only
+  (AC6). Say so and stop; do not draft a build-state revert from a released/verified ticket.
+- **`Idea` (or earlier) source:** already at the earliest discovery state — nothing to back up to. Say so and
+  stop.
+
+**Active-brief precondition (relaxed for build-state sources, B-609).** A `Decomposed`/`Designed` source is
+expected to have an active downstream brief (the one that surfaced the scope mismatch). A **build-state source
+does NOT require an active brief**: a mid-build discovery at `Planned` typically has **no** active brief (it is
+agent-proposed — raise-path 3), and at `Built` the active brief is the `release-decision-pending` brief. Either
+way the B-482 reconciliation on the revert auto-clears whatever active brief exists (and is a no-op if none),
+so do not require or block on one when the source is a build state.
 
 Pull the gate decisions the ticket already passed:
 
@@ -103,6 +129,14 @@ necessary. The revert lands at that gate's **INPUT** state (so the gate re-runs 
 (Each landing is the gate's INPUT, NOT its output — the gate re-runs natively from there and authors the
 revised decision through its own surface. This is the B-529 input-state principle; the old behavior reverted
 to each gate's output and folded the revised decision into this flow.)
+
+**Build-state source for a design target (B-609).** The SOURCE need not be a discovery state. For a **design**
+target the source may also be `Planned` or `Built` — the build-time "the design is wrong" case (a discovery
+surfaced after the plan/build gate). The back-edge is still `revising-decomposing` and the landing is still
+`Decomposed` (design's INPUT) — only the *from-set* widened to `{Decomposed, Designed, Planned, Built}`. The
+minimal target from a build state is therefore **design** (the build-phase back-edge lands only at
+`Decomposed`); a build-state source cannot target decompose/clarify directly (step-1 guard rejects it with the
+compose-pointer — back up `--to design` first, then revert further from `Decomposed`).
 
 Honour an explicit `--to <gate>` if it is **no earlier** than the minimal target (a human may choose to back
 up further); if `--to` names a gate *forward of* the minimal target, that target is insufficient — say so and
@@ -231,6 +265,16 @@ Show the rendered `content` verbatim. On the human's command:
      (the B-519 guard branch matches `revising-%`, so `revising-promoting` is covered for free with no guard
      change). So this skill does **NOT** manually clear the brief or the stale flag — the guard does both for
      free. (Order matters: supersede first, then revert, so the final guard pass leaves the ticket clean.)
+  2a. **Build-state source only — REPORT the dangling build artifacts (B-609).** When the source was a build
+     state (`Built`, or `Planned` **with an open PR** — start-work opens the PR during the build), reverting to
+     `Decomposed` orphans the in-flight build artifacts: the **open PR**, its **pushed branch**, and the local
+     **git worktree**. This skill does **NOT** close PRs, delete branches, or remove worktrees itself (its
+     `disallowed-tools` block `git push`/`git merge`, and it has no GitHub access). **Surface them explicitly**
+     and instruct the human to **clean them up manually before the re-build** — list the PR (if known from the
+     ticket/branch), the branch name, and the worktree path, and note that the native re-run will re-plan and
+     re-build from the revised design, so the orphaned PR/branch/worktree should be closed/deleted to avoid a
+     stale parallel build. (A discovery-source revert — `Decomposed`/`Designed` — has no build artifacts, so
+     skip this report.) Automating this cleanup is tracked as the follow-up **B-614**.
   3. **STOP and report** the ticket is now at the target gate's **INPUT** state (`Idea` for clarify,
      `Clarified` for decompose, `Decomposed` for design), the brief is cleared, ONLY the listed decisions were
      superseded, and it is **ready for `harmony-conduct` to re-run the target gate NATIVELY** — the revised
@@ -259,7 +303,9 @@ State the outcome: either **accepted** (ticket reverted to the target gate's INP
 `Clarified` for decompose, `Decomposed` for design; brief cleared; these decisions superseded; ready for
 `harmony-conduct` to re-run the target gate NATIVELY) or **rejected** (no-op; run untouched at its current
 gate; the feedback is addressed in-gate). Either way, name the target gate considered so the human has the
-audit trail.
+audit trail. **When the source was a build state** (`Built`, or `Planned` with an open PR), also restate the
+**dangling build artifacts** (open PR + pushed branch + worktree) the human must clean up manually before the
+re-build (step 5 · 2a), and reference **B-614** (the follow-up to automate that cleanup).
 
 ## The input-state principle + the `revising-promoting` name (B-529)
 
@@ -275,6 +321,12 @@ A revise-scope revert lands at the re-targeted gate's **INPUT** state, never its
 This is why the revise-scope flow no longer authors the revised decision (the old behavior reverted to each
 gate's *output* and folded the revised decision into the brief — accepting it off-flow, never through the
 gate). Now it only supersedes + reverts; the decision is authored at the native re-run.
+
+**Build-state source widening (B-609).** The table above maps each target gate to its INPUT and back-edge; the
+SOURCE is independent of it. For a **design** target the source from-set is `{Decomposed, Designed, Planned,
+Built}` — the back-edge (`revising-decomposing`) and the landing (`Decomposed`) are **unchanged**; only the
+accepted source widened to include the build states (the build-time "design is wrong" case). For decompose/
+clarify targets the source stays `{Decomposed, Designed}` (a build-state source is rejected — step 1).
 
 **About the name `revising-promoting`.** The discovery back-edges are named after the activity that *produces*
 the milestone they land at: `revising-clarifying`→`Clarified` (clarifying produces Clarified),
