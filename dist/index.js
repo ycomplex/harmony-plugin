@@ -34865,6 +34865,7 @@ async function manageAcceptanceCriteria(client, projectId, userId, args) {
 }
 
 // src/tools/test-cases.ts
+var TEST_CASE_TYPES = ["unit", "e2e", "integration"];
 var listTestCasesTool = {
   name: "list_test_cases",
   description: "List test cases for a task",
@@ -34901,9 +34902,13 @@ var manageTestCasesTool = {
           type: "object",
           properties: {
             name: { type: "string", description: "Test case name" },
-            type: { type: "string", description: 'Test case type (e.g., "manual", "automated")' }
+            type: {
+              type: "string",
+              enum: [...TEST_CASE_TYPES],
+              description: "Test case kind \u2014 one of: unit | e2e | integration"
+            }
           },
-          required: ["name"]
+          required: ["name", "type"]
         },
         description: "Test cases to add (appended in order)"
       },
@@ -34914,7 +34919,11 @@ var manageTestCasesTool = {
           properties: {
             id: { type: "string", description: "Test case UUID" },
             name: { type: "string", description: "New name" },
-            type: { type: "string", description: "New type" }
+            type: {
+              type: "string",
+              enum: [...TEST_CASE_TYPES],
+              description: "New test case kind \u2014 one of: unit | e2e | integration"
+            }
           },
           required: ["id"]
         },
@@ -34930,6 +34939,16 @@ var manageTestCasesTool = {
   }
 };
 async function manageTestCases(client, projectId, userId, args) {
+  const assertValidType = (type) => {
+    if (type === void 0 || !TEST_CASE_TYPES.includes(type)) {
+      throw new Error(
+        `manage_test_cases: invalid type ${JSON.stringify(type)} \u2014 must be one of: ${TEST_CASE_TYPES.join(", ")}`
+      );
+    }
+  };
+  if (args.add) {
+    for (const item of args.add) assertValidType(item.type);
+  }
   const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
   const results = {
     added: [],
@@ -34945,7 +34964,7 @@ async function manageTestCases(client, projectId, userId, args) {
     const rows = args.add.map((item, i) => ({
       task_id: resolvedTaskId,
       name: item.name,
-      type: item.type ?? null,
+      type: item.type,
       position: maxPosition + 1 + i,
       created_by: userId
     }));
@@ -34958,7 +34977,10 @@ async function manageTestCases(client, projectId, userId, args) {
       const { id, ...updates } = item;
       const payload = {};
       if (updates.name !== void 0) payload.name = updates.name;
-      if (updates.type !== void 0) payload.type = updates.type;
+      if (updates.type !== void 0) {
+        assertValidType(updates.type);
+        payload.type = updates.type;
+      }
       if (Object.keys(payload).length === 0) continue;
       const { data, error: error2 } = await client.from("test_cases").update(payload).eq("id", id).eq("task_id", resolvedTaskId).select().single();
       if (error2) throw error2;
