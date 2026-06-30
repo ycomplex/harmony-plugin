@@ -1,6 +1,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
 
+// Single source of truth for the DB constraint:
+//   type TEXT NOT NULL CHECK (type IN ('unit','e2e','integration'))
+export const TEST_CASE_TYPES = ['unit', 'e2e', 'integration'] as const;
+export type TestCaseType = (typeof TEST_CASE_TYPES)[number];
+
 export const listTestCasesTool = {
   name: 'list_test_cases',
   description: 'List test cases for a task',
@@ -47,9 +52,13 @@ export const manageTestCasesTool = {
           type: 'object',
           properties: {
             name: { type: 'string', description: 'Test case name' },
-            type: { type: 'string', description: 'Test case type (e.g., "manual", "automated")' },
+            type: {
+              type: 'string',
+              enum: [...TEST_CASE_TYPES],
+              description: 'Test case kind — one of: unit | e2e | integration',
+            },
           },
-          required: ['name'],
+          required: ['name', 'type'],
         },
         description: 'Test cases to add (appended in order)',
       },
@@ -60,7 +69,11 @@ export const manageTestCasesTool = {
           properties: {
             id: { type: 'string', description: 'Test case UUID' },
             name: { type: 'string', description: 'New name' },
-            type: { type: 'string', description: 'New type' },
+            type: {
+              type: 'string',
+              enum: [...TEST_CASE_TYPES],
+              description: 'New test case kind — one of: unit | e2e | integration',
+            },
           },
           required: ['id'],
         },
@@ -87,6 +100,22 @@ export async function manageTestCases(
     delete?: string[];
   },
 ) {
+  // The schema `enum` isn't enforced by all MCP clients, and this handler is the
+  // shared core for MCP + CLI. Guard the type against the DB constraint up front so
+  // callers get a clear error instead of a raw Postgres 23514/23502.
+  const assertValidType = (type: unknown) => {
+    if (type === undefined || !TEST_CASE_TYPES.includes(type as TestCaseType)) {
+      throw new Error(
+        `manage_test_cases: invalid type ${JSON.stringify(type)} — must be one of: ${TEST_CASE_TYPES.join(', ')}`,
+      );
+    }
+  };
+
+  // Validate every add row BEFORE any DB call (fail fast — nothing partially inserted).
+  if (args.add) {
+    for (const item of args.add) assertValidType(item.type);
+  }
+
   const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
   const results: { added: any[]; updated: any[]; deleted: string[] } = {
     added: [],
@@ -111,7 +140,7 @@ export async function manageTestCases(
     const rows = args.add.map((item, i) => ({
       task_id: resolvedTaskId,
       name: item.name,
-      type: item.type ?? null,
+      type: item.type,
       position: maxPosition + 1 + i,
       created_by: userId,
     }));
@@ -129,7 +158,10 @@ export async function manageTestCases(
       const { id, ...updates } = item;
       const payload: Record<string, any> = {};
       if (updates.name !== undefined) payload.name = updates.name;
-      if (updates.type !== undefined) payload.type = updates.type;
+      if (updates.type !== undefined) {
+        assertValidType(updates.type);
+        payload.type = updates.type;
+      }
       if (Object.keys(payload).length === 0) continue;
 
       const { data, error } = await client
