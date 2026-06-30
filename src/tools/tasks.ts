@@ -189,7 +189,8 @@ export async function getTask(
 
 export const createTaskTool = {
   name: 'create_task',
-  description: 'Create a new task in the project',
+  description:
+    'Create a task, written for TWO audiences (a product reader AND an engineer). Title = the product-visible OUTCOME, not the mechanism. First `description` paragraph = what changes for the user or product, in plain language; put mechanism and searchable technical keywords under a `## Technical` heading (so the ticket stays grep-able). ✅ "Stop one runaway query from hanging the app for every user"  ❌ "Set statement_timeout on authenticated role".',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -297,7 +298,8 @@ export async function createTask(
 
 export const updateTaskTool = {
   name: 'update_task',
-  description: 'Update an existing task',
+  description:
+    'Update an existing task. If you change the title or description, keep the two-audience register: title = the product-visible OUTCOME, not the mechanism; first `description` paragraph = plain-language user or product impact; mechanism and searchable technical keywords under a `## Technical` heading. ✅ "Stop one runaway query from hanging the app for every user"  ❌ "Set statement_timeout on authenticated role".',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -444,7 +446,8 @@ export async function updateTask(
 
 export const bulkCreateTasksTool = {
   name: 'bulk_create_tasks',
-  description: 'Create multiple tasks at once',
+  description:
+    'Create multiple tasks at once. Each task uses the two-audience register: title = the product-visible OUTCOME, not the mechanism; first `description` paragraph = plain-language user or product impact; mechanism and searchable technical keywords under a `## Technical` heading. ✅ "Stop one runaway query from hanging the app for every user"  ❌ "Set statement_timeout on authenticated role".',
   inputSchema: {
     type: 'object' as const,
     properties: {

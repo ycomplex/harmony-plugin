@@ -28,6 +28,8 @@ Invoke with a sub-track: `--track product` | `--track technical` | `--track ux-u
 
 > Before deciding, follow `skills/harmony-shared/knowledge-discipline.md`.
 
+> **Knowledge-entry shape (B-395).** Author every decision as ONE atomic claim shaped **Decision · Why · How-to-apply · Scope**; pick the narrowest `type`; multi-tag `domain`; respect the Asserted→human-Accept lifecycle (never pre-Accept a replacement). See the *knowledge-entry authoring standard* doctrine and `record_decision`'s description.
+
 ## Flow
 
 ### 1. Load + determine required sub-tracks (ticket-scoped completion read)

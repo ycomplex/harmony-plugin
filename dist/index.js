@@ -33009,7 +33009,7 @@ async function getTask(client, projectId, args) {
 }
 var createTaskTool = {
   name: "create_task",
-  description: "Create a new task in the project",
+  description: 'Create a task, written for TWO audiences (a product reader AND an engineer). Title = the product-visible OUTCOME, not the mechanism. First `description` paragraph = what changes for the user or product, in plain language; put mechanism and searchable technical keywords under a `## Technical` heading (so the ticket stays grep-able). \u2705 "Stop one runaway query from hanging the app for every user"  \u274C "Set statement_timeout on authenticated role".',
   inputSchema: {
     type: "object",
     properties: {
@@ -33069,7 +33069,7 @@ async function createTask(client, projectId, userId, args) {
 }
 var updateTaskTool = {
   name: "update_task",
-  description: "Update an existing task",
+  description: 'Update an existing task. If you change the title or description, keep the two-audience register: title = the product-visible OUTCOME, not the mechanism; first `description` paragraph = plain-language user or product impact; mechanism and searchable technical keywords under a `## Technical` heading. \u2705 "Stop one runaway query from hanging the app for every user"  \u274C "Set statement_timeout on authenticated role".',
   inputSchema: {
     type: "object",
     properties: {
@@ -33163,7 +33163,7 @@ async function updateTask(client, projectId, args) {
 }
 var bulkCreateTasksTool = {
   name: "bulk_create_tasks",
-  description: "Create multiple tasks at once",
+  description: 'Create multiple tasks at once. Each task uses the two-audience register: title = the product-visible OUTCOME, not the mechanism; first `description` paragraph = plain-language user or product impact; mechanism and searchable technical keywords under a `## Technical` heading. \u2705 "Stop one runaway query from hanging the app for every user"  \u274C "Set statement_timeout on authenticated role".',
   inputSchema: {
     type: "object",
     properties: {
@@ -34402,7 +34402,7 @@ var supersedeDecisionTool = {
 };
 var recordDecisionTool = {
   name: "record_decision",
-  description: 'Record a knowledge decision (MADR-shaped) produced by a gate/skill. Created as "Asserted" by default; a human promotes it to "Accepted". Use type product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral.',
+  description: 'Record a knowledge decision produced by a gate/skill. Author ONE ATOMIC claim, not a document \u2014 shape the `content` as Decision \xB7 Why \xB7 How-to-apply \xB7 Scope. Pick the NARROWEST fitting `type` (product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral) and multi-tag every `domain` a querying skill would filter on (engineering, operations, data, product, customer, process). Lifecycle: enters "Asserted" by default and a HUMAN promotes it to "Accepted" \u2014 never pre-mark a replacement Accepted before the decision is made. To retire an entry, SUPERSEDE it (do not edit it into irrelevance); for an in-part repair use update_knowledge_entry plus a dated banner. Migration window: supersede the old decision at decision-time, keep the old fact valid until cutover, and mark in-flight state with `realization`.',
   inputSchema: {
     type: "object",
     properties: {
@@ -34478,7 +34478,7 @@ async function assertFact(client, projectId, userId, args) {
 }
 var assertFactTool = {
   name: "assert_fact",
-  description: 'Assert an atomic fact about an entity (subject-predicate-object) with provenance. Facts enter "Asserted"; research-sourced facts need human promotion before agents act on them autonomously.',
+  description: 'Assert ONE ATOMIC fact about an entity (subject-predicate-object) with provenance \u2014 a single claim, not a bundle. Use a precise `predicate` and multi-tag every `domain` a querying skill would filter on. Facts enter "Asserted"; a human promotes before agents act on them autonomously (research-sourced facts especially). Do not edit a fact into irrelevance \u2014 invalidate it; during a migration window keep the old fact valid until cutover (bi-temporal).',
   inputSchema: {
     type: "object",
     properties: {
