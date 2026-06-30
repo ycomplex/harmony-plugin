@@ -24660,6 +24660,9 @@ async function updateTask(client, projectId, args) {
   if (updates.parent_task_id !== void 0) {
     updates.parent_task_id = updates.parent_task_id === null ? null : await resolveTaskId(client, projectId, updates.parent_task_id);
   }
+  if (updates.subsumed_by_task_id !== void 0) {
+    updates.subsumed_by_task_id = updates.subsumed_by_task_id === null ? null : await resolveTaskId(client, projectId, updates.subsumed_by_task_id);
+  }
   if (typeof updates.description === "string") {
     updates.description = updates.description.replace(/\\n/g, "\n");
   }

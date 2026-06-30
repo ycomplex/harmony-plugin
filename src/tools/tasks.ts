@@ -317,11 +317,12 @@ export const updateTaskTool = {
         description: 'Label IDs to assign. Replaces all existing labels. Omit to leave unchanged.',
       },
       cycle_id: { type: 'string', description: 'Assign to a cycle. Optional.' },
-      milestone_id: { type: 'string', description: 'Assign to a milestone. Optional.' },
+      milestone_id: { type: ['string', 'null'], description: 'Assign to a milestone (UUID), or null to clear.' } as any,
       parent_task_id: {
         type: ['string', 'null'],
         description: 'New parent task identifier (UUID, task number, or visual ID). Pass `null` to detach.',
       } as any,
+      subsumed_by_task_id: { type: ['string', 'null'], description: 'The umbrella this ticket is folded into. Pass null to UN-FOLD (clear the pointer); pair with archived:false to fully restore a folded ticket. Or pass a task id to set it.' } as any,
     },
     required: ['task_id'],
   },
@@ -347,6 +348,13 @@ export async function updateTask(
     updates.parent_task_id = updates.parent_task_id === null
       ? null
       : await resolveTaskId(client, projectId, updates.parent_task_id);
+  }
+
+  // Resolve / clear subsumed_by_task_id (null to un-fold)
+  if (updates.subsumed_by_task_id !== undefined) {
+    updates.subsumed_by_task_id = updates.subsumed_by_task_id === null
+      ? null
+      : await resolveTaskId(client, projectId, updates.subsumed_by_task_id);
   }
 
   // Normalize escaped newlines in description

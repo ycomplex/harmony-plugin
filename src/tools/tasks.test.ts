@@ -166,6 +166,76 @@ describe('updateTask', () => {
       expect.objectContaining({ parent_task_id: 'parent-uuid' }),
     );
   });
+
+  // B-629: a nullable FK can be cleared by passing real JSON `null`, mirroring parent_task_id.
+  // Captures the UPDATE payload via a single update spy shared across all tables (no status
+  // change → no projects lookup or rpc).
+  function makeUpdatePayloadClient(updatePayloadSpy: ReturnType<typeof vi.fn>) {
+    return {
+      from: vi.fn(() => ({ update: updatePayloadSpy })),
+      rpc: vi.fn(),
+    } as any;
+  }
+  function makeUpdateSpy(resultData: any) {
+    return vi.fn(() => ({
+      eq: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          select: vi.fn(() => ({
+            single: vi.fn().mockResolvedValue({ data: resultData, error: null }),
+          })),
+        })),
+      })),
+    }));
+  }
+
+  it('B-629: clears subsumed_by_task_id by passing JSON null (un-fold the pointer)', async () => {
+    const updatePayloadSpy = makeUpdateSpy({ id: 'resolved-uuid', subsumed_by_task_id: null });
+    const client = makeUpdatePayloadClient(updatePayloadSpy);
+
+    await updateTask(client, 'proj-1', { task_id: 'B-2', subsumed_by_task_id: null });
+
+    expect(updatePayloadSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ subsumed_by_task_id: null }),
+    );
+  });
+
+  it('B-582: clears milestone_id by passing JSON null', async () => {
+    const updatePayloadSpy = makeUpdateSpy({ id: 'resolved-uuid', milestone_id: null });
+    const client = makeUpdatePayloadClient(updatePayloadSpy);
+
+    await updateTask(client, 'proj-1', { task_id: 'B-2', milestone_id: null });
+
+    expect(updatePayloadSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ milestone_id: null }),
+    );
+  });
+
+  it('B-629: a full un-fold call clears subsumed_by_task_id and sets archived:false in one update', async () => {
+    const updatePayloadSpy = makeUpdateSpy({ id: 'resolved-uuid', subsumed_by_task_id: null, archived: false });
+    const client = makeUpdatePayloadClient(updatePayloadSpy);
+
+    await updateTask(client, 'proj-1', { task_id: 'B-2', archived: false, subsumed_by_task_id: null });
+
+    expect(updatePayloadSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ subsumed_by_task_id: null, archived: false }),
+    );
+  });
+
+  it('B-629: resolves a visual subsumed_by_task_id to a UUID before writing (mirrors parent_task_id)', async () => {
+    const resolveMock = (await import('./resolve-task-id.js'))
+      .resolveTaskId as ReturnType<typeof vi.fn>;
+    // First call resolves the task being updated, second resolves the umbrella.
+    resolveMock.mockResolvedValueOnce('child-uuid').mockResolvedValueOnce('umbrella-uuid');
+
+    const updatePayloadSpy = makeUpdateSpy({ id: 'child-uuid', subsumed_by_task_id: 'umbrella-uuid' });
+    const client = makeUpdatePayloadClient(updatePayloadSpy);
+
+    await updateTask(client, 'proj-1', { task_id: 'B-2', subsumed_by_task_id: 'B-10' });
+
+    expect(updatePayloadSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ subsumed_by_task_id: 'umbrella-uuid' }),
+    );
+  });
 });
 
 describe('createTask', () => {

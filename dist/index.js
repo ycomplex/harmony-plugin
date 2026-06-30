@@ -33089,11 +33089,12 @@ var updateTaskTool = {
         description: "Label IDs to assign. Replaces all existing labels. Omit to leave unchanged."
       },
       cycle_id: { type: "string", description: "Assign to a cycle. Optional." },
-      milestone_id: { type: "string", description: "Assign to a milestone. Optional." },
+      milestone_id: { type: ["string", "null"], description: "Assign to a milestone (UUID), or null to clear." },
       parent_task_id: {
         type: ["string", "null"],
         description: "New parent task identifier (UUID, task number, or visual ID). Pass `null` to detach."
-      }
+      },
+      subsumed_by_task_id: { type: ["string", "null"], description: "The umbrella this ticket is folded into. Pass null to UN-FOLD (clear the pointer); pair with archived:false to fully restore a folded ticket. Or pass a task id to set it." }
     },
     required: ["task_id"]
   }
@@ -33108,6 +33109,9 @@ async function updateTask(client, projectId, args) {
   }
   if (updates.parent_task_id !== void 0) {
     updates.parent_task_id = updates.parent_task_id === null ? null : await resolveTaskId(client, projectId, updates.parent_task_id);
+  }
+  if (updates.subsumed_by_task_id !== void 0) {
+    updates.subsumed_by_task_id = updates.subsumed_by_task_id === null ? null : await resolveTaskId(client, projectId, updates.subsumed_by_task_id);
   }
   if (typeof updates.description === "string") {
     updates.description = updates.description.replace(/\\n/g, "\n");
