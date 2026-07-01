@@ -151,6 +151,8 @@ tickets) / dropped (with reasons) — so the human can **veto a drop or upgrade 
 verify** (drain → surface → verify). See `skills/harmony-shared/disposition-discipline.md`. (Skip if nothing
 surfaced.)
 
+**Audit for cross-ticket completion at the release gate (B-643).** Alongside draining the rollup, ask: *did this run's work also complete another **open** ticket?* Seed candidates by scanning the branch's commits for `[B-XXX]` tags other than this ticket (`git log --format='%s%n%b' origin/main..HEAD | grep -oE '\[B-[0-9]+\]'`); `get_task` each. **Surface the candidates + a recommended disposition on the release brief** for the human to confirm at the hard-floor: **completely covered → `subsume_task`** it into this ticket (+ archive); **uncertain → annotate** the covered ticket's description with a `possibly-subsumed-by: <this> — confirm at clarify/design` flag (do not subsume on a guess). See `skills/harmony-shared/ticket-disposition.md` → **"Reconciling a ticket another run already finished."** (Skip if this run's work covers no other ticket.)
+
 If CI/deploy goes red, **do not advance** — the ticket stays Built; fix and retry. This is what keeps
 `Released` meaning "deployed" (state-machine §6.1), so `verifying` (O3) checks against a real deploy
 rather than a state that ran ahead of reality (the B-60 conflation — review F4).

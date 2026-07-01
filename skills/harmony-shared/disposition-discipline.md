@@ -35,6 +35,8 @@ The three working tags map onto these outcomes: `do-now` → **fix-inline**, `dr
 
 Draining happens **at the release gate**, and the drained buffer is **surfaced on the release brief for human review**: list each item with its terminal resolution — filed (with ticket IDs), folded (into which tickets, as AC / scope-item / subsume), or dropped (with reasons). The human can **veto a drop or upgrade a fold to a file** before verify. Only after the buffer is drained and reviewed does the run proceed to verify. **Drain → surface → verify.**
 
+**Also audit for cross-ticket completion.** The same release gate asks one more question: *did this run's work also complete another **open** ticket?* That is a **distinct axis** from this within-run item buffer — it retires *another existing ticket*, not a surfaced item — so it lives in `skills/harmony-shared/ticket-disposition.md` (**"Reconciling a ticket another run already finished"**): subsume-if-complete / annotate-if-unsure, surfaced on the same release brief for the human to confirm.
+
 ## Why
 This attacks bloat from both ends: don't reflexively mint, **and** actively fold what does warrant tracking into a home that *gates completion* (AC / scope-item / subsume) — while never letting real deferred work rest as a note (**recording ≠ tracking**). It is a **convention over existing tools** (`add_comment`, `find_related_tickets`, `subsume_task`, ticket acceptance criteria) — not a board feature, no new schema.
 
