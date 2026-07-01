@@ -373,14 +373,19 @@ release-brief risk signal). This holds identically whether the gate was controll
 those gate skills and `skills/harmony-shared/gate-routing.md`. (A split-umbrella roll-up is exempt: its
 evidence is carried by its children.)
 
-**Out-of-scope items surfaced during the run are NOT auto-minted (B-585).** A conduct run surfaces adjacent
-bugs, refactors, nice-to-haves and review nits that aren't in the ticket's accepted scope. Do **NOT** reflexively
-mint a standalone ticket for each — that is the largest source of board bloat. Force a disposition per
-`skills/harmony-shared/disposition-discipline.md`: fix-first if trivial/in-scope/same-PR, else accumulate the
-item in-session. At the **release/verify** gate (alongside the B-560 evidence comments above) the main session
-posts ONE consolidated **"Follow-ups rollup"** comment (tags `do-now`/`defer-with-trigger`/`drop`) and runs
-**triage-and-consolidate** — `find_related_tickets` → prefer **fold** (`subsume_task` into an existing/umbrella
-ticket) or **dedupe**, minting a new ticket only when genuinely novel.
+**Out-of-scope items surfaced during the run are NOT auto-minted — and NOT left as notes (B-585, B-641).** A
+conduct run surfaces adjacent bugs, refactors, nice-to-haves and review nits that aren't in the ticket's
+accepted scope. Do **NOT** reflexively mint a standalone ticket for each — that is the largest source of board
+bloat. Force a disposition per `skills/harmony-shared/disposition-discipline.md`: fix-first if
+trivial/in-scope/same-PR, else accumulate the item in the per-parent "Follow-ups rollup" (a **within-run
+buffer**, tagged `do-now`/`defer-with-trigger`/`drop`). At the **release** gate (alongside the B-560 evidence
+comments above) the main session **DRAINS** the buffer: every item resolves to exactly one of four terminal
+outcomes — **fix-inline / fold-into-existing** (an AC / scope-item or `subsume_task`, **not a bare comment**)
+**/ drop-with-reason / file-a-ticket** — nothing persists as a note; a `defer-with-trigger` becomes a fold or a
+**low-priority backlog ticket with the trigger in its body**. Run **triage-and-consolidate** for fold-vs-file
+(`find_related_tickets` → prefer **fold** (`subsume_task` into an existing/umbrella ticket) or **dedupe**,
+minting only when genuinely novel), and **surface the drained buffer on the release brief** so the human can
+**veto a drop or upgrade a fold to a file before verify** (drain → surface → verify).
 
 ### The state → activity map (the §6.1 forward path)
 
