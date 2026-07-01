@@ -387,6 +387,8 @@ outcomes — **fix-inline / fold-into-existing** (an AC / scope-item or `subsume
 minting only when genuinely novel), and **surface the drained buffer on the release brief** so the human can
 **veto a drop or upgrade a fold to a file before verify** (drain → surface → verify).
 
+**Cross-ticket completion audit at the release gate (B-643).** The same release drain also asks: *did this run's work complete another **open** ticket?* If so, the covering run reconciles it rather than leaving it open and stale — **subsume-if-complete / annotate-if-unsure** — surfaced on the release brief for the human to confirm at the hard-floor. This is the covering-run half of a write-then-honor loop whose other half lives in the clarify/design gates; the whole mechanism (including the `search_tasks` Verified-sibling check that bridges `find_related`'s Verified exclusion) is documented in `skills/harmony-shared/ticket-disposition.md` → **"Reconciling a ticket another run already finished."**
+
 **Retiring a ticket at a disposal point — one convention (B-604).** When the run retires a ticket (as opposed
 to dispositioning a surfaced *item*, above), the end-state is keyed on **does the work continue?** — see
 `skills/harmony-shared/ticket-disposition.md`. In short: a **fold/dedup** → **Subsume** (`subsume_task`; keep

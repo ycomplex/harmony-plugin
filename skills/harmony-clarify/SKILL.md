@@ -25,6 +25,15 @@ lifecycle). Then `mcp__harmony__get_task({ task_id })`. Confirm `workflow_state 
 If a brief is already active (`mcp__harmony__get_brief` returns one with `reason: 'clarification-draft'`),
 you're iterating — load it and skip to step 4.
 
+### 1b. Honor a cross-ticket-completion flag (reconcile before drafting)
+
+Before drafting, check whether this ticket's work is **already done** by another run (B-643) — because a run that completed this work may have flagged it forward, and `find_related_tickets` (step 3c) **excludes Verified/Released**, so a *done* sibling will not surface there:
+
+1. **Honor a `possibly-subsumed-by` annotation** if the description carries one (grep for the `possibly-subsumed-by:` token): `get_task` the named covering ticket; if its work covers this ticket → `subsume_task({ task_id, subsumed_by_task_id: <covering>, reason })` and **stop** — don't clarify already-delivered work. Else clear/note the flag and proceed with the genuine remainder.
+2. **Independently, check for a Verified/Released sibling** via `search_tasks` (it does **not** filter by `workflow_state`, so unlike `find_related_tickets` it reaches done work): search this ticket's title + intent, keep hits whose `workflow_state ∈ {Verified, Released}`, and if a high-similarity hit already delivered this work → subsume + stop.
+
+See `skills/harmony-shared/ticket-disposition.md` → **"Reconciling a ticket another run already finished"** for the full mechanism and rationale.
+
 ### 2. Query domain knowledge BEFORE drafting
 
 Per the discipline, query the relevant domains. For most clarifications that's `product` (feature
