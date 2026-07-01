@@ -387,6 +387,14 @@ outcomes — **fix-inline / fold-into-existing** (an AC / scope-item or `subsume
 minting only when genuinely novel), and **surface the drained buffer on the release brief** so the human can
 **veto a drop or upgrade a fold to a file before verify** (drain → surface → verify).
 
+**Retiring a ticket at a disposal point — one convention (B-604).** When the run retires a ticket (as opposed
+to dispositioning a surfaced *item*, above), the end-state is keyed on **does the work continue?** — see
+`skills/harmony-shared/ticket-disposition.md`. In short: a **fold/dedup** → **Subsume** (`subsume_task`; keep
+its `workflow_state`, never additionally Cancel); an **"obsolete, don't proceed" drop** → **cancel+archive**
+(`advance_workflow` `cancelling` → `add_comment` with the reason → `update_task archived:true`, in that order —
+never archive-only, never cancel-only); a **defer** stays **Parked** (a park is NOT a disposal). This is the
+adjacent axis to the item-disposition discipline above.
+
 ### The state → activity map (the §6.1 forward path)
 
 Branch on `workflow_state` to pick the next gate. **The canonical gate→owning-skill routing — which skill
