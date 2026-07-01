@@ -38,5 +38,8 @@ Draining happens **at the release gate**, and the drained buffer is **surfaced o
 ## Why
 This attacks bloat from both ends: don't reflexively mint, **and** actively fold what does warrant tracking into a home that *gates completion* (AC / scope-item / subsume) — while never letting real deferred work rest as a note (**recording ≠ tracking**). It is a **convention over existing tools** (`add_comment`, `find_related_tickets`, `subsume_task`, ticket acceptance criteria) — not a board feature, no new schema.
 
+## Adjacent axis
+`skills/harmony-shared/ticket-disposition.md` is the adjacent axis — how to **retire an existing ticket** (subsume vs cancel+archive), keyed on *does the work continue?* This doctrine decides what a surfaced *item* becomes; that one decides an existing ticket's end-state.
+
 ## Project-specific bindings
 This discipline is **portable**. WHERE a given workspace routes specific follow-up streams (e.g. a dedicated running-log lane for usage/dogfood findings) is a **project-specific binding** — see the workspace's `CLAUDE.md`, not this file.

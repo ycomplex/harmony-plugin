@@ -38,6 +38,10 @@ harmony tasks create --title "New task" --priority high
 
 Both skills depend on the `superpowers` plugin for some functionality (brainstorming, writing-plans, git-worktrees).
 
+## Ticket disposition
+
+When you retire a Harmony ticket — including the general conversational "let's drop this" — follow the one convention in `skills/harmony-shared/ticket-disposition.md`, keyed on **does the work continue?**: fold/dedup → **subsume** (keep its `workflow_state`, never additionally Cancel); won't-be-done → **cancel+archive** (`advance_workflow` `cancelling` → `add_comment` with the reason → `update_task archived:true`, in that order — never archive-only, never cancel-only); re-homed → **reparent**; deferred → **park** (Parked). The disposal-surface skills (harmony-conduct, harmony-revise-scope) already wire this in; this is the last-resort pointer for ad-hoc "drop this" actions. Its adjacent axis — what a *surfaced item* becomes — is `skills/harmony-shared/disposition-discipline.md`.
+
 ## Versioning
 
 Every PR must bump the version in `.claude-plugin/plugin.json`. This is how Claude Code detects plugin updates — without a version bump, users won't pick up the changes.

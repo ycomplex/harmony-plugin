@@ -39,11 +39,13 @@ brief reason, and entry points stale-patch lacks.
 4. **Never silently orphan children (B-473).** A revert that **crosses the decompose gate** — a target of
    **clarify** (→`Idea`) or **decompose** (→`Clarified`), landing *before* `Decomposed`, which supersedes the
    decompose decision that created this ticket's children — must dispose of those children **explicitly and
-   recoverably**, never leave them orphaned under a re-gated parent. Two tiers: **auto-archive** children with
-   no work; **block + require an explicit per-child disposition** (archive / reparent / cancel) when any child
-   has work. Archive is recoverable (`archived: true`), never a delete. A **design**-target revert lands at
-   `Decomposed` with the decompose decision intact, so it does NOT cross the gate and does NOT trigger this
-   guard.
+   recoverably**, never leave them orphaned under a re-gated parent. Two tiers: **auto cancel+archive**
+   work-less children; **block + require an explicit per-child disposition** (**drop** / **reparent** /
+   **abort**) when any child has work. Each end-state follows the canonical ticket-disposition convention
+   (`skills/harmony-shared/ticket-disposition.md`): **drop** = cancel-then-archive (recoverable, `archived:
+   true`, never a delete); **reparent** keeps the child live; **abort** abandons the revert (NOT a disposition).
+   A **design**-target revert lands at `Decomposed` with the decompose decision intact, so it does NOT cross the
+   gate and does NOT trigger this guard.
 
 ## Three ways it gets RAISED; one authority DECIDES it (human accept)
 
@@ -197,12 +199,13 @@ sub-tracks). It does NOT contain the revised decision's content.
 
 **Child disposition (when the target crosses the decompose gate, §3a).** The brief MUST also state the
 disposition of this ticket's children:
-- **Tier 1 — no child has work:** state that the back-up will **auto-archive** the N work-less children
-  (recoverable). No per-child input needed.
+- **Tier 1 — no child has work:** state that the back-up will **auto cancel+archive** the N work-less children
+  (advance_workflow `cancelling`, record the reason in this revise-scope resolution, then archive — recoverable).
+  No per-child input needed.
 - **Tier 2 — ≥1 child has work:** **list each work-bearing child** (visual ID + title + `workflow_state`) and
-  **gate the accept** on an explicit per-child disposition — **archive** (recoverable), **reparent
-  <new-parent>** (move the work), or **cancel** (abandon the revert). The accept does **not** execute until
-  every work-bearing child has a disposition.
+  **gate the accept** on an explicit per-child disposition — **drop** (cancel+archive — discard the child's
+  work; recoverable), **reparent <new-parent>** (move the work; child stays live), or **abort** (abandon the
+  revert). The accept does **not** execute until every work-bearing child has a disposition.
 
 ```
 mcp__harmony__compose_brief({
@@ -240,12 +243,15 @@ Show the rendered `content` verbatim. On the human's command:
   guard pass lands the ticket clean). **This flow does NOT author the revised decision** — that is the job of
   the gate's native re-run (B-529 input-state principle), for ALL targets (clarify / decompose / design):
   0. **Dispose of the children FIRST (decompose-crossing targets only — §3a; skip for a design target):**
-     - **archive** (Tier-1 auto, or a Tier-2 choice): `mcp__harmony__update_task({ task_id: <child>, archived: true })`
-       — recoverable; never a delete (the accepted arch rule: a destructive cascade belongs to archive, not delete).
+     - **drop** (Tier-1 auto, or a Tier-2 choice) — cancel-then-archive per
+       `skills/harmony-shared/ticket-disposition.md`: `mcp__harmony__advance_workflow({ task_id: <child>, activity: 'cancelling' })`,
+       record the reason in the resolution detail (the resolution IS the reason-capture — `advance_workflow` has
+       no reason field), then `mcp__harmony__update_task({ task_id: <child>, archived: true })` — recoverable;
+       never a delete (the accepted arch rule: a destructive cascade belongs to archive, not delete).
      - **reparent** (Tier-2 choice): `mcp__harmony__manage_subtasks({ task_id: <new-parent>, add: [<child>] })`
-       — re-points the child's `parent_task_id` so its work survives the re-gate.
-     - **cancel** (Tier-2 choice): abort the whole back-up — do **NOT** supersede, do **NOT** revert; the run
-       stays at the current gate (same as reject).
+       — re-points the child's `parent_task_id` so its work survives the re-gate (the child stays live).
+     - **abort** (Tier-2 choice): abandon the whole back-up — do **NOT** supersede, do **NOT** revert; the run
+       stays at the current gate (same as reject). This is NOT a child disposition — it leaves the child untouched.
      Record each disposition in the resolution detail (the Decision Trail) — supersede-never-delete consistent.
   1. **Supersede the invalidated decisions:** `mcp__harmony__supersede_decision` **each** decision in the
      supersede-list (the target gate's decision + the downstream decisions the scope change invalidates).
