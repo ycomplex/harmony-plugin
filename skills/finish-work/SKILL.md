@@ -136,12 +136,20 @@ ticket, so without this the trail is lost — B-551 hit Verified with zero build
 mcp__harmony__add_comment({ task_id, content: "Released via PR #<number> — squash-merged to main; deploy succeeded (<run-id/url>)." })
 ```
 
-**Post the per-parent "Follow-ups rollup" comment (B-585).** If out-of-scope items surfaced during this run
-(adjacent bugs, refactors, review nits) that weren't fix-first'd into the PR, post — alongside the release trail
-above — ONE consolidated **"Follow-ups rollup"** comment accumulated in-session (tags
-`do-now`/`defer-with-trigger`/`drop`), then run **triage-and-consolidate**: `find_related_tickets` → prefer
-**fold** (`subsume_task`) or **dedupe** over minting; mint a new ticket only when genuinely novel. See
-`skills/harmony-shared/disposition-discipline.md`. (Skip if nothing surfaced.)
+**DRAIN the "Follow-ups rollup" buffer at the release gate + surface the audit (B-585, B-641).** If
+out-of-scope items surfaced during this run (adjacent bugs, refactors, review nits) that weren't fix-first'd
+into the PR, the rollup is a **within-run buffer** that must now be **DRAINED** — every item resolves to
+exactly one of four terminal outcomes (**fix-inline / fold-into-existing / drop-with-reason / file-a-ticket**);
+**nothing persists as a note**. A fold must gate the host's completion (an **AC / scope item** or
+`subsume_task`) — a **bare comment is not a fold**. Post — alongside the release trail above — ONE
+consolidated **"Follow-ups rollup"** comment (accumulated in-session) recording each item's terminal
+resolution, running **triage-and-consolidate** for fold-vs-file: `find_related_tickets` → prefer **fold**
+(`subsume_task`) or **dedupe** over minting; mint a new ticket only when genuinely novel; a
+`defer-with-trigger` becomes a fold or a **low-priority backlog ticket with the trigger in its body**. Then
+**surface the drained buffer on the release brief** — each item as filed (with IDs) / folded (into which
+tickets) / dropped (with reasons) — so the human can **veto a drop or upgrade a fold to a file before
+verify** (drain → surface → verify). See `skills/harmony-shared/disposition-discipline.md`. (Skip if nothing
+surfaced.)
 
 If CI/deploy goes red, **do not advance** — the ticket stays Built; fix and retry. This is what keeps
 `Released` meaning "deployed" (state-machine §6.1), so `verifying` (O3) checks against a real deploy
@@ -185,11 +193,14 @@ evidence:
 mcp__harmony__add_comment({ task_id, content: "Verified — production behaviour matches the design (human-acked <date>)." })
 ```
 
-**Post the per-parent "Follow-ups rollup" comment (B-585) — if not already posted at the release gate (O2).**
-Any out-of-scope items surfaced this run (including during verify) that weren't fix-first'd go into ONE
-consolidated **"Follow-ups rollup"** comment (tags `do-now`/`defer-with-trigger`/`drop`), followed by
-**triage-and-consolidate** (`find_related_tickets` → fold/dedupe over mint; mint only if genuinely novel) per
-`skills/harmony-shared/disposition-discipline.md`. (Skip if nothing surfaced, or it was already posted at O2.)
+**Drain any remaining rollup items (B-585, B-641) — if not already drained at the release gate (O2).**
+Any out-of-scope items surfaced this run (including during verify) that weren't fix-first'd must be **drained
+to a terminal outcome** — **fix-inline / fold-into-existing** (an AC / scope-item or `subsume_task`, **not a
+bare comment**) **/ drop-with-reason / file-a-ticket**; nothing persists as a note — in ONE consolidated
+**"Follow-ups rollup"** comment, followed by **triage-and-consolidate** (`find_related_tickets` → fold/dedupe
+over mint; a `defer-with-trigger` → a fold or a **low-priority backlog ticket with the trigger in its body**)
+per `skills/harmony-shared/disposition-discipline.md`. (Skip if nothing surfaced, or it was already drained +
+audited at O2.)
 
 Report completion.
 
