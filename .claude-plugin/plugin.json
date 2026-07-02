@@ -1,11 +1,16 @@
 {
   "name": "harmony-plugin",
-  "version": "0.14.43",
+  "version": "0.14.44",
   "description": "Harmony project management integration for Claude Code — MCP tools and workflow skills",
   "author": {
     "name": "ycomplex"
   },
   "repository": "https://github.com/ycomplex/harmony-plugin",
   "license": "MIT",
-  "keywords": ["harmony", "project-management", "workflow", "mcp"]
+  "keywords": [
+    "harmony",
+    "project-management",
+    "workflow",
+    "mcp"
+  ]
 }

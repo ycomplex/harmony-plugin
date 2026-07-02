@@ -32547,6 +32547,18 @@ async function composeBrief(client, projectId, userId, args) {
     } else {
       brief = data;
     }
+    if (args.underwriting_claim_ids !== void 0) {
+      const kept = args.underwriting_claim_ids;
+      let prune = client.from("knowledge_decisions").update({ status: "Archived" }).eq("underwriting_brief_id", briefId).eq("status", "Asserted");
+      if (kept.length > 0) {
+        prune = prune.not("id", "in", `(${kept.join(",")})`);
+      }
+      const { error: pruneErr } = await prune;
+      if (pruneErr) {
+        const missingClaimColumn = /underwriting_brief_id/.test(pruneErr.message ?? "") && /(does not exist|could not find|schema cache|column)/i.test(pruneErr.message ?? "");
+        if (!missingClaimColumn) throw new Error(pruneErr.message);
+      }
+    }
   } else {
     const insertRow = { task_id: taskId, created_by: userId, ...payload };
     const { data, error: error2 } = await client.from("briefs").insert(insertRow).select(BRIEF_COLS).single();
@@ -32570,7 +32582,7 @@ async function composeBrief(client, projectId, userId, args) {
 }
 var composeBriefTool = {
   name: "compose_brief",
-  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate).",
+  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate). On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning).",
   inputSchema: {
     type: "object",
     properties: {
@@ -32608,7 +32620,8 @@ var composeBriefTool = {
       expand_sections: { type: "object", description: "Pre-generated expand content keyed by section: reasoning/alternatives/history" },
       related: { type: "array", description: "Pre-generated related decisions/tickets/knowledge" },
       pending_activity: { type: ["string", "null"], description: "The workflow activity `accept` applies (e.g. clarifying, decomposing, releasing, verifying). A real activity is validated against the transition table; null or omitted \u21D2 accept advances no state." },
-      decision_ref: { type: "object", description: 'The Asserted knowledge entry to promote on accept: { type: "decision", id: "<uuid>" }' }
+      decision_ref: { type: "object", description: 'The Asserted knowledge entry to promote on accept: { type: "decision", id: "<uuid>" }' },
+      underwriting_claim_ids: { type: "array", items: { type: "string" }, description: "B-645 iterate-prune: on an in-place iterate, the KEPT set of elicitation-claim ids that still underwrite this brief. Coupled Asserted claims NOT listed are archived; [] archives all coupled Asserted claims; omit \u21D2 no prune. Ignored on a first compose (nothing is coupled yet)." }
     },
     required: ["task_id", "reason", "doc"]
   }
@@ -32683,6 +32696,234 @@ var resolveBriefTool = {
     required: ["task_id", "command"]
   }
 };
+
+// src/elicitation/engine.ts
+var MAX_QUESTIONS_PER_ROUND = 5;
+function validateRound(questions) {
+  const errors = [];
+  if (!Array.isArray(questions) || questions.length === 0) {
+    errors.push("a round needs at least one question");
+    return errors;
+  }
+  if (questions.length > MAX_QUESTIONS_PER_ROUND) {
+    errors.push(
+      `a round carries at most ${MAX_QUESTIONS_PER_ROUND} questions (got ${questions.length}) \u2014 split the residual across rounds instead of interrogating in bulk`
+    );
+  }
+  const seen = /* @__PURE__ */ new Set();
+  for (const q of questions) {
+    const label = q.id?.trim() ? `question "${q.id}"` : "a question";
+    if (!q.id?.trim()) {
+      errors.push("every question needs an id (the answer keys on it)");
+    } else if (seen.has(q.id)) {
+      errors.push(`duplicate question id "${q.id}" \u2014 answers key on the id, so ids must be round-unique`);
+    } else {
+      seen.add(q.id);
+    }
+    if (!q.text?.trim()) {
+      errors.push(`${label} has no text`);
+    }
+    if (q.stakes === "load-bearing" && q.kind === "validate") {
+      errors.push(
+        `${label} is load-bearing but kind='validate' \u2014 load-bearing questions MUST be kind='open' (open question first, candidate withheld; a one-click confirm on a load-bearing residual is the rubber-stamp this engine exists to prevent)`
+      );
+    }
+    if (q.kind === "validate" && !q.statement?.trim()) {
+      errors.push(`${label} is kind='validate' but has no statement \u2014 there is nothing for the human to confirm or correct`);
+    }
+  }
+  return errors;
+}
+function nextRoundNumber(rounds) {
+  return currentRoundNumber(rounds) + 1;
+}
+function currentRoundNumber(rounds) {
+  if (!Array.isArray(rounds) || rounds.length === 0) return 0;
+  const last = rounds[rounds.length - 1];
+  return typeof last?.n === "number" ? last.n : rounds.length;
+}
+function appendRound(rounds, round) {
+  return [...Array.isArray(rounds) ? rounds : [], round];
+}
+
+// src/tools/elicitation.ts
+var EXCHANGE_COLS = "id, task_id, trigger, gate, brief_id, status, rounds, answers_submitted_at, force_quit_requested_at, created_by, created_at, updated_at";
+var VALID_TRIGGERS = ["pre-draft-clarify", "discuss", "phase-split-probe"];
+var VALID_OUTCOMES = ["converged", "force-quit", "abandoned"];
+async function findActiveExchange(client, taskId) {
+  const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("task_id", taskId).eq("status", "active").maybeSingle();
+  if (error2) throw new Error(error2.message);
+  return data ?? null;
+}
+async function resolveExchange(client, projectId, args) {
+  if (args.exchange_id) {
+    const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("id", args.exchange_id).maybeSingle();
+    if (error2) throw new Error(error2.message);
+    if (!data) throw new Error(`elicitation exchange ${args.exchange_id} not found`);
+    return data;
+  }
+  if (!args.task_id) throw new Error("either exchange_id or task_id is required");
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const active = await findActiveExchange(client, taskId);
+  if (!active) throw new Error(`no active elicitation exchange for task ${args.task_id}`);
+  return active;
+}
+async function startElicitation(client, projectId, userId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  if (!args.trigger || !VALID_TRIGGERS.includes(args.trigger)) {
+    throw new Error(`trigger must be one of: ${VALID_TRIGGERS.join(", ")}`);
+  }
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const existing = await findActiveExchange(client, taskId);
+  if (existing) return existing;
+  const { data, error: error2 } = await client.from("elicitation_exchanges").insert({
+    task_id: taskId,
+    trigger: args.trigger,
+    gate: args.gate ?? null,
+    brief_id: args.brief_id ?? null,
+    created_by: userId
+  }).select(EXCHANGE_COLS).single();
+  if (error2) throw new Error(error2.message);
+  return data;
+}
+var startElicitationTool = {
+  name: "start_elicitation",
+  description: "Open an elicitation exchange for a task (elicitation-first discovery, B-550) \u2014 the round-based question/answer record a gate skill interrogates the human's intent through BEFORE drafting. Idempotent-on-active: at most one active exchange exists per task, and calling this when one exists RETURNS it (resume, not error). Elicit only when intent is opaque relative to the knowledge base \u2014 always try KB inference first and interrogate the residual; see skills/harmony-shared/elicitation-engine.md for the behavioural contract.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "The task the exchange belongs to \u2014 UUID, task number, or visual ID (e.g., B-43)" },
+      trigger: { type: "string", description: "What started the exchange: 'pre-draft-clarify' (questions before a clarification draft exists) | 'discuss' (attached to an active brief under discussion) | 'phase-split-probe' (probing whether/where to split phases)" },
+      gate: { type: "string", description: "The workflow activity the exchange serves (e.g. 'clarifying'). Optional." },
+      brief_id: { type: "string", description: "The active brief a 'discuss' exchange attaches to. Omit for pre-draft triggers." }
+    },
+    required: ["task_id", "trigger"]
+  }
+};
+async function fileElicitationRound(client, projectId, args) {
+  if (!args.context_line?.trim()) throw new Error("context_line is required \u2014 one plain-prose line framing the round");
+  const violations = validateRound(args.questions ?? []);
+  if (violations.length > 0) {
+    throw new Error(`Round failed the elicitation lints:
+- ${violations.join("\n- ")}`);
+  }
+  const exchange = await resolveExchange(client, projectId, args);
+  if (exchange.status !== "active") {
+    throw new Error(`exchange ${exchange.id} is '${exchange.status}' \u2014 rounds can only be filed on an active exchange`);
+  }
+  const rounds = Array.isArray(exchange.rounds) ? exchange.rounds : [];
+  const n = nextRoundNumber(rounds);
+  const round = {
+    n,
+    context_line: args.context_line.trim(),
+    questions: args.questions,
+    answers: {},
+    // House idiom (milestones.ts shipped_at / knowledge.ts valid_to): timestamps are stamped
+    // client-side; the row's updated_at trigger carries the authoritative DB clock for the write.
+    filed_at: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  const { data, error: error2 } = await client.from("elicitation_exchanges").update({ rounds: appendRound(rounds, round), answers_submitted_at: null }).eq("id", exchange.id).select(EXCHANGE_COLS).single();
+  if (error2) throw new Error(error2.message);
+  const { error: taskErr } = await client.from("tasks").update({
+    awaiting_human_input: true,
+    awaiting_human_reason: "elicitation-round",
+    awaiting_human_ref: { kind: "elicitation", exchange_id: exchange.id, round: n }
+  }).eq("id", exchange.task_id);
+  if (taskErr) throw new Error(taskErr.message);
+  return data;
+}
+var fileElicitationRoundTool = {
+  name: "file_elicitation_round",
+  description: `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld \u2014 load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) \u2014 read the previous round's answers via get_elicitation before filing the next.`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      exchange_id: { type: "string", description: "The exchange to file on. Or pass task_id to target its active exchange." },
+      task_id: { type: "string", description: "Alternative to exchange_id \u2014 the task whose ACTIVE exchange to file on (UUID, task number, or visual ID)." },
+      context_line: { type: "string", description: "ONE plain-prose line framing the round (what this round is settling and why)." },
+      questions: {
+        type: "array",
+        description: `The round's questions (max ${MAX_QUESTIONS_PER_ROUND}).`,
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Round-unique id the answer keys on (e.g. 'q1')." },
+            stakes: { type: "string", description: "'low' | 'load-bearing' \u2014 how much a wrong answer steers the work. Load-bearing \u21D2 kind must be 'open'." },
+            kind: { type: "string", description: "'validate' (confirm/correct an inference \u2014 requires statement) | 'open' (open text)." },
+            statement: { type: "string", description: "The agent's inference the human confirms or corrects. Required for kind='validate'." },
+            text: { type: "string", description: "The question text." },
+            why: { type: "string", description: `Optional "why I'm asking" expander.` }
+          },
+          required: ["id", "stakes", "kind", "text"]
+        }
+      }
+    },
+    required: ["context_line", "questions"]
+  }
+};
+async function getElicitation(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const active = await findActiveExchange(client, taskId);
+  if (active) return active;
+  const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("task_id", taskId).order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (error2) throw new Error(error2.message);
+  return data ?? null;
+}
+var getElicitationTool = {
+  name: "get_elicitation",
+  description: "Get a task's elicitation exchange \u2014 the active one, or the most recent if none is active (null when the task has never had one). `rounds` carries every filed round with its questions and any answers keyed by question id; a non-null `answers_submitted_at` means the human submitted answers the agent has NOT yet consumed (filing the next round, or concluding, consumes it); a non-null `force_quit_requested_at` means the human asked to force-quit ('best efforts, proceed').",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "The task whose exchange to fetch \u2014 UUID, task number, or visual ID (e.g., B-43)" }
+    },
+    required: ["task_id"]
+  }
+};
+async function concludeElicitation(client, projectId, args) {
+  if (!args.outcome || !VALID_OUTCOMES.includes(args.outcome)) {
+    throw new Error(`outcome must be one of: ${VALID_OUTCOMES.join(", ")}`);
+  }
+  const exchange = await resolveExchange(client, projectId, args);
+  if (exchange.status !== "active") {
+    if (exchange.status === args.outcome) return exchange;
+    throw new Error(`exchange ${exchange.id} is already '${exchange.status}' \u2014 cannot conclude it '${args.outcome}'`);
+  }
+  const { data, error: error2 } = await client.from("elicitation_exchanges").update({ status: args.outcome, answers_submitted_at: null, force_quit_requested_at: null }).eq("id", exchange.id).select(EXCHANGE_COLS).single();
+  if (error2) throw new Error(error2.message);
+  return data;
+}
+var concludeElicitationTool = {
+  name: "conclude_elicitation",
+  description: `Conclude an elicitation exchange: 'converged' (the agent can now confidently draft a brief that represents the user's intent), 'force-quit' (the human said "best efforts, proceed" \u2014 draft from what you have; mint any claims with provenance 'force-quit'), or 'abandoned'. Sets the exchange status and clears both consumable markers. Writes NOTHING else: it does not touch the attached brief and does not re-set the task's awaiting flag \u2014 for 'abandoned' on a brief-attached exchange the brief row deliberately stays ACTIVE with the flag down, so the owning gate's "brief already active" path re-surfaces it in place on re-entry.`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      exchange_id: { type: "string", description: "The exchange to conclude. Or pass task_id to target its active exchange." },
+      task_id: { type: "string", description: "Alternative to exchange_id \u2014 the task whose ACTIVE exchange to conclude (UUID, task number, or visual ID)." },
+      outcome: { type: "string", description: "'converged' | 'force-quit' | 'abandoned'" }
+    },
+    required: ["outcome"]
+  }
+};
+async function fetchActiveExchange(client, taskId) {
+  try {
+    const { data, error: error2 } = await client.from("elicitation_exchanges").select("id, status, rounds, answers_submitted_at, force_quit_requested_at").eq("task_id", taskId).eq("status", "active").maybeSingle();
+    if (error2 || !data) return null;
+    const row = data;
+    const rounds = Array.isArray(row.rounds) ? row.rounds : [];
+    return {
+      exchange_id: row.id,
+      status: row.status,
+      round: currentRoundNumber(rounds),
+      answers_submitted_at: row.answers_submitted_at ?? null,
+      force_quit_requested_at: row.force_quit_requested_at ?? null
+    };
+  } catch {
+    return null;
+  }
+}
 
 // src/tools/risk-class.ts
 var RISK_CLASSES = [
@@ -32956,7 +33197,7 @@ async function listTasks(client, projectId, args) {
 }
 var getTaskTool = {
   name: "get_task",
-  description: "Get full details of a specific task. Returns `pending_resolution` \u2014 the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Also returns `risk_classes` \u2014 a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run \u2014 the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate).",
+  description: "Get full details of a specific task. Returns `pending_resolution` \u2014 the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Returns `active_exchange` (B-645) \u2014 the task's active elicitation exchange as {exchange_id, status, round, answers_submitted_at, force_quit_requested_at}, or null when none; a non-null answers_submitted_at/force_quit_requested_at is an unconsumed web\u2192agent marker the watch classifies as 'answers-landed' (read the answers via get_elicitation; filing the next round or concluding consumes it). Also returns `risk_classes` \u2014 a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run \u2014 the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate).",
   inputSchema: {
     type: "object",
     properties: {
@@ -32976,7 +33217,7 @@ async function getTask(client, projectId, args) {
   if (error2) throw error2;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
-  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution] = await Promise.all([
+  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange] = await Promise.all([
     client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
     client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
     (async () => {
@@ -32987,7 +33228,8 @@ async function getTask(client, projectId, args) {
         return [];
       }
     })(),
-    fetchPendingResolution(client, resolvedId)
+    fetchPendingResolution(client, resolvedId),
+    fetchActiveExchange(client, resolvedId)
   ]);
   const acceptanceCriteria = acceptanceCriteriaRes.data;
   const testCases = testCasesRes.data;
@@ -33005,7 +33247,7 @@ async function getTask(client, projectId, args) {
     labels: labels.map((l) => l?.name).filter((n) => typeof n === "string")
   });
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, risk_classes };
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, risk_classes };
 }
 var createTaskTool = {
   name: "create_task",
@@ -34315,9 +34557,14 @@ async function resolveOrCreateEntity(client, workspaceId, projectId, name, kind 
   if (error2) throw new Error(error2.message);
   return data.id;
 }
+var CLAIM_PROVENANCES = ["human-stated", "agent-inferred-human-validated", "force-quit"];
+var isMissingClaimColumns = (msg) => !!msg && /(claim_provenance|underwriting_brief_id)/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
 async function recordDecision(client, projectId, userId, args) {
   if (!args.title?.trim()) throw new Error("title is required");
   if (!args.type) throw new Error("type is required");
+  if (args.claim_provenance !== void 0 && !CLAIM_PROVENANCES.includes(args.claim_provenance)) {
+    throw new Error(`claim_provenance must be one of: ${CLAIM_PROVENANCES.join(", ")}`);
+  }
   const workspaceId = await getWorkspaceId2(client, projectId);
   const affectedIds = [];
   for (const name of args.affected_entity_names ?? []) {
@@ -34345,7 +34592,13 @@ ${args.content ?? ""}`);
   if (args.source_task_id !== void 0) record2.source_task_id = args.source_task_id;
   if (args.review_by !== void 0) record2.review_by = args.review_by;
   if (args.realization !== void 0) record2.realization = args.realization;
-  const { data, error: error2 } = await client.from("knowledge_decisions").insert(record2).select(DECISION_COLS).single();
+  if (args.claim_provenance !== void 0) record2.claim_provenance = args.claim_provenance;
+  if (args.underwriting_brief_id !== void 0) record2.underwriting_brief_id = args.underwriting_brief_id;
+  let { data, error: error2 } = await client.from("knowledge_decisions").insert(record2).select(DECISION_COLS).single();
+  if (error2 && isMissingClaimColumns(error2.message) && (args.claim_provenance !== void 0 || args.underwriting_brief_id !== void 0)) {
+    const { claim_provenance: _cp, underwriting_brief_id: _ub, ...fallback } = record2;
+    ({ data, error: error2 } = await client.from("knowledge_decisions").insert(fallback).select(DECISION_COLS).single());
+  }
   if (error2) {
     if (error2.code === "23505") {
       throw new Error(`A decision titled "${args.title.trim()}" already exists in this project`);
@@ -34402,7 +34655,7 @@ var supersedeDecisionTool = {
 };
 var recordDecisionTool = {
   name: "record_decision",
-  description: 'Record a knowledge decision produced by a gate/skill. Author ONE ATOMIC claim, not a document \u2014 shape the `content` as Decision \xB7 Why \xB7 How-to-apply \xB7 Scope. Pick the NARROWEST fitting `type` (product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral) and multi-tag every `domain` a querying skill would filter on (engineering, operations, data, product, customer, process). Lifecycle: enters "Asserted" by default and a HUMAN promotes it to "Accepted" \u2014 never pre-mark a replacement Accepted before the decision is made. To retire an entry, SUPERSEDE it (do not edit it into irrelevance); for an in-part repair use update_knowledge_entry plus a dated banner. Migration window: supersede the old decision at decision-time, keep the old fact valid until cutover, and mark in-flight state with `realization`.',
+  description: 'Record a knowledge decision produced by a gate/skill. Author ONE ATOMIC claim, not a document \u2014 shape the `content` as Decision \xB7 Why \xB7 How-to-apply \xB7 Scope. Pick the NARROWEST fitting `type` (product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral) and multi-tag every `domain` a querying skill would filter on (engineering, operations, data, product, customer, process). Lifecycle: enters "Asserted" by default and a HUMAN promotes it to "Accepted" \u2014 never pre-mark a replacement Accepted before the decision is made. To retire an entry, SUPERSEDE it (do not edit it into irrelevance); for an in-part repair use update_knowledge_entry plus a dated banner. Migration window: supersede the old decision at decision-time, keep the old fact valid until cutover, and mark in-flight state with `realization`. Elicitation claims (B-645): a claim mined from an elicitation exchange sets `claim_provenance` + `underwriting_brief_id` so brief resolution disposes it mechanically (accept promotes human-grounded claims, defer archives; force-quit claims never promote at their own brief\'s accept).',
   inputSchema: {
     type: "object",
     properties: {
@@ -34419,7 +34672,9 @@ var recordDecisionTool = {
       source_activity: { type: "string", description: "The gate/skill that authored it (e.g. design-decide, clarify)" },
       tags: { type: "array", items: { type: "string" }, description: "Optional tags" },
       source_task_id: { type: "string", description: "Task that triggered this decision" },
-      review_by: { type: "string", description: "ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires." }
+      review_by: { type: "string", description: "ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires." },
+      claim_provenance: { type: "string", enum: ["human-stated", "agent-inferred-human-validated", "force-quit"], description: "B-645: how an elicitation claim was grounded. 'force-quit' claims are quarantined \u2014 never promoted on their brief's accept, never grounds for inference until validated. Omit for a non-claim decision." },
+      underwriting_brief_id: { type: "string", description: "B-645: the brief (UUID) this Asserted claim underwrites \u2014 resolve_brief disposes coupled claims on accept/defer; compose_brief prunes dropped claims on iterate. Omit for a non-claim decision." }
     },
     required: ["type", "title"]
   }
@@ -35549,6 +35804,10 @@ function registerTools(disabledFeatures) {
     composeBriefTool,
     getBriefTool,
     resolveBriefTool,
+    startElicitationTool,
+    fileElicitationRoundTool,
+    getElicitationTool,
+    concludeElicitationTool,
     advanceWorkflowTool,
     referenceKnowledgeTool,
     listTicketKnowledgeTool,
@@ -35730,6 +35989,18 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "resolve_brief":
         result = await resolveBrief(client, projectId, args);
+        break;
+      case "start_elicitation":
+        result = await startElicitation(client, projectId, userId, args);
+        break;
+      case "file_elicitation_round":
+        result = await fileElicitationRound(client, projectId, args);
+        break;
+      case "get_elicitation":
+        result = await getElicitation(client, projectId, args);
+        break;
+      case "conclude_elicitation":
+        result = await concludeElicitation(client, projectId, args);
         break;
       case "advance_workflow":
         result = await advanceWorkflow(client, projectId, args);

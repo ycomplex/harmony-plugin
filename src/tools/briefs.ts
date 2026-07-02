@@ -179,6 +179,10 @@ export interface ComposeBriefArgs {
   related?: unknown[];
   pending_activity?: string | null;
   decision_ref?: DecisionRef;
+  /** B-645 iterate-prune: the KEPT set of elicitation-claim ids that still underwrite the brief.
+   *  On an in-place iterate, coupled Asserted claims NOT in this list are archived (empty array ⇒
+   *  archive all coupled Asserted claims). Omitted ⇒ no prune (back-compat). */
+  underwriting_claim_ids?: string[];
 }
 
 export async function composeBrief(
@@ -279,6 +283,35 @@ export async function composeBrief(
     } else {
       brief = data;
     }
+
+    // B-645 iterate-prune: the in-place iterate is the elicitation-claim disposal moment for a
+    // reshaped brief (mirrors this same path consuming pending_resolution above). When the caller
+    // passes `underwriting_claim_ids` — the KEPT set of claims that still underwrite the re-composed
+    // brief — archive every coupled dangling claim: Asserted rows whose underwriting_brief_id is
+    // THIS brief and whose id is not kept. An empty array archives ALL coupled Asserted claims.
+    // Omitted ⇒ no prune (back-compat: pre-B-645 callers never prune). Rows coupled to other briefs
+    // (or uncoupled) are untouched by construction of the underwriting_brief_id filter.
+    if (args.underwriting_claim_ids !== undefined) {
+      const kept = args.underwriting_claim_ids;
+      let prune = client
+        .from('knowledge_decisions')
+        .update({ status: 'Archived' })
+        .eq('underwriting_brief_id', briefId)
+        .eq('status', 'Asserted');
+      if (kept.length > 0) {
+        prune = prune.not('id', 'in', `(${kept.join(',')})`);
+      }
+      const { error: pruneErr } = await prune;
+      if (pruneErr) {
+        // Guarded (B-383 class, like the pending_resolution fallback): on a DB that predates the
+        // Phase-1 claim columns the filter column is absent — no claim can exist there, so the
+        // prune is a faithful no-op. Any OTHER error rethrows: a real prune failure must be loud.
+        const missingClaimColumn =
+          /underwriting_brief_id/.test(pruneErr.message ?? '') &&
+          /(does not exist|could not find|schema cache|column)/i.test(pruneErr.message ?? '');
+        if (!missingClaimColumn) throw new Error(pruneErr.message);
+      }
+    }
   } else {
     const insertRow = { task_id: taskId, created_by: userId, ...payload };
     const { data, error } = await client
@@ -318,7 +351,7 @@ export async function composeBrief(
 export const composeBriefTool = {
   name: 'compose_brief',
   description:
-    "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate).",
+    "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate). On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning).",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -357,6 +390,7 @@ export const composeBriefTool = {
       related: { type: 'array', description: 'Pre-generated related decisions/tickets/knowledge' },
       pending_activity: { type: ['string', 'null'], description: 'The workflow activity `accept` applies (e.g. clarifying, decomposing, releasing, verifying). A real activity is validated against the transition table; null or omitted ⇒ accept advances no state.' },
       decision_ref: { type: 'object', description: 'The Asserted knowledge entry to promote on accept: { type: "decision", id: "<uuid>" }' },
+      underwriting_claim_ids: { type: 'array', items: { type: 'string' }, description: 'B-645 iterate-prune: on an in-place iterate, the KEPT set of elicitation-claim ids that still underwrite this brief. Coupled Asserted claims NOT listed are archived; [] archives all coupled Asserted claims; omit ⇒ no prune. Ignored on a first compose (nothing is coupled yet).' },
     },
     required: ['task_id', 'reason', 'doc'],
   },

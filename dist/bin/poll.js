@@ -18409,6 +18409,62 @@ async function fetchPendingResolution(client, taskId) {
   }
 }
 
+// src/elicitation/engine.ts
+var MAX_QUESTIONS_PER_ROUND = 5;
+function currentRoundNumber(rounds) {
+  if (!Array.isArray(rounds) || rounds.length === 0) return 0;
+  const last = rounds[rounds.length - 1];
+  return typeof last?.n === "number" ? last.n : rounds.length;
+}
+
+// src/tools/elicitation.ts
+var fileElicitationRoundTool = {
+  name: "file_elicitation_round",
+  description: `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld \u2014 load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) \u2014 read the previous round's answers via get_elicitation before filing the next.`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      exchange_id: { type: "string", description: "The exchange to file on. Or pass task_id to target its active exchange." },
+      task_id: { type: "string", description: "Alternative to exchange_id \u2014 the task whose ACTIVE exchange to file on (UUID, task number, or visual ID)." },
+      context_line: { type: "string", description: "ONE plain-prose line framing the round (what this round is settling and why)." },
+      questions: {
+        type: "array",
+        description: `The round's questions (max ${MAX_QUESTIONS_PER_ROUND}).`,
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Round-unique id the answer keys on (e.g. 'q1')." },
+            stakes: { type: "string", description: "'low' | 'load-bearing' \u2014 how much a wrong answer steers the work. Load-bearing \u21D2 kind must be 'open'." },
+            kind: { type: "string", description: "'validate' (confirm/correct an inference \u2014 requires statement) | 'open' (open text)." },
+            statement: { type: "string", description: "The agent's inference the human confirms or corrects. Required for kind='validate'." },
+            text: { type: "string", description: "The question text." },
+            why: { type: "string", description: `Optional "why I'm asking" expander.` }
+          },
+          required: ["id", "stakes", "kind", "text"]
+        }
+      }
+    },
+    required: ["context_line", "questions"]
+  }
+};
+async function fetchActiveExchange(client, taskId) {
+  try {
+    const { data, error } = await client.from("elicitation_exchanges").select("id, status, rounds, answers_submitted_at, force_quit_requested_at").eq("task_id", taskId).eq("status", "active").maybeSingle();
+    if (error || !data) return null;
+    const row = data;
+    const rounds = Array.isArray(row.rounds) ? row.rounds : [];
+    return {
+      exchange_id: row.id,
+      status: row.status,
+      round: currentRoundNumber(rounds),
+      answers_submitted_at: row.answers_submitted_at ?? null,
+      force_quit_requested_at: row.force_quit_requested_at ?? null
+    };
+  } catch {
+    return null;
+  }
+}
+
 // src/tools/risk-class.ts
 var RISK_CLASSES = [
   "auth",
@@ -18632,7 +18688,7 @@ async function getTask(client, projectId, args) {
   if (error) throw error;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
-  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution] = await Promise.all([
+  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange] = await Promise.all([
     client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
     client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
     (async () => {
@@ -18643,7 +18699,8 @@ async function getTask(client, projectId, args) {
         return [];
       }
     })(),
-    fetchPendingResolution(client, resolvedId)
+    fetchPendingResolution(client, resolvedId),
+    fetchActiveExchange(client, resolvedId)
   ]);
   const acceptanceCriteria = acceptanceCriteriaRes.data;
   const testCases = testCasesRes.data;
@@ -18661,7 +18718,7 @@ async function getTask(client, projectId, args) {
     labels: labels.map((l) => l?.name).filter((n) => typeof n === "string")
   });
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, risk_classes };
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, risk_classes };
 }
 
 // src/conductor/poll-loop.ts
@@ -18691,6 +18748,14 @@ function samePending(a, b) {
   if (!pendingPresent(a) || !pendingPresent(b)) return false;
   return a.command === b.command && (a.detail ?? null) === (b.detail ?? null);
 }
+function exchangeMarkerPresent(ex) {
+  return ex != null && (ex.answers_submitted_at != null || ex.force_quit_requested_at != null);
+}
+function sameExchangeMarker(a, b) {
+  if (a == null && b == null) return true;
+  if (a == null || b == null) return false;
+  return (a.exchange_id ?? null) === (b.exchange_id ?? null) && (a.answers_submitted_at ?? null) === (b.answers_submitted_at ?? null) && (a.force_quit_requested_at ?? null) === (b.force_quit_requested_at ?? null);
+}
 function detectChange(baseline, task) {
   if (!(baseline.awaitingHumanInput === true && task.awaiting_human_input === false)) {
     return null;
@@ -18707,13 +18772,18 @@ function detectChange(baseline, task) {
   if (pendingPresent(pr) && !samePending(pr, baseline.pendingResolution)) {
     return { trigger: "pending_resolution", workflow_state: state, pending_resolution: pr };
   }
+  const ex = task.active_exchange ?? null;
+  if (exchangeMarkerPresent(ex) && !sameExchangeMarker(ex, baseline.activeExchange)) {
+    return { trigger: "answers-landed", workflow_state: state, active_exchange: ex };
+  }
   return { trigger: "resolved", workflow_state: state };
 }
 function baselineReadFallback(baseline) {
   return {
     workflow_state: baseline.workflowState,
     pending_resolution: baseline.pendingResolution,
-    awaiting_human_input: baseline.awaitingHumanInput
+    awaiting_human_input: baseline.awaitingHumanInput,
+    active_exchange: baseline.activeExchange
   };
 }
 async function runPollLoop(opts) {
@@ -18761,7 +18831,8 @@ async function main() {
   const baseline = {
     workflowState: baselineTask.workflow_state ?? null,
     pendingResolution: baselineTask.pending_resolution ?? null,
-    awaitingHumanInput: baselineTask.awaiting_human_input ?? null
+    awaitingHumanInput: baselineTask.awaiting_human_input ?? null,
+    activeExchange: baselineTask.active_exchange ?? null
   };
   const launchStamp = Date.now();
   const readTask = async () => {

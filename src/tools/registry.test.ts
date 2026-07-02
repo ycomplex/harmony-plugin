@@ -23,4 +23,12 @@ describe('tool registry', () => {
     const names = registerTools().map((t) => t.name);
     expect(names).toContain('get_build_evidence_status');
   });
+
+  it('registers the B-645 elicitation exchange tools', () => {
+    const names = registerTools().map((t) => t.name);
+    expect(names).toContain('start_elicitation');
+    expect(names).toContain('file_elicitation_round');
+    expect(names).toContain('get_elicitation');
+    expect(names).toContain('conclude_elicitation');
+  });
 });

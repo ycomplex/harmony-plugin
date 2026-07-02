@@ -124,6 +124,88 @@ describe('detectChange', () => {
   });
 });
 
+describe('detectChange — answers-landed (B-645 elicitation exchange)', () => {
+  // The watch is armed right after a round is filed: awaiting flag up, exchange active, marker clear.
+  const baseline: PollBaseline = {
+    workflowState: 'Idea',
+    pendingResolution: null,
+    awaitingHumanInput: true,
+    activeExchange: { exchange_id: 'ex-1', status: 'active', round: 2, answers_submitted_at: null, force_quit_requested_at: null },
+  };
+
+  it('classifies answers-landed when the human submits a round (marker set, flag cleared, state unchanged)', () => {
+    const ex = { exchange_id: 'ex-1', status: 'active', round: 2, answers_submitted_at: '2026-07-02T10:00:00Z', force_quit_requested_at: null };
+    expect(
+      detectChange(baseline, { workflow_state: 'Idea', awaiting_human_input: false, active_exchange: ex }),
+    ).toEqual({ trigger: 'answers-landed', workflow_state: 'Idea', active_exchange: ex });
+  });
+
+  it('classifies answers-landed on a force-quit request too', () => {
+    const ex = { exchange_id: 'ex-1', status: 'active', round: 2, answers_submitted_at: null, force_quit_requested_at: '2026-07-02T10:05:00Z' };
+    const change = detectChange(baseline, { workflow_state: 'Idea', awaiting_human_input: false, active_exchange: ex });
+    expect(change?.trigger).toBe('answers-landed');
+  });
+
+  it('ORDERING (the B-611 cousin): an exchange answer must NOT classify as `resolved`', () => {
+    // A round-submit clears the flag with NO state advance / reshape / park — exactly the shape of the
+    // B-611 non-advancing accept. answers-landed is checked BEFORE resolved so the answers get consumed.
+    const change = detectChange(baseline, {
+      workflow_state: 'Idea',
+      awaiting_human_input: false,
+      active_exchange: { exchange_id: 'ex-1', answers_submitted_at: '2026-07-02T10:00:00Z' },
+    });
+    expect(change?.trigger).not.toBe('resolved');
+    expect(change?.trigger).toBe('answers-landed');
+  });
+
+  it('a state advance still wins over an exchange marker (priority order preserved)', () => {
+    const change = detectChange(baseline, {
+      workflow_state: 'Clarified',
+      awaiting_human_input: false,
+      active_exchange: { exchange_id: 'ex-1', answers_submitted_at: '2026-07-02T10:00:00Z' },
+    });
+    expect(change?.trigger).toBe('state-advanced');
+  });
+
+  it('a fresh pending_resolution still wins over an exchange marker (priority order preserved)', () => {
+    const change = detectChange(baseline, {
+      workflow_state: 'Idea',
+      awaiting_human_input: false,
+      pending_resolution: { command: 'iterate', detail: 'reshape' },
+      active_exchange: { exchange_id: 'ex-1', answers_submitted_at: '2026-07-02T10:00:00Z' },
+    });
+    expect(change?.trigger).toBe('pending_resolution');
+  });
+
+  it('a marker identical to the baseline is STALE — falls through to `resolved`, not answers-landed', () => {
+    const stale = { exchange_id: 'ex-1', status: 'active', round: 2, answers_submitted_at: '2026-07-02T09:00:00Z', force_quit_requested_at: null };
+    const change = detectChange(
+      { ...baseline, activeExchange: stale },
+      { workflow_state: 'Idea', awaiting_human_input: false, active_exchange: stale },
+    );
+    expect(change?.trigger).toBe('resolved');
+  });
+
+  it('GATE unchanged: an exchange marker with the flag still up is NOT an exit', () => {
+    expect(
+      detectChange(baseline, {
+        workflow_state: 'Idea',
+        awaiting_human_input: true,
+        active_exchange: { exchange_id: 'ex-1', answers_submitted_at: '2026-07-02T10:00:00Z' },
+      }),
+    ).toBeNull();
+  });
+
+  it('an active exchange with NO marker does not classify answers-landed (falls to resolved)', () => {
+    const change = detectChange(baseline, {
+      workflow_state: 'Idea',
+      awaiting_human_input: false,
+      active_exchange: { exchange_id: 'ex-1', status: 'active', round: 2, answers_submitted_at: null, force_quit_requested_at: null },
+    });
+    expect(change?.trigger).toBe('resolved');
+  });
+});
+
 describe('baselineReadFallback (B-611 — a transient read error must not false-trip the exit gate)', () => {
   it('projects the baseline back as a fresh read, carrying awaiting_human_input', () => {
     const baseline: PollBaseline = {
@@ -140,6 +222,17 @@ describe('baselineReadFallback (B-611 — a transient read error must not false-
 
   it('detectChange returns null for the fallback shape — a degraded poll never reads as a resolution', () => {
     const baseline: PollBaseline = { workflowState: 'Decomposed', pendingResolution: null, awaitingHumanInput: true };
+    expect(detectChange(baseline, baselineReadFallback(baseline))).toBeNull();
+  });
+
+  it('carries the baseline active_exchange (B-645) so a degraded poll cannot false-trip answers-landed', () => {
+    const baseline: PollBaseline = {
+      workflowState: 'Idea',
+      pendingResolution: null,
+      awaitingHumanInput: true,
+      activeExchange: { exchange_id: 'ex-1', answers_submitted_at: '2026-07-02T09:00:00Z', force_quit_requested_at: null },
+    };
+    expect(baselineReadFallback(baseline).active_exchange).toEqual(baseline.activeExchange);
     expect(detectChange(baseline, baselineReadFallback(baseline))).toBeNull();
   });
 });
@@ -254,6 +347,28 @@ describe('runPollLoop', () => {
       expect(res.detail.trigger).toBe('pending_resolution');
       expect(res.detail.pending_resolution).toEqual({ command: 'iterate', detail: 'broaden' });
     }
+  });
+
+  it('exits changed with answers-landed when the human submits an elicitation round (B-645)', async () => {
+    const clock = makeClock();
+    const exBaseline = { exchange_id: 'ex-1', status: 'active', round: 1, answers_submitted_at: null, force_quit_requested_at: null };
+    const exAnswered = { ...exBaseline, answers_submitted_at: '2026-07-02T10:00:00Z' };
+    const reader = readTaskAfter(
+      2,
+      { workflow_state: 'Idea', awaiting_human_input: true, active_exchange: exBaseline },
+      { workflow_state: 'Idea', awaiting_human_input: false, active_exchange: exAnswered },
+    );
+    const res = await runPollLoop({
+      readTask: reader.read,
+      now: clock.now,
+      sleep: clock.sleep,
+      launchStamp: 0,
+      baseline: { workflowState: 'Idea', awaitingHumanInput: true, activeExchange: exBaseline },
+    });
+    expect(res).toEqual({
+      reason: 'changed',
+      detail: { trigger: 'answers-landed', workflow_state: 'Idea', active_exchange: exAnswered },
+    });
   });
 
   it('exits changed when the ticket is Parked (browser defer/deny)', async () => {

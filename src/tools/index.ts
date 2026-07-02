@@ -50,6 +50,12 @@ import {
   resolveBrief, resolveBriefTool,
 } from './briefs.js';
 import {
+  startElicitationTool, startElicitation,
+  fileElicitationRoundTool, fileElicitationRound,
+  getElicitationTool, getElicitation,
+  concludeElicitationTool, concludeElicitation,
+} from './elicitation.js';
+import {
   advanceWorkflowTool, advanceWorkflow,
   referenceKnowledgeTool, referenceKnowledge,
   listTicketKnowledgeTool, listTicketKnowledge,
@@ -74,6 +80,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     composeBriefTool, getBriefTool, resolveBriefTool,
+    startElicitationTool, fileElicitationRoundTool, getElicitationTool, concludeElicitationTool,
     advanceWorkflowTool,
     referenceKnowledgeTool,
     listTicketKnowledgeTool,
@@ -268,6 +275,18 @@ export async function handleToolCall(
         break;
       case 'resolve_brief':
         result = await resolveBrief(client, projectId, args as any);
+        break;
+      case 'start_elicitation':
+        result = await startElicitation(client, projectId, userId, args as any);
+        break;
+      case 'file_elicitation_round':
+        result = await fileElicitationRound(client, projectId, args as any);
+        break;
+      case 'get_elicitation':
+        result = await getElicitation(client, projectId, args as any);
+        break;
+      case 'conclude_elicitation':
+        result = await concludeElicitation(client, projectId, args as any);
         break;
       case 'advance_workflow':
         result = await advanceWorkflow(client, projectId, args as any);

@@ -755,7 +755,24 @@ export interface RecordDecisionArgs {
   source_task_id?: string;
   review_by?: string;   // ISO timestamp; freshness/decay date (knowledge-model-v1 §3)
   realization?: string; // implementation state (orthogonal to status); omit ⇒ NULL ≡ live. agreed | live | deprecating | retired
+  // B-645 elicitation claims: how the claim was grounded + the brief it underwrites. Omit both for
+  // an ordinary (non-claim) decision.
+  claim_provenance?: string;      // human-stated | agent-inferred-human-validated | force-quit
+  underwriting_brief_id?: string; // FK briefs — resolve_brief disposes coupled claims on accept/defer
 }
+
+// B-645: the three claim-provenance grounds (mirrors the DB CHECK). force-quit claims are
+// quarantined — they never promote at their own brief's accept and never feed inference until
+// validated (elicitation-engine contract).
+const CLAIM_PROVENANCES = ['human-stated', 'agent-inferred-human-validated', 'force-quit'];
+
+// B-645 guarded-write matcher (the pending_resolution fallback pattern, briefs.ts): the claim
+// columns are added by harmony-web's Phase-1 migration; on an older DB the insert 400s with a
+// missing-column error. Detect that specific failure so the write can retry without the columns.
+const isMissingClaimColumns = (msg: string | undefined): boolean =>
+  !!msg &&
+  /(claim_provenance|underwriting_brief_id)/.test(msg) &&
+  /(does not exist|could not find|schema cache|column)/i.test(msg);
 
 export async function recordDecision(
   client: SupabaseClient,
@@ -765,6 +782,9 @@ export async function recordDecision(
 ): Promise<KnowledgeDecisionFull> {
   if (!args.title?.trim()) throw new Error('title is required');
   if (!args.type) throw new Error('type is required');
+  if (args.claim_provenance !== undefined && !CLAIM_PROVENANCES.includes(args.claim_provenance)) {
+    throw new Error(`claim_provenance must be one of: ${CLAIM_PROVENANCES.join(', ')}`);
+  }
 
   const workspaceId = await getWorkspaceId(client, projectId);
 
@@ -795,12 +815,28 @@ export async function recordDecision(
   if (args.source_task_id !== undefined) record.source_task_id = args.source_task_id;
   if (args.review_by !== undefined) record.review_by = args.review_by;
   if (args.realization !== undefined) record.realization = args.realization;
+  // B-645 claim columns: included ONLY when provided (an ordinary decision writes neither, so the
+  // insert stays valid on any schema and NULL keeps meaning "not an elicitation claim").
+  if (args.claim_provenance !== undefined) record.claim_provenance = args.claim_provenance;
+  if (args.underwriting_brief_id !== undefined) record.underwriting_brief_id = args.underwriting_brief_id;
 
-  const { data, error } = await client
+  let { data, error } = await client
     .from('knowledge_decisions')
     .insert(record)
     .select(DECISION_COLS)
     .single();
+  if (error && isMissingClaimColumns(error.message) &&
+      (args.claim_provenance !== undefined || args.underwriting_brief_id !== undefined)) {
+    // Guarded fallback (B-383 class, mirrors composeBrief's pending_resolution retry): on a DB that
+    // predates the Phase-1 claim columns, retry once without them. Degradation is faithful — that
+    // schema also lacks resolve_brief's claim disposal, so nothing could have consumed the coupling.
+    const { claim_provenance: _cp, underwriting_brief_id: _ub, ...fallback } = record;
+    ({ data, error } = await client
+      .from('knowledge_decisions')
+      .insert(fallback)
+      .select(DECISION_COLS)
+      .single());
+  }
   if (error) {
     if (error.code === '23505') {
       throw new Error(`A decision titled "${args.title.trim()}" already exists in this project`);
@@ -924,7 +960,7 @@ export const supersedeDecisionTool = {
 export const recordDecisionTool = {
   name: 'record_decision',
   description:
-    'Record a knowledge decision produced by a gate/skill. Author ONE ATOMIC claim, not a document — shape the `content` as Decision · Why · How-to-apply · Scope. Pick the NARROWEST fitting `type` (product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral) and multi-tag every `domain` a querying skill would filter on (engineering, operations, data, product, customer, process). Lifecycle: enters "Asserted" by default and a HUMAN promotes it to "Accepted" — never pre-mark a replacement Accepted before the decision is made. To retire an entry, SUPERSEDE it (do not edit it into irrelevance); for an in-part repair use update_knowledge_entry plus a dated banner. Migration window: supersede the old decision at decision-time, keep the old fact valid until cutover, and mark in-flight state with `realization`.',
+    'Record a knowledge decision produced by a gate/skill. Author ONE ATOMIC claim, not a document — shape the `content` as Decision · Why · How-to-apply · Scope. Pick the NARROWEST fitting `type` (product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral) and multi-tag every `domain` a querying skill would filter on (engineering, operations, data, product, customer, process). Lifecycle: enters "Asserted" by default and a HUMAN promotes it to "Accepted" — never pre-mark a replacement Accepted before the decision is made. To retire an entry, SUPERSEDE it (do not edit it into irrelevance); for an in-part repair use update_knowledge_entry plus a dated banner. Migration window: supersede the old decision at decision-time, keep the old fact valid until cutover, and mark in-flight state with `realization`. Elicitation claims (B-645): a claim mined from an elicitation exchange sets `claim_provenance` + `underwriting_brief_id` so brief resolution disposes it mechanically (accept promotes human-grounded claims, defer archives; force-quit claims never promote at their own brief\'s accept).',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -942,6 +978,8 @@ export const recordDecisionTool = {
       tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags' },
       source_task_id: { type: 'string', description: 'Task that triggered this decision' },
       review_by: { type: 'string', description: 'ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires.' },
+      claim_provenance: { type: 'string', enum: ['human-stated', 'agent-inferred-human-validated', 'force-quit'], description: "B-645: how an elicitation claim was grounded. 'force-quit' claims are quarantined — never promoted on their brief's accept, never grounds for inference until validated. Omit for a non-claim decision." },
+      underwriting_brief_id: { type: 'string', description: 'B-645: the brief (UUID) this Asserted claim underwrites — resolve_brief disposes coupled claims on accept/defer; compose_brief prunes dropped claims on iterate. Omit for a non-claim decision.' },
     },
     required: ['type', 'title'],
   },

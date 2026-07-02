@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId, resolveTaskIds } from './resolve-task-id.js';
 import { resolveAssignee } from './members.js';
 import { fetchPendingResolution } from './briefs.js';
+import { fetchActiveExchange } from './elicitation.js';
 import { detectRiskClasses } from './risk-class.js';
 
 export const listTasksTool = {
@@ -90,7 +91,7 @@ export async function listTasks(
 
 export const getTaskTool = {
   name: 'get_task',
-  description: "Get full details of a specific task. Returns `pending_resolution` — the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Also returns `risk_classes` — a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run — the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate).",
+  description: "Get full details of a specific task. Returns `pending_resolution` — the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Returns `active_exchange` (B-645) — the task's active elicitation exchange as {exchange_id, status, round, answers_submitted_at, force_quit_requested_at}, or null when none; a non-null answers_submitted_at/force_quit_requested_at is an unconsumed web→agent marker the watch classifies as 'answers-landed' (read the answers via get_elicitation; filing the next round or concluding consumes it). Also returns `risk_classes` — a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run — the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate).",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -135,7 +136,11 @@ export async function getTask(
   //   marker) and consume it — see the auto-pickup loop in skills/harmony-conduct. fetchPendingResolution
   //   reads defensively (separate guarded query) and returns null on an older DB lacking the Phase-1 column
   //   rather than 400-ing the whole get_task read (B-383 class).
-  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution] = await Promise.all([
+  // B-645 (active_exchange): surface the task's active elicitation exchange (compact projection) so the
+  //   conductor watch can classify a web answer-submit as 'answers-landed' (poll-loop) and a skill can see
+  //   an in-flight exchange at pickup. fetchActiveExchange mirrors fetchPendingResolution's guarded read:
+  //   absent table/column (pre-Phase-1 DB) or no active row degrades to null — get_task never regresses.
+  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange] = await Promise.all([
     client.from('acceptance_criteria').select('*').eq('task_id', resolvedId).order('position'),
     client.from('test_cases').select('*').eq('task_id', resolvedId).order('position'),
     (async (): Promise<unknown[]> => {
@@ -152,6 +157,7 @@ export async function getTask(
       }
     })(),
     fetchPendingResolution(client, resolvedId),
+    fetchActiveExchange(client, resolvedId),
   ]);
   const acceptanceCriteria = acceptanceCriteriaRes.data;
   const testCases = testCasesRes.data;
@@ -184,7 +190,7 @@ export async function getTask(
   });
 
   const { task_labels, checklist_items: _checklistItems, ...rest } = data as any;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, risk_classes };
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, risk_classes };
 }
 
 export const createTaskTool = {
