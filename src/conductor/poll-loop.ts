@@ -16,6 +16,7 @@ export interface Taskish {
   workflow_state?: string | null;
   pending_resolution?: PendingResolutionish | null;
   awaiting_human_input?: boolean | null;
+  active_exchange?: ActiveExchangeish | null;
 }
 
 /** The browser-submitted reshape marker (`briefs.pending_resolution`); shape mirrors PendingResolution. */
@@ -24,25 +25,39 @@ export interface PendingResolutionish {
   detail?: string | null;
 }
 
+/** get_task's compact active-elicitation-exchange projection (B-645); shape mirrors
+ *  ActiveExchangeSummary. The watch only classifies on the two consumable markers. */
+export interface ActiveExchangeish {
+  exchange_id?: string;
+  status?: string;
+  round?: number;
+  answers_submitted_at?: string | null;
+  force_quit_requested_at?: string | null;
+}
+
 /** The state captured at launch, against which every poll is compared. */
 export interface PollBaseline {
   workflowState?: string | null;
   pendingResolution?: PendingResolutionish | null;
   awaitingHumanInput?: boolean | null;
+  activeExchange?: ActiveExchangeish | null;
 }
 
 /**
  * What the human did, CLASSIFIED after the exit gate fires (B-611). The sole exit gate is the canonical
- * `awaiting_human_input` true→false transition; these four are a post-gate classification mirroring the §4c
- * consume cases. `resolved` is the non-advancing case (the flag cleared with no state advance / reshape /
- * park — e.g. a design sub-track accept composed with `pending_activity: null`).
+ * `awaiting_human_input` true→false transition; these five are a post-gate classification mirroring the §4c
+ * consume cases. `answers-landed` (B-645) is a submitted elicitation round (or a force-quit request) — the
+ * agent reads the answers via get_elicitation and files the next round / concludes. `resolved` is the
+ * non-advancing case (the flag cleared with no state advance / reshape / exchange answer / park — e.g. a
+ * design sub-track accept composed with `pending_activity: null`).
  */
-export type ChangeTrigger = 'state-advanced' | 'pending_resolution' | 'parked' | 'resolved';
+export type ChangeTrigger = 'state-advanced' | 'pending_resolution' | 'parked' | 'answers-landed' | 'resolved';
 
 export interface ChangeDetail {
   trigger: ChangeTrigger;
   workflow_state?: string | null;
   pending_resolution?: PendingResolutionish | null;
+  active_exchange?: ActiveExchangeish | null;
 }
 
 export type PollResult =
@@ -90,6 +105,27 @@ function samePending(
   return a.command === b.command && (a.detail ?? null) === (b.detail ?? null);
 }
 
+/** An exchange marker is present when the active exchange carries an unconsumed web→agent stamp:
+ *  submitted answers OR a force-quit request (B-645). */
+function exchangeMarkerPresent(ex: ActiveExchangeish | null | undefined): ex is ActiveExchangeish {
+  return ex != null && (ex.answers_submitted_at != null || ex.force_quit_requested_at != null);
+}
+
+/** Same marker ⇔ same exchange + identical stamps. Timestamps make this exact: a fresh submit always
+ *  carries a new answers_submitted_at, so a marker equal to the baseline's is stale, never news. */
+function sameExchangeMarker(
+  a: ActiveExchangeish | null | undefined,
+  b: ActiveExchangeish | null | undefined,
+): boolean {
+  if (a == null && b == null) return true;
+  if (a == null || b == null) return false;
+  return (
+    (a.exchange_id ?? null) === (b.exchange_id ?? null) &&
+    (a.answers_submitted_at ?? null) === (b.answers_submitted_at ?? null) &&
+    (a.force_quit_requested_at ?? null) === (b.force_quit_requested_at ?? null)
+  );
+}
+
 /**
  * Compare a freshly-read task against the launch baseline and report what (if anything) the human did.
  *
@@ -103,13 +139,19 @@ function samePending(
  *   2. `state-advanced`     — `workflow_state` differs from the baseline (a browser accept advanced the gate).
  *   3. `pending_resolution` — a browser reshape left a (new/changed) `pending_resolution` marker on the
  *                             active brief with the state unchanged.
- *   4. `resolved`           — the flag cleared but state is unchanged and there is no new `pending_resolution`:
+ *   4. `answers-landed`     — (B-645) the active elicitation exchange carries an unconsumed marker: the human
+ *                             submitted a round's answers (`answers_submitted_at`) or requested a force-quit
+ *                             (`force_quit_requested_at`). The consumer reads the answers via get_elicitation
+ *                             and files the next round / concludes.
+ *   5. `resolved`           — the flag cleared but state is unchanged and there is no new marker of any kind:
  *                             a NON-ADVANCING accept (the B-611 case — a design sub-track brief composed with
  *                             `pending_activity: null` clears `awaiting_human_input` without advancing /
  *                             reshaping / parking). A real resolution to continue the loop on, NOT a timeout.
- * Order matters: Parked is checked before the generic state-diff so a defer/deny reports `parked`, and the
- * pending_resolution check requires the marker to be genuinely new (present and not equal to the baseline
- * marker) so a pre-existing marker can't change the classification.
+ * Order matters: Parked is checked before the generic state-diff so a defer/deny reports `parked`; the
+ * pending_resolution and answers-landed checks require the marker to be genuinely new (present and not equal
+ * to the baseline marker) so a pre-existing marker can't change the classification; and `answers-landed` MUST
+ * precede `resolved` — an elicitation round-submit clears the flag with no state change, so without step 4 it
+ * would misclassify as the B-611 non-advancing-accept case and the answers would never be consumed.
  */
 export function detectChange(baseline: PollBaseline, task: Taskish): ChangeDetail | null {
   // GATE (B-611): the SOLE exit signal is awaiting_human_input transitioning true→false. Until the human
@@ -132,7 +174,15 @@ export function detectChange(baseline: PollBaseline, task: Taskish): ChangeDetai
   if (pendingPresent(pr) && !samePending(pr, baseline.pendingResolution)) {
     return { trigger: 'pending_resolution', workflow_state: state, pending_resolution: pr };
   }
-  // The flag cleared with no advance / reshape / park — a non-advancing sub-track accept (B-611).
+  // B-645: an unconsumed exchange marker (submitted answers / force-quit request) — checked BEFORE
+  // 'resolved' so a round-submit (flag cleared, state unchanged) is never mistaken for the B-611
+  // non-advancing accept. Like pending_resolution, the marker must be genuinely new vs the baseline.
+  const ex = task.active_exchange ?? null;
+  if (exchangeMarkerPresent(ex) && !sameExchangeMarker(ex, baseline.activeExchange)) {
+    return { trigger: 'answers-landed', workflow_state: state, active_exchange: ex };
+  }
+  // The flag cleared with no advance / reshape / exchange answer / park — a non-advancing sub-track
+  // accept (B-611).
   return { trigger: 'resolved', workflow_state: state };
 }
 
@@ -147,6 +197,7 @@ export function baselineReadFallback(baseline: PollBaseline): Taskish {
     workflow_state: baseline.workflowState,
     pending_resolution: baseline.pendingResolution,
     awaiting_human_input: baseline.awaitingHumanInput,
+    active_exchange: baseline.activeExchange,
   };
 }
 

@@ -1213,6 +1213,71 @@ describe('recordDecision', () => {
     });
     expect(secondChain.insert.mock.calls[0][0]).not.toHaveProperty('realization');
   });
+
+  // B-645: elicitation claims — provenance + brief coupling.
+  it('includes claim_provenance + underwriting_brief_id in the insert when provided (B-645)', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    await recordDecision(client, PROJECT_ID, USER_ID, {
+      type: 'specification', title: 'claim: exports must be CSV-first',
+      claim_provenance: 'human-stated', underwriting_brief_id: 'brief-1',
+    });
+    expect(secondChain.insert).toHaveBeenCalledWith(expect.objectContaining({
+      claim_provenance: 'human-stated', underwriting_brief_id: 'brief-1',
+    }));
+  });
+
+  it('omits the claim columns from the insert when not provided (a non-claim decision, B-645)', async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    await recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'ordinary decision' });
+    expect(secondChain.insert.mock.calls[0][0]).not.toHaveProperty('claim_provenance');
+    expect(secondChain.insert.mock.calls[0][0]).not.toHaveProperty('underwriting_brief_id');
+  });
+
+  it('rejects an invalid claim_provenance (enum check, B-645)', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: null });
+    await expect(
+      recordDecision(client, PROJECT_ID, USER_ID, {
+        type: 'specification', title: 'x', claim_provenance: 'vibes',
+      }),
+    ).rejects.toThrow(/claim_provenance must be one of: human-stated, agent-inferred-human-validated, force-quit/);
+  });
+
+  it("accepts the 'force-quit' provenance (the quarantined ground)", async () => {
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    await recordDecision(client, PROJECT_ID, USER_ID, {
+      type: 'specification', title: 'assumed under force-quit',
+      claim_provenance: 'force-quit', underwriting_brief_id: 'brief-1',
+    });
+    expect(secondChain.insert).toHaveBeenCalledWith(expect.objectContaining({ claim_provenance: 'force-quit' }));
+  });
+
+  it('retries WITHOUT the claim columns when the DB predates them (guarded fallback, B-383 class)', async () => {
+    // First insert 400s on the missing column; the retry drops both claim columns and succeeds.
+    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    secondChain.single
+      .mockResolvedValueOnce({ data: null, error: { message: "Could not find the 'claim_provenance' column of 'knowledge_decisions' in the schema cache" } })
+      .mockResolvedValueOnce({ data: decisionRow, error: null });
+    const result = await recordDecision(client, PROJECT_ID, USER_ID, {
+      type: 'specification', title: 'claim on an older DB',
+      claim_provenance: 'human-stated', underwriting_brief_id: 'brief-1',
+    });
+    expect(result).toEqual(decisionRow);
+    expect(secondChain.insert).toHaveBeenCalledTimes(2);
+    const retryPayload = secondChain.insert.mock.calls[1][0];
+    expect(retryPayload).not.toHaveProperty('claim_provenance');
+    expect(retryPayload).not.toHaveProperty('underwriting_brief_id');
+  });
+});
+
+describe('recordDecisionTool schema — B-645 claim params', () => {
+  it('exposes claim_provenance with its enum and underwriting_brief_id, neither required', () => {
+    const props = recordDecisionTool.inputSchema.properties as Record<string, any>;
+    expect(props.claim_provenance.enum).toEqual(['human-stated', 'agent-inferred-human-validated', 'force-quit']);
+    expect(props.underwriting_brief_id).toBeDefined();
+    const required = (recordDecisionTool.inputSchema as any).required as string[];
+    expect(required).not.toContain('claim_provenance');
+    expect(required).not.toContain('underwriting_brief_id');
+  });
 });
 
 describe('recordDecisionTool schema', () => {

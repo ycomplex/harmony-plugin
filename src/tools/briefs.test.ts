@@ -206,7 +206,7 @@ function makeClient(responses: Array<{ data: unknown; error?: unknown }>) {
   let i = 0;
   const next = () => responses[i++] ?? { data: null, error: null };
   const chain: any = {};
-  for (const m of ['from', 'select', 'insert', 'update', 'eq', 'is']) chain[m] = vi.fn(() => chain);
+  for (const m of ['from', 'select', 'insert', 'update', 'eq', 'is', 'not']) chain[m] = vi.fn(() => chain);
   chain.maybeSingle = vi.fn(async () => next());
   chain.single = vi.fn(async () => next());
   chain.then = (resolve: (v: unknown) => unknown) => resolve(next());
@@ -394,6 +394,93 @@ describe('composeBrief', () => {
       }),
     ).rejects.toThrow(/no valid transition/i);
     expect(client.insert).not.toHaveBeenCalled();
+  });
+});
+
+// B-645 iterate-prune: the in-place iterate is the elicitation-claim disposal moment. When
+// `underwriting_claim_ids` (the KEPT set) is passed, coupled dangling claims — Asserted rows whose
+// underwriting_brief_id is the active brief — are archived unless kept. The mock can't filter rows,
+// so "archives drop1 but not keep1 and not uncoupled/foreign rows" is expressed as the exact filter
+// chain: eq(underwriting_brief_id, <active brief>) + eq(status,'Asserted') scopes OUT rows coupled to
+// other briefs (e.g. a force-quit claim underwriting a different brief) and non-Asserted rows, and
+// not(id, in, (keep…)) spares the kept set.
+describe('composeBrief — B-645 elicitation-claim iterate-prune', () => {
+  const briefRow = { id: 'brief-1', task_id: 'task-1', reason: 'clarification-draft', content: 'rendered', status: 'active', iteration: 2 };
+
+  it('on iterate with underwriting_claim_ids=[keep1]: archives coupled Asserted claims NOT kept', async () => {
+    // responses: [active found] -> [brief update] -> [prune await] -> [task update]
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: briefRow }, { data: null }, { data: null }]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      underwriting_claim_ids: ['keep1'],
+    });
+    expect(client.from).toHaveBeenCalledWith('knowledge_decisions');
+    expect(client.update).toHaveBeenCalledWith({ status: 'Archived' });
+    // Scoped to THIS brief's coupled Asserted claims (drop1 matches; keep1 is spared by the not-in;
+    // an uncoupled or other-brief force-quit claim never matches the underwriting_brief_id filter).
+    expect(client.eq).toHaveBeenCalledWith('underwriting_brief_id', 'brief-1');
+    expect(client.eq).toHaveBeenCalledWith('status', 'Asserted');
+    expect(client.not).toHaveBeenCalledWith('id', 'in', '(keep1)');
+  });
+
+  it('empty array = archive ALL coupled Asserted claims (no not-in filter)', async () => {
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: briefRow }, { data: null }, { data: null }]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      underwriting_claim_ids: [],
+    });
+    expect(client.update).toHaveBeenCalledWith({ status: 'Archived' });
+    expect(client.eq).toHaveBeenCalledWith('underwriting_brief_id', 'brief-1');
+    expect(client.not).not.toHaveBeenCalled();
+  });
+
+  it('omitted param = NO prune call (back-compat)', async () => {
+    // responses: [active found] -> [brief update] -> [task update]
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: briefRow }, { data: null }]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    });
+    expect(client.from).not.toHaveBeenCalledWith('knowledge_decisions');
+    expect(client.update).not.toHaveBeenCalledWith({ status: 'Archived' });
+  });
+
+  it('no prune on a FIRST compose even when the param is passed (nothing is coupled yet)', async () => {
+    // responses: [no active brief] -> [insert row] -> [task update]
+    const client = makeClient([{ data: null }, { data: { ...briefRow, iteration: 1 } }, { data: null }]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      underwriting_claim_ids: ['keep1'],
+    });
+    expect(client.from).not.toHaveBeenCalledWith('knowledge_decisions');
+  });
+
+  it('tolerates a missing claim column on an older DB (guarded — compose still succeeds)', async () => {
+    // responses: [active found] -> [brief update] -> [prune errors: column absent] -> [task update]
+    const client = makeClient([
+      { data: { id: 'brief-1', iteration: 1 } },
+      { data: briefRow },
+      { data: null, error: { message: 'column knowledge_decisions.underwriting_brief_id does not exist' } },
+      { data: null },
+    ]);
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      underwriting_claim_ids: ['keep1'],
+    });
+    expect(result.brief).toEqual(briefRow);
+  });
+
+  it('rethrows a REAL prune failure (only the missing-column error is tolerated)', async () => {
+    const client = makeClient([
+      { data: { id: 'brief-1', iteration: 1 } },
+      { data: briefRow },
+      { data: null, error: { message: 'permission denied for table knowledge_decisions' } },
+    ]);
+    await expect(
+      composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+        underwriting_claim_ids: ['keep1'],
+      }),
+    ).rejects.toThrow(/permission denied/i);
   });
 });
 
