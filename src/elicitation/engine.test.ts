@@ -4,6 +4,7 @@ import {
   nextRoundNumber,
   currentRoundNumber,
   appendRound,
+  echoPriorAnswers,
   MAX_QUESTIONS_PER_ROUND,
   type ElicitationQuestion,
   type ElicitationRound,
@@ -105,5 +106,73 @@ describe('round lifecycle helpers', () => {
     const appended = appendRound(rounds, round(2));
     expect(appended).toHaveLength(2);
     expect(rounds).toHaveLength(1);
+  });
+});
+
+describe('echoPriorAnswers (B-462 — terminal answering echo)', () => {
+  const round = (n: number, questions: ElicitationQuestion[], answers: ElicitationRound['answers'] = {}): ElicitationRound => ({
+    n, context_line: 'ctx', questions, answers,
+  });
+  const validateQ = (id: string): ElicitationQuestion => ({
+    id, stakes: 'low', kind: 'validate', statement: 'It is per-user.', text: 'Correct?',
+  });
+
+  it('merges echoed answers into the LAST round, stamped via:terminal + answered_at', () => {
+    const rounds = [round(1, [openQ({ id: 'old' })]), round(2, [validateQ('q1'), openQ({ id: 'q2' })])];
+    const { rounds: out, errors } = echoPriorAnswers(rounds, {
+      q1: { verb: 'confirm' },
+      q2: { verb: 'answer', text: 'Speed of triage.' },
+    }, '2026-07-02T16:00:00Z');
+    expect(errors).toEqual([]);
+    expect(out![1].answers).toEqual({
+      q1: { verb: 'confirm', via: 'terminal' },
+      q2: { verb: 'answer', text: 'Speed of triage.', via: 'terminal' },
+    });
+    expect(out![1].answered_at).toBe('2026-07-02T16:00:00Z');
+    // Immutable: the input rounds are untouched.
+    expect(rounds[1].answers).toEqual({});
+  });
+
+  it('a partial echo is legitimate — unanswered questions stay unanswered', () => {
+    const rounds = [round(1, [validateQ('q1'), openQ({ id: 'q2' })])];
+    const { rounds: out, errors } = echoPriorAnswers(rounds, { q1: { verb: 'confirm' } });
+    expect(errors).toEqual([]);
+    expect(Object.keys(out![0].answers)).toEqual(['q1']);
+  });
+
+  it('rejects an echo when no round has been filed', () => {
+    const { rounds: out, errors } = echoPriorAnswers([], { q1: { verb: 'confirm' } });
+    expect(out).toBeNull();
+    expect(errors[0]).toMatch(/no round has been filed/i);
+  });
+
+  it('rejects an empty prior_answers object', () => {
+    const { errors } = echoPriorAnswers([round(1, [openQ()])], {});
+    expect(errors[0]).toMatch(/empty/i);
+  });
+
+  it('rejects a question id not in the LAST round (earlier rounds are history)', () => {
+    const rounds = [round(1, [openQ({ id: 'old' })]), round(2, [openQ({ id: 'q2' })])];
+    const { errors } = echoPriorAnswers(rounds, { old: { verb: 'answer', text: 'late' } });
+    expect(errors[0]).toMatch(/not in the last filed round/i);
+  });
+
+  it('NEVER overwrites a submitted answer — the human\'s own words win', () => {
+    const rounds = [round(1, [openQ({ id: 'q1' })], { q1: { verb: 'answer', text: 'web answer' } })];
+    const { errors } = echoPriorAnswers(rounds, { q1: { verb: 'answer', text: 'echo attempt' } });
+    expect(errors[0]).toMatch(/never overwritten/i);
+  });
+
+  it('enforces verb/kind fit and text presence', () => {
+    const rounds = [round(1, [validateQ('q1'), openQ({ id: 'q2' })])];
+    expect(echoPriorAnswers(rounds, { q1: { verb: 'answer', text: 'x' } }).errors[0]).toMatch(/confirm, correct, or skip/);
+    expect(echoPriorAnswers(rounds, { q2: { verb: 'confirm' } }).errors[0]).toMatch(/answer or skip/);
+    expect(echoPriorAnswers(rounds, { q2: { verb: 'answer' } }).errors[0]).toMatch(/no text/);
+  });
+
+  it('preserves an existing answered_at (first stamp wins)', () => {
+    const r = { ...round(1, [validateQ('q1'), openQ({ id: 'q2' })], { q2: { verb: 'answer', text: 'web' } }), answered_at: '2026-07-01T00:00:00Z' };
+    const { rounds: out } = echoPriorAnswers([r], { q1: { verb: 'confirm' } }, '2026-07-02T00:00:00Z');
+    expect(out![0].answered_at).toBe('2026-07-01T00:00:00Z');
   });
 });

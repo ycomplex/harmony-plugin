@@ -20,7 +20,9 @@ import {
   nextRoundNumber,
   currentRoundNumber,
   appendRound,
+  echoPriorAnswers,
   MAX_QUESTIONS_PER_ROUND,
+  type ElicitationAnswer,
   type ElicitationQuestion,
   type ElicitationRound,
 } from '../elicitation/engine.js';
@@ -38,6 +40,7 @@ const VALID_OUTCOMES = ['converged', 'force-quit', 'abandoned'];
 interface ExchangeRow {
   id: string;
   task_id: string;
+  gate: string | null;
   status: string;
   rounds: ElicitationRound[];
   answers_submitted_at: string | null;
@@ -148,6 +151,8 @@ export interface FileElicitationRoundArgs {
   task_id?: string;
   context_line: string;
   questions: ElicitationQuestion[];
+  /** Terminal-given answers to the PREVIOUS round, echoed in the same write that consumes it (B-462). */
+  prior_answers?: Record<string, ElicitationAnswer>;
 }
 
 export async function fileElicitationRound(
@@ -168,7 +173,20 @@ export async function fileElicitationRound(
     throw new Error(`exchange ${exchange.id} is '${exchange.status}' — rounds can only be filed on an active exchange`);
   }
 
-  const rounds = Array.isArray(exchange.rounds) ? exchange.rounds : [];
+  let rounds = Array.isArray(exchange.rounds) ? exchange.rounds : [];
+
+  // Terminal answering (B-462): echo the human's terminal-given answers into the round being
+  // consumed, in the same write that appends the next round — the exchange record stays complete
+  // regardless of which surface the human answered on. The engine guards (last round only,
+  // no overwrites, verb/kind fit) throw before any write.
+  if (args.prior_answers) {
+    const echoed = echoPriorAnswers(rounds, args.prior_answers, new Date().toISOString());
+    if (echoed.errors.length > 0) {
+      throw new Error(`prior_answers failed the echo guards:\n- ${echoed.errors.join('\n- ')}`);
+    }
+    rounds = echoed.rounds!;
+  }
+
   const n = nextRoundNumber(rounds);
   const round: ElicitationRound = {
     n,
@@ -198,7 +216,9 @@ export async function fileElicitationRound(
     .update({
       awaiting_human_input: true,
       awaiting_human_reason: 'elicitation-round',
-      awaiting_human_ref: { kind: 'elicitation', exchange_id: exchange.id, round: n },
+      // `gate` rides along (B-462) so surfaces can group/label the round by the lifecycle gate the
+      // exchange serves without re-fetching the exchange (the Queue card's gate pill reads it).
+      awaiting_human_ref: { kind: 'elicitation', exchange_id: exchange.id, round: n, gate: exchange.gate ?? null },
     })
     .eq('id', exchange.task_id);
   if (taskErr) throw new Error(taskErr.message);
@@ -231,6 +251,11 @@ export const fileElicitationRoundTool = {
           },
           required: ['id', 'stakes', 'kind', 'text'],
         },
+      },
+      prior_answers: {
+        type: 'object',
+        description:
+          "Terminal-given answers to the PREVIOUS round, echoed into the exchange record in the same write (B-462 — the human answered in the terminal, not the web). Keyed by question id: { <qid>: { verb, text? } } with verb confirm|correct|skip for a 'validate' question and answer|skip for an 'open' one (correct/answer require text). Only the LAST filed round's unanswered questions may be echoed; each echo is stamped via:'terminal'. Omit entirely for web-submitted answers — the web writes those itself.",
       },
     },
     required: ['context_line', 'questions'],
@@ -289,6 +314,8 @@ export interface ConcludeElicitationArgs {
   exchange_id?: string;
   task_id?: string;
   outcome: 'converged' | 'force-quit' | 'abandoned';
+  /** Terminal-given answers to the final round, echoed in the same concluding write (B-462). */
+  prior_answers?: Record<string, ElicitationAnswer>;
 }
 
 export async function concludeElicitation(
@@ -302,16 +329,34 @@ export async function concludeElicitation(
 
   const exchange = await resolveExchange(client, projectId, args);
   if (exchange.status !== 'active') {
-    // Idempotent re-issue of the same conclusion is safe (mirrors resolve_brief §4.5).
+    // Idempotent re-issue of the same conclusion is safe (mirrors resolve_brief §4.5). A re-issue
+    // never re-echoes prior_answers — the first conclusion already recorded them (or the exchange
+    // was concluded elsewhere and the echo window is closed).
     if (exchange.status === args.outcome) return exchange;
     throw new Error(`exchange ${exchange.id} is already '${exchange.status}' — cannot conclude it '${args.outcome}'`);
   }
 
-  // ONLY the exchange row is written: status + clear both consumable markers. Deliberately does NOT
-  // touch the attached brief or the task's awaiting flag — see the tool description for why.
+  // Terminal answering (B-462): the final round's terminal-given answers are echoed in the same
+  // write that concludes — usually a convergence consuming the answers that produced it.
+  let roundsUpdate: { rounds: ElicitationRound[] } | Record<string, never> = {};
+  if (args.prior_answers) {
+    const echoed = echoPriorAnswers(
+      Array.isArray(exchange.rounds) ? exchange.rounds : [],
+      args.prior_answers,
+      new Date().toISOString(),
+    );
+    if (echoed.errors.length > 0) {
+      throw new Error(`prior_answers failed the echo guards:\n- ${echoed.errors.join('\n- ')}`);
+    }
+    roundsUpdate = { rounds: echoed.rounds! };
+  }
+
+  // ONLY the exchange row is written: status + clear both consumable markers (+ the terminal echo
+  // above, when given). Deliberately does NOT touch the attached brief or the task's awaiting flag —
+  // see the tool description for why.
   const { data, error } = await client
     .from('elicitation_exchanges')
-    .update({ status: args.outcome, answers_submitted_at: null, force_quit_requested_at: null })
+    .update({ status: args.outcome, answers_submitted_at: null, force_quit_requested_at: null, ...roundsUpdate })
     .eq('id', exchange.id)
     .select(EXCHANGE_COLS)
     .single();
@@ -329,6 +374,11 @@ export const concludeElicitationTool = {
       exchange_id: { type: 'string', description: 'The exchange to conclude. Or pass task_id to target its active exchange.' },
       task_id: { type: 'string', description: 'Alternative to exchange_id — the task whose ACTIVE exchange to conclude (UUID, task number, or visual ID).' },
       outcome: { type: 'string', description: "'converged' | 'force-quit' | 'abandoned'" },
+      prior_answers: {
+        type: 'object',
+        description:
+          "Terminal-given answers to the FINAL round, echoed into the exchange record in the same concluding write (B-462) — use when the answers that produced this conclusion arrived in the terminal, not the web. Same shape and guards as file_elicitation_round's prior_answers; each echo is stamped via:'terminal'.",
+      },
     },
     required: ['outcome'],
   },
