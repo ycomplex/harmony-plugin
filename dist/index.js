@@ -32745,6 +32745,49 @@ function currentRoundNumber(rounds) {
 function appendRound(rounds, round) {
   return [...Array.isArray(rounds) ? rounds : [], round];
 }
+function echoPriorAnswers(rounds, priorAnswers, answeredAt) {
+  const errors = [];
+  if (!Array.isArray(rounds) || rounds.length === 0) {
+    return { rounds: null, errors: ["no round has been filed \u2014 there is nothing to echo answers onto"] };
+  }
+  const entries = Object.entries(priorAnswers ?? {});
+  if (entries.length === 0) {
+    return { rounds: null, errors: ["prior_answers is empty \u2014 omit it instead of passing an empty object"] };
+  }
+  const last = rounds[rounds.length - 1];
+  const byId = new Map(last.questions.map((q) => [q.id, q]));
+  for (const [qid, answer] of entries) {
+    const q = byId.get(qid);
+    if (!q) {
+      errors.push(`question "${qid}" is not in the last filed round (round ${last.n}) \u2014 only the open round can be echoed`);
+      continue;
+    }
+    if (last.answers?.[qid]) {
+      errors.push(`question "${qid}" already has an answer \u2014 a submitted answer is the human's own words and is never overwritten`);
+      continue;
+    }
+    const verb = answer?.verb;
+    if (q.kind === "validate" && verb !== "confirm" && verb !== "correct" && verb !== "skip") {
+      errors.push(`question "${qid}" is kind='validate' \u2014 its echoed verb must be confirm, correct, or skip (got '${verb}')`);
+    }
+    if (q.kind === "open" && verb !== "answer" && verb !== "skip") {
+      errors.push(`question "${qid}" is kind='open' \u2014 its echoed verb must be answer or skip (got '${verb}')`);
+    }
+    if ((verb === "correct" || verb === "answer") && !answer.text?.trim()) {
+      errors.push(`question "${qid}" echoes verb='${verb}' but has no text \u2014 there is no answer to record`);
+    }
+  }
+  if (errors.length > 0) return { rounds: null, errors };
+  const echoed = {
+    ...last,
+    answers: {
+      ...last.answers,
+      ...Object.fromEntries(entries.map(([qid, a]) => [qid, { ...a, via: "terminal" }]))
+    },
+    ...answeredAt && !last.answered_at ? { answered_at: answeredAt } : {}
+  };
+  return { rounds: [...rounds.slice(0, -1), echoed], errors: [] };
+}
 
 // src/tools/elicitation.ts
 var EXCHANGE_COLS = "id, task_id, trigger, gate, brief_id, status, rounds, answers_submitted_at, force_quit_requested_at, created_by, created_at, updated_at";
@@ -32811,7 +32854,15 @@ async function fileElicitationRound(client, projectId, args) {
   if (exchange.status !== "active") {
     throw new Error(`exchange ${exchange.id} is '${exchange.status}' \u2014 rounds can only be filed on an active exchange`);
   }
-  const rounds = Array.isArray(exchange.rounds) ? exchange.rounds : [];
+  let rounds = Array.isArray(exchange.rounds) ? exchange.rounds : [];
+  if (args.prior_answers) {
+    const echoed = echoPriorAnswers(rounds, args.prior_answers, (/* @__PURE__ */ new Date()).toISOString());
+    if (echoed.errors.length > 0) {
+      throw new Error(`prior_answers failed the echo guards:
+- ${echoed.errors.join("\n- ")}`);
+    }
+    rounds = echoed.rounds;
+  }
   const n = nextRoundNumber(rounds);
   const round = {
     n,
@@ -32827,7 +32878,9 @@ async function fileElicitationRound(client, projectId, args) {
   const { error: taskErr } = await client.from("tasks").update({
     awaiting_human_input: true,
     awaiting_human_reason: "elicitation-round",
-    awaiting_human_ref: { kind: "elicitation", exchange_id: exchange.id, round: n }
+    // `gate` rides along (B-462) so surfaces can group/label the round by the lifecycle gate the
+    // exchange serves without re-fetching the exchange (the Queue card's gate pill reads it).
+    awaiting_human_ref: { kind: "elicitation", exchange_id: exchange.id, round: n, gate: exchange.gate ?? null }
   }).eq("id", exchange.task_id);
   if (taskErr) throw new Error(taskErr.message);
   return data;
@@ -32856,6 +32909,10 @@ var fileElicitationRoundTool = {
           },
           required: ["id", "stakes", "kind", "text"]
         }
+      },
+      prior_answers: {
+        type: "object",
+        description: "Terminal-given answers to the PREVIOUS round, echoed into the exchange record in the same write (B-462 \u2014 the human answered in the terminal, not the web). Keyed by question id: { <qid>: { verb, text? } } with verb confirm|correct|skip for a 'validate' question and answer|skip for an 'open' one (correct/answer require text). Only the LAST filed round's unanswered questions may be echoed; each echo is stamped via:'terminal'. Omit entirely for web-submitted answers \u2014 the web writes those itself."
       }
     },
     required: ["context_line", "questions"]
@@ -32890,7 +32947,20 @@ async function concludeElicitation(client, projectId, args) {
     if (exchange.status === args.outcome) return exchange;
     throw new Error(`exchange ${exchange.id} is already '${exchange.status}' \u2014 cannot conclude it '${args.outcome}'`);
   }
-  const { data, error: error2 } = await client.from("elicitation_exchanges").update({ status: args.outcome, answers_submitted_at: null, force_quit_requested_at: null }).eq("id", exchange.id).select(EXCHANGE_COLS).single();
+  let roundsUpdate = {};
+  if (args.prior_answers) {
+    const echoed = echoPriorAnswers(
+      Array.isArray(exchange.rounds) ? exchange.rounds : [],
+      args.prior_answers,
+      (/* @__PURE__ */ new Date()).toISOString()
+    );
+    if (echoed.errors.length > 0) {
+      throw new Error(`prior_answers failed the echo guards:
+- ${echoed.errors.join("\n- ")}`);
+    }
+    roundsUpdate = { rounds: echoed.rounds };
+  }
+  const { data, error: error2 } = await client.from("elicitation_exchanges").update({ status: args.outcome, answers_submitted_at: null, force_quit_requested_at: null, ...roundsUpdate }).eq("id", exchange.id).select(EXCHANGE_COLS).single();
   if (error2) throw new Error(error2.message);
   return data;
 }
@@ -32902,7 +32972,11 @@ var concludeElicitationTool = {
     properties: {
       exchange_id: { type: "string", description: "The exchange to conclude. Or pass task_id to target its active exchange." },
       task_id: { type: "string", description: "Alternative to exchange_id \u2014 the task whose ACTIVE exchange to conclude (UUID, task number, or visual ID)." },
-      outcome: { type: "string", description: "'converged' | 'force-quit' | 'abandoned'" }
+      outcome: { type: "string", description: "'converged' | 'force-quit' | 'abandoned'" },
+      prior_answers: {
+        type: "object",
+        description: "Terminal-given answers to the FINAL round, echoed into the exchange record in the same concluding write (B-462) \u2014 use when the answers that produced this conclusion arrived in the terminal, not the web. Same shape and guards as file_elicitation_round's prior_answers; each echo is stamped via:'terminal'."
+      }
     },
     required: ["outcome"]
   }

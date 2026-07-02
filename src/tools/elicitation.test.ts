@@ -112,13 +112,75 @@ describe('fileElicitationRound', () => {
       ],
     }));
 
-    // The ball moves to the human on the TASK row, with the typed reason + ref.
+    // The ball moves to the human on the TASK row, with the typed reason + ref. The ref carries the
+    // exchange's gate (B-462) so the Queue card can label the round without re-fetching the exchange.
     expect(client.from).toHaveBeenCalledWith('tasks');
     expect(client.update).toHaveBeenCalledWith({
       awaiting_human_input: true,
       awaiting_human_reason: 'elicitation-round',
-      awaiting_human_ref: { kind: 'elicitation', exchange_id: 'ex-1', round: 2 },
+      awaiting_human_ref: { kind: 'elicitation', exchange_id: 'ex-1', round: 2, gate: 'clarifying' },
     });
+  });
+
+  it('echoes terminal-given prior_answers into the consumed round in the same write (B-462)', async () => {
+    const withRound = {
+      ...exchangeRow,
+      rounds: [{
+        n: 1, context_line: 'c',
+        questions: [
+          { id: 'q1', stakes: 'low', kind: 'validate', statement: 'It is per-user.', text: 'Correct?' },
+          { id: 'q2', stakes: 'load-bearing', kind: 'open', text: 'What drives this?' },
+        ],
+        answers: {},
+      }],
+    };
+    const client = makeClient([{ data: withRound }, { data: withRound }, { data: null }]);
+
+    await fileElicitationRound(client, PROJECT_ID, {
+      task_id: 'task-1',
+      context_line: 'Following up on the driver.',
+      questions: [openQ('q3')],
+      prior_answers: {
+        q1: { verb: 'confirm' },
+        q2: { verb: 'answer', text: 'Speed of triage.' },
+      },
+    });
+
+    // One exchange write: round 1 gains the echoed answers (stamped via:'terminal' + answered_at),
+    // round 2 is appended, and the consumable marker clears — all in the same update payload.
+    expect(client.update).toHaveBeenCalledWith(expect.objectContaining({
+      answers_submitted_at: null,
+      rounds: [
+        expect.objectContaining({
+          n: 1,
+          answered_at: expect.any(String),
+          answers: {
+            q1: { verb: 'confirm', via: 'terminal' },
+            q2: { verb: 'answer', text: 'Speed of triage.', via: 'terminal' },
+          },
+        }),
+        expect.objectContaining({ n: 2 }),
+      ],
+    }));
+  });
+
+  it('rejects prior_answers that fail the echo guards, before any write', async () => {
+    const withAnswered = {
+      ...exchangeRow,
+      rounds: [{
+        n: 1, context_line: 'c',
+        questions: [{ id: 'q1', stakes: 'low', kind: 'open', text: 't' }],
+        answers: { q1: { verb: 'answer', text: 'already answered on the web' } },
+      }],
+    };
+    const client = makeClient([{ data: withAnswered }]);
+    await expect(
+      fileElicitationRound(client, PROJECT_ID, {
+        task_id: 'task-1', context_line: 'ctx', questions: [openQ('q2')],
+        prior_answers: { q1: { verb: 'answer', text: 'overwrite attempt' } },
+      }),
+    ).rejects.toThrow(/echo guards[\s\S]*never overwritten/i);
+    expect(client.update).not.toHaveBeenCalled();
   });
 
   it('NEVER touches workflow_state — no update payload carries it', async () => {
@@ -210,6 +272,42 @@ describe('concludeElicitation', () => {
     expect(client.update).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'abandoned', answers_submitted_at: null, force_quit_requested_at: null }),
     );
+  });
+
+  it('echoes terminal-given prior_answers to the final round in the concluding write (B-462)', async () => {
+    const withRound = {
+      ...exchangeRow,
+      rounds: [{
+        n: 1, context_line: 'c',
+        questions: [{ id: 'q1', stakes: 'load-bearing', kind: 'open', text: 'What drives this?' }],
+        answers: {},
+      }],
+    };
+    const concluded = { ...withRound, status: 'converged' };
+    const client = makeClient([{ data: withRound }, { data: concluded }]);
+    await concludeElicitation(client, PROJECT_ID, {
+      task_id: 'task-1', outcome: 'converged',
+      prior_answers: { q1: { verb: 'answer', text: 'Faster triage.' } },
+    });
+    expect(client.update).toHaveBeenCalledWith({
+      status: 'converged', answers_submitted_at: null, force_quit_requested_at: null,
+      rounds: [expect.objectContaining({
+        n: 1,
+        answers: { q1: { verb: 'answer', text: 'Faster triage.', via: 'terminal' } },
+        answered_at: expect.any(String),
+      })],
+    });
+  });
+
+  it('rejects prior_answers failing the echo guards at conclude, before any write', async () => {
+    const client = makeClient([{ data: exchangeRow }]); // no rounds filed
+    await expect(
+      concludeElicitation(client, PROJECT_ID, {
+        task_id: 'task-1', outcome: 'converged',
+        prior_answers: { q1: { verb: 'answer', text: 'x' } },
+      }),
+    ).rejects.toThrow(/echo guards[\s\S]*no round has been filed/i);
+    expect(client.update).not.toHaveBeenCalled();
   });
 
   it('re-issuing the same conclusion on an already-concluded exchange is idempotent (by exchange_id)', async () => {

@@ -63,6 +63,15 @@ accept). On pickup:
 3. Decide: converged → conclude; more residual → file the next round (**filing IS the consume** —
    it clears the marker); force-quit requested (`force_quit_requested_at`) → the force-quit path.
 
+**Terminal answers are echoed, not lost (B-462).** The web submit is the only surface that writes
+`rounds[].answers` itself; when the human answers a round in the terminal, echo their answers via
+`prior_answers` on your NEXT engine write — `file_elicitation_round` (when filing the following
+round) or `conclude_elicitation` (at convergence/force-quit). Same `{verb, text?}` shape, keyed by
+question id; the engine stamps each echo `via:'terminal'` and guards the write (last filed round
+only; a web-submitted answer is never overwritten; verbs must fit the question kind — confirm /
+correct / skip for a `validate`, answer / skip for an `open`). The rounds history is the provenance
+trail — an exchange answered at the terminal must read identically to one answered on the web.
+
 ## Convergence — agent-detected, a signal never a gate
 
 The test: **"I can now confidently draft a brief that represents the user's intent."** Its concrete
