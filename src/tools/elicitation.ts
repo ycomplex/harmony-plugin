@@ -41,12 +41,27 @@ interface ExchangeRow {
   id: string;
   task_id: string;
   gate: string | null;
+  brief_id: string | null;
   status: string;
   rounds: ElicitationRound[];
   answers_submitted_at: string | null;
   force_quit_requested_at: string | null;
   [key: string]: unknown;
 }
+
+/** B-461: the typed no-op both write tools return when a mechanical cancel landed first — the exchange
+ *  is 'abandoned'. Never a silent success, never a generic throw: the CALLER must see the cancel (and
+ *  archive any claims it minted in that same turn — the mint→conclude window can race a cancel). */
+export interface ExchangeCancelledNoop {
+  noop: true;
+  cause: 'exchange-cancelled';
+  exchange: ExchangeRow;
+}
+
+/** B-461: mirrors briefs.ts's guarded-fallback matcher — `pending_resolution` is added by harmony-web's
+ *  Phase-1 migration, so on an older DB the column is absent and the clear is a faithful no-op. */
+const isMissingPendingResolutionColumn = (msg: string | undefined): boolean =>
+  !!msg && /pending_resolution/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
 
 /** Look up the (unique — partial unique index) active exchange for a task, or null. Throws on error. */
 async function findActiveExchange(client: SupabaseClient, taskId: string): Promise<ExchangeRow | null> {
@@ -170,6 +185,13 @@ export async function fileElicitationRound(
 
   const exchange = await resolveExchange(client, projectId, args);
   if (exchange.status !== 'active') {
+    // B-461 amendment #3: 'abandoned' means a mechanical cancel landed (the human said "never mind —
+    // keep the brief as it was"). Return the typed no-op instead of a generic throw so the calling
+    // agent can stand down cleanly (and archive any claims it minted this turn). Every OTHER
+    // non-active status keeps the loud error.
+    if (exchange.status === 'abandoned') {
+      return { noop: true, cause: 'exchange-cancelled', exchange } satisfies ExchangeCancelledNoop;
+    }
     throw new Error(`exchange ${exchange.id} is '${exchange.status}' — rounds can only be filed on an active exchange`);
   }
 
@@ -188,6 +210,25 @@ export async function fileElicitationRound(
   }
 
   const n = nextRoundNumber(rounds);
+
+  // B-461 amendment #1: for a brief-attached exchange (trigger='discuss'), filing ROUND 1 IS the
+  // consume of the brief's `pending_resolution = { command: 'discuss', detail }` marker the web
+  // captured — the same logical write clears it so the marker is never re-consumable. Cleared BEFORE
+  // the round is appended so a loud failure below leaves the whole filing cleanly retryable (a retry
+  // still sees n === 1 and re-runs the clear; clearing an already-null marker is a no-op). Guarded
+  // like briefs.ts's compose fallback (the B-383 schema-drift class): ONLY a missing-column error is
+  // tolerated — the marker can't exist on a schema that lacks the column, so skipping is a faithful
+  // no-op. Any OTHER failure (e.g. permission) rethrows: it must never silently skip the clear.
+  if (exchange.brief_id != null && n === 1) {
+    const { error: clearErr } = await client
+      .from('briefs')
+      .update({ pending_resolution: null })
+      .eq('id', exchange.brief_id);
+    if (clearErr && !isMissingPendingResolutionColumn(clearErr.message)) {
+      throw new Error(clearErr.message);
+    }
+  }
+
   const round: ElicitationRound = {
     n,
     context_line: args.context_line.trim(),
@@ -229,7 +270,7 @@ export async function fileElicitationRound(
 export const fileElicitationRoundTool = {
   name: 'file_elicitation_round',
   description:
-    `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld — load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) — read the previous round's answers via get_elicitation before filing the next.`,
+    `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld — load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) — read the previous round's answers via get_elicitation before filing the next. For a brief-attached ('discuss') exchange, filing ROUND 1 also clears the attached brief's pending_resolution discuss marker (B-461 — the filing IS the consume). If the exchange was mechanically cancelled ('abandoned'), returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing — the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint→conclude window can race a cancel).`,
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -333,6 +374,13 @@ export async function concludeElicitation(
     // never re-echoes prior_answers — the first conclusion already recorded them (or the exchange
     // was concluded elsewhere and the echo window is closed).
     if (exchange.status === args.outcome) return exchange;
+    // B-461 amendment #3: 'abandoned' means a mechanical cancel landed first (the mint→conclude
+    // window can race a cancel). Return the typed no-op — never a silent success, never a generic
+    // throw — so the calling agent stands down and archives any claims it minted this turn. Every
+    // OTHER conflicting conclusion keeps the loud error.
+    if (exchange.status === 'abandoned') {
+      return { noop: true, cause: 'exchange-cancelled', exchange } satisfies ExchangeCancelledNoop;
+    }
     throw new Error(`exchange ${exchange.id} is already '${exchange.status}' — cannot conclude it '${args.outcome}'`);
   }
 
@@ -367,7 +415,7 @@ export async function concludeElicitation(
 export const concludeElicitationTool = {
   name: 'conclude_elicitation',
   description:
-    "Conclude an elicitation exchange: 'converged' (the agent can now confidently draft a brief that represents the user's intent), 'force-quit' (the human said \"best efforts, proceed\" — draft from what you have; mint any claims with provenance 'force-quit'), or 'abandoned'. Sets the exchange status and clears both consumable markers. Writes NOTHING else: it does not touch the attached brief and does not re-set the task's awaiting flag — for 'abandoned' on a brief-attached exchange the brief row deliberately stays ACTIVE with the flag down, so the owning gate's \"brief already active\" path re-surfaces it in place on re-entry.",
+    "Conclude an elicitation exchange: 'converged' (the agent can now confidently draft a brief that represents the user's intent), 'force-quit' (the human said \"best efforts, proceed\" — draft from what you have; mint any claims with provenance 'force-quit'), or 'abandoned'. Sets the exchange status and clears both consumable markers. Writes NOTHING else: it does not touch the attached brief and does not re-set the task's awaiting flag — for 'abandoned' on a brief-attached exchange the brief row deliberately stays ACTIVE with the flag down, so the owning gate's \"brief already active\" path re-surfaces it in place on re-entry. If the exchange is already 'abandoned' (a mechanical cancel landed first) and a DIFFERENT outcome is requested, returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing (B-461) — the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint→conclude window can race a cancel). Re-issuing the SAME outcome stays idempotent and returns the row.",
   inputSchema: {
     type: 'object' as const,
     properties: {

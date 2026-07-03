@@ -119,3 +119,48 @@ promotion on a brief it no longer underwrites.
 exchange this deliberately leaves **the brief active with the task flag down** — the owning gate
 skill's existing "brief already active" path re-composes it in place on re-entry, re-setting the
 flag. Do not "helpfully" re-flag the task or resolve the brief at abandon time; re-entry owns that.
+Distinguish the two abandons: **system-abandon** (session death — the flag stays down and gate
+re-entry re-surfaces the brief later) vs a **human cancel** (§The discuss trigger — the cancel is
+immediate and mechanical: the ball-restore puts the untouched brief straight back in front of the
+human, no re-entry needed).
+
+## The discuss trigger (B-461)
+
+The human answers an active brief with **`discuss <remark>`** — pushback that wants a conversation,
+not a whole regenerated brief. The agent opens an exchange with this **trigger config** and inherits
+everything above:
+
+- **`trigger: 'discuss'`**, **`gate`** = the brief's activity (the gate the brief serves), and
+  **`brief_id`** = the ACTIVE brief the discussion attaches to.
+- **Web capture:** the browser captures Discuss mechanically as
+  `pending_resolution = { command: 'discuss', detail }` on the active brief (the same marker shape as
+  a reshape, distinguished by the command). The conductor watch classifies it **`discuss-requested`**.
+- **Consume = `start_elicitation` + file round 1.** Opening the exchange and filing the first round
+  (seeded by the `detail` remark) IS the consume: **filing round 1 clears the brief's
+  `pending_resolution`** (engine amendment #1) in the same logical write, so the marker is never
+  re-consumable.
+
+**Brief resolution is SUSPENDED from marker capture until the exchange concludes — on both
+surfaces.** The suspension predicate: a pending discuss marker (`pending_resolution.command ===
+'discuss'`) OR an active attached exchange (`brief_id` set, status `active`). While it holds, do not
+accept/defer/resolve the brief (web or terminal) — offer the two escapes instead.
+
+**The TWO escapes:**
+
+- **Force-quit** — existing semantics (§Force-quit): "best efforts, proceed".
+  `conclude_elicitation('force-quit')`, then **redraft with what you have**; force-quit claims stay
+  quarantined.
+- **Cancel** — "never mind — keep the brief as it was": a human-initiated `conclude('abandoned')`.
+  Mechanical on the web; in the terminal it is `conclude_elicitation('abandoned')` + the mechanical
+  ball-restore (re-set the task's awaiting flag with the brief's own reason). It **restores the
+  untouched brief** — NO redraft, NO claims, no iteration bump.
+
+**Conclude → re-compose once.** On convergence, re-compose the brief **once** (the in-place iterate:
+`iteration+1`, claims coupled via `underwriting_brief_id`, present with "What I learned from you") —
+the re-compose restores the brief's own awaiting reason, putting the updated brief back in front of
+the human.
+
+**Claims hygiene on a cancelled exchange:** claims are minted before conclude, so the mint→conclude
+window can race a mechanical cancel. When an engine write returns the typed
+`{ noop: true, cause: 'exchange-cancelled' }` no-op, the agent **ARCHIVES the claims it minted that
+turn** — they must never promote at the brief's accept.

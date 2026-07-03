@@ -218,6 +218,80 @@ describe('fileElicitationRound', () => {
     expect(client.update).not.toHaveBeenCalled();
   });
 
+  it("returns the typed 'exchange-cancelled' no-op on an 'abandoned' exchange instead of throwing (B-461)", async () => {
+    const abandoned = { ...exchangeRow, trigger: 'discuss', brief_id: 'brief-1', status: 'abandoned' };
+    const client = makeClient([{ data: abandoned }]);
+    const result = await fileElicitationRound(client, PROJECT_ID, {
+      exchange_id: 'ex-1', context_line: 'ctx', questions: [openQ()],
+    });
+    // Never a silent success, never a generic throw: the caller sees the mechanical cancel and stands down.
+    expect(result).toEqual({ noop: true, cause: 'exchange-cancelled', exchange: abandoned });
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
+  it("round 1 on a brief-attached exchange clears the brief's pending_resolution in the same filing (B-461)", async () => {
+    const discussExchange = { ...exchangeRow, trigger: 'discuss', brief_id: 'brief-1' };
+    // responses: [active lookup] -> [briefs clear (direct await)] -> [exchange update] -> [task flag update]
+    const client = makeClient([{ data: discussExchange }, { data: null }, { data: discussExchange }, { data: null }]);
+    await fileElicitationRound(client, PROJECT_ID, {
+      task_id: 'task-1', context_line: 'Opening the discussion.', questions: [openQ()],
+    });
+    // Filing round 1 IS the consume of the web-captured discuss marker: the attached brief's
+    // pending_resolution clears in the same logical write, so the marker is never re-consumable.
+    expect(client.from).toHaveBeenCalledWith('briefs');
+    expect(client.update).toHaveBeenCalledWith({ pending_resolution: null });
+    // The round still lands and the ball still moves to the human.
+    expect(client.update).toHaveBeenCalledWith(expect.objectContaining({
+      rounds: [expect.objectContaining({ n: 1 })],
+    }));
+    expect(client.from).toHaveBeenCalledWith('tasks');
+  });
+
+  it('round 2 does NOT re-clear the brief marker (the consume is round-1-only)', async () => {
+    const withRound = {
+      ...exchangeRow, trigger: 'discuss', brief_id: 'brief-1',
+      rounds: [{ n: 1, context_line: 'c', questions: [openQ()], answers: {} }],
+    };
+    // responses: [active lookup] -> [exchange update] -> [task flag update] — NO briefs write.
+    const client = makeClient([{ data: withRound }, { data: withRound }, { data: null }]);
+    await fileElicitationRound(client, PROJECT_ID, {
+      task_id: 'task-1', context_line: 'Round two.', questions: [openQ('q2')],
+    });
+    expect(client.from).not.toHaveBeenCalledWith('briefs');
+    expect(client.update).not.toHaveBeenCalledWith({ pending_resolution: null });
+  });
+
+  it('tolerates ONLY a missing pending_resolution column on the round-1 clear (B-383 schema-drift class)', async () => {
+    const discussExchange = { ...exchangeRow, trigger: 'discuss', brief_id: 'brief-1' };
+    const client = makeClient([
+      { data: discussExchange },
+      { data: null, error: { message: 'column "pending_resolution" of relation "briefs" does not exist' } },
+      { data: discussExchange },
+      { data: null },
+    ]);
+    // The marker can't exist on a schema that lacks the column — skipping the clear is a faithful
+    // no-op; the round still files and the ball still moves.
+    await expect(
+      fileElicitationRound(client, PROJECT_ID, { task_id: 'task-1', context_line: 'ctx', questions: [openQ()] }),
+    ).resolves.toEqual(discussExchange);
+    expect(client.from).toHaveBeenCalledWith('tasks');
+  });
+
+  it('a permission failure on the round-1 clear is LOUD — the clear is never silently skipped', async () => {
+    const discussExchange = { ...exchangeRow, trigger: 'discuss', brief_id: 'brief-1' };
+    const client = makeClient([
+      { data: discussExchange },
+      { data: null, error: { message: 'permission denied for table briefs' } },
+    ]);
+    await expect(
+      fileElicitationRound(client, PROJECT_ID, { task_id: 'task-1', context_line: 'ctx', questions: [openQ()] }),
+    ).rejects.toThrow(/permission denied/i);
+    // The clear runs BEFORE the round is appended, so the failed filing is cleanly retryable:
+    // only the briefs update ran — no round write, no task-flag write.
+    expect(client.update).toHaveBeenCalledTimes(1);
+    expect(client.update).toHaveBeenCalledWith({ pending_resolution: null });
+  });
+
   it('requires a context_line', async () => {
     const client = makeClient([]);
     await expect(
@@ -325,6 +399,23 @@ describe('concludeElicitation', () => {
     ).rejects.toThrow(/already 'converged'/i);
   });
 
+  it("concluding 'converged' on an 'abandoned' exchange returns the typed no-op, not a throw (B-461)", async () => {
+    // The mint→conclude window raced a mechanical cancel: the exchange is already 'abandoned'.
+    const abandoned = { ...exchangeRow, trigger: 'discuss', brief_id: 'brief-1', status: 'abandoned' };
+    const client = makeClient([{ data: abandoned }]);
+    const result = await concludeElicitation(client, PROJECT_ID, { exchange_id: 'ex-1', outcome: 'converged' });
+    expect(result).toEqual({ noop: true, cause: 'exchange-cancelled', exchange: abandoned });
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
+  it("re-issuing 'abandoned' on an 'abandoned' exchange stays idempotent — returns the ROW, not the no-op", async () => {
+    const abandoned = { ...exchangeRow, status: 'abandoned' };
+    const client = makeClient([{ data: abandoned }]);
+    const result = await concludeElicitation(client, PROJECT_ID, { exchange_id: 'ex-1', outcome: 'abandoned' });
+    expect(result).toEqual(abandoned);
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
   it('rejects an unknown outcome', async () => {
     const client = makeClient([]);
     await expect(
@@ -337,6 +428,35 @@ describe('concludeElicitation', () => {
     await expect(
       concludeElicitation(client, PROJECT_ID, { task_id: 'task-1', outcome: 'converged' }),
     ).rejects.toThrow(/no active elicitation exchange/i);
+  });
+});
+
+describe('claims hygiene on a mechanical cancel (B-461)', () => {
+  it('a claim minted before the cancel is archived by the caller path and never selected for accept-promotion', async () => {
+    // Claims are minted BEFORE conclude, so the mint→conclude window can race a cancel: the agent
+    // minted a coupled Asserted claim (underwriting_brief_id + claim_provenance), then the web
+    // mechanically set the exchange 'abandoned' before conclude ran.
+    const claims = [
+      { id: 'claim-1', status: 'Asserted', claim_provenance: 'human-stated', underwriting_brief_id: 'brief-1' },
+    ];
+    const abandoned = { ...exchangeRow, trigger: 'discuss', brief_id: 'brief-1', status: 'abandoned' };
+    const client = makeClient([{ data: abandoned }]);
+
+    // conclude returns the typed no-op — the signal to the CALLING AGENT that the cancel won the race.
+    const result = await concludeElicitation(client, PROJECT_ID, { exchange_id: 'ex-1', outcome: 'converged' });
+    expect(result).toEqual({ noop: true, cause: 'exchange-cancelled', exchange: abandoned });
+
+    // The caller-path contract (the tool descriptions): on the typed no-op, archive every claim
+    // minted in that same turn — a cancelled discussion leaves NO claims behind.
+    if ((result as { noop?: boolean; cause?: string }).cause === 'exchange-cancelled') {
+      for (const claim of claims) claim.status = 'Archived';
+    }
+    expect(claims[0].status).toBe('Archived');
+
+    // The resolve_brief accept-promotion disposal predicate (coupled to THIS brief + still Asserted)
+    // must select nothing — an archived claim can never promote at the brief's accept.
+    const promotable = claims.filter((c) => c.underwriting_brief_id === 'brief-1' && c.status === 'Asserted');
+    expect(promotable).toEqual([]);
   });
 });
 

@@ -206,6 +206,95 @@ describe('detectChange — answers-landed (B-645 elicitation exchange)', () => {
   });
 });
 
+describe('detectChange — discuss-requested (B-461 discuss verb)', () => {
+  const baseline: PollBaseline = { workflowState: 'Built', pendingResolution: null, awaitingHumanInput: true };
+
+  it("classifies discuss-requested when the flag clears with a { command: 'discuss' } marker", () => {
+    const pr = { command: 'discuss', detail: 'why not the simpler option?' };
+    expect(
+      detectChange(baseline, { workflow_state: 'Built', pending_resolution: pr, awaiting_human_input: false }),
+    ).toEqual({ trigger: 'discuss-requested', workflow_state: 'Built', pending_resolution: pr });
+  });
+
+  it("a reshape marker still classifies pending_resolution (only command === 'discuss' re-routes)", () => {
+    const change = detectChange(baseline, {
+      workflow_state: 'Built',
+      pending_resolution: { command: 'iterate', detail: 'tighten the scope' },
+      awaiting_human_input: false,
+    });
+    expect(change?.trigger).toBe('pending_resolution');
+  });
+
+  it('GATE unchanged: a discuss marker with the flag still up is NOT an exit', () => {
+    expect(
+      detectChange(baseline, {
+        workflow_state: 'Built',
+        pending_resolution: { command: 'discuss', detail: 'x' },
+        awaiting_human_input: true,
+      }),
+    ).toBeNull();
+  });
+
+  it('a discuss marker identical to the baseline is STALE — never a fresh discuss-requested', () => {
+    const pr = { command: 'discuss', detail: 'x' };
+    const change = detectChange(
+      { workflowState: 'Built', pendingResolution: pr, awaitingHumanInput: true },
+      { workflow_state: 'Built', pending_resolution: pr, awaiting_human_input: false },
+    );
+    expect(change?.trigger).toBe('resolved');
+  });
+});
+
+describe('detectChange — discussion-cancelled (B-461, the one no-flag-transition exit)', () => {
+  // The watch is armed mid-discussion: awaiting flag up, discuss exchange active on the brief.
+  const activeEx = { exchange_id: 'ex-1', status: 'active', round: 1, answers_submitted_at: null, force_quit_requested_at: null };
+  const baseline: PollBaseline = {
+    workflowState: 'Idea', pendingResolution: null, awaitingHumanInput: true, activeExchange: activeEx,
+  };
+
+  it('classifies discussion-cancelled when the active exchange row is GONE without a flag true→false', () => {
+    // A mechanical cancel restores awaiting=true DIRECTLY (no true→false transition — the B-611
+    // blind-spot class), and get_task's active-only projection now reads null for the exchange.
+    expect(
+      detectChange(baseline, { workflow_state: 'Idea', awaiting_human_input: true, active_exchange: null }),
+    ).toEqual({ trigger: 'discussion-cancelled', workflow_state: 'Idea' });
+  });
+
+  it('classifies discussion-cancelled when the exchange status changed without a flag true→false', () => {
+    expect(
+      detectChange(baseline, {
+        workflow_state: 'Idea',
+        awaiting_human_input: true,
+        active_exchange: { ...activeEx, status: 'abandoned' },
+      }),
+    ).toEqual({ trigger: 'discussion-cancelled', workflow_state: 'Idea' });
+  });
+
+  it('does NOT fire when the flag transition happened — the post-gate classification owns that read', () => {
+    const change = detectChange(baseline, { workflow_state: 'Idea', awaiting_human_input: false, active_exchange: null });
+    expect(change?.trigger).toBe('resolved');
+  });
+
+  it('does NOT fire while the baseline exchange is still active (keeps polling)', () => {
+    expect(
+      detectChange(baseline, { workflow_state: 'Idea', awaiting_human_input: true, active_exchange: activeEx }),
+    ).toBeNull();
+  });
+
+  it('does NOT fire when the baseline had no ACTIVE exchange', () => {
+    expect(
+      detectChange(
+        { workflowState: 'Idea', pendingResolution: null, awaitingHumanInput: true },
+        { workflow_state: 'Idea', awaiting_human_input: true, active_exchange: null },
+      ),
+    ).toBeNull();
+  });
+
+  it('a degraded read (baselineReadFallback) can never false-trip discussion-cancelled', () => {
+    expect(detectChange(baseline, baselineReadFallback(baseline))).toBeNull();
+  });
+});
+
 describe('baselineReadFallback (B-611 — a transient read error must not false-trip the exit gate)', () => {
   it('projects the baseline back as a fresh read, carrying awaiting_human_input', () => {
     const baseline: PollBaseline = {
@@ -369,6 +458,46 @@ describe('runPollLoop', () => {
       reason: 'changed',
       detail: { trigger: 'answers-landed', workflow_state: 'Idea', active_exchange: exAnswered },
     });
+  });
+
+  it('exits changed with discuss-requested when the human clicks Discuss in the browser (B-461)', async () => {
+    const clock = makeClock();
+    const pr = { command: 'discuss', detail: 'talk me through the trade-off' };
+    const reader = readTaskAfter(
+      2,
+      { workflow_state: 'Built', pending_resolution: null, awaiting_human_input: true },
+      { workflow_state: 'Built', pending_resolution: pr, awaiting_human_input: false },
+    );
+    const res = await runPollLoop({
+      readTask: reader.read,
+      now: clock.now,
+      sleep: clock.sleep,
+      launchStamp: 0,
+      baseline: { workflowState: 'Built', pendingResolution: null, awaitingHumanInput: true },
+    });
+    expect(res).toEqual({
+      reason: 'changed',
+      detail: { trigger: 'discuss-requested', workflow_state: 'Built', pending_resolution: pr },
+    });
+  });
+
+  it('exits changed with discussion-cancelled when a mechanical cancel lands mid-watch (B-461)', async () => {
+    const clock = makeClock();
+    const activeEx = { exchange_id: 'ex-1', status: 'active', round: 1, answers_submitted_at: null, force_quit_requested_at: null };
+    const reader = readTaskAfter(
+      2,
+      { workflow_state: 'Idea', awaiting_human_input: true, active_exchange: activeEx },
+      // The cancel restores awaiting=true directly; the active exchange is gone from the projection.
+      { workflow_state: 'Idea', awaiting_human_input: true, active_exchange: null },
+    );
+    const res = await runPollLoop({
+      readTask: reader.read,
+      now: clock.now,
+      sleep: clock.sleep,
+      launchStamp: 0,
+      baseline: { workflowState: 'Idea', awaitingHumanInput: true, activeExchange: activeEx },
+    });
+    expect(res).toEqual({ reason: 'changed', detail: { trigger: 'discussion-cancelled', workflow_state: 'Idea' } });
   });
 
   it('exits changed when the ticket is Parked (browser defer/deny)', async () => {

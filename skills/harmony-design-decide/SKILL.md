@@ -177,6 +177,7 @@ Show the rendered `content`. On the human's command:
   `defer` is mechanical-only and never authors this — documented v1 asymmetry.)
 - **expand** / **related** → show pre-generated sections.
 - **edit** / **iterate** → revise and re-call `compose_brief`.
+- **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
 
 ### 6. Cross-cutting scope (optional)
 

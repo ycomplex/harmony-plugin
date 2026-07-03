@@ -117,6 +117,7 @@ The release brief carries `pending_activity: null` (state-machine §6.1 — Buil
 SYSTEM-on-deploy-success, not human-accept). So accept is only the human's "go"; the ticket stays **Built**
 until the deploy actually succeeds (O2). (If the human defers, `resolve_brief({ command: "defer" })` parks
 it — do not merge.)
+**discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
 
 ### O2. Run the merge + deploy, THEN advance to Released
 
@@ -186,6 +187,7 @@ mcp__harmony__compose_brief({
 
 On the human's **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept" })` advances
 Released→Verified (terminal-positive).
+**discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
 
 **Land the verify result on the ticket (B-560) — NON-OPTIONAL.** Immediately after the accept, comment
 the verify outcome so the ticket carries the closing leg of the build→release→verify trail as durable
