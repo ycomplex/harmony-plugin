@@ -86,11 +86,13 @@ For three gates the *real* work (create children / merge+deploy / observe produc
 - **expand** / **related** → read `expand_sections` / `related` from `get_brief` and show them
   (pre-generated; no recompute). Inline.
 - **accept** → branch on `awaiting_human_reason`:
-  - **Pure gates** — `clarification-draft`, `design-decision-draft`, `plan-draft` (accept ==
+  - **Pure gates** — `design-decision-draft`, `plan-draft` (accept ==
     `resolve_brief` with no external side-effect) → resolve inline:
     `mcp__harmony__resolve_brief({ task_id, command: 'accept' })`; report the new `workflow_state`.
-  - **Side-effecting gates** — `decomposition-proposal` (children must be created first),
-    `release-decision-pending` (merge + deploy), `verification-ack-pending` (production observation) →
+  - **Side-effecting gates** — `clarification-draft` (the clarify-authored happy-path ACs must be filed
+    first — `manage_acceptance_criteria`, idempotent, then `resolve_brief`; B-648),
+    `decomposition-proposal` (children must be created first), `release-decision-pending` (merge +
+    deploy), `verification-ack-pending` (production observation) →
     **do NOT call `resolve_brief` here.** Delegate `accept` to the owning skill (step 4), which performs
     the work AND resolves in the correct order.
 - **edit** / **iterate** → generative work owned by the gate skill → delegate (step 4); it re-composes

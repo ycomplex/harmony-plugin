@@ -43,10 +43,12 @@ describe('harmony-next skill contract', () => {
     expect(sideIdx).toBeGreaterThan(pureIdx);
     const pureSeg = skill.body.slice(pureIdx, sideIdx);
     const sideSeg = skill.body.slice(sideIdx);
-    for (const r of ['clarification-draft', 'design-decision-draft', 'plan-draft']) {
+    for (const r of ['design-decision-draft', 'plan-draft']) {
       expect(pureSeg).toContain(r); // pure gates resolve inline
     }
-    for (const r of ['decomposition-proposal', 'release-decision-pending', 'verification-ack-pending']) {
+    // B-648: clarify's accept files the happy-path ACs before resolve_brief, so
+    // clarification-draft moved from the pure (inline) set to the delegated set.
+    for (const r of ['clarification-draft', 'decomposition-proposal', 'release-decision-pending', 'verification-ack-pending']) {
       expect(sideSeg).toContain(r); // side-effecting gates are delegated
       expect(pureSeg).not.toContain(r); // …and must NOT be in the inline-accept set
     }

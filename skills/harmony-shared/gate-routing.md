@@ -14,7 +14,7 @@ drift hazard this file removes).
 
 | gate | from `workflow_state` | brief `awaiting_human_reason` | owning skill | accept is… | hard floor |
 |---|---|---|---|---|---|
-| clarify | Idea | `clarification-draft` | `harmony-clarify` | **pure** (accept = `resolve_brief`) | no |
+| clarify | Idea | `clarification-draft` | `harmony-clarify` | **side-effecting** (accept files the clarify-authored happy-path ACs first — `manage_acceptance_criteria`, idempotent — then `resolve_brief`; B-648) | no |
 | decompose | Clarified | `decomposition-proposal` | `harmony-decompose` | **side-effecting** (accept creates children first) | no |
 | design | Decomposed | `design-decision-draft` | `harmony-design-decide --track <sub-track>` | **pure** (per sub-track; serialized) | no |
 | plan | Designed | `plan-draft` | `start-work` | **pure** (accept = `resolve_brief`; the "go" to build) | no |
@@ -26,9 +26,10 @@ Terminal states (`Verified`, `Parked`, `Cancelled`) have no gate — they end th
 
 **Pure vs side-effecting (the inline-vs-delegate fact).** `resolve_brief` does exactly three things on
 accept — promote the referenced decision, advance state via `pending_activity`, clear the flag. For the
-**pure** gates (`clarification-draft`, `design-decision-draft`, `plan-draft`) that is the whole accept, so a
+**pure** gates (`design-decision-draft`, `plan-draft`) that is the whole accept, so a
 caller may resolve inline. For the **side-effecting** gates the real work lives **outside** `resolve_brief`
-(`decomposition-proposal` creates children, `release-decision-pending` merges + deploys,
+(`clarification-draft` files the happy-path ACs — B-648, `decomposition-proposal` creates children,
+`release-decision-pending` merges + deploys,
 `verification-ack-pending` observes production), so accept must be **delegated** to the owning skill, which
 performs the work in the correct order.
 

@@ -71,10 +71,11 @@ describe('gate-routing (B-545 SSoT)', () => {
     const lower = doc.toLowerCase();
     expect(lower).toContain('pure');
     expect(lower).toMatch(/side-effecting/);
-    for (const pure of ['clarification-draft', 'design-decision-draft', 'plan-draft']) {
+    for (const pure of ['design-decision-draft', 'plan-draft']) {
       expect(doc, `gate-routing.md missing pure reason ${pure}`).toContain(pure);
     }
-    for (const side of ['decomposition-proposal', 'release-decision-pending', 'verification-ack-pending']) {
+    // B-648: clarification-draft is side-effecting (accept files the happy-path ACs first).
+    for (const side of ['clarification-draft', 'decomposition-proposal', 'release-decision-pending', 'verification-ack-pending']) {
       expect(doc, `gate-routing.md missing side-effecting reason ${side}`).toContain(side);
     }
   });

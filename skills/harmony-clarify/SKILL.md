@@ -140,7 +140,7 @@ Rounds follow the engine contract (≤5 questions, stakes-split — a load-beari
   load-bearing question re-framed, or let it go. *Force-quit* (the marker, or said in-terminal) →
   `conclude_elicitation('force-quit')` → step 3, drafting from what you have.
 
-### 3. Draft the clarification — the convergence handoff (emission order: spec → brief → claims)
+### 3. Draft the clarification — the convergence handoff (emission order: spec → proposed ACs → brief → claims)
 
 Resolve the open questions from what the exchange established (or from inference alone on the
 draft-directly path). The emission is **one discrete, ordered step** — the order is what lets claims
@@ -161,20 +161,32 @@ const decision = mcp__harmony__record_decision({
 mcp__harmony__reference_knowledge({ task_id, decision_id: decision.id })
 ```
 
-2. **Brief.** Compose the brief (step 4) with `decision_ref` = the spec. **When an exchange ran**, the
+2. **Proposed ACs (B-648).** Derive the ticket's **happy-path acceptance criteria** from the
+   clarification — on the exchange path, from the elicitation dialogue (stating them and having the
+   human confirm without correction is the convergence correlate); on the draft-directly path, from
+   the ticket + Accepted-KB inference. **Both paths emit ACs** — the v1 exchange-only constraint
+   governs CLAIMS (step 4), not ACs. Keep the set small (**1–5 — happy path only**; edge cases, error
+   paths, and non-functional criteria are design's to add). **Intent-register guard (drafting lint,
+   applied per AC):** clarify-authored ACs are written in **user-observable-behaviour register, never
+   mechanism** — "the board exports a PDF that matches the on-screen layout", not "PDF renderer added
+   to export pipeline". A mechanism-flavoured draft is rewritten into the observable outcome or pushed
+   to design's refine step — mechanism-flavoured ACs at clarify are the solution-shape-smuggling
+   failure mode. The proposed set rides the brief (next step) as a clearly-delimited context block
+   headed exactly **"Proposed acceptance criteria (happy path) — filed on accept:"** with one line per
+   AC. The ACs are NOT written to the ticket at emission time — they land at the brief's ACCEPT (see
+   step 5); filing-at-compose would persist unratified proposals on defer/iterate.
+
+3. **Brief.** Compose the brief (step 4) with `decision_ref` = the spec. **When an exchange ran**, the
    doc's context carries a **"What I learned from you"** section — one line per load-bearing claim
    that steered the draft, badged by provenance: **You said** / **You confirmed** / **Best effort —
    unvalidated** (force-quit).
 
-3. **Claims — ONLY when an exchange actually ran (v1).** Mint each load-bearing claim that steered the
+4. **Claims — ONLY when an exchange actually ran (v1).** Mint each load-bearing claim that steered the
    brief via `record_decision` with `claim_provenance` (`'human-stated'` |
    `'agent-inferred-human-validated'` | `'force-quit'`) and `underwriting_brief_id` = the
    just-composed brief's id. **Mint-time dedupe** per the engine contract: a duplicate of an existing
    entry becomes a validation candidate, not a twin. Disposal is then mechanical at brief resolution —
    accept promotes (except force-quit, which stays quarantined), defer archives, iterate prunes.
-
-**Seam (B-648):** the proposed happy-path acceptance criteria will slot into this emission step
-(between spec and claims) once B-648 ships its derivation — do NOT derive ACs here yet.
 
 #### 3b. Load-bearing gap → research-first
 
@@ -243,10 +255,18 @@ brief it no longer underwrites (the engine contract's iterate-prune).
 ### 5. Display + resolve
 
 Show the rendered `content` verbatim. On the human's command:
-- **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept" })` → promotes the
-  specification Asserted→Accepted, advances Idea→Clarified, and (when an exchange ran) promotes the
-  coupled human-grounded claims — force-quit claims stay Asserted, quarantined (the DB disposal skips
-  them). Report the new state.
+- **accept** → **first file the proposed ACs (B-648), then resolve.** File the brief's proposed
+  happy-path set onto the ticket, unchecked:
+  ```
+  mcp__harmony__manage_acceptance_criteria({ task_id, add: [{ content: "..." }, ...] })
+  ```
+  **Idempotent — skip the filing if the ticket already carries acceptance criteria** (a web accept
+  consumed by a running session may have already filed them). Then
+  `mcp__harmony__resolve_brief({ task_id, command: "accept" })` → promotes the specification
+  Asserted→Accepted, advances Idea→Clarified, and (when an exchange ran) promotes the coupled
+  human-grounded claims — force-quit claims stay Asserted, quarantined (the DB disposal skips them).
+  Report the new state. A WEB accept with no session running defers the AC filing to the design gate's
+  self-heal (the documented v1 asymmetry, same shape as decompose's children).
 - **defer** → **deferral is knowledge** (knowledge-discipline.md §"Deferral is knowledge"). First author the
   deferral, then park:
   ```
