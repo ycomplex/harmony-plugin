@@ -351,10 +351,14 @@ the *same routing* the controlled flow uses when the human types "accept" in-ses
 `--unattended`, `--escalate`'s decide-and-record) — `--escalate` does **not** introduce a new accept path; it
 only adds a *pause* decision in front of this one. It does **not** invent a new write path:
 
-- **Pure gates** — clarify (`brief-review`), design (`*-design-decision` per sub-track), plan
+- **Pure gates** — design (`*-design-decision` per sub-track), plan
   (`plan-draft`): the accept is the gate skill's `resolve_brief({ decision: 'accept', … })`. Routing to the
   owning gate skill's accept path (NOT a raw conductor `resolve_brief`) ensures the gate skill records its
   Accepted knowledge decision and runs its own completion logic.
+- **Side-effecting CLARIFY** (`brief-review`, B-648): clarify's accept **files the happy-path ACs**
+  (`manage_acceptance_criteria`, idempotent) **before** `resolve_brief`. Synthesize the accept by routing
+  to `harmony-clarify`'s accept path exactly as decompose routes through `harmony-decompose`'s, so the ACs
+  land on the ticket as part of the accept.
 - **Side-effecting DECOMPOSE** (`decomposition-proposal`): the accept is `harmony-decompose`'s
   **child-creating accept path**, NOT a bare `resolve_brief` — children must be created first (the gate
   skill owns that). Synthesize the accept by routing to `harmony-decompose`'s accept (the same path a human
@@ -724,8 +728,14 @@ resolved (in the browser or terminal); classify which resolution it was:
    `workflow_state` moved forward (accept) or is now `Parked` (defer/deny), and `awaiting_human_input` is
    `false`. The web's accept/defer is the **mechanical** half (`resolve_brief` + the B-482 reconciliation
    guard). What remains is any **side effect** that only runs where the agent runs:
-   - **Pure gate** (clarify `brief-review`, design sub-tracks, plan `plan-draft`): nothing further — the
+   - **Pure gate** (design sub-tracks, plan `plan-draft`): nothing further — the
      accept fully resolved mechanically. **Continue the loop at step 1** from the new state.
+   - **Side-effecting CLARIFY** (`brief-review`, B-648): the web accept advanced Idea→Clarified **but
+     filed no ACs** (the web is mechanical-only; it cannot file the clarify-authored happy-path ACs).
+     Route the human's **actual** accept to **`/harmony-plugin:harmony-clarify <ticket>`'s accept path**
+     (the same path §4b uses for a synthesized accept, but here the human already accepted) so the ACs
+     are filed **in this running session** — idempotent if already filed. If no session was running at
+     the web accept, the design gate's self-heal covers it. Then continue the loop.
    - **Side-effecting DECOMPOSE** (`decomposition-proposal`): the web accept advanced Clarified→Decomposed
      **but created no children** (the web is mechanical-only; it cannot create children). Route the human's
      **actual** accept to **`/harmony-plugin:harmony-decompose <ticket>`'s child-creating accept path** (the

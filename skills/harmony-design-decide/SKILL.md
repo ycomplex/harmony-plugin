@@ -15,7 +15,7 @@ Invoke with a sub-track: `--track product` | `--track technical` | `--track ux-u
 
 | `--track` | Decision `type` | Produces | Default `domain` |
 |---|---|---|---|
-| `product` | `product-design` | Behaviour spec + acceptance criteria | `product` |
+| `product` | `product-design` | Behaviour spec + refined/extended acceptance criteria (clarify originates the happy-path set — B-648) | `product` |
 | `technical` | `technical-design` | Architecture / implementation approach | `engineering`, `operations`, `data` |
 | `ux-ui` | `ux-ui-design` | Experience design — look, feel, interaction | `product`, `customer` |
 
@@ -82,6 +82,25 @@ mcp__harmony__query_knowledge({ domain: ["engineering", "operations", "data"], s
 Ground the decision in what you find; surface gaps. If a
 load-bearing gap blocks the decision, go research-first (see knowledge-discipline) and invoke
 `/harmony-plugin:harmony-research`.
+
+### 2b. Acceptance criteria — refine and extend (product track, B-648)
+
+Clarify ORIGINATES the happy-path ACs — they land at the clarification brief's accept. The product
+track REFINES AND EXTENDS that set. Read the current set first:
+
+```
+mcp__harmony__list_acceptance_criteria({ task_id })
+```
+
+- **If EMPTY** (a web-accepted clarification with no running session, or a ticket clarified before
+  B-648): derive the happy-path set from the Accepted clarification FIRST — the self-heal — then
+  proceed.
+- Then **ADD** the design-dependent criteria — edge cases, error paths, non-functional
+  (mechanism-register criteria belong here, not at clarify). You may **SHARPEN** a happy-path AC
+  (update). **NEVER silently drop a clarify-authored AC** — a drop is an explicit decision item on the
+  design brief that the human accepts.
+- The product track's AC writes (add/update/delete via `manage_acceptance_criteria`) land at ITS
+  brief's ACCEPT, symmetric with clarify — never at compose.
 
 ### 3. Draft the typed decision (Asserted)
 
