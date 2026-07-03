@@ -85,3 +85,76 @@ describe('gate-routing (B-545 SSoT)', () => {
     expect(doc).toContain('B-446');
   });
 });
+
+// B-461: the discuss trigger's semantics live in ONE canonical home (elicitation-engine.md) and are
+// consumed by reference everywhere else. These pins live HERE, at the SSoT (the gate-routing idiom),
+// so the routing prose can't silently drift out from under its consumers (the B-648 discipline).
+describe('elicitation-engine — the discuss trigger (B-461 canonical home)', () => {
+  const doc = readSharedDoc('elicitation-engine');
+  const lower = doc.toLowerCase();
+
+  it('has the top-level discuss-trigger section with the trigger config (trigger/gate/brief_id)', () => {
+    expect(doc).toContain('## The discuss trigger (B-461)');
+    expect(doc).toMatch(/trigger:\s*'discuss'/);
+    expect(doc).toContain('brief_id');
+  });
+
+  it('documents the web capture marker and that filing round 1 IS the consume (clears the marker)', () => {
+    expect(doc).toMatch(/pending_resolution\s*=\s*\{\s*command:\s*'discuss'/);
+    expect(lower).toMatch(/filing round 1 clears/);
+    expect(lower).toMatch(/is the consume/);
+    expect(lower).toMatch(/never\s+re-consumable/);
+  });
+
+  it('states the resolution-suspension predicate (pending discuss marker OR active attached exchange), on both surfaces', () => {
+    expect(doc).toContain('SUSPENDED');
+    expect(lower).toMatch(/pending discuss marker/);
+    expect(lower).toMatch(/active attached exchange/);
+    expect(lower).toMatch(/both\s+surfaces/);
+  });
+
+  it('names the TWO escapes — force-quit (redraft with what you have) and cancel (untouched brief: no redraft, no claims, no iteration bump)', () => {
+    expect(lower).toMatch(/force-quit/);
+    expect(lower).toMatch(/redraft with what you have/);
+    expect(lower).toMatch(/never mind/);
+    expect(doc).toMatch(/conclude(_elicitation)?\(?'abandoned'\)?/);
+    expect(lower).toMatch(/untouched brief/);
+    expect(lower).toMatch(/no redraft/);
+    expect(lower).toMatch(/no claims/);
+    expect(lower).toMatch(/no iteration bump/);
+  });
+
+  it('conclude → re-compose ONCE: in-place iterate, iteration+1, coupled claims, "What I learned from you"', () => {
+    expect(lower).toMatch(/re-compose the brief\s+\*?\*?once/);
+    expect(doc).toMatch(/iteration\s*\+\s*1|iteration\+1|`iteration\+1`/);
+    expect(doc).toContain('underwriting_brief_id');
+    expect(doc).toContain('What I learned from you');
+  });
+
+  it("pins the claims-hygiene rule: on the typed 'exchange-cancelled' no-op the agent ARCHIVES the claims it minted that turn", () => {
+    expect(doc).toContain('exchange-cancelled');
+    expect(lower).toMatch(/archives?\b/);
+    expect(lower).toMatch(/never promote/);
+  });
+
+  it('distinguishes system-abandon (gate re-entry re-surfaces) from a human cancel (immediate mechanical restore)', () => {
+    expect(lower).toMatch(/system-abandon/);
+    expect(lower).toMatch(/human cancel/);
+    expect(lower).toMatch(/re-entry/);
+    expect(lower).toMatch(/mechanical/);
+  });
+});
+
+// B-461: the five brief-verb surfaces consume the canonical home BY REFERENCE — one identical
+// single-line pointer each, no restated semantics (harmony-conduct carries its own richer routing
+// prose, pinned in its contract test).
+describe('discuss verb pointers (B-461 — the five verb surfaces reference the canonical home)', () => {
+  const POINTER =
+    /\*\*discuss <remark>\*\* → open a discussion on this brief per `skills\/harmony-shared\/elicitation-engine\.md` §The discuss trigger \(resolution suspends until it concludes\)\./;
+
+  for (const name of ['harmony-clarify', 'harmony-decompose', 'harmony-design-decide', 'start-work', 'finish-work']) {
+    it(`${name} carries the one-line discuss pointer`, () => {
+      expect(readSkill(name).body, `${name} missing the B-461 discuss pointer`).toMatch(POINTER);
+    });
+  }
+});
