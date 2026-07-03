@@ -61,3 +61,23 @@ lifecycle rather than the implementation.
 The **promoting** row is the canonical example of *"same routing, opposite handling, by design"* (B-490):
 the owning step is shared, but each skill's *handling* of it is deliberately different — and that handling
 lives in the skill, not here.
+
+## Split ownership — which gate may split a ticket, on what axis (B-518)
+
+Two gates can spin work out of a ticket. They split on **different axes**, and the axis is the
+contract (Accepted: B-550 `5d33aba5`, delivered by B-518):
+
+- **Clarify splits only on complexity of PRODUCT INTENT** — a now-vs-later bundle. The phase-split
+  probe (a question type within clarify's elicitation rounds) asks the human which part is in
+  immediate scope; the human's explicit **"later"** answer (or an explicit choice on the clarification
+  brief) **de-scopes** that phase — re-ticketed out of immediate scope at the brief's accept. Clarify
+  NEVER splits because work is big or technically composite, and a de-scope is **never initiated from
+  agent inference alone** — it executes only downstream of the human's explicit answer.
+- **Decompose owns complexity/STRUCTURE splitting** — breaking in-scope work into manageable,
+  independently-shippable children (the manageability rule). Whether in-scope work becomes one ticket
+  or several is decompose's call, not clarify's.
+
+Why this line: children inherit the parent's clarification (state-machine §8.1) and each
+decompose-created child re-clarifies narrowly from its own Idea state — so the intended flow is one
+broad parent clarification → decompose splits → children re-clarify. A clarify-side complexity split
+pre-empts that design and produces premature splits before the design is understood.

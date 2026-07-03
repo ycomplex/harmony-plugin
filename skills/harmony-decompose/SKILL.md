@@ -26,7 +26,13 @@ children inherit the parent's **clarification**, not design (state-machine §8.1
 
 Query `engineering` (how this codebase structures multi-surface work) and `product` (feature
 boundaries). Apply the manageability rule: split until each child is a clean, independently-shippable
-unit; stop when further splitting adds coordination cost without clarity. The result is either:
+unit; stop when further splitting adds coordination cost without clarity. **Complexity/structure
+splitting is THIS gate's job alone** — clarify may split only to de-scope a later phase of product
+intent on the human's explicit answer, never on size or compositeness; see
+`skills/harmony-shared/gate-routing.md` §Split ownership. (Self-heal, B-518: if the accepted
+clarification carries an unexecuted **"De-scope — re-ticketed on accept:"** block — a web accept with
+no session running — execute the re-ticket here first, idempotently, before proposing the hierarchy.)
+The result is either:
 - a list of proposed children (title + one-line intent each), or
 - **"no decomposition needed"** — a single, explicit decision.
 
