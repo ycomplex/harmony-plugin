@@ -18,8 +18,9 @@ back through MCP. It never edits code (discovery role).
 > Before deciding, follow `skills/harmony-shared/knowledge-discipline.md`.
 
 > **The exchange behaviour is INHERITED, not implemented.** This skill supplies only its trigger
-> configuration — `trigger: 'pre-draft-clarify'`, `gate: 'clarifying'`, and the clarify-specific flow
-> below. ALL turn, convergence, and emission behaviour (stakes-split, round lints, cold-start cap,
+> configuration — `trigger: 'pre-draft-clarify'` (or `'phase-split-probe'` when the phase-split
+> question is the sole load-bearing residual — step 2b), `gate: 'clarifying'`, and the clarify-specific
+> flow below. ALL turn, convergence, and emission behaviour (stakes-split, round lints, cold-start cap,
 > force-quit, claims provenance + disposal, mint-time dedupe) comes from
 > `skills/harmony-shared/elicitation-engine.md` and its four tools (`start_elicitation`,
 > `file_elicitation_round`, `get_elicitation`, `conclude_elicitation`). A behaviour gap found here is
@@ -96,6 +97,14 @@ slots): the ticket's **drivers** (motivations), the **behaviour** to be performe
 as *inferable* (ticket + Accepted KB settle it) / *inference-needing-validation* / *unknown*, and by
 stakes: *low* / *load-bearing*.
 
+**Phase-split detection (B-518).** While assessing the scope boundaries, check whether the ticket
+**bundles a now-phase and a later-phase of product intent** — two asks at different priority horizons
+("do X — and eventually Y"). A detected now-vs-later mixture is a **load-bearing scope-boundary
+unknown** (only the human knows which phase is in immediate scope): it enters the residual like any
+other load-bearing unknown and is asked via the **phase-split probe** (step 2c). **Size or technical
+compositeness is NEVER this signal** — a ticket that is merely big or multi-part passes whole to
+decompose, which owns complexity-splitting (`skills/harmony-shared/gate-routing.md` §Split ownership).
+
 ### 2b. The trigger decision — open an exchange, or draft directly?
 
 Open an exchange **iff the residual holds ≥1 load-bearing unknown OR a load-bearing inference that
@@ -103,6 +112,11 @@ needs the human's validation.** Otherwise — an all-low-stakes residual — **d
 step 3, folding the low-stakes validation candidates into the brief's decision items as today (the
 "much lighter approve").
 
+- **Phase-split probe trigger (B-518):** a detected now-vs-later bundle (step 2) is such a
+  load-bearing unknown. When it is the **sole** load-bearing residual — everything else inferable,
+  where draft-directly would otherwise fire — still open the exchange, with
+  `trigger: 'phase-split-probe'` instead of `pre-draft-clarify`, and ask just the phase-split
+  question. (The trigger value records *why* the exchange exists; the engine behaviour is identical.)
 - **Cold start (rule 7):** a thin KB must not translate into maximal interrogation of the
   least-invested user. Lead with your own best-effort inferences as validate questions, gate depth by
   stakes, keep force-quit prominent from round one.
@@ -122,6 +136,11 @@ Rounds follow the engine contract (≤5 questions, stakes-split — a load-beari
 `kind:'open'`; the tool lints enforce this at point-of-use). Filing hands the ball to the human
 (`awaiting_human_reason = 'elicitation-round'`). Then:
 
+- **The phase-split probe question (B-518):** always `stakes:'load-bearing'` → `kind:'open'` (the
+  lint enforces open). NAME the bundle, WITHHOLD your split candidate — *"The ticket asks for X and
+  also Y — which of these is in immediate scope now?"*, never *"I think Y is later."* Its answer feeds
+  exactly one disposition: **de-scope** (step 3's de-scope block); an "all of it now" answer changes
+  nothing — no split at clarify, decompose decides structure later.
 - **In a conducted session:** return control to the conductor — it arms the §4c watch and re-invokes
   this skill when the poll classifies **`answers-landed`** (a web submit) or the human answers in the
   terminal. Never leave a filed round without an armed watch in a conducted run.
@@ -140,7 +159,7 @@ Rounds follow the engine contract (≤5 questions, stakes-split — a load-beari
   load-bearing question re-framed, or let it go. *Force-quit* (the marker, or said in-terminal) →
   `conclude_elicitation('force-quit')` → step 3, drafting from what you have.
 
-### 3. Draft the clarification — the convergence handoff (emission order: spec → proposed ACs → brief → claims)
+### 3. Draft the clarification — the convergence handoff (emission order: spec → proposed ACs → de-scope block → brief → claims)
 
 Resolve the open questions from what the exchange established (or from inference alone on the
 draft-directly path). The emission is **one discrete, ordered step** — the order is what lets claims
@@ -171,17 +190,28 @@ mcp__harmony__reference_knowledge({ task_id, decision_id: decision.id })
    mechanism** — "the board exports a PDF that matches the on-screen layout", not "PDF renderer added
    to export pipeline". A mechanism-flavoured draft is rewritten into the observable outcome or pushed
    to design's refine step — mechanism-flavoured ACs at clarify are the solution-shape-smuggling
-   failure mode. The proposed set rides the brief (next step) as a clearly-delimited context block
-   headed exactly **"Proposed acceptance criteria (happy path) — filed on accept:"** with one line per
-   AC. The ACs are NOT written to the ticket at emission time — they land at the brief's ACCEPT (see
-   step 5); filing-at-compose would persist unratified proposals on defer/iterate.
+   failure mode. The proposed set rides the brief (the brief item below) as a clearly-delimited
+   context block headed exactly **"Proposed acceptance criteria (happy path) — filed on accept:"**
+   with one line per AC. The ACs are NOT written to the ticket at emission time — they land at the
+   brief's ACCEPT (see step 5); filing-at-compose would persist unratified proposals on defer/iterate.
 
-3. **Brief.** Compose the brief (step 4) with `decision_ref` = the spec. **When an exchange ran**, the
+3. **De-scope block (B-518) — only when the human's answer put work out of immediate scope.** When
+   the exchange's phase-split answer (or the human's explicit direction) marked a later phase, the
+   clarified spec covers the **immediate scope only**, and the brief carries a clearly-delimited
+   context block headed exactly **"De-scope — re-ticketed on accept:"** — one line per later-phase
+   item (working title + one-line intent). Like the proposed ACs, the re-ticket is NOT executed at
+   emission time — it lands at the brief's ACCEPT (step 5); executing at compose would persist an
+   unratified split on defer/iterate. **A de-scope only ever originates from the human's explicit
+   "later" answer (or an explicit human choice on the brief) — never from agent inference alone.**
+   Never author this block for a split motivated by size or technical compositeness — that is
+   decompose's axis (`skills/harmony-shared/gate-routing.md` §Split ownership).
+
+4. **Brief.** Compose the brief (step 4) with `decision_ref` = the spec. **When an exchange ran**, the
    doc's context carries a **"What I learned from you"** section — one line per load-bearing claim
    that steered the draft, badged by provenance: **You said** / **You confirmed** / **Best effort —
    unvalidated** (force-quit).
 
-4. **Claims — ONLY when an exchange actually ran (v1).** Mint each load-bearing claim that steered the
+5. **Claims — ONLY when an exchange actually ran (v1).** Mint each load-bearing claim that steered the
    brief via `record_decision` with `claim_provenance` (`'human-stated'` |
    `'agent-inferred-human-validated'` | `'force-quit'`) and `underwriting_brief_id` = the
    just-composed brief's id. **Mint-time dedupe** per the engine contract: a duplicate of an existing
@@ -255,18 +285,28 @@ brief it no longer underwrites (the engine contract's iterate-prune).
 ### 5. Display + resolve
 
 Show the rendered `content` verbatim. On the human's command:
-- **accept** → **first file the proposed ACs (B-648), then resolve.** File the brief's proposed
-  happy-path set onto the ticket, unchecked:
+- **accept** → **first file the proposed ACs (B-648), then execute the de-scope block (B-518), then
+  resolve.** File the brief's proposed happy-path set onto the ticket, unchecked:
   ```
   mcp__harmony__manage_acceptance_criteria({ task_id, add: [{ content: "..." }, ...] })
   ```
   **Idempotent — skip the filing if the ticket already carries acceptance criteria** (a web accept
-  consumed by a running session may have already filed them). Then
+  consumed by a running session may have already filed them). Then, if the brief carries a
+  **"De-scope — re-ticketed on accept:"** block, re-ticket each listed later phase:
+  ```
+  mcp__harmony__create_task({ title: "<product-visible outcome>", description: "<intent>\n\nDe-scoped from <ticket> at clarify (phase-split probe, B-518)." })
+  ```
+  — product register per `create_task`'s description; the new ticket lands **Captured** (the normal
+  inbox). **Idempotent — skip any item whose ticket already exists** (`search_tasks` by the working
+  title). The human's brief accept authorizes exactly the de-scopes listed on the brief — never
+  re-ticket anything not in the block. Then
   `mcp__harmony__resolve_brief({ task_id, command: "accept" })` → promotes the specification
   Asserted→Accepted, advances Idea→Clarified, and (when an exchange ran) promotes the coupled
   human-grounded claims — force-quit claims stay Asserted, quarantined (the DB disposal skips them).
-  Report the new state. A WEB accept with no session running defers the AC filing to the design gate's
-  self-heal (the documented v1 asymmetry, same shape as decompose's children).
+  Report the new state, including any re-ticketed later phase's visual id. A WEB accept with no
+  session running defers the AC filing to the design gate's self-heal and the de-scope execution to
+  the DECOMPOSE gate's self-heal — the next gate to read the clarification (the documented v1
+  asymmetry, same shape as decompose's children).
 - **defer** → **deferral is knowledge** (knowledge-discipline.md §"Deferral is knowledge"). First author the
   deferral, then park:
   ```
