@@ -326,6 +326,7 @@ Show the rendered `content` verbatim. On the human's command:
 - **expand** / **related** → show the pre-generated sections from `get_brief`.
 - **edit** / **iterate** → revise the `doc` per the human's input and re-call `compose_brief` (updates
   in place, bumps `iteration`; pass `underwriting_claim_ids` when claims are coupled — see step 4).
+- **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
 
 #### Acting on a related-ticket disposition (B-475)
 

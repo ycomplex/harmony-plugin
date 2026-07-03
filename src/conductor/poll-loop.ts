@@ -45,13 +45,27 @@ export interface PollBaseline {
 
 /**
  * What the human did, CLASSIFIED after the exit gate fires (B-611). The sole exit gate is the canonical
- * `awaiting_human_input` true→false transition; these five are a post-gate classification mirroring the §4c
+ * `awaiting_human_input` true→false transition; the post-gate classifications mirror the §4c
  * consume cases. `answers-landed` (B-645) is a submitted elicitation round (or a force-quit request) — the
- * agent reads the answers via get_elicitation and files the next round / concludes. `resolved` is the
- * non-advancing case (the flag cleared with no state advance / reshape / exchange answer / park — e.g. a
- * design sub-track accept composed with `pending_activity: null`).
+ * agent reads the answers via get_elicitation and files the next round / concludes. `discuss-requested`
+ * (B-461) is a browser Discuss on the active brief (`pending_resolution.command === 'discuss'`) — the agent
+ * opens a discussion exchange rather than re-composing. `resolved` is the non-advancing case (the flag
+ * cleared with no state advance / reshape / discuss / exchange answer / park — e.g. a design sub-track
+ * accept composed with `pending_activity: null`).
+ *
+ * ONE classification fires OUTSIDE the flag gate: `discussion-cancelled` (B-461) — a mechanical cancel
+ * concluded the attached exchange ('abandoned') and restored `awaiting_human_input = true` DIRECTLY, so
+ * the canonical true→false transition never happens (the B-611 blind-spot class). It is detected as the
+ * baseline's ACTIVE exchange going non-active (status changed / row gone) without the flag transition.
  */
-export type ChangeTrigger = 'state-advanced' | 'pending_resolution' | 'parked' | 'answers-landed' | 'resolved';
+export type ChangeTrigger =
+  | 'state-advanced'
+  | 'pending_resolution'
+  | 'discuss-requested'
+  | 'parked'
+  | 'answers-landed'
+  | 'discussion-cancelled'
+  | 'resolved';
 
 export interface ChangeDetail {
   trigger: ChangeTrigger;
@@ -111,6 +125,22 @@ function exchangeMarkerPresent(ex: ActiveExchangeish | null | undefined): ex is 
   return ex != null && (ex.answers_submitted_at != null || ex.force_quit_requested_at != null);
 }
 
+/** B-461: the baseline's ACTIVE exchange is no longer active on the current read — its status changed,
+ *  the row is gone from the active projection (get_task's `active_exchange` only surfaces status='active'
+ *  rows, so a cancelled exchange reads as null), or a different exchange has replaced it. Requires the
+ *  baseline exchange to have been captured as ACTIVE (fetchActiveExchange always stamps status). A current
+ *  read of the SAME exchange with the status field simply absent is INDETERMINATE, not a cancel — keep
+ *  polling (a real cancel presents as row-gone or an explicit non-active status). */
+function baselineExchangeWentInactive(
+  base: ActiveExchangeish | null | undefined,
+  cur: ActiveExchangeish | null | undefined,
+): boolean {
+  if (base == null || base.status !== 'active') return false;
+  if (cur == null) return true;
+  if ((cur.exchange_id ?? null) !== (base.exchange_id ?? null)) return true;
+  return cur.status != null && cur.status !== 'active';
+}
+
 /** Same marker ⇔ same exchange + identical stamps. Timestamps make this exact: a fresh submit always
  *  carries a new answers_submitted_at, so a marker equal to the baseline's is stale, never news. */
 function sameExchangeMarker(
@@ -129,16 +159,21 @@ function sameExchangeMarker(
 /**
  * Compare a freshly-read task against the launch baseline and report what (if anything) the human did.
  *
- * GATE-THEN-CLASSIFY (B-611). The SOLE exit signal is the canonical "human resolved" primitive:
+ * GATE-THEN-CLASSIFY (B-611). The flag-based exit signal is the canonical "human resolved" primitive:
  * `awaiting_human_input` transitioning true→false (the baseline was awaiting; the fresh read no longer is).
  * Until that flag clears, nothing the human could have done is consumable yet — so we return null and keep
- * polling regardless of any incidental state / pending_resolution difference. Once the gate fires, we
- * CLASSIFY what the human did, in priority order (mirrors the §4c consume cases):
+ * polling regardless of any incidental state / pending_resolution difference, with ONE exception checked
+ * OUTSIDE the gate (B-461): `discussion-cancelled` — the baseline's ACTIVE exchange went non-active
+ * (status changed / row gone) WITHOUT the true→false transition, because a mechanical cancel restores
+ * `awaiting_human_input = true` directly (the B-611 blind-spot class — the flag gate alone would miss it).
+ * Once the gate fires, we CLASSIFY what the human did, in priority order (mirrors the §4c consume cases):
  *   1. `parked`             — the ticket is now Parked (a browser defer/deny). Surfaced explicitly because it
  *                             is terminal and must not be mistaken for a forward advance.
  *   2. `state-advanced`     — `workflow_state` differs from the baseline (a browser accept advanced the gate).
  *   3. `pending_resolution` — a browser reshape left a (new/changed) `pending_resolution` marker on the
- *                             active brief with the state unchanged.
+ *                             active brief with the state unchanged. When the marker's command is 'discuss'
+ *                             (B-461) this classifies as `discuss-requested` instead — a request to open a
+ *                             discussion exchange on the active brief, not a reshape.
  *   4. `answers-landed`     — (B-645) the active elicitation exchange carries an unconsumed marker: the human
  *                             submitted a round's answers (`answers_submitted_at`) or requested a force-quit
  *                             (`force_quit_requested_at`). The consumer reads the answers via get_elicitation
@@ -154,9 +189,21 @@ function sameExchangeMarker(
  * would misclassify as the B-611 non-advancing-accept case and the answers would never be consumed.
  */
 export function detectChange(baseline: PollBaseline, task: Taskish): ChangeDetail | null {
-  // GATE (B-611): the SOLE exit signal is awaiting_human_input transitioning true→false. Until the human
-  // resolves (the flag drops), nothing is consumable — keep polling no matter what else looks different.
-  if (!(baseline.awaitingHumanInput === true && task.awaiting_human_input === false)) {
+  // GATE (B-611): the SOLE flag-based exit signal is awaiting_human_input transitioning true→false.
+  const gateFired = baseline.awaitingHumanInput === true && task.awaiting_human_input === false;
+
+  if (!gateFired) {
+    // B-461 'discussion-cancelled' — deliberately its OWN check, NOT inside the flag-gated
+    // classification (the B-611 blind-spot class): a mechanical cancel concludes the attached
+    // exchange ('abandoned') and restores awaiting_human_input = true DIRECTLY, so the canonical
+    // true→false transition never happens and the flag gate alone would miss it. The signal is the
+    // baseline's ACTIVE exchange going non-active (status changed / row gone) without the flag
+    // transition. The poll exits on it like any other classification.
+    if (baselineExchangeWentInactive(baseline.activeExchange, task.active_exchange ?? null)) {
+      return { trigger: 'discussion-cancelled', workflow_state: task.workflow_state ?? null };
+    }
+    // Until the human resolves (the flag drops), nothing else is consumable — keep polling no matter
+    // what else looks different.
     return null;
   }
 
@@ -172,6 +219,12 @@ export function detectChange(baseline: PollBaseline, task: Taskish): ChangeDetai
   }
   const pr = task.pending_resolution ?? null;
   if (pendingPresent(pr) && !samePending(pr, baseline.pendingResolution)) {
+    // B-461: a browser Discuss leaves the same marker shape with command='discuss' — that is a request
+    // to OPEN a discussion exchange on the active brief, not a reshape; everything else keeps the
+    // existing 'pending_resolution' (reshape) classification.
+    if (pr.command === 'discuss') {
+      return { trigger: 'discuss-requested', workflow_state: state, pending_resolution: pr };
+    }
     return { trigger: 'pending_resolution', workflow_state: state, pending_resolution: pr };
   }
   // B-645: an unconsumed exchange marker (submitted answers / force-quit request) — checked BEFORE

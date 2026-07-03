@@ -325,4 +325,49 @@ describe('harmony-conduct skill contract', () => {
     expect(body).toMatch(/in.?session|running session/);
     expect(body).toMatch(/merge \+ deploy|merge\+deploy|merge and deploy/);
   });
+
+  it("B-461 DISCUSS VERB: 'discuss <remark>' joins the controlled-pause verb set and routes to the owning gate skill; brief resolution suspends while a discussion is open", () => {
+    const body = skill.body;
+    const lower = body.toLowerCase();
+    // The lineage is named.
+    expect(body).toContain('B-461');
+    // The verb joins the §4 enumeration alongside accept/defer/edit/iterate (both prose spots share
+    // the slash-list shape; pin the phrase, not a location).
+    expect(lower).toMatch(/accept\/defer\/edit\/iterate\/`?discuss/);
+    expect(body).toMatch(/discuss\s+<remark>/);
+    // Routing: the conductor delegates to the OWNING gate skill to open the exchange, per the ONE
+    // canonical home (consumed by reference, never restated).
+    expect(lower).toMatch(/owning gate skill/);
+    expect(body).toContain('harmony-shared/elicitation-engine.md');
+    expect(body).toMatch(/The discuss trigger/);
+    // While a discussion is open, brief resolution is suspended — the escapes are offered instead.
+    expect(lower).toMatch(/brief resolution is suspended/);
+    expect(lower).toMatch(/force-quit/);
+    expect(lower).toMatch(/\bcancel\b/);
+  });
+
+  it('B-461 CONSUME CASES: §4c classifies BOTH discuss-requested and discussion-cancelled (pinned on the trigger names + semantics, never case numbers)', () => {
+    const body = skill.body;
+    // discuss-requested: the discuss marker is present → route to the owning gate skill to open the
+    // exchange and file round 1 (which consumes the marker). Scope the assertions to the consume-case
+    // paragraph (its bolded heading) so a stray token elsewhere can't satisfy them.
+    const dr = body.indexOf('**`discuss-requested`');
+    expect(dr, 'missing the discuss-requested consume case').toBeGreaterThan(-1);
+    const drSeg = body.slice(dr, dr + 900).toLowerCase();
+    expect(drSeg).toMatch(/command: 'discuss'/);
+    expect(drSeg).toMatch(/owning gate skill/);
+    expect(drSeg).toMatch(/open the discussion exchange|open the exchange/);
+    expect(drSeg).toMatch(/file round 1/);
+    expect(drSeg).toMatch(/consumes the marker|clears `?pending_resolution`?/);
+    // discussion-cancelled: a mechanical cancel restored the brief — the ONE exit that fires WITHOUT
+    // the flag's true→false transition; consume = re-read, resume the pause on the untouched brief,
+    // re-arm the watch.
+    const dc = body.indexOf('**`discussion-cancelled`');
+    expect(dc, 'missing the discussion-cancelled consume case').toBeGreaterThan(-1);
+    const dcSeg = body.slice(dc, dc + 900).toLowerCase();
+    expect(dcSeg).toMatch(/without the flag|true→false/);
+    expect(dcSeg).toMatch(/re-read/);
+    expect(dcSeg).toMatch(/untouched brief/);
+    expect(dcSeg).toMatch(/re-arm the watch/);
+  });
 });

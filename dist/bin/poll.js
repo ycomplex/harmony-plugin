@@ -18420,7 +18420,7 @@ function currentRoundNumber(rounds) {
 // src/tools/elicitation.ts
 var fileElicitationRoundTool = {
   name: "file_elicitation_round",
-  description: `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld \u2014 load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) \u2014 read the previous round's answers via get_elicitation before filing the next.`,
+  description: `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld \u2014 load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) \u2014 read the previous round's answers via get_elicitation before filing the next. For a brief-attached ('discuss') exchange, filing ROUND 1 also clears the attached brief's pending_resolution discuss marker (B-461 \u2014 the filing IS the consume). If the exchange was mechanically cancelled ('abandoned'), returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel).`,
   inputSchema: {
     type: "object",
     properties: {
@@ -18755,13 +18755,23 @@ function samePending(a, b) {
 function exchangeMarkerPresent(ex) {
   return ex != null && (ex.answers_submitted_at != null || ex.force_quit_requested_at != null);
 }
+function baselineExchangeWentInactive(base, cur) {
+  if (base == null || base.status !== "active") return false;
+  if (cur == null) return true;
+  if ((cur.exchange_id ?? null) !== (base.exchange_id ?? null)) return true;
+  return cur.status != null && cur.status !== "active";
+}
 function sameExchangeMarker(a, b) {
   if (a == null && b == null) return true;
   if (a == null || b == null) return false;
   return (a.exchange_id ?? null) === (b.exchange_id ?? null) && (a.answers_submitted_at ?? null) === (b.answers_submitted_at ?? null) && (a.force_quit_requested_at ?? null) === (b.force_quit_requested_at ?? null);
 }
 function detectChange(baseline, task) {
-  if (!(baseline.awaitingHumanInput === true && task.awaiting_human_input === false)) {
+  const gateFired = baseline.awaitingHumanInput === true && task.awaiting_human_input === false;
+  if (!gateFired) {
+    if (baselineExchangeWentInactive(baseline.activeExchange, task.active_exchange ?? null)) {
+      return { trigger: "discussion-cancelled", workflow_state: task.workflow_state ?? null };
+    }
     return null;
   }
   const state = task.workflow_state ?? null;
@@ -18774,6 +18784,9 @@ function detectChange(baseline, task) {
   }
   const pr = task.pending_resolution ?? null;
   if (pendingPresent(pr) && !samePending(pr, baseline.pendingResolution)) {
+    if (pr.command === "discuss") {
+      return { trigger: "discuss-requested", workflow_state: state, pending_resolution: pr };
+    }
     return { trigger: "pending_resolution", workflow_state: state, pending_resolution: pr };
   }
   const ex = task.active_exchange ?? null;

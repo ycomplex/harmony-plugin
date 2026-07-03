@@ -32793,6 +32793,7 @@ function echoPriorAnswers(rounds, priorAnswers, answeredAt) {
 var EXCHANGE_COLS = "id, task_id, trigger, gate, brief_id, status, rounds, answers_submitted_at, force_quit_requested_at, created_by, created_at, updated_at";
 var VALID_TRIGGERS = ["pre-draft-clarify", "discuss", "phase-split-probe"];
 var VALID_OUTCOMES = ["converged", "force-quit", "abandoned"];
+var isMissingPendingResolutionColumn = (msg) => !!msg && /pending_resolution/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
 async function findActiveExchange(client, taskId) {
   const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (error2) throw new Error(error2.message);
@@ -32852,6 +32853,9 @@ async function fileElicitationRound(client, projectId, args) {
   }
   const exchange = await resolveExchange(client, projectId, args);
   if (exchange.status !== "active") {
+    if (exchange.status === "abandoned") {
+      return { noop: true, cause: "exchange-cancelled", exchange };
+    }
     throw new Error(`exchange ${exchange.id} is '${exchange.status}' \u2014 rounds can only be filed on an active exchange`);
   }
   let rounds = Array.isArray(exchange.rounds) ? exchange.rounds : [];
@@ -32864,6 +32868,12 @@ async function fileElicitationRound(client, projectId, args) {
     rounds = echoed.rounds;
   }
   const n = nextRoundNumber(rounds);
+  if (exchange.brief_id != null && n === 1) {
+    const { error: clearErr } = await client.from("briefs").update({ pending_resolution: null }).eq("id", exchange.brief_id);
+    if (clearErr && !isMissingPendingResolutionColumn(clearErr.message)) {
+      throw new Error(clearErr.message);
+    }
+  }
   const round = {
     n,
     context_line: args.context_line.trim(),
@@ -32887,7 +32897,7 @@ async function fileElicitationRound(client, projectId, args) {
 }
 var fileElicitationRoundTool = {
   name: "file_elicitation_round",
-  description: `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld \u2014 load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) \u2014 read the previous round's answers via get_elicitation before filing the next.`,
+  description: `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld \u2014 load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) \u2014 read the previous round's answers via get_elicitation before filing the next. For a brief-attached ('discuss') exchange, filing ROUND 1 also clears the attached brief's pending_resolution discuss marker (B-461 \u2014 the filing IS the consume). If the exchange was mechanically cancelled ('abandoned'), returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel).`,
   inputSchema: {
     type: "object",
     properties: {
@@ -32945,6 +32955,9 @@ async function concludeElicitation(client, projectId, args) {
   const exchange = await resolveExchange(client, projectId, args);
   if (exchange.status !== "active") {
     if (exchange.status === args.outcome) return exchange;
+    if (exchange.status === "abandoned") {
+      return { noop: true, cause: "exchange-cancelled", exchange };
+    }
     throw new Error(`exchange ${exchange.id} is already '${exchange.status}' \u2014 cannot conclude it '${args.outcome}'`);
   }
   let roundsUpdate = {};
@@ -32966,7 +32979,7 @@ async function concludeElicitation(client, projectId, args) {
 }
 var concludeElicitationTool = {
   name: "conclude_elicitation",
-  description: `Conclude an elicitation exchange: 'converged' (the agent can now confidently draft a brief that represents the user's intent), 'force-quit' (the human said "best efforts, proceed" \u2014 draft from what you have; mint any claims with provenance 'force-quit'), or 'abandoned'. Sets the exchange status and clears both consumable markers. Writes NOTHING else: it does not touch the attached brief and does not re-set the task's awaiting flag \u2014 for 'abandoned' on a brief-attached exchange the brief row deliberately stays ACTIVE with the flag down, so the owning gate's "brief already active" path re-surfaces it in place on re-entry.`,
+  description: `Conclude an elicitation exchange: 'converged' (the agent can now confidently draft a brief that represents the user's intent), 'force-quit' (the human said "best efforts, proceed" \u2014 draft from what you have; mint any claims with provenance 'force-quit'), or 'abandoned'. Sets the exchange status and clears both consumable markers. Writes NOTHING else: it does not touch the attached brief and does not re-set the task's awaiting flag \u2014 for 'abandoned' on a brief-attached exchange the brief row deliberately stays ACTIVE with the flag down, so the owning gate's "brief already active" path re-surfaces it in place on re-entry. If the exchange is already 'abandoned' (a mechanical cancel landed first) and a DIFFERENT outcome is requested, returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing (B-461) \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel). Re-issuing the SAME outcome stays idempotent and returns the row.`,
   inputSchema: {
     type: "object",
     properties: {
