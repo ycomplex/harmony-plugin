@@ -35,6 +35,8 @@ export interface ElicitationAnswer {
   /** confirm/correct answer a 'validate' question; answer/skip an 'open' one. */
   verb: 'confirm' | 'correct' | 'answer' | 'skip';
   text?: string;
+  /** 'terminal' when the agent echoed a terminal-given answer on the human's behalf (B-462). Absent for web submits. */
+  via?: 'terminal';
 }
 
 /** One round of the exchange, as stored in `elicitation_exchanges.rounds` (append-only). */
@@ -113,4 +115,68 @@ export function currentRoundNumber(rounds: ElicitationRound[]): number {
 /** Append a round immutably (the caller owns the write of the new array back to the row). */
 export function appendRound(rounds: ElicitationRound[], round: ElicitationRound): ElicitationRound[] {
   return [...(Array.isArray(rounds) ? rounds : []), round];
+}
+
+/**
+ * Echo terminal-given answers into the LAST filed round (B-462 — the terminal answering surface).
+ *
+ * The web submit is the only surface that writes `rounds[].answers` mechanically; when the human
+ * answers a round in the terminal instead, the agent already holds the answers in-conversation and
+ * echoes them here so the exchange record stays complete regardless of answering surface (the
+ * rounds history is the provenance trail — fa8b09d6). Guards keep the echo honest:
+ *  - only the LAST filed round may be echoed (earlier rounds are history, not open questions);
+ *  - only UNANSWERED questions may be echoed (a web-submitted answer is the human's own words —
+ *    never overwrite it);
+ *  - verbs must fit the question kind ('validate' → confirm/correct/skip; 'open' → answer/skip),
+ *    and a correct/answer needs text (there is nothing echoed otherwise).
+ * Every echoed answer is stamped `via:'terminal'` so provenance stays legible. Pure — the caller
+ * supplies `answeredAt` (client-stamped, house idiom) and owns the row write.
+ */
+export function echoPriorAnswers(
+  rounds: ElicitationRound[],
+  priorAnswers: Record<string, ElicitationAnswer>,
+  answeredAt?: string,
+): { rounds: ElicitationRound[] | null; errors: string[] } {
+  const errors: string[] = [];
+  if (!Array.isArray(rounds) || rounds.length === 0) {
+    return { rounds: null, errors: ['no round has been filed — there is nothing to echo answers onto'] };
+  }
+  const entries = Object.entries(priorAnswers ?? {});
+  if (entries.length === 0) {
+    return { rounds: null, errors: ['prior_answers is empty — omit it instead of passing an empty object'] };
+  }
+  const last = rounds[rounds.length - 1];
+  const byId = new Map(last.questions.map((q) => [q.id, q]));
+  for (const [qid, answer] of entries) {
+    const q = byId.get(qid);
+    if (!q) {
+      errors.push(`question "${qid}" is not in the last filed round (round ${last.n}) — only the open round can be echoed`);
+      continue;
+    }
+    if (last.answers?.[qid]) {
+      errors.push(`question "${qid}" already has an answer — a submitted answer is the human's own words and is never overwritten`);
+      continue;
+    }
+    const verb = answer?.verb;
+    if (q.kind === 'validate' && verb !== 'confirm' && verb !== 'correct' && verb !== 'skip') {
+      errors.push(`question "${qid}" is kind='validate' — its echoed verb must be confirm, correct, or skip (got '${verb}')`);
+    }
+    if (q.kind === 'open' && verb !== 'answer' && verb !== 'skip') {
+      errors.push(`question "${qid}" is kind='open' — its echoed verb must be answer or skip (got '${verb}')`);
+    }
+    if ((verb === 'correct' || verb === 'answer') && !answer.text?.trim()) {
+      errors.push(`question "${qid}" echoes verb='${verb}' but has no text — there is no answer to record`);
+    }
+  }
+  if (errors.length > 0) return { rounds: null, errors };
+
+  const echoed: ElicitationRound = {
+    ...last,
+    answers: {
+      ...last.answers,
+      ...Object.fromEntries(entries.map(([qid, a]) => [qid, { ...a, via: 'terminal' as const }])),
+    },
+    ...(answeredAt && !last.answered_at ? { answered_at: answeredAt } : {}),
+  };
+  return { rounds: [...rounds.slice(0, -1), echoed], errors: [] };
 }

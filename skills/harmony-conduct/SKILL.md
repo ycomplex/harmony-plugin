@@ -189,9 +189,20 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    re-read, regenerate and render the progress overview from the ticket row** (see *The progress overview*
    below). This happens on **every** iteration so the checklist always reflects the just-read state.
 
-2. **If the ticket is already awaiting a human decision → handle per mode.** If `awaiting_human_input`
-   is set, a gate has already drafted a brief. There is one active brief per task, so do **NOT** run
-   another gate on top of it. Run *The delegation test* below — which checks, in order, the cautious
+2. **If the ticket is already awaiting a human decision → handle per mode.** First check the reason:
+
+   **`awaiting_human_reason === 'elicitation-round'` → NOT a brief, NOT a gate decision — ALWAYS wait
+   (B-462).** An elicitation exchange has the ball with the human (questions filed by a gate skill via
+   the B-645 engine). **Elicitation pauses are ORTHOGONAL to delegation:** there is no brief to accept
+   and nothing to synthesize — the round's answers exist only in the human's head, so NO mode
+   (`--pause-at`, `--unattended`, `--escalate`) auto-advances past an open exchange; delegation covers
+   decisions, never the human's answers. Surface the round (render the last round from
+   `get_elicitation` as prose, per the owning gate skill's terminal parity), then **arm the §4c watch
+   and end the turn** exactly as at a controlled pause. The poll classifies a web submit as
+   **`answers-landed`** (consume case 3 below); a terminal answer is a normal in-session exit.
+
+   Otherwise `awaiting_human_input` set means a gate has already drafted a brief. There is one active
+   brief per task, so do **NOT** run another gate on top of it. Run *The delegation test* below — which checks, in order, the cautious
    kill-switch, the hard floor (release/verify), the **`--escalate` risk-class floor** (`risk_classes`
    non-empty, in `--escalate` only — B-516), the `--escalate` judgment, and finally the mode table — to
    decide whether this gate is **delegated (auto-advanced)** or **controlled (pause)** for this run. When
@@ -684,8 +695,9 @@ background poll script** — `dist/bin/poll.js`. It reads the ticket **IN-PROCES
 `dist/index.js` — with auth + project **pinned once at launch from `HARMONY_API_TOKEN`** (immune to a
 mid-watch `~/.harmony` active-project switch). It exits the instant the human resolves — the **canonical exit
 signal is `awaiting_human_input` clearing (true→false)** (B-611), after which it classifies what the human did
-(state advanced / `pending_resolution` reshape / `Parked` / a non-advancing sub-track accept) — or the ~90-min
-window expires. To arm it, after surfacing the brief **launch it in the background and end the turn**:
+(state advanced / `pending_resolution` reshape / `Parked` / submitted elicitation answers (`answers-landed`,
+B-645) / a non-advancing sub-track accept) — or the ~90-min window expires. To arm it, after surfacing the
+brief (or an elicitation round) **launch it in the background and end the turn**:
 
 1. **`pkill -f "dist/bin/poll.js <ticket>"`** first, to kill any prior poll still watching THIS ticket
    (idempotent re-arm). Also run this on session end so no poll outlives the session — the watch is
@@ -697,11 +709,12 @@ window expires. To arm it, after surfacing the brief **launch it in the backgrou
 On the script's exit your `run_in_background` re-invocation fires: **re-read `get_task` yourself** — the
 script's stdout/exit code are *diagnostic only*; the conductor re-reads the ticket row and is the source of
 truth. The **canonical signal a human resolved is `awaiting_human_input` clearing (true→false)**; once it
-clears, classify what they did (state advanced / `pending_resolution` reshape / a non-advancing sub-track
-accept / nothing changed), consume it per the cases below, and **if it is still pending, ARM AGAIN** (pkill
-the prior poll, re-launch, end the turn). The poll script owns the **cadence (tunable):** first poll
-**~120s**; back off but keep each delay **under ~300s** while the human is likely present; widen to a coarse
-tail (~900s) once clearly idle; stop at the **~90-min** window and degrade (case 4 below). Between launch and
+clears, classify what they did (state advanced / `pending_resolution` reshape / elicitation answers landed /
+a non-advancing sub-track accept / nothing changed), consume it per the cases below, and **if it is still
+pending, ARM AGAIN** (pkill the prior poll, re-launch, end the turn). The poll script owns the **cadence
+(tunable):** first poll **~120s**; back off but keep each delay **under ~300s** while the human is likely
+present; widen to a coarse tail (~900s) once clearly idle; stop at the **~90-min** window and degrade (case 5
+below). Between launch and
 exit you do nothing — the background poll IS the watch. The watch ends on **any** of three co-equal exits — a
 browser resolution, an in-session/terminal answer, or the ~90-min timeout, whichever lands first. On each
 re-read, the **exit gate is `awaiting_human_input` going true→false** — the moment that flag drops the human
@@ -725,7 +738,17 @@ resolved (in the browser or terminal); classify which resolution it was:
    `pending_resolution = { command: 'iterate', detail: <feedback> }`; `awaiting_human_input` is `false`
    (ball → agent) and the active brief is unchanged (the web did NOT advance state — it left the brief
    `active` for you to revise). **Run the LLM iterate in-session** (§4d).
-3. **Flag cleared, state unchanged, no `pending_resolution` — a non-advancing accept (B-611).**
+3. **`answers-landed` — the human submitted an elicitation round's answers (or a force-quit) from the
+   web (B-645/B-462).** The flag cleared and the task's `active_exchange` carries an unconsumed
+   `answers_submitted_at` (or `force_quit_requested_at`) — checked BEFORE case 4, or an exchange answer
+   would misclassify as a non-advancing accept and never be consumed. This is INPUT, not a resolution:
+   **re-invoke the owning gate skill** for the exchange's `gate` (e.g. `clarifying` →
+   `/harmony-plugin:harmony-clarify <ticket>`) — its resume path reads the answers via
+   `get_elicitation` and consumes them (files the next round, which re-sets the flag and re-arms the
+   watch; or concludes and proceeds to its draft). The conductor never answers, re-asks, or concludes
+   an exchange itself — the gate skill owns the exchange; the conductor only routes the wake-up.
+4. **Flag cleared, state unchanged, no `pending_resolution`, no exchange marker — a non-advancing accept
+   (B-611).**
    `awaiting_human_input` went `false` but `workflow_state` did NOT move and there is no reshape marker. This
    is a **design sub-track accept** whose brief was composed with `pending_activity: null` — it records the
    sub-track decision **without advancing state** (state advances to `Designed` only once *all* required
@@ -735,7 +758,7 @@ resolved (in the browser or terminal); classify which resolution it was:
    required sub-track, which re-sets `awaiting_human_input = true` and re-arms the watch. (Before B-611 the
    poll watched only the three *consequences* — advance / reshape / park — so this flag-only clear was missed
    and the watch false-timed-out at ~90 min.)
-4. **Nothing changed** within the **~90-min** watch window (`awaiting_human_input` still `true`) →
+5. **Nothing changed** within the **~90-min** watch window (`awaiting_human_input` still `true`) →
    **poll-window expiry**: fall back to graceful degradation — tell the human to re-run
    `/harmony-plugin:harmony-conduct <ticket>`; the resolution (if any) persists on the ticket row; **end the
    turn**. The next run resumes from the ticket row (the no-session degradation). Do not keep an indefinite
