@@ -24,6 +24,13 @@ children inherit the parent's **clarification**, not design (state-machine §8.1
 
 ### 2. Query knowledge + propose the hierarchy
 
+**Detect prior decomposition first (B-646).** Before proposing anything, call
+`mcp__harmony__list_subtasks({ task_id })`. "Already decomposed" = ≥1 **non-archived** child (each row
+carries `archived`, `workflow_state`, `title`). If children already exist, the existing set IS the
+proposed hierarchy — confirm/adjust the existing children; never draft a fresh competing hierarchy
+(B-646: manual pre-decomposition is common — children get filed during triage — and an unguided run
+would duplicate them, e.g. B-550's 4 → 8).
+
 Query `engineering` (how this codebase structures multi-surface work) and `product` (feature
 boundaries). Apply the manageability rule: split until each child is a clean, independently-shippable
 unit; stop when further splitting adds coordination cost without clarity. **Complexity/structure
@@ -34,7 +41,9 @@ clarification carries an unexecuted **"De-scope — re-ticketed on accept:"** bl
 no session running — execute the re-ticket here first, idempotently, before proposing the hierarchy.)
 The result is either:
 - a list of proposed children (title + one-line intent each), or
-- **"no decomposition needed"** — a single, explicit decision.
+- **"no decomposition needed"** — a single, explicit decision, or
+- confirmation of the existing child set (plus any genuinely net-new children the decomposition
+  introduces).
 
 ### 3. Compose the proposal brief
 
@@ -55,6 +64,12 @@ mcp__harmony__compose_brief({
 })
 ```
 
+On an already-decomposed ticket (B-646), the items enumerate each EXISTING child — visual id + title,
+e.g. `{ kind: "decision", text: "B-551 — schema migration (existing)", recommendation: "confirm" }` —
+never `"create"`. Genuinely net-new children the decomposition introduces are separate items
+recommended `"create"`; a removal/restructure of an existing child is its own explicit decision item,
+never silent.
+
 For "no decomposition needed", file a single decision item recommending "no split", and (optionally)
 record a short `specification` decision documenting *why* — then `reference_knowledge` it.
 
@@ -62,14 +77,23 @@ record a short `specification` decision documenting *why* — then `reference_kn
 
 Show the rendered `content`. On the human's command:
 - **accept** → first create the children, then advance:
-  1. `mcp__harmony__manage_subtasks({ task_id, add_new: [{ title: "...", description: "..." }, ...] })`
-  2. For each new child, bring it to **Idea** (state-machine §8.1). `manage_subtasks add_new` lands
-     children at **Captured** (the `tasks_default_workflow_state` insert trigger), so promote each one
-     Captured→Idea in a single step — do **not** call `capturing` first (the child is already Captured,
-     so `capturing` has no valid edge and the transition guard rejects it):
+  1. For confirmed-EXISTING children, skip `manage_subtasks add_new` entirely — they are already the
+     hierarchy. Call `mcp__harmony__manage_subtasks({ task_id, add_new: [{ title: "...", description: "..." }, ...] })`
+     ONLY for genuinely net-new children. Never `add_new` a fresh set that duplicates existing
+     non-archived children (B-646).
+  2. Then bring EVERY still-**Captured** child — existing and newly created alike — to **Idea**
+     (state-machine §8.1). `manage_subtasks add_new` lands children at **Captured** (the
+     `tasks_default_workflow_state` insert trigger), and existing children pre-filed at triage
+     typically sit at Captured too; promote each one Captured→Idea in a single step — do **not**
+     call `capturing` first (the child is already Captured, so `capturing` has no valid edge and the
+     transition guard rejects it):
      `mcp__harmony__advance_workflow({ task_id: <child>, activity: "promoting" })`.
   3. `mcp__harmony__resolve_brief({ task_id, command: "accept" })` → advances the parent
      Clarified→Decomposed. (For "no decomposition needed", skip 1–2 and just accept.)
+
+  The existing-children branch also makes accept idempotent for free: a re-run after a crash
+  mid-accept (children created, resolve not yet run) sees them as existing and confirms instead of
+  re-creating.
 - **defer** → **deferral is knowledge** (knowledge-discipline.md §"Deferral is knowledge"). Author the
   deferral, then park:
   ```

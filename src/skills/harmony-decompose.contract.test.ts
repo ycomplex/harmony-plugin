@@ -48,4 +48,18 @@ describe('harmony-decompose skill contract', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
     expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);
   });
+  it('detects pre-existing children before proposing (B-646)', () => {
+    // Manual pre-decomposition is common (children filed during triage); an unguided run
+    // would draft a fresh competing hierarchy and duplicate them (B-550: 4 -> 8).
+    expect(referencedHarmonyTools(skill.body)).toContain('list_subtasks');
+    expect(skill.body).toMatch(/already decomposed|children already exist/i);
+    expect(skill.body).toContain('non-archived');
+  });
+  it('never duplicates an existing child hierarchy (B-646)', () => {
+    // The accept path must branch: confirm existing children (recommendation "confirm",
+    // never "create"), add_new ONLY for genuinely net-new children.
+    expect(skill.body).toMatch(/never\s+`?add_new`?\s+a fresh set that duplicates existing\s+non-archived children/i);
+    expect(skill.body).toContain('net-new');
+    expect(skill.body).toContain('recommendation: "confirm"');
+  });
 });
