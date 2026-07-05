@@ -10,7 +10,10 @@ disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Ba
 Implements the §6.4 **agent patch step** of the Stale loop. When a knowledge decision is superseded
 (`supersede_decision`), P2's trigger flags every dependent ticket `stale=true` and writes
 `stale_ref = { type:'decision', id:<superseded>, superseded_by:<successor> }` (P2 A8) — but the flag alone
-just tells the human "this is stale." This skill is the agent that **drafts a concrete proposed patch** and
+just tells the human "this is stale." Since B-534, `superseded_by` may be **null**: the decision was
+**retired** with no successor (`supersede_decision` retire mode, used by harmony-revise-scope's
+no-successor supersede; the trigger fires on the status transition either way) — see the null-successor
+branches in steps 1, 3 and 4. This skill is the agent that **drafts a concrete proposed patch** and
 files it as a `stale-patch-review` brief so the human can accept (apply) or reject (knowing-divergence). It
 never edits code (discovery role): it produces a *proposed reconciliation*, not an implementation.
 
@@ -22,9 +25,16 @@ never edits code (discovery role): it produces a *proposed reconciliation*, not 
 
 `mcp__harmony__get_task({ task_id })` (or, picking one up, `mcp__harmony__query_tasks({ stale: true,
 sort_by: 'priority', limit: 1 })`). Confirm `stale === true`. Read `stale_ref` — it names the **superseded**
-decision (`stale_ref.id`) and its **successor** (`stale_ref.superseded_by`). Pull both entries
-(`mcp__harmony__get_knowledge_entry`) so you can see exactly what changed: the old decision the ticket was
-built on, and the new one that replaced it.
+decision (`stale_ref.id`) and its **successor** (`stale_ref.superseded_by`). **Branch on the successor
+BEFORE pulling entries:**
+
+- **Successor present** → pull both entries (`mcp__harmony__get_knowledge_entry`) so you can see exactly
+  what changed: the old decision the ticket was built on, and the new one that replaced it.
+- **`superseded_by` is null** → the decision was **retired without a replacement** (B-534 retire mode, or
+  the earlier `update_knowledge_entry(status:'Superseded')` workaround — handle both identically). Pull
+  ONLY the retired decision (`get_knowledge_entry(stale_ref.id)`); never call `get_knowledge_entry` with
+  the null successor. There is no successor to reconcile against — ground the patch in re-derived intent
+  instead (step 3's null-successor drafting), and omit the brief's `decision_ref` (step 4).
 
 Also read the ticket's current `workflow_state` and the knowledge it references:
 
@@ -51,6 +61,15 @@ Decide what reconciliation the supersession actually requires. Two (non-exclusiv
   (a `revising-*`), so accepting the patch re-opens the ticket at the correct state.
 
 The patch is a **proposal**, concrete enough that the human can say yes/no — not a vague "this is stale."
+
+**Null-successor (retired) drafting.** With no successor to diff against, ground the patch in
+**re-derived intent**: the retired decision's content + step 2's query over its domains (current Accepted
+knowledge). Say plainly that the decision was retired without a replacement, then propose the same two
+shapes: a **knowledge reconciliation** when the retirement doesn't invalidate the ticket's premise
+(propose clearing Stale with the corrected understanding — and, where warranted, describe a replacement
+ticket-level decision for the human to apply), or a **state re-work** when the ticket already consumed
+the retired premise (propose the `revising-*` backflow that re-runs the owning gate — re-derive intent
+there rather than patching around the hole).
 
 **Amend-in-place vs supersede — separate the invariant's goal from its mechanism (B-585).** When the
 reconciliation REVISES a governing invariant, do not reflexively `supersede_decision` (which cascades Stale onto
@@ -79,7 +98,7 @@ mcp__harmony__compose_brief({
   task_id,
   reason: "stale-patch-review",
   pending_activity: <a "revising-*" activity IF the patch reverts state, else null>,
-  decision_ref: { type: "<successor type>", id: stale_ref.superseded_by },   // the superseding decision (optional, for linkage)
+  decision_ref: { type: "<successor type>", id: stale_ref.superseded_by },   // successor present only — OMIT when superseded_by is null
   doc: {
     decide: "Reconcile B-288 against the superseding 'harmony-web CI/CD' decision?",
     recommend: { text: "Re-open at Designed and redo the deploy-step technical-design", confidence: "low" },
@@ -90,6 +109,10 @@ mcp__harmony__compose_brief({
   }
 })
 ```
+
+**Null-successor briefs:** OMIT `decision_ref` entirely (it is optional; `{ id: null }` is malformed), and
+state plainly in the doc — *"the decision this ticket depended on was retired without a replacement."*
+`pending_activity` semantics are unchanged: a `revising-*` iff the patch reverts state, else `null`.
 
 `compose_brief` sets `awaiting_human_input=true` + `awaiting_human_reason='stale-patch-review'`, so the
 ticket now appears in **both** queue reads — the `awaiting_human_input` read (it has a brief now) and the
