@@ -1018,6 +1018,360 @@ export const queryEntitiesTool = {
 };
 
 // ---------------------------------------------------------------------------
+// Handler: createEntity  (B-397 / folded B-399 — typed-entity authoring)
+// ---------------------------------------------------------------------------
+//
+// Authors a TYPED entity node directly, over the columns knowledge_entities already
+// carries (kind/name/description/metadata — no migration; ENTITY_COLS above). This is the
+// deliberate, gated authoring path; resolveOrCreateEntity stays the name-only side-effect
+// minter its callers (recordDecision/assertFact) rely on. Idempotent upsert on the existing
+// uniqueness key (workspace_id, kind, name) — the B-397 A10 create-or-skip mechanism.
+
+export interface CreateEntityArgs {
+  kind: string;
+  name: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export async function createEntity(
+  client: SupabaseClient,
+  projectId: string,
+  args: CreateEntityArgs,
+): Promise<KnowledgeEntityFull> {
+  if (!args.kind?.trim()) throw new Error('kind is required');
+  if (!args.name?.trim()) throw new Error('name is required');
+  const kind = args.kind.trim();
+  const name = args.name.trim();
+
+  const workspaceId = await getWorkspaceId(client, projectId);
+
+  // Create-or-skip on (workspace_id, kind, name): a re-seed of the same node is a no-op, unless a
+  // description/metadata is supplied — then those fields are refreshed on the existing row (upsert).
+  const { data: existing, error: lookupErr } = await client
+    .from('knowledge_entities')
+    .select(ENTITY_COLS)
+    .eq('workspace_id', workspaceId)
+    .eq('kind', kind)
+    .eq('name', name)
+    .maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+
+  if (existing) {
+    const patch: Record<string, unknown> = {};
+    if (args.description !== undefined) patch.description = args.description;
+    if (args.metadata !== undefined) patch.metadata = args.metadata;
+    if (Object.keys(patch).length === 0) return existing as unknown as KnowledgeEntityFull;
+    const { data: updated, error: updErr } = await client
+      .from('knowledge_entities')
+      .update(patch)
+      .eq('workspace_id', workspaceId)
+      .eq('id', (existing as { id: string }).id)
+      .select(ENTITY_COLS)
+      .single();
+    if (updErr) throw new Error(updErr.message);
+    return updated as unknown as KnowledgeEntityFull;
+  }
+
+  const record: Record<string, unknown> = {
+    workspace_id: workspaceId,
+    project_id: projectId,
+    kind,
+    name,
+  };
+  if (args.description !== undefined) record.description = args.description;
+  if (args.metadata !== undefined) record.metadata = args.metadata;
+
+  const { data, error } = await client
+    .from('knowledge_entities')
+    .insert(record)
+    .select(ENTITY_COLS)
+    .single();
+  if (error) {
+    // A racing create can still trip the uniqueness key after our lookup — treat as an idempotent
+    // success by re-reading the row the other writer landed (create-or-skip, not create-or-fail).
+    if (error.code === '23505') {
+      const { data: raced } = await client
+        .from('knowledge_entities')
+        .select(ENTITY_COLS)
+        .eq('workspace_id', workspaceId)
+        .eq('kind', kind)
+        .eq('name', name)
+        .maybeSingle();
+      if (raced) return raced as unknown as KnowledgeEntityFull;
+    }
+    throw new Error(error.message);
+  }
+  return data as unknown as KnowledgeEntityFull;
+}
+
+export const createEntityTool = {
+  name: 'create_entity',
+  description:
+    'Author a TYPED knowledge entity node (kind + name; optional description + metadata) directly in the graph. ' +
+    'Idempotent upsert on the uniqueness key (workspace, kind, name): re-authoring the same node is a no-op, or ' +
+    'refreshes the description/metadata when supplied. A node description is a THIN, stable, one-line canonical ' +
+    'identifier — the substance and lifecycle (Asserted→Accepted, realization) live in the decisions/facts ABOUT ' +
+    "the entity, not on the node. Kinds are open-ended (e.g. 'persona', 'feature', 'component', 'integration', " +
+    "'concept'). To merge a low-typed stub into a richer node of the same name, use reconcile_entity.",
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      kind: { type: 'string', description: "Entity kind — open-ended (e.g. 'persona', 'feature', 'component', 'integration', 'concept')" },
+      name: { type: 'string', description: 'Entity name (unique within the workspace per kind)' },
+      description: { type: 'string', description: 'A THIN one-line canonical identifier — not a document; depth belongs in the claims about the entity' },
+      metadata: { type: 'object', description: 'Optional structured metadata (JSON object)' },
+    },
+    required: ['kind', 'name'],
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Handler: updateEntity  (B-397 / folded B-399)
+// ---------------------------------------------------------------------------
+
+export interface UpdateEntityArgs {
+  entity_id?: string;
+  kind?: string;   // with `name`, identifies the entity when entity_id is absent
+  name?: string;
+  new_kind?: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export async function updateEntity(
+  client: SupabaseClient,
+  projectId: string,
+  args: UpdateEntityArgs,
+): Promise<KnowledgeEntityFull> {
+  if (!args.entity_id && !(args.kind && args.name)) {
+    throw new Error('Provide entity_id, or both kind and name, to identify the entity');
+  }
+  const hasUpdates =
+    args.new_kind !== undefined || args.description !== undefined || args.metadata !== undefined;
+  if (!hasUpdates) {
+    throw new Error('At least one of new_kind, description, or metadata must be provided');
+  }
+
+  const workspaceId = await getWorkspaceId(client, projectId);
+
+  const patch: Record<string, unknown> = {};
+  if (args.new_kind !== undefined) patch.kind = args.new_kind;
+  if (args.description !== undefined) patch.description = args.description;
+  if (args.metadata !== undefined) patch.metadata = args.metadata;
+
+  let query = client
+    .from('knowledge_entities')
+    .update(patch)
+    .eq('workspace_id', workspaceId);
+  if (args.entity_id) {
+    query = query.eq('id', args.entity_id);
+  } else {
+    query = query.eq('kind', args.kind!).eq('name', args.name!);
+  }
+
+  const { data, error } = await query.select(ENTITY_COLS).single();
+  if (error) {
+    if (error.code === '23505') {
+      // Changing kind collided with an existing (workspace, new_kind, name) node — that is the MERGE
+      // case, which repoints references. Route the caller there rather than silently failing.
+      throw new Error(
+        `An entity named "${args.name ?? patch.name ?? ''}" already exists under kind "${args.new_kind}". ` +
+        `Use reconcile_entity to MERGE the two nodes (it repoints all references), not update_entity.`,
+      );
+    }
+    throw new Error(error.message);
+  }
+  return data as unknown as KnowledgeEntityFull;
+}
+
+export const updateEntityTool = {
+  name: 'update_entity',
+  description:
+    "Update a typed knowledge entity's description, metadata, or kind. Identify it by entity_id, or by its " +
+    'current (kind, name). Changing kind to a value already taken by a same-named node is rejected with a ' +
+    'pointer to reconcile_entity (the MERGE path that repoints references) — update_entity never silently ' +
+    'orphans or duplicates.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      entity_id: { type: 'string', description: 'Entity UUID (preferred identifier)' },
+      kind: { type: 'string', description: 'Current kind (with name) — identifies the entity when entity_id is omitted' },
+      name: { type: 'string', description: 'Current name (with kind) — identifies the entity when entity_id is omitted' },
+      new_kind: { type: 'string', description: 'New kind. For a stub→typed promotion that may collide, prefer reconcile_entity.' },
+      description: { type: 'string', description: 'New thin one-line canonical description' },
+      metadata: { type: 'object', description: 'New structured metadata (full-object replace)' },
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Handler: reconcileEntity  (B-397 / folded B-399 — the core: stub → typed node)
+// ---------------------------------------------------------------------------
+//
+// Two sub-cases, chosen automatically (technical-design 826c5088 point 7):
+//   (a) UPGRADE-IN-PLACE — the stub (default kind 'concept') has NO same-named node under to_kind:
+//       flip kind/description on the same row; no reference repointing.
+//   (b) MERGE — a same-named to_kind node ALREADY exists: repoint EVERY referencing row
+//       (knowledge_facts.subject_entity_id, knowledge_decisions.affected_entity_ids[],
+//       knowledge_events.entity_id) to the typed node, dedup arrays (the conflict case), then DELETE
+//       the stub. Merge referential integrity is the load-bearing behaviour B-399 exists for.
+
+export interface ReconcileEntityArgs {
+  name: string;
+  to_kind: string;
+  from_kind?: string;    // the stub's kind; defaults to 'concept'
+  description?: string;  // optional refreshed description (upgrade-in-place only)
+}
+
+export interface ReconcileEntityResult {
+  mode: 'upgrade-in-place' | 'merge';
+  entity: KnowledgeEntityFull;
+  merged_stub_id?: string;
+  repointed?: { facts: number; decisions: number; events: number };
+}
+
+export async function reconcileEntity(
+  client: SupabaseClient,
+  projectId: string,
+  args: ReconcileEntityArgs,
+): Promise<ReconcileEntityResult> {
+  if (!args.name?.trim()) throw new Error('name is required');
+  if (!args.to_kind?.trim()) throw new Error('to_kind is required');
+  const name = args.name.trim();
+  const toKind = args.to_kind.trim();
+  const fromKind = (args.from_kind ?? 'concept').trim();
+  if (fromKind === toKind) throw new Error('from_kind and to_kind must differ (nothing to reconcile)');
+
+  const workspaceId = await getWorkspaceId(client, projectId);
+
+  // Find the stub (the lower-typed node — a 'concept' minted as a side effect by resolveOrCreateEntity).
+  const { data: stub, error: stubErr } = await client
+    .from('knowledge_entities')
+    .select(ENTITY_COLS)
+    .eq('workspace_id', workspaceId)
+    .eq('kind', fromKind)
+    .eq('name', name)
+    .maybeSingle();
+  if (stubErr) throw new Error(stubErr.message);
+  if (!stub) throw new Error(`No ${fromKind} entity named "${name}" to reconcile`);
+  const stubRow = stub as unknown as KnowledgeEntityFull;
+
+  // Does a typed node of the same name already exist under to_kind?
+  const { data: typed, error: typedErr } = await client
+    .from('knowledge_entities')
+    .select(ENTITY_COLS)
+    .eq('workspace_id', workspaceId)
+    .eq('kind', toKind)
+    .eq('name', name)
+    .maybeSingle();
+  if (typedErr) throw new Error(typedErr.message);
+
+  // --- Case (a): UPGRADE-IN-PLACE — no collision, no references move. ---
+  if (!typed) {
+    const patch: Record<string, unknown> = { kind: toKind };
+    if (args.description !== undefined) patch.description = args.description;
+    const { data: upgraded, error: upErr } = await client
+      .from('knowledge_entities')
+      .update(patch)
+      .eq('workspace_id', workspaceId)
+      .eq('id', stubRow.id)
+      .select(ENTITY_COLS)
+      .single();
+    if (upErr) throw new Error(upErr.message);
+    return { mode: 'upgrade-in-place', entity: upgraded as unknown as KnowledgeEntityFull };
+  }
+
+  // --- Case (b): MERGE — repoint every reference stub→typed, then delete the stub. ---
+  const typedRow = typed as unknown as KnowledgeEntityFull;
+
+  // 1) Facts: bulk repoint subject_entity_id (RETURNING the moved rows gives the count).
+  const { data: movedFacts, error: factErr } = await client
+    .from('knowledge_facts')
+    .update({ subject_entity_id: typedRow.id })
+    .eq('workspace_id', workspaceId)
+    .eq('subject_entity_id', stubRow.id)
+    .select('id');
+  if (factErr) throw new Error(factErr.message);
+  const factCount = (movedFacts ?? []).length;
+
+  // 2) Decisions: affected_entity_ids is an array — rewrite stub→typed per row and DEDUP (a decision
+  //    already referencing BOTH the stub and the typed node would otherwise list the typed id twice —
+  //    the conflict case merge must handle).
+  const { data: decisionRows, error: decSelErr } = await client
+    .from('knowledge_decisions')
+    .select('id, affected_entity_ids')
+    .eq('workspace_id', workspaceId)
+    .contains('affected_entity_ids', [stubRow.id]);
+  if (decSelErr) throw new Error(decSelErr.message);
+  let decisionCount = 0;
+  for (const row of (decisionRows ?? []) as Array<{ id: string; affected_entity_ids: string[] }>) {
+    const current = row.affected_entity_ids ?? [];
+    const rewritten = Array.from(new Set(current.map((id) => (id === stubRow.id ? typedRow.id : id))));
+    const { error: decUpdErr } = await client
+      .from('knowledge_decisions')
+      .update({ affected_entity_ids: rewritten })
+      .eq('workspace_id', workspaceId)
+      .eq('id', row.id);
+    if (decUpdErr) throw new Error(decUpdErr.message);
+    decisionCount++;
+  }
+
+  // 3) Events: best-effort repoint of the append-only log. Under the user-JWT (authenticated) role the
+  //    events UPDATE is RLS-blocked and no-ops — but the FK's ON DELETE SET NULL cleans the reference
+  //    up on the stub deletion below, so a failed events repoint never dangles a reference and must
+  //    NEVER fail the merge (the log is thin/best-effort by design — knowledge-model-v1 §3).
+  let eventCount = 0;
+  try {
+    const { data: movedEvents } = await client
+      .from('knowledge_events')
+      .update({ entity_id: typedRow.id })
+      .eq('workspace_id', workspaceId)
+      .eq('entity_id', stubRow.id)
+      .select('id');
+    eventCount = (movedEvents ?? []).length;
+  } catch {
+    // never block the merge on the append-only event log
+  }
+
+  // 4) Delete the now-unreferenced stub.
+  const { error: delErr } = await client
+    .from('knowledge_entities')
+    .delete()
+    .eq('workspace_id', workspaceId)
+    .eq('id', stubRow.id);
+  if (delErr) throw new Error(delErr.message);
+
+  return {
+    mode: 'merge',
+    entity: typedRow,
+    merged_stub_id: stubRow.id,
+    repointed: { facts: factCount, decisions: decisionCount, events: eventCount },
+  };
+}
+
+export const reconcileEntityTool = {
+  name: 'reconcile_entity',
+  description:
+    "Reconcile a low-typed entity stub (default kind 'concept') into a richer typed node of the same name — " +
+    'the folded B-399 capability. Two modes, chosen automatically: (a) UPGRADE-IN-PLACE when NO same-named node ' +
+    'exists under to_kind — the stub row is retyped in place (kind/description), no references move; ' +
+    '(b) MERGE when a same-named to_kind node ALREADY exists — every referencing row ' +
+    '(facts.subject_entity_id, decisions.affected_entity_ids, events.entity_id) is repointed to the typed node ' +
+    '(deduping arrays), then the stub is deleted. Prevents two nodes for the same real thing.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      name: { type: 'string', description: 'The shared entity name to reconcile' },
+      to_kind: { type: 'string', description: 'The richer target kind (e.g. component, feature, persona)' },
+      from_kind: { type: 'string', description: "The stub's kind. Default 'concept'." },
+      description: { type: 'string', description: 'Optional refreshed one-line description (applied on upgrade-in-place)' },
+    },
+    required: ['name', 'to_kind'],
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Handler: assertFact
 // ---------------------------------------------------------------------------
 
