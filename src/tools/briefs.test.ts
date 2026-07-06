@@ -91,6 +91,16 @@ describe('renderBrief', () => {
     expect(md).toContain('- [ ] Pick sidebar placement');
     expect(md).not.toContain('Confidentiality rule is already fixed');
   });
+
+  it('appends the depth-pointer footer when a decision_ref is supplied (B-674)', () => {
+    const md = renderBrief(baseDoc(), { type: 'specification', id: 'abc' });
+    expect(md).toContain('fuller depth lives in the linked decision entry');
+  });
+
+  it('omits the depth-pointer footer when no decision_ref is supplied (B-674)', () => {
+    const md = renderBrief(baseDoc());
+    expect(md).not.toContain('fuller depth lives in the linked decision entry');
+  });
 });
 
 describe('lintBrief', () => {
