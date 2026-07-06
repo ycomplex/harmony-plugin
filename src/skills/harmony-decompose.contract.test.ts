@@ -24,13 +24,13 @@ describe('harmony-decompose skill contract', () => {
     expect(tools).toContain('advance_workflow');
     expect(skill.body).toContain('decomposition-proposal');
   });
-  it('promotes new children with `promoting` only — no off-by-one `capturing` step (B-465)', () => {
+  it('promotes new children with `proposing` only — no off-by-one `capturing` step (B-465)', () => {
     // manage_subtasks add_new lands children at Captured (the tasks_default_workflow_state
-    // insert trigger), so the only valid promotion edge is Captured->Idea ('promoting').
+    // insert trigger), so the only valid promotion edge is Captured->Proposed ('proposing').
     // A 'capturing' step (valid only NULL->Captured) would be rejected by the transition
     // guard. Guard against re-introducing the off-by-one (the skill was broken as written).
     expect(skill.body).not.toContain('activity: "capturing"');
-    expect(skill.body).toContain('activity: "promoting"');
+    expect(skill.body).toContain('activity: "proposing"');
   });
   it('handles the explicit "no decomposition needed" decision', () => {
     expect(skill.body.toLowerCase()).toContain('no decomposition');

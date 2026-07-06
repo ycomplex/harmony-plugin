@@ -54,13 +54,13 @@ patch author). A Stale task that already carries a `stale-patch-review` brief ha
 Awaiting you (3):
 
 CLARIFICATION
-  B-316  Saved Filter state            [Idea]       "Is a saved filter per-user or shared?"   → /harmony-next
+  B-316  Saved Filter state            [Proposed]   "Is a saved filter per-user or shared?"   → /harmony-next
 
 RELEASE DECISION
   B-301  Bulk export to CSV            [Built]      "Release the CSV export to production?"    → /harmony-plugin:finish-work B-301
 
 STALE — KNOWLEDGE CHANGED (agent will draft a patch for review)
-  B-288  Deploy webhook                [Released]   superseded: "harmony-web CI/CD…"  → /harmony-next B-288
+  B-288  Deploy webhook                [Deployed]   superseded: "harmony-web CI/CD…"  → /harmony-next B-288
 ```
 
 ### 5. Offer to pick one up

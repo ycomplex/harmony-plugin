@@ -21,7 +21,7 @@ import { resolveTaskId } from './resolve-task-id.js';
 //
 // UMBRELLA EXEMPTION (AC4): a ticket with >=1 non-archived child is an umbrella
 // — its build evidence is carried by its children (the B-471 roll-up reaches a
-// split umbrella to Released without it doing its own build), so the evidence
+// split umbrella to Deployed without it doing its own build), so the evidence
 // requirement does NOT apply. `complete` is true and `exempt_reason` explains
 // why. A leaf ticket (no children) that carries its own build is `complete`
 // only when it has test cases AND every AC is checked AND a PR/merge/deploy

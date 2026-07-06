@@ -14,13 +14,13 @@ drift hazard this file removes).
 
 | gate | from `workflow_state` | brief `awaiting_human_reason` | owning skill | accept is… | hard floor |
 |---|---|---|---|---|---|
-| clarify | Idea | `clarification-draft` | `harmony-clarify` | **side-effecting** (accept files the clarify-authored happy-path ACs first — `manage_acceptance_criteria`, idempotent — then `resolve_brief`; B-648) | no |
+| clarify | Proposed | `clarification-draft` | `harmony-clarify` | **side-effecting** (accept files the clarify-authored happy-path ACs first — `manage_acceptance_criteria`, idempotent — then `resolve_brief`; B-648) | no |
 | decompose | Clarified | `decomposition-proposal` | `harmony-decompose` | **side-effecting** (accept creates children first) | no |
 | design | Decomposed | `design-decision-draft` | `harmony-design-decide --track <sub-track>` | **pure** (per sub-track; serialized) | no |
 | plan | Designed | `plan-draft` | `start-work` | **pure** (accept = `resolve_brief`; the "go" to build) | no |
 | build | Planned | (files `release-decision-pending`) | `start-work` | build work, then files the release brief | no |
 | **release** | Built | `release-decision-pending` | `finish-work` | **side-effecting** (accept → merge + deploy) | **YES — always human** |
-| **verify** | Released | `verification-ack-pending` | `finish-work` (verify step) | **side-effecting** (observe prod); also the PR-less umbrella path | **YES — always human** |
+| **verify** | Deployed | `verification-ack-pending` | `finish-work` (verify step) | **side-effecting** (observe prod); also the PR-less umbrella path | **YES — always human** |
 
 Terminal states (`Verified`, `Parked`, `Cancelled`) have no gate — they end the lifecycle.
 
@@ -55,10 +55,10 @@ lifecycle rather than the implementation.
 
 | condition | owning step / skill | note |
 |---|---|---|
-| `Captured` → promoting | (none — `advance_workflow`) | brief-less plumbing (Captured→Idea). **Handling differs by skill:** `harmony-conduct` auto-advances it; `harmony-next` surfaces it as a human triage decision. |
+| `Captured` → proposing | (none — `advance_workflow`) | brief-less plumbing (Captured→Proposed). **Handling differs by skill:** `harmony-conduct` auto-advances it; `harmony-next` surfaces it as a human triage decision. |
 | `stale` ticket | `harmony-stale-patch` | a superseded decision put the ticket out of sync — drafts a `stale-patch-review` brief; never on the forward path, never auto-advanced. |
 
-The **promoting** row is the canonical example of *"same routing, opposite handling, by design"* (B-490):
+The **proposing** row is the canonical example of *"same routing, opposite handling, by design"* (B-490):
 the owning step is shared, but each skill's *handling* of it is deliberately different — and that handling
 lives in the skill, not here.
 
@@ -78,6 +78,6 @@ contract (Accepted: B-550 `5d33aba5`, delivered by B-518):
   or several is decompose's call, not clarify's.
 
 Why this line: children inherit the parent's clarification (state-machine §8.1) and each
-decompose-created child re-clarifies narrowly from its own Idea state — so the intended flow is one
+decompose-created child re-clarifies narrowly from its own Proposed state — so the intended flow is one
 broad parent clarification → decompose splits → children re-clarify. A clarify-side complexity split
 pre-empts that design and produces premature splits before the design is understood.

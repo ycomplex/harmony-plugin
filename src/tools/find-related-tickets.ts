@@ -28,7 +28,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 //   3. Self-exclude the subject ticket.
 //   4. Enrich each candidate via a tasks lookup → visual_id, title, workflow_state,
 //      milestone_id, archived. Drop archived AND every NON-FOLDABLE state — terminal-dead
-//      (Cancelled / Parked) AND done (Verified / Released). The clarify card folds/subsumes
+//      (Cancelled / Parked) AND done (Verified / Deployed). The clarify card folds/subsumes
 //      only OPEN work, so only open/foldable candidates are returned.
 //      (B-581: reversed B-574's keep-terminal decision — disproven by dogfood.)
 //   5. Rank PURELY by combined RRF score (DESC); cap at limit (default 5). No
@@ -201,7 +201,7 @@ export async function findRelatedTickets(
   }
 
   // 4. Enrich each candidate via a tasks lookup. Drop archived AND every NON-FOLDABLE
-  //    candidate — terminal-dead (Cancelled / Parked) AND done (Verified / Released).
+  //    candidate — terminal-dead (Cancelled / Parked) AND done (Verified / Deployed).
   //    The clarify card folds/subsumes only OPEN work, so done tickets are excluded too.
   //    (B-581: reversed B-574's keep-terminal decision — disproven by dogfood.)
   const candidateIds = [...byTask.keys()];
@@ -215,7 +215,7 @@ export async function findRelatedTickets(
   const candidates: RelatedTicketCandidate[] = [];
   for (const r of (rows ?? []) as Array<Record<string, any>>) {
     if (r.archived) continue;                            // drop archived candidates
-    if (EXCLUDED_WORKFLOW_STATES.has(r.workflow_state)) continue;  // drop non-foldable: Cancelled / Parked (dead) + Verified / Released (done)
+    if (EXCLUDED_WORKFLOW_STATES.has(r.workflow_state)) continue;  // drop non-foldable: Cancelled / Parked (dead) + Verified / Deployed (done)
     const agg = byTask.get(r.id);
     if (!agg) continue;
     const projectKey = r.projects?.key ?? '?';
@@ -247,10 +247,10 @@ export async function findRelatedTickets(
 
 // Workflow states EXCLUDED from the fold list — every NON-FOLDABLE state. Two kinds:
 // terminal-dead (Cancelled / Parked — neither foldable nor a useful signal) AND done
-// (Verified / Released — already delivered, so not foldable either). The clarify card
+// (Verified / Deployed — already delivered, so not foldable either). The clarify card
 // folds/subsumes only OPEN work. (B-581: reversed B-574's keep-terminal decision —
-// disproven by dogfood; Verified / Released used to be retained here as dedup signals.)
-const EXCLUDED_WORKFLOW_STATES = new Set(['Cancelled', 'Parked', 'Verified', 'Released']);
+// disproven by dogfood; Verified / Deployed used to be retained here as dedup signals.)
+const EXCLUDED_WORKFLOW_STATES = new Set(['Cancelled', 'Parked', 'Verified', 'Deployed']);
 
 /** Add one ranked list's Reciprocal Rank Fusion contribution for a task. A task
  *  surfaced by multiple lists (e.g. both route-1 framings + route-2) accumulates a
@@ -352,7 +352,7 @@ async function resolveTaskId(
 export const findRelatedTicketsTool = {
   name: 'find_related_tickets',
   description:
-    'Surface tickets related to / duplicating / overlapping a subject ticket — the dedup pipeline used at the clarify gate. MULTI-QUERY retrieval fused by Reciprocal Rank Fusion (RRF by rank, not a raw max, so the routes’ incommensurable score scales can’t dominate each other) over THREE ranked lists: lexical content match on title+description (route 1, full), a SECOND lexical match on the title ALONE (route 1, title — rescues siblings the full-text framing dilutes), and intent retrieval (route 2, semantic+lexical over ticket intents). Self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), and ranks PURELY by relevance (combined RRF score). Returns only OPEN / foldable candidates — excludes archived + Cancelled + Parked + Verified + Released (the clarify card folds/subsumes only open work; B-581 reversed B-574’s keep-terminal decision). Unmilestoned candidates are FLAGGED (`unmilestoned: true`) for the renderer to badge — they are NOT reordered (relevance order is authoritative). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. Degrades gracefully (returns lexical-only results with degraded:true) if intent retrieval is unavailable.',
+    'Surface tickets related to / duplicating / overlapping a subject ticket — the dedup pipeline used at the clarify gate. MULTI-QUERY retrieval fused by Reciprocal Rank Fusion (RRF by rank, not a raw max, so the routes’ incommensurable score scales can’t dominate each other) over THREE ranked lists: lexical content match on title+description (route 1, full), a SECOND lexical match on the title ALONE (route 1, title — rescues siblings the full-text framing dilutes), and intent retrieval (route 2, semantic+lexical over ticket intents). Self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), and ranks PURELY by relevance (combined RRF score). Returns only OPEN / foldable candidates — excludes archived + Cancelled + Parked + Verified + Deployed (the clarify card folds/subsumes only open work; B-581 reversed B-574’s keep-terminal decision). Unmilestoned candidates are FLAGGED (`unmilestoned: true`) for the renderer to badge — they are NOT reordered (relevance order is authoritative). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. Degrades gracefully (returns lexical-only results with degraded:true) if intent retrieval is unavailable.',
   inputSchema: {
     type: 'object' as const,
     properties: {

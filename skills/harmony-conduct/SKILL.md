@@ -43,7 +43,7 @@ control choice for no safety gain. Neither weakens the controlled default or the
    the owning gate skill's accept path — the exact same routing the controlled flow uses when a human types
    "accept" — so the gate's decision is *recorded identically*; only the human pause is skipped.
 3. **The HARD FLOOR is always human, regardless of any flag or dial.** The workspace safety rails — the
-   **release** gate (merge + deploy: one-way, irreversible) and the **verify** gate (Released→Verified) —
+   **release** gate (merge + deploy: one-way, irreversible) and the **verify** gate (Deployed→Verified) —
    are NEVER auto-resolved by the conductor. Even `--unattended`/`--escalate` pause at release and at
    verify. One-way / irreversible decisions always surface for a human.
 3a. **The RISK-CLASS FLOOR is non-discretionary and dial-independent — and B-516 scopes WHERE it pauses.**
@@ -225,18 +225,18 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    it and pause (*§4. Surface the brief + pause*) — exactly as `harmony-next` does. The loop does not
    advance a Stale ticket past the patch decision, even unattended.
 
-4. **If `workflow_state === 'Captured'` → auto-advance `promoting` (plumbing, NOT a pause), then loop
-   again.** A freshly-created ticket lands in `Captured` (the post-B-474 inbox state). `promoting`
-   (Captured→Idea) is a **brief-less AGENT/SYSTEM transition** with no human decision attached — and in the
+4. **If `workflow_state === 'Captured'` → auto-advance `proposing` (plumbing, NOT a pause), then loop
+   again.** A freshly-created ticket lands in `Captured` (the post-B-474 inbox state). `proposing`
+   (Captured→Proposed) is a **brief-less AGENT/SYSTEM transition** with no human decision attached — and in the
    conductor, *choosing to conduct this ticket IS the promote decision* (the human named it; they've
    already decided it's worth pursuing). So the conductor advances it itself, with **no brief and no
-   pause**: `mcp__harmony__advance_workflow({ task_id, activity: 'promoting' })` (Captured→Idea). Then go
-   back to step 1 (re-read) — the ticket is now `Idea` and the next iteration runs the clarify gate.
+   pause**: `mcp__harmony__advance_workflow({ task_id, activity: 'proposing' })` (Captured→Proposed). Then go
+   back to step 1 (re-read) — the ticket is now `Proposed` and the next iteration runs the clarify gate.
    **Do NOT** try to file a `clarifying` brief from `Captured` — the transition table only allows
-   `('Captured','promoting','Idea')` then `('Idea','clarifying','Clarified')`, so `compose_brief` with
+   `('Captured','proposing','Proposed')` then `('Proposed','clarifying','Clarified')`, so `compose_brief` with
    `pending_activity: 'clarifying'` would hard-error from `Captured`. (This is the one self-advance the
    conductor makes regardless of mode; it advances no *human* decision — contrast `harmony-next`, which
-   **surfaces** promoting as a human triage decision because it pulls un-triaged queue items, see
+   **surfaces** proposing as a human triage decision because it pulls un-triaged queue items, see
    harmony-next's routing.)
 
 5. **If `workflow_state === 'Decomposed'`, branch split-umbrella vs no-split BEFORE routing to design.**
@@ -250,8 +250,8 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
      child's visual ID + title + `workflow_state` — and **end the run on the parent** (*report-and-stop*,
      see *§5. Terminal conditions*). The parent completes on its own via the **B-471 umbrella-auto-verify
      roll-up**: once all children reach Verified, the DB trigger forward-advances the parent
-     Decomposed→Released, and finish-work's no-PR verify path (the `umbrella-auto-verify` null-brief
-     handling, §4) carries Released→Verified with a human ack. Tell the human to **conduct the children** to
+     Decomposed→Deployed, and finish-work's no-PR verify path (the `umbrella-auto-verify` null-brief
+     handling, §4) carries Deployed→Verified with a human ack. Tell the human to **conduct the children** to
      drive it. This branch **advances no state and files no brief** — it is a brief-less, resumable
      end-of-run; it is **never auto-advanced** and **dial-independent** (there is no decision to delegate, so
      no mode / flag / floor applies). *(Forward-compatible seam: a later phase — B-508 — may replace
@@ -310,7 +310,7 @@ pause wins; only if none force a pause does the gate auto-advance:
 The **risk-class floor pauses a delegated gate ONLY in `--escalate`** (step 3) — there it beats the mode
 table and the escalate judgment; in `--unattended`/`--pause-at` it does not pause but is carried to the
 release brief. `stale` is likewise never auto-advanced (loop step 3), and a `Captured` ticket always
-self-advances `promoting` as plumbing (loop step 4), not via this test.
+self-advances `proposing` as plumbing (loop step 4), not via this test.
 
 Lifecycle order for "strictly before": `clarify < decompose < design < plan < build < release < verify`.
 
@@ -418,18 +418,18 @@ Branch on `workflow_state` to pick the next gate. **The canonical gate→owning-
 owns each gate, whether accept is pure or side-effecting, and where the hard floor sits — lives in
 `skills/harmony-shared/gate-routing.md`. Consult it; do not restate it here.** The conductor reads that
 table keyed by `workflow_state` (walking forward one state at a time); `harmony-next` reads the same table
-keyed by `awaiting_human_reason` (resolving an existing brief). The forward path it walks: `Idea` →
-`Clarified` → `Decomposed` → `Designed` → `Planned` → `Built` → `Released` → `Verified`.
+keyed by `awaiting_human_reason` (resolving an existing brief). The forward path it walks: `Proposed` →
+`Clarified` → `Decomposed` → `Designed` → `Planned` → `Built` → `Deployed` → `Verified`.
 
 What is **conduct-specific** (NOT in the shared table — this is the conductor's *handling*, not the routing
 facts; this is the deliberate other half of B-490's "same routing, opposite handling"):
 
 | `workflow_state` | Conductor's handling |
 |---|---|
-| Captured | auto-advance `promoting` (Captured→Idea) as **plumbing, not a pause** — see loop step 4 (the OPPOSITE of `harmony-next`, which surfaces promoting as a triage decision) |
+| Captured | auto-advance `proposing` (Captured→Proposed) as **plumbing, not a pause** — see loop step 4 (the OPPOSITE of `harmony-next`, which surfaces proposing as a triage decision) |
 | Decomposed **(split umbrella)** | **report-and-stop** — the children carry design/build; the B-471 roll-up completes the parent (loop step 5). NOT a forward gate |
 | Decomposed **(no-split)** | run the **design** gate (owning skill per `gate-routing.md`); serialized per sub-track (see below) |
-| Built / Released | the **release** / **verify** gates — **HARD FLOOR, always human** (gate-routing.md marks these); never auto-advanced |
+| Built / Deployed | the **release** / **verify** gates — **HARD FLOOR, always human** (gate-routing.md marks these); never auto-advanced |
 | Verified / Parked / Cancelled | TERMINAL — loop ends |
 
 **Designing is multi-sub-track and serialized** (and applies to a **no-split** parent only — loop step 5
@@ -503,19 +503,19 @@ Progress for B-123 (state: Decomposed):
 
 | `workflow_state` | Current phase (→ `in_progress`) |
 |---|---|
-| Captured / Idea | clarify |
+| Captured / Proposed | clarify |
 | Clarified | decompose |
 | Decomposed | design |
 | Designed | plan |
 | Planned | build |
 | Built | release |
-| Released | verify |
+| Deployed | verify |
 | Verified | — all `completed` (terminal) |
 | Parked / Cancelled | mark phases through the last-reached one `completed`, leave the rest `pending`; the run is terminal |
 
-(`Captured` and `Idea` both map to the `clarify` phase — a `Captured` ticket auto-advances `promoting` to
-`Idea` first, §"The loop" step 4, so the very next overview after the promote shows `clarify` as
-`in_progress` exactly as it would from `Idea`.) For **Verified**, mark every item `completed`. For
+(`Captured` and `Proposed` both map to the `clarify` phase — a `Captured` ticket auto-advances `proposing` to
+`Proposed` first, §"The loop" step 4, so the very next overview after the promote shows `clarify` as
+`in_progress` exactly as it would from `Proposed`.) For **Verified**, mark every item `completed`. For
 **Parked**/**Cancelled**, the run is terminal — the list shows progress frozen where it stopped (no
 `in_progress` item). Keep it to this high-level phase map; per-design-sub-track granularity is **not**
 required (if a `design` sub-track is mid-serialization you may note it in the design item's text, but only
@@ -574,7 +574,7 @@ Surface the active brief so the human can decide:
 - **Null brief on a `verification-ack-pending` umbrella (B-471):** `get_brief` can be **null** when
   `awaiting_human_reason = 'verification-ack-pending'` and `awaiting_human_ref.kind ===
   'umbrella-auto-verify'` — the trigger-surfaced **PR-less umbrella** (a decomposed parent the DB trigger
-  auto-advanced Decomposed→Released once all children reached Verified; it set the flag but composed no
+  auto-advanced Decomposed→Deployed once all children reached Verified; it set the flag but composed no
   brief). Do **not** choke on the missing brief. The `verifying` gate already routes to
   `/harmony-plugin:finish-work <ticket>` (per the map), which composes the verification brief first and
   then surfaces it. Recognise the umbrella by the `umbrella-auto-verify` marker on `awaiting_human_ref`.
@@ -740,7 +740,7 @@ resolved (in the browser or terminal); classify which resolution it was:
    guard). What remains is any **side effect** that only runs where the agent runs:
    - **Pure gate** (design sub-tracks, plan `plan-draft`): nothing further — the
      accept fully resolved mechanically. **Continue the loop at step 1** from the new state.
-   - **Side-effecting CLARIFY** (`brief-review`, B-648): the web accept advanced Idea→Clarified **but
+   - **Side-effecting CLARIFY** (`brief-review`, B-648): the web accept advanced Proposed→Clarified **but
      filed no ACs** (the web is mechanical-only; it cannot file the clarify-authored happy-path ACs).
      Route the human's **actual** accept to **`/harmony-plugin:harmony-clarify <ticket>`'s accept path**
      (the same path §4b uses for a synthesized accept, but here the human already accepted) so the ACs
@@ -813,12 +813,12 @@ release/verify accept (the §4b auto-advance excludes them in every mode). But w
 floor holds by construction), it consumes that human decision and runs the side effect **in the running
 session** by routing to `/harmony-plugin:finish-work <ticket>`:
 - **release**: the web accept of the release brief clears the flag but **leaves the ticket at Built**
-  (the release brief carries `pending_activity: null` — Built→Released is SYSTEM-on-deploy-success, not
+  (the release brief carries `pending_activity: null` — Built→Deployed is SYSTEM-on-deploy-success, not
   human-accept; see finish-work O1/O2). So on detecting a human browser-accept of release (flag cleared,
   still `Built`, no `pending_resolution`), route to `finish-work` to run the **merge + deploy** in-session;
-  finish-work advances Built→Released only after the deploy actually succeeds.
+  finish-work advances Built→Deployed only after the deploy actually succeeds.
 - **verify**: likewise route to `finish-work`'s verify step on a human browser-accept; it advances
-  Released→Verified.
+  Deployed→Verified.
 If the human did NOT act (no browser accept), release/verify stay paused — the conductor waits or the watch
 window expires; it never advances them itself.
 
@@ -879,7 +879,7 @@ The loop **ends** (does not pause for resume) when, after re-reading the ticket 
   Verified/Parked/Cancelled — it will still complete via the roll-up) and **not** a controlled pause (no
   brief, `awaiting_human_input` stays false — there is nothing for the human to decide here). It simply ends
   *this run*, and is **resumable**: re-running `/harmony-conduct <umbrella>` reconstitutes from the ticket
-  row — if the B-471 roll-up has since advanced the parent to Released, the loop resumes at the verify hard
+  row — if the B-471 roll-up has since advanced the parent to Deployed, the loop resumes at the verify hard
   floor; to Verified → reports terminal; still Decomposed-with-children → re-renders the umbrella report. The
   conductor never auto-advances it (dial-independent — no decision to delegate).
 

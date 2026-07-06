@@ -93,7 +93,7 @@ mcp__harmony__advance_workflow({ task_id, activity: "building" })   // Planned -
 ```
 
 Then file the release-decision brief (the ticket is now awaiting the human's release call). Note
-`pending_activity: null` — the human's accept is the "go", but Built→Released is SYSTEM-on-deploy-success
+`pending_activity: null` — the human's accept is the "go", but Built→Deployed is SYSTEM-on-deploy-success
 (state-machine §6.1), advanced by the release path (`/harmony-plugin:finish-work`) *after* the deploy, not by the accept (review F4):
 
 ```

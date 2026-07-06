@@ -17,7 +17,7 @@ brief reason, and entry points stale-patch lacks.
 
 > **Input-state principle (B-529).** A revise-scope revert lands at the re-targeted gate's **INPUT** state and
 > hands off to a **NATIVE re-run** — the revised upstream decision is authored through that gate's OWN surface,
-> **NOT folded into the revise-scope brief**. The landings are **clarify→`Idea`, decompose→`Clarified`,
+> **NOT folded into the revise-scope brief**. The landings are **clarify→`Proposed`, decompose→`Clarified`,
 > design→`Decomposed`** (each gate's input, not its output). This skill only **supersedes** the invalidated
 > decisions and reverts; it does **not** author the revised decision — the next `harmony-conduct` re-runs the
 > target gate to author it fresh.
@@ -37,7 +37,7 @@ brief reason, and entry points stale-patch lacks.
    **kept**. The drafted brief lists both (supersede-list vs keep-list) so the human can see exactly what the
    back-up touches.
 4. **Never silently orphan children (B-473).** A revert that **crosses the decompose gate** — a target of
-   **clarify** (→`Idea`) or **decompose** (→`Clarified`), landing *before* `Decomposed`, which supersedes the
+   **clarify** (→`Proposed`) or **decompose** (→`Clarified`), landing *before* `Decomposed`, which supersedes the
    decompose decision that created this ticket's children — must dispose of those children **explicitly and
    recoverably**, never leave them orphaned under a re-gated parent. Two tiers: **auto cancel+archive**
    work-less children; **block + require an explicit per-child disposition** (**drop** / **reparent** /
@@ -82,15 +82,15 @@ any target, and — new in **B-609** — the build phase (`Planned` / `Built`) f
   `Decomposed` from any of these (the B-609 web migration seeds `Planned`/`Built` → `revising-decomposing` →
   `Decomposed`; `Designed` already exists from B-519). NO guard/activity change — the `revising-%` stale-clear
   and the B-482 brief-clear apply for free.
-- **`--to decompose`** (→`Clarified`) **or `--to clarify`** (→`Idea`): accept ONLY `Decomposed` or `Designed`.
+- **`--to decompose`** (→`Clarified`) **or `--to clarify`** (→`Proposed`): accept ONLY `Decomposed` or `Designed`.
   A **build-state source (`Planned`/`Built`) is REJECTED** for these targets (AC4). Say so and give the
   **compose-pointer**: *"A build-state ticket can only back up `--to design` (to `Decomposed`) — the
   build-phase back-edge lands only at `Decomposed`. Back up `--to design` to `Decomposed` first, then revert
   further from `Decomposed` to re-decompose/re-clarify."* Build states are accepted **only** for a design
   target.
-- **`Released` / `Verified` source:** this extension does **NOT** apply — post-release backflow is human-only
-  (AC6). Say so and stop; do not draft a build-state revert from a released/verified ticket.
-- **`Idea` (or earlier) source:** already at the earliest discovery state — nothing to back up to. Say so and
+- **`Deployed` / `Verified` source:** this extension does **NOT** apply — post-release backflow is human-only
+  (AC6). Say so and stop; do not draft a build-state revert from a deployed/verified ticket.
+- **`Proposed` (or earlier) source:** already at the earliest discovery state — nothing to back up to. Say so and
   stop.
 
 **Active-brief precondition (relaxed for build-state sources, B-609).** A `Decomposed`/`Designed` source is
@@ -122,7 +122,7 @@ Pick the **earliest discovery gate the scope change actually requires reverting 
 necessary. The revert lands at that gate's **INPUT** state (so the gate re-runs natively, B-529):
 
 - the broadened scope changes **what the ticket fundamentally is** (the spec itself) → target **clarify**
-  (revert to **`Idea`** — clarify's input).
+  (revert to **`Proposed`** — clarify's input).
 - the spec is fine but the broadened scope changes **how the work splits** (the decompose decision) → target
   **decompose** (revert to **`Clarified`** — decompose's input).
 - the spec and the split are fine but the broadened scope invalidates a **design sub-track** decision → target
@@ -152,7 +152,7 @@ Then, from the gate decisions in step 1, split them into:
 
 ### 3a. Child disposition — only when the target crosses the decompose gate (B-473)
 
-A target of **clarify** (→`Idea`) or **decompose** (→`Clarified`) reverts the ticket to *before* `Decomposed`,
+A target of **clarify** (→`Proposed`) or **decompose** (→`Clarified`) reverts the ticket to *before* `Decomposed`,
 superseding the decompose decision that **created** this ticket's children — so those children would be
 orphaned. (A **design** target lands at `Decomposed` with the decompose decision intact, so it does **not**
 cross the gate — skip this step.)
@@ -167,7 +167,7 @@ for (const child of children) {
 }
 ```
 
-A non-archived child **has work** iff `workflow_state ∉ {Captured, Idea}` (a gate decision was made on it) OR
+A non-archived child **has work** iff `workflow_state ∉ {Captured, Proposed}` (a gate decision was made on it) OR
 it has ≥1 non-archived child of its own. Partition into **work-less** (Tier 1) and **work-bearing** (Tier 2);
 the brief (step 4) and the accept (step 5) act on this partition.
 
@@ -180,15 +180,15 @@ gate's **INPUT** state:
 
 | target gate | `revising-*` activity | lands at (INPUT) |
 |---|---|---|
-| clarify | `revising-promoting` | `Idea` |
+| clarify | `revising-promoting` | `Proposed` |
 | decompose | `revising-clarifying` | `Clarified` |
 | design | `revising-decomposing` | `Decomposed` |
 
 (Backflow semantics, B-529: each `revising-*` activity lands at the re-targeted gate's INPUT state — the
-milestone the gate re-runs FROM, not the one it produces. `revising-promoting` lands at `Idea` (the state the
-forward `promoting` activity produces), so it is **not** named after a discovery gate — see the docs note
-below. The web migration seeds the back-edges — `revising-promoting` is the Phase-1 edge for clarify
-(`{Clarified,Decomposed,Designed}→revising-promoting→Idea`); decompose's `{Decomposed,Designed}→
+milestone the gate re-runs FROM, not the one it produces. `revising-promoting` lands at `Proposed` (the state the
+forward `proposing` activity — named `promoting` when this edge was minted — produces), so it is **not** named
+after a discovery gate — see the docs note below. The web migration seeds the back-edges — `revising-promoting` is the Phase-1 edge for clarify
+(`{Clarified,Decomposed,Designed}→revising-promoting→Proposed`); decompose's `{Decomposed,Designed}→
 revising-clarifying→Clarified` and design's `Designed→revising-decomposing→Decomposed` already exist from
 B-519 — so `advance_workflow` validates them. **This skill's `advance_workflow(revising-promoting)`
 hard-errors until that migration is deployed** — promote in lockstep, web migration first.)
@@ -215,14 +215,14 @@ mcp__harmony__compose_brief({
                                             // ("revising-clarifying" for decompose, "revising-decomposing" for design)
   doc: {
     decide: "Back B-123 up to re-clarify against the broadened scope (the design gate revealed the spec was too narrow)?",
-    recommend: { text: "Revert to Idea and re-run clarify natively against the real scope", confidence: "high" },
+    recommend: { text: "Revert to Proposed and re-run clarify natively against the real scope", confidence: "high" },
     why: [
       "The design-gate discussion grew the scope from X to X+Y",
       "The accepted clarify spec + no-split decompose decision assume the narrow scope",
       "Re-running clarify natively authors a fresh spec through the clarify gate's own surface (not folded here)"
     ],
     items: [
-      { kind: "decision", text: "Revert to Idea and re-run clarify natively; supersede the clarify spec + decompose decision; keep the unaffected product-design sub-track", recommendation: "accept" }
+      { kind: "decision", text: "Revert to Proposed and re-run clarify natively; supersede the clarify spec + decompose decision; keep the unaffected product-design sub-track", recommendation: "accept" }
     ]
   }
 })
@@ -263,7 +263,7 @@ Show the rendered `content` verbatim. On the human's command:
      decision `Superseded` with `superseded_by=null` and creates NO successor decision (providing exactly one
      of type/title is rejected; provide both only to supersede-with-successor, which this flow never does).
   2. **Revert state to the gate's INPUT via the back-edge:** `mcp__harmony__advance_workflow({ task_id,
-     activity })` with the activity that lands at the target's INPUT — `revising-promoting` (→`Idea`) for a
+     activity })` with the activity that lands at the target's INPUT — `revising-promoting` (→`Proposed`) for a
      clarify target, `revising-clarifying` (→`Clarified`) for decompose, `revising-decomposing` (→`Decomposed`)
      for design. The DB guard then, in the same pass, **auto-clears the orphaned active downstream brief** (the
      B-482 reconciliation guard — direction-agnostic, closes any active brief on a state change) **AND
@@ -281,7 +281,7 @@ Show the rendered `content` verbatim. On the human's command:
      re-build from the revised design, so the orphaned PR/branch/worktree should be closed/deleted to avoid a
      stale parallel build. (A discovery-source revert — `Decomposed`/`Designed` — has no build artifacts, so
      skip this report.) Automating this cleanup is tracked as the follow-up **B-614**.
-  3. **STOP and report** the ticket is now at the target gate's **INPUT** state (`Idea` for clarify,
+  3. **STOP and report** the ticket is now at the target gate's **INPUT** state (`Proposed` for clarify,
      `Clarified` for decompose, `Decomposed` for design), the brief is cleared, ONLY the listed decisions were
      superseded, and it is **ready for `harmony-conduct` to re-run the target gate NATIVELY** — the revised
      decision is authored fresh through that gate's own surface (`/harmony-plugin:harmony-conduct B-123` picks
@@ -305,7 +305,7 @@ Show the rendered `content` verbatim. On the human's command:
 
 ### 6. Report
 
-State the outcome: either **accepted** (ticket reverted to the target gate's INPUT state — `Idea` for clarify,
+State the outcome: either **accepted** (ticket reverted to the target gate's INPUT state — `Proposed` for clarify,
 `Clarified` for decompose, `Decomposed` for design; brief cleared; these decisions superseded; ready for
 `harmony-conduct` to re-run the target gate NATIVELY) or **rejected** (no-op; run untouched at its current
 gate; the feedback is addressed in-gate). Either way, name the target gate considered so the human has the
@@ -320,7 +320,7 @@ A revise-scope revert lands at the re-targeted gate's **INPUT** state, never its
 
 | target gate | revert to (INPUT) | back-edge activity |
 |---|---|---|
-| clarify | `Idea` | `revising-promoting` |
+| clarify | `Proposed` | `revising-promoting` |
 | decompose | `Clarified` | `revising-clarifying` |
 | design | `Decomposed` | `revising-decomposing` |
 
@@ -336,14 +336,16 @@ clarify targets the source stays `{Decomposed, Designed}` (a build-state source 
 
 **About the name `revising-promoting`.** The discovery back-edges are named after the activity that *produces*
 the milestone they land at: `revising-clarifying`→`Clarified` (clarifying produces Clarified),
-`revising-decomposing`→`Decomposed`. The clarify-target back-edge lands at **`Idea`**, which the forward
-**`promoting`** activity produces — so the back-edge is `revising-promoting`, NOT named after a discovery gate.
+`revising-decomposing`→`Decomposed`. The clarify-target back-edge lands at **`Proposed`**, which the forward
+**`proposing`** activity produces (that activity was named `promoting` when this edge was minted; B-637 renamed
+the forward activity, and the `revising-*` back-edges deliberately keep their names) — so the back-edge is
+`revising-promoting`, NOT named after a discovery gate.
 This deliberately breaks the "every `revising-*` is named after a discovery gate" reading; `revising-promoting`
-is the back-edge to clarify's INPUT (`Idea`), and clarify itself re-runs there. It still carries the
+is the back-edge to clarify's INPUT (`Proposed`), and clarify itself re-runs there. It still carries the
 `revising-` prefix, so the B-519 stale-clear guard (`revising-%`) + the B-482 brief-clear apply with no guard
 change.
 
-**Lockstep promotion.** The `revising-promoting → Idea` edges ship in a harmony-web migration (Phase 1) that
+**Lockstep promotion.** The `revising-promoting → Proposed` edges ship in a harmony-web migration (Phase 1) that
 must deploy **before** this skill — `advance_workflow(revising-promoting)` hard-errors until the edge exists.
 Promote web first, then the plugin, in the same step (web before plugin), like B-519. The decompose/design
 back-edges already exist from B-519, so only the clarify edge is new.

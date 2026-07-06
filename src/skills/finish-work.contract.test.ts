@@ -25,14 +25,14 @@ describe('finish-work skill contract (evolved)', () => {
   });
 
   // New opinionated path.
-  it('branches on mode and drives releasing + verifying', () => {
+  it('branches on mode and drives deploying + verifying', () => {
     expect(skill.body).toContain('get_project');
     expect(skill.body).toContain('opinionated');
     expect(skill.body.toLowerCase()).toContain('manual mode');
     const tools = referencedHarmonyTools(skill.body);
     expect(tools).toContain('resolve_brief');       // release accept (clears gate) + verify accept
     expect(tools).toContain('compose_brief');       // verification-ack-pending
-    expect(tools).toContain('advance_workflow');    // Built->Released AFTER deploy succeeds (F4)
+    expect(tools).toContain('advance_workflow');    // Built->Deployed AFTER deploy succeeds (F4)
     expect(skill.body).toContain('release-decision-pending');
     expect(skill.body).toContain('verification-ack-pending');
   });
@@ -54,7 +54,7 @@ describe('finish-work skill contract (evolved)', () => {
     const tools = referencedHarmonyTools(body);
     expect(tools).toContain('get_brief');     // detect the null brief
     expect(tools).toContain('compose_brief'); // compose it when null
-    expect(tools).toContain('resolve_brief'); // accept → Released -> Verified
+    expect(tools).toContain('resolve_brief'); // accept → Deployed -> Verified
     // Edge: a still-Decomposed umbrella (children in flight) is NOT verified.
     expect(body).toContain('Decomposed');
   });

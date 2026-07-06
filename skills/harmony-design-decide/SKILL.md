@@ -68,7 +68,7 @@ required** one (which decides `pending_activity` in step 4).
 
 ### 1c. Honor a cross-ticket-completion flag (reconcile before designing)
 
-Before designing, check whether this ticket's work is **already done** by another run (B-643): honor a `possibly-subsumed-by` annotation on the description (grep the `possibly-subsumed-by:` token → `get_task` the covering ticket → subsume + stop if it covers this work), AND independently check for a Verified/Released sibling via `search_tasks` (it reaches done work; `find_related_tickets` excludes Verified/Released). If a covering done sibling exists → `subsume_task` + stop; else proceed. Full mechanism + rationale: `skills/harmony-shared/ticket-disposition.md` → **"Reconciling a ticket another run already finished."**
+Before designing, check whether this ticket's work is **already done** by another run (B-643): honor a `possibly-subsumed-by` annotation on the description (grep the `possibly-subsumed-by:` token → `get_task` the covering ticket → subsume + stop if it covers this work), AND independently check for a Verified/Deployed sibling via `search_tasks` (it reaches done work; `find_related_tickets` excludes Verified/Deployed). If a covering done sibling exists → `subsume_task` + stop; else proceed. Full mechanism + rationale: `skills/harmony-shared/ticket-disposition.md` → **"Reconciling a ticket another run already finished."**
 
 ### 2. Query domain knowledge for THIS sub-track
 

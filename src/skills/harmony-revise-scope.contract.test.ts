@@ -71,10 +71,10 @@ describe('harmony-revise-scope skill contract', () => {
     expect(body).toMatch(/stale/);
   });
 
-  it('B-529: reverts to the gate INPUT for ALL THREE targets (clarify→Idea, decompose→Clarified, design→Decomposed)', () => {
+  it('B-529: reverts to the gate INPUT for ALL THREE targets (clarify→Proposed, decompose→Clarified, design→Decomposed)', () => {
     const body = skill.body.toLowerCase();
-    // clarify lands at Idea via revising-promoting (the Phase-1 input-edge, not named after a discovery gate)
-    expect(body).toMatch(/clarify.*idea|idea.*clarify/);
+    // clarify lands at Proposed via revising-promoting (the Phase-1 input-edge, not named after a discovery gate)
+    expect(body).toMatch(/clarify.*proposed|proposed.*clarify/);
     expect(body).toMatch(/revising-promoting/);
     // decompose lands at Clarified, design lands at Decomposed (their INPUT states)
     expect(body).toMatch(/decompose.*clarified|clarified.*decompose/);

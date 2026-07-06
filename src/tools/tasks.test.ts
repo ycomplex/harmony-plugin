@@ -464,7 +464,7 @@ describe('getTask', () => {
               eq: () => ({
                 eq: () => ({
                   single: vi.fn().mockResolvedValue({
-                    data: { id: 'resolved-uuid', title: 'T', task_labels: [], checklist_items: [], workflow_state: 'Idea', awaiting_human_input: false },
+                    data: { id: 'resolved-uuid', title: 'T', task_labels: [], checklist_items: [], workflow_state: 'Proposed', awaiting_human_input: false },
                     error: null,
                   }),
                 }),

@@ -36,8 +36,8 @@ describe('start-work skill contract (evolved)', () => {
     expect(skill.body).toContain('plan-draft');
     expect(skill.body).toContain('release-decision-pending');
     // F4 guard: the release brief must carry pending_activity: null (accept is the human's "go";
-    // Built->Released is SYSTEM-on-deploy via finish-work, not the accept). An inverted body that
-    // set pending_activity:'releasing' here would reintroduce the B-60 "Released before deploy" bug.
+    // Built->Deployed is SYSTEM-on-deploy via finish-work, not the accept). An inverted body that
+    // set pending_activity:'deploying' here would reintroduce the B-60 "Deployed before deploy" bug.
     expect(skill.body).toMatch(/release-decision-pending",\s*pending_activity:\s*null/);
   });
   it('carries the build role profile (can commit; cannot author design knowledge)', () => {

@@ -221,7 +221,7 @@ describe('composeBrief', () => {
   it('renders + lints, validates pending_activity, inserts, then sets awaiting_human_input', async () => {
     // responses: [task state] -> [transition exists] -> [no active brief] -> [insert row] -> [task update]
     const client = makeClient([
-      { data: { workflow_state: 'Idea' } },
+      { data: { workflow_state: 'Proposed' } },
       { data: { to_state: 'Clarified' } },
       { data: null },
       { data: briefRow },
@@ -370,7 +370,7 @@ describe('composeBrief', () => {
   it('still validates a real pending_activity — the "null" normalization does not over-reach (B-625)', async () => {
     // responses: [task state] -> [transition exists] -> [no active brief] -> [insert row] -> [task update]
     const client = makeClient([
-      { data: { workflow_state: 'Idea' } },
+      { data: { workflow_state: 'Proposed' } },
       { data: { to_state: 'Clarified' } },
       { data: null },
       { data: briefRow },
@@ -592,7 +592,7 @@ describe('resolveBrief', () => {
 });
 
 // B-517: brief-less umbrella verify-ack. A trigger-rolled-up umbrella's verify gate has no active brief,
-// so the normal path can't ack it; on `accept` of such a sentinel we advance Released→Verified via the
+// so the normal path can't ack it; on `accept` of such a sentinel we advance Deployed→Verified via the
 // fixed-contract ack_umbrella_verify RPC. The normal active-brief path must stay completely unchanged.
 describe('resolveBrief — brief-less umbrella verify-ack (B-517)', () => {
   // Two queued maybeSingle responses in call order: [active brief lookup] -> [task-row lookup]. rpc returns
@@ -608,7 +608,7 @@ describe('resolveBrief — brief-less umbrella verify-ack (B-517)', () => {
   }
 
   const sentinel = {
-    workflow_state: 'Released',
+    workflow_state: 'Deployed',
     awaiting_human_reason: 'verification-ack-pending',
     awaiting_human_ref: { kind: 'umbrella-auto-verify' },
   };
