@@ -20,9 +20,10 @@ Every brief, at every gate:
 - **Sorts its items** into exactly one kind: a *decision* (always recommended), a
   *content-input* (only the human can supply it), or a *derived-constraint* (already fixed
   elsewhere — it belongs in Context, never as an ask).
-- **States that it is the summary.** Fuller depth lives in the linked decision entry, and the
-  brief says so. Every brief states this even while the clickable brief→entry navigation is
-  deferred (that surface is B-669).
+- **Is the summary — depth lives in the linked decision entry.** The render emits this pointer
+  automatically whenever the brief carries a `decision_ref` (B-674), so do not hand-write it; a
+  brief with no `decision_ref` correctly shows no pointer. The clickable brief→entry navigation
+  is still deferred (that surface is B-669).
 
 ## Legibility contract
 
@@ -34,8 +35,9 @@ Write for the human who wasn't in the room. Optimize for the one-scan read.
    reconciliation guard" means nothing to someone who never saw B-482 — say what it does.
 4. **The recommendation is a prose paragraph**, not a clause-chain.
 5. **Spend the word budget on clarity, never density.**
-6. **The brief is the summary**; depth lives in the linked decision entry, and the brief
-   says so.
+6. **The brief is the summary**; depth lives in the linked decision entry. The render emits
+   this pointer automatically whenever the brief carries a `decision_ref` (B-674) — do not
+   hand-write it.
 
 ## Engagement model
 

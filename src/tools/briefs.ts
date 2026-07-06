@@ -170,8 +170,11 @@ export function analyzeLegibility(content: string): LegibilityStats {
   };
 }
 
-/** Render the canonical doc to the §3.1 BLUF Markdown blob, deterministically. */
-export function renderBrief(doc: BriefDoc): string {
+/** Render the canonical doc to the §3.1 BLUF Markdown blob, deterministically.
+ *  When `decisionRef` is present (B-674), the render mechanically appends the depth-pointer
+ *  footer just above the command tail — the authoring agent no longer hand-writes it. A brief
+ *  with no `decision_ref` correctly shows no pointer. */
+export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null): string {
   const out: string[] = [];
   out.push(`## DECIDE: ${doc.decide}`, '');
 
@@ -212,6 +215,12 @@ export function renderBrief(doc: BriefDoc): string {
       // derived-constraint items never render — the lint rejects them before this point.
     }
     out.push('');
+  }
+
+  if (decisionRef) {
+    // B-674: emit the depth-pointer mechanically whenever the brief carries a decision_ref — the
+    // author no longer hand-writes it, so the wording can never drift.
+    out.push('_This brief is a summary — fuller depth lives in the linked decision entry._', '');
   }
 
   out.push(`> ${doc.tail ?? DEFAULT_TAIL}`);
@@ -327,7 +336,7 @@ export async function composeBrief(
   if (!args.doc?.decide?.trim()) throw new Error('doc.decide is required');
 
   // Render the canonical doc to the blob, then lint the doc (what's checked is what's rendered).
-  const content = renderBrief(args.doc);
+  const content = renderBrief(args.doc, args.decision_ref);
   const lint = lintBrief(args.doc, content);
   if (!lint.ok) {
     throw new Error(`Brief failed the §3.2 pre-send lint:\n- ${lint.errors.join('\n- ')}`);
@@ -480,7 +489,7 @@ export async function composeBrief(
 export const composeBriefTool = {
   name: 'compose_brief',
   description:
-    "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate). On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary and should say that fuller depth lives in the linked decision entry.",
+    "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate). On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref — do not hand-write it.",
   inputSchema: {
     type: 'object' as const,
     properties: {

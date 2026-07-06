@@ -32434,7 +32434,7 @@ function analyzeLegibility(content) {
     adjacentParens
   };
 }
-function renderBrief(doc) {
+function renderBrief(doc, decisionRef) {
   const out = [];
   out.push(`## DECIDE: ${doc.decide}`, "");
   if (doc.load_bearing_gap) {
@@ -32470,6 +32470,9 @@ function renderBrief(doc) {
       }
     }
     out.push("");
+  }
+  if (decisionRef) {
+    out.push("_This brief is a summary \u2014 fuller depth lives in the linked decision entry._", "");
   }
   out.push(`> ${doc.tail ?? DEFAULT_TAIL}`);
   return out.join("\n");
@@ -32543,7 +32546,7 @@ async function composeBrief(client, projectId, userId, args) {
     throw new Error(`reason must be one of: ${VALID_REASONS.join(", ")}`);
   }
   if (!args.doc?.decide?.trim()) throw new Error("doc.decide is required");
-  const content = renderBrief(args.doc);
+  const content = renderBrief(args.doc, args.decision_ref);
   const lint = lintBrief(args.doc, content);
   if (!lint.ok) {
     throw new Error(`Brief failed the \xA73.2 pre-send lint:
@@ -32635,7 +32638,7 @@ async function composeBrief(client, projectId, userId, args) {
 }
 var composeBriefTool = {
   name: "compose_brief",
-  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate). On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary and should say that fuller depth lives in the linked decision entry.",
+  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate). On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it.",
   inputSchema: {
     type: "object",
     properties: {
