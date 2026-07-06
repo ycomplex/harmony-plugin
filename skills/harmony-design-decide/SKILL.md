@@ -120,6 +120,9 @@ mcp__harmony__reference_knowledge({ task_id, decision_id: decision.id })
 
 ### 4. Compose the brief — advance only on the LAST required sub-track
 
+Author the brief per `skills/harmony-shared/brief-authoring.md` §Design — the question, must-haves,
+and engagement it owes the human, plus the legibility contract. Consult it; do not restate it.
+
 Set `pending_activity: "designing"` **only if this is the last required sub-track** (all others already
 Accepted). Otherwise set `pending_activity: null` — accepting this brief promotes the decision and clears
 the flag without advancing state (state advances to Designed only when *all* required sub-tracks are in).

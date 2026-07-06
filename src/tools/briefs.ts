@@ -45,6 +45,9 @@ export interface BriefLintResult {
 // never fails — preserves the expose-expand-not-amputate convention.
 // B-541: BASE raised 300->600 (founder-confirmed ~2× base) so briefs read as self-contained
 // artifacts; MAX raised 700->1400 so the clamp doesn't re-squeeze normal complex briefs.
+// B-660 re-tune (2026-07-06): measured five live contract-passing briefs against their tier
+// budgets — 47–81% used (worst case 604/750). Measurement says no change: base 600, 75/unit,
+// clamp 1400 all hold; the budget never pressured a legible brief toward density.
 const WORD_BUDGET_BASE = 600;
 const WORD_BUDGET_PER_UNIT = 75;   // unchanged
 const WORD_BUDGET_MAX = 1400;
@@ -56,6 +59,116 @@ function softWordBudget(doc: BriefDoc): number {
 }
 
 const DEFAULT_TAIL = 'Type `accept`, `edit`, `iterate <feedback>`, or `defer`.';
+
+// ——— B-660 legibility nudges (warn-only — same soft tier as the word budget) ———
+// The legibility contract (skills/harmony-shared/brief-authoring.md) is not self-enforcing:
+// B-550's design brief sat within the word budget and was still rejected as illegible. Two
+// mechanical nudges catch its two highest-signal violations: over-long sentences ("one idea
+// per sentence") and STACKED parentheticals (an aside inside an aside — B-550's signature;
+// a per-sentence count would false-flag the common, legitimate two-asides sentence). Both run
+// on the rendered blob AFTER stripping fenced code blocks, inline code spans, URLs, and
+// template chrome (the `> Type accept…` tail and the rendered `- [ ]` item lines — structured
+// field output, not authored prose), so `manage_subtasks(task_id)` can never read as a
+// parenthetical and a long tool path never inflates a sentence.
+
+/** Words per sentence over which the "one idea per sentence" nudge fires. Calibrated
+ *  two-sided (B-660, 2026-07-06): five real contract-passing briefs must stay silent and a
+ *  synthetic B-550 positive must fire. The starting 40 false-tripped two real briefs (45w
+ *  and 48w units), so the threshold sits at 50 — the exact floor of B-550's documented
+ *  "five-clause 50+ word sentences" failure signature. Closest passing negatives: 48w
+ *  (BRIEF-5's plan step-list) and 45w (BRIEF-4's recommend clause). */
+export const SENTENCE_WORD_LIMIT = 50;
+
+export interface LegibilityStats {
+  /** Sentence-ish units found in the stripped prose (newline- and .!?;-bounded). */
+  sentenceCount: number;
+  /** Word count of the longest unit — the calibration headroom signal. */
+  maxSentenceWords: number;
+  /** Units over SENTENCE_WORD_LIMIT, longest first. */
+  longSentences: Array<{ words: number; excerpt: string }>;
+  /** Parentheticals opened inside another parenthetical (per line; depth resets at newlines). */
+  nestedParens: number;
+  /** Immediately-adjacent parenthetical pairs — `)(` or `) (` — the other stacking form. */
+  adjacentParens: number;
+}
+
+/** Drop everything the legibility nudges must never read: code, URLs, and template chrome. */
+function stripForLegibility(content: string): string {
+  return content
+    .replace(/```[\s\S]*?```/g, ' ')          // fenced code blocks
+    .replace(/`[^`\n]+`/g, ' ')               // inline code spans
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')  // markdown links: keep the text, drop the (target)
+    .replace(/\(\s*https?:\/\/[^)]*\)/g, ' ') // parenthesized bare URLs
+    .replace(/https?:\/\/\S+/g, ' ')          // bare URLs
+    .split('\n')
+    // Template chrome: the command tail (blockquote) + rendered checkbox items (structured
+    // text — recommendation fields joined by em-dashes, not authored prose sentences).
+    .filter((line) => !/^\s*>/.test(line) && !/^\s*- \[[ xX]\]/.test(line))
+    .join('\n');
+}
+
+/** Word-ish tokens only — a bare `—` or `·` between spaces is not a word. */
+function countProseWords(s: string): number {
+  return s.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
+}
+
+/** Measure the stripped prose for the two B-660 legibility nudges. Pure + exported so the
+ *  calibration corpus can be measured with exactly the shipped logic. */
+export function analyzeLegibility(content: string): LegibilityStats {
+  const text = stripForLegibility(content);
+
+  // Sentence units: newline-bounded, then split after terminal punctuation (. ! ?), a
+  // semicolon, or a colon — a semicolon separates two ideas the way a period does, and a
+  // colon hands off to an elaboration/step list (real plan briefs legitimately enumerate
+  // "do X, do Y, do Z" after one). "Five clauses means five sentences" blesses the split.
+  // Abbreviation artifacts ("e.g.") only shorten units, the safe direction for a warn-only
+  // nudge. Em-dashes deliberately do NOT split: dash-glued clause-chains are the B-550
+  // signature the nudge exists to catch.
+  const sentences = text
+    .split('\n')
+    .flatMap((line) => line.split(/(?<=[.!?;:])\s+/))
+    .map((s) => s.trim())
+    .filter((s) => countProseWords(s) > 0);
+
+  const measured = sentences.map((s) => ({ words: countProseWords(s), sentence: s }));
+  const longSentences = measured
+    .filter((m) => m.words > SENTENCE_WORD_LIMIT)
+    .sort((a, b) => b.words - a.words)
+    .map((m) => ({
+      words: m.words,
+      excerpt: m.sentence.split(/\s+/).slice(0, 8).join(' '),
+    }));
+
+  // Stacked parentheticals: NESTED — `(… (…) …)` — plus immediately-adjacent pairs `)(` /
+  // `) (`. NEVER a per-sentence count (two separate asides in one sentence are legitimate).
+  // Depth is tracked per line (brief prose never spans a parenthetical across lines), so one
+  // unbalanced `(` can't cascade nesting onto every later line.
+  let nestedParens = 0;
+  let adjacentParens = 0;
+  for (const line of text.split('\n')) {
+    let depth = 0;
+    let prevClose = -1;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '(') {
+        depth++;
+        if (depth >= 2) nestedParens++;
+        if (prevClose >= 0 && /^\s*$/.test(line.slice(prevClose + 1, i))) adjacentParens++;
+      } else if (ch === ')') {
+        if (depth > 0) depth--;
+        prevClose = i;
+      }
+    }
+  }
+
+  return {
+    sentenceCount: sentences.length,
+    maxSentenceWords: measured.reduce((mx, m) => Math.max(mx, m.words), 0),
+    longSentences,
+    nestedParens,
+    adjacentParens,
+  };
+}
 
 /** Render the canonical doc to the §3.1 BLUF Markdown blob, deterministically. */
 export function renderBrief(doc: BriefDoc): string {
@@ -146,6 +259,22 @@ export function lintBrief(doc: BriefDoc, content: string): BriefLintResult {
   if (words > budget) {
     warnings.push(
       `Brief renders to ${words} words (soft budget ${budget}, tier-aware). Trim noise — but don't amputate reasoning; expose detail via expand instead.`,
+    );
+  }
+
+  // Soft (B-660): the two legibility nudges — warn-only, same tier as the word budget. They
+  // never touch `errors`, so `ok` can never flip because of a nudge.
+  const legibility = analyzeLegibility(content);
+  if (legibility.longSentences.length > 0) {
+    const worst = legibility.longSentences[0];
+    warnings.push(
+      `${legibility.longSentences.length} sentence(s) run past ${SENTENCE_WORD_LIMIT} words (longest: ${worst.words} — "${worst.excerpt}…"). One idea per sentence — five clauses means five sentences (brief-authoring.md, legibility contract).`,
+    );
+  }
+  const stackedParens = legibility.nestedParens + legibility.adjacentParens;
+  if (stackedParens > 0) {
+    warnings.push(
+      `Stacked parentheticals at ${stackedParens} spot(s) — an aside inside (or immediately against) an aside. Unstack these: lift the inner aside into its own sentence (brief-authoring.md, legibility contract).`,
     );
   }
 
@@ -351,7 +480,7 @@ export async function composeBrief(
 export const composeBriefTool = {
   name: 'compose_brief',
   description:
-    "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate). On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning).",
+    "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate). On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary and should say that fuller depth lives in the linked decision entry.",
   inputSchema: {
     type: 'object' as const,
     properties: {

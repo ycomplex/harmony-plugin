@@ -32394,6 +32394,46 @@ function softWordBudget(doc) {
   return Math.min(WORD_BUDGET_BASE + WORD_BUDGET_PER_UNIT * units, WORD_BUDGET_MAX);
 }
 var DEFAULT_TAIL = "Type `accept`, `edit`, `iterate <feedback>`, or `defer`.";
+var SENTENCE_WORD_LIMIT = 50;
+function stripForLegibility(content) {
+  return content.replace(/```[\s\S]*?```/g, " ").replace(/`[^`\n]+`/g, " ").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\(\s*https?:\/\/[^)]*\)/g, " ").replace(/https?:\/\/\S+/g, " ").split("\n").filter((line) => !/^\s*>/.test(line) && !/^\s*- \[[ xX]\]/.test(line)).join("\n");
+}
+function countProseWords(s) {
+  return s.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
+}
+function analyzeLegibility(content) {
+  const text = stripForLegibility(content);
+  const sentences = text.split("\n").flatMap((line) => line.split(/(?<=[.!?;:])\s+/)).map((s) => s.trim()).filter((s) => countProseWords(s) > 0);
+  const measured = sentences.map((s) => ({ words: countProseWords(s), sentence: s }));
+  const longSentences = measured.filter((m) => m.words > SENTENCE_WORD_LIMIT).sort((a, b) => b.words - a.words).map((m) => ({
+    words: m.words,
+    excerpt: m.sentence.split(/\s+/).slice(0, 8).join(" ")
+  }));
+  let nestedParens = 0;
+  let adjacentParens = 0;
+  for (const line of text.split("\n")) {
+    let depth = 0;
+    let prevClose = -1;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === "(") {
+        depth++;
+        if (depth >= 2) nestedParens++;
+        if (prevClose >= 0 && /^\s*$/.test(line.slice(prevClose + 1, i))) adjacentParens++;
+      } else if (ch === ")") {
+        if (depth > 0) depth--;
+        prevClose = i;
+      }
+    }
+  }
+  return {
+    sentenceCount: sentences.length,
+    maxSentenceWords: measured.reduce((mx, m) => Math.max(mx, m.words), 0),
+    longSentences,
+    nestedParens,
+    adjacentParens
+  };
+}
 function renderBrief(doc) {
   const out = [];
   out.push(`## DECIDE: ${doc.decide}`, "");
@@ -32464,6 +32504,19 @@ function lintBrief(doc, content) {
   if (words > budget) {
     warnings.push(
       `Brief renders to ${words} words (soft budget ${budget}, tier-aware). Trim noise \u2014 but don't amputate reasoning; expose detail via expand instead.`
+    );
+  }
+  const legibility = analyzeLegibility(content);
+  if (legibility.longSentences.length > 0) {
+    const worst = legibility.longSentences[0];
+    warnings.push(
+      `${legibility.longSentences.length} sentence(s) run past ${SENTENCE_WORD_LIMIT} words (longest: ${worst.words} \u2014 "${worst.excerpt}\u2026"). One idea per sentence \u2014 five clauses means five sentences (brief-authoring.md, legibility contract).`
+    );
+  }
+  const stackedParens = legibility.nestedParens + legibility.adjacentParens;
+  if (stackedParens > 0) {
+    warnings.push(
+      `Stacked parentheticals at ${stackedParens} spot(s) \u2014 an aside inside (or immediately against) an aside. Unstack these: lift the inner aside into its own sentence (brief-authoring.md, legibility contract).`
     );
   }
   if (doc.recommend && !doc.recommend.cede && !doc.recommend.confidence) {
@@ -32582,7 +32635,7 @@ async function composeBrief(client, projectId, userId, args) {
 }
 var composeBriefTool = {
   name: "compose_brief",
-  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate). On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning).",
+  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate). On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary and should say that fuller depth lives in the linked decision entry.",
   inputSchema: {
     type: "object",
     properties: {

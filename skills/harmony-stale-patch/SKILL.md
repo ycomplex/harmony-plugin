@@ -89,7 +89,9 @@ here, never amend knowledge itself.
 
 ### 4. Compose the stale-patch-review brief
 
-File the patch as a brief. Setting `pending_activity` to a `revising-*` activity **iff the patch reverts
+File the patch as a brief. Author it per `skills/harmony-shared/brief-authoring.md` §Auxiliary briefs —
+it inherits the shared core and the legibility contract. Consult it; do not restate it. Setting
+`pending_activity` to a `revising-*` activity **iff the patch reverts
 state** (accept backflows the ticket through P3's existing `resolve_brief` path); otherwise `null`
 (knowledge-only reconciliation — accept just clears Stale, no state change):
 

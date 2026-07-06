@@ -66,7 +66,9 @@ sequence, and do NOT touch git):
   lives), so it cannot tell you which children are un-Verified. If you want to enumerate the un-Verified
   children, `mcp__harmony__get_task` each child and read its `workflow_state`.
 - **Compose the verify brief if missing:** `mcp__harmony__get_brief({ task_id })`. If it is **null** (the
-  trigger set the flag but composed no brief), compose it. **Also render the B-560 evidence-status line**
+  trigger set the flag but composed no brief), compose it. Author the brief per
+  `skills/harmony-shared/brief-authoring.md` §Verify — the question, must-haves, and engagement it owes
+  the human, plus the legibility contract. Consult it; do not restate it. **Also render the B-560 evidence-status line**
   (call `mcp__harmony__get_build_evidence_status({ task_id })` first, prepend it to the brief — for an
   umbrella it renders `Evidence: N/A (umbrella — carried by children)`, the explicit AC4 exemption):
 
@@ -177,6 +179,9 @@ a missing piece is surfaced on the brief the human accepts (it does NOT block ac
 
 (If incomplete and the build genuinely had its own work, land the missing evidence first — record the test
 cases via `manage_test_cases`, check the ACs via `manage_acceptance_criteria` — then recompute the line.)
+
+Author the brief per `skills/harmony-shared/brief-authoring.md` §Verify — the question, must-haves, and
+engagement it owes the human, plus the legibility contract. Consult it; do not restate it.
 
 ```
 mcp__harmony__compose_brief({
