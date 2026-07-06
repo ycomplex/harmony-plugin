@@ -1,6 +1,6 @@
 ---
 name: harmony-decompose
-description: Decompose a clarified ticket into a child hierarchy (Clarified → Decomposed). Triggers on "decompose B-123", "break this down", "harmony decompose", or picking up a Clarified ticket. Applies the manageability rule; even "no decomposition needed" is an explicit decision. Files a proposal brief; on accept, creates children at Idea state.
+description: Decompose a clarified ticket into a child hierarchy (Clarified → Decomposed). Triggers on "decompose B-123", "break this down", "harmony decompose", or picking up a Clarified ticket. Applies the manageability rule; even "no decomposition needed" is an explicit decision. Files a proposal brief; on accept, creates children at Proposed state.
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
@@ -81,13 +81,13 @@ Show the rendered `content`. On the human's command:
      hierarchy. Call `mcp__harmony__manage_subtasks({ task_id, add_new: [{ title: "...", description: "..." }, ...] })`
      ONLY for genuinely net-new children. Never `add_new` a fresh set that duplicates existing
      non-archived children (B-646).
-  2. Then bring EVERY still-**Captured** child — existing and newly created alike — to **Idea**
+  2. Then bring EVERY still-**Captured** child — existing and newly created alike — to **Proposed**
      (state-machine §8.1). `manage_subtasks add_new` lands children at **Captured** (the
      `tasks_default_workflow_state` insert trigger), and existing children pre-filed at triage
-     typically sit at Captured too; promote each one Captured→Idea in a single step — do **not**
+     typically sit at Captured too; promote each one Captured→Proposed in a single step — do **not**
      call `capturing` first (the child is already Captured, so `capturing` has no valid edge and the
      transition guard rejects it):
-     `mcp__harmony__advance_workflow({ task_id: <child>, activity: "promoting" })`.
+     `mcp__harmony__advance_workflow({ task_id: <child>, activity: "proposing" })`.
   3. `mcp__harmony__resolve_brief({ task_id, command: "accept" })` → advances the parent
      Clarified→Decomposed. (For "no decomposition needed", skip 1–2 and just accept.)
 
@@ -114,4 +114,4 @@ Show the rendered `content`. On the human's command:
 ### 5. Report
 
 List the created children with their IDs and confirm the parent is at Decomposed. Each child is now an
-Idea ready for its own `/harmony-plugin:harmony-clarify`.
+Proposed ready for its own `/harmony-plugin:harmony-clarify`.

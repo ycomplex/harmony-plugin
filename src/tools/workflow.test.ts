@@ -4,14 +4,14 @@ import { deriveToState, advanceWorkflow, referenceKnowledge, listTicketKnowledge
 // P1 seed subset (web/supabase/migrations/20260602170200_workflow_transitions.sql)
 const TRANSITIONS = [
   { from_state: null,         activity: 'capturing',          to_state: 'Captured' },
-  { from_state: 'Captured',   activity: 'promoting',          to_state: 'Idea' },
-  { from_state: 'Idea',       activity: 'clarifying',         to_state: 'Clarified' },
+  { from_state: 'Captured',   activity: 'proposing',          to_state: 'Proposed' },
+  { from_state: 'Proposed',   activity: 'clarifying',         to_state: 'Clarified' },
   { from_state: 'Clarified',  activity: 'decomposing',        to_state: 'Decomposed' },
   { from_state: 'Decomposed', activity: 'designing',          to_state: 'Designed' },
   { from_state: 'Designed',   activity: 'planning',           to_state: 'Planned' },
   { from_state: 'Planned',    activity: 'building',           to_state: 'Built' },
-  { from_state: 'Built',      activity: 'releasing',          to_state: 'Released' },
-  { from_state: 'Released',   activity: 'verifying',          to_state: 'Verified' },
+  { from_state: 'Built',      activity: 'deploying',          to_state: 'Deployed' },
+  { from_state: 'Deployed',   activity: 'verifying',          to_state: 'Verified' },
   { from_state: 'Planned',    activity: 'revising-designing', to_state: 'Designed' },
   { from_state: 'Built',      activity: 'revising-building',  to_state: 'Planned' },
 ];
@@ -25,7 +25,7 @@ describe('deriveToState', () => {
   });
   it('special-cases parking and cancelling to terminal/park states', () => {
     expect(deriveToState('Built', 'parking', TRANSITIONS)).toBe('Parked');
-    expect(deriveToState('Idea', 'cancelling', TRANSITIONS)).toBe('Cancelled');
+    expect(deriveToState('Proposed', 'cancelling', TRANSITIONS)).toBe('Cancelled');
   });
   it('keeps researching at the same state (no advance); null stays null (F8)', () => {
     expect(deriveToState('Designed', 'researching', TRANSITIONS)).toBe('Designed');
@@ -35,7 +35,7 @@ describe('deriveToState', () => {
     expect(deriveToState(null, 'capturing', TRANSITIONS)).toBe('Captured');
   });
   it('throws on an illegal (from, activity) pair', () => {
-    expect(() => deriveToState('Idea', 'building', TRANSITIONS)).toThrow(/No workflow transition/);
+    expect(() => deriveToState('Proposed', 'building', TRANSITIONS)).toThrow(/No workflow transition/);
   });
 });
 

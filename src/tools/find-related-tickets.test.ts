@@ -70,7 +70,7 @@ describe('findRelatedTickets', () => {
           ...subjectRows(),
           // enrich query (.in) — note: subject is in the RPC results but must be dropped
           { data: [
-            { id: 'cand-1', task_number: 100, title: 'Saved filter sharing', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+            { id: 'cand-1', task_number: 100, title: 'Saved filter sharing', workflow_state: 'Proposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
           ] },
         ],
         projects: projectRows(),
@@ -93,7 +93,7 @@ describe('findRelatedTickets', () => {
   it('TC2: enriches + ranks; caps at limit', async () => {
     const enriched = Array.from({ length: 8 }, (_, i) => ({
       id: `cand-${i}`, task_number: 100 + i, title: `Cand ${i}`,
-      workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' },
+      workflow_state: 'Proposed', milestone_id: 'm1', archived: false, projects: { key: 'B' },
     }));
     const client = makeClient({
       tableResults: {
@@ -126,7 +126,7 @@ describe('findRelatedTickets', () => {
     const enriched = [
       { id: 'b561', task_number: 561, title: 'Fix dead lexical/trigram arm', workflow_state: 'Verified', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
       { id: 'b499', task_number: 499, title: 'Conduct → split umbrella', workflow_state: 'Decomposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
-      { id: 'b540', task_number: 540, title: 'Generic vocab overlap', workflow_state: 'Idea', milestone_id: null, archived: false, projects: { key: 'B' } },
+      { id: 'b540', task_number: 540, title: 'Generic vocab overlap', workflow_state: 'Proposed', milestone_id: null, archived: false, projects: { key: 'B' } },
       { id: 'b249', task_number: 249, title: 'Cancelled relative', workflow_state: 'Cancelled', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
     ];
     const client = makeClient({
@@ -170,9 +170,9 @@ describe('findRelatedTickets', () => {
     // NOT let it dominate (no Math.max behavior). The single search_tasks value is reused
     // for BOTH framings, so route-1 contributes TWICE here (full + title).
     const enriched = [
-      { id: 'both', task_number: 1, title: 'Both routes #1', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
-      { id: 'one', task_number: 2, title: 'Route-2 only #1', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
-      { id: 'lex-hi', task_number: 3, title: 'Route-1 only, huge similarity', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'both', task_number: 1, title: 'Both routes #1', workflow_state: 'Proposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'one', task_number: 2, title: 'Route-2 only #1', workflow_state: 'Proposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'lex-hi', task_number: 3, title: 'Route-1 only, huge similarity', workflow_state: 'Proposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
     ];
     const client = makeClient({
       tableResults: {
@@ -217,10 +217,10 @@ describe('findRelatedTickets', () => {
     //   route-1 TITLE : [titleonly@1, multi@2]    (titleonly appears in NO other list)
     //   route-2 intent: [multi@1, soloIntent@2]
     const enriched = [
-      { id: 'multi', task_number: 1, title: 'In every list', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
-      { id: 'titleonly', task_number: 2, title: 'Only the title framing finds me', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
-      { id: 'soloIntent', task_number: 3, title: 'Only intent finds me', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
-      { id: 'lexhi', task_number: 4, title: 'Only full framing, huge similarity', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'multi', task_number: 1, title: 'In every list', workflow_state: 'Proposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'titleonly', task_number: 2, title: 'Only the title framing finds me', workflow_state: 'Proposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'soloIntent', task_number: 3, title: 'Only intent finds me', workflow_state: 'Proposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'lexhi', task_number: 4, title: 'Only full framing, huge similarity', workflow_state: 'Proposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
     ];
     const client = makeClient({
       tableResults: {
@@ -271,8 +271,8 @@ describe('findRelatedTickets', () => {
     // The inverse of the deleted "unmilestoned-first" test: relevance order is authoritative,
     // the unmilestoned flag is carried for badging only — never reordered.
     const enriched = [
-      { id: 'milestoned-hi', task_number: 1, title: 'Milestoned high relevance', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
-      { id: 'unmilestoned-lo', task_number: 2, title: 'Unmilestoned low relevance', workflow_state: 'Idea', milestone_id: null, archived: false, projects: { key: 'B' } },
+      { id: 'milestoned-hi', task_number: 1, title: 'Milestoned high relevance', workflow_state: 'Proposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'unmilestoned-lo', task_number: 2, title: 'Unmilestoned low relevance', workflow_state: 'Proposed', milestone_id: null, archived: false, projects: { key: 'B' } },
     ];
     const client = makeClient({
       tableResults: {
@@ -297,14 +297,14 @@ describe('findRelatedTickets', () => {
     expect(res.candidates.find((c) => c.id === 'milestoned-hi')!.unmilestoned).toBe(false);
   });
 
-  it('TC3d (terminal+done exclusion): drops Cancelled + Parked + Verified + Released; keeps OPEN candidates', async () => {
+  it('TC3d (terminal+done exclusion): drops Cancelled + Parked + Verified + Deployed; keeps OPEN candidates', async () => {
     // B-581: every NON-FOLDABLE state is excluded — terminal-dead (Cancelled / Parked)
-    // AND done (Verified / Released). Only OPEN / foldable candidates survive. An OPEN
+    // AND done (Verified / Deployed). Only OPEN / foldable candidates survive. An OPEN
     // candidate of comparable relevance ('open') proves the filter drops by state, not by
     // relevance.
     const enriched = [
       { id: 'verified', task_number: 10, title: 'Already delivered', workflow_state: 'Verified', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
-      { id: 'released', task_number: 11, title: 'Shipped', workflow_state: 'Released', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'deployed', task_number: 11, title: 'Shipped', workflow_state: 'Deployed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
       { id: 'cancelled', task_number: 12, title: 'Cancelled', workflow_state: 'Cancelled', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
       { id: 'parked', task_number: 13, title: 'Parked', workflow_state: 'Parked', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
       { id: 'open', task_number: 14, title: 'Open foldable relative', workflow_state: 'Decomposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
@@ -318,7 +318,7 @@ describe('findRelatedTickets', () => {
       rpc: {
         search_ticket_intents: { data: [
           { source_task_id: 'verified', content: 'x', score: 0.4 },
-          { source_task_id: 'released', content: 'x', score: 0.35 },
+          { source_task_id: 'deployed', content: 'x', score: 0.35 },
           { source_task_id: 'open', content: 'x', score: 0.3 },     // OPEN, comparable relevance
           { source_task_id: 'cancelled', content: 'x', score: 0.2 },
           { source_task_id: 'parked', content: 'x', score: 0.1 },
@@ -329,7 +329,7 @@ describe('findRelatedTickets', () => {
     const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
     const ids = res.candidates.map((c) => c.id);
     expect(ids).not.toContain('verified');  // dropped — done (B-581)
-    expect(ids).not.toContain('released');  // dropped — done (B-581)
+    expect(ids).not.toContain('deployed');  // dropped — done (B-581)
     expect(ids).not.toContain('cancelled'); // dropped — terminal dead
     expect(ids).not.toContain('parked');    // dropped — terminal dead
     expect(ids).toContain('open');          // OPEN candidate of comparable relevance is kept
@@ -355,7 +355,7 @@ describe('findRelatedTickets', () => {
 
   it('TC5 [AC6]: route 2 unavailable → graceful degrade (no throw), degraded:true', async () => {
     const enriched = [
-      { id: 'lex-1', task_number: 50, title: 'Lexical-only hit', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+      { id: 'lex-1', task_number: 50, title: 'Lexical-only hit', workflow_state: 'Proposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
     ];
     const client = makeClient({
       tableResults: {
@@ -398,8 +398,8 @@ describe('findRelatedTickets', () => {
     const client = makeClient({
       tableResults: {
         tasks: [...subjectRows(), { data: [
-          { id: 'live', task_number: 10, title: 'Live', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
-          { id: 'gone', task_number: 11, title: 'Archived', workflow_state: 'Idea', milestone_id: 'm1', archived: true, projects: { key: 'B' } },
+          { id: 'live', task_number: 10, title: 'Live', workflow_state: 'Proposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+          { id: 'gone', task_number: 11, title: 'Archived', workflow_state: 'Proposed', milestone_id: 'm1', archived: true, projects: { key: 'B' } },
         ] }],
         projects: projectRows(),
         knowledge_decisions: intentEmbedRow(),
@@ -420,7 +420,7 @@ describe('findRelatedTickets', () => {
     const client = makeClient({
       tableResults: {
         tasks: [...subjectRows(), { data: [
-          { id: 'both', task_number: 20, title: 'Both routes', workflow_state: 'Idea', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
+          { id: 'both', task_number: 20, title: 'Both routes', workflow_state: 'Proposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } },
         ] }],
         projects: projectRows(),
         knowledge_decisions: intentEmbedRow(),

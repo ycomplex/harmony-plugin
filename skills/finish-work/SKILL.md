@@ -1,6 +1,6 @@
 ---
 name: finish-work
-description: Use when the user wants to finish, complete, wrap up, land, or merge their current work. Triggers on phrases like "finish", "done", "wrap up", "land this", "merge", "ship it", or "we're done". This is the exit point for ALL development work in this project — it handles the full merge-and-cleanup sequence. In opinionated-mode projects it also drives the releasing + verifying activities; in manual-mode projects it behaves exactly as before.
+description: Use when the user wants to finish, complete, wrap up, land, or merge their current work. Triggers on phrases like "finish", "done", "wrap up", "land this", "merge", "ship it", or "we're done". This is the exit point for ALL development work in this project — it handles the full merge-and-cleanup sequence. In opinionated-mode projects it also drives the deploying + verifying activities; in manual-mode projects it behaves exactly as before.
 allowed-tools: mcp__harmony__* Read Grep Glob Bash Bash(gh *)
 disallowed-tools: mcp__harmony__record_decision mcp__harmony__supersede_decision mcp__harmony__update_knowledge_entry
 ---
@@ -17,17 +17,17 @@ merge-and-cleanup flow below — unchanged). If `mode === 'opinionated'`, follow
 
 ---
 
-## Opinionated mode (releasing + verifying)
+## Opinionated mode (deploying + verifying)
 
 The ticket should be at **Built** with `awaiting_human_reason = 'release-decision-pending'` (set by
-`/harmony-plugin:start-work`). This path drives `releasing` (Built → Released) and `verifying`
-(Released → Verified). It does NOT rewrite design knowledge (release role).
+`/harmony-plugin:start-work`). This path drives `deploying` (Built → Deployed) and `verifying`
+(Deployed → Verified). It does NOT rewrite design knowledge (release role).
 
 ### O0. PR-less umbrella? (a decomposed parent whose work shipped in its children — B-471)
 
 **Check this BEFORE the release pre-flight.** A decomposed parent (an "umbrella") has NO branch/PR of its
 own — its real work shipped in its children's PRs. The DB trigger auto-advances such a parent
-**Decomposed → Released** once all active children reach **Verified**, and surfaces verify by setting on
+**Decomposed → Deployed** once all active children reach **Verified**, and surfaces verify by setting on
 the parent row `awaiting_human_input = true`, `awaiting_human_reason = 'verification-ack-pending'`,
 `awaiting_human_ref = {"kind":"umbrella-auto-verify"}` — **but it does NOT compose a brief** (so
 `get_brief` returns null for the umbrella until this skill composes one).
@@ -40,9 +40,9 @@ so do **NOT** read `task_id` from that file for an umbrella. Use the ticket id y
 
 1. **Primary — the purpose-built marker.** `mcp__harmony__get_task({ task_id })` and check
    `awaiting_human_ref.kind === 'umbrella-auto-verify'`. The harmony-web Phase-1 trigger sets this on an
-   auto-advanced umbrella parent, alongside `workflow_state = 'Released'`,
+   auto-advanced umbrella parent, alongside `workflow_state = 'Deployed'`,
    `awaiting_human_input = true`, and `awaiting_human_reason = 'verification-ack-pending'`. Equivalently:
-   `workflow_state = 'Released'` + `awaiting_human_reason = 'verification-ack-pending'` + it has children.
+   `workflow_state = 'Deployed'` + `awaiting_human_reason = 'verification-ack-pending'` + it has children.
    This `awaiting_human_ref.kind` marker is the authoritative, purpose-built signal — prefer it over any
    proxy.
 2. **Corroboration only — has children, no open PR.** `mcp__harmony__list_subtasks({ task_id })` shows it
@@ -51,7 +51,7 @@ so do **NOT** read `task_id` from that file for an umbrella. Use the ticket id y
    worktree of its own, so `gh pr view` runs against whatever arbitrary branch the cwd happens to be on and
    is unreliable on its own.
 
-Such an umbrella is already at `workflow_state` **Released** (auto-advanced) with
+Such an umbrella is already at `workflow_state` **Deployed** (auto-advanced) with
 `awaiting_human_reason = 'verification-ack-pending'` and `awaiting_human_ref.kind = 'umbrella-auto-verify'`.
 
 **If it is an umbrella → take the umbrella verify path and SKIP O1/O2 entirely** (there is no code to
@@ -80,7 +80,7 @@ sequence, and do NOT touch git):
   ```
 
 - **Resolve on human ack:** show the brief; on the human's **accept** →
-  `mcp__harmony__resolve_brief({ task_id, command: "accept" })` advances **Released → Verified**
+  `mcp__harmony__resolve_brief({ task_id, command: "accept" })` advances **Deployed → Verified**
   (terminal-positive). **No git.** Report completion and stop — do not fall through to O1/O2/O3.
 
 (If `awaiting_human_ref.kind` is not `'umbrella-auto-verify'` — e.g. the ticket has NO children, or it has
@@ -113,19 +113,19 @@ prose false-positives B-516 fixed. On the human's **accept**:
 mcp__harmony__resolve_brief({ task_id, command: "accept" })   // pending_activity: null → clears the flag, NO state change
 ```
 
-The release brief carries `pending_activity: null` (state-machine §6.1 — Built→Released is
+The release brief carries `pending_activity: null` (state-machine §6.1 — Built→Deployed is
 SYSTEM-on-deploy-success, not human-accept). So accept is only the human's "go"; the ticket stays **Built**
 until the deploy actually succeeds (O2). (If the human defers, `resolve_brief({ command: "defer" })` parks
 it — do not merge.)
 **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
 
-### O2. Run the merge + deploy, THEN advance to Released
+### O2. Run the merge + deploy, THEN advance to Deployed
 
 Run the **manual-mode merge sequence below** (pre-flight checks → rebase → force-push → wait for CI →
 squash merge → cleanup). **Only after the deploy actually succeeds:**
 
 ```
-mcp__harmony__advance_workflow({ task_id, activity: "releasing" })   // Built -> Released (now reality matches)
+mcp__harmony__advance_workflow({ task_id, activity: "deploying" })   // Built -> Deployed (now reality matches)
 ```
 
 **Land the release trail on the ticket (B-560) — NON-OPTIONAL.** Immediately after the deploy
@@ -134,7 +134,7 @@ durable evidence (gates only advance `workflow_state`; a delegated/worktree buil
 ticket, so without this the trail is lost — B-551 hit Verified with zero build trail):
 
 ```
-mcp__harmony__add_comment({ task_id, content: "Released via PR #<number> — squash-merged to main; deploy succeeded (<run-id/url>)." })
+mcp__harmony__add_comment({ task_id, content: "Deployed via PR #<number> — squash-merged to main; deploy succeeded (<run-id/url>)." })
 ```
 
 **DRAIN the "Follow-ups rollup" buffer at the release gate + surface the audit (B-585, B-641).** If
@@ -155,10 +155,10 @@ surfaced.)
 **Audit for cross-ticket completion at the release gate (B-643).** Alongside draining the rollup, ask: *did this run's work also complete another **open** ticket?* Seed candidates by scanning the branch's commits for `[B-XXX]` tags other than this ticket (`git log --format='%s%n%b' origin/main..HEAD | grep -oE '\[B-[0-9]+\]'`); `get_task` each. **Surface the candidates + a recommended disposition on the release brief** for the human to confirm at the hard-floor: **completely covered → `subsume_task`** it into this ticket (+ archive); **uncertain → annotate** the covered ticket's description with a `possibly-subsumed-by: <this> — confirm at clarify/design` flag (do not subsume on a guess). See `skills/harmony-shared/ticket-disposition.md` → **"Reconciling a ticket another run already finished."** (Skip if this run's work covers no other ticket.)
 
 If CI/deploy goes red, **do not advance** — the ticket stays Built; fix and retry. This is what keeps
-`Released` meaning "deployed" (state-machine §6.1), so `verifying` (O3) checks against a real deploy
+`Deployed` meaning "deployed" (state-machine §6.1), so `verifying` (O3) checks against a real deploy
 rather than a state that ran ahead of reality (the B-60 conflation — review F4).
 
-### O3. Verify (Released → Verified)
+### O3. Verify (Deployed → Verified)
 
 After deploy, file the verification brief so the human can acknowledge real-world behaviour matches the
 design (state-machine §6.1 — verifying is human-ack by default).
@@ -186,7 +186,7 @@ mcp__harmony__compose_brief({
 ```
 
 On the human's **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept" })` advances
-Released→Verified (terminal-positive).
+Deployed→Verified (terminal-positive).
 **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
 
 **Land the verify result on the ticket (B-560) — NON-OPTIONAL.** Immediately after the accept, comment
@@ -209,7 +209,7 @@ audited at O2.)
 Report completion.
 
 > If post-release the human finds a problem, flag a human-authorised backflow:
-> `mcp__harmony__advance_workflow({ task_id, activity: "revising-building" })` (Released → Built) and
+> `mcp__harmony__advance_workflow({ task_id, activity: "revising-building" })` (Deployed → Built) and
 > hand back to `/harmony-plugin:start-work`.
 
 ---

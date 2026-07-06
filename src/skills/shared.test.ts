@@ -44,8 +44,8 @@ describe('gate-routing (B-545 SSoT)', () => {
 
   it('records every forward + terminal workflow_state', () => {
     for (const state of [
-      'Captured', 'Idea', 'Clarified', 'Decomposed', 'Designed',
-      'Planned', 'Built', 'Released', 'Verified', 'Parked', 'Cancelled',
+      'Captured', 'Proposed', 'Clarified', 'Decomposed', 'Designed',
+      'Planned', 'Built', 'Deployed', 'Verified', 'Parked', 'Cancelled',
     ]) {
       expect(doc, `gate-routing.md missing state ${state}`).toContain(state);
     }

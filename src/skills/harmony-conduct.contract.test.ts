@@ -159,16 +159,16 @@ describe('harmony-conduct skill contract', () => {
     expect(skill.body).toContain('harmony-shared/gate-routing.md');
     // It reads that table keyed by workflow_state (its projection) and still names the forward path.
     expect(skill.body).toContain('workflow_state');
-    for (const state of ['Idea', 'Clarified', 'Decomposed', 'Designed', 'Planned', 'Built', 'Released', 'Verified']) {
+    for (const state of ['Proposed', 'Clarified', 'Decomposed', 'Designed', 'Planned', 'Built', 'Deployed', 'Verified']) {
       expect(skill.body, `missing forward state ${state}`).toContain(state);
     }
   });
 
   it('B-545: keeps its conduct-SPECIFIC handling inline (the deliberate divergence from harmony-next is NOT shared)', () => {
     const body = skill.body.toLowerCase();
-    // Captured → auto-advance promoting as plumbing (the OPPOSITE of harmony-next's triage-stop).
-    expect(skill.body).toContain('promoting');
-    expect(body).toMatch(/auto-advance.*promoting|promoting.*plumbing|plumbing, not a pause/);
+    // Captured → auto-advance proposing as plumbing (the OPPOSITE of harmony-next's triage-stop).
+    expect(skill.body).toContain('proposing');
+    expect(body).toMatch(/auto-advance.*proposing|proposing.*plumbing|plumbing, not a pause/);
     // Decomposed split-umbrella → report-and-stop (the B-471/B-506 branch).
     expect(body).toMatch(/report-and-stop|split umbrella|report and stop/);
   });
@@ -192,19 +192,19 @@ describe('harmony-conduct skill contract', () => {
     expect(body).toMatch(/conductor never reverts state|never reverts state itself|only a human accept executes/);
   });
 
-  it('auto-advances promoting on a Captured ticket — plumbing, not a pause (B-490 F2)', () => {
+  it('auto-advances proposing on a Captured ticket — plumbing, not a pause (B-490 F2)', () => {
     const body = skill.body;
     // Captured must be handled (it is the inbox state freshly-created tickets land in).
     expect(body).toContain('Captured');
-    // The conductor advances promoting itself via advance_workflow — it does NOT compose a brief / pause.
+    // The conductor advances proposing itself via advance_workflow — it does NOT compose a brief / pause.
     expect(referencedHarmonyTools(body)).toContain('advance_workflow');
-    expect(body).toContain('promoting');
+    expect(body).toContain('proposing');
     // Scope the assertion to the Captured-handling step so a stray token elsewhere can't satisfy it:
-    // the SAME paragraph must tie Captured → promoting → advance_workflow and frame it as no-pause plumbing.
+    // the SAME paragraph must tie Captured → proposing → advance_workflow and frame it as no-pause plumbing.
     const capIdx = body.indexOf("workflow_state === 'Captured'");
     expect(capIdx).toBeGreaterThan(-1);
     const seg = body.slice(capIdx, capIdx + 900);
-    expect(seg).toContain('promoting');
+    expect(seg).toContain('proposing');
     expect(seg).toContain('advance_workflow');
     expect(seg.toLowerCase()).toMatch(/no .*pause|not a pause|plumbing/);
     // It must NOT try to file a clarifying brief from Captured (the transition-table gap that broke B-487).

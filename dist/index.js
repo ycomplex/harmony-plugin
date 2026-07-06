@@ -32619,7 +32619,7 @@ var composeBriefTool = {
       },
       expand_sections: { type: "object", description: "Pre-generated expand content keyed by section: reasoning/alternatives/history" },
       related: { type: "array", description: "Pre-generated related decisions/tickets/knowledge" },
-      pending_activity: { type: ["string", "null"], description: "The workflow activity `accept` applies (e.g. clarifying, decomposing, releasing, verifying). A real activity is validated against the transition table; null or omitted \u21D2 accept advances no state." },
+      pending_activity: { type: ["string", "null"], description: "The workflow activity `accept` applies (e.g. clarifying, decomposing, deploying, verifying). A real activity is validated against the transition table; null or omitted \u21D2 accept advances no state." },
       decision_ref: { type: "object", description: 'The Asserted knowledge entry to promote on accept: { type: "decision", id: "<uuid>" }' },
       underwriting_claim_ids: { type: "array", items: { type: "string" }, description: "B-645 iterate-prune: on an in-place iterate, the KEPT set of elicitation-claim ids that still underwrite this brief. Coupled Asserted claims NOT listed are archived; [] archives all coupled Asserted claims; omit \u21D2 no prune. Ignored on a first compose (nothing is coupled yet)." }
     },
@@ -32658,7 +32658,7 @@ async function resolveBrief(client, projectId, args) {
       const { data: task, error: taskErr } = await client.from("tasks").select("workflow_state, awaiting_human_reason, awaiting_human_ref").eq("id", taskId).maybeSingle();
       if (taskErr) throw new Error(taskErr.message);
       const row = task;
-      if (row?.workflow_state === "Released" && row.awaiting_human_reason === "verification-ack-pending" && row.awaiting_human_ref?.kind === "umbrella-auto-verify") {
+      if (row?.workflow_state === "Deployed" && row.awaiting_human_reason === "verification-ack-pending" && row.awaiting_human_ref?.kind === "umbrella-auto-verify") {
         const { data: data2, error: error3 } = await client.rpc("ack_umbrella_verify", { _task_id: taskId });
         if (error3) throw new Error(error3.message);
         return data2;
@@ -33940,7 +33940,7 @@ async function findRelatedTickets(client, projectId, args) {
     degraded
   };
 }
-var EXCLUDED_WORKFLOW_STATES = /* @__PURE__ */ new Set(["Cancelled", "Parked", "Verified", "Released"]);
+var EXCLUDED_WORKFLOW_STATES = /* @__PURE__ */ new Set(["Cancelled", "Parked", "Verified", "Deployed"]);
 function accumulateRrf(byTask, taskId, rank, route) {
   const contribution = 1 / (RRF_K + rank);
   const existing = byTask.get(taskId);
@@ -33987,7 +33987,7 @@ async function resolveTaskId2(client, projectId, input) {
 }
 var findRelatedTicketsTool = {
   name: "find_related_tickets",
-  description: "Surface tickets related to / duplicating / overlapping a subject ticket \u2014 the dedup pipeline used at the clarify gate. MULTI-QUERY retrieval fused by Reciprocal Rank Fusion (RRF by rank, not a raw max, so the routes\u2019 incommensurable score scales can\u2019t dominate each other) over THREE ranked lists: lexical content match on title+description (route 1, full), a SECOND lexical match on the title ALONE (route 1, title \u2014 rescues siblings the full-text framing dilutes), and intent retrieval (route 2, semantic+lexical over ticket intents). Self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), and ranks PURELY by relevance (combined RRF score). Returns only OPEN / foldable candidates \u2014 excludes archived + Cancelled + Parked + Verified + Released (the clarify card folds/subsumes only open work; B-581 reversed B-574\u2019s keep-terminal decision). Unmilestoned candidates are FLAGGED (`unmilestoned: true`) for the renderer to badge \u2014 they are NOT reordered (relevance order is authoritative). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. Degrades gracefully (returns lexical-only results with degraded:true) if intent retrieval is unavailable.",
+  description: "Surface tickets related to / duplicating / overlapping a subject ticket \u2014 the dedup pipeline used at the clarify gate. MULTI-QUERY retrieval fused by Reciprocal Rank Fusion (RRF by rank, not a raw max, so the routes\u2019 incommensurable score scales can\u2019t dominate each other) over THREE ranked lists: lexical content match on title+description (route 1, full), a SECOND lexical match on the title ALONE (route 1, title \u2014 rescues siblings the full-text framing dilutes), and intent retrieval (route 2, semantic+lexical over ticket intents). Self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), and ranks PURELY by relevance (combined RRF score). Returns only OPEN / foldable candidates \u2014 excludes archived + Cancelled + Parked + Verified + Deployed (the clarify card folds/subsumes only open work; B-581 reversed B-574\u2019s keep-terminal decision). Unmilestoned candidates are FLAGGED (`unmilestoned: true`) for the renderer to badge \u2014 they are NOT reordered (relevance order is authoritative). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. Degrades gracefully (returns lexical-only results with degraded:true) if intent retrieval is unavailable.",
   inputSchema: {
     type: "object",
     properties: {
@@ -35584,7 +35584,7 @@ var advanceWorkflowTool = {
       task_id: { type: "string", description: "Task identifier \u2014 UUID, number, or visual ID (e.g. B-43)" },
       activity: {
         type: "string",
-        description: "Workflow activity to apply, e.g. 'building', 'releasing', 'revising-designing', 'researching', 'parking', 'cancelling', 'capturing', 'promoting'."
+        description: "Workflow activity to apply, e.g. 'building', 'deploying', 'revising-designing', 'researching', 'parking', 'cancelling', 'capturing', 'proposing'."
       }
     },
     required: ["task_id", "activity"]

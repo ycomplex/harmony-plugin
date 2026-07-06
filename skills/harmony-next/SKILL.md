@@ -20,24 +20,24 @@ queue). If the user named a ticket, `mcp__harmony__get_task({ task_id })`. Other
 `mcp__harmony__query_tasks({ awaiting_human_input: true, sort_by: 'priority', limit: 1 })` and take the
 single result. If the queue is empty, say so and stop.
 
-### 1a. A `Captured` item → SURFACE the promote-to-Idea triage decision, then STOP
+### 1a. A `Captured` item → SURFACE the promote-to-Proposed triage decision, then STOP
 
 If the resolved item's `workflow_state === 'Captured'` (a freshly-created, **un-triaged** inbox ticket —
-the post-B-474 inbox state), **do NOT auto-advance `promoting` and do NOT run clarify.** `promoting`
-(Captured→Idea) is a documented **human triage move** ("is this worth pursuing?"), and `harmony-next`
+the post-B-474 inbox state), **do NOT auto-advance `proposing` and do NOT run clarify.** `proposing`
+(Captured→Proposed) is a documented **human triage move** ("is this worth pursuing?"), and `harmony-next`
 pulls *un-triaged* items off the queue — so the promote decision is **the human's**, not something this
 skill makes for them. Surface it and pause:
 
-> *"B-123 is **Captured** (un-triaged). Promote it to Idea — is this worth pursuing? If yes, say so (or
-> `/harmony-plugin:harmony-next B-123` again after promoting) and I'll advance it and start clarifying. If
+> *"B-123 is **Captured** (un-triaged). Promote it to Proposed — is this worth pursuing? If yes, say so (or
+> `/harmony-plugin:harmony-next B-123` again after proposing) and I'll advance it and start clarifying. If
 > not, defer/cancel it."*
 
 Then **STOP** — the ball is in the human's court for the triage call. (This is the deliberate **opposite**
-of `harmony-conduct`, which auto-advances `promoting` itself because *the human choosing to conduct a
+of `harmony-conduct`, which auto-advances `proposing` itself because *the human choosing to conduct a
 specific ticket IS the promote decision*. `harmony-next` makes no such assumption: it took the top of the
 queue, the human hasn't triaged it yet, so triage stays theirs.) Only once the human confirms (or once the
 ticket is already past `Captured`) does the normal flow below run: re-read with `get_task`, then the next
-gate from `Idea` is `clarifying`.
+gate from `Proposed` is `clarifying`.
 
 ### 2. Show the brief
 
@@ -47,9 +47,9 @@ fenced block (it is already BLUF-formatted and lint-clean — do not re-summaris
 
 **Null brief on a `verification-ack-pending` umbrella (B-471):** `get_brief` can be **null** when
 `awaiting_human_reason = 'verification-ack-pending'`. This is the trigger-surfaced **PR-less umbrella** —
-a decomposed parent that the DB trigger auto-advanced **Decomposed → Released** once all its children
+a decomposed parent that the DB trigger auto-advanced **Decomposed → Deployed** once all its children
 reached **Verified**. The authoritative marker for this case is **`awaiting_human_ref.kind ===
-'umbrella-auto-verify'`** (set by the harmony-web Phase-1 trigger alongside `workflow_state = 'Released'`
+'umbrella-auto-verify'`** (set by the harmony-web Phase-1 trigger alongside `workflow_state = 'Deployed'`
 and `awaiting_human_reason = 'verification-ack-pending'`); the trigger set the `awaiting_human_input` flag
 via that ref but **composed no brief**. Do **NOT** choke on the missing brief and do NOT try to render it
 here. **Delegate to `/harmony-plugin:finish-work <ticket>` (verify step)** — it composes the verification

@@ -127,7 +127,7 @@ describe('detectChange', () => {
 describe('detectChange — answers-landed (B-645 elicitation exchange)', () => {
   // The watch is armed right after a round is filed: awaiting flag up, exchange active, marker clear.
   const baseline: PollBaseline = {
-    workflowState: 'Idea',
+    workflowState: 'Proposed',
     pendingResolution: null,
     awaitingHumanInput: true,
     activeExchange: { exchange_id: 'ex-1', status: 'active', round: 2, answers_submitted_at: null, force_quit_requested_at: null },
@@ -136,13 +136,13 @@ describe('detectChange — answers-landed (B-645 elicitation exchange)', () => {
   it('classifies answers-landed when the human submits a round (marker set, flag cleared, state unchanged)', () => {
     const ex = { exchange_id: 'ex-1', status: 'active', round: 2, answers_submitted_at: '2026-07-02T10:00:00Z', force_quit_requested_at: null };
     expect(
-      detectChange(baseline, { workflow_state: 'Idea', awaiting_human_input: false, active_exchange: ex }),
-    ).toEqual({ trigger: 'answers-landed', workflow_state: 'Idea', active_exchange: ex });
+      detectChange(baseline, { workflow_state: 'Proposed', awaiting_human_input: false, active_exchange: ex }),
+    ).toEqual({ trigger: 'answers-landed', workflow_state: 'Proposed', active_exchange: ex });
   });
 
   it('classifies answers-landed on a force-quit request too', () => {
     const ex = { exchange_id: 'ex-1', status: 'active', round: 2, answers_submitted_at: null, force_quit_requested_at: '2026-07-02T10:05:00Z' };
-    const change = detectChange(baseline, { workflow_state: 'Idea', awaiting_human_input: false, active_exchange: ex });
+    const change = detectChange(baseline, { workflow_state: 'Proposed', awaiting_human_input: false, active_exchange: ex });
     expect(change?.trigger).toBe('answers-landed');
   });
 
@@ -150,7 +150,7 @@ describe('detectChange — answers-landed (B-645 elicitation exchange)', () => {
     // A round-submit clears the flag with NO state advance / reshape / park — exactly the shape of the
     // B-611 non-advancing accept. answers-landed is checked BEFORE resolved so the answers get consumed.
     const change = detectChange(baseline, {
-      workflow_state: 'Idea',
+      workflow_state: 'Proposed',
       awaiting_human_input: false,
       active_exchange: { exchange_id: 'ex-1', answers_submitted_at: '2026-07-02T10:00:00Z' },
     });
@@ -169,7 +169,7 @@ describe('detectChange — answers-landed (B-645 elicitation exchange)', () => {
 
   it('a fresh pending_resolution still wins over an exchange marker (priority order preserved)', () => {
     const change = detectChange(baseline, {
-      workflow_state: 'Idea',
+      workflow_state: 'Proposed',
       awaiting_human_input: false,
       pending_resolution: { command: 'iterate', detail: 'reshape' },
       active_exchange: { exchange_id: 'ex-1', answers_submitted_at: '2026-07-02T10:00:00Z' },
@@ -181,7 +181,7 @@ describe('detectChange — answers-landed (B-645 elicitation exchange)', () => {
     const stale = { exchange_id: 'ex-1', status: 'active', round: 2, answers_submitted_at: '2026-07-02T09:00:00Z', force_quit_requested_at: null };
     const change = detectChange(
       { ...baseline, activeExchange: stale },
-      { workflow_state: 'Idea', awaiting_human_input: false, active_exchange: stale },
+      { workflow_state: 'Proposed', awaiting_human_input: false, active_exchange: stale },
     );
     expect(change?.trigger).toBe('resolved');
   });
@@ -189,7 +189,7 @@ describe('detectChange — answers-landed (B-645 elicitation exchange)', () => {
   it('GATE unchanged: an exchange marker with the flag still up is NOT an exit', () => {
     expect(
       detectChange(baseline, {
-        workflow_state: 'Idea',
+        workflow_state: 'Proposed',
         awaiting_human_input: true,
         active_exchange: { exchange_id: 'ex-1', answers_submitted_at: '2026-07-02T10:00:00Z' },
       }),
@@ -198,7 +198,7 @@ describe('detectChange — answers-landed (B-645 elicitation exchange)', () => {
 
   it('an active exchange with NO marker does not classify answers-landed (falls to resolved)', () => {
     const change = detectChange(baseline, {
-      workflow_state: 'Idea',
+      workflow_state: 'Proposed',
       awaiting_human_input: false,
       active_exchange: { exchange_id: 'ex-1', status: 'active', round: 2, answers_submitted_at: null, force_quit_requested_at: null },
     });
@@ -249,43 +249,43 @@ describe('detectChange — discussion-cancelled (B-461, the one no-flag-transiti
   // The watch is armed mid-discussion: awaiting flag up, discuss exchange active on the brief.
   const activeEx = { exchange_id: 'ex-1', status: 'active', round: 1, answers_submitted_at: null, force_quit_requested_at: null };
   const baseline: PollBaseline = {
-    workflowState: 'Idea', pendingResolution: null, awaitingHumanInput: true, activeExchange: activeEx,
+    workflowState: 'Proposed', pendingResolution: null, awaitingHumanInput: true, activeExchange: activeEx,
   };
 
   it('classifies discussion-cancelled when the active exchange row is GONE without a flag true→false', () => {
     // A mechanical cancel restores awaiting=true DIRECTLY (no true→false transition — the B-611
     // blind-spot class), and get_task's active-only projection now reads null for the exchange.
     expect(
-      detectChange(baseline, { workflow_state: 'Idea', awaiting_human_input: true, active_exchange: null }),
-    ).toEqual({ trigger: 'discussion-cancelled', workflow_state: 'Idea' });
+      detectChange(baseline, { workflow_state: 'Proposed', awaiting_human_input: true, active_exchange: null }),
+    ).toEqual({ trigger: 'discussion-cancelled', workflow_state: 'Proposed' });
   });
 
   it('classifies discussion-cancelled when the exchange status changed without a flag true→false', () => {
     expect(
       detectChange(baseline, {
-        workflow_state: 'Idea',
+        workflow_state: 'Proposed',
         awaiting_human_input: true,
         active_exchange: { ...activeEx, status: 'abandoned' },
       }),
-    ).toEqual({ trigger: 'discussion-cancelled', workflow_state: 'Idea' });
+    ).toEqual({ trigger: 'discussion-cancelled', workflow_state: 'Proposed' });
   });
 
   it('does NOT fire when the flag transition happened — the post-gate classification owns that read', () => {
-    const change = detectChange(baseline, { workflow_state: 'Idea', awaiting_human_input: false, active_exchange: null });
+    const change = detectChange(baseline, { workflow_state: 'Proposed', awaiting_human_input: false, active_exchange: null });
     expect(change?.trigger).toBe('resolved');
   });
 
   it('does NOT fire while the baseline exchange is still active (keeps polling)', () => {
     expect(
-      detectChange(baseline, { workflow_state: 'Idea', awaiting_human_input: true, active_exchange: activeEx }),
+      detectChange(baseline, { workflow_state: 'Proposed', awaiting_human_input: true, active_exchange: activeEx }),
     ).toBeNull();
   });
 
   it('does NOT fire when the baseline had no ACTIVE exchange', () => {
     expect(
       detectChange(
-        { workflowState: 'Idea', pendingResolution: null, awaitingHumanInput: true },
-        { workflow_state: 'Idea', awaiting_human_input: true, active_exchange: null },
+        { workflowState: 'Proposed', pendingResolution: null, awaitingHumanInput: true },
+        { workflow_state: 'Proposed', awaiting_human_input: true, active_exchange: null },
       ),
     ).toBeNull();
   });
@@ -316,7 +316,7 @@ describe('baselineReadFallback (B-611 — a transient read error must not false-
 
   it('carries the baseline active_exchange (B-645) so a degraded poll cannot false-trip answers-landed', () => {
     const baseline: PollBaseline = {
-      workflowState: 'Idea',
+      workflowState: 'Proposed',
       pendingResolution: null,
       awaitingHumanInput: true,
       activeExchange: { exchange_id: 'ex-1', answers_submitted_at: '2026-07-02T09:00:00Z', force_quit_requested_at: null },
@@ -444,19 +444,19 @@ describe('runPollLoop', () => {
     const exAnswered = { ...exBaseline, answers_submitted_at: '2026-07-02T10:00:00Z' };
     const reader = readTaskAfter(
       2,
-      { workflow_state: 'Idea', awaiting_human_input: true, active_exchange: exBaseline },
-      { workflow_state: 'Idea', awaiting_human_input: false, active_exchange: exAnswered },
+      { workflow_state: 'Proposed', awaiting_human_input: true, active_exchange: exBaseline },
+      { workflow_state: 'Proposed', awaiting_human_input: false, active_exchange: exAnswered },
     );
     const res = await runPollLoop({
       readTask: reader.read,
       now: clock.now,
       sleep: clock.sleep,
       launchStamp: 0,
-      baseline: { workflowState: 'Idea', awaitingHumanInput: true, activeExchange: exBaseline },
+      baseline: { workflowState: 'Proposed', awaitingHumanInput: true, activeExchange: exBaseline },
     });
     expect(res).toEqual({
       reason: 'changed',
-      detail: { trigger: 'answers-landed', workflow_state: 'Idea', active_exchange: exAnswered },
+      detail: { trigger: 'answers-landed', workflow_state: 'Proposed', active_exchange: exAnswered },
     });
   });
 
@@ -486,18 +486,18 @@ describe('runPollLoop', () => {
     const activeEx = { exchange_id: 'ex-1', status: 'active', round: 1, answers_submitted_at: null, force_quit_requested_at: null };
     const reader = readTaskAfter(
       2,
-      { workflow_state: 'Idea', awaiting_human_input: true, active_exchange: activeEx },
+      { workflow_state: 'Proposed', awaiting_human_input: true, active_exchange: activeEx },
       // The cancel restores awaiting=true directly; the active exchange is gone from the projection.
-      { workflow_state: 'Idea', awaiting_human_input: true, active_exchange: null },
+      { workflow_state: 'Proposed', awaiting_human_input: true, active_exchange: null },
     );
     const res = await runPollLoop({
       readTask: reader.read,
       now: clock.now,
       sleep: clock.sleep,
       launchStamp: 0,
-      baseline: { workflowState: 'Idea', awaitingHumanInput: true, activeExchange: activeEx },
+      baseline: { workflowState: 'Proposed', awaitingHumanInput: true, activeExchange: activeEx },
     });
-    expect(res).toEqual({ reason: 'changed', detail: { trigger: 'discussion-cancelled', workflow_state: 'Idea' } });
+    expect(res).toEqual({ reason: 'changed', detail: { trigger: 'discussion-cancelled', workflow_state: 'Proposed' } });
   });
 
   it('exits changed when the ticket is Parked (browser defer/deny)', async () => {

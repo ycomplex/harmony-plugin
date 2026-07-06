@@ -388,7 +388,7 @@ export const composeBriefTool = {
       },
       expand_sections: { type: 'object', description: 'Pre-generated expand content keyed by section: reasoning/alternatives/history' },
       related: { type: 'array', description: 'Pre-generated related decisions/tickets/knowledge' },
-      pending_activity: { type: ['string', 'null'], description: 'The workflow activity `accept` applies (e.g. clarifying, decomposing, releasing, verifying). A real activity is validated against the transition table; null or omitted ⇒ accept advances no state.' },
+      pending_activity: { type: ['string', 'null'], description: 'The workflow activity `accept` applies (e.g. clarifying, decomposing, deploying, verifying). A real activity is validated against the transition table; null or omitted ⇒ accept advances no state.' },
       decision_ref: { type: 'object', description: 'The Asserted knowledge entry to promote on accept: { type: "decision", id: "<uuid>" }' },
       underwriting_claim_ids: { type: 'array', items: { type: 'string' }, description: 'B-645 iterate-prune: on an in-place iterate, the KEPT set of elicitation-claim ids that still underwrite this brief. Coupled Asserted claims NOT listed are archived; [] archives all coupled Asserted claims; omit ⇒ no prune. Ignored on a first compose (nothing is coupled yet).' },
     },
@@ -470,10 +470,10 @@ export async function resolveBrief(
     .eq('task_id', taskId).eq('status', 'active').maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
 
-  // B-517: a trigger-rolled-up umbrella's verify gate has NO brief (it was auto-released without a
-  // live conductor), so the normal active-brief path can't ack it. When the task is such a brief-less
-  // umbrella-auto-verify sentinel (Released + awaiting verification-ack-pending + ref.kind=
-  // 'umbrella-auto-verify') and the human accepts, advance it Released→Verified via the fixed-contract
+  // B-517: a trigger-rolled-up umbrella's verify gate has NO brief (it was auto-advanced to Deployed
+  // without a live conductor), so the normal active-brief path can't ack it. When the task is such a
+  // brief-less umbrella-auto-verify sentinel (Deployed + awaiting verification-ack-pending + ref.kind=
+  // 'umbrella-auto-verify') and the human accepts, advance it Deployed→Verified via the fixed-contract
   // RPC instead of erroring. defer/other commands on a brief-less umbrella stay out of scope (still error).
   if (!active) {
     if (args.command === 'accept') {
@@ -489,7 +489,7 @@ export async function resolveBrief(
         awaiting_human_ref?: { kind?: string } | null;
       } | null;
       if (
-        row?.workflow_state === 'Released' &&
+        row?.workflow_state === 'Deployed' &&
         row.awaiting_human_reason === 'verification-ack-pending' &&
         row.awaiting_human_ref?.kind === 'umbrella-auto-verify'
       ) {

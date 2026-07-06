@@ -47,7 +47,7 @@ export const advanceWorkflowTool = {
       activity: {
         type: 'string',
         description:
-          "Workflow activity to apply, e.g. 'building', 'releasing', 'revising-designing', 'researching', 'parking', 'cancelling', 'capturing', 'promoting'.",
+          "Workflow activity to apply, e.g. 'building', 'deploying', 'revising-designing', 'researching', 'parking', 'cancelling', 'capturing', 'proposing'.",
       },
     },
     required: ['task_id', 'activity'],

@@ -1,13 +1,13 @@
 ---
 name: harmony-clarify
-description: Clarify a ticket's intent into a specification (Idea → Clarified) — elicitation-first (B-462): infer from the ticket + Accepted knowledge, interrogate only the load-bearing residual through a question exchange BEFORE drafting, then draft. Triggers on "clarify B-123", "what does this ticket mean", "harmony clarify", or picking up an Idea-state ticket. Queries domain knowledge first, opens an elicitation exchange when intent is opaque, drafts a clarification, and files it as a brief for accept/edit/defer.
+description: Clarify a ticket's intent into a specification (Proposed → Clarified) — elicitation-first (B-462): infer from the ticket + Accepted knowledge, interrogate only the load-bearing residual through a question exchange BEFORE drafting, then draft. Triggers on "clarify B-123", "what does this ticket mean", "harmony clarify", or picking up a Proposed-state ticket. Queries domain knowledge first, opens an elicitation exchange when intent is opaque, drafts a clarification, and files it as a brief for accept/edit/defer.
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
 
 # Harmony Clarify
 
-Implements the `clarifying` activity (state-machine §4): Idea → Clarified, producing a clarification
+Implements the `clarifying` activity (state-machine §4): Proposed → Clarified, producing a clarification
 knowledge entry. **Elicitation-first (B-462 — the reference trigger configuration of the B-550/B-645
 engine):** the first move is an inference attempt against the ticket + Accepted knowledge; only where
 intent stays opaque does the skill interrogate the human through a round-based exchange *before*
@@ -34,7 +34,7 @@ back through MCP. It never edits code (discovery role).
 
 First call `mcp__harmony__get_project`; if `mode !== 'opinionated'`, stop — the discovery gates are an
 opinionated-mode activity (manual-mode projects use the normal board, not the clarify→decompose→design
-lifecycle). Then `mcp__harmony__get_task({ task_id })`. Confirm `workflow_state === 'Idea'` (or near it).
+lifecycle). Then `mcp__harmony__get_task({ task_id })`. Confirm `workflow_state === 'Proposed'` (or near it).
 
 **Resume check — exchanges survive session death, like briefs.** `mcp__harmony__get_elicitation({
 task_id })` and branch:
@@ -54,10 +54,10 @@ reopen the exchange; post-brief discussion is B-461's trigger, not this skill's.
 
 ### 1b. Honor a cross-ticket-completion flag (reconcile before drafting)
 
-Before drafting, check whether this ticket's work is **already done** by another run (B-643) — because a run that completed this work may have flagged it forward, and `find_related_tickets` (step 1c) **excludes Verified/Released**, so a *done* sibling will not surface there:
+Before drafting, check whether this ticket's work is **already done** by another run (B-643) — because a run that completed this work may have flagged it forward, and `find_related_tickets` (step 1c) **excludes Verified/Deployed**, so a *done* sibling will not surface there:
 
 1. **Honor a `possibly-subsumed-by` annotation** if the description carries one (grep for the `possibly-subsumed-by:` token): `get_task` the named covering ticket; if its work covers this ticket → `subsume_task({ task_id, subsumed_by_task_id: <covering>, reason })` and **stop** — don't clarify already-delivered work. Else clear/note the flag and proceed with the genuine remainder.
-2. **Independently, check for a Verified/Released sibling** via `search_tasks` (it does **not** filter by `workflow_state`, so unlike `find_related_tickets` it reaches done work): search this ticket's title + intent, keep hits whose `workflow_state ∈ {Verified, Released}`, and if a high-similarity hit already delivered this work → subsume + stop.
+2. **Independently, check for a Verified/Deployed sibling** via `search_tasks` (it does **not** filter by `workflow_state`, so unlike `find_related_tickets` it reaches done work): search this ticket's title + intent, keep hits whose `workflow_state ∈ {Verified, Deployed}`, and if a high-similarity hit already delivered this work → subsume + stop.
 
 See `skills/harmony-shared/ticket-disposition.md` → **"Reconciling a ticket another run already finished"** for the full mechanism and rationale.
 
@@ -301,7 +301,7 @@ Show the rendered `content` verbatim. On the human's command:
   title). The human's brief accept authorizes exactly the de-scopes listed on the brief — never
   re-ticket anything not in the block. Then
   `mcp__harmony__resolve_brief({ task_id, command: "accept" })` → promotes the specification
-  Asserted→Accepted, advances Idea→Clarified, and (when an exchange ran) promotes the coupled
+  Asserted→Accepted, advances Proposed→Clarified, and (when an exchange ran) promotes the coupled
   human-grounded claims — force-quit claims stay Asserted, quarantined (the DB disposal skips them).
   Report the new state, including any re-ticketed later phase's visual id. A WEB accept with no
   session running defers the AC filing to the design gate's self-heal and the de-scope execution to
