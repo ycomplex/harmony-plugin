@@ -47,6 +47,9 @@ The result is either:
 
 ### 3. Compose the proposal brief
 
+Author the brief per `skills/harmony-shared/brief-authoring.md` §Decompose — the question, must-haves,
+and engagement it owes the human, plus the legibility contract. Consult it; do not restate it.
+
 ```
 mcp__harmony__compose_brief({
   task_id,

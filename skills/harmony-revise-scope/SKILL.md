@@ -207,6 +207,9 @@ disposition of this ticket's children:
   work; recoverable), **reparent <new-parent>** (move the work; child stays live), or **abort** (abandon the
   revert). The accept does **not** execute until every work-bearing child has a disposition.
 
+Author the brief per `skills/harmony-shared/brief-authoring.md` §Auxiliary briefs — it inherits the
+shared core and the legibility contract. Consult it; do not restate it.
+
 ```
 mcp__harmony__compose_brief({
   task_id,

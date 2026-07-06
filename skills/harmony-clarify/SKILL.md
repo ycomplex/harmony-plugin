@@ -251,6 +251,9 @@ auto-dedupe, or auto-subsume.
 
 ### 4. Compose the brief
 
+Author the brief per `skills/harmony-shared/brief-authoring.md` §Clarify — the question, must-haves,
+and engagement it owes the human, plus the legibility contract. Consult it; do not restate it.
+
 Build the BLUF `BriefDoc` and file it — this sets `awaiting_human_input` and lints the doc:
 
 ```

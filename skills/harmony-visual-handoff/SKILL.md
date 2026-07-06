@@ -105,7 +105,9 @@ const decision = mcp__harmony__record_decision({
 mcp__harmony__reference_knowledge({ task_id, decision_id: decision.id })
 ```
 
-Then compose the brief. Set `pending_activity: "designing"` **only if this is the last required sub-track**
+Then compose the brief. Author it per `skills/harmony-shared/brief-authoring.md` §Design — the question,
+must-haves, and engagement it owes the human, plus the legibility contract. Consult it; do not restate it.
+Set `pending_activity: "designing"` **only if this is the last required sub-track**
 (derive exactly as `harmony-design-decide` does — `mcp__harmony__list_ticket_knowledge({ task_id })`, the
 Accepted `*-design` types vs the required set); otherwise `null`.
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, getBrief, resolveBrief, fetchPendingResolution, type BriefDoc, type BriefItem } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, getBrief, resolveBrief, fetchPendingResolution, SENTENCE_WORD_LIMIT, type BriefDoc, type BriefItem } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -194,6 +194,122 @@ describe('lintBrief', () => {
   it('does not nag for a confidence level on a research-first brief with no recommend (B-445)', () => {
     const r = lint(baseDoc({ recommend: undefined, load_bearing_gap: true, research: ['Q?'], items: [decision({ deferred: true })] }));
     expect(r.warnings.join(' ')).not.toMatch(/no confidence level/i);
+  });
+});
+
+// ——— B-660 legibility nudges: warn-only, calibrated two-sided ———
+describe('lintBrief legibility nudges (B-660)', () => {
+  // Confidence set so the only warnings in play are the nudges under test.
+  const quiet = (over: Partial<BriefDoc> = {}): BriefDoc =>
+    baseDoc({ recommend: { text: 'Adopt.', confidence: 'high' }, ...over });
+  const lint = (doc: BriefDoc) => lintBrief(doc, renderBrief(doc));
+  const NUDGE_A = /one idea per sentence/i;
+  const NUDGE_B = /unstack these/i;
+
+  const longSentence =
+    Array.from({ length: SENTENCE_WORD_LIMIT + 5 }, (_, i) => `word${i}`).join(' ') + '.';
+
+  it(`Nudge A fires on a sentence over ${SENTENCE_WORD_LIMIT} words — and never flips ok`, () => {
+    const r = lint(quiet({ why: [longSentence] }));
+    expect(r.ok).toBe(true);
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(' ')).toMatch(NUDGE_A);
+  });
+
+  it('Nudge A is silent on short-sentence prose', () => {
+    const r = lint(quiet({ why: ['Short sentences read fast. Each carries one idea. That is the contract.'] }));
+    expect(r.warnings.join(' ')).not.toMatch(NUDGE_A);
+  });
+
+  it('Nudge A is silent when the long word-run sits inside an inline code span', () => {
+    const r = lint(quiet({ why: ['`' + longSentence + '` explains it.'] }));
+    expect(r.warnings.join(' ')).not.toMatch(NUDGE_A);
+  });
+
+  it('Nudge A is silent when the long word-run sits inside a fenced code block', () => {
+    const r = lint(quiet({ why: ['```\n' + longSentence + '\n```'] }));
+    expect(r.warnings.join(' ')).not.toMatch(NUDGE_A);
+  });
+
+  it('Nudge A treats rendered checkbox items as template chrome (structured fields, not prose)', () => {
+    const itemText = Array.from({ length: SENTENCE_WORD_LIMIT + 5 }, (_, i) => `w${i}`).join(' ');
+    const r = lint(quiet({ items: [decision({ text: itemText })] }));
+    expect(r.warnings.join(' ')).not.toMatch(NUDGE_A);
+  });
+
+  it('Nudge B fires on a nested parenthetical (an aside inside an aside) — and never flips ok', () => {
+    const r = lint(quiet({ why: ['The guard (the reconciliation path (consume-on-pickup)) covers it.'] }));
+    expect(r.ok).toBe(true);
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(' ')).toMatch(NUDGE_B);
+  });
+
+  it('Nudge B fires on immediately-adjacent parenthetical pairs', () => {
+    const r = lint(quiet({ why: ['The guard (the reconciliation path) (consume-on-pickup) covers it.'] }));
+    expect(r.ok).toBe(true);
+    expect(r.warnings.join(' ')).toMatch(NUDGE_B);
+  });
+
+  it('Nudge B is SILENT on two separate parentheticals in one sentence — never a per-sentence count', () => {
+    const r = lint(quiet({ why: ['The guard (the reconciliation path) covers it for now (until the redesign).'] }));
+    expect(r.warnings.join(' ')).not.toMatch(NUDGE_B);
+  });
+
+  it('Nudge B is silent on code spans containing parens — a tool call is not a parenthetical', () => {
+    const r = lint(quiet({ why: ['Call `manage_subtasks(task_id)` then `get_task(id)` to confirm the split.'] }));
+    expect(r.warnings.join(' ')).not.toMatch(NUDGE_B);
+  });
+
+  // ——— Two-sided calibration (B-660) ———
+  // SYNTHETIC POSITIVE reconstructed from B-550's documented failure signature — stacked
+  // parentheticals (asides inside asides), five-clause 50+ word sentences, inline substrate
+  // jargon. The ORIGINAL illegible brief is unrecoverable: compose_brief iterates the active
+  // brief in place, so the rejected text survives in no activity event and no doc. Both
+  // nudges must fire on this reconstruction.
+  const B550_SYNTHETIC_POSITIVE = `## DECIDE: Adopt the gate-ui conductor split for B-550?
+
+**Recommend (high confidence):** Adopt the reconciliation-guard sub-track split (the B-482 guard (the consume-on-auto-pickup path) already half-covers it), which lands the elicitation-claim coupling on the brief row, keeps the underwriting ids on the prune path, folds the pending_resolution consume into the iterate re-compose, threads the awaiting_human_ref through the P3 substrate's partial unique index, and defers the reshape surface to the web repo because the poll-loop arm (the B-500 auto-watch (armed at hard floors)) serializes the sub-tracks anyway.
+
+**Why:**
+- The P3 substrate already carries the partial unique index (scoped to the active row (status alone is not enough)) so the coupling rides the existing slot.
+
+**You need to:**
+- [ ] Adopt the split — *recommend: adopt*
+
+> Type \`accept\`, \`edit\`, \`iterate <feedback>\`, or \`defer\`.`;
+
+  it('trips BOTH nudges on the synthetic B-550 positive (reconstruction — original unrecoverable)', () => {
+    const r = lintBrief(quiet(), B550_SYNTHETIC_POSITIVE);
+    expect(r.ok).toBe(true); // warn-only even on the worst offender
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(' ')).toMatch(NUDGE_A);
+    expect(r.warnings.join(' ')).toMatch(NUDGE_B);
+  });
+
+  // BRIEF-5 from the B-660 calibration corpus — a REAL plan brief authored under the contract
+  // (the shortest of the five clean negatives; all five measured silent at calibration). A
+  // representative real brief must produce zero warnings of any kind.
+  const CORPUS_BRIEF_5_PLAN = `## DECIDE: Approve B-660's execution plan?
+
+**Recommend (high confidence):** Proceed. One plugin PR in a worktree created inside plugin/: recover the B-550 illegible-brief anchor, author brief-authoring.md, wire the eight skill pointers, add the two nudges to lintBrief with the compose_brief description backstop, write the nudge tests plus the pointer contract test, re-tune the budget from measurement, then full suite, typecheck, verify:dist, and a version bump to 0.14.52.
+
+**Why:**
+- Executes the two Accepted design decisions (d97ac598 product, 30bb02d1 technical) with no open choices left.
+- Base verified: lintBrief, the eight compose sites, and the AC mechanics were all read in current code this session; no DB objects are touched, so there is no CREATE OR REPLACE to rebase.
+
+**Context:**
+- Build order: (1) worktree inside plugin/ — never the workspace root; (2) recover the B-550 positive anchor from activity events or the session record, else reconstruct and say so in the test; (3) brief-authoring.md; (4) the eight §-pointers; (5) compose_brief description essence + pointer; (6) the two nudges in lintBrief, code spans and URLs stripped first; (7) tests — nudges two-sided (fire on the anchor, silent on this run's briefs, never flip ok) + the compose-site pointer contract test; (8) budget re-tune from measured briefs + draft the 9599c855 dated-banner amendment, applied with the release and surfaced on its brief; (9) npm run typecheck, full npm test, npm run verify:dist, bump plugin.json to 0.14.52; (10) commit, push, PR — then stop at the release hard floor.
+- Plan is the lead-by-system gate under the contract this ticket encodes: this brief is deliberately terse, and the disciplines it attests to are enforced in the build steps, not in prose the human must audit.
+
+**You need to:**
+- [ ] Execute the ten-step single-PR plan above in a plugin/ worktree — *recommend: Proceed — accept advances to Planned and the build starts*
+
+> Type \`accept\`, \`edit\`, \`iterate <feedback>\`, or \`defer\`.`;
+
+  it('passes a real corpus brief (BRIEF-5, the plan brief) with zero warnings', () => {
+    const r = lintBrief(quiet(), CORPUS_BRIEF_5_PLAN);
+    expect(r.ok).toBe(true);
+    expect(r.warnings).toEqual([]);
   });
 });
 
