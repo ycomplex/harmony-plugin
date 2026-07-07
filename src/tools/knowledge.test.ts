@@ -9,6 +9,12 @@ import {
   supersedeKnowledgeEntry,
   resolveOrCreateEntity,
   queryEntities,
+  createEntity,
+  createEntityTool,
+  updateEntity,
+  updateEntityTool,
+  reconcileEntity,
+  reconcileEntityTool,
   recordDecision,
   recordDecisionTool,
   supersedeDecision,
@@ -1116,6 +1122,253 @@ describe('queryEntities', () => {
     expect(secondChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
     expect(secondChain.eq).toHaveBeenCalledWith('kind', 'component');
     expect(secondChain.ilike).toHaveBeenCalledWith('name', '%auth%');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createEntity / updateEntity / reconcileEntity  (B-397 / folded B-399)
+// ---------------------------------------------------------------------------
+
+/**
+ * A graph-shaped mock: from(table) returns a SHARED chain per table (so spies accumulate across the
+ * multiple calls a reconcile makes), every filter method returns the chain, and each terminal —
+ * .single(), .maybeSingle(), or awaiting the chain itself (thenable, mirroring PostgrestFilterBuilder)
+ * — consumes the next {data,error} from that table's queue (the last entry repeats). from('projects')
+ * always resolves the workspace id. `chains[table]` is exposed so tests can assert the exact args.
+ */
+function buildGraphClient(tables: Record<string, Array<{ data: any; error?: any }>>) {
+  const used: Record<string, number> = {};
+  const norm = (r: { data: any; error?: any }) => ({ data: r?.data ?? null, error: r?.error ?? null });
+  const take = (table: string) => {
+    const q = tables[table] ?? [{ data: null }];
+    const i = used[table] ?? 0;
+    used[table] = i + 1;
+    return norm(q[Math.min(i, q.length - 1)]);
+  };
+  const chains: Record<string, any> = {};
+  const makeChain = (table: string) => {
+    const c: any = {};
+    for (const m of ['select', 'insert', 'update', 'delete', 'eq', 'contains', 'ilike', 'is', 'in', 'order', 'range', 'overlaps', 'lte', 'or', 'gte', 'not']) {
+      c[m] = vi.fn().mockReturnValue(c);
+    }
+    c.single = vi.fn().mockImplementation(() => Promise.resolve(take(table)));
+    c.maybeSingle = vi.fn().mockImplementation(() => Promise.resolve(take(table)));
+    c.then = (resolve: any) => resolve(take(table)); // await chain → consume queue (thenable)
+    return c;
+  };
+  const client: any = {
+    from: vi.fn().mockImplementation((table: string) => {
+      if (table === 'projects') {
+        const ws: any = {};
+        ws.select = vi.fn().mockReturnValue(ws);
+        ws.eq = vi.fn().mockReturnValue(ws);
+        ws.single = vi.fn().mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
+        return ws;
+      }
+      if (!chains[table]) chains[table] = makeChain(table);
+      return chains[table];
+    }),
+  };
+  return { client, chains };
+}
+
+const sampleEntity = {
+  id: 'ent-1', workspace_id: WORKSPACE_ID, project_id: PROJECT_ID,
+  kind: 'persona', name: 'Busy PM', description: 'A time-poor product manager', metadata: null,
+  created_at: '2026-07-06T00:00:00Z',
+};
+
+describe('createEntity', () => {
+  it('inserts a new typed node (kind + name + thin description) when none exists', async () => {
+    const created = { ...sampleEntity };
+    const { client, chains } = buildGraphClient({
+      knowledge_entities: [{ data: null }, { data: created }],   // lookup miss, then insert echo
+    });
+    const result = await createEntity(client, PROJECT_ID, {
+      kind: 'persona', name: 'Busy PM', description: 'A time-poor product manager',
+    });
+    expect(chains.knowledge_entities.insert).toHaveBeenCalledWith(expect.objectContaining({
+      workspace_id: WORKSPACE_ID, project_id: PROJECT_ID, kind: 'persona', name: 'Busy PM',
+      description: 'A time-poor product manager',
+    }));
+    expect(result).toEqual(created);
+  });
+
+  it('is idempotent: re-authoring the same node with no new fields is a no-op (create-or-skip, A10)', async () => {
+    const { client, chains } = buildGraphClient({ knowledge_entities: [{ data: sampleEntity }] });
+    const result = await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Busy PM' });
+    expect(result).toEqual(sampleEntity);
+    expect(chains.knowledge_entities.insert).not.toHaveBeenCalled();   // no duplicate row
+    expect(chains.knowledge_entities.update).not.toHaveBeenCalled();   // no needless write
+  });
+
+  it('upserts the description onto an existing node when one is supplied', async () => {
+    const updated = { ...sampleEntity, description: 'refreshed' };
+    const { client, chains } = buildGraphClient({
+      knowledge_entities: [{ data: sampleEntity }, { data: updated }],  // lookup hit, then update
+    });
+    const result = await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Busy PM', description: 'refreshed' });
+    expect(chains.knowledge_entities.update).toHaveBeenCalledWith({ description: 'refreshed' });
+    expect(chains.knowledge_entities.insert).not.toHaveBeenCalled();
+    expect(result).toEqual(updated);
+  });
+
+  it('throws when kind or name is missing', async () => {
+    const { client } = buildGraphClient({});
+    await expect(createEntity(client, PROJECT_ID, { kind: '', name: 'x' })).rejects.toThrow('kind is required');
+    await expect(createEntity(client, PROJECT_ID, { kind: 'persona', name: '  ' })).rejects.toThrow('name is required');
+  });
+
+  it('seeds a persona node that is then queryable by kind=persona (AC4)', async () => {
+    const created = { ...sampleEntity };
+    const { client } = buildGraphClient({ knowledge_entities: [{ data: null }, { data: created }] });
+    const seeded = await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Busy PM', description: 'A time-poor product manager' });
+    expect(seeded.kind).toBe('persona');
+    // A queryEntities kind=persona over the same graph returns the seeded node (not []).
+    const { client: qClient, secondChain } = buildWorkspaceAndQueryClient({ data: [created] });
+    secondChain.order = vi.fn().mockResolvedValue({ data: [created], error: null });
+    const rows = await queryEntities(qClient, PROJECT_ID, { kind: 'persona' });
+    expect(rows).toEqual([created]);
+  });
+});
+
+describe('updateEntity', () => {
+  it('updates description by entity_id', async () => {
+    const updated = { ...sampleEntity, description: 'new desc' };
+    const { client, chains } = buildGraphClient({ knowledge_entities: [{ data: updated }] });
+    const result = await updateEntity(client, PROJECT_ID, { entity_id: 'ent-1', description: 'new desc' });
+    expect(chains.knowledge_entities.update).toHaveBeenCalledWith({ description: 'new desc' });
+    expect(chains.knowledge_entities.eq).toHaveBeenCalledWith('id', 'ent-1');
+    expect(result).toEqual(updated);
+  });
+
+  it('identifies the entity by (kind, name) when entity_id is omitted', async () => {
+    const updated = { ...sampleEntity, kind: 'feature', name: 'Checkout' };
+    const { client, chains } = buildGraphClient({ knowledge_entities: [{ data: updated }] });
+    await updateEntity(client, PROJECT_ID, { kind: 'feature', name: 'Checkout', description: 'd' });
+    expect(chains.knowledge_entities.eq).toHaveBeenCalledWith('kind', 'feature');
+    expect(chains.knowledge_entities.eq).toHaveBeenCalledWith('name', 'Checkout');
+  });
+
+  it('throws when no identifier is provided', async () => {
+    const { client } = buildGraphClient({});
+    await expect(updateEntity(client, PROJECT_ID, { description: 'x' })).rejects.toThrow(/entity_id, or both kind and name/);
+  });
+
+  it('throws when no update field is provided', async () => {
+    const { client } = buildGraphClient({});
+    await expect(updateEntity(client, PROJECT_ID, { entity_id: 'ent-1' })).rejects.toThrow(/At least one of new_kind, description, or metadata/);
+  });
+
+  it('rejects a kind change that collides with a friendly pointer to reconcile_entity', async () => {
+    const { client } = buildGraphClient({
+      knowledge_entities: [{ data: null, error: { code: '23505', message: 'unique violation' } }],
+    });
+    await expect(
+      updateEntity(client, PROJECT_ID, { kind: 'concept', name: 'Checkout', new_kind: 'feature' }),
+    ).rejects.toThrow(/reconcile_entity to MERGE/);
+  });
+});
+
+describe('reconcileEntity', () => {
+  const stub = { id: 'ent-stub', workspace_id: WORKSPACE_ID, project_id: PROJECT_ID, kind: 'concept', name: 'Checkout', description: null, metadata: null, created_at: '2026-07-06T00:00:00Z' };
+  const typed = { ...stub, id: 'ent-typed', kind: 'component' };
+
+  it('UPGRADE-IN-PLACE: retypes the stub in place when no same-named typed node exists (no references move)', async () => {
+    const upgraded = { ...stub, kind: 'component', description: 'the checkout surface' };
+    const { client, chains } = buildGraphClient({
+      knowledge_entities: [{ data: stub }, { data: null }, { data: upgraded }],  // stub lookup, typed miss, update
+    });
+    const result = await reconcileEntity(client, PROJECT_ID, { name: 'Checkout', to_kind: 'component', description: 'the checkout surface' });
+
+    expect(result.mode).toBe('upgrade-in-place');
+    expect(result.entity).toEqual(upgraded);
+    expect(chains.knowledge_entities.update).toHaveBeenCalledWith({ kind: 'component', description: 'the checkout surface' });
+    expect(chains.knowledge_entities.delete).not.toHaveBeenCalled();       // nothing deleted
+    expect(client.from).not.toHaveBeenCalledWith('knowledge_facts');       // no references repointed
+    expect(client.from).not.toHaveBeenCalledWith('knowledge_decisions');
+  });
+
+  it('MERGE: repoints facts + decisions + events to the typed node (deduping arrays), then deletes the stub', async () => {
+    // The decision references BOTH the stub AND the typed node — the conflict the merge must dedup.
+    const decisionRow = { id: 'dec-1', affected_entity_ids: ['ent-stub', 'ent-typed', 'other'] };
+    const { client, chains } = buildGraphClient({
+      knowledge_entities: [{ data: stub }, { data: typed }, { data: null }],   // stub, typed, delete
+      knowledge_facts: [{ data: [{ id: 'fact-1' }] }],                          // update...select id
+      knowledge_decisions: [{ data: [decisionRow] }, { data: null }],          // select, then per-row update
+      knowledge_events: [{ data: [{ id: 'evt-1' }] }],                          // update...select id
+    });
+
+    const result = await reconcileEntity(client, PROJECT_ID, { name: 'Checkout', to_kind: 'component' });
+
+    expect(result.mode).toBe('merge');
+    expect(result.entity.id).toBe('ent-typed');
+    expect(result.merged_stub_id).toBe('ent-stub');
+    expect(result.repointed).toEqual({ facts: 1, decisions: 1, events: 1 });
+
+    // Facts: bulk repoint stub → typed.
+    expect(chains.knowledge_facts.update).toHaveBeenCalledWith({ subject_entity_id: 'ent-typed' });
+    expect(chains.knowledge_facts.eq).toHaveBeenCalledWith('subject_entity_id', 'ent-stub');
+
+    // Decisions: the array is rewritten AND deduped — 'ent-stub' → 'ent-typed', no duplicate 'ent-typed'.
+    expect(chains.knowledge_decisions.update).toHaveBeenCalledWith({ affected_entity_ids: ['ent-typed', 'other'] });
+
+    // Events: repointed too (best-effort).
+    expect(chains.knowledge_events.update).toHaveBeenCalledWith({ entity_id: 'ent-typed' });
+
+    // Stub deleted last, by id.
+    expect(chains.knowledge_entities.delete).toHaveBeenCalled();
+    expect(chains.knowledge_entities.eq).toHaveBeenCalledWith('id', 'ent-stub');
+  });
+
+  it('MERGE never fails on the append-only event log (events repoint throwing is swallowed)', async () => {
+    const { client, chains } = buildGraphClient({
+      knowledge_entities: [{ data: stub }, { data: typed }, { data: null }],
+      knowledge_facts: [{ data: [] }],
+      knowledge_decisions: [{ data: [] }],
+    });
+    // Make the events chain throw when written (simulates an RLS-blocked append-only log).
+    chains.knowledge_events = {
+      update: vi.fn(() => { throw new Error('events are append-only'); }),
+    } as any;
+    const result = await reconcileEntity(client, PROJECT_ID, { name: 'Checkout', to_kind: 'component' });
+    expect(result.mode).toBe('merge');
+    expect(result.repointed?.events).toBe(0);
+    expect(chains.knowledge_entities.delete).toHaveBeenCalled();   // stub still deleted; FK SET NULL cleans events
+  });
+
+  it('throws when there is no stub to reconcile', async () => {
+    const { client } = buildGraphClient({ knowledge_entities: [{ data: null }] });
+    await expect(
+      reconcileEntity(client, PROJECT_ID, { name: 'Ghost', to_kind: 'component' }),
+    ).rejects.toThrow(/No concept entity named "Ghost"/);
+  });
+
+  it('throws when from_kind equals to_kind (nothing to reconcile)', async () => {
+    const { client } = buildGraphClient({});
+    await expect(
+      reconcileEntity(client, PROJECT_ID, { name: 'x', to_kind: 'concept', from_kind: 'concept' }),
+    ).rejects.toThrow(/must differ/);
+  });
+});
+
+describe('entity-authoring tool schemas (B-397)', () => {
+  it('create_entity requires kind + name and documents thin descriptions', () => {
+    expect(createEntityTool.name).toBe('create_entity');
+    expect((createEntityTool.inputSchema as any).required).toEqual(['kind', 'name']);
+    expect(createEntityTool.description.toLowerCase()).toContain('thin');
+  });
+  it('update_entity exposes new_kind and points collisions at reconcile_entity', () => {
+    expect(updateEntityTool.name).toBe('update_entity');
+    expect(updateEntityTool.inputSchema.properties).toHaveProperty('new_kind');
+    expect(updateEntityTool.description).toContain('reconcile_entity');
+  });
+  it('reconcile_entity requires name + to_kind and documents both modes', () => {
+    expect(reconcileEntityTool.name).toBe('reconcile_entity');
+    expect((reconcileEntityTool.inputSchema as any).required).toEqual(['name', 'to_kind']);
+    const d = reconcileEntityTool.description.toUpperCase();
+    expect(d).toContain('UPGRADE-IN-PLACE');
+    expect(d).toContain('MERGE');
   });
 });
 

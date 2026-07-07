@@ -34842,6 +34842,164 @@ var queryEntitiesTool = {
     }
   }
 };
+async function createEntity(client, projectId, args) {
+  if (!args.kind?.trim()) throw new Error("kind is required");
+  if (!args.name?.trim()) throw new Error("name is required");
+  const kind = args.kind.trim();
+  const name = args.name.trim();
+  const workspaceId = await getWorkspaceId2(client, projectId);
+  const { data: existing, error: lookupErr } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", kind).eq("name", name).maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+  if (existing) {
+    const patch = {};
+    if (args.description !== void 0) patch.description = args.description;
+    if (args.metadata !== void 0) patch.metadata = args.metadata;
+    if (Object.keys(patch).length === 0) return existing;
+    const { data: updated, error: updErr } = await client.from("knowledge_entities").update(patch).eq("workspace_id", workspaceId).eq("id", existing.id).select(ENTITY_COLS).single();
+    if (updErr) throw new Error(updErr.message);
+    return updated;
+  }
+  const record2 = {
+    workspace_id: workspaceId,
+    project_id: projectId,
+    kind,
+    name
+  };
+  if (args.description !== void 0) record2.description = args.description;
+  if (args.metadata !== void 0) record2.metadata = args.metadata;
+  const { data, error: error2 } = await client.from("knowledge_entities").insert(record2).select(ENTITY_COLS).single();
+  if (error2) {
+    if (error2.code === "23505") {
+      const { data: raced } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", kind).eq("name", name).maybeSingle();
+      if (raced) return raced;
+    }
+    throw new Error(error2.message);
+  }
+  return data;
+}
+var createEntityTool = {
+  name: "create_entity",
+  description: "Author a TYPED knowledge entity node (kind + name; optional description + metadata) directly in the graph. Idempotent upsert on the uniqueness key (workspace, kind, name): re-authoring the same node is a no-op, or refreshes the description/metadata when supplied. A node description is a THIN, stable, one-line canonical identifier \u2014 the substance and lifecycle (Asserted\u2192Accepted, realization) live in the decisions/facts ABOUT the entity, not on the node. Kinds are open-ended (e.g. 'persona', 'feature', 'component', 'integration', 'concept'). To merge a low-typed stub into a richer node of the same name, use reconcile_entity.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      kind: { type: "string", description: "Entity kind \u2014 open-ended (e.g. 'persona', 'feature', 'component', 'integration', 'concept')" },
+      name: { type: "string", description: "Entity name (unique within the workspace per kind)" },
+      description: { type: "string", description: "A THIN one-line canonical identifier \u2014 not a document; depth belongs in the claims about the entity" },
+      metadata: { type: "object", description: "Optional structured metadata (JSON object)" }
+    },
+    required: ["kind", "name"]
+  }
+};
+async function updateEntity(client, projectId, args) {
+  if (!args.entity_id && !(args.kind && args.name)) {
+    throw new Error("Provide entity_id, or both kind and name, to identify the entity");
+  }
+  const hasUpdates = args.new_kind !== void 0 || args.description !== void 0 || args.metadata !== void 0;
+  if (!hasUpdates) {
+    throw new Error("At least one of new_kind, description, or metadata must be provided");
+  }
+  const workspaceId = await getWorkspaceId2(client, projectId);
+  const patch = {};
+  if (args.new_kind !== void 0) patch.kind = args.new_kind;
+  if (args.description !== void 0) patch.description = args.description;
+  if (args.metadata !== void 0) patch.metadata = args.metadata;
+  let query = client.from("knowledge_entities").update(patch).eq("workspace_id", workspaceId);
+  if (args.entity_id) {
+    query = query.eq("id", args.entity_id);
+  } else {
+    query = query.eq("kind", args.kind).eq("name", args.name);
+  }
+  const { data, error: error2 } = await query.select(ENTITY_COLS).single();
+  if (error2) {
+    if (error2.code === "23505") {
+      throw new Error(
+        `An entity named "${args.name ?? patch.name ?? ""}" already exists under kind "${args.new_kind}". Use reconcile_entity to MERGE the two nodes (it repoints all references), not update_entity.`
+      );
+    }
+    throw new Error(error2.message);
+  }
+  return data;
+}
+var updateEntityTool = {
+  name: "update_entity",
+  description: "Update a typed knowledge entity's description, metadata, or kind. Identify it by entity_id, or by its current (kind, name). Changing kind to a value already taken by a same-named node is rejected with a pointer to reconcile_entity (the MERGE path that repoints references) \u2014 update_entity never silently orphans or duplicates.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      entity_id: { type: "string", description: "Entity UUID (preferred identifier)" },
+      kind: { type: "string", description: "Current kind (with name) \u2014 identifies the entity when entity_id is omitted" },
+      name: { type: "string", description: "Current name (with kind) \u2014 identifies the entity when entity_id is omitted" },
+      new_kind: { type: "string", description: "New kind. For a stub\u2192typed promotion that may collide, prefer reconcile_entity." },
+      description: { type: "string", description: "New thin one-line canonical description" },
+      metadata: { type: "object", description: "New structured metadata (full-object replace)" }
+    }
+  }
+};
+async function reconcileEntity(client, projectId, args) {
+  if (!args.name?.trim()) throw new Error("name is required");
+  if (!args.to_kind?.trim()) throw new Error("to_kind is required");
+  const name = args.name.trim();
+  const toKind = args.to_kind.trim();
+  const fromKind = (args.from_kind ?? "concept").trim();
+  if (fromKind === toKind) throw new Error("from_kind and to_kind must differ (nothing to reconcile)");
+  const workspaceId = await getWorkspaceId2(client, projectId);
+  const { data: stub, error: stubErr } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", fromKind).eq("name", name).maybeSingle();
+  if (stubErr) throw new Error(stubErr.message);
+  if (!stub) throw new Error(`No ${fromKind} entity named "${name}" to reconcile`);
+  const stubRow = stub;
+  const { data: typed, error: typedErr } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", toKind).eq("name", name).maybeSingle();
+  if (typedErr) throw new Error(typedErr.message);
+  if (!typed) {
+    const patch = { kind: toKind };
+    if (args.description !== void 0) patch.description = args.description;
+    const { data: upgraded, error: upErr } = await client.from("knowledge_entities").update(patch).eq("workspace_id", workspaceId).eq("id", stubRow.id).select(ENTITY_COLS).single();
+    if (upErr) throw new Error(upErr.message);
+    return { mode: "upgrade-in-place", entity: upgraded };
+  }
+  const typedRow = typed;
+  const { data: movedFacts, error: factErr } = await client.from("knowledge_facts").update({ subject_entity_id: typedRow.id }).eq("workspace_id", workspaceId).eq("subject_entity_id", stubRow.id).select("id");
+  if (factErr) throw new Error(factErr.message);
+  const factCount = (movedFacts ?? []).length;
+  const { data: decisionRows, error: decSelErr } = await client.from("knowledge_decisions").select("id, affected_entity_ids").eq("workspace_id", workspaceId).contains("affected_entity_ids", [stubRow.id]);
+  if (decSelErr) throw new Error(decSelErr.message);
+  let decisionCount = 0;
+  for (const row of decisionRows ?? []) {
+    const current = row.affected_entity_ids ?? [];
+    const rewritten = Array.from(new Set(current.map((id) => id === stubRow.id ? typedRow.id : id)));
+    const { error: decUpdErr } = await client.from("knowledge_decisions").update({ affected_entity_ids: rewritten }).eq("workspace_id", workspaceId).eq("id", row.id);
+    if (decUpdErr) throw new Error(decUpdErr.message);
+    decisionCount++;
+  }
+  let eventCount = 0;
+  try {
+    const { data: movedEvents } = await client.from("knowledge_events").update({ entity_id: typedRow.id }).eq("workspace_id", workspaceId).eq("entity_id", stubRow.id).select("id");
+    eventCount = (movedEvents ?? []).length;
+  } catch {
+  }
+  const { error: delErr } = await client.from("knowledge_entities").delete().eq("workspace_id", workspaceId).eq("id", stubRow.id);
+  if (delErr) throw new Error(delErr.message);
+  return {
+    mode: "merge",
+    entity: typedRow,
+    merged_stub_id: stubRow.id,
+    repointed: { facts: factCount, decisions: decisionCount, events: eventCount }
+  };
+}
+var reconcileEntityTool = {
+  name: "reconcile_entity",
+  description: "Reconcile a low-typed entity stub (default kind 'concept') into a richer typed node of the same name \u2014 the folded B-399 capability. Two modes, chosen automatically: (a) UPGRADE-IN-PLACE when NO same-named node exists under to_kind \u2014 the stub row is retyped in place (kind/description), no references move; (b) MERGE when a same-named to_kind node ALREADY exists \u2014 every referencing row (facts.subject_entity_id, decisions.affected_entity_ids, events.entity_id) is repointed to the typed node (deduping arrays), then the stub is deleted. Prevents two nodes for the same real thing.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "The shared entity name to reconcile" },
+      to_kind: { type: "string", description: "The richer target kind (e.g. component, feature, persona)" },
+      from_kind: { type: "string", description: "The stub's kind. Default 'concept'." },
+      description: { type: "string", description: "Optional refreshed one-line description (applied on upgrade-in-place)" }
+    },
+    required: ["name", "to_kind"]
+  }
+};
 async function assertFact(client, projectId, userId, args) {
   if (!args.subject_entity?.trim()) throw new Error("subject_entity is required");
   if (!args.predicate?.trim()) throw new Error("predicate is required");
@@ -35944,6 +36102,9 @@ function registerTools(disabledFeatures) {
     assertFactTool,
     invalidateFactTool,
     queryEntitiesTool,
+    createEntityTool,
+    updateEntityTool,
+    reconcileEntityTool,
     composeBriefTool,
     getBriefTool,
     resolveBriefTool,
@@ -36075,6 +36236,15 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "query_entities":
         result = await queryEntities(client, projectId, args);
+        break;
+      case "create_entity":
+        result = await createEntity(client, projectId, args);
+        break;
+      case "update_entity":
+        result = await updateEntity(client, projectId, args);
+        break;
+      case "reconcile_entity":
+        result = await reconcileEntity(client, projectId, args);
         break;
       case "list_milestones":
         result = await listMilestones(client, projectId, args);

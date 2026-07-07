@@ -32,6 +32,9 @@ import {
   assertFactTool, assertFact,
   invalidateFactTool, invalidateFact,
   queryEntitiesTool, queryEntities,
+  createEntityTool, createEntity,
+  updateEntityTool, updateEntity,
+  reconcileEntityTool, reconcileEntity,
 } from './knowledge.js';
 import {
   listMilestonesTool, listMilestones,
@@ -79,6 +82,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listMembersTool,
     queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
+    createEntityTool, updateEntityTool, reconcileEntityTool,
     composeBriefTool, getBriefTool, resolveBriefTool,
     startElicitationTool, fileElicitationRoundTool, getElicitationTool, concludeElicitationTool,
     advanceWorkflowTool,
@@ -218,6 +222,15 @@ export async function handleToolCall(
         break;
       case 'query_entities':
         result = await queryEntities(client, projectId, args as any);
+        break;
+      case 'create_entity':
+        result = await createEntity(client, projectId, args as any);
+        break;
+      case 'update_entity':
+        result = await updateEntity(client, projectId, args as any);
+        break;
+      case 'reconcile_entity':
+        result = await reconcileEntity(client, projectId, args as any);
         break;
       case 'list_milestones':
         result = await listMilestones(client, projectId, args as any);
