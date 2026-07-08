@@ -33,8 +33,9 @@ harmony tasks create --title "New task" --priority high
 
 ## Skills
 
-- **start-work** — Find or create a Harmony task, move it to In Progress, create a git worktree, and recommend an execution route (Execute, Plan, or Explore)
-- **finish-work** — Verify readiness, rebase, squash merge the PR, clean up the worktree/branches, and move the Harmony task to Done
+- **harmony-conduct** — The opinionated-mode entry point: drive one ticket through the whole gate sequence (clarify → decompose → design → plan → build → release → verify), pausing at each gate for the human's decision
+- **start-work** — Manual mode: find or create a Harmony task, move it to In Progress, create a git worktree, and recommend an execution route (Execute, Plan, or Explore). Opinionated mode: implements the planning + building gates the conductor delegates to (directly invokable to run just those gates)
+- **finish-work** — Manual mode: verify readiness, rebase, squash merge the PR, clean up the worktree/branches, and move the Harmony task to Done. Opinionated mode: implements the release (merge + deploy) + verify gates the conductor delegates to; crossed only on your explicit "finish work" / "land it" / "merge it"
 
 Both skills depend on the `superpowers` plugin for some functionality (brainstorming, writing-plans, git-worktrees).
 

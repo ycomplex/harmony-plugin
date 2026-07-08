@@ -1,6 +1,6 @@
 ---
 name: finish-work
-description: Use when the user wants to finish, complete, wrap up, land, or merge their current work. Triggers on phrases like "finish", "done", "wrap up", "land this", "merge", "ship it", or "we're done". This is the exit point for ALL development work in this project — it handles the full merge-and-cleanup sequence. In opinionated-mode projects it also drives the deploying + verifying activities; in manual-mode projects it behaves exactly as before.
+description: Use when the user wants to finish, complete, wrap up, land, or merge their current work. Triggers on phrases like "finish", "done", "wrap up", "land this", "merge", "ship it", or "we're done". In manual-mode projects this is the exit point for development work — it handles the full merge-and-cleanup sequence, exactly as before. In opinionated-mode projects, /harmony-conduct is the entry point that drives the whole lifecycle; this skill implements the release (merge + deploy) and verify gates the conductor delegates to, and your explicit invocation ("finish work" / "land it" / "merge it") is how the release gate is crossed.
 allowed-tools: mcp__harmony__* Read Grep Glob Bash Bash(gh *)
 disallowed-tools: mcp__harmony__record_decision mcp__harmony__supersede_decision mcp__harmony__update_knowledge_entry
 ---
@@ -18,6 +18,8 @@ merge-and-cleanup flow below — unchanged). If `mode === 'opinionated'`, follow
 ---
 
 ## Opinionated mode (deploying + verifying)
+
+In opinionated mode the usual entry point is `/harmony-plugin:harmony-conduct`, which drives the whole gate sequence and delegates the release/verify gates to this section; invoking finish-work directly (the explicit "finish work" / "land it" / "merge it" verb) runs just these gates.
 
 The ticket should be at **Built** with `awaiting_human_reason = 'release-decision-pending'` (set by
 `/harmony-plugin:start-work`). This path drives `deploying` (Built → Deployed) and `verifying`
