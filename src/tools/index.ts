@@ -70,6 +70,7 @@ import {
 import {
   getBuildEvidenceStatusTool, getBuildEvidenceStatus,
 } from './evidence-status.js';
+import { projectAck } from './ack-projection.js';
 
 export function registerTools(disabledFeatures?: Record<string, boolean>) {
   const tools = [
@@ -322,7 +323,11 @@ export async function handleToolCall(
       default:
         return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };
     }
-    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    // B-683: boundary-only mutation-ack projection (write tools stop echoing the caller-sent
+    // record; reads pass through) + compact JSON for ALL tool results. Both apply ONLY at this
+    // MCP boundary — the CLI and in-process callers use the handler functions directly and keep
+    // full-fidelity results. Do NOT strip nulls: `pending_resolution: null` is the poll signal.
+    return { content: [{ type: 'text' as const, text: JSON.stringify(projectAck(name, result, args)) }] };
   } catch (err: any) {
     const message = err.message ?? 'Unknown error';
     if (message.includes('permission denied') || message.includes('RLS')) {
