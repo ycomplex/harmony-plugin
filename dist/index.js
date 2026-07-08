@@ -18585,15 +18585,15 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
       return `shape[${k}]._zod.run({ value: input[${k}], issues: [] }, ctx)`;
     };
     doc.write(`const input = payload.value;`);
-    const ids = /* @__PURE__ */ Object.create(null);
+    const ids2 = /* @__PURE__ */ Object.create(null);
     let counter = 0;
     for (const key of normalized.keys) {
-      ids[key] = `key_${counter++}`;
+      ids2[key] = `key_${counter++}`;
     }
     doc.write(`const newResult = {}`);
     for (const key of normalized.keys) {
       if (normalized.optionalKeys.has(key)) {
-        const id = ids[key];
+        const id = ids2[key];
         doc.write(`const ${id} = ${parseStr(key)};`);
         const k = esc(key);
         doc.write(`
@@ -18617,7 +18617,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
         }
         `);
       } else {
-        const id = ids[key];
+        const id = ids2[key];
         doc.write(`const ${id} = ${parseStr(key)};`);
         doc.write(`
           if (${id}.issues.length) payload.issues = payload.issues.concat(${id}.issues.map(iss => ({
@@ -35082,9 +35082,9 @@ async function queryFacts(client, projectId, args) {
   if (args.entity) {
     const { data: ents, error: entErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).ilike("name", args.entity);
     if (entErr) throw new Error(entErr.message);
-    const ids = (ents ?? []).map((e) => e.id);
-    if (ids.length === 0) return [];
-    query = query.in("subject_entity_id", ids);
+    const ids2 = (ents ?? []).map((e) => e.id);
+    if (ids2.length === 0) return [];
+    query = query.in("subject_entity_id", ids2);
   }
   const { data, error: error2 } = await query.order("recorded_at", { ascending: false });
   if (error2) throw new Error(error2.message);
@@ -36071,6 +36071,225 @@ async function getBuildEvidenceStatus(client, projectId, args) {
   };
 }
 
+// src/tools/ack-projection.ts
+var isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function pick2(value, keys) {
+  if (!isRecord(value)) return value;
+  const out = {};
+  for (const k of keys) {
+    if (value[k] !== void 0) out[k] = value[k];
+  }
+  return out;
+}
+function ids(rows) {
+  if (!Array.isArray(rows)) return rows;
+  return rows.map((r) => isRecord(r) && r.id !== void 0 ? r.id : r);
+}
+function changedFields(args, identifierKeys) {
+  return Object.keys(args).filter((k) => !identifierKeys.includes(k) && args[k] !== void 0);
+}
+var createdTaskAck = (row) => pick2(row, ["id", "task_number", "workflow_state"]);
+function exchangeAck(row) {
+  if (!isRecord(row)) return row;
+  const rounds = Array.isArray(row.rounds) ? row.rounds : [];
+  const last = rounds[rounds.length - 1];
+  return {
+    id: row.id,
+    task_id: row.task_id,
+    status: row.status,
+    round: typeof last?.n === "number" ? last.n : rounds.length,
+    answers_submitted_at: row.answers_submitted_at ?? null,
+    force_quit_requested_at: row.force_quit_requested_at ?? null
+  };
+}
+function elicitationAck(result) {
+  if (isRecord(result) && result.noop === true) {
+    return { noop: true, cause: result.cause, exchange: exchangeAck(result.exchange) };
+  }
+  return exchangeAck(result);
+}
+function batchIdsAck(result) {
+  if (!isRecord(result)) return result;
+  const added = ids(result.added);
+  const updated = ids(result.updated);
+  const deleted = result.deleted;
+  return {
+    added,
+    updated,
+    deleted,
+    counts: {
+      added: Array.isArray(added) ? added.length : 0,
+      updated: Array.isArray(updated) ? updated.length : 0,
+      deleted: Array.isArray(deleted) ? deleted.length : 0
+    }
+  };
+}
+var knowledgeCreatedAck = (row) => pick2(row, ["id", "status", "created_at"]);
+var supersededAck = (row) => pick2(row, ["id", "status", "superseded_by"]);
+var ackProjections = {
+  // ——— tasks ———
+  create_task: (result) => createdTaskAck(result),
+  bulk_create_tasks: (result) => {
+    if (!Array.isArray(result)) return result;
+    return { created: result.map(createdTaskAck), count: result.length };
+  },
+  update_task: (result, args) => {
+    if (!isRecord(result)) return result;
+    return {
+      ...pick2(result, ["id", "task_number", "status", "workflow_state", "updated_at"]),
+      changed_fields: changedFields(args, ["task_id"])
+    };
+  },
+  bulk_update_tasks: (result, args) => {
+    if (!Array.isArray(result)) return result;
+    return {
+      updated: ids(result),
+      count: result.length,
+      changed_fields: changedFields(args, ["task_ids"])
+    };
+  },
+  subsume_task: (result) => (
+    // Already server-computed and compact except the optional caller-echoed `reason` — dropped.
+    pick2(result, ["task_id", "subsumed_by_task_id", "archived", "already_subsumed"])
+  ),
+  // ——— epics / labels ———
+  create_epic: (result) => pick2(result, ["id", "position", "created_at"]),
+  update_epic: (result, args) => {
+    if (!isRecord(result)) return result;
+    return {
+      ...pick2(result, ["id", "updated_at"]),
+      changed_fields: changedFields(args, ["epic_id"])
+    };
+  },
+  create_label: (result) => pick2(result, ["id"]),
+  // ——— comments ———
+  add_comment: (result) => pick2(result, ["id", "created_at"]),
+  // ——— batch child-record managers ———
+  manage_checklist_items: batchIdsAck,
+  manage_acceptance_criteria: batchIdsAck,
+  manage_test_cases: batchIdsAck,
+  manage_dependencies: (result) => {
+    if (!isRecord(result)) return result;
+    return { added: ids(result.added), removed: result.removed };
+  },
+  manage_subtasks: (result) => {
+    if (!isRecord(result)) return result;
+    return {
+      attached: result.attached,
+      created: Array.isArray(result.created) ? result.created.map(createdTaskAck) : result.created,
+      detached: result.detached
+    };
+  },
+  // ——— knowledge entries / decisions / facts / entities ———
+  create_knowledge_entry: knowledgeCreatedAck,
+  record_decision: knowledgeCreatedAck,
+  update_knowledge_entry: (result, args) => {
+    if (!isRecord(result)) return result;
+    return {
+      ...pick2(result, ["id", "status", "updated_at"]),
+      // `title` doubles as the identifier when entry_id is absent; `new_title` is the change.
+      changed_fields: changedFields(args, ["entry_id", "title"])
+    };
+  },
+  supersede_knowledge_entry: (result) => {
+    if (!isRecord(result)) return result;
+    return {
+      superseded: supersededAck(result.superseded),
+      replacement: knowledgeCreatedAck(result.replacement)
+    };
+  },
+  supersede_decision: (result) => {
+    if (!isRecord(result)) return result;
+    return {
+      superseded: supersededAck(result.superseded),
+      // retire-mode (B-534) legitimately has no successor — preserve the null.
+      replacement: result.replacement == null ? null : knowledgeCreatedAck(result.replacement)
+    };
+  },
+  assert_fact: (result) => (
+    // subject_entity_id is server-computed (the entity was resolved/created from a NAME).
+    pick2(result, ["id", "subject_entity_id", "status", "valid_from"])
+  ),
+  invalidate_fact: (result) => pick2(result, ["id", "status", "valid_to"]),
+  create_entity: (result) => pick2(result, ["id", "created_at"]),
+  update_entity: (result, args) => {
+    if (!isRecord(result)) return result;
+    return {
+      ...pick2(result, ["id"]),
+      // kind + name identify the entity when entity_id is absent; new_kind etc. are the changes.
+      changed_fields: changedFields(args, ["entity_id", "kind", "name"])
+    };
+  },
+  reconcile_entity: (result) => {
+    if (!isRecord(result)) return result;
+    return {
+      mode: result.mode,
+      entity: pick2(result.entity, ["id"]),
+      ...result.merged_stub_id !== void 0 ? { merged_stub_id: result.merged_stub_id } : {},
+      ...result.repointed !== void 0 ? { repointed: result.repointed } : {}
+    };
+  },
+  // ——— milestones / cycles ———
+  create_milestone: (result) => pick2(result, ["id", "status", "created_at"]),
+  update_milestone: (result, args) => {
+    if (!isRecord(result)) return result;
+    return {
+      ...pick2(result, ["id", "updated_at"]),
+      changed_fields: changedFields(args, ["milestone_id"])
+    };
+  },
+  ship_milestone: (result) => {
+    if (!isRecord(result)) return result;
+    return {
+      milestone: pick2(result.milestone, ["id", "name", "status", "shipped_at"]),
+      shipped_task_count: result.shipped_task_count,
+      removed_tasks: result.removed_tasks
+    };
+  },
+  create_cycle: (result) => (
+    // sequence_number + end_date are server-computed (duration comes from project config).
+    pick2(result, ["id", "sequence_number", "end_date", "created_at"])
+  ),
+  update_cycle: (result, args) => {
+    if (!isRecord(result)) return result;
+    return {
+      // start/end confirm the applied window (an end_date change cascades to the next cycle).
+      ...pick2(result, ["id", "sequence_number", "start_date", "end_date"]),
+      changed_fields: changedFields(args, ["cycle_id"])
+    };
+  },
+  // ——— briefs ———
+  compose_brief: (result) => {
+    if (!isRecord(result)) return result;
+    return {
+      brief: pick2(result.brief, [
+        "id",
+        "reason",
+        "status",
+        "iteration",
+        "pending_activity",
+        "decision_ref",
+        "content"
+      ]),
+      lint: result.lint
+    };
+  },
+  // ——— elicitation ———
+  start_elicitation: (result) => elicitationAck(result),
+  file_elicitation_round: (result) => elicitationAck(result),
+  conclude_elicitation: (result) => elicitationAck(result),
+  // ——— attachments ———
+  attach_file: (result) => (
+    // content_type/byte_size/status come from the server-side finalize sniff; `filename` is derived
+    // from the caller's own file_path — dropped.
+    pick2(result, ["attachment_id", "task_id", "content_type", "byte_size", "status"])
+  )
+};
+function projectAck(toolName, result, args) {
+  const projection = ackProjections[toolName];
+  return projection ? projection(result, args) : result;
+}
+
 // src/tools/index.ts
 function registerTools(disabledFeatures) {
   const tools = [
@@ -36336,7 +36555,7 @@ async function handleToolCall(name, args, client, projectId, userId) {
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     }
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    return { content: [{ type: "text", text: JSON.stringify(projectAck(name, result, args)) }] };
   } catch (err) {
     const message = err.message ?? "Unknown error";
     if (message.includes("permission denied") || message.includes("RLS")) {
