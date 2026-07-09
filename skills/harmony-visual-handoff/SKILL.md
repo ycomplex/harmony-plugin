@@ -156,4 +156,4 @@ mcp__harmony__compose_brief({
   should we revisit, and when?"), but if the human declines, skip the `record_decision`/`reference_knowledge`
   and just `resolve_brief({ task_id, command: "defer" })`. Never hard-block the "not now". (Web `defer` is
   mechanical-only and never authors this — documented v1 asymmetry.)
-- **iterate** → step 4 (regenerate); **expand**/**related** → show pre-generated sections.
+- **iterate** → step 4 (regenerate); **expand**/**related** → show the pre-generated sections from `get_brief`.

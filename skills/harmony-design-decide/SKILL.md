@@ -178,7 +178,7 @@ Show the rendered `content`. On the human's command:
   ```
   **Fallback (B-352):** no rationale still parks — prompt once, then skip the authoring if declined. (Web
   `defer` is mechanical-only and never authors this — documented v1 asymmetry.)
-- **expand** / **related** → show pre-generated sections.
+- **expand** / **related** → show the pre-generated sections from `get_brief`.
 - **edit** / **iterate** → revise and re-call `compose_brief`.
 - **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
 

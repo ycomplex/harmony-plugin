@@ -24634,15 +24634,16 @@ async function listTasks(client, projectId, args) {
   return enriched;
 }
 async function getTask(client, projectId, args) {
+  const meta = args.view === "meta";
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error } = await client.from("tasks").select("*, task_labels(labels(id, name, color)), checklist_items(id, title, completed, position)").eq("id", resolvedId).eq("project_id", projectId).single();
   if (error) throw error;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
   const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange] = await Promise.all([
-    client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
-    client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
-    (async () => {
+    meta ? Promise.resolve({ data: null }) : client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
+    meta ? Promise.resolve({ data: null }) : client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
+    meta ? Promise.resolve([]) : (async () => {
       try {
         const { data: rows } = await client.from("attachments").select("id, filename, content_type, byte_size, created_at").eq("task_id", resolvedId).eq("status", "finalized").order("created_at", { ascending: true });
         return rows ?? [];
@@ -24668,6 +24669,30 @@ async function getTask(client, projectId, args) {
     changedPaths: Array.isArray(args.changed_paths) ? args.changed_paths : void 0,
     labels: labels.map((l) => l?.name).filter((n) => typeof n === "string")
   });
+  if (meta) {
+    const t = data;
+    return {
+      id: t.id,
+      task_number: t.task_number,
+      title: t.title,
+      workflow_state: t.workflow_state,
+      workflow_activity: t.workflow_activity,
+      awaiting_human_input: t.awaiting_human_input,
+      awaiting_human_reason: t.awaiting_human_reason,
+      awaiting_human_ref: t.awaiting_human_ref,
+      stale: t.stale,
+      stale_ref: t.stale_ref,
+      parent_task_id: t.parent_task_id,
+      archived: t.archived,
+      subsumed_by_task_id: t.subsumed_by_task_id,
+      pending_resolution,
+      active_exchange,
+      risk_classes,
+      updated_at: t.updated_at,
+      content_updated_at: t.content_updated_at,
+      last_activity_at: t.last_activity_at
+    };
+  }
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
   return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, risk_classes };
 }

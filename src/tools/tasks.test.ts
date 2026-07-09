@@ -614,6 +614,128 @@ describe('getTask', () => {
     // migration path → data-migration; auth.ts path → auth + shared-core; canonical order.
     expect((result as any).risk_classes).toEqual(['auth', 'data-migration', 'shared-core']);
   });
+
+  // B-684: the lean 'meta' view — a pinned loop-control projection for repeated re-reads.
+  // Trim the RETURN, never the COMPUTATION: risk_classes keeps its full-mode inputs.
+  const makeFullClient = (opts: { title: string; description?: string }): any => ({
+    from: vi.fn((table: string) => {
+      if (table === 'tasks') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: vi.fn().mockResolvedValue({
+                  data: {
+                    id: 'resolved-uuid',
+                    task_number: 1,
+                    title: opts.title,
+                    description: opts.description ?? null,
+                    workflow_state: 'Proposed',
+                    workflow_activity: null,
+                    awaiting_human_input: false,
+                    awaiting_human_reason: null,
+                    awaiting_human_ref: null,
+                    stale: false,
+                    stale_ref: null,
+                    parent_task_id: null,
+                    archived: false,
+                    subsumed_by_task_id: null,
+                    updated_at: '2026-07-08T00:00:00Z',
+                    content_updated_at: '2026-07-07T00:00:00Z',
+                    last_activity_at: '2026-07-08T00:00:00Z',
+                    task_labels: [{ labels: { id: 'l1', name: 'backend', color: '#fff' } }],
+                    checklist_items: [{ id: 'ci1', title: 'item', completed: false, position: 0 }],
+                  },
+                  error: null,
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === 'briefs') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === 'attachments') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                order: vi.fn().mockResolvedValue({
+                  data: [{ id: 'att-1', filename: 'spec.pdf', content_type: 'application/pdf', byte_size: 1234, created_at: '2026-06-15T00:00:00Z' }],
+                  error: null,
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+      // acceptance_criteria / test_cases
+      return {
+        select: () => ({
+          eq: () => ({
+            order: vi.fn().mockResolvedValue({
+              data: [{ id: `${table}-1`, task_id: 'resolved-uuid', position: 0 }],
+              error: null,
+            }),
+          }),
+        }),
+      };
+    }),
+  });
+
+  it("B-684: view:'meta' returns EXACTLY the 19-key loop-control projection", async () => {
+    const client = makeFullClient({ title: 'T', description: 'A long payload description.' });
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1', view: 'meta' });
+
+    const expectedKeys = [
+      'id', 'task_number', 'title', 'workflow_state', 'workflow_activity',
+      'awaiting_human_input', 'awaiting_human_reason', 'awaiting_human_ref',
+      'stale', 'stale_ref', 'parent_task_id', 'archived', 'subsumed_by_task_id',
+      'pending_resolution', 'active_exchange', 'risk_classes',
+      'updated_at', 'content_updated_at', 'last_activity_at',
+    ];
+    expect(Object.keys(result).sort()).toEqual([...expectedKeys].sort());
+
+    // The payload fields are OMITTED (implied by the exact-key pin; asserted explicitly for clarity).
+    expect(result).not.toHaveProperty('description');
+    expect(result).not.toHaveProperty('acceptance_criteria');
+    expect(result).not.toHaveProperty('test_cases');
+    expect(result).not.toHaveProperty('attachments');
+    expect(result).not.toHaveProperty('labels');
+    expect(result).not.toHaveProperty('checklist_items');
+  });
+
+  it("B-684: view:'meta' still computes risk_classes from the omitted description (trim the return, never the computation)", async () => {
+    const client = makeRiskClient({
+      title: 'Tidy a helper',
+      description: 'Rework the auth token exchange for the session refresh.',
+    });
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1', view: 'meta' });
+    // description is not RETURNED in meta, but it still FED the detector.
+    expect(result).not.toHaveProperty('description');
+    expect((result as any).risk_classes).toContain('auth');
+  });
+
+  it('B-684: getTask WITHOUT view returns the full payload unchanged (regression pin)', async () => {
+    const client = makeFullClient({ title: 'T', description: 'A long payload description.' });
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1' });
+
+    expect((result as any).description).toBe('A long payload description.');
+    expect((result as any).acceptance_criteria).toHaveLength(1);
+    expect((result as any).test_cases).toHaveLength(1);
+    expect((result as any).attachments).toHaveLength(1);
+    expect((result as any).labels).toEqual([{ id: 'l1', name: 'backend', color: '#fff' }]);
+    expect((result as any).checklist_items).toHaveLength(1);
+  });
 });
 
 describe('bulkCreateTasks', () => {
