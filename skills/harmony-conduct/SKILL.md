@@ -183,9 +183,18 @@ won't stop the run — I'll surface it on the release brief so you review it at 
 
 Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see *§5. Terminal conditions*):
 
-1. **Re-read the ticket, then render the progress overview.** `mcp__harmony__get_task({ task_id })` at the
-   TOP of every iteration — never trust a cached copy. Read `(workflow_state, workflow_activity,
-   awaiting_human_input, awaiting_human_reason, awaiting_human_ref, stale)`. **Immediately after the
+1. **Re-read the ticket, then render the progress overview.** `mcp__harmony__get_task({ task_id, view:
+   'meta' })` at the TOP of every iteration — never trust a cached copy. Read `(workflow_state,
+   workflow_activity, awaiting_human_input, awaiting_human_reason, awaiting_human_ref, stale)`. **Lean
+   re-read discipline (B-684):** the FIRST pickup of a run (the initial §1 read) and the VERIFY gate
+   always fetch FULL; every subsequent step-1 re-read and post-mutation confirm goes lean (`view:
+   'meta'`) — and REFETCH FULL when `content_updated_at` has moved past the last full read.
+   (`content_updated_at` bumps on tasks-row content edits — title, description, status, priority,
+   assignee, epic/cycle/milestone, due_date, archived, field_values — but NOT on gate advances and NOT
+   on acceptance-criteria/test-case/checklist/label edits, which live in separate tables; that is safe
+   because the AC/test consumers — the gate skills — always do their own full/dedicated reads. It is
+   deliberately NOT keyed on `updated_at`, which moves on every advance and would force a full read at
+   every gate.) **Immediately after the
    re-read, regenerate and render the progress overview from the ticket row** (see *The progress overview*
    below). This happens on **every** iteration so the checklist always reflects the just-read state.
 
@@ -720,7 +729,8 @@ brief (or an elicitation round) **launch it in the background and end the turn**
 
 On the script's exit your `run_in_background` re-invocation fires: **re-read `get_task` yourself** — the
 script's stdout/exit code are *diagnostic only*; the conductor re-reads the ticket row and is the source of
-truth. The **canonical signal a human resolved is `awaiting_human_input` clearing (true→false)**; once it
+truth. (These poll-exit re-reads may also use `view: 'meta'` — the classification fields below are all in
+meta, B-684.) The **canonical signal a human resolved is `awaiting_human_input` clearing (true→false)**; once it
 clears, classify what they did (state advanced / `pending_resolution` reshape / a Discuss request /
 elicitation answers landed /
 a non-advancing sub-track accept / nothing changed) — plus the one no-flag-transition exit, a mechanical

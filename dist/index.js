@@ -33340,7 +33340,7 @@ async function listTasks(client, projectId, args) {
 }
 var getTaskTool = {
   name: "get_task",
-  description: "Get full details of a specific task. Returns `pending_resolution` \u2014 the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Returns `active_exchange` (B-645) \u2014 the task's active elicitation exchange as {exchange_id, status, round, answers_submitted_at, force_quit_requested_at}, or null when none; a non-null answers_submitted_at/force_quit_requested_at is an unconsumed web\u2192agent marker the watch classifies as 'answers-landed' (read the answers via get_elicitation; filing the next round or concluding consumes it). Also returns `risk_classes` \u2014 a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run \u2014 the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate).",
+  description: "Get full details of a specific task. Returns `pending_resolution` \u2014 the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Returns `active_exchange` (B-645) \u2014 the task's active elicitation exchange as {exchange_id, status, round, answers_submitted_at, force_quit_requested_at}, or null when none; a non-null answers_submitted_at/force_quit_requested_at is an unconsumed web\u2192agent marker the watch classifies as 'answers-landed' (read the answers via get_elicitation; filing the next round or concluding consumes it). Also returns `risk_classes` \u2014 a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run \u2014 the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate). Pass `view:'meta'` (B-684) for a lean loop-control projection on repeated re-reads.",
   inputSchema: {
     type: "object",
     properties: {
@@ -33349,21 +33349,27 @@ var getTaskTool = {
         type: "array",
         items: { type: "string" },
         description: "Optional changed file paths (e.g. `git diff --name-only` output) the build gate can pass so `risk_classes` also reflects path-based matches (e.g. **/auth/**, **/migrations/**). Additive; omit when unknown."
+      },
+      view: {
+        type: "string",
+        enum: ["full", "meta"],
+        description: "Payload shape. Absent \u21D2 'full' (today's full payload). 'meta' (B-684) = lean loop-control projection for repeated re-reads (conduct loop step-1 re-reads / post-mutation confirms): keeps `risk_classes` + the poll markers (`pending_resolution`, `active_exchange`, `awaiting_human_*`); omits description, acceptance criteria, test cases, attachments, labels, checklist."
       }
     },
     required: ["task_id"]
   }
 };
 async function getTask(client, projectId, args) {
+  const meta = args.view === "meta";
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error: error2 } = await client.from("tasks").select("*, task_labels(labels(id, name, color)), checklist_items(id, title, completed, position)").eq("id", resolvedId).eq("project_id", projectId).single();
   if (error2) throw error2;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
   const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange] = await Promise.all([
-    client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
-    client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
-    (async () => {
+    meta ? Promise.resolve({ data: null }) : client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
+    meta ? Promise.resolve({ data: null }) : client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
+    meta ? Promise.resolve([]) : (async () => {
       try {
         const { data: rows } = await client.from("attachments").select("id, filename, content_type, byte_size, created_at").eq("task_id", resolvedId).eq("status", "finalized").order("created_at", { ascending: true });
         return rows ?? [];
@@ -33389,6 +33395,30 @@ async function getTask(client, projectId, args) {
     changedPaths: Array.isArray(args.changed_paths) ? args.changed_paths : void 0,
     labels: labels.map((l) => l?.name).filter((n) => typeof n === "string")
   });
+  if (meta) {
+    const t = data;
+    return {
+      id: t.id,
+      task_number: t.task_number,
+      title: t.title,
+      workflow_state: t.workflow_state,
+      workflow_activity: t.workflow_activity,
+      awaiting_human_input: t.awaiting_human_input,
+      awaiting_human_reason: t.awaiting_human_reason,
+      awaiting_human_ref: t.awaiting_human_ref,
+      stale: t.stale,
+      stale_ref: t.stale_ref,
+      parent_task_id: t.parent_task_id,
+      archived: t.archived,
+      subsumed_by_task_id: t.subsumed_by_task_id,
+      pending_resolution,
+      active_exchange,
+      risk_classes,
+      updated_at: t.updated_at,
+      content_updated_at: t.content_updated_at,
+      last_activity_at: t.last_activity_at
+    };
+  }
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
   return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, risk_classes };
 }

@@ -68,7 +68,9 @@ async function main(): Promise<number> {
 
   // Baseline read: the state the watch diffs every poll against. active_exchange (B-645) is captured
   // so an unconsumed exchange marker already present at launch reads as stale, never as fresh news.
-  const baselineTask = (await getTask(client, projectId, { task_id: ticket })) as Taskish;
+  // B-684: the watch reads via the lean 'meta' view — it consumes only workflow_state /
+  // pending_resolution / awaiting_human_input / active_exchange, all of which meta carries.
+  const baselineTask = (await getTask(client, projectId, { task_id: ticket, view: 'meta' })) as Taskish;
   const baseline: PollBaseline = {
     workflowState: baselineTask.workflow_state ?? null,
     pendingResolution: baselineTask.pending_resolution ?? null,
@@ -85,7 +87,7 @@ async function main(): Promise<number> {
   // cannot false-trip on a transient error.
   const readTask = async (): Promise<Taskish> => {
     try {
-      return (await getTask(client, projectId, { task_id: ticket })) as Taskish;
+      return (await getTask(client, projectId, { task_id: ticket, view: 'meta' })) as Taskish;
     } catch {
       return baselineReadFallback(baseline);
     }
