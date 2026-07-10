@@ -20,6 +20,7 @@ function makeClient(tables: {
   test_cases?: any[];
   acceptance_criteria?: any[]; // { id, checked }
   task_comments?: any[]; // { content }
+  task_labels?: any[]; // { labels: { name } }
   errorOn?: string; // a table name whose query should error
 }) {
   const rowsFor = (table: string): any[] => (tables as any)[table] ?? [];
@@ -55,6 +56,7 @@ describe('getBuildEvidenceStatus', () => {
     expect(res).toEqual({
       task_id: 'task-uuid',
       is_umbrella: false,
+      is_decision_only: false,
       has_test_cases: true,
       all_acs_checked: true,
       has_comment_trail: true,
@@ -64,7 +66,7 @@ describe('getBuildEvidenceStatus', () => {
     });
   });
 
-  it('resolves the task_id via resolveTaskId and reads the four tables', async () => {
+  it('resolves the task_id via resolveTaskId and reads the five tables', async () => {
     const client = makeClient({
       tasks: [],
       test_cases: [{ id: 't1' }],
@@ -75,7 +77,7 @@ describe('getBuildEvidenceStatus', () => {
     expect(mockResolveTaskId).toHaveBeenCalledWith(client, PROJECT_ID, 'B-1');
     const tablesQueried = client.from.mock.calls.map((c: any[]) => c[0]);
     expect(tablesQueried).toEqual(
-      expect.arrayContaining(['tasks', 'test_cases', 'acceptance_criteria', 'task_comments']),
+      expect.arrayContaining(['tasks', 'test_cases', 'acceptance_criteria', 'task_comments', 'task_labels']),
     );
   });
 
@@ -181,6 +183,54 @@ describe('getBuildEvidenceStatus', () => {
       'acceptance criteria (none created)',
       'PR/merge/deploy comment trail',
     ]);
+  });
+
+  it('decision-only label → complete=true, exempt_reason set, no evidence required (B-681)', async () => {
+    // No test cases / no ACs / no trail — but the decision-only marker exempts it: the
+    // ticket completes via the deliverable-gate fast-forward and its evidence IS the
+    // Accepted decision knowledge.
+    const client = makeClient({
+      tasks: [],
+      test_cases: [],
+      acceptance_criteria: [],
+      task_comments: [],
+      task_labels: [{ labels: { name: 'decision-only' } }],
+    });
+    const res = await getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1' });
+    expect(res.is_decision_only).toBe(true);
+    expect(res.is_umbrella).toBe(false);
+    expect(res.complete).toBe(true);
+    expect(res.exempt_reason).toBe('decision-only — the Accepted decision knowledge is the evidence');
+    expect(res.missing).toEqual([]);
+  });
+
+  it('decision-only + umbrella → umbrella keeps precedence in exempt_reason', async () => {
+    const client = makeClient({
+      tasks: [{ id: 'c1', archived: false }],
+      test_cases: [],
+      acceptance_criteria: [],
+      task_comments: [],
+      task_labels: [{ labels: { name: 'decision-only' } }],
+    });
+    const res = await getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1' });
+    expect(res.is_umbrella).toBe(true);
+    expect(res.is_decision_only).toBe(true);
+    expect(res.complete).toBe(true);
+    expect(res.exempt_reason).toBe('umbrella — evidence carried by children');
+  });
+
+  it('other labels do NOT trip the decision-only exemption', async () => {
+    const client = makeClient({
+      tasks: [],
+      test_cases: [],
+      acceptance_criteria: [],
+      task_comments: [],
+      task_labels: [{ labels: { name: 'tech-debt' } }, { labels: null }],
+    });
+    const res = await getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1' });
+    expect(res.is_decision_only).toBe(false);
+    expect(res.complete).toBe(false);
+    expect(res.exempt_reason).toBeNull();
   });
 
   it('throws when a read errors (propagates the Supabase error)', async () => {

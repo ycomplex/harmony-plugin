@@ -143,6 +143,16 @@ mcp__harmony__compose_brief({
 })
 ```
 
+**Decision-only completion line (B-681).** If the ticket carries the **`decision-only` label** (a decision
+ticket whose deliverable IS this design decision — e.g. an inception S2 decision ticket), the **last
+required sub-track's** brief is its **deliverable gate**: that brief MUST carry an explicit completion line
+in its context — *"Accepting this completes the ticket to Verified via the decision-only fast-forward;
+nothing is built, and the decided thing's realization stays `agreed`."* (Author the design decision itself
+with `realization: 'agreed'` — decided-not-yet-built.) The completion is never silent, and that brief is
+**hard-floor** — never auto-advanced under any delegation flag (see
+`skills/harmony-shared/gate-routing.md` §The decision-only fast-forward). A non-last sub-track brief is
+unaffected.
+
 ### 5a. De-risk the decision
 
 A read-through is **NOT** a de-risk. For any load-bearing integration / auth / cross-surface handshake, before
@@ -164,6 +174,15 @@ Show the rendered `content`. On the human's command:
 - **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept" })` → promotes this decision
   Asserted→Accepted; if it carried `pending_activity: "designing"`, advances Decomposed→Designed. Report
   whether the ticket is now Designed or still needs other sub-tracks.
+  **Decision-only fast-forward (B-681):** if the ticket carries the `decision-only` label AND this was the
+  LAST required sub-track (the brief carried the completion line), run the trailing mechanical completion
+  the accept just authorized:
+  ```
+  mcp__harmony__advance_workflow({ task_id, activity: "fast-forwarding" })   // Designed -> Verified
+  ```
+  — one human accept, two writes; report the ticket as **Verified (decision-only fast-forward, realization
+  stays 'agreed')**. Idempotent guard: skip if the ticket is already Verified. A WEB accept with no session
+  running leaves the trailing fast-forward to the next running session (re-run the conductor to apply it).
 - **defer** → **deferral is knowledge** (knowledge-discipline.md §"Deferral is knowledge"). Author the
   deferral, then park:
   ```

@@ -36042,7 +36042,7 @@ async function attachFile(client, projectId, args) {
 var COMMENT_TRAIL_RE = /\b(?:prs?|pull requests?|ci|merg\w*|deploy\w*|#\d+)\b/i;
 var getBuildEvidenceStatusTool = {
   name: "get_build_evidence_status",
-  description: "Read-only. The CANONICAL definition (single source of truth) of whether a conducted ticket carries the build evidence required by Verified. Derives \u2014 never writes \u2014 from the ticket's own records: `has_test_cases` (>=1 test case), `all_acs_checked` (>=1 acceptance criterion AND every one checked), `has_comment_trail` (>=1 comment mentioning a PR/merge/deploy/CI signal). `is_umbrella` is true when the task has >=1 non-archived child; an umbrella is EXEMPT (its evidence is carried by its children \u2014 e.g. a B-471 split-umbrella roll-up), so `complete` is true and `exempt_reason` is set. For a leaf ticket carrying its own build, `complete` = has_test_cases && all_acs_checked && has_comment_trail, and `missing` lists the gaps in human-readable form. Used by finish-work's verify brief to render a mechanical evidence-status line (like the B-516 release-brief risk signal) and reusable by the Decision Trail.",
+  description: "Read-only. The CANONICAL definition (single source of truth) of whether a conducted ticket carries the build evidence required by Verified. Derives \u2014 never writes \u2014 from the ticket's own records: `has_test_cases` (>=1 test case), `all_acs_checked` (>=1 acceptance criterion AND every one checked), `has_comment_trail` (>=1 comment mentioning a PR/merge/deploy/CI signal). `is_umbrella` is true when the task has >=1 non-archived child; an umbrella is EXEMPT (its evidence is carried by its children \u2014 e.g. a B-471 split-umbrella roll-up), so `complete` is true and `exempt_reason` is set. `is_decision_only` is true when the task carries the `decision-only` label; it is likewise EXEMPT (B-681 \u2014 the ticket completes via the deliverable-gate fast-forward and its evidence IS the Accepted decision knowledge); umbrella keeps precedence in `exempt_reason` when both apply. For a leaf ticket carrying its own build, `complete` = has_test_cases && all_acs_checked && has_comment_trail, and `missing` lists the gaps in human-readable form. Used by finish-work's verify brief to render a mechanical evidence-status line (like the B-516 release-brief risk signal) and reusable by the Decision Trail.",
   inputSchema: {
     type: "object",
     properties: {
@@ -36056,28 +36056,33 @@ var getBuildEvidenceStatusTool = {
 };
 async function getBuildEvidenceStatus(client, projectId, args) {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
-  const [childrenRes, testCasesRes, acsRes, commentsRes] = await Promise.all([
+  const [childrenRes, testCasesRes, acsRes, commentsRes, labelsRes] = await Promise.all([
     client.from("tasks").select("id, archived").eq("parent_task_id", resolvedId),
     client.from("test_cases").select("id").eq("task_id", resolvedId),
     client.from("acceptance_criteria").select("id, checked").eq("task_id", resolvedId),
-    client.from("task_comments").select("content").eq("task_id", resolvedId)
+    client.from("task_comments").select("content").eq("task_id", resolvedId),
+    client.from("task_labels").select("labels(name)").eq("task_id", resolvedId)
   ]);
   if (childrenRes.error) throw childrenRes.error;
   if (testCasesRes.error) throw testCasesRes.error;
   if (acsRes.error) throw acsRes.error;
   if (commentsRes.error) throw commentsRes.error;
+  if (labelsRes.error) throw labelsRes.error;
   const children = childrenRes.data ?? [];
   const testCases = testCasesRes.data ?? [];
   const acs = acsRes.data ?? [];
   const comments = commentsRes.data ?? [];
+  const labelRows = labelsRes.data ?? [];
   const is_umbrella = children.some((c) => c.archived !== true);
+  const is_decision_only = labelRows.some((l) => l.labels?.name === "decision-only");
   const has_test_cases = testCases.length >= 1;
   const all_acs_checked = acs.length >= 1 && acs.every((a) => a.checked === true);
   const has_comment_trail = comments.some((c) => typeof c.content === "string" && COMMENT_TRAIL_RE.test(c.content));
-  const complete = is_umbrella ? true : has_test_cases && all_acs_checked && has_comment_trail;
-  const exempt_reason = is_umbrella ? "umbrella \u2014 evidence carried by children" : null;
+  const exempt = is_umbrella || is_decision_only;
+  const complete = exempt ? true : has_test_cases && all_acs_checked && has_comment_trail;
+  const exempt_reason = is_umbrella ? "umbrella \u2014 evidence carried by children" : is_decision_only ? "decision-only \u2014 the Accepted decision knowledge is the evidence" : null;
   const missing = [];
-  if (!complete && !is_umbrella) {
+  if (!complete && !exempt) {
     if (!has_test_cases) missing.push("test cases");
     if (!all_acs_checked) {
       const unchecked = acs.filter((a) => a.checked !== true).length;
@@ -36092,6 +36097,7 @@ async function getBuildEvidenceStatus(client, projectId, args) {
   return {
     task_id: resolvedId,
     is_umbrella,
+    is_decision_only,
     has_test_cases,
     all_acs_checked,
     has_comment_trail,
