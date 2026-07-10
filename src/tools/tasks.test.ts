@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { updateTask, createTask, getTask, bulkCreateTasks } from './tasks.js';
+import { updateTask, createTask, getTask, bulkCreateTasks, listTasks } from './tasks.js';
 
 vi.mock('./resolve-task-id.js', () => ({
   resolveTaskId: vi.fn().mockResolvedValue('resolved-uuid'),
@@ -1005,5 +1005,129 @@ describe('bulkCreateTasks', () => {
       }),
     ).rejects.toThrow(/No task\(s\) with number/);
     expect(insertSpy).not.toHaveBeenCalled();
+  });
+});
+
+// B-686: listTasks — additive workflow_state fields, mode-validated filters, lean-by-default view.
+// Recording builder so assertions hit the ACTUAL select string + filter invocations
+// (B-607: a mocked filter that isn't asserted on false-greens).
+function makeListClient(opts: { rows?: any[]; mode?: string; acRows?: any[]; tcRows?: any[] } = {}) {
+  const calls: {
+    select?: string;
+    eq: [string, unknown][];
+    in: [string, unknown][];
+    projectsModeReads: number;
+  } = { eq: [], in: [], projectsModeReads: 0 };
+
+  const tasksChain: any = {};
+  tasksChain.select = vi.fn((cols: string) => {
+    calls.select = cols;
+    return tasksChain;
+  });
+  tasksChain.eq = vi.fn((col: string, val: unknown) => {
+    calls.eq.push([col, val]);
+    return tasksChain;
+  });
+  tasksChain.in = vi.fn((col: string, val: unknown) => {
+    calls.in.push([col, val]);
+    return tasksChain;
+  });
+  tasksChain.order = vi.fn(() => tasksChain);
+  tasksChain.range = vi.fn(() => tasksChain);
+  tasksChain.then = (resolve: any) => resolve({ data: opts.rows ?? [], error: null });
+
+  const client: any = {
+    from: vi.fn((table: string) => {
+      if (table === 'projects') {
+        calls.projectsModeReads++;
+        return {
+          select: () => ({
+            eq: () => ({
+              single: vi.fn().mockResolvedValue({ data: { mode: opts.mode ?? 'opinionated' }, error: null }),
+            }),
+          }),
+        };
+      }
+      if (table === 'acceptance_criteria') {
+        return { select: () => ({ in: vi.fn().mockResolvedValue({ data: opts.acRows ?? [], error: null }) }) };
+      }
+      if (table === 'test_cases') {
+        return { select: () => ({ in: vi.fn().mockResolvedValue({ data: opts.tcRows ?? [], error: null }) }) };
+      }
+      return tasksChain;
+    }),
+  };
+  return { client, calls };
+}
+
+describe('listTasks (B-686)', () => {
+  it('default (lean) select omits description and includes the lifecycle + grouping fields', async () => {
+    const { client, calls } = makeListClient();
+    await listTasks(client, 'proj-1', {});
+    expect(calls.select).toBeDefined();
+    expect(calls.select).not.toContain('description');
+    for (const col of ['workflow_state', 'awaiting_human_input', 'awaiting_human_reason', 'stale', 'milestone_id', 'cycle_id', 'status']) {
+      expect(calls.select).toContain(col);
+    }
+  });
+
+  it("view:'full' restores description in the select (and keeps the new fields)", async () => {
+    const { client, calls } = makeListClient();
+    await listTasks(client, 'proj-1', { view: 'full' });
+    expect(calls.select).toContain('description');
+    expect(calls.select).toContain('workflow_state');
+  });
+
+  it('does NOT read projects.mode when no workflow_state filter is passed', async () => {
+    const { client, calls } = makeListClient();
+    await listTasks(client, 'proj-1', { status: 'To Do' });
+    expect(calls.projectsModeReads).toBe(0);
+    expect(calls.eq).toContainEqual(['status', 'To Do']);
+  });
+
+  it('applies a string workflow_state filter via .eq on an opinionated project (after a mode read)', async () => {
+    const { client, calls } = makeListClient({ mode: 'opinionated' });
+    await listTasks(client, 'proj-1', { workflow_state: 'Built' });
+    expect(calls.projectsModeReads).toBe(1);
+    expect(calls.eq).toContainEqual(['workflow_state', 'Built']);
+  });
+
+  it('applies an array workflow_state filter via .in (e.g. the non-terminal set)', async () => {
+    const { client, calls } = makeListClient({ mode: 'opinionated' });
+    const states = ['Captured', 'Proposed', 'Clarified', 'Decomposed', 'Designed', 'Planned', 'Built', 'Deployed'];
+    await listTasks(client, 'proj-1', { workflow_state: states });
+    expect(calls.in).toContainEqual(['workflow_state', states]);
+  });
+
+  it('rejects the workflow_state filter on a manual-mode project with an explicit error', async () => {
+    const { client, calls } = makeListClient({ mode: 'manual' });
+    await expect(listTasks(client, 'proj-1', { workflow_state: 'Built' })).rejects.toThrow(/opinionated/);
+    // the tasks query must never have run
+    expect(calls.select).toBeUndefined();
+  });
+
+  it('applies milestone_id and cycle_id filters without any mode read', async () => {
+    const { client, calls } = makeListClient();
+    await listTasks(client, 'proj-1', { milestone_id: 'ms-1', cycle_id: 'cy-1' });
+    expect(calls.projectsModeReads).toBe(0);
+    expect(calls.eq).toContainEqual(['milestone_id', 'ms-1']);
+    expect(calls.eq).toContainEqual(['cycle_id', 'cy-1']);
+  });
+
+  it('keeps the labels + AC/test-count enrichment on lean rows', async () => {
+    const rows = [
+      {
+        id: 't1', title: 'One', status: 'To Do', workflow_state: 'Built',
+        task_labels: [{ labels: { id: 'l1', name: 'Bug', color: '#f00' } }],
+      },
+    ];
+    const { client } = makeListClient({ rows, acRows: [{ task_id: 't1' }, { task_id: 't1' }], tcRows: [{ task_id: 't1' }] });
+    const result = await listTasks(client, 'proj-1', {});
+    expect(result).toHaveLength(1);
+    expect(result[0].labels).toEqual([{ id: 'l1', name: 'Bug', color: '#f00' }]);
+    expect(result[0].acceptance_criteria_count).toBe(2);
+    expect(result[0].test_case_count).toBe(1);
+    expect(result[0].workflow_state).toBe('Built');
+    expect(result[0]).not.toHaveProperty('task_labels');
   });
 });
