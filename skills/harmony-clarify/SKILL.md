@@ -280,6 +280,14 @@ mcp__harmony__compose_brief({
 If `compose_brief` throws a lint error (naked fork, mislabelled derived constraint, or a load-bearing
 gap without research), fix the `doc` and recompose — what's linted is exactly what's rendered.
 
+**Decision-only completion line (B-681).** If the ticket carries the **`decision-only` label** (a
+capture-only ticket — e.g. an inception proposition-root — whose deliverable IS this clarification),
+clarify is its **deliverable gate**: the brief MUST carry an explicit completion line in its context —
+*"Accepting this completes the ticket to Verified via the decision-only fast-forward; nothing is built,
+and the captured decision's realization stays `agreed`."* The completion is never silent, and this brief
+is **hard-floor** — never auto-advanced under any delegation flag (see
+`skills/harmony-shared/gate-routing.md` §The decision-only fast-forward).
+
 **On an iterate of a brief with coupled claims**, compute the kept-set (which claims still underwrite
 the revised doc) and pass it as `underwriting_claim_ids` to `compose_brief` — coupled Asserted claims
 NOT in the list are archived in the same write. Never let a dropped claim ride into promotion on a
@@ -306,10 +314,18 @@ Show the rendered `content` verbatim. On the human's command:
   `mcp__harmony__resolve_brief({ task_id, command: "accept" })` → promotes the specification
   Asserted→Accepted, advances Proposed→Clarified, and (when an exchange ran) promotes the coupled
   human-grounded claims — force-quit claims stay Asserted, quarantined (the DB disposal skips them).
+  **Decision-only fast-forward (B-681):** if the ticket carries the `decision-only` label (the brief
+  carried the completion line), run the trailing mechanical completion the accept just authorized:
+  ```
+  mcp__harmony__advance_workflow({ task_id, activity: "fast-forwarding" })   // Clarified -> Verified
+  ```
+  — one human accept, two writes; report the ticket as **Verified (decision-only fast-forward,
+  realization stays 'agreed')**. Idempotent guard: skip if the ticket is already Verified.
   Report the new state, including any re-ticketed later phase's visual id. A WEB accept with no
   session running defers the AC filing to the design gate's self-heal and the de-scope execution to
   the DECOMPOSE gate's self-heal — the next gate to read the clarification (the documented v1
-  asymmetry, same shape as decompose's children).
+  asymmetry, same shape as decompose's children); a decision-only ticket's web accept likewise leaves
+  the trailing fast-forward to the next running session (re-run the conductor to apply it).
 - **defer** → **deferral is knowledge** (knowledge-discipline.md §"Deferral is knowledge"). First author the
   deferral, then park:
   ```

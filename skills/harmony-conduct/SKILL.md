@@ -284,7 +284,12 @@ pause wins; only if none force a pause does the gate auto-advance:
 1. **Cautious kill-switch (dial, §1b).** If the dial overrode the mode to `controlled`, every gate is
    controlled — pause. (Already handled at §1b; the effective `mode` is `controlled` here.)
 2. **Hard floor (release/verify, contract 3).** If the gate's phase is **release** or **verify**, it is
-   NEVER auto-advanced, in any mode — surface and pause (§4).
+   NEVER auto-advanced, in any mode — surface and pause (§4). **Decision-only extension (B-681):** the
+   **deliverable gate of a `decision-only`-labelled ticket** (clarify for a capture-only ticket; the LAST
+   design sub-track for a decision ticket) is that ticket's release+verify **collapsed into one** — its
+   accept completes the ticket to Verified via the fast-forward — so it inherits this same hard floor:
+   NEVER auto-advanced, in any mode. (The label is read from the gate skill's own full `get_task`; see
+   `skills/harmony-shared/gate-routing.md` §The decision-only fast-forward.)
 3. **Risk-class FLOOR (contract 3a — NON-DISCRETIONARY in `--escalate`, RELEASE-BRIEF SIGNAL otherwise — B-516).**
    Read `risk_classes` from the `get_task` of step-1 (the conductor already re-read the ticket). If it is
    **non-empty**:
@@ -441,6 +446,16 @@ facts; this is the deliberate other half of B-490's "same routing, opposite hand
 | Built / Deployed | the **release** / **verify** gates — **HARD FLOOR, always human** (gate-routing.md marks these); never auto-advanced |
 | Verified / Parked / Cancelled | TERMINAL — loop ends |
 
+**Decision-only tickets complete at their deliverable gate (B-681).** When the ticket carries the
+`decision-only` label, the walk above ENDS at the deliverable gate: the clarify accept (capture-only) or
+the last design sub-track's accept (decision ticket) carries an explicit completion line and — on the
+human's accept — the owning gate skill runs the trailing `advance_workflow('fast-forwarding')`
+(Clarified→Verified / Designed→Verified). The conductor never routes such a ticket to plan/build/release;
+the loop's next re-read finds it Verified (TERMINAL). That deliverable gate inherits the hard floor
+(delegation test step 2) — never auto-advanced. Until the deliverable gate, the marker changes nothing.
+The decided thing stays `realization='agreed'` (B-677 flips it when built); evidence is exempt
+(`get_build_evidence_status.exempt_reason = 'decision-only'`).
+
 **Designing is multi-sub-track and serialized** (and applies to a **no-split** parent only — loop step 5
 routes a *split umbrella* to report-and-stop instead; you never design an umbrella, its children carry
 design/build). `harmony-design-decide` runs ONE sub-track per
@@ -537,6 +552,13 @@ as **"— carried by children"** and release/verify as **"via roll-up"** (the pa
 the B-471 auto-advance), and put the current marker on the **umbrella report-and-stop**, not on
 "design in_progress". This stays a cheap derived read: it's keyed on the same `list_subtasks` children-check
 step 5 already made.
+
+**Decision-only rendering (B-681).** For a ticket carrying the `decision-only` label, the phases past its
+deliverable gate never run: render them as **"— skipped (decision-only fast-forward)"**. A capture-only
+ticket skips decompose/design/plan/build/release/verify (its clarify accept completes it); a decision
+ticket skips plan/build/release/verify (its last design sub-track's accept completes it). The deliverable
+gate's item is the one to mark `in_progress`, annotated **"completes to Verified on accept"**. This stays a
+cheap derived read: the label is already on the gate skill's full `get_task`.
 
 **Annotate the delegation plan (informational).** When the effective mode is `partial`, `unattended`, or
 `escalate`, you may annotate each phase item's text with whether it will be **auto-advanced** or **paused**

@@ -27,6 +27,12 @@ import { resolveTaskId } from './resolve-task-id.js';
 // only when it has test cases AND every AC is checked AND a PR/merge/deploy
 // comment trail is present.
 //
+// DECISION-ONLY EXEMPTION (B-681): a ticket carrying the `decision-only` label
+// has no PR/tests by design — it completes via the deliverable-gate fast-forward
+// (Clarified/Designed → Verified) and its evidence IS the Accepted decision
+// knowledge. Same exemption shape as the umbrella; umbrella keeps precedence
+// when both apply (children carrying evidence is the more specific claim).
+//
 // Reusable by the Decision Trail: the same derivation can render the evidence
 // status anywhere the trail wants it, without re-implementing the definition.
 // ===========================================================================
@@ -48,13 +54,15 @@ export interface BuildEvidenceStatus {
   task_id: string;
   /** Task has >=1 non-archived child → it is an umbrella; evidence is carried by the children. */
   is_umbrella: boolean;
+  /** Task carries the `decision-only` label → its evidence is the Accepted decision knowledge (B-681). */
+  is_decision_only: boolean;
   /** >=1 test case recorded on the task. */
   has_test_cases: boolean;
   /** >=1 acceptance criterion AND every one of them is checked. */
   all_acs_checked: boolean;
   /** >=1 comment whose body matches the PR/merge/deploy/CI trail pattern. */
   has_comment_trail: boolean;
-  /** Umbrella ⇒ true (exempt); else has_test_cases && all_acs_checked && has_comment_trail. */
+  /** Umbrella or decision-only ⇒ true (exempt); else has_test_cases && all_acs_checked && has_comment_trail. */
   complete: boolean;
   /** Why the ticket is exempt from the evidence requirement, or null when it is not. */
   exempt_reason: string | null;
@@ -65,7 +73,7 @@ export interface BuildEvidenceStatus {
 export const getBuildEvidenceStatusTool = {
   name: 'get_build_evidence_status',
   description:
-    "Read-only. The CANONICAL definition (single source of truth) of whether a conducted ticket carries the build evidence required by Verified. Derives — never writes — from the ticket's own records: `has_test_cases` (>=1 test case), `all_acs_checked` (>=1 acceptance criterion AND every one checked), `has_comment_trail` (>=1 comment mentioning a PR/merge/deploy/CI signal). `is_umbrella` is true when the task has >=1 non-archived child; an umbrella is EXEMPT (its evidence is carried by its children — e.g. a B-471 split-umbrella roll-up), so `complete` is true and `exempt_reason` is set. For a leaf ticket carrying its own build, `complete` = has_test_cases && all_acs_checked && has_comment_trail, and `missing` lists the gaps in human-readable form. Used by finish-work's verify brief to render a mechanical evidence-status line (like the B-516 release-brief risk signal) and reusable by the Decision Trail.",
+    "Read-only. The CANONICAL definition (single source of truth) of whether a conducted ticket carries the build evidence required by Verified. Derives — never writes — from the ticket's own records: `has_test_cases` (>=1 test case), `all_acs_checked` (>=1 acceptance criterion AND every one checked), `has_comment_trail` (>=1 comment mentioning a PR/merge/deploy/CI signal). `is_umbrella` is true when the task has >=1 non-archived child; an umbrella is EXEMPT (its evidence is carried by its children — e.g. a B-471 split-umbrella roll-up), so `complete` is true and `exempt_reason` is set. `is_decision_only` is true when the task carries the `decision-only` label; it is likewise EXEMPT (B-681 — the ticket completes via the deliverable-gate fast-forward and its evidence IS the Accepted decision knowledge); umbrella keeps precedence in `exempt_reason` when both apply. For a leaf ticket carrying its own build, `complete` = has_test_cases && all_acs_checked && has_comment_trail, and `missing` lists the gaps in human-readable form. Used by finish-work's verify brief to render a mechanical evidence-status line (like the B-516 release-brief risk signal) and reusable by the Decision Trail.",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -85,33 +93,44 @@ export async function getBuildEvidenceStatus(
 ): Promise<BuildEvidenceStatus> {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
 
-  // The four reads are independent — fire them in parallel (mirrors get_task's enrichment).
-  const [childrenRes, testCasesRes, acsRes, commentsRes] = await Promise.all([
+  // The five reads are independent — fire them in parallel (mirrors get_task's enrichment).
+  const [childrenRes, testCasesRes, acsRes, commentsRes, labelsRes] = await Promise.all([
     client.from('tasks').select('id, archived').eq('parent_task_id', resolvedId),
     client.from('test_cases').select('id').eq('task_id', resolvedId),
     client.from('acceptance_criteria').select('id, checked').eq('task_id', resolvedId),
     client.from('task_comments').select('content').eq('task_id', resolvedId),
+    client.from('task_labels').select('labels(name)').eq('task_id', resolvedId),
   ]);
   if (childrenRes.error) throw childrenRes.error;
   if (testCasesRes.error) throw testCasesRes.error;
   if (acsRes.error) throw acsRes.error;
   if (commentsRes.error) throw commentsRes.error;
+  if (labelsRes.error) throw labelsRes.error;
 
   const children = (childrenRes.data ?? []) as Array<{ id: string; archived: boolean | null }>;
   const testCases = (testCasesRes.data ?? []) as Array<{ id: string }>;
   const acs = (acsRes.data ?? []) as Array<{ id: string; checked: boolean | null }>;
   const comments = (commentsRes.data ?? []) as Array<{ content: string | null }>;
+  // supabase-js types the to-one `labels(name)` embed as an array — cast through unknown (house pattern).
+  const labelRows = (labelsRes.data ?? []) as unknown as Array<{ labels: { name: string | null } | null }>;
 
   const is_umbrella = children.some((c) => c.archived !== true);
+  const is_decision_only = labelRows.some((l) => l.labels?.name === 'decision-only');
   const has_test_cases = testCases.length >= 1;
   const all_acs_checked = acs.length >= 1 && acs.every((a) => a.checked === true);
   const has_comment_trail = comments.some((c) => typeof c.content === 'string' && COMMENT_TRAIL_RE.test(c.content));
 
-  const complete = is_umbrella ? true : has_test_cases && all_acs_checked && has_comment_trail;
-  const exempt_reason = is_umbrella ? 'umbrella — evidence carried by children' : null;
+  const exempt = is_umbrella || is_decision_only;
+  const complete = exempt ? true : has_test_cases && all_acs_checked && has_comment_trail;
+  // Umbrella keeps precedence when both apply — children carrying evidence is the more specific claim.
+  const exempt_reason = is_umbrella
+    ? 'umbrella — evidence carried by children'
+    : is_decision_only
+      ? 'decision-only — the Accepted decision knowledge is the evidence'
+      : null;
 
   const missing: string[] = [];
-  if (!complete && !is_umbrella) {
+  if (!complete && !exempt) {
     if (!has_test_cases) missing.push('test cases');
     if (!all_acs_checked) {
       const unchecked = acs.filter((a) => a.checked !== true).length;
@@ -127,6 +146,7 @@ export async function getBuildEvidenceStatus(
   return {
     task_id: resolvedId,
     is_umbrella,
+    is_decision_only,
     has_test_cases,
     all_acs_checked,
     has_comment_trail,

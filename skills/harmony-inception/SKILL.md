@@ -113,7 +113,9 @@ described as the Day-1 capture of purpose / personas / features. Stamp it with t
 title first; reuse the existing one if present.
 
 ### 2b. Run clarify — at genesis the KB is empty, so it degrades to PURE COLD-START elicitation (AC A7)
-Invoke `/harmony-plugin:harmony-clarify <proposition-root>` (or run its flow inline). Because the KB is
+Invoke `/harmony-plugin:harmony-clarify <proposition-root>` — always the real gate skill, never an inline
+re-implementation (B-681 dropped the former "(or run its flow inline)" escape: the real gate is what
+authors the proposition knowledge, carries the completion line, and runs the fast-forward). Because the KB is
 empty there is nothing to infer from, so clarify runs as **pure elicitation** under the cold-start rule
 (`elicitation-engine.md` §cold start): **lead with your own best-effort inferences as validate
 questions, gate depth by stakes, keep force-quit prominent from round one** — never maximal
@@ -122,7 +124,13 @@ build needs (personas, features, purpose, the explicit non-goals), never interro
 
 ### 2c. On the founder's clarify-ACCEPT → seed the persona + feature entity nodes
 The clarify accept promotes the proposition to **Accepted knowledge anchored to the proposition-root**,
-and the ticket completes. **Only then** — the node-lifecycle rule (below) — seed the founding entity
+and the ticket completes **by the named mechanism (B-681): the accept advances Proposed→Clarified, then —
+when the proposition-root carries the `decision-only` label — the clarify skill's trailing
+`advance_workflow('fast-forwarding')` completes it Clarified→Verified** (the brief carries the completion
+line; the captured proposition stays `realization='agreed'`; never Parked, never left non-terminal). Who
+stamps the `decision-only` label is B-688's scope — until stamping is enabled there, complete the
+proposition-root the same way by hand (label it, then accept). **Only then** — the node-lifecycle rule
+(below) — seed the founding entity
 nodes from the just-Accepted proposition claims:
 
 ```

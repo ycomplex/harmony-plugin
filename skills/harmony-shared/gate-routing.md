@@ -42,7 +42,38 @@ legible build trail (gates otherwise only advance `workflow_state`): **build** r
 the satisfied ACs (`start-work` O3), **release** comments the PR→merge→deploy trail, and **verify** comments
 the verify result AND its brief always carries a mechanical evidence-status line from
 `get_build_evidence_status` (`finish-work` O2/O3). A split-umbrella roll-up is **exempt** — its evidence is
-carried by its children.
+carried by its children. A **decision-only ticket is likewise exempt** (B-681) — its evidence IS the
+Accepted decision knowledge (`exempt_reason: 'decision-only'`).
+
+## The decision-only fast-forward (B-681)
+
+A ticket carrying the **`decision-only` label** finishes its deliverable at an early gate and has nothing
+to plan/build/deploy — so it completes at that **deliverable gate** instead of walking the build gates
+empty or stalling:
+
+| ticket kind | deliverable gate | fast-forward edge |
+|---|---|---|
+| capture-only (e.g. an inception proposition-root) | **clarify** | Clarified → Verified |
+| decision ticket (decision Accepted at design) | **design** (last required sub-track) | Designed → Verified |
+
+- **One accept, two writes.** The deliverable-gate brief of a marker-carrying ticket **must carry an
+  explicit completion line** — *"accepting this completes the ticket to Verified; nothing is built, the
+  decision's realization stays `agreed`"* — and the human's single accept authorizes both. On accept the
+  owning gate skill resolves the brief normally, then runs the trailing
+  `advance_workflow({ activity: 'fast-forwarding' })` as the mechanical completion. Never silent, never a
+  second ceremony.
+- **Hard floor.** The deliverable gate of a decision-only ticket is its release+verify **collapsed into
+  one**, so it inherits the hard floor: **never auto-advanced under any delegation flag** (`--pause-at` /
+  `--unattended` / `--escalate`). No ticket reaches Verified without a human decision in the loop.
+- **Until the deliverable gate the marker changes nothing** — a decision ticket still clarifies and
+  decomposes normally; only the gates PAST the deliverable are skipped.
+- **Realization stays `agreed`.** The fast-forward never touches realization; the produced decision reads
+  agreed-not-built until its build work flips it live (B-677).
+- **Marker consumed, not governed.** Who/what stamps `decision-only` (and its guardrails) is B-688's
+  scope; this table only keys on the label's presence.
+
+Both consumers inherit this branch from here: `harmony-conduct` at the deliverable gate of its forward
+walk, `harmony-next` when resolving the deliverable gate's brief.
 
 ## Human-facing vocabulary (B-446)
 
