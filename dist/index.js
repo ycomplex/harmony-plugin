@@ -33287,15 +33287,26 @@ function detectRiskClasses(input) {
 // src/tools/tasks.ts
 var listTasksTool = {
   name: "list_tasks",
-  description: "List tasks in the project with optional filters",
+  description: "List tasks in the project with optional filters. Each row carries the real workflow_state + lifecycle fields (awaiting_human_input, awaiting_human_reason, stale) alongside the legacy status, plus milestone_id/cycle_id (B-686). Rows are LEAN by default \u2014 description is omitted (a list navigates; read bodies via get_task or pass view:'full'). Filter by workflow_state (opinionated-mode projects only \u2014 string or array, e.g. the non-terminal set; errors on a manual-mode project), milestone_id, cycle_id, or the legacy status.",
   inputSchema: {
     type: "object",
     properties: {
-      status: { type: "string", description: 'Filter by status (e.g. "To Do")' },
+      status: { type: "string", description: 'Filter by legacy status (e.g. "To Do")' },
+      workflow_state: {
+        oneOf: [{ type: "string" }, { type: "array", items: { type: "string" } }],
+        description: "Filter by real workflow state (opinionated-mode projects only \u2014 errors on manual-mode; use the status filter there). String for one state, array for a set (e.g. the non-terminal states)."
+      },
       epic_id: { type: "string", description: "Filter by epic ID" },
+      milestone_id: { type: "string", description: "Filter by milestone ID" },
+      cycle_id: { type: "string", description: "Filter by cycle ID" },
       assignee_id: { type: "string", description: "Filter by assignee user ID" },
       archived: { type: "boolean", description: "Include archived tasks. Default false." },
       label_ids: { type: "array", items: { type: "string" }, description: "Filter by label IDs (OR logic)" },
+      view: {
+        type: "string",
+        enum: ["lean", "full"],
+        description: "Row shape. Default 'lean' \u2014 omits description so broad listings stay under the tool-result cap. 'full' restores the pre-B-686 shape including description."
+      },
       limit: { type: "number", description: "Max results to return. Default 50." },
       offset: { type: "number", description: "Number of results to skip (for pagination). Default 0." }
     }
@@ -33304,9 +33315,25 @@ var listTasksTool = {
 async function listTasks(client, projectId, args) {
   const limit = args.limit ?? 50;
   const offset = args.offset ?? 0;
-  let query = client.from("tasks").select("id, title, status, priority, task_number, assignee_id, epic_id, description, field_values, archived, due_date, task_labels(labels(id, name, color))").eq("project_id", projectId).eq("archived", args.archived ?? false).order("position").range(offset, offset + limit - 1);
+  if (args.workflow_state !== void 0) {
+    const { data: proj, error: projError } = await client.from("projects").select("mode").eq("id", projectId).single();
+    if (projError) throw projError;
+    if (proj?.mode !== "opinionated") {
+      throw new Error(
+        "The workflow_state filter applies to opinionated-mode projects only; this project is manual-mode \u2014 use the status filter instead."
+      );
+    }
+  }
+  const baseCols = "id, title, status, priority, task_number, assignee_id, epic_id, field_values, archived, due_date, workflow_state, awaiting_human_input, awaiting_human_reason, stale, milestone_id, cycle_id";
+  const cols = args.view === "full" ? `${baseCols}, description` : baseCols;
+  let query = client.from("tasks").select(`${cols}, task_labels(labels(id, name, color))`).eq("project_id", projectId).eq("archived", args.archived ?? false).order("position").range(offset, offset + limit - 1);
   if (args.status) query = query.eq("status", args.status);
+  if (args.workflow_state !== void 0) {
+    query = Array.isArray(args.workflow_state) ? query.in("workflow_state", args.workflow_state) : query.eq("workflow_state", args.workflow_state);
+  }
   if (args.epic_id) query = query.eq("epic_id", args.epic_id);
+  if (args.milestone_id) query = query.eq("milestone_id", args.milestone_id);
+  if (args.cycle_id) query = query.eq("cycle_id", args.cycle_id);
   if (args.assignee_id) query = query.eq("assignee_id", args.assignee_id);
   const { data, error: error2 } = await query;
   if (error2) throw error2;

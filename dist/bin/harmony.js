@@ -24599,9 +24599,25 @@ function detectRiskClasses(input) {
 async function listTasks(client, projectId, args) {
   const limit = args.limit ?? 50;
   const offset = args.offset ?? 0;
-  let query = client.from("tasks").select("id, title, status, priority, task_number, assignee_id, epic_id, description, field_values, archived, due_date, task_labels(labels(id, name, color))").eq("project_id", projectId).eq("archived", args.archived ?? false).order("position").range(offset, offset + limit - 1);
+  if (args.workflow_state !== void 0) {
+    const { data: proj, error: projError } = await client.from("projects").select("mode").eq("id", projectId).single();
+    if (projError) throw projError;
+    if (proj?.mode !== "opinionated") {
+      throw new Error(
+        "The workflow_state filter applies to opinionated-mode projects only; this project is manual-mode \u2014 use the status filter instead."
+      );
+    }
+  }
+  const baseCols = "id, title, status, priority, task_number, assignee_id, epic_id, field_values, archived, due_date, workflow_state, awaiting_human_input, awaiting_human_reason, stale, milestone_id, cycle_id";
+  const cols = args.view === "full" ? `${baseCols}, description` : baseCols;
+  let query = client.from("tasks").select(`${cols}, task_labels(labels(id, name, color))`).eq("project_id", projectId).eq("archived", args.archived ?? false).order("position").range(offset, offset + limit - 1);
   if (args.status) query = query.eq("status", args.status);
+  if (args.workflow_state !== void 0) {
+    query = Array.isArray(args.workflow_state) ? query.in("workflow_state", args.workflow_state) : query.eq("workflow_state", args.workflow_state);
+  }
   if (args.epic_id) query = query.eq("epic_id", args.epic_id);
+  if (args.milestone_id) query = query.eq("milestone_id", args.milestone_id);
+  if (args.cycle_id) query = query.eq("cycle_id", args.cycle_id);
   if (args.assignee_id) query = query.eq("assignee_id", args.assignee_id);
   const { data, error } = await query;
   if (error) throw error;
@@ -24891,15 +24907,19 @@ async function runCommand(opts, handler, formatter) {
 // src/cli/commands/tasks.ts
 function registerTaskCommands(program3) {
   const tasks = program3.command("tasks").description("Manage tasks");
-  tasks.command("list").description("List tasks with optional filters").option("--status <status>", "Filter by status").option("--assignee <id>", "Filter by assignee").option("--epic <id>", "Filter by epic").option("--label <ids...>", "Filter by label IDs").option("--archived", "Include archived tasks", false).option("--limit <n>", "Max results", "50").option("--offset <n>", "Skip results", "0").action(async (opts) => {
+  tasks.command("list").description("List tasks with optional filters").option("--status <status>", "Filter by legacy status").option("--state <states...>", "Filter by workflow state(s) (opinionated-mode projects only)").option("--assignee <id>", "Filter by assignee").option("--epic <id>", "Filter by epic").option("--milestone <id>", "Filter by milestone").option("--cycle <id>", "Filter by cycle").option("--label <ids...>", "Filter by label IDs").option("--archived", "Include archived tasks", false).option("--full", "Include full descriptions (rows are lean by default)", false).option("--limit <n>", "Max results", "50").option("--offset <n>", "Skip results", "0").action(async (opts) => {
     await runCommand(
       program3.opts(),
       async (ctx) => listTasks(ctx.client, ctx.projectId, {
         status: opts.status,
         assignee_id: opts.assignee,
         epic_id: opts.epic,
+        workflow_state: opts.state?.length === 1 ? opts.state[0] : opts.state,
+        milestone_id: opts.milestone,
+        cycle_id: opts.cycle,
         label_ids: opts.label,
         archived: opts.archived,
+        view: opts.full ? "full" : void 0,
         limit: parseInt(opts.limit),
         offset: parseInt(opts.offset)
       }),

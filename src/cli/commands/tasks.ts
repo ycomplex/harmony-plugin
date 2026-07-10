@@ -8,18 +8,25 @@ export function registerTaskCommands(program: Command): void {
 
   tasks.command('list')
     .description('List tasks with optional filters')
-    .option('--status <status>', 'Filter by status')
+    .option('--status <status>', 'Filter by legacy status')
+    .option('--state <states...>', 'Filter by workflow state(s) (opinionated-mode projects only)')
     .option('--assignee <id>', 'Filter by assignee')
     .option('--epic <id>', 'Filter by epic')
+    .option('--milestone <id>', 'Filter by milestone')
+    .option('--cycle <id>', 'Filter by cycle')
     .option('--label <ids...>', 'Filter by label IDs')
     .option('--archived', 'Include archived tasks', false)
+    .option('--full', 'Include full descriptions (rows are lean by default)', false)
     .option('--limit <n>', 'Max results', '50')
     .option('--offset <n>', 'Skip results', '0')
     .action(async (opts) => {
       await runCommand(program.opts(), async (ctx) =>
         listTasks(ctx.client, ctx.projectId, {
           status: opts.status, assignee_id: opts.assignee, epic_id: opts.epic,
+          workflow_state: opts.state?.length === 1 ? opts.state[0] : opts.state,
+          milestone_id: opts.milestone, cycle_id: opts.cycle,
           label_ids: opts.label, archived: opts.archived,
+          view: opts.full ? 'full' : undefined,
           limit: parseInt(opts.limit), offset: parseInt(opts.offset),
         }),
         (data) => formatTable(data, [
