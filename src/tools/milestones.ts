@@ -16,7 +16,10 @@ export async function listMilestones(client: SupabaseClient, projectId: string, 
     .from('milestones')
     .select('*')
     .eq('project_id', projectId)
-    .order('position');
+    // B-702: legacy rows can share a position (pre-fix inserts defaulted to 0), so
+    // tie-break on created_at for a stable order — matching the web app's reader.
+    .order('position')
+    .order('created_at');
   if (args.status) query = query.eq('status', args.status);
   const { data, error } = await query;
   if (error) throw error;
@@ -40,6 +43,17 @@ export async function createMilestone(
   client: SupabaseClient, projectId: string, userId: string,
   args: { name: string; description?: string }
 ) {
+  // B-702: the DB column defaults position to 0, so an insert without a position
+  // collides with existing rows (duplicate positions make the web reorder a no-op).
+  // Assign max+1, matching the web app's create path.
+  const { data: existing } = await client
+    .from('milestones')
+    .select('position')
+    .eq('project_id', projectId)
+    .order('position', { ascending: false })
+    .limit(1);
+  const nextPosition = ((existing?.[0]?.position as number | undefined) ?? -1) + 1;
+
   const { data, error } = await client
     .from('milestones')
     .insert({
@@ -47,6 +61,7 @@ export async function createMilestone(
       name: args.name,
       description: args.description ?? null,
       created_by: userId,
+      position: nextPosition,
     })
     .select()
     .single();
