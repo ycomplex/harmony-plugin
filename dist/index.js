@@ -35200,7 +35200,7 @@ var listMilestonesTool = {
   }
 };
 async function listMilestones(client, projectId, args) {
-  let query = client.from("milestones").select("*").eq("project_id", projectId).order("position");
+  let query = client.from("milestones").select("*").eq("project_id", projectId).order("position").order("created_at");
   if (args.status) query = query.eq("status", args.status);
   const { data, error: error2 } = await query;
   if (error2) throw error2;
@@ -35219,11 +35219,14 @@ var createMilestoneTool = {
   }
 };
 async function createMilestone(client, projectId, userId, args) {
+  const { data: existing } = await client.from("milestones").select("position").eq("project_id", projectId).order("position", { ascending: false }).limit(1);
+  const nextPosition = (existing?.[0]?.position ?? -1) + 1;
   const { data, error: error2 } = await client.from("milestones").insert({
     project_id: projectId,
     name: args.name,
     description: args.description ?? null,
-    created_by: userId
+    created_by: userId,
+    position: nextPosition
   }).select().single();
   if (error2) throw error2;
   return data;
