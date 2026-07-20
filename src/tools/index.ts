@@ -72,6 +72,29 @@ import {
 } from './evidence-status.js';
 import { projectAck } from './ack-projection.js';
 
+// B-692 Phase 2: the conduction record's shared-core accessors + canonical status axis. Deliberately
+// NOT registered as an MCP tool and NOT wired into src/cli/commands/ — the future conductor daemon
+// consumes these in-process, exactly as src/bin/poll.ts consumes getTask. Barrel export only.
+export {
+  createConduction,
+  getConduction,
+  getActiveConduction,
+  updateConduction,
+  ActiveConductionExistsError,
+  CONDUCTION_LIVE_STATUSES,
+  CONDUCTION_HUMAN_OWNED_STATUSES,
+  CONDUCTION_TERMINAL_STATUSES,
+  CONDUCTION_STATUSES,
+  CONDUCTION_PATCHABLE_FIELDS,
+  isConductionLive,
+  isConductionHumanOwned,
+  isConductionTerminal,
+  type ConductionRecord,
+  type ConductionStatus,
+  type ConductionPatch,
+  type CreateConductionArgs,
+} from './conduction-record.js';
+
 export function registerTools(disabledFeatures?: Record<string, boolean>) {
   const tools = [
     // Core tools (always visible)
