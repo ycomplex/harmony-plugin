@@ -74,6 +74,14 @@ describe('get_project', () => {
     expect((badLevel as { agent_trust: { level: string } }).agent_trust.level).toBe('balanced');
   });
 
+  it('attaches the runtime environment block (B-488 staging channel)', async () => {
+    const data = await getProject(clientReturning({ id: 'p', mode: 'opinionated' }), 'p');
+    const env = (data as { environment: { supabase_url: string; supabase_project_ref: string; target: string } }).environment;
+    expect(env.supabase_url).toContain('supabase.co');
+    expect(env.supabase_project_ref).not.toBe('');
+    expect(['prod', 'staging', 'custom']).toContain(env.target);
+  });
+
   it('strips the raw workspace embed from the returned project', async () => {
     const data = await getProject(
       clientReturning({ id: 'p', mode: 'opinionated', workspace: { agent_trust: { level: 'cautious' } } }),
