@@ -1,9 +1,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { resolveEnvironment, type EnvironmentInfo } from './environment.js';
 import { resolveTrustLevel, type TrustLevel } from './trust-model.js';
 
 export const getProjectTool = {
   name: 'get_project',
-  description: 'Get project details including workflow mode (manual|opinionated), statuses, field definitions, epics, and the owning workspace\'s agent-trust dial (level + safety-rail overrides).',
+  description: 'Get project details including workflow mode (manual|opinionated), statuses, field definitions, epics, the owning workspace\'s agent-trust dial (level + safety-rail overrides), and the runtime environment (Supabase target prod|staging|custom + plugin version).',
   inputSchema: { type: 'object' as const, properties: {} },
 };
 
@@ -32,6 +33,8 @@ type ProjectWithTrust = {
   field_definitions: unknown;
   archived: boolean;
   agent_trust: AgentTrustResolved;
+  // Which backend + plugin build this session is running against (B-488 staging channel).
+  environment: EnvironmentInfo;
   [k: string]: unknown;
 };
 
@@ -56,7 +59,8 @@ export async function getProject(client: SupabaseClient, projectId: string): Pro
     overrides: (rawTrust.overrides ?? {}) as Record<string, unknown>,
   };
 
-  // Strip the raw embed and surface a clean, resolved `agent_trust` field.
+  // Strip the raw embed and surface a clean, resolved `agent_trust` field, plus the
+  // runtime environment (non-throwing — degrades rather than breaking get_project).
   const { workspace: _workspace, ...project } = row;
-  return { ...project, agent_trust } as unknown as ProjectWithTrust;
+  return { ...project, agent_trust, environment: resolveEnvironment() } as unknown as ProjectWithTrust;
 }

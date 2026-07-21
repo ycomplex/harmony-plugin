@@ -3977,8 +3977,8 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error, leave, join } = constants_1.CHANNEL_EVENTS;
-        const events = [close, error, leave, join];
+        const { close, error, leave, join: join2 } = constants_1.CHANNEL_EVENTS;
+        const events = [close, error, leave, join2];
         return ref && events.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
@@ -18333,6 +18333,56 @@ async function createAuthenticatedClient(auth) {
   });
 }
 
+// src/tools/environment.ts
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
+var KNOWN_REFS = {
+  eioxsunvhakmelhanmnn: "prod",
+  meqkdgncdzromunylyxf: "staging"
+  // staging.harmony.ad's deployed project
+};
+function readManifestVersion(manifestPath) {
+  try {
+    const parsed = JSON.parse(readFileSync(manifestPath, "utf8"));
+    return typeof parsed.version === "string" ? parsed.version : null;
+  } catch {
+    return null;
+  }
+}
+function resolvePluginVersion(env, moduleUrl) {
+  const root = env.CLAUDE_PLUGIN_ROOT;
+  if (root) {
+    const version3 = readManifestVersion(join(root, ".claude-plugin", "plugin.json"));
+    if (version3 !== null) return version3;
+  }
+  try {
+    let dir = dirname(fileURLToPath(moduleUrl));
+    for (let i = 0; i < 3; i++) {
+      dir = dirname(dir);
+      const version3 = readManifestVersion(join(dir, ".claude-plugin", "plugin.json"));
+      if (version3 !== null) return version3;
+    }
+  } catch {
+  }
+  return null;
+}
+function resolveEnvironment(env = process.env, moduleUrl = import.meta.url) {
+  const supabase_url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
+  let supabase_project_ref = "";
+  try {
+    supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
+  } catch {
+  }
+  return {
+    supabase_url,
+    supabase_project_ref,
+    target: KNOWN_REFS[supabase_project_ref] ?? "custom",
+    plugin_version: resolvePluginVersion(env, moduleUrl)
+  };
+}
+
 // src/tools/trust-model.ts
 var LEVELS = ["cautious", "balanced", "autonomous"];
 var DEFAULT_TRUST_LEVEL = "balanced";
@@ -18354,7 +18404,7 @@ async function getProject(client, projectId) {
     overrides: rawTrust.overrides ?? {}
   };
   const { workspace: _workspace, ...project } = row;
-  return { ...project, agent_trust };
+  return { ...project, agent_trust, environment: resolveEnvironment() };
 }
 
 // src/tools/resolve-task-id.ts

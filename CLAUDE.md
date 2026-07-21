@@ -61,7 +61,7 @@ The `ycomplex` marketplace pins this plugin to the **`prod`** branch (`source.re
 git push origin main:prod   # in harmony-plugin
 ```
 
-Plugin-only changes with no new schema dependency (skills, CLI, bug fixes) are safe to promote any time; the gate matters specifically for changes that read newly-added schema. To dogfood `main` ahead of prod, set `HARMONY_SUPABASE_URL` to staging so the ahead-of-prod plugin talks to an ahead-of-prod DB.
+Plugin-only changes with no new schema dependency (skills, CLI, bug fixes) are safe to promote any time; the gate matters specifically for changes that read newly-added schema. To dogfood `main` ahead of prod, use the **[staging channel](#staging-channel-pre-prod-functional-verify)** below — it wires an ahead-of-prod plugin to the ahead-of-prod staging DB.
 
 ### `dist/` is tracked in git
 
@@ -73,6 +73,25 @@ Because Claude Code plugins aren't npm-installed (the marketplace copies files d
 3. Commit any `dist/` changes alongside the version bump
 
 CI should run `npm run verify:dist` on every PR.
+
+## Staging channel (pre-prod functional verify)
+
+The sanctioned way to functionally verify plugin changes — **skills AND MCP code** — before promoting to prod: run the `main` (or branch) checkout against the **staging** Supabase project, so ahead-of-prod code talks to an ahead-of-prod DB.
+
+**Engage it via the setup script, into a DEDICATED out-of-repo dogfood directory** — never inside this repo, harmony-web, or the workspace root (`promote-prod.sh` aborts on untracked files, and dogfood residue like `.claude/` would trip it):
+
+```bash
+./scripts/setup-staging-channel.sh ~/harmony-dogfood <staging-api-token> [staging-anon-key]
+cd ~/harmony-dogfood && claude --plugin-dir /path/to/main/checkout/of/harmony-plugin
+```
+
+The script writes the dogfood dir's `.claude/settings.local.json` (staging `HARMONY_SUPABASE_URL` / `HARMONY_SUPABASE_ANON_KEY` / `HARMONY_API_TOKEN`), disables the marketplace-installed `harmony-plugin@ycomplex` in that dir's `.claude/settings.json` so the local checkout is the only Harmony plugin loaded, and ensures `.claude/` is excluded in this checkout's git exclude file. It is idempotent and merge-safe.
+
+**Confirm the pairing before trusting any verify result:** call `get_project` and check its `environment` block — `target` must be `staging` and `plugin_version` must be the version you built. That is the code/DB confirmation; without it you may be verifying the installed prod plugin against prod.
+
+**Fallback on identity collision:** if `--plugin-dir` collides with the marketplace install (same plugin name resolving to the cached copy), use the cache-overwrite generalization — rsync (copy-paste) `dist/`, `skills/`, and `.claude-plugin/` over `~/.claude/plugins/cache/ycomplex/harmony-plugin/<installed-version>/`. It is reversible by reinstalling the plugin from the marketplace. This supersedes the old skills-only cache hack (overwriting just `skills/` in the cache) — the generalized form covers MCP code too.
+
+**Successor:** this channel becomes a proper two-marketplace setup (a staging marketplace entry alongside prod) once the upstream Claude Code same-name plugin collision bug is fixed; until then `--plugin-dir` + the cache-overwrite fallback is the supported path.
 
 ## Plugin Structure
 
