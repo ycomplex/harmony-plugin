@@ -370,4 +370,49 @@ describe('harmony-conduct skill contract', () => {
     expect(dcSeg).toMatch(/untouched brief/);
     expect(dcSeg).toMatch(/re-arm the watch/);
   });
+
+  it('B-693 ONE-SHOT: --one-shot exits at EVERY human pause without arming the watch — ONE guard at the sole spawn site, hard-floor pauses included; the ticket row is the worker exit contract', () => {
+    const body = skill.body;
+    // The flag is documented as ORTHOGONAL to the mode selector — not a fifth mode; identical gate
+    // behaviour: it changes what happens AT a pause, never WHICH gates pause.
+    expect(body).toContain('--one-shot');
+    expect(body).toMatch(/NOT a fifth mode/i);
+    expect(body).toMatch(/identical gate behaviour/i);
+    expect(body).toMatch(/what happens \*\*AT\*\*[\s\S]*?never \*\*WHICH\*\* gates pause/);
+    // Misspelling strictness matches the mode flags: never a silent ignore.
+    expect(body).toMatch(/--oneshot/);
+    // THE GUARD: checked FIRST at the sole poll.js spawn site. Scope assertions to the guard's own
+    // paragraph so a stray token elsewhere can't satisfy them.
+    const g = body.indexOf('THE ONE-SHOT GUARD');
+    expect(g, 'missing the one-shot guard at the spawn site').toBeGreaterThan(-1);
+    const gSeg = body.slice(g, g + 1200);
+    expect(gSeg).toMatch(/checked FIRST/);
+    expect(gSeg).toMatch(/sole spawn site|ONLY place poll\.js is ever spawned/);
+    expect(gSeg).toMatch(/do \*\*NOT\*\* arm/);
+    expect(gSeg).toMatch(/no `pkill`, no spawn/);
+    expect(gSeg).toMatch(/END THE RUN/);
+    // The load-bearing coverage: a forward-gate-only reading is wrong — the HARD-FLOOR pauses
+    // (release/verify), stale, and elicitation are all named inside the guard itself.
+    expect(gSeg).toMatch(/release[\s\S]*?verify[\s\S]*?hard-floor/);
+    expect(gSeg).toMatch(/stale/);
+    expect(gSeg).toMatch(/elicitation/);
+    expect(gSeg).toMatch(/physically cannot[\s\S]*?arm/);
+    // THE EXIT CONTRACT: the row IS the contract; four shapes; torn pause = dirty (B-498 family).
+    const c = body.indexOf('### The one-shot exit contract');
+    expect(c, 'missing the one-shot exit contract subsection').toBeGreaterThan(-1);
+    const cSeg = body.slice(c, c + 2400);
+    expect(cSeg).toMatch(/ticket row IS the contract/);
+    expect(cSeg).toMatch(/Clean human pause/);
+    expect(cSeg).toMatch(/Terminal/);
+    expect(cSeg).toMatch(/report-and-stop/);
+    expect(cSeg).toMatch(/must NOT[\s\S]*?dirty/);
+    expect(cSeg).toMatch(/TORN pause/);
+    expect(cSeg).toMatch(/advanced but no composed brief/);
+    expect(cSeg).toContain('B-498');
+    // The behavioural proof is stated: no watch process after a one-shot exit (the AC2 live check).
+    expect(cSeg).toMatch(/pgrep/);
+    expect(cSeg).toMatch(/no background watch process/);
+    // The interactive default is untouched: B-500's auto-watch-default language survives the edit.
+    expect(body).toMatch(/Auto-watch is the default/);
+  });
 });

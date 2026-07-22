@@ -1,11 +1,11 @@
 ---
 name: harmony-conduct
-description: The opinionated-mode entry point: drive one ticket through the gate sequence end to end. Default = pause at every gate for the human's decision (controlled). Optional per-run delegation — `--pause-at <gate>` (auto-advance up to a gate), `--unattended` (auto-advance to the hard floor), or `--escalate` (auto-advance, but surface any gate genuinely worth a human opinion). A non-discretionary risk-class FLOOR (auth / data-migration / irreversible-destructive / shared-core) PAUSES a delegated gate for a human in `--escalate`; in `--unattended` and the auto-advanced prefix of `--pause-at` it does NOT pause mid-run — it is recorded and SURFACED on the release brief (the hard floor at release+verify already covers irreversibility). Triggers on "conduct B-123", "harmony conduct", "run B-123 through the flow", "drive this ticket to verified". The conductor orchestrates the plumbing BETWEEN gates; at a controlled gate it hands the decision to the human, and an auto-advanced gate still records the SAME Accepted decision a controlled run would.
+description: The opinionated-mode entry point: drive one ticket through the gate sequence end to end. Default = pause at every gate for the human's decision (controlled). Optional per-run delegation — `--pause-at <gate>` (auto-advance up to a gate), `--unattended` (auto-advance to the hard floor), or `--escalate` (auto-advance, but surface any gate genuinely worth a human opinion). A non-discretionary risk-class FLOOR (auth / data-migration / irreversible-destructive / shared-core) PAUSES a delegated gate for a human in `--escalate`; in `--unattended` and the auto-advanced prefix of `--pause-at` it does NOT pause mid-run — it is recorded and SURFACED on the release brief (the hard floor at release+verify already covers irreversibility). Triggers on "conduct B-123", "harmony conduct", "run B-123 through the flow", "drive this ticket to verified". The conductor orchestrates the plumbing BETWEEN gates; at a controlled gate it hands the decision to the human, and an auto-advanced gate still records the SAME Accepted decision a controlled run would. `--one-shot` (the daemon's worker flag, orthogonal to the mode selector) advances one leg and exits at the next human pause WITHOUT arming the watch — the daemon owns watching.
 allowed-tools: mcp__harmony__* Read Grep Glob
 disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
 
-# Harmony Conduct (conductor — B-458 phase 2a controlled core + B-489 phase 2b autonomy selector + B-485 browser auto-pickup + B-493 phase 2c risk-class floor & --escalate + B-500 auto-watch by default + B-506 Decomposed split-umbrella branch + B-519 revise-scope / back-up + B-516 floor scoping: pause only in --escalate, release-brief signal otherwise)
+# Harmony Conduct (conductor — B-458 phase 2a controlled core + B-489 phase 2b autonomy selector + B-485 browser auto-pickup + B-493 phase 2c risk-class floor & --escalate + B-500 auto-watch by default + B-506 Decomposed split-umbrella branch + B-519 revise-scope / back-up + B-516 floor scoping: pause only in --escalate, release-brief signal otherwise + B-693 --one-shot worker exit)
 
 The conductor loop. Given a ticket and a "go", it drives the whole gate sequence
 (clarify → decompose → design → plan → build → release → verify) by delegating to the existing gate
@@ -116,6 +116,16 @@ and persisting it would let the system delegate a future run the human didn't au
   `--unattended` uses). The risk-class floor (§3a) sits **underneath** the judgment: a risk-class hit
   floors a gate even when the judgment says "routine".
 
+**Orthogonal to the mode selector — `--one-shot` (B-693, the daemon's worker flag).** Alongside the mode
+(any of the above, or no flag), the invocation may carry **`--one-shot`**: advance one leg — run to the
+next human-required pause — then **exit without arming the §4c watch** (the Conductor Daemon owns
+watching; see the daemon spec §4.1 / B-696). It is **NOT a fifth mode**: it changes what happens **AT** a
+human pause (exit vs arm-and-wait), never **WHICH** gates pause — the run behaves gate-for-gate with
+**identical gate behaviour** to the same invocation without the flag, so "one leg" is mode-dependent by
+construction: one gate in controlled, up to the hard floor under `--unattended`. It is never implied — a
+daemon-fired worker passes it explicitly. The suppression itself lives at §4c's step-0 guard (the sole
+poll.js spawn site); what the exit leaves behind is *The one-shot exit contract* (after §4c).
+
 Validation (do this BEFORE touching the ticket):
 
 - `--pause-at`, `--unattended`, and `--escalate` are **mutually exclusive**. If more than one is present →
@@ -128,6 +138,9 @@ Validation (do this BEFORE touching the ticket):
   list and stop. (Silently delegating on a typo is exactly the contract-1 violation this guards.)
 - Absence of any flag ⇒ controlled. This is the only default; the conductor never selects delegation on
   its own.
+- **`--one-shot` is exempt from the mutual-exclusivity rule** (it is not a mode — it composes with any
+  mode or none), but it gets the same misspelling strictness: `--oneshot`, `--one-sht`, etc. → **ERROR**
+  and stop, never a silent ignore.
 
 Note that `--pause-at release` and `--pause-at verify` are *expressible* but redundant with the hard floor
 (release/verify are never auto-advanced anyway). They are accepted (they correctly auto-advance everything
@@ -154,7 +167,7 @@ Apply the dial **ceiling** to the parsed per-run `mode`:
   moot here. The risk-class floor (§3a) is computed under *all* permitted modes and at every level — it
   PAUSES in `--escalate` and is carried to the release brief in `--unattended`/`--pause-at`, B-516.)
 
-A ticket id is **required** — `/harmony-plugin:harmony-conduct B-123 [--pause-at <gate> | --unattended]`.
+A ticket id is **required** — `/harmony-plugin:harmony-conduct B-123 [--pause-at <gate> | --unattended | --escalate] [--one-shot]`.
 (Conducting picks a *specific* ticket to its terminal state; that is different from
 `/harmony-plugin:harmony-next`, which pulls whatever is top of the queue.) If no ticket was named, ask for
 one and stop.
@@ -178,6 +191,9 @@ Note the floor's behaviour once up front, matched to the mode: in **`--escalate`
 regardless of judgment — on any gate whose subject touches auth, a data migration, an irreversible/destructive
 change, or a shared-core module."*; in **`--unattended`/`--pause-at`** say *"A risk class on a forward gate
 won't stop the run — I'll surface it on the release brief so you review it at the hard floor."*
+
+When the run carries **`--one-shot`**, append the worker notice to the report: *"One-shot: I'll exit at
+the first human pause instead of watching — the daemon (or you) re-fires the next leg."*
 
 ### 2. The loop
 
@@ -207,7 +223,8 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    (`--pause-at`, `--unattended`, `--escalate`) auto-advances past an open exchange; delegation covers
    decisions, never the human's answers. Surface the round (render the last round from
    `get_elicitation` as prose, per the owning gate skill's terminal parity), then **arm the §4c watch
-   and end the turn** exactly as at a controlled pause. The poll classifies a web submit as
+   and end the turn** exactly as at a controlled pause (in `--one-shot`, §4c's step-0 guard exits the
+   run here instead of arming — same surface, no watch). The poll classifies a web submit as
    **`answers-landed`** (consume case 4 below); a terminal answer is a normal in-session exit.
 
    Otherwise `awaiting_human_input` set means a gate has already drafted a brief. There is one active
@@ -692,7 +709,7 @@ run is untouched and still paused at this gate.
 After surfacing the brief, **do not ask** whether to watch and **do not require a re-run** — auto-watch is the
 **default** (B-500: *don't ask, don't make me re-run*). The conductor automatically enters the §4c watch loop
 and keeps watching the ticket row for the human's resolution (Accept / Reshape / Deny submitted from the
-TaskDetailPanel on any device), continuing the instant it lands. **This is not optional and not automatic: you MUST arm the watch as a concrete action (§4c) before yielding the turn — never end the turn assuming the runtime will re-invoke you. "Surfaced the brief and stopped" is a bug; the only clean end-of-turn at a pause is an in-session answer you just received, or the ~90-min window expiry (graceful degradation).** State it plainly, e.g.: *"I'll keep watching
+TaskDetailPanel on any device), continuing the instant it lands. **This is not optional and not automatic: you MUST arm the watch as a concrete action (§4c) before yielding the turn — never end the turn assuming the runtime will re-invoke you. "Surfaced the brief and stopped" is a bug; the only clean end-of-turn at a pause is an in-session answer you just received, or the ~90-min window expiry (graceful degradation). (Exception, B-693: in `--one-shot` the clean end-of-turn IS the exit — §4c's step-0 guard ends the run at this pause without arming; the daemon owns watching.)** State it plainly, e.g.: *"I'll keep watching
 for your decision — resolve it here in the terminal or from the browser (Accept / Reshape / Deny) and I'll
 continue automatically."* The watch is **bounded (~90 min, idle backoff)** and ends on **any** of three
 co-equal exits: a browser resolution, an in-session/terminal answer, or the ~90-min timeout. On timeout the
@@ -714,7 +731,9 @@ answers (the browser, on any device) versus requiring a session re-run; **it is 
 didn't make; it routes the human's **actual** browser command to the owning gate skill, exactly as a
 same-session answer would. **Auto-watch is the default (B-500):** after every controlled pause the conductor
 enters this loop automatically — it does **not** ask the human to opt in and does **not** require a manual
-re-run.
+re-run. **The one exception is `--one-shot` (B-693): a one-shot run never enters this section — it exits at
+the pause via the step-0 guard below; the daemon owns watching.** The interactive default is otherwise
+unchanged.
 
 **The poll loop (bounded, idle-backoff, default-on).** After surfacing the brief at a controlled pause, the
 conductor re-reads `mcp__harmony__get_task({ task_id })` on a bounded, idle-backoff schedule up to a **total
@@ -728,7 +747,8 @@ watch silently dies (this is the B-531 bug). The *behaviour* — arm a self-firi
 controlled/hard-floor pause — is the **durable contract**; the concrete mechanism below is a **swappable
 recipe** (B-532 swapped the earlier Claude-Code `ScheduleWakeup` recipe for the bundled background poll
 script below — the *recipe* changed, the *contract* did not; a persistent cross-session daemon would be a
-further, separate change, still out of scope).
+further, separate change, still out of scope). (In `--one-shot` the arming imperative is inverted by the
+step-0 guard below: the run exits at the pause instead — the daemon owns watching.)
 
 **Claude Code — how to actually arm (the current recipe, B-532).** The watch is a **plugin-bundled
 background poll script** — `dist/bin/poll.js`. It reads the ticket **IN-PROCESS** via the shared-core
@@ -742,6 +762,15 @@ submitted elicitation answers (`answers-landed`, B-645) / a non-advancing sub-tr
 cancel restores the flag directly) — or the ~90-min window expires. To arm it, after surfacing the
 brief (or an elicitation round) **launch it in the background and end the turn**:
 
+0. **THE ONE-SHOT GUARD (B-693) — checked FIRST, at this sole spawn site.** If the run carries
+   `--one-shot`, do **NOT** arm: no `pkill`, no spawn — surface the pause exactly as §4 renders it, state
+   the worker exit (*"exiting — the daemon owns watching; re-fire `harmony-conduct <ticket>` for the next
+   leg"*), and **END THE RUN**. This guard lives at the ONLY place poll.js is ever spawned, so it covers
+   **every** pause path — forward controlled gates, the **release** and **verify** hard-floor pauses, a
+   **stale-patch** pause, and **elicitation rounds** alike — and a future new pause path physically cannot
+   arm in a one-shot run, because arming only happens through this recipe. What the exit leaves on the
+   ticket row is specified in *The one-shot exit contract* below. (Steps 1–3 are the interactive,
+   non-one-shot path.)
 1. **`pkill -f "dist/bin/poll.js <ticket>"`** first, to kill any prior poll still watching THIS ticket
    (idempotent re-arm). Also run this on session end so no poll outlives the session — the watch is
    session-scoped and must die with the session.
@@ -853,6 +882,31 @@ session** by routing to `/harmony-plugin:finish-work <ticket>`:
   Deployed→Verified.
 If the human did NOT act (no browser accept), release/verify stay paused — the conductor waits or the watch
 window expires; it never advances them itself.
+
+### The one-shot exit contract (B-693 — the worker half, joint with B-696)
+
+A `--one-shot` run is the Conductor Daemon's worker: it advances one leg and hands back. It writes **no
+separate exit status — the ticket row IS the contract**; the daemon classifies the outcome purely from the
+row shape the exit leaves behind (daemon spec §3 step 4):
+
+- **Clean human pause** — `awaiting_human_input: true` plus an active brief or elicitation exchange
+  (**release and verify pauses included** — the hard floor is a clean pause like any other) → the daemon
+  waits for the human.
+- **Terminal** — `Verified` / `Cancelled` (or `Parked` via a human defer consumed in-run — a human
+  outcome, never the worker's own) → the conduction is done.
+- **Split-umbrella report-and-stop** — `Decomposed` with non-archived children, `awaiting_human_input:
+  false`, no active brief (§5's report-and-stop): a **legitimate clean exit** — the daemon must NOT
+  classify it as dirty; how the daemon proceeds from it (conduct the children / park-and-flag) is B-696's
+  decision, not this skill's.
+- **Anything else = DIRTY** → the daemon parks the conduction and flags the human. This **explicitly
+  includes a TORN pause: `workflow_state` advanced but no composed brief** (a crash in the
+  advance→compose window). A torn pause must never be mistaken for a clean one — it is the same flag+row
+  atomicity family as **B-498** (the browser reshape's single-RPC write); both exit-contract owners stay
+  consistent with that classification.
+
+Suppression is total by construction: the step-0 guard sits at the sole poll.js spawn site, so a one-shot
+run leaves **no background watch process** — `pgrep -f "dist/bin/poll.js"` after a one-shot exit finds
+nothing armed by this run (the AC2 live check).
 
 ### 4d. Run the LLM iterate on a browser reshape (B-485 — AC3)
 
@@ -971,6 +1025,15 @@ Browser auto-pickup (B-485) is **orthogonal and equally non-decisional**:
   via `finish-work`.
 - It is **orthogonal to the `--pause-at`/`--unattended` selector** — auto-pickup changes *where* the human
   answers a controlled gate, not *whether* a gate is controlled.
+
+`--one-shot` (B-693) is **orthogonal and equally non-decisional**:
+
+- It changes only what happens **at** a human pause — exit instead of arm-and-wait. Gate behaviour, the
+  delegation test, the risk-class floor, and the hard floor are untouched in every mode.
+- It never weakens B-500's interactive auto-watch default — a run without the flag arms exactly as today.
+- The exit leaves the decision surface intact: the pause persists on the ticket row (the no-session
+  degradation is the designed path), and the daemon — or a human re-run — picks it up from there. The row
+  shapes it may leave are pinned in *The one-shot exit contract* (torn pause = dirty, B-498 family).
 
 ## Still out of scope (later phases)
 
