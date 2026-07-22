@@ -25,18 +25,18 @@ HARMONY_TARGET="${HARMONY_TARGET:-prod}"
 case "$HARMONY_TARGET" in
   prod)    SUPABASE_URL="https://eioxsunvhakmelhanmnn.supabase.co" ;;
   staging) SUPABASE_URL="https://meqkdgncdzromunylyxf.supabase.co" ;;
-  custom)  SUPABASE_URL="${HARMONY_SUPABASE_URL:?HARMONY_TARGET=custom needs HARMONY_SUPABASE_URL}" ;;
+  custom)  SUPABASE_URL="${HARMONY_SUPABASE_URL:?HARMONY_TARGET=custom needs HARMONY_SUPABASE_URL — see plugin/container/env.example (copy it and fill it in — container/README.md Quick start)}" ;;
   *)
     echo "Unknown HARMONY_TARGET '$HARMONY_TARGET' (expected prod | staging | custom)" >&2
     exit 1
     ;;
 esac
 
-: "${HARMONY_API_TOKEN:?HARMONY_API_TOKEN is required (the board API token for the chosen target)}"
+: "${HARMONY_API_TOKEN:?HARMONY_API_TOKEN is required (the board API token for the chosen target) — see plugin/container/env.example (copy it and fill it in — container/README.md Quick start)}"
 # The plugin's shared core carries a baked prod anon-key default; staging and
 # custom must supply theirs (Supabase dashboard > Project Settings > API keys).
 if [ "$HARMONY_TARGET" != "prod" ] && [ -z "${HARMONY_SUPABASE_ANON_KEY:-}" ]; then
-  echo "HARMONY_SUPABASE_ANON_KEY is required for HARMONY_TARGET=$HARMONY_TARGET" >&2
+  echo "HARMONY_SUPABASE_ANON_KEY is required for HARMONY_TARGET=$HARMONY_TARGET — see plugin/container/env.example (copy it and fill it in — container/README.md Quick start)" >&2
   exit 1
 fi
 ANON_KEY="${HARMONY_SUPABASE_ANON_KEY:-}"
@@ -109,7 +109,7 @@ case "$MODE" in
       echo "Unset it and set CLAUDE_CODE_OAUTH_TOKEN (minted via 'claude setup-token') for subscription runs." >&2
     elif [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
       echo "headless mode needs auth: set CLAUDE_CODE_OAUTH_TOKEN (primary; mint via 'claude setup-token')" >&2
-      echo "or ANTHROPIC_API_KEY (fallback; per-token API billing)." >&2
+      echo "or ANTHROPIC_API_KEY (fallback; per-token API billing) — see plugin/container/env.example (copy it and fill it in — container/README.md Quick start)." >&2
       exit 1
     fi
     cd "$WORKDIR"

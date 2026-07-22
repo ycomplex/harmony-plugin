@@ -5,11 +5,13 @@
 # provisions. Keep this file to: validate env -> clone -> hand off.
 set -euo pipefail
 
-: "${GIT_TOKEN:?GIT_TOKEN is required (a GitHub token able to clone/push ycomplex repos)}"
+: "${GIT_TOKEN:?GIT_TOKEN is required (a GitHub token able to clone/push ycomplex repos) — see plugin/container/env.example (copy it and fill it in — container/README.md Quick start)}"
 WEB_REPO="${WEB_REPO:-https://github.com/ycomplex/harmony-web.git}"
 PLUGIN_REPO="${PLUGIN_REPO:-https://github.com/ycomplex/harmony-plugin.git}"
+WORKSPACE_REPO="${WORKSPACE_REPO:-https://github.com/ycomplex/harmony-workspace.git}"
 WEB_REF="${WEB_REF:-main}"
 PLUGIN_REF="${PLUGIN_REF:-main}"
+WORKSPACE_REF="${WORKSPACE_REF:-main}"
 
 # Token-authenticated clones without the token landing in .git/config or argv:
 # an askpass helper reads it from the env.
@@ -34,5 +36,8 @@ clone() { # $1 = url, $2 = ref, $3 = dir
 }
 clone "$WEB_REPO" "$WEB_REF" /workspace/web
 clone "$PLUGIN_REPO" "$PLUGIN_REF" /workspace/plugin
+# harmony-workspace joins the default clone set (B-710) — meta-repo builds no
+# longer need a manual extra clone; token auth reuses the ASKPASS plumbing above.
+clone "$WORKSPACE_REPO" "$WORKSPACE_REF" /workspace/workspace
 
 exec /workspace/plugin/container/provision.sh "$@"
