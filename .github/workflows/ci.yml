@@ -37,3 +37,18 @@ jobs:
       # keeps the explicit "Build" status check that branch protection requires.
       - name: Verify dist matches source
         run: npm run verify:dist
+
+  # B-694: the build container's agent-portability guardrail, checked on every
+  # run — the base target must stay agent-neutral (no claude in it). Light
+  # image only; the heavy substrate (DinD/local Supabase) is B-708.
+  container-base:
+    name: Container base layer (agent-free)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build base target
+        run: docker build -f container/Dockerfile --target base -t b694-base container
+
+      - name: Assert no agent in base
+        run: docker run --rm --entrypoint /bin/sh b694-base -c '! command -v claude'
