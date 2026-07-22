@@ -34,6 +34,13 @@ docker run --rm --env-file ~/.harmony-container.env harmony-build-env \
   headless "your prompt here"
 ```
 
+Headless auth is **`CLAUDE_CODE_OAUTH_TOKEN`** (mint once via `claude
+setup-token` — a ~1-year subscription token), keeping workers on Max
+subscription economics. `ANTHROPIC_API_KEY` is a labelled fallback only: it
+**overrides subscription auth and bills per-token**. provision.sh unsets
+empty values of either so a blank env-file line can't shadow the real token,
+and refuses headless mode with neither set.
+
 ## Layering (agent portability — CI-enforced)
 
 | Target | Contents | Swap cost |

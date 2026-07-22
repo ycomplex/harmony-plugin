@@ -99,6 +99,19 @@ case "$MODE" in
       echo "headless mode needs the agent image (this looks like the base target — no claude installed)." >&2
       exit 1
     }
+    # Empty-value shadow guard (same class as the anon-key omit): --env-file
+    # turns a blank line into a set-but-empty var, and an empty
+    # ANTHROPIC_API_KEY would shadow the OAuth token.
+    [ -z "${ANTHROPIC_API_KEY:-}" ] && unset ANTHROPIC_API_KEY
+    [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && unset CLAUDE_CODE_OAUTH_TOKEN
+    if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+      echo "Warning: ANTHROPIC_API_KEY is set — it OVERRIDES subscription auth and bills per-token." >&2
+      echo "Unset it and set CLAUDE_CODE_OAUTH_TOKEN (minted via 'claude setup-token') for subscription runs." >&2
+    elif [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+      echo "headless mode needs auth: set CLAUDE_CODE_OAUTH_TOKEN (primary; mint via 'claude setup-token')" >&2
+      echo "or ANTHROPIC_API_KEY (fallback; per-token API billing)." >&2
+      exit 1
+    fi
     cd "$WORKDIR"
     # The flags are deliberately word-split.
     # shellcheck disable=SC2086
