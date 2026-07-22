@@ -41,6 +41,27 @@ subscription economics. `ANTHROPIC_API_KEY` is a labelled fallback only: it
 empty values of either so a blank env-file line can't shadow the real token,
 and refuses headless mode with neither set.
 
+## Interactive login
+
+`CLAUDE_CODE_OAUTH_TOKEN` (above) only authenticates headless `claude -p` runs. The
+**interactive TUI** (`claude --plugin-dir /workspace/plugin`) needs its own stored OAuth
+session in `~/.claude` — a fresh `--rm` container has none, so it sends you to a browser
+login with no explanation. Two paths:
+
+- **One-time, this container only:** just run `claude --plugin-dir /workspace/plugin` and
+  follow the browser prompt. The session lives only as long as this container — a fresh
+  `--rm` run logs you in again.
+- **Persistent across runs:** mount a named volume over `~/.claude` so the OAuth session
+  survives container restarts:
+  ```bash
+  docker run --rm -it --env-file ~/.harmony-container.env \
+    -v harmony-claude-auth:/home/worker/.claude harmony-build-env
+  ```
+  Log in once; subsequent runs with the same volume skip the browser step.
+
+Daemon/headless workers are unaffected — they authenticate via `CLAUDE_CODE_OAUTH_TOKEN`,
+not this interactive session.
+
 ## Layering (agent portability — CI-enforced)
 
 | Target | Contents | Swap cost |
