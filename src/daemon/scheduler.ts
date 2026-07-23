@@ -56,34 +56,67 @@ export interface SchedulerDeps {
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 
+/** B-696 backstop: thrown by runScheduler after AUTH_FAILURE_PASS_LIMIT consecutive passes in
+ *  which every attempted conduction handling (or the pass itself) failed auth-shaped. The
+ *  entrypoint catches it and exits non-zero so launchd restarts the daemon with fresh auth —
+ *  restart over zombie. */
+export class PersistentAuthFailure extends Error {
+  readonly consecutivePasses: number;
+
+  constructor(consecutivePasses: number) {
+    super(
+      `persistent auth failure: ${consecutivePasses} consecutive scheduler passes failed auth-shaped`,
+    );
+    this.name = 'PersistentAuthFailure';
+    this.consecutivePasses = consecutivePasses;
+  }
+}
+
+const AUTH_FAILURE_PASS_LIMIT = 3;
+
+/** Auth-shaped error detection (exported for tests): 401s, expired/invalid JWTs and tokens. */
+export function isAuthShapedError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /\b401\b|jwt expired|invalid (jwt|token)|token .*expired/i.test(message);
+}
+
 function templateVars(row: ConductionRecord): { conduction_id: string; ticket: string } {
   // {ticket} carries the task UUID — resolveTaskId fast-paths UUIDs in every consumer, with no
   // project-key lookup and no cross-project ambiguity.
   return { conduction_id: row.id, ticket: row.task_id };
 }
 
+/** What one pass observed — consumed only by runScheduler's auth-failure counter. */
+export interface PassSummary {
+  attempted: number;
+  authShapedFailures: number;
+}
+
 /** ONE scheduler pass over every active conduction (exported for tests). */
 export async function runSchedulerPass(
   deps: SchedulerDeps,
   state: Map<string, WatchBaseline>,
-): Promise<void> {
+): Promise<PassSummary> {
   const rows = await deps.listConductions({ status: 'active' });
 
   // Prune baselines for conductions that left the active set (completed/parked elsewhere).
   const activeIds = new Set(rows.map((r) => r.id));
   for (const id of [...state.keys()]) if (!activeIds.has(id)) state.delete(id);
 
+  let authShapedFailures = 0;
   for (const row of rows) {
     try {
       await handleConduction(deps, state, row);
     } catch (err) {
       // Isolation per conduction: one row's failure must never kill the pass (and a READ failure
       // must never park anything — parking is a classification, not an error handler).
+      if (isAuthShapedError(err)) authShapedFailures += 1;
       deps.log(
         `conduction ${row.id}: pass error — row skipped (${err instanceof Error ? err.message : String(err)})`,
       );
     }
   }
+  return { attempted: rows.length, authShapedFailures };
 }
 
 async function handleConduction(
@@ -155,14 +188,27 @@ async function handleConduction(
 }
 
 /** The forever loop: pass; sleep(pollMs). A pass-level failure (e.g. a transient list error) is
- *  logged and the loop keeps going — supervision (launchd) owns process death, not transients. */
+ *  logged and the loop keeps going — supervision (launchd) owns process death, not transients.
+ *  ONE exception (B-696): AUTH_FAILURE_PASS_LIMIT consecutive auth-shaped-failing passes throw
+ *  PersistentAuthFailure — a zombie daemon must die loudly, not heartbeat forever. */
 export async function runScheduler(deps: SchedulerDeps): Promise<never> {
   const state = new Map<string, WatchBaseline>();
+  let consecutiveAuthFailingPasses = 0;
   for (;;) {
+    // A pass counts as auth-failing when the pass ITSELF died auth-shaped (e.g. the list read),
+    // or when it attempted ≥1 conduction and EVERY attempt failed auth-shaped. Anything else —
+    // a success, an idle pass, a non-auth error, one healthy row — resets the counter.
+    let authFailingPass = false;
     try {
-      await runSchedulerPass(deps, state);
+      const summary = await runSchedulerPass(deps, state);
+      authFailingPass = summary.attempted > 0 && summary.authShapedFailures === summary.attempted;
     } catch (err) {
       deps.log(`scheduler pass failed: ${err instanceof Error ? err.message : String(err)}`);
+      authFailingPass = isAuthShapedError(err);
+    }
+    consecutiveAuthFailingPasses = authFailingPass ? consecutiveAuthFailingPasses + 1 : 0;
+    if (consecutiveAuthFailingPasses >= AUTH_FAILURE_PASS_LIMIT) {
+      throw new PersistentAuthFailure(consecutiveAuthFailingPasses);
     }
     await deps.sleep(deps.config.pollMs);
   }

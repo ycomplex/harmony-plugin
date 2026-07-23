@@ -36,7 +36,12 @@ import {
   updateConduction,
 } from '../tools/conduction-record.js';
 import { loadDaemonConfig } from '../daemon/config.js';
-import { runScheduler, type DaemonTask, type SchedulerDeps } from '../daemon/scheduler.js';
+import {
+  PersistentAuthFailure,
+  runScheduler,
+  type DaemonTask,
+  type SchedulerDeps,
+} from '../daemon/scheduler.js';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -127,7 +132,17 @@ async function main(): Promise<void> {
     `conductor daemon up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, ` +
       `heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms`,
   );
-  await runScheduler(deps);
+  try {
+    await runScheduler(deps);
+  } catch (err) {
+    // B-696 backstop: persistent auth failure exits non-zero so launchd restarts the daemon with
+    // fresh auth — a restart beats a zombie that heartbeats but can never conduct.
+    if (err instanceof PersistentAuthFailure) {
+      log(`${err.message} — exiting 1 (launchd restarts with fresh auth)`);
+      process.exit(1);
+    }
+    throw err;
+  }
 }
 
 main().catch((err) => {
