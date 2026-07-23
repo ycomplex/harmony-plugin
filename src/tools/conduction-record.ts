@@ -11,6 +11,12 @@
 // daemon exactly as src/bin/poll.ts consumes getTask (a plain function call over an authenticated
 // Supabase client). Deliberately NOT registered as MCP tools and NOT wired into src/cli/commands/:
 // the module is exported through the src/tools barrel only.
+//
+// Takeover CAS (B-696): two daemons can never both win — the guarded UPDATE in takeoverConduction
+// (id + status='active' + the OBSERVED lease holder + the stale-heartbeat window) is the whole
+// mutual-exclusion story. Whichever daemon's UPDATE matches the row first flips lease_holder; the
+// loser's guard no longer matches (the holder it observed is gone) and its UPDATE affects zero
+// rows, surfacing as the null "lost the race" return. No advisory locks, no separate lease table.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
@@ -272,4 +278,69 @@ export async function updateConduction(
     .single();
   if (error) throw new Error(error.message);
   return data as unknown as ConductionRecord;
+}
+
+// ---------------------------------------------------------------------------
+// listConductions
+// ---------------------------------------------------------------------------
+
+/** List conductions, oldest started first, optionally filtered to one status (the daemon's pass
+ *  lists `{ status: 'active' }`). Throws on error. */
+export async function listConductions(
+  client: SupabaseClient,
+  args: { status?: ConductionStatus },
+): Promise<ConductionRecord[]> {
+  let query = client.from('conductions').select(CONDUCTION_COLS);
+  if (args.status) query = query.eq('status', args.status);
+  const { data, error } = await query.order('started_at', { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data as unknown as ConductionRecord[]) ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// takeoverConduction — the CAS takeover guard (see module header).
+// ---------------------------------------------------------------------------
+
+export interface TakeoverConductionArgs {
+  id: string;
+  /** The lease holder the caller OBSERVED on its read — the compare half of compare-and-swap. */
+  observed_lease_holder: string | null;
+  /** ISO timestamp: only a row whose last heartbeat is OLDER than this (or NULL — a
+   *  never-heartbeated row counts as stale) can be taken over. */
+  stale_before: string;
+  new_lease_holder: string;
+}
+
+/** Atomically take over a stale active conduction. The UPDATE is guarded on id + status='active' +
+ *  the observed lease holder + the stale-heartbeat window, so at most one contender's guard can
+ *  match — returns the updated row on the CAS win, `null` when no row matched (lost the race, or
+ *  the holder heartbeated in the meantime); throws only on an operational error. */
+export async function takeoverConduction(
+  client: SupabaseClient,
+  args: TakeoverConductionArgs,
+): Promise<ConductionRecord | null> {
+  if (!args.id) throw new Error('id is required');
+  if (!args.stale_before) throw new Error('stale_before is required');
+  if (!args.new_lease_holder) throw new Error('new_lease_holder is required');
+
+  const stamp = new Date().toISOString();
+  let query = client
+    .from('conductions')
+    .update({
+      lease_holder: args.new_lease_holder,
+      lease_acquired_at: stamp,
+      last_heartbeat_at: stamp,
+    })
+    .eq('id', args.id)
+    .eq('status', 'active');
+  query =
+    args.observed_lease_holder === null
+      ? query.is('lease_holder', null)
+      : query.eq('lease_holder', args.observed_lease_holder);
+  const { data, error } = await query
+    .or(`last_heartbeat_at.is.null,last_heartbeat_at.lt.${args.stale_before}`)
+    .select(CONDUCTION_COLS)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as unknown as ConductionRecord) ?? null;
 }
