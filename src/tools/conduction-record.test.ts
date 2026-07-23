@@ -4,6 +4,8 @@ import {
   getConduction,
   getActiveConduction,
   updateConduction,
+  listConductions,
+  takeoverConduction,
   ActiveConductionExistsError,
   CONDUCTION_LIVE_STATUSES,
   CONDUCTION_HUMAN_OWNED_STATUSES,
@@ -28,9 +30,12 @@ function makeClient(responses: Array<{ data: unknown; error?: unknown }>) {
   let i = 0;
   const next = () => responses[i++] ?? { data: null, error: null };
   const chain: any = {};
-  for (const m of ['from', 'select', 'insert', 'update', 'eq']) chain[m] = vi.fn(() => chain);
+  for (const m of ['from', 'select', 'insert', 'update', 'eq', 'is', 'or']) chain[m] = vi.fn(() => chain);
   chain.maybeSingle = vi.fn(async () => next());
   chain.single = vi.fn(async () => next());
+  // List queries terminate on .order(...) (the builder is awaited as a thenable in real supabase;
+  // the mock returns the queued response directly).
+  chain.order = vi.fn(async () => next());
   return chain;
 }
 
@@ -227,6 +232,85 @@ describe('updateConduction', () => {
     await expect(updateConduction(client, 'cond-1', { retry_count: 1 })).rejects.toThrow(
       'no rows returned',
     );
+  });
+});
+
+describe('listConductions', () => {
+  it("filters eq('status','active') when a status is given and orders by started_at ascending", async () => {
+    const client = makeClient([{ data: [conductionRow] }]);
+    const result = await listConductions(client, { status: 'active' });
+
+    expect(client.from).toHaveBeenCalledWith('conductions');
+    expect(client.eq).toHaveBeenCalledWith('status', 'active');
+    expect(client.order).toHaveBeenCalledWith('started_at', { ascending: true });
+    expect(result).toEqual([conductionRow]);
+  });
+
+  it('applies NO status filter when none is given', async () => {
+    const client = makeClient([{ data: [conductionRow, { ...conductionRow, id: 'cond-2', status: 'parked' }] }]);
+    const result = await listConductions(client, {});
+    expect(client.eq).not.toHaveBeenCalled();
+    expect(result).toHaveLength(2);
+  });
+
+  it('returns [] when there are no rows', async () => {
+    const client = makeClient([{ data: null }]);
+    expect(await listConductions(client, { status: 'active' })).toEqual([]);
+  });
+
+  it('throws on a DB error', async () => {
+    const client = makeClient([{ data: null, error: { message: 'boom' } }]);
+    await expect(listConductions(client, {})).rejects.toThrow('boom');
+  });
+});
+
+describe('takeoverConduction', () => {
+  const casArgs = {
+    id: 'cond-1',
+    observed_lease_holder: 'daemon-a',
+    stale_before: '2026-07-23T00:00:00.000Z',
+    new_lease_holder: 'daemon-b',
+  };
+
+  it('issues the guarded CAS UPDATE (id + active + observed holder + stale guard) and returns the row on win', async () => {
+    const won = { ...conductionRow, lease_holder: 'daemon-b' };
+    const client = makeClient([{ data: won }]);
+    const result = await takeoverConduction(client, casArgs);
+
+    expect(client.from).toHaveBeenCalledWith('conductions');
+    expect(client.update).toHaveBeenCalledWith({
+      lease_holder: 'daemon-b',
+      lease_acquired_at: expect.any(String),
+      last_heartbeat_at: expect.any(String),
+    });
+    expect(client.eq).toHaveBeenCalledWith('id', 'cond-1');
+    expect(client.eq).toHaveBeenCalledWith('status', 'active');
+    expect(client.eq).toHaveBeenCalledWith('lease_holder', 'daemon-a');
+    expect(client.is).not.toHaveBeenCalled();
+    // NULL last_heartbeat_at counts as stale — the guard is the or(is-null, lt stale_before) form,
+    // never a bare .lt (a never-heartbeated row must be takeable).
+    expect(client.or).toHaveBeenCalledWith(
+      `last_heartbeat_at.is.null,last_heartbeat_at.lt.${casArgs.stale_before}`,
+    );
+    expect(client.maybeSingle).toHaveBeenCalled();
+    expect(result).toEqual(won);
+  });
+
+  it("guards .is('lease_holder', null) when the observed holder is null (never eq on null)", async () => {
+    const client = makeClient([{ data: conductionRow }]);
+    await takeoverConduction(client, { ...casArgs, observed_lease_holder: null });
+    expect(client.is).toHaveBeenCalledWith('lease_holder', null);
+    expect(client.eq).not.toHaveBeenCalledWith('lease_holder', expect.anything());
+  });
+
+  it('returns null when no row matched — the CAS race was LOST, not an error', async () => {
+    const client = makeClient([{ data: null }]);
+    expect(await takeoverConduction(client, casArgs)).toBeNull();
+  });
+
+  it('throws on an operational error (distinct from losing the race)', async () => {
+    const client = makeClient([{ data: null, error: { message: 'permission denied' } }]);
+    await expect(takeoverConduction(client, casArgs)).rejects.toThrow('permission denied');
   });
 });
 

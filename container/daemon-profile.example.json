@@ -1,0 +1,4 @@
+{
+  "launch": "docker run --rm --name harmony-worker-{conduction_id} --env-file $HOME/.harmony-container.env harmony-build-env claude -p '/harmony-plugin:harmony-conduct {ticket} --one-shot'",
+  "reap": "docker rm -f harmony-worker-{conduction_id}"
+}
