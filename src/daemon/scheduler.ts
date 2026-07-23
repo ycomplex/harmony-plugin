@@ -135,11 +135,17 @@ async function handleConduction(
     });
     if (won === null) return; // holder alive, or lost the CAS race — row untouched.
 
-    // REAP-THEN-FIRE: the dead holder may have left a worker running; remove it BEFORE this daemon
-    // ever fires one, so two workers can never conduct the same ticket.
-    await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
-    state.delete(row.id); // fresh read — takeover starts with no baseline.
-    deps.log(`conduction ${row.id}: took over stale lease from ${row.lease_holder ?? '(none)'} — reaped`);
+    state.delete(row.id); // fresh read — the claim starts with no baseline.
+    if (row.lease_holder === null) {
+      // B-696 first-claim polish: a never-held conduction has no dead holder and no worker to
+      // reap — running the reap template would target a container that never existed.
+      deps.log(`conduction ${row.id}: first claim of a never-held conduction`);
+    } else {
+      // REAP-THEN-FIRE: the dead holder may have left a worker running; remove it BEFORE this
+      // daemon ever fires one, so two workers can never conduct the same ticket.
+      await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+      deps.log(`conduction ${row.id}: took over stale lease from ${row.lease_holder} — reaped`);
+    }
   }
 
   // ── Heartbeat (step 3): every pass ≈ heartbeat cadence (pollMs ≤ heartbeatMs). ────────────────
@@ -198,7 +204,7 @@ export async function runScheduler(deps: SchedulerDeps): Promise<never> {
     // A pass counts as auth-failing when the pass ITSELF died auth-shaped (e.g. the list read),
     // or when it attempted ≥1 conduction and EVERY attempt failed auth-shaped. Anything else —
     // a success, an idle pass, a non-auth error, one healthy row — resets the counter.
-    let authFailingPass = false;
+    let authFailingPass: boolean;
     try {
       const summary = await runSchedulerPass(deps, state);
       authFailingPass = summary.attempted > 0 && summary.authShapedFailures === summary.attempted;

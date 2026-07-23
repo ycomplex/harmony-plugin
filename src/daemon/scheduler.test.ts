@@ -372,6 +372,35 @@ describe('runSchedulerPass', () => {
     expect(h.logs.some((l) => l.includes('cond-1') && l.includes('read blew up'))).toBe(true);
     expect(h.launches()).toEqual(['launch cond-2 task-2']); // the healthy row still progressed
   });
+
+  it('case 11 (B-696): first claim of a never-held conduction — CAS attempted, NO reap, calm claim log', async () => {
+    const h = makeHarness({
+      // A fresh conduction: created, never held by any daemon — no worker has ever existed for it.
+      conductions: [conduction({ lease_holder: null, last_heartbeat_at: null })],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+    });
+    const state = new Map<string, WatchBaseline>();
+
+    await runSchedulerPass(h.deps, state); // claim pass: CAS still guards the claim…
+    expect(h.deps.takeoverConduction).toHaveBeenCalledWith({
+      id: 'cond-1',
+      observed_lease_holder: null,
+      stale_before: iso(T0 - config.staleMs),
+      new_lease_holder: ME,
+    });
+    expect(h.getConduction('cond-1').lease_holder).toBe(ME);
+    // …but there is nothing to reap — no holder ever launched a worker for this conduction.
+    expect(h.commands).toEqual([]);
+    // The log reads as a first claim, not a spooky takeover from "(none)".
+    expect(h.logs.some((l) => l.includes('cond-1') && /claim/i.test(l))).toBe(true);
+    expect(h.logs.some((l) => /took over stale lease/i.test(l))).toBe(false);
+
+    h.hooks.onLaunch = () => {
+      (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true;
+    };
+    await runSchedulerPass(h.deps, state); // wake (first pickup) → fire, still reap-free
+    expect(h.commands).toEqual(['launch cond-1 task-1']);
+  });
 });
 
 describe('isAuthShapedError', () => {
