@@ -32,6 +32,7 @@ export function registerConductCommand(program: Command): void {
               throw new Error(
                 `${ticket} is already being conducted — a ticket has at most one active conduction; ` +
                   `park or complete the existing run first`,
+                { cause: err },
               );
             }
             throw err;

@@ -58,6 +58,7 @@ export function loadDaemonConfig(
   } catch (err) {
     throw new Error(
       `could not load the launch profile at ${profilePath}: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
     );
   }
   const profile = parsed as Partial<LaunchProfile>;

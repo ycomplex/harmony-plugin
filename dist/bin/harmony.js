@@ -26636,6 +26636,77 @@ function registerSubtaskCommands(program3) {
   });
 }
 
+// src/tools/conduction-record.ts
+var CONDUCTION_LIVE_STATUSES = ["active"];
+var CONDUCTION_HUMAN_OWNED_STATUSES = ["parked"];
+var CONDUCTION_TERMINAL_STATUSES = ["completed", "cancelled"];
+var CONDUCTION_STATUSES = [
+  ...CONDUCTION_LIVE_STATUSES,
+  ...CONDUCTION_HUMAN_OWNED_STATUSES,
+  ...CONDUCTION_TERMINAL_STATUSES
+];
+var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at";
+var ActiveConductionExistsError = class extends Error {
+  code = "active-conduction-exists";
+  task_id;
+  constructor(taskId, cause) {
+    super(
+      `an active conduction already exists for task ${taskId} \u2014 the atomic insert IS the lease-acquisition primitive, so losing it means another holder owns the run` + (cause ? ` (${cause})` : "")
+    );
+    this.name = "ActiveConductionExistsError";
+    this.task_id = taskId;
+  }
+};
+var isUniqueViolation = (error) => error.code === "23505" || /duplicate key value violates unique constraint/i.test(error.message ?? "");
+async function createConduction(client, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const row = {
+    task_id: args.task_id,
+    status: "active",
+    mode: args.mode ?? "controlled",
+    lease_holder: args.lease_holder ?? null,
+    worker_kind: args.worker_kind ?? null,
+    worker_ref: args.worker_ref ?? null,
+    created_by: args.created_by ?? null
+  };
+  if (args.lease_holder) row.lease_acquired_at = (/* @__PURE__ */ new Date()).toISOString();
+  const { data, error } = await client.from("conductions").insert(row).select(CONDUCTION_COLS).single();
+  if (error) {
+    if (isUniqueViolation(error)) throw new ActiveConductionExistsError(args.task_id, error.message);
+    throw new Error(error.message);
+  }
+  return data;
+}
+
+// src/cli/commands/conduct.ts
+function registerConductCommand(program3) {
+  program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor daemon picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").action(async (ticket) => {
+    await runCommand(
+      program3.opts(),
+      async (ctx) => {
+        const taskId = await resolveTaskId(ctx.client, ctx.projectId, ticket);
+        try {
+          return await createConduction(ctx.client, {
+            task_id: taskId,
+            mode: "controlled",
+            created_by: ctx.userId
+          });
+        } catch (err) {
+          if (err instanceof ActiveConductionExistsError) {
+            throw new Error(
+              `${ticket} is already being conducted \u2014 a ticket has at most one active conduction; park or complete the existing run first`,
+              { cause: err }
+            );
+          }
+          throw err;
+        }
+      },
+      (row) => `Conduction ${row.id} created for ${ticket} (${row.status}, mode: ${row.mode}).
+The conductor daemon will pick it up on its next pass.`
+    );
+  });
+}
+
 // src/cli/index.ts
 var require2 = createRequire(import.meta.url);
 var { version: version3 } = require2("../../package.json");
@@ -26659,4 +26730,5 @@ registerTestCaseCommands(program2);
 registerBulkCommands(program2);
 registerKnowledgeCommands(program2);
 registerSubtaskCommands(program2);
+registerConductCommand(program2);
 program2.parse();
