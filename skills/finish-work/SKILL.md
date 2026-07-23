@@ -274,7 +274,15 @@ If CI fails, stop and investigate — do not merge a failing build.
 
 ### 4. Squash merge the PR
 
-Use `gh pr merge <PR-number> --squash`. Do NOT pass `--delete-branch` — the branch deletion will fail from inside the worktree and break the flow.
+Merge via the REST endpoint (gh resolves `{owner}/{repo}` from the current repo):
+
+```bash
+gh api -X PUT "repos/{owner}/{repo}/pulls/<PR-number>/merge" -f merge_method=squash
+```
+
+Do NOT use `gh pr merge` — its GraphQL path does not evaluate `bypass_pull_request_allowances`, so under the required-review merge floor (B-695) it refuses even the bypass-listed founder's zero-approval merge; the REST endpoint honors the bypass. Do NOT delete the branch here — the branch deletion will fail from inside the worktree and break the flow (step 7 deletes it explicitly).
+
+If the merge is refused, the error body names the unmet requirement (checks pending / review required) — stop and investigate before retrying.
 
 ### 5. Switch to parent directory and main branch
 
