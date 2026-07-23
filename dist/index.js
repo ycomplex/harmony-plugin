@@ -32159,11 +32159,9 @@ if (shouldShowDeprecationWarning()) console.warn("\u26A0\uFE0F  Node.js 18 and b
 var SUPABASE_URL2 = process.env.HARMONY_SUPABASE_URL ?? "https://eioxsunvhakmelhanmnn.supabase.co";
 var SUPABASE_ANON_KEY2 = process.env.HARMONY_SUPABASE_ANON_KEY ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
 async function createAuthenticatedClient(auth2) {
-  const accessToken = await auth2.getAccessToken();
+  await auth2.getAccessToken();
   return createClient(SUPABASE_URL2, SUPABASE_ANON_KEY2, {
-    global: {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    },
+    accessToken: () => auth2.getAccessToken(),
     auth: {
       persistSession: false,
       autoRefreshToken: false
