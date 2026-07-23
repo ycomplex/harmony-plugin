@@ -92,3 +92,63 @@ checked, not a one-shot.
 Heavy builds (web E2E, local Supabase, Docker-in-Docker) are NOT covered by
 this image — that substrate is B-708, extending these same targets when the
 first heavy-build ticket needs it.
+
+## Conductor daemon (B-696)
+
+The conductor daemon (`dist/bin/daemon.js`) watches every active conduction's
+ticket and fires a fresh one-shot `harmony-conduct` worker (a container from
+this image) whenever the ball returns to the agent. Create conductions with
+`harmony conduct <ticket>`; the daemon does the rest — heartbeats, CAS
+takeover of stale leases (reap-then-fire), exit classification, and
+park-and-flag for anything off the happy path (no auto-retry).
+
+### Install (launchd, macOS)
+
+```bash
+# 1. Build once so dist/bin/daemon.js exists (or use the committed dist/).
+npm run build
+
+# 2. Copy the launch profile and adjust if needed (worker image, env-file path).
+cp container/daemon-profile.example.json ~/harmony-daemon-profile.json
+
+# 3. Copy the plist, fill in the REPLACE-ME placeholders (node path via
+#    `which node`, absolute dist path, token, profile path, log paths).
+cp container/launchd/com.ycomplex.harmony-daemon.plist ~/Library/LaunchAgents/
+
+# 4. Load it (RunAtLoad starts it immediately; KeepAlive restarts it on death).
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.ycomplex.harmony-daemon.plist
+```
+
+Status / logs / stop:
+
+```bash
+launchctl print gui/$UID/com.ycomplex.harmony-daemon   # status
+tail -f ~/Library/Logs/harmony-daemon.log              # logs
+launchctl bootout gui/$UID/com.ycomplex.harmony-daemon # stop + unload
+```
+
+### The two-envelope credential rule
+
+- **Daemon env** (the plist's `EnvironmentVariables`) carries **only**
+  `HARMONY_API_TOKEN` — ticket reads + conduction writes. Nothing else.
+- **Worker creds** (git token, `CLAUDE_CODE_OAUTH_TOKEN`, Supabase overrides)
+  live **only** in the `--env-file` referenced by the launch profile's
+  command template (`env.example` documents the set). They never enter the
+  daemon process, so a daemon-side leak can never mint commits or spend
+  Claude credits.
+
+### Config, not constants (B-711)
+
+Everything operational is an env knob or a profile file — never a code edit:
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `HARMONY_DAEMON_PROFILE` | *(required)* | Path to the launch-profile JSON: `{ launch, reap }` command templates with `{conduction_id}` / `{ticket}` placeholders. No baked-in worker command — swapping agent brands is a profile edit. |
+| `HARMONY_DAEMON_POLL_MS` | `25000` | Pass cadence (one watch/heartbeat pass per interval). |
+| `HARMONY_DAEMON_HEARTBEAT_MS` | `30000` | Lease heartbeat cadence (poll ≤ heartbeat). |
+| `HARMONY_DAEMON_STALE_MS` | `300000` | Silence threshold after which another daemon may CAS-take the lease. |
+| `HARMONY_DAEMON_LOG` | *(unset)* | Optional extra log file (stdout is primary; launchd redirects it). |
+
+Worker containers are named `harmony-worker-<conduction_id>` (the example
+profile's templates), so `docker ps` maps running workers to conductions and
+the reap template can remove a dead holder's worker by name.

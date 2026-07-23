@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- B-696: launchd supervision for the Harmony conductor daemon.
+
+     Install: fill in the three REPLACE-ME placeholders below (node path, absolute repo path,
+     env values), copy to ~/Library/LaunchAgents/, then:
+         launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.ycomplex.harmony-daemon.plist
+     See container/README.md § "Conductor daemon" for the full runbook.
+
+     Two-envelope credential rule (B-694): this environment carries ONLY the Harmony API token.
+     Worker credentials (git, CLAUDE_CODE_OAUTH_TOKEN) live in the launch profile's env-file and
+     never enter the daemon process. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ycomplex.harmony-daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- `which node` — launchd does not read your shell PATH. -->
+        <string>/usr/local/bin/node</string>
+        <string>/REPLACE-ME/path/to/harmony-plugin/dist/bin/daemon.js</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HARMONY_API_TOKEN</key>
+        <string>REPLACE-ME</string>
+        <key>HARMONY_DAEMON_PROFILE</key>
+        <string>/REPLACE-ME/path/to/daemon-profile.json</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/REPLACE-ME/Library/Logs/harmony-daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/REPLACE-ME/Library/Logs/harmony-daemon.log</string>
+</dict>
+</plist>
