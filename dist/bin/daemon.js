@@ -18327,11 +18327,9 @@ if (shouldShowDeprecationWarning()) console.warn("\u26A0\uFE0F  Node.js 18 and b
 var SUPABASE_URL2 = process.env.HARMONY_SUPABASE_URL ?? "https://eioxsunvhakmelhanmnn.supabase.co";
 var SUPABASE_ANON_KEY2 = process.env.HARMONY_SUPABASE_ANON_KEY ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
 async function createAuthenticatedClient(auth) {
-  const accessToken = await auth.getAccessToken();
+  await auth.getAccessToken();
   return createClient(SUPABASE_URL2, SUPABASE_ANON_KEY2, {
-    global: {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    },
+    accessToken: () => auth.getAccessToken(),
     auth: {
       persistSession: false,
       autoRefreshToken: false
@@ -19013,6 +19011,21 @@ function exitClass(outcome, args) {
 
 // src/daemon/scheduler.ts
 var iso = (ms) => new Date(ms).toISOString();
+var PersistentAuthFailure = class extends Error {
+  consecutivePasses;
+  constructor(consecutivePasses) {
+    super(
+      `persistent auth failure: ${consecutivePasses} consecutive scheduler passes failed auth-shaped`
+    );
+    this.name = "PersistentAuthFailure";
+    this.consecutivePasses = consecutivePasses;
+  }
+};
+var AUTH_FAILURE_PASS_LIMIT = 3;
+function isAuthShapedError(err) {
+  const message = err instanceof Error ? err.message : String(err);
+  return /\b401\b|jwt expired|invalid (jwt|token)|token .*expired/i.test(message);
+}
 function templateVars(row) {
   return { conduction_id: row.id, ticket: row.task_id };
 }
@@ -19020,15 +19033,18 @@ async function runSchedulerPass(deps, state) {
   const rows = await deps.listConductions({ status: "active" });
   const activeIds = new Set(rows.map((r) => r.id));
   for (const id of [...state.keys()]) if (!activeIds.has(id)) state.delete(id);
+  let authShapedFailures = 0;
   for (const row of rows) {
     try {
       await handleConduction(deps, state, row);
     } catch (err) {
+      if (isAuthShapedError(err)) authShapedFailures += 1;
       deps.log(
         `conduction ${row.id}: pass error \u2014 row skipped (${err instanceof Error ? err.message : String(err)})`
       );
     }
   }
+  return { attempted: rows.length, authShapedFailures };
 }
 async function handleConduction(deps, state, row) {
   if (row.lease_holder !== deps.leaseHolder) {
@@ -19040,9 +19056,13 @@ async function handleConduction(deps, state, row) {
       new_lease_holder: deps.leaseHolder
     });
     if (won === null) return;
-    await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
     state.delete(row.id);
-    deps.log(`conduction ${row.id}: took over stale lease from ${row.lease_holder ?? "(none)"} \u2014 reaped`);
+    if (row.lease_holder === null) {
+      deps.log(`conduction ${row.id}: first claim of a never-held conduction`);
+    } else {
+      await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+      deps.log(`conduction ${row.id}: took over stale lease from ${row.lease_holder} \u2014 reaped`);
+    }
   }
   await deps.updateConduction(row.id, { last_heartbeat_at: iso(deps.now()) });
   const current = await deps.getTaskMeta(row.task_id);
@@ -19077,11 +19097,19 @@ async function handleConduction(deps, state, row) {
 }
 async function runScheduler(deps) {
   const state = /* @__PURE__ */ new Map();
+  let consecutiveAuthFailingPasses = 0;
   for (; ; ) {
+    let authFailingPass;
     try {
-      await runSchedulerPass(deps, state);
+      const summary = await runSchedulerPass(deps, state);
+      authFailingPass = summary.attempted > 0 && summary.authShapedFailures === summary.attempted;
     } catch (err) {
       deps.log(`scheduler pass failed: ${err instanceof Error ? err.message : String(err)}`);
+      authFailingPass = isAuthShapedError(err);
+    }
+    consecutiveAuthFailingPasses = authFailingPass ? consecutiveAuthFailingPasses + 1 : 0;
+    if (consecutiveAuthFailingPasses >= AUTH_FAILURE_PASS_LIMIT) {
+      throw new PersistentAuthFailure(consecutiveAuthFailingPasses);
     }
     await deps.sleep(deps.config.pollMs);
   }
@@ -19160,7 +19188,15 @@ ${err instanceof Error ? err.message : String(err)}
   log(
     `conductor daemon up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms`
   );
-  await runScheduler(deps);
+  try {
+    await runScheduler(deps);
+  } catch (err) {
+    if (err instanceof PersistentAuthFailure) {
+      log(`${err.message} \u2014 exiting 1 (launchd restarts with fresh auth)`);
+      process.exit(1);
+    }
+    throw err;
+  }
 }
 main().catch((err) => {
   process.stderr.write(`daemon failed: ${err instanceof Error ? err.message : String(err)}

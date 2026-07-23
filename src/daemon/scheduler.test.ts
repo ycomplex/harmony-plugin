@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { runSchedulerPass, runScheduler, type SchedulerDeps, type DaemonTask } from './scheduler.js';
+import {
+  runSchedulerPass,
+  runScheduler,
+  isAuthShapedError,
+  PersistentAuthFailure,
+  type SchedulerDeps,
+  type DaemonTask,
+} from './scheduler.js';
 import type { WatchBaseline } from './watch.js';
 import type { ConductionRecord } from '../tools/conduction-record.js';
 import type { DaemonConfig } from './config.js';
@@ -364,6 +371,107 @@ describe('runSchedulerPass', () => {
     );
     expect(h.logs.some((l) => l.includes('cond-1') && l.includes('read blew up'))).toBe(true);
     expect(h.launches()).toEqual(['launch cond-2 task-2']); // the healthy row still progressed
+  });
+
+  it('case 11 (B-696): first claim of a never-held conduction — CAS attempted, NO reap, calm claim log', async () => {
+    const h = makeHarness({
+      // A fresh conduction: created, never held by any daemon — no worker has ever existed for it.
+      conductions: [conduction({ lease_holder: null, last_heartbeat_at: null })],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+    });
+    const state = new Map<string, WatchBaseline>();
+
+    await runSchedulerPass(h.deps, state); // claim pass: CAS still guards the claim…
+    expect(h.deps.takeoverConduction).toHaveBeenCalledWith({
+      id: 'cond-1',
+      observed_lease_holder: null,
+      stale_before: iso(T0 - config.staleMs),
+      new_lease_holder: ME,
+    });
+    expect(h.getConduction('cond-1').lease_holder).toBe(ME);
+    // …but there is nothing to reap — no holder ever launched a worker for this conduction.
+    expect(h.commands).toEqual([]);
+    // The log reads as a first claim, not a spooky takeover from "(none)".
+    expect(h.logs.some((l) => l.includes('cond-1') && /claim/i.test(l))).toBe(true);
+    expect(h.logs.some((l) => /took over stale lease/i.test(l))).toBe(false);
+
+    h.hooks.onLaunch = () => {
+      (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true;
+    };
+    await runSchedulerPass(h.deps, state); // wake (first pickup) → fire, still reap-free
+    expect(h.commands).toEqual(['launch cond-1 task-1']);
+  });
+});
+
+describe('isAuthShapedError', () => {
+  it('matches the auth-failure shapes and nothing else', () => {
+    expect(isAuthShapedError(new Error('JWT expired'))).toBe(true);
+    expect(isAuthShapedError(new Error('jwt expired'))).toBe(true);
+    expect(isAuthShapedError(new Error('401 Unauthorized'))).toBe(true);
+    expect(isAuthShapedError(new Error('Invalid JWT'))).toBe(true);
+    expect(isAuthShapedError(new Error('invalid token'))).toBe(true);
+    expect(isAuthShapedError(new Error('token abc123 expired'))).toBe(true);
+    expect(isAuthShapedError(new Error('network flake'))).toBe(false);
+    expect(isAuthShapedError(new Error('read blew up'))).toBe(false);
+    expect(isAuthShapedError(new Error('HTTP 4011'))).toBe(false); // \b401\b — not a substring hit
+  });
+});
+
+// B-696 backstop: the accessToken callback (src/supabase.ts) is the FIX for the JWT zombie; this
+// exit is the safety net if auth still fails persistently — exit non-zero so launchd restarts the
+// daemon with fresh auth, instead of zombie-looping forever.
+describe('runScheduler — persistent auth-failure exit', () => {
+  it('throws PersistentAuthFailure after 3 consecutive passes whose listConductions rejects auth-shaped', async () => {
+    const h = makeHarness({ conductions: [], tasks: {} });
+    (h.deps as { listConductions: () => Promise<never> }).listConductions = vi.fn(async () => {
+      throw new Error('JWT expired');
+    });
+    const err = await runScheduler(h.deps).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PersistentAuthFailure);
+    expect((err as PersistentAuthFailure).consecutivePasses).toBe(3);
+    expect(h.deps.listConductions).toHaveBeenCalledTimes(3); // trips at 3 — does NOT loop forever
+  });
+
+  it('throws PersistentAuthFailure when every attempted conduction handling fails auth-shaped for 3 passes', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': new Error('Invalid JWT') },
+    });
+    const err = await runScheduler(h.deps).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PersistentAuthFailure);
+    expect(h.deps.getTaskMeta).toHaveBeenCalledTimes(3);
+  });
+
+  it('a successful pass between failures resets the counter (fail, fail, ok, fail, fail → still running)', async () => {
+    const h = makeHarness({ conductions: [], tasks: {} });
+    let pass = 0;
+    (h.deps as { listConductions: () => Promise<unknown[]> }).listConductions = vi.fn(async () => {
+      pass += 1;
+      if (pass === 3) return []; // the OK pass
+      throw new Error('JWT expired');
+    });
+    let sleeps = 0;
+    (h.deps as { sleep: () => Promise<void> }).sleep = async () => {
+      sleeps += 1;
+      if (sleeps >= 5) throw new Error('stop-the-loop');
+    };
+    // Counter runs 1, 2, reset-to-0, 1, 2 — never 3: the loop is still alive at the 5th sleep.
+    await expect(runScheduler(h.deps)).rejects.toThrow('stop-the-loop');
+    expect(pass).toBe(5);
+  });
+
+  it('non-auth pass errors never trip it (per-conduction isolation unchanged)', async () => {
+    const h = makeHarness({ conductions: [], tasks: {} });
+    (h.deps as { listConductions: () => Promise<never> }).listConductions = vi.fn(async () => {
+      throw new Error('network flake');
+    });
+    let sleeps = 0;
+    (h.deps as { sleep: () => Promise<void> }).sleep = async () => {
+      sleeps += 1;
+      if (sleeps >= 5) throw new Error('stop-the-loop');
+    };
+    await expect(runScheduler(h.deps)).rejects.toThrow('stop-the-loop');
+    expect(h.deps.listConductions).toHaveBeenCalledTimes(5); // survived well past 3
   });
 });
 

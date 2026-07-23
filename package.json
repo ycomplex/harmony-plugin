@@ -1,6 +1,6 @@
 {
   "name": "@harmony-ad/harmony",
-  "version": "0.14.68",
+  "version": "0.14.69",
   "description": "Harmony CLI and MCP server for project management",
   "type": "module",
   "bin": {
