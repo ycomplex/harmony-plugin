@@ -21,7 +21,11 @@ describe('finish-work skill contract (evolved)', () => {
   it('preserves the manual-mode merge sequence', () => {
     expect(skill.body).toContain('Pre-flight checks');
     expect(skill.body).toContain('git rebase origin/main');
-    expect(skill.body).toContain('--squash');
+    // B-712: the merge floor (B-695) requires the REST merge form — GraphQL `gh pr merge`
+    // does not honor bypass_pull_request_allowances and must never come back.
+    expect(skill.body).toContain('pulls/<PR-number>/merge');
+    expect(skill.body).toContain('merge_method=squash');
+    expect(skill.body).not.toContain('gh pr merge ');
   });
 
   // New opinionated path.
