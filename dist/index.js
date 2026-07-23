@@ -32742,6 +32742,42 @@ async function fetchPendingResolution(client, taskId) {
     return null;
   }
 }
+async function fetchPendingRemark(client, taskId) {
+  try {
+    const { data, error: error2 } = await client.from("briefs").select("id, reason, accept_remark").eq("task_id", taskId).not("accept_remark", "is", null).is("accept_remark_consumed_at", null).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (error2 || !data) return null;
+    const row = data;
+    const detail = row.accept_remark;
+    if (typeof detail !== "string" || detail.trim().length === 0) return null;
+    return { brief_id: row.id, reason: row.reason, detail };
+  } catch {
+    return null;
+  }
+}
+var isMissingAcceptRemark = (msg) => !!msg && /accept_remark/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
+async function consumeAcceptRemark(client, _projectId, args) {
+  if (!args.brief_id) throw new Error("brief_id is required");
+  const { data, error: error2 } = await client.from("briefs").update({ accept_remark_consumed_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", args.brief_id).not("accept_remark", "is", null).is("accept_remark_consumed_at", null).select("id").maybeSingle();
+  if (error2) {
+    if (isMissingAcceptRemark(error2.message)) {
+      return { brief_id: args.brief_id, consumed: false, unsupported: true };
+    }
+    throw new Error(error2.message);
+  }
+  if (!data) return { brief_id: args.brief_id, consumed: false, already: true };
+  return { brief_id: args.brief_id, consumed: true };
+}
+var consumeAcceptRemarkTool = {
+  name: "consume_accept_remark",
+  description: "Mark a brief's accept-with-remark as consumed (B-503). get_task surfaces the task's most recent unconsumed remark as `pending_remark: { brief_id, reason, detail }`; after APPLYING the remark (consume-after-apply \u2014 never stamp before the apply completes), call this with that brief_id to stamp `accept_remark_consumed_at` so the remark is not re-consumed. Idempotent: an already-consumed (or absent) remark returns { consumed: false, already: true } \u2014 no error. On a DB that predates the B-503 columns, returns { consumed: false, unsupported: true }.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      brief_id: { type: "string", description: "The brief whose accept remark to mark consumed (from pending_remark.brief_id)" }
+    },
+    required: ["brief_id"]
+  }
+};
 async function getBrief(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
   const taskId = await resolveTaskId(client, projectId, args.task_id);
@@ -33417,7 +33453,7 @@ async function listTasks(client, projectId, args) {
 }
 var getTaskTool = {
   name: "get_task",
-  description: "Get full details of a specific task. Returns `pending_resolution` \u2014 the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Returns `active_exchange` (B-645) \u2014 the task's active elicitation exchange as {exchange_id, status, round, answers_submitted_at, force_quit_requested_at}, or null when none; a non-null answers_submitted_at/force_quit_requested_at is an unconsumed web\u2192agent marker the watch classifies as 'answers-landed' (read the answers via get_elicitation; filing the next round or concluding consumes it). Also returns `risk_classes` \u2014 a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run \u2014 the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate). Pass `view:'meta'` (B-684) for a lean loop-control projection on repeated re-reads.",
+  description: "Get full details of a specific task. Returns `pending_resolution` \u2014 the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Returns `pending_remark` (B-503) \u2014 the task's most recent UNCONSUMED accept-with-remark as {brief_id, reason, detail}, or null: a browser accept that carried a remark BOTH advanced state AND left this marker; the conductor applies the remark then calls consume_accept_remark. Returns `active_exchange` (B-645) \u2014 the task's active elicitation exchange as {exchange_id, status, round, answers_submitted_at, force_quit_requested_at}, or null when none; a non-null answers_submitted_at/force_quit_requested_at is an unconsumed web\u2192agent marker the watch classifies as 'answers-landed' (read the answers via get_elicitation; filing the next round or concluding consumes it). Also returns `risk_classes` \u2014 a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run \u2014 the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate). Pass `view:'meta'` (B-684) for a lean loop-control projection on repeated re-reads.",
   inputSchema: {
     type: "object",
     properties: {
@@ -33430,7 +33466,7 @@ var getTaskTool = {
       view: {
         type: "string",
         enum: ["full", "meta"],
-        description: "Payload shape. Absent \u21D2 'full' (today's full payload). 'meta' (B-684) = lean loop-control projection for repeated re-reads (conduct loop step-1 re-reads / post-mutation confirms): keeps `risk_classes` + the poll markers (`pending_resolution`, `active_exchange`, `awaiting_human_*`); omits description, acceptance criteria, test cases, attachments, labels, checklist."
+        description: "Payload shape. Absent \u21D2 'full' (today's full payload). 'meta' (B-684) = lean loop-control projection for repeated re-reads (conduct loop step-1 re-reads / post-mutation confirms): keeps `risk_classes` + the poll markers (`pending_resolution`, `active_exchange`, `pending_remark`, `awaiting_human_*`); omits description, acceptance criteria, test cases, attachments, labels, checklist."
       }
     },
     required: ["task_id"]
@@ -33443,7 +33479,7 @@ async function getTask(client, projectId, args) {
   if (error2) throw error2;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
-  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange] = await Promise.all([
+  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange, pending_remark] = await Promise.all([
     meta ? Promise.resolve({ data: null }) : client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
     meta ? Promise.resolve({ data: null }) : client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
     meta ? Promise.resolve([]) : (async () => {
@@ -33455,7 +33491,8 @@ async function getTask(client, projectId, args) {
       }
     })(),
     fetchPendingResolution(client, resolvedId),
-    fetchActiveExchange(client, resolvedId)
+    fetchActiveExchange(client, resolvedId),
+    fetchPendingRemark(client, resolvedId)
   ]);
   const acceptanceCriteria = acceptanceCriteriaRes.data;
   const testCases = testCasesRes.data;
@@ -33490,6 +33527,7 @@ async function getTask(client, projectId, args) {
       subsumed_by_task_id: t.subsumed_by_task_id,
       pending_resolution,
       active_exchange,
+      pending_remark,
       risk_classes,
       updated_at: t.updated_at,
       content_updated_at: t.content_updated_at,
@@ -33497,7 +33535,7 @@ async function getTask(client, projectId, args) {
     };
   }
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, risk_classes };
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, pending_remark, risk_classes };
 }
 var createTaskTool = {
   name: "create_task",
@@ -36453,6 +36491,7 @@ function registerTools(disabledFeatures) {
     composeBriefTool,
     getBriefTool,
     resolveBriefTool,
+    consumeAcceptRemarkTool,
     startElicitationTool,
     fileElicitationRoundTool,
     getElicitationTool,
@@ -36647,6 +36686,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "resolve_brief":
         result = await resolveBrief(client, projectId, args);
+        break;
+      case "consume_accept_remark":
+        result = await consumeAcceptRemark(client, projectId, args);
         break;
       case "start_elicitation":
         result = await startElicitation(client, projectId, userId, args);

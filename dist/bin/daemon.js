@@ -18464,6 +18464,18 @@ async function fetchPendingResolution(client, taskId) {
     return null;
   }
 }
+async function fetchPendingRemark(client, taskId) {
+  try {
+    const { data, error } = await client.from("briefs").select("id, reason, accept_remark").eq("task_id", taskId).not("accept_remark", "is", null).is("accept_remark_consumed_at", null).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (error || !data) return null;
+    const row = data;
+    const detail = row.accept_remark;
+    if (typeof detail !== "string" || detail.trim().length === 0) return null;
+    return { brief_id: row.id, reason: row.reason, detail };
+  } catch {
+    return null;
+  }
+}
 
 // src/elicitation/engine.ts
 var MAX_QUESTIONS_PER_ROUND = 5;
@@ -18749,7 +18761,7 @@ async function getTask(client, projectId, args) {
   if (error) throw error;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
-  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange] = await Promise.all([
+  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange, pending_remark] = await Promise.all([
     meta ? Promise.resolve({ data: null }) : client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
     meta ? Promise.resolve({ data: null }) : client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
     meta ? Promise.resolve([]) : (async () => {
@@ -18761,7 +18773,8 @@ async function getTask(client, projectId, args) {
       }
     })(),
     fetchPendingResolution(client, resolvedId),
-    fetchActiveExchange(client, resolvedId)
+    fetchActiveExchange(client, resolvedId),
+    fetchPendingRemark(client, resolvedId)
   ]);
   const acceptanceCriteria = acceptanceCriteriaRes.data;
   const testCases = testCasesRes.data;
@@ -18796,6 +18809,7 @@ async function getTask(client, projectId, args) {
       subsumed_by_task_id: t.subsumed_by_task_id,
       pending_resolution,
       active_exchange,
+      pending_remark,
       risk_classes,
       updated_at: t.updated_at,
       content_updated_at: t.content_updated_at,
@@ -18803,7 +18817,7 @@ async function getTask(client, projectId, args) {
     };
   }
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, risk_classes };
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, pending_remark, risk_classes };
 }
 
 // src/tools/decomposition.ts

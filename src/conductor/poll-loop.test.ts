@@ -295,6 +295,73 @@ describe('detectChange — discussion-cancelled (B-461, the one no-flag-transiti
   });
 });
 
+describe('detectChange — accept-with-remark (B-503, the remark rides ALONGSIDE the trigger)', () => {
+  const baseline: PollBaseline = {
+    workflowState: 'Clarified',
+    pendingResolution: null,
+    awaitingHumanInput: true,
+    pendingRemark: null,
+  };
+  const remark = { brief_id: 'brief-1', reason: 'decomposition-proposal', detail: 'auto-accept decompose if the proposal is no-split' };
+
+  it('SWALLOW GUARD (the B-611 class): an accept WITH a remark reports BOTH the advance AND the remark', () => {
+    const change = detectChange(baseline, {
+      workflow_state: 'Decomposed',
+      awaiting_human_input: false,
+      pending_remark: remark,
+    });
+    // The trigger is still the state advance — the remark never replaces it…
+    expect(change?.trigger).toBe('state-advanced');
+    expect(change?.workflow_state).toBe('Decomposed');
+    // …and the remark rides alongside — the classification reports BOTH, never one instead of the other.
+    expect(change?.pending_remark).toEqual(remark);
+  });
+
+  it('attaches the remark to a NON-ADVANCING accept (`resolved`) too — a sub-track accept can carry one', () => {
+    const change = detectChange(baseline, {
+      workflow_state: 'Clarified',
+      awaiting_human_input: false,
+      pending_remark: remark,
+    });
+    expect(change?.trigger).toBe('resolved');
+    expect(change?.pending_remark).toEqual(remark);
+  });
+
+  it('attaches the remark alongside `parked` (a browser defer can carry a parting remark)', () => {
+    const change = detectChange(baseline, {
+      workflow_state: 'Parked',
+      awaiting_human_input: false,
+      pending_remark: remark,
+    });
+    expect(change?.trigger).toBe('parked');
+    expect(change?.pending_remark).toEqual(remark);
+  });
+
+  it('a remark identical to the baseline is STALE — never re-attached as fresh news', () => {
+    const change = detectChange(
+      { ...baseline, pendingRemark: remark },
+      { workflow_state: 'Decomposed', awaiting_human_input: false, pending_remark: remark },
+    );
+    expect(change?.trigger).toBe('state-advanced');
+    expect(change?.pending_remark).toBeUndefined();
+  });
+
+  it('no remark ⇒ the classification shape is unchanged (regression pin — no pending_remark key)', () => {
+    const change = detectChange(baseline, { workflow_state: 'Decomposed', awaiting_human_input: false });
+    expect(change).toEqual({ trigger: 'state-advanced', workflow_state: 'Decomposed' });
+  });
+
+  it('GATE unchanged: a remark with the flag still up is NOT an exit', () => {
+    expect(
+      detectChange(baseline, {
+        workflow_state: 'Clarified',
+        awaiting_human_input: true,
+        pending_remark: remark,
+      }),
+    ).toBeNull();
+  });
+});
+
 describe('baselineReadFallback (B-611 — a transient read error must not false-trip the exit gate)', () => {
   it('projects the baseline back as a fresh read, carrying awaiting_human_input', () => {
     const baseline: PollBaseline = {
@@ -322,6 +389,17 @@ describe('baselineReadFallback (B-611 — a transient read error must not false-
       activeExchange: { exchange_id: 'ex-1', answers_submitted_at: '2026-07-02T09:00:00Z', force_quit_requested_at: null },
     };
     expect(baselineReadFallback(baseline).active_exchange).toEqual(baseline.activeExchange);
+    expect(detectChange(baseline, baselineReadFallback(baseline))).toBeNull();
+  });
+
+  it('carries the baseline pending_remark (B-503) so a degraded poll cannot false-attach a stale remark', () => {
+    const baseline: PollBaseline = {
+      workflowState: 'Clarified',
+      pendingResolution: null,
+      awaitingHumanInput: true,
+      pendingRemark: { brief_id: 'brief-1', reason: 'plan-draft', detail: 'stale remark' },
+    };
+    expect(baselineReadFallback(baseline).pending_remark).toEqual(baseline.pendingRemark);
     expect(detectChange(baseline, baselineReadFallback(baseline))).toBeNull();
   });
 });

@@ -692,7 +692,7 @@ describe('getTask', () => {
     }),
   });
 
-  it("B-684: view:'meta' returns EXACTLY the 19-key loop-control projection", async () => {
+  it("B-684: view:'meta' returns EXACTLY the 20-key loop-control projection", async () => {
     const client = makeFullClient({ title: 'T', description: 'A long payload description.' });
     const result = await getTask(client, 'proj-1', { task_id: 'B-1', view: 'meta' });
 
@@ -700,7 +700,7 @@ describe('getTask', () => {
       'id', 'task_number', 'title', 'workflow_state', 'workflow_activity',
       'awaiting_human_input', 'awaiting_human_reason', 'awaiting_human_ref',
       'stale', 'stale_ref', 'parent_task_id', 'archived', 'subsumed_by_task_id',
-      'pending_resolution', 'active_exchange', 'risk_classes',
+      'pending_resolution', 'active_exchange', 'pending_remark', 'risk_classes',
       'updated_at', 'content_updated_at', 'last_activity_at',
     ];
     expect(Object.keys(result).sort()).toEqual([...expectedKeys].sort());
@@ -735,6 +735,82 @@ describe('getTask', () => {
     expect((result as any).attachments).toHaveLength(1);
     expect((result as any).labels).toEqual([{ id: 'l1', name: 'backend', color: '#fff' }]);
     expect((result as any).checklist_items).toHaveLength(1);
+  });
+
+  // B-503: get_task projects `pending_remark` — the task's most recent UNCONSUMED accept-with-remark.
+  // The briefs table now serves THREE distinct reads, so this mock dispatches on the selected columns:
+  // fetchPendingRemark selects accept_remark; the pending_resolution + risk-class reads keep the
+  // existing .eq().eq().maybeSingle() shape.
+  const makeRemarkClient = (opts: { remarkRow?: unknown; remarkError?: unknown }): any => ({
+    from: vi.fn((table: string) => {
+      if (table === 'tasks') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: vi.fn().mockResolvedValue({
+                  data: { id: 'resolved-uuid', title: 'T', task_labels: [], checklist_items: [] },
+                  error: null,
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === 'briefs') {
+        return {
+          select: vi.fn((cols: string) => {
+            if (cols.includes('accept_remark')) {
+              // fetchPendingRemark: .eq().not().is().order().limit().maybeSingle()
+              const chain: any = {};
+              for (const m of ['eq', 'not', 'is', 'order', 'limit']) chain[m] = vi.fn(() => chain);
+              chain.maybeSingle = vi.fn().mockResolvedValue({
+                data: opts.remarkRow ?? null,
+                error: opts.remarkError ?? null,
+              });
+              return chain;
+            }
+            // pending_resolution / risk-class content: .eq().eq().maybeSingle()
+            return { eq: () => ({ eq: () => ({ maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }) }) }) };
+          }),
+        };
+      }
+      if (table === 'attachments') {
+        return { select: () => ({ eq: () => ({ eq: () => ({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }) }) }) };
+      }
+      // acceptance_criteria / test_cases
+      return { select: () => ({ eq: () => ({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }) }) };
+    }),
+  });
+
+  const remarkRow = { id: 'brief-9', reason: 'decomposition-proposal', accept_remark: 'auto-accept decompose if no-split' };
+  const projectedRemark = { brief_id: 'brief-9', reason: 'decomposition-proposal', detail: 'auto-accept decompose if no-split' };
+
+  it('B-503: the FULL payload carries pending_remark from an unconsumed accept-with-remark', async () => {
+    const client = makeRemarkClient({ remarkRow });
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1' });
+    expect((result as any).pending_remark).toEqual(projectedRemark);
+  });
+
+  it("B-503: the META projection carries pending_remark too (it is a poll marker — the conduct loop's poll read)", async () => {
+    const client = makeRemarkClient({ remarkRow });
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1', view: 'meta' });
+    expect((result as any).pending_remark).toEqual(projectedRemark);
+  });
+
+  it('B-503: a consumed/absent remark projects pending_remark: null', async () => {
+    const client = makeRemarkClient({});
+    const full = await getTask(client, 'proj-1', { task_id: 'B-1' });
+    expect((full as any).pending_remark).toBeNull();
+    const meta = await getTask(makeRemarkClient({}), 'proj-1', { task_id: 'B-1', view: 'meta' });
+    expect((meta as any).pending_remark).toBeNull();
+  });
+
+  it('B-503: the missing-column guard (pre-migration DB) projects pending_remark: null — get_task does not regress', async () => {
+    const client = makeRemarkClient({ remarkError: { message: 'column briefs.accept_remark does not exist' } });
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1' });
+    expect((result as any).pending_remark).toBeNull();
+    expect((result as any).title).toBe('T');
   });
 });
 

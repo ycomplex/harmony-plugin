@@ -304,6 +304,8 @@ export const ackProjections: Record<string, AckProjection> = {
 export const ACK_PASS_THROUGH: Record<string, string> = {
   resolve_brief:
     'RPC result is already a compact state-confirming ack ({task_id, brief_id, workflow_state, brief_status, command, idempotent}); skills read workflow_state off it.',
+  consume_accept_remark:
+    'Already a compact server-computed ack ({brief_id, consumed, already?, unsupported?}) — no caller-sent body to strip (the only arg is the identifier).',
   advance_workflow:
     'Already a compact transition summary ({task_id, from_state, to_state, activity, task:{id, workflow_state, workflow_activity}}); skills read to_state / task.workflow_state.',
   reference_knowledge:

@@ -343,6 +343,10 @@ table and the escalate judgment; in `--unattended`/`--pause-at` it does not paus
 release brief. `stale` is likewise never auto-advanced (loop step 3), and a `Captured` ticket always
 self-advances `proposing` as plumbing (loop step 4), not via this test.
 
+A **remark-derived instruction** (§4c's accept-with-remark adjunct case, B-503) goes through this SAME
+delegation test, with the **floor-veto helper** (`src/tools/floor-veto.ts`) as the mechanical backstop — a
+remark can never pre-accept release, verify, a stale-patch review, or a decision-only deliverable gate.
+
 Lifecycle order for "strictly before": `clarify < decompose < design < plan < build < release < verify`.
 
 ### The escalate judgment — is THIS gate genuinely worth a human opinion?
@@ -859,6 +863,33 @@ resolved (in the browser or terminal); classify which resolution it was:
    `/harmony-plugin:harmony-conduct <ticket>`; the resolution (if any) persists on the ticket row; **end the
    turn**. The next run resumes from the ticket row (the no-session degradation). Do not keep an indefinite
    watch.
+
+**Accept-with-remark (B-503) — an ADJUNCT to cases 1 and 5, never a replacement.** The flag cleared, the
+state advanced (case 1) or a non-advancing sub-track accept resolved (case 5), AND `get_task` shows an
+unconsumed `pending_remark: { brief_id, reason, detail }` (the poll's exit detail carries the same field
+alongside its trigger — an accept WITH a remark both advances state AND carries the remark; report and
+handle BOTH, the B-611 swallow class). Handle it in two steps, strictly ordered:
+
+1. **Run the normal consume for the resolution itself** — case 1's (or case 5's) handling exactly as
+   written above. The remark never changes what the accept did.
+2. **Then interpret the remark** (`detail`), by weight:
+   - **LIGHT amendment** — the promoted decision stays the same decision (a wording fix, a clarifying
+     constraint, a small addendum): apply it to the promoted knowledge entry via
+     `mcp__harmony__update_knowledge_entry`.
+   - **Run-scoped downstream instruction** — e.g. *"auto-accept decompose if the proposal is no-split"*:
+     honored for THIS run only, consumed once, and routed through *The delegation test* with the
+     **floor-veto** (`src/tools/floor-veto.ts`, the single source of truth): release
+     (`release-decision-pending`), verify (`verification-ack-pending`), a stale-patch review
+     (`stale-patch-review`), and a decision-only ticket's deliverable gate can **NEVER** be pre-accepted
+     by a remark — when the veto fires, surface the gate and pause instead (state the veto's `why`).
+   - **SUBSTANTIVE remark** — it would change the decision that was accepted: **NOT absorbed**. Write a
+     trail comment and re-surface it to the human (the decision the human accepted stands until the human
+     revises it — the conductor never silently re-decides).
+
+In all handled cases: `mcp__harmony__add_comment` the remark + the action taken, **THEN** call
+`mcp__harmony__consume_accept_remark({ brief_id })`. **Consume-after-apply:** never mark the remark
+consumed before the apply completes — a crash between apply and consume re-surfaces the remark (safe,
+idempotent); the reverse order silently loses it.
 
 **The in-session (terminal) exit (B-500).** The watch also ends the moment the human answers in the **running
 session (the terminal)** — accept / feedback / defer typed here. That is a normal in-session answer: handle it

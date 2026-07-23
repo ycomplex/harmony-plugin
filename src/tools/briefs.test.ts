@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, getBrief, resolveBrief, fetchPendingResolution, SENTENCE_WORD_LIMIT, type BriefDoc, type BriefItem } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, getBrief, resolveBrief, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, type BriefDoc, type BriefItem } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -332,7 +332,7 @@ function makeClient(responses: Array<{ data: unknown; error?: unknown }>) {
   let i = 0;
   const next = () => responses[i++] ?? { data: null, error: null };
   const chain: any = {};
-  for (const m of ['from', 'select', 'insert', 'update', 'eq', 'is', 'not']) chain[m] = vi.fn(() => chain);
+  for (const m of ['from', 'select', 'insert', 'update', 'eq', 'is', 'not', 'order', 'limit']) chain[m] = vi.fn(() => chain);
   chain.maybeSingle = vi.fn(async () => next());
   chain.single = vi.fn(async () => next());
   chain.then = (resolve: (v: unknown) => unknown) => resolve(next());
@@ -673,6 +673,65 @@ describe('fetchPendingResolution (B-485 — the conductor auto-pickup detector)'
   it('returns null (never throws) when the column is absent on an older DB', async () => {
     const client = makeClient([{ data: null, error: { message: 'column briefs.pending_resolution does not exist' } }]);
     expect(await fetchPendingResolution(client, 'task-1')).toBeNull();
+  });
+});
+
+describe('fetchPendingRemark (B-503 — the accept-with-remark detector)', () => {
+  it('returns { brief_id, reason, detail } for the most recent unconsumed remark', async () => {
+    const client = makeClient([{ data: { id: 'brief-9', reason: 'decomposition-proposal', accept_remark: 'auto-accept decompose if no-split' } }]);
+    const r = await fetchPendingRemark(client, 'task-1');
+    expect(r).toEqual({ brief_id: 'brief-9', reason: 'decomposition-proposal', detail: 'auto-accept decompose if no-split' });
+    // The filters that define "unconsumed": remark present AND consumed-stamp NULL.
+    expect(client.not).toHaveBeenCalledWith('accept_remark', 'is', null);
+    expect(client.is).toHaveBeenCalledWith('accept_remark_consumed_at', null);
+  });
+
+  it('returns null when no brief carries an unconsumed remark', async () => {
+    const client = makeClient([{ data: null }]);
+    expect(await fetchPendingRemark(client, 'task-1')).toBeNull();
+  });
+
+  it('returns null on the missing-column error (older DB) — never throws (B-383 class)', async () => {
+    const client = makeClient([{ data: null, error: { message: 'column briefs.accept_remark does not exist' } }]);
+    expect(await fetchPendingRemark(client, 'task-1')).toBeNull();
+  });
+
+  it('returns null for a blank remark (nothing to consume)', async () => {
+    const client = makeClient([{ data: { id: 'brief-9', reason: 'plan-draft', accept_remark: '   ' } }]);
+    expect(await fetchPendingRemark(client, 'task-1')).toBeNull();
+  });
+});
+
+describe('consumeAcceptRemark (B-503)', () => {
+  it('stamps accept_remark_consumed_at where currently NULL — { consumed: true }', async () => {
+    const client = makeClient([{ data: { id: 'brief-9' } }]);
+    const r = await consumeAcceptRemark(client, PROJECT_ID, { brief_id: 'brief-9' });
+    expect(r).toEqual({ brief_id: 'brief-9', consumed: true });
+    expect(client.update).toHaveBeenCalledWith({ accept_remark_consumed_at: expect.any(String) });
+    // The idempotency filter: only an un-stamped remark is stamped.
+    expect(client.is).toHaveBeenCalledWith('accept_remark_consumed_at', null);
+  });
+
+  it('is idempotent: a second call matches zero rows — { consumed: false, already: true }, no error', async () => {
+    const client = makeClient([{ data: null }]);
+    const r = await consumeAcceptRemark(client, PROJECT_ID, { brief_id: 'brief-9' });
+    expect(r).toEqual({ brief_id: 'brief-9', consumed: false, already: true });
+  });
+
+  it('pre-migration guard: the missing-column error returns { unsupported: true } cleanly (B-383 class)', async () => {
+    const client = makeClient([{ data: null, error: { message: "Could not find the 'accept_remark_consumed_at' column of 'briefs' in the schema cache" } }]);
+    const r = await consumeAcceptRemark(client, PROJECT_ID, { brief_id: 'brief-9' });
+    expect(r).toEqual({ brief_id: 'brief-9', consumed: false, unsupported: true });
+  });
+
+  it('rethrows any OTHER error (a real failure must be loud)', async () => {
+    const client = makeClient([{ data: null, error: { message: 'permission denied for table briefs' } }]);
+    await expect(consumeAcceptRemark(client, PROJECT_ID, { brief_id: 'brief-9' })).rejects.toThrow(/permission denied/);
+  });
+
+  it('requires brief_id', async () => {
+    const client = makeClient([]);
+    await expect(consumeAcceptRemark(client, PROJECT_ID, { brief_id: '' })).rejects.toThrow(/brief_id/);
   });
 });
 

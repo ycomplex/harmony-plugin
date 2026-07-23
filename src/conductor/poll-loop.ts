@@ -17,6 +17,7 @@ export interface Taskish {
   pending_resolution?: PendingResolutionish | null;
   awaiting_human_input?: boolean | null;
   active_exchange?: ActiveExchangeish | null;
+  pending_remark?: PendingRemarkish | null;
 }
 
 /** The browser-submitted reshape marker (`briefs.pending_resolution`); shape mirrors PendingResolution. */
@@ -35,12 +36,20 @@ export interface ActiveExchangeish {
   force_quit_requested_at?: string | null;
 }
 
+/** get_task's unconsumed accept-with-remark projection (B-503); shape mirrors PendingRemark. */
+export interface PendingRemarkish {
+  brief_id?: string;
+  reason?: string;
+  detail?: string | null;
+}
+
 /** The state captured at launch, against which every poll is compared. */
 export interface PollBaseline {
   workflowState?: string | null;
   pendingResolution?: PendingResolutionish | null;
   awaitingHumanInput?: boolean | null;
   activeExchange?: ActiveExchangeish | null;
+  pendingRemark?: PendingRemarkish | null;
 }
 
 /**
@@ -57,6 +66,10 @@ export interface PollBaseline {
  * concluded the attached exchange ('abandoned') and restored `awaiting_human_input = true` DIRECTLY, so
  * the canonical true→false transition never happens (the B-611 blind-spot class). It is detected as the
  * baseline's ACTIVE exchange going non-active (status changed / row gone) without the flag transition.
+ *
+ * B-503 (accept-with-remark): an unconsumed remark is NOT a trigger of its own — it rides on
+ * `ChangeDetail.pending_remark` ALONGSIDE whichever post-gate classification fired (an accept with a
+ * remark both advances state and carries the remark; the classifier reports BOTH).
  */
 export type ChangeTrigger =
   | 'state-advanced'
@@ -72,6 +85,10 @@ export interface ChangeDetail {
   workflow_state?: string | null;
   pending_resolution?: PendingResolutionish | null;
   active_exchange?: ActiveExchangeish | null;
+  /** B-503: an unconsumed accept-with-remark, carried ALONGSIDE the trigger (never a trigger of its
+   *  own — an accept WITH a remark both advances state AND carries the remark, and the classifier
+   *  must report BOTH; collapsing them into one trigger is the B-611 swallow class). */
+  pending_remark?: PendingRemarkish | null;
 }
 
 export type PollResult =
@@ -139,6 +156,29 @@ function baselineExchangeWentInactive(
   if (cur == null) return true;
   if ((cur.exchange_id ?? null) !== (base.exchange_id ?? null)) return true;
   return cur.status != null && cur.status !== 'active';
+}
+
+/** B-503: same remark ⇔ same brief + identical detail. A remark equal to the baseline's is STALE
+ *  (it was already unconsumed at launch — the previous consumer owns it), never fresh news. */
+function sameRemark(
+  a: PendingRemarkish | null | undefined,
+  b: PendingRemarkish | null | undefined,
+): boolean {
+  if (a == null && b == null) return true;
+  if (a == null || b == null) return false;
+  return (a.brief_id ?? null) === (b.brief_id ?? null) && (a.detail ?? null) === (b.detail ?? null);
+}
+
+/** B-503: attach a genuinely-new unconsumed accept-with-remark ALONGSIDE whatever post-gate
+ *  classification fired — never instead of it (the B-611 swallow class: an accept WITH a remark
+ *  both advances state AND carries the remark; the classifier must report BOTH). A remark already
+ *  present at baseline is stale and never attached. */
+function withRemark(detail: ChangeDetail, baseline: PollBaseline, task: Taskish): ChangeDetail {
+  const remark = task.pending_remark ?? null;
+  if (remark != null && !sameRemark(remark, baseline.pendingRemark)) {
+    return { ...detail, pending_remark: remark };
+  }
+  return detail;
 }
 
 /** Same marker ⇔ same exchange + identical stamps. Timestamps make this exact: a fresh submit always
@@ -210,12 +250,15 @@ export function detectChange(baseline: PollBaseline, task: Taskish): ChangeDetai
   const state = task.workflow_state ?? null;
   const baseState = baseline.workflowState ?? null;
 
-  // CLASSIFY (post-gate) in §4c priority order.
+  // CLASSIFY (post-gate) in §4c priority order. Every post-gate classification passes through
+  // withRemark (B-503): an unconsumed accept-with-remark rides ALONGSIDE the trigger — a browser
+  // accept that carried a remark both advances state ('state-advanced') AND leaves the remark, and
+  // the consumer must see BOTH (dropping either is the B-611 swallow class).
   if (state === 'Parked') {
-    return { trigger: 'parked', workflow_state: state };
+    return withRemark({ trigger: 'parked', workflow_state: state }, baseline, task);
   }
   if (state !== baseState) {
-    return { trigger: 'state-advanced', workflow_state: state };
+    return withRemark({ trigger: 'state-advanced', workflow_state: state }, baseline, task);
   }
   const pr = task.pending_resolution ?? null;
   if (pendingPresent(pr) && !samePending(pr, baseline.pendingResolution)) {
@@ -223,20 +266,20 @@ export function detectChange(baseline: PollBaseline, task: Taskish): ChangeDetai
     // to OPEN a discussion exchange on the active brief, not a reshape; everything else keeps the
     // existing 'pending_resolution' (reshape) classification.
     if (pr.command === 'discuss') {
-      return { trigger: 'discuss-requested', workflow_state: state, pending_resolution: pr };
+      return withRemark({ trigger: 'discuss-requested', workflow_state: state, pending_resolution: pr }, baseline, task);
     }
-    return { trigger: 'pending_resolution', workflow_state: state, pending_resolution: pr };
+    return withRemark({ trigger: 'pending_resolution', workflow_state: state, pending_resolution: pr }, baseline, task);
   }
   // B-645: an unconsumed exchange marker (submitted answers / force-quit request) — checked BEFORE
   // 'resolved' so a round-submit (flag cleared, state unchanged) is never mistaken for the B-611
   // non-advancing accept. Like pending_resolution, the marker must be genuinely new vs the baseline.
   const ex = task.active_exchange ?? null;
   if (exchangeMarkerPresent(ex) && !sameExchangeMarker(ex, baseline.activeExchange)) {
-    return { trigger: 'answers-landed', workflow_state: state, active_exchange: ex };
+    return withRemark({ trigger: 'answers-landed', workflow_state: state, active_exchange: ex }, baseline, task);
   }
   // The flag cleared with no advance / reshape / exchange answer / park — a non-advancing sub-track
-  // accept (B-611).
-  return { trigger: 'resolved', workflow_state: state };
+  // accept (B-611). An accept-with-remark on a non-advancing accept still attaches the remark.
+  return withRemark({ trigger: 'resolved', workflow_state: state }, baseline, task);
 }
 
 /**
@@ -251,6 +294,7 @@ export function baselineReadFallback(baseline: PollBaseline): Taskish {
     pending_resolution: baseline.pendingResolution,
     awaiting_human_input: baseline.awaitingHumanInput,
     active_exchange: baseline.activeExchange,
+    pending_remark: baseline.pendingRemark,
   };
 }
 
