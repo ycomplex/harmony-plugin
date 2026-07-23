@@ -10,8 +10,9 @@
 // `awaiting_human_input` clearing (true→false); the poll then classifies what the human did — a browser
 // accept advances workflow_state, a deny Parks it, a reshape leaves a pending_resolution, an elicitation
 // round-submit / force-quit request leaves an unconsumed marker on the active exchange (B-645,
-// 'answers-landed'), and a non-advancing sub-track accept simply clears the flag (B-611) — or it exits after
-// a bounded ~90-minute window. The
+// 'answers-landed'), a non-advancing sub-track accept simply clears the flag (B-611), and an
+// accept-with-remark additionally carries the unconsumed remark ALONGSIDE its classification (B-503) — or
+// it exits after a bounded ~90-minute window. The
 // conductor's `run_in_background` re-invocation on exit re-reads get_task itself and
 // consumes the change per §4c; this script's stdout/exit code are DIAGNOSTIC only (the conductor does not
 // trust them as the source of truth).
@@ -66,16 +67,19 @@ async function main(): Promise<number> {
   const client = await createAuthenticatedClient(auth);
   const projectId = auth.getProjectId();
 
-  // Baseline read: the state the watch diffs every poll against. active_exchange (B-645) is captured
-  // so an unconsumed exchange marker already present at launch reads as stale, never as fresh news.
+  // Baseline read: the state the watch diffs every poll against. active_exchange (B-645) and
+  // pending_remark (B-503) are captured so an unconsumed marker already present at launch reads as
+  // stale, never as fresh news.
   // B-684: the watch reads via the lean 'meta' view — it consumes only workflow_state /
-  // pending_resolution / awaiting_human_input / active_exchange, all of which meta carries.
+  // pending_resolution / awaiting_human_input / active_exchange / pending_remark, all of which meta
+  // carries.
   const baselineTask = (await getTask(client, projectId, { task_id: ticket, view: 'meta' })) as Taskish;
   const baseline: PollBaseline = {
     workflowState: baselineTask.workflow_state ?? null,
     pendingResolution: baselineTask.pending_resolution ?? null,
     awaitingHumanInput: baselineTask.awaiting_human_input ?? null,
     activeExchange: baselineTask.active_exchange ?? null,
+    pendingRemark: baselineTask.pending_remark ?? null,
   };
 
   // Anchor the window to a single launch stamp (B-548): elapsed is always measured against this.

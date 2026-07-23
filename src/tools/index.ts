@@ -51,6 +51,7 @@ import {
   composeBrief, composeBriefTool,
   getBrief, getBriefTool,
   resolveBrief, resolveBriefTool,
+  consumeAcceptRemark, consumeAcceptRemarkTool,
 } from './briefs.js';
 import {
   startElicitationTool, startElicitation,
@@ -107,7 +108,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     createEntityTool, updateEntityTool, reconcileEntityTool,
-    composeBriefTool, getBriefTool, resolveBriefTool,
+    composeBriefTool, getBriefTool, resolveBriefTool, consumeAcceptRemarkTool,
     startElicitationTool, fileElicitationRoundTool, getElicitationTool, concludeElicitationTool,
     advanceWorkflowTool,
     referenceKnowledgeTool,
@@ -312,6 +313,9 @@ export async function handleToolCall(
         break;
       case 'resolve_brief':
         result = await resolveBrief(client, projectId, args as any);
+        break;
+      case 'consume_accept_remark':
+        result = await consumeAcceptRemark(client, projectId, args as any);
         break;
       case 'start_elicitation':
         result = await startElicitation(client, projectId, userId, args as any);

@@ -24,6 +24,11 @@ describe('tool registry', () => {
     expect(names).toContain('get_build_evidence_status');
   });
 
+  it('registers the B-503 accept-with-remark consume tool', () => {
+    const names = registerTools().map((t) => t.name);
+    expect(names).toContain('consume_accept_remark');
+  });
+
   it('registers the B-645 elicitation exchange tools', () => {
     const names = registerTools().map((t) => t.name);
     expect(names).toContain('start_elicitation');

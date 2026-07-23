@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId, resolveTaskIds } from './resolve-task-id.js';
 import { resolveAssignee } from './members.js';
-import { fetchPendingResolution } from './briefs.js';
+import { fetchPendingResolution, fetchPendingRemark } from './briefs.js';
 import { fetchActiveExchange } from './elicitation.js';
 import { detectRiskClasses } from './risk-class.js';
 
@@ -146,7 +146,7 @@ export async function listTasks(
 
 export const getTaskTool = {
   name: 'get_task',
-  description: "Get full details of a specific task. Returns `pending_resolution` — the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Returns `active_exchange` (B-645) — the task's active elicitation exchange as {exchange_id, status, round, answers_submitted_at, force_quit_requested_at}, or null when none; a non-null answers_submitted_at/force_quit_requested_at is an unconsumed web→agent marker the watch classifies as 'answers-landed' (read the answers via get_elicitation; filing the next round or concluding consumes it). Also returns `risk_classes` — a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run — the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate). Pass `view:'meta'` (B-684) for a lean loop-control projection on repeated re-reads.",
+  description: "Get full details of a specific task. Returns `pending_resolution` — the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Returns `pending_remark` (B-503) — the task's most recent UNCONSUMED accept-with-remark as {brief_id, reason, detail}, or null: a browser accept that carried a remark BOTH advanced state AND left this marker; the conductor applies the remark then calls consume_accept_remark. Returns `active_exchange` (B-645) — the task's active elicitation exchange as {exchange_id, status, round, answers_submitted_at, force_quit_requested_at}, or null when none; a non-null answers_submitted_at/force_quit_requested_at is an unconsumed web→agent marker the watch classifies as 'answers-landed' (read the answers via get_elicitation; filing the next round or concluding consumes it). Also returns `risk_classes` — a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run — the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate). Pass `view:'meta'` (B-684) for a lean loop-control projection on repeated re-reads.",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -159,7 +159,7 @@ export const getTaskTool = {
       view: {
         type: 'string',
         enum: ['full', 'meta'],
-        description: "Payload shape. Absent ⇒ 'full' (today's full payload). 'meta' (B-684) = lean loop-control projection for repeated re-reads (conduct loop step-1 re-reads / post-mutation confirms): keeps `risk_classes` + the poll markers (`pending_resolution`, `active_exchange`, `awaiting_human_*`); omits description, acceptance criteria, test cases, attachments, labels, checklist.",
+        description: "Payload shape. Absent ⇒ 'full' (today's full payload). 'meta' (B-684) = lean loop-control projection for repeated re-reads (conduct loop step-1 re-reads / post-mutation confirms): keeps `risk_classes` + the poll markers (`pending_resolution`, `active_exchange`, `pending_remark`, `awaiting_human_*`); omits description, acceptance criteria, test cases, attachments, labels, checklist.",
       },
     },
     required: ['task_id'],
@@ -172,10 +172,10 @@ export async function getTask(
   args: { task_id: string; changed_paths?: string[]; view?: 'full' | 'meta' },
 ) {
   // B-684 (meta view): trim the RETURN, never the COMPUTATION. Meta keeps the same tasks-row
-  // select, labels extraction, pending_resolution/active_exchange reads, and the detectRiskClasses
-  // call with IDENTICAL inputs (title + description + brief text, changed_paths, label names) —
-  // it skips ONLY the pure return-payload selects (acceptance_criteria / test_cases / attachments,
-  // which feed no computation) and returns a pinned 19-key loop-control projection.
+  // select, labels extraction, pending_resolution/active_exchange/pending_remark reads, and the
+  // detectRiskClasses call with IDENTICAL inputs (title + description + brief text, changed_paths,
+  // label names) — it skips ONLY the pure return-payload selects (acceptance_criteria / test_cases /
+  // attachments, which feed no computation) and returns a pinned 20-key loop-control projection.
   const meta = args.view === 'meta';
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error } = await client
@@ -206,9 +206,15 @@ export async function getTask(
   //   conductor watch can classify a web answer-submit as 'answers-landed' (poll-loop) and a skill can see
   //   an in-flight exchange at pickup. fetchActiveExchange mirrors fetchPendingResolution's guarded read:
   //   absent table/column (pre-Phase-1 DB) or no active row degrades to null — get_task never regresses.
+  // B-503 (pending_remark): surface the task's most recent UNCONSUMED accept-with-remark — the human's
+  //   browser accept carried a remark (resolve_brief persisted it) that the running conductor must pick
+  //   up ALONGSIDE the resolution itself (§4c accept-with-remark case; consume via consume_accept_remark).
+  //   fetchPendingRemark mirrors the same guarded read: absent columns (pre-B-503 DB) or no unconsumed
+  //   remark degrades to null — get_task never regresses.
   // B-684 (meta view): the three payload reads below are pure return material — skipped in meta.
-  //   pending_resolution + active_exchange are the poll markers meta exists to serve, so they always run.
-  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange] = await Promise.all([
+  //   pending_resolution + active_exchange + pending_remark are the poll markers meta exists to serve,
+  //   so they always run.
+  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange, pending_remark] = await Promise.all([
     meta ? Promise.resolve({ data: null }) : client.from('acceptance_criteria').select('*').eq('task_id', resolvedId).order('position'),
     meta ? Promise.resolve({ data: null }) : client.from('test_cases').select('*').eq('task_id', resolvedId).order('position'),
     meta
@@ -228,6 +234,7 @@ export async function getTask(
         })(),
     fetchPendingResolution(client, resolvedId),
     fetchActiveExchange(client, resolvedId),
+    fetchPendingRemark(client, resolvedId),
   ]);
   const acceptanceCriteria = acceptanceCriteriaRes.data;
   const testCases = testCasesRes.data;
@@ -259,10 +266,12 @@ export async function getTask(
     labels: labels.map((l: any) => l?.name).filter((n: unknown): n is string => typeof n === 'string'),
   });
 
-  // B-684: the lean 'meta' projection — a pinned 19-key loop-control shape (nothing more, nothing
+  // B-684: the lean 'meta' projection — a pinned 20-key loop-control shape (nothing more, nothing
   // less; tasks.test.ts deep-equals the key set). risk_classes above was computed exactly as in full
   // mode (trim the return, never the computation); the omitted fields (description, acceptance
   // criteria, test cases, attachments, labels, checklist) are pure payload with no loop-control role.
+  // pending_remark (B-503) is a poll marker — the conduct loop's poll read classifies on it — so it
+  // rides in meta like pending_resolution/active_exchange.
   if (meta) {
     const t = data as any;
     return {
@@ -281,6 +290,7 @@ export async function getTask(
       subsumed_by_task_id: t.subsumed_by_task_id,
       pending_resolution,
       active_exchange,
+      pending_remark,
       risk_classes,
       updated_at: t.updated_at,
       content_updated_at: t.content_updated_at,
@@ -289,7 +299,7 @@ export async function getTask(
   }
 
   const { task_labels, checklist_items: _checklistItems, ...rest } = data as any;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, risk_classes };
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, pending_remark, risk_classes };
 }
 
 export const createTaskTool = {

@@ -569,6 +569,108 @@ export async function fetchPendingResolution(
   }
 }
 
+// B-503 (accept-with-remark): `briefs.accept_remark` + `briefs.accept_remark_consumed_at` are added
+// by harmony-web's B-503 migration — resolve_brief persists an optional remark alongside an accept.
+// The plugin's pickup half surfaces the task's most recent UNCONSUMED remark as `pending_remark` on
+// get_task (full AND meta), and consume_accept_remark stamps it consumed. Both reads/writes are
+// guarded (the B-383 schema-drift class, exactly like pending_resolution above): on a DB that
+// predates the migration, the read degrades to null and the consume returns an unsupported ack —
+// never a 400 on the core path.
+export interface PendingRemark {
+  /** The brief the remark rode in on — pass this to consume_accept_remark. */
+  brief_id: string;
+  /** That brief's gate reason (e.g. 'decomposition-proposal') — what the remark was accepted AT. */
+  reason: string;
+  /** The human's remark text (briefs.accept_remark). */
+  detail: string;
+}
+
+/** Fetch the task's most recent brief whose accept_remark is unconsumed, defensively (mirrors
+ *  fetchPendingResolution). Returns null on absent columns (older DB) / no such brief / any error —
+ *  never throws, so it can never regress get_task on a DB without the B-503 migration. */
+export async function fetchPendingRemark(
+  client: SupabaseClient,
+  taskId: string,
+): Promise<PendingRemark | null> {
+  try {
+    const { data, error } = await client
+      .from('briefs')
+      .select('id, reason, accept_remark')
+      .eq('task_id', taskId)
+      .not('accept_remark', 'is', null)
+      .is('accept_remark_consumed_at', null)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error || !data) return null;
+    // Cast: the columns may be absent from generated types / the deployed schema. Guard for null.
+    const row = data as unknown as { id: string; reason: string; accept_remark?: unknown };
+    const detail = row.accept_remark;
+    if (typeof detail !== 'string' || detail.trim().length === 0) return null;
+    return { brief_id: row.id, reason: row.reason, detail };
+  } catch {
+    return null;
+  }
+}
+
+export interface ConsumeAcceptRemarkArgs { brief_id: string; }
+
+/** Idempotent consume result. `consumed: true` = this call stamped it. `already: true` = nothing to
+ *  stamp (already consumed, no remark, or no such brief — all safe no-ops). `unsupported: true` =
+ *  the DB predates the B-503 columns (pre-migration guard; nothing could exist to consume). */
+export interface ConsumeAcceptRemarkResult {
+  brief_id: string;
+  consumed: boolean;
+  already?: boolean;
+  unsupported?: boolean;
+}
+
+const isMissingAcceptRemark = (msg: string | undefined): boolean =>
+  !!msg && /accept_remark/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
+
+export async function consumeAcceptRemark(
+  client: SupabaseClient,
+  _projectId: string,
+  args: ConsumeAcceptRemarkArgs,
+): Promise<ConsumeAcceptRemarkResult> {
+  if (!args.brief_id) throw new Error('brief_id is required');
+
+  // Conditional stamp: WHERE accept_remark_consumed_at IS NULL makes the consume naturally
+  // idempotent — a second call matches zero rows and is a no-op ack, never an error. The
+  // remark-present filter keeps the stamp meaningful (a brief with no remark is a no-op too).
+  const { data, error } = await client
+    .from('briefs')
+    .update({ accept_remark_consumed_at: new Date().toISOString() })
+    .eq('id', args.brief_id)
+    .not('accept_remark', 'is', null)
+    .is('accept_remark_consumed_at', null)
+    .select('id')
+    .maybeSingle();
+  if (error) {
+    // Guarded (B-383 class, like the pending_resolution fallback): on a DB that predates the B-503
+    // columns no remark can exist, so the consume is a faithful no-op ack. Any other error rethrows.
+    if (isMissingAcceptRemark(error.message)) {
+      return { brief_id: args.brief_id, consumed: false, unsupported: true };
+    }
+    throw new Error(error.message);
+  }
+  if (!data) return { brief_id: args.brief_id, consumed: false, already: true };
+  return { brief_id: args.brief_id, consumed: true };
+}
+
+export const consumeAcceptRemarkTool = {
+  name: 'consume_accept_remark',
+  description:
+    "Mark a brief's accept-with-remark as consumed (B-503). get_task surfaces the task's most recent unconsumed remark as `pending_remark: { brief_id, reason, detail }`; after APPLYING the remark (consume-after-apply — never stamp before the apply completes), call this with that brief_id to stamp `accept_remark_consumed_at` so the remark is not re-consumed. Idempotent: an already-consumed (or absent) remark returns { consumed: false, already: true } — no error. On a DB that predates the B-503 columns, returns { consumed: false, unsupported: true }.",
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      brief_id: { type: 'string', description: 'The brief whose accept remark to mark consumed (from pending_remark.brief_id)' },
+    },
+    required: ['brief_id'],
+  },
+};
+
 export interface GetBriefArgs { task_id: string; }
 
 export async function getBrief(

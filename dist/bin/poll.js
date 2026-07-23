@@ -18458,6 +18458,18 @@ async function fetchPendingResolution(client, taskId) {
     return null;
   }
 }
+async function fetchPendingRemark(client, taskId) {
+  try {
+    const { data, error } = await client.from("briefs").select("id, reason, accept_remark").eq("task_id", taskId).not("accept_remark", "is", null).is("accept_remark_consumed_at", null).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (error || !data) return null;
+    const row = data;
+    const detail = row.accept_remark;
+    if (typeof detail !== "string" || detail.trim().length === 0) return null;
+    return { brief_id: row.id, reason: row.reason, detail };
+  } catch {
+    return null;
+  }
+}
 
 // src/elicitation/engine.ts
 var MAX_QUESTIONS_PER_ROUND = 5;
@@ -18743,7 +18755,7 @@ async function getTask(client, projectId, args) {
   if (error) throw error;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
-  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange] = await Promise.all([
+  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange, pending_remark] = await Promise.all([
     meta ? Promise.resolve({ data: null }) : client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
     meta ? Promise.resolve({ data: null }) : client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
     meta ? Promise.resolve([]) : (async () => {
@@ -18755,7 +18767,8 @@ async function getTask(client, projectId, args) {
       }
     })(),
     fetchPendingResolution(client, resolvedId),
-    fetchActiveExchange(client, resolvedId)
+    fetchActiveExchange(client, resolvedId),
+    fetchPendingRemark(client, resolvedId)
   ]);
   const acceptanceCriteria = acceptanceCriteriaRes.data;
   const testCases = testCasesRes.data;
@@ -18790,6 +18803,7 @@ async function getTask(client, projectId, args) {
       subsumed_by_task_id: t.subsumed_by_task_id,
       pending_resolution,
       active_exchange,
+      pending_remark,
       risk_classes,
       updated_at: t.updated_at,
       content_updated_at: t.content_updated_at,
@@ -18797,7 +18811,7 @@ async function getTask(client, projectId, args) {
     };
   }
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, risk_classes };
+  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, pending_remark, risk_classes };
 }
 
 // src/conductor/poll-loop.ts
@@ -18836,6 +18850,18 @@ function baselineExchangeWentInactive(base, cur) {
   if ((cur.exchange_id ?? null) !== (base.exchange_id ?? null)) return true;
   return cur.status != null && cur.status !== "active";
 }
+function sameRemark(a, b) {
+  if (a == null && b == null) return true;
+  if (a == null || b == null) return false;
+  return (a.brief_id ?? null) === (b.brief_id ?? null) && (a.detail ?? null) === (b.detail ?? null);
+}
+function withRemark(detail, baseline, task) {
+  const remark = task.pending_remark ?? null;
+  if (remark != null && !sameRemark(remark, baseline.pendingRemark)) {
+    return { ...detail, pending_remark: remark };
+  }
+  return detail;
+}
 function sameExchangeMarker(a, b) {
   if (a == null && b == null) return true;
   if (a == null || b == null) return false;
@@ -18852,30 +18878,31 @@ function detectChange(baseline, task) {
   const state = task.workflow_state ?? null;
   const baseState = baseline.workflowState ?? null;
   if (state === "Parked") {
-    return { trigger: "parked", workflow_state: state };
+    return withRemark({ trigger: "parked", workflow_state: state }, baseline, task);
   }
   if (state !== baseState) {
-    return { trigger: "state-advanced", workflow_state: state };
+    return withRemark({ trigger: "state-advanced", workflow_state: state }, baseline, task);
   }
   const pr = task.pending_resolution ?? null;
   if (pendingPresent(pr) && !samePending(pr, baseline.pendingResolution)) {
     if (pr.command === "discuss") {
-      return { trigger: "discuss-requested", workflow_state: state, pending_resolution: pr };
+      return withRemark({ trigger: "discuss-requested", workflow_state: state, pending_resolution: pr }, baseline, task);
     }
-    return { trigger: "pending_resolution", workflow_state: state, pending_resolution: pr };
+    return withRemark({ trigger: "pending_resolution", workflow_state: state, pending_resolution: pr }, baseline, task);
   }
   const ex = task.active_exchange ?? null;
   if (exchangeMarkerPresent(ex) && !sameExchangeMarker(ex, baseline.activeExchange)) {
-    return { trigger: "answers-landed", workflow_state: state, active_exchange: ex };
+    return withRemark({ trigger: "answers-landed", workflow_state: state, active_exchange: ex }, baseline, task);
   }
-  return { trigger: "resolved", workflow_state: state };
+  return withRemark({ trigger: "resolved", workflow_state: state }, baseline, task);
 }
 function baselineReadFallback(baseline) {
   return {
     workflow_state: baseline.workflowState,
     pending_resolution: baseline.pendingResolution,
     awaiting_human_input: baseline.awaitingHumanInput,
-    active_exchange: baseline.activeExchange
+    active_exchange: baseline.activeExchange,
+    pending_remark: baseline.pendingRemark
   };
 }
 async function runPollLoop(opts) {
@@ -18924,7 +18951,8 @@ async function main() {
     workflowState: baselineTask.workflow_state ?? null,
     pendingResolution: baselineTask.pending_resolution ?? null,
     awaitingHumanInput: baselineTask.awaiting_human_input ?? null,
-    activeExchange: baselineTask.active_exchange ?? null
+    activeExchange: baselineTask.active_exchange ?? null,
+    pendingRemark: baselineTask.pending_remark ?? null
   };
   const launchStamp = Date.now();
   const readTask = async () => {
