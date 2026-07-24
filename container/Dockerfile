@@ -56,3 +56,14 @@ USER worker
 # that makes a broad grant safe; provision.sh passes these flags to the
 # non-interactive `claude -p` run. Override per-run via the env file.
 ENV CLAUDE_HEADLESS_FLAGS="--dangerously-skip-permissions"
+
+# B-719: neither the CLI flag above nor a settings.json defaultMode bake
+# reaches Task-tool subagents in headless -p (minimal repros on the ticket —
+# the settings bake was tried here and disproven). The build subagent's bypass
+# ships as a DECLARED agent (container/agents/harmony-build.md) that
+# provision.sh installs to ~/.claude/agents/ at startup; its frontmatter
+# permissionMode is the one honored lever. The marker below is the mode
+# discriminator start-work keys park-vs-fallback on (diagnostic-grade: a
+# misprovisioned container still fails visibly without it — see the B-719
+# design entry).
+ENV HARMONY_BUILD_CONTAINER=1

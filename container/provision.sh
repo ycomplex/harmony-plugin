@@ -69,6 +69,13 @@ EOF
 chmod 755 "$HOME/bin/harmony"
 export PATH="$HOME/bin:$PATH"
 
+# --- Install the declared build agent (B-719). ------------------------------
+# Config levers (CLI flag / settings.json) do NOT reach Task-tool subagents in
+# headless -p; a DECLARED agent's frontmatter permissionMode is the one lever
+# that does. Clone-sourced so it never drifts from the provisioned ref.
+mkdir -p "$HOME/.claude/agents"
+cp "$PLUGIN_DIR/container/agents/harmony-build.md" "$HOME/.claude/agents/harmony-build.md"
+
 # --- Confirm the environment pairing (AC2) BEFORE any work. -----------------
 # harmony login writes ~/.harmony/config.json (the CLI has no env-token
 # fallback); get_project then resolves the target through the plugin's real

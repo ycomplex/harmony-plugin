@@ -68,6 +68,20 @@ Create the isolated worktree (invoke `superpowers:using-git-worktrees`) and save
 exactly as in the manual flow. Implement, write tests, self-validate against acceptance criteria
 (`mcp__harmony__manage_acceptance_criteria`, `mcp__harmony__manage_test_cases`).
 
+**Build delegation is CONDITIONAL on the declared build agent (B-719).** The implementation runs in a
+build subagent (context-thinning; worktree per B-628) — WHICH subagent depends on what the session has:
+
+- **`harmony-build` available** (`test -f ~/.claude/agents/harmony-build.md` — provisioned in the build
+  container) → delegate the implementation to it **BY NAME**. Its declared frontmatter
+  `permissionMode: bypassPermissions` is the only lever that reaches a subagent in headless `-p`
+  (B-719 minimal repros); config levers (the CLI flag, settings `defaultMode`, `dontAsk`) all fail.
+- **Absent AND `HARMONY_BUILD_CONTAINER` is set** (the image-baked container marker) → the container is
+  MISPROVISIONED: `mcp__harmony__add_comment` "Build agent not provisioned — ~/.claude/agents/harmony-build.md
+  missing in the build container" and `mcp__harmony__advance_workflow({ activity: 'parking' })`. Do NOT
+  attempt the ad-hoc build — its Edit/Write will be denied and the run dies mid-build with no clear cause.
+- **Absent, no marker** (every human machine) → today's behavior, unchanged: the ordinary ad-hoc build
+  subagent. The bypass agent never lands on a human machine (B-719 design: container-only).
+
 **Verify the base before building (B-585) — NON-OPTIONAL for a redefine or a "relative-to-today" change.**
 Before a `CREATE OR REPLACE` of a DB function / trigger / view that has been redefined across migrations, find
 the **LIVE** body: grep every migration for `CREATE OR REPLACE FUNCTION <name>` → the **LAST by timestamp** is
