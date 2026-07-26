@@ -92,10 +92,53 @@ claim), **READ the current code to confirm that baseline before building** — t
 status quo is frequently wrong, and the build gate is where to catch it (sharpens `a58907f1` — plans grounded
 against real code, never from memory).
 
-**When the build completes, LAND the build evidence on the ticket BEFORE advancing — ORDERED &
-NON-OPTIONAL (B-560).** Gates only advance `workflow_state`; a delegated/worktree build never touches the
-ticket, so the evidence must be recorded here or it is lost (B-551 reached Verified with zero build trail).
-Do these two steps, in order, before composing the release brief:
+**When the tests pass, PRODUCE THE ARTEFACT — the ordered commit→push→verify→PR→record step (B-722,
+NON-OPTIONAL).** A build is not done when its tests pass; it is done when the tested work exists as a
+real, pushed, open PR. A conducted ticket must NEVER reach the release gate without one — B-713 composed
+a "Ship the built artefact" release brief with zero persisted code, and the `--rm` container discarded
+the work. Run these sub-steps in order; on ANY sub-step failure go to the FAILURE PATH below — never
+advance past a failed sub-step:
+
+1. **Commit + push the ticket branch.** In a delegated build, INSTRUCT the build subagent to commit and
+   push — the `harmony-build` agent is deliberately "push only when instructed" (B-719), and O3 is the
+   instructing party. In a main-loop build, run the commit + push yourself.
+2. **Verify the push landed:** `git ls-remote origin <branch>` must show the branch at the expected head
+   SHA. An un-pushed commit is not an artefact.
+3. **Open the PR:** `gh pr create` (base `main`), then verify it is open — `gh pr view <url> --json state,url`
+   must report `OPEN`.
+4. **Record the structured pushed-PR reference on the ticket** — written ONLY from the just-verified
+   live outputs of sub-steps 2–3, never from intent:
+   ```
+   mcp__harmony__update_task({ task_id, field_values: { build_pr: {
+     branch, head_sha, pr_number, pr_url, base: "main", opened_at
+   } } })
+   ```
+   The record IS the verification: `get_build_evidence_status` keys `has_pushed_pr` (and therefore
+   `complete`) on this reference, so a ticket with no verified PR mechanically reads incomplete at the
+   verify gate. `update_task` merges `field_values` — other keys are preserved.
+5. **Comment the PR URL** for the human trail: `mcp__harmony__add_comment(task_id, "PR created: <url>")`.
+
+**FAILURE PATH — preserve the work, then park; NEVER a PR-less release brief (B-722).** On ANY failure
+of commit / push / PR-create (permission denial, network, auth, `gh` outage), run this IN THE WORKER,
+BEFORE the session or container exits — an ephemeral `--rm` worker that exits first discards the work:
+
+1. **Generate the patch FIRST** — `git diff HEAD` (plus `git diff --staged` when staging succeeded) into
+   a patch file. Diffing is a READ: it works even when `git commit` itself was denied (B-668).
+2. **Upgrade to a WIP branch when a commit exists** — `git push origin HEAD:wip/B-<n>` with whatever
+   creds succeed. Under commit-denial no commit exists, so this rung is skipped, not retried.
+3. **Attach the patch when the WIP push rung failed** — `mcp__harmony__attach_file({ task_id, file_path })`
+   with the patch file. Preservation must succeed by ONE of the two rungs before proceeding.
+4. **Comment the park contract** — `mcp__harmony__add_comment`: which sub-step failed (commit vs push vs
+   PR-create), the preservation form + location (WIP branch name, or attachment filename), and the
+   test/AC state at failure — resume-ready without forensics.
+5. **Park:** `mcp__harmony__advance_workflow({ task_id, activity: "parking" })`. The ticket NEVER
+   advances to Built and NEVER composes a release brief without the recorded `build_pr` reference.
+
+**Then LAND the build evidence on the ticket BEFORE advancing — ORDERED & NON-OPTIONAL (B-560).** Gates
+only advance `workflow_state`; a delegated/worktree build never touches the ticket, so the evidence must
+be recorded here or it is lost (B-551 reached Verified with zero build trail). By now the artefact step
+has already recorded `build_pr` and commented the PR URL. Do these two steps, in order, before composing
+the release brief:
 
 1. **Record the test cases** from the build's tests — `mcp__harmony__manage_test_cases({ task_id, add: [...] })`
    (one entry per test/spec the build added or relies on; `type: "integration"` / `"e2e"`).
@@ -116,10 +159,15 @@ it owes the human, plus the legibility contract. Consult it; do not restate it. 
 `pending_activity: null` — the human's accept is the "go", but Built→Deployed is SYSTEM-on-deploy-success
 (state-machine §6.1), advanced by the release path (`/harmony-plugin:finish-work`) *after* the deploy, not by the accept (review F4):
 
+The release brief must reference the recorded PR — the human's "ship it" points at a real, verifiable
+artefact (read `branch` / `pr_url` back from `field_values.build_pr`):
+
 ```
 mcp__harmony__compose_brief({
   task_id, reason: "release-decision-pending", pending_activity: null,
-  doc: { decide: "Release <ticket> to production?", items: [{ kind: "decision", text: "Ship the built artefact", recommendation: "release" }] }
+  doc: { decide: "Release <ticket> to production?",
+    context: ["PR: <pr_url> (branch <branch>, head <head_sha>)"],
+    items: [{ kind: "decision", text: "Ship the built artefact — PR <pr_url>", recommendation: "release" }] }
 })
 ```
 

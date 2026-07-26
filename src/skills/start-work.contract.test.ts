@@ -54,4 +54,49 @@ describe('start-work skill contract (evolved)', () => {
     expect(skill.body).toContain('harmony-revise-scope');
     expect(skill.body).toMatch(/--to\s+design/);
   });
+
+  // B-722: the build gate must produce and verify a real pushed PR before Built (the B-713
+  // phantom-build class), and preserve tested work on any failure (the B-668 discarded-work
+  // class). These pins hold O3's ordered artefact step and failure path in place.
+  describe('B-722: O3 artefact step + failure path', () => {
+    const body = skill.body;
+
+    it('carries the ordered commit→push→verify→PR→record step, in order, before advancing', () => {
+      const iVerifyPush = body.indexOf('git ls-remote origin');
+      const iPrCreate = body.indexOf('gh pr create');
+      const iRecord = body.indexOf('field_values: { build_pr');
+      const iAdvance = body.indexOf('activity: "building"');
+      expect(iVerifyPush).toBeGreaterThan(-1);
+      expect(iPrCreate).toBeGreaterThan(iVerifyPush);
+      expect(iRecord).toBeGreaterThan(iPrCreate);
+      expect(iAdvance).toBeGreaterThan(iRecord);
+    });
+
+    it('O3 does the push-instructing (the B-719 push-only-when-instructed contract stays intact)', () => {
+      expect(body).toMatch(/INSTRUCT the build subagent to commit and\s+push/);
+      expect(body).toContain('instructing party');
+    });
+
+    it('records the ref only from live-verified outputs and keys evidence on it', () => {
+      expect(body).toMatch(/written ONLY from the just-verified\s+live outputs/);
+      expect(body).toContain('has_pushed_pr');
+    });
+
+    it('failure path: patch-first ladder (diff is a read), WIP-push upgrade, attach fallback, park', () => {
+      const iPatch = body.indexOf('git diff HEAD');
+      const iWip = body.indexOf('HEAD:wip/B-<n>');
+      const iAttach = body.indexOf('attach_file');
+      const iPark = body.indexOf('activity: "parking"');
+      expect(iPatch).toBeGreaterThan(-1);
+      expect(iWip).toBeGreaterThan(iPatch);
+      expect(iAttach).toBeGreaterThan(iWip);
+      expect(iPark).toBeGreaterThan(iAttach);
+      expect(body).toMatch(/works even when `git commit` itself was denied/);
+    });
+
+    it('never a PR-less release brief; the release brief references the recorded PR', () => {
+      expect(body).toMatch(/NEVER composes a release brief without the recorded `build_pr` reference/);
+      expect(body).toContain('Ship the built artefact — PR <pr_url>');
+    });
+  });
 });

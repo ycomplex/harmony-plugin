@@ -24,8 +24,18 @@ import { resolveTaskId } from './resolve-task-id.js';
 // split umbrella to Deployed without it doing its own build), so the evidence
 // requirement does NOT apply. `complete` is true and `exempt_reason` explains
 // why. A leaf ticket (no children) that carries its own build is `complete`
-// only when it has test cases AND every AC is checked AND a PR/merge/deploy
-// comment trail is present.
+// only when it has test cases AND every AC is checked AND a verified pushed-PR
+// reference is recorded (`field_values.build_pr`).
+//
+// PUSHED-PR KEYING (B-722): completeness keys on `has_pushed_pr` — a structured
+// reference the build gate records in `tasks.field_values.build_pr` ONLY from
+// live-verified push/PR outputs (start-work O3's artefact step). The old
+// comment-keyword gate false-greened B-713's phantom build (the word "PR" in an
+// unrelated comment passed a ticket with zero persisted code). This derivation
+// cannot call GitHub — the recorded ref is the DB-visible proof — so the step
+// that opens the PR and the check that verifies it are one mechanism.
+// `has_comment_trail` is still computed and reported, but it is informational
+// and no longer gates `complete`.
 //
 // DECISION-ONLY EXEMPTION (B-681): a ticket carrying the `decision-only` label
 // has no PR/tests by design — it completes via the deliverable-gate fast-forward
@@ -60,9 +70,11 @@ export interface BuildEvidenceStatus {
   has_test_cases: boolean;
   /** >=1 acceptance criterion AND every one of them is checked. */
   all_acs_checked: boolean;
-  /** >=1 comment whose body matches the PR/merge/deploy/CI trail pattern. */
+  /** >=1 comment whose body matches the PR/merge/deploy/CI trail pattern. Informational — no longer gates `complete` (B-722). */
   has_comment_trail: boolean;
-  /** Umbrella or decision-only ⇒ true (exempt); else has_test_cases && all_acs_checked && has_comment_trail. */
+  /** A verified pushed-PR reference is recorded: `field_values.build_pr` with non-empty branch + head_sha + pr_url (B-722). */
+  has_pushed_pr: boolean;
+  /** Umbrella or decision-only ⇒ true (exempt); else has_test_cases && all_acs_checked && has_pushed_pr. */
   complete: boolean;
   /** Why the ticket is exempt from the evidence requirement, or null when it is not. */
   exempt_reason: string | null;
@@ -73,7 +85,7 @@ export interface BuildEvidenceStatus {
 export const getBuildEvidenceStatusTool = {
   name: 'get_build_evidence_status',
   description:
-    "Read-only. The CANONICAL definition (single source of truth) of whether a conducted ticket carries the build evidence required by Verified. Derives — never writes — from the ticket's own records: `has_test_cases` (>=1 test case), `all_acs_checked` (>=1 acceptance criterion AND every one checked), `has_comment_trail` (>=1 comment mentioning a PR/merge/deploy/CI signal). `is_umbrella` is true when the task has >=1 non-archived child; an umbrella is EXEMPT (its evidence is carried by its children — e.g. a B-471 split-umbrella roll-up), so `complete` is true and `exempt_reason` is set. `is_decision_only` is true when the task carries the `decision-only` label; it is likewise EXEMPT (B-681 — the ticket completes via the deliverable-gate fast-forward and its evidence IS the Accepted decision knowledge); umbrella keeps precedence in `exempt_reason` when both apply. For a leaf ticket carrying its own build, `complete` = has_test_cases && all_acs_checked && has_comment_trail, and `missing` lists the gaps in human-readable form. Used by finish-work's verify brief to render a mechanical evidence-status line (like the B-516 release-brief risk signal) and reusable by the Decision Trail.",
+    "Read-only. The CANONICAL definition (single source of truth) of whether a conducted ticket carries the build evidence required by Verified. Derives — never writes — from the ticket's own records: `has_test_cases` (>=1 test case), `all_acs_checked` (>=1 acceptance criterion AND every one checked), `has_pushed_pr` (a verified pushed-PR reference recorded by the build gate in `tasks.field_values.build_pr` — non-empty branch + head_sha + pr_url; B-722), and `has_comment_trail` (>=1 comment mentioning a PR/merge/deploy/CI signal — INFORMATIONAL only; it no longer gates completeness, killing the B-713 keyword false-green). `is_umbrella` is true when the task has >=1 non-archived child; an umbrella is EXEMPT (its evidence is carried by its children — e.g. a B-471 split-umbrella roll-up), so `complete` is true and `exempt_reason` is set. `is_decision_only` is true when the task carries the `decision-only` label; it is likewise EXEMPT (B-681 — the ticket completes via the deliverable-gate fast-forward and its evidence IS the Accepted decision knowledge); umbrella keeps precedence in `exempt_reason` when both apply. For a leaf ticket carrying its own build, `complete` = has_test_cases && all_acs_checked && has_pushed_pr, and `missing` lists the gaps in human-readable form. Used by finish-work's verify brief to render a mechanical evidence-status line (like the B-516 release-brief risk signal) and reusable by the Decision Trail.",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -93,21 +105,24 @@ export async function getBuildEvidenceStatus(
 ): Promise<BuildEvidenceStatus> {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
 
-  // The five reads are independent — fire them in parallel (mirrors get_task's enrichment).
-  const [childrenRes, testCasesRes, acsRes, commentsRes, labelsRes] = await Promise.all([
+  // The six reads are independent — fire them in parallel (mirrors get_task's enrichment).
+  const [childrenRes, taskRowRes, testCasesRes, acsRes, commentsRes, labelsRes] = await Promise.all([
     client.from('tasks').select('id, archived').eq('parent_task_id', resolvedId),
+    client.from('tasks').select('field_values').eq('id', resolvedId),
     client.from('test_cases').select('id').eq('task_id', resolvedId),
     client.from('acceptance_criteria').select('id, checked').eq('task_id', resolvedId),
     client.from('task_comments').select('content').eq('task_id', resolvedId),
     client.from('task_labels').select('labels(name)').eq('task_id', resolvedId),
   ]);
   if (childrenRes.error) throw childrenRes.error;
+  if (taskRowRes.error) throw taskRowRes.error;
   if (testCasesRes.error) throw testCasesRes.error;
   if (acsRes.error) throw acsRes.error;
   if (commentsRes.error) throw commentsRes.error;
   if (labelsRes.error) throw labelsRes.error;
 
   const children = (childrenRes.data ?? []) as Array<{ id: string; archived: boolean | null }>;
+  const taskRows = (taskRowRes.data ?? []) as Array<{ field_values: Record<string, unknown> | null }>;
   const testCases = (testCasesRes.data ?? []) as Array<{ id: string }>;
   const acs = (acsRes.data ?? []) as Array<{ id: string; checked: boolean | null }>;
   const comments = (commentsRes.data ?? []) as Array<{ content: string | null }>;
@@ -120,8 +135,22 @@ export async function getBuildEvidenceStatus(
   const all_acs_checked = acs.length >= 1 && acs.every((a) => a.checked === true);
   const has_comment_trail = comments.some((c) => typeof c.content === 'string' && COMMENT_TRAIL_RE.test(c.content));
 
+  // B-722: the pushed-PR reference the build gate records from live-verified outputs.
+  // Well-formed = non-empty branch + head_sha + pr_url; anything less reads as absent.
+  const buildPr = taskRows[0]?.field_values?.['build_pr'] as
+    | { branch?: unknown; head_sha?: unknown; pr_url?: unknown }
+    | null
+    | undefined;
+  const has_pushed_pr =
+    typeof buildPr?.branch === 'string' &&
+    buildPr.branch.length > 0 &&
+    typeof buildPr?.head_sha === 'string' &&
+    buildPr.head_sha.length > 0 &&
+    typeof buildPr?.pr_url === 'string' &&
+    buildPr.pr_url.length > 0;
+
   const exempt = is_umbrella || is_decision_only;
-  const complete = exempt ? true : has_test_cases && all_acs_checked && has_comment_trail;
+  const complete = exempt ? true : has_test_cases && all_acs_checked && has_pushed_pr;
   // Umbrella keeps precedence when both apply — children carrying evidence is the more specific claim.
   const exempt_reason = is_umbrella
     ? 'umbrella — evidence carried by children'
@@ -140,7 +169,7 @@ export async function getBuildEvidenceStatus(
         missing.push(`${unchecked} unchecked acceptance criteria`);
       }
     }
-    if (!has_comment_trail) missing.push('PR/merge/deploy comment trail');
+    if (!has_pushed_pr) missing.push('pushed PR reference (no verified branch/PR recorded)');
   }
 
   return {
@@ -150,6 +179,7 @@ export async function getBuildEvidenceStatus(
     has_test_cases,
     all_acs_checked,
     has_comment_trail,
+    has_pushed_pr,
     complete,
     exempt_reason,
     missing,
