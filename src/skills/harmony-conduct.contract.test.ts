@@ -18,10 +18,18 @@ describe('harmony-conduct skill contract', () => {
     }
   });
 
-  it('is scoped to the read-only conductor role (no code writes, no git mutation)', () => {
-    // The conductor orchestrates plumbing; the gate skills it delegates to own the writes.
+  it('revokes file writes but NOT git — the conductor orchestrates gates that legitimately run git (B-722)', () => {
+    // The conductor delegates the build gate (start-work: commit/push) and the release gate
+    // (finish-work: merge). The old discovery-profile git revocation here was in force during
+    // the daemon's `harmony-conduct --one-shot`, hard-denying the delegated build's commit/push
+    // headless (no approver) — the B-713/B-668 phantom-build root that survived PR #115.
+    // File writes stay revoked: implementation is delegated to the harmony-build subagent
+    // (its own bypassPermissions), and commits use heredoc messages, not top-level file writes.
     expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);
+    expect(skill.frontmatter['disallowed-tools']).toMatch(/Edit/);
+    expect(skill.frontmatter['disallowed-tools']).not.toMatch(/git commit/);
+    expect(skill.frontmatter['disallowed-tools']).not.toMatch(/git push/);
+    expect(skill.frontmatter['disallowed-tools']).not.toMatch(/git merge/);
   });
 
   it('CONTROLLED DEFAULT: the no-flag run pauses at every gate (the core contract, intact in 2b)', () => {
