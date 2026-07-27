@@ -50,6 +50,16 @@ FROM base AS agent
 USER root
 RUN npm install -g @anthropic-ai/claude-code \
     && claude --version
+
+# B-724: pre-create the worker's Claude state dirs WORKER-OWNED. The launch
+# profile bind-mounts projects/ and logs/ per conduction; Docker otherwise
+# creates the mount-point parent ~/.claude AS ROOT at container create, and
+# provision.sh's declared-agent install (mkdir ~/.claude/agents, B-719) then
+# dies with Permission denied — a non-mounted sibling under a root-owned
+# parent (live daemon leg, 2026-07-27). profile-contract.test.ts pins every
+# mount target in the launch template to a pre-created dir here.
+RUN mkdir -p /home/worker/.claude/projects /home/worker/.claude/logs /home/worker/.claude/agents \
+    && chown -R worker:worker /home/worker/.claude
 USER worker
 
 # The headless permission envelope (B-694 AC4): the container IS the sandbox
