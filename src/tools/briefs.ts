@@ -359,9 +359,21 @@ export async function composeBrief(
   // a second to_state for the same (from_state, activity), maybeSingle errors loudly (a safe fail).
   if (pendingActivity) {
     const { data: task, error: tErr } = await client
-      .from('tasks').select('workflow_state').eq('id', taskId).single();
+      .from('tasks').select('workflow_state, stale').eq('id', taskId).single();
     if (tErr) throw new Error(tErr.message);
-    const fromState = (task as { workflow_state: string | null } | null)?.workflow_state ?? null;
+    const taskRow = task as { workflow_state: string | null; stale: boolean | null } | null;
+    const fromState = taskRow?.workflow_state ?? null;
+    // B-715: a stale ticket must never compose a state-advancing brief except through the two
+    // documented reconciliation routes. This mirrors the P1 transition-table guard pattern so the
+    // stale backstop can't be skipped by loop non-adherence — the exact gap B-696 exposed (a design
+    // accept + plan-draft compose sailed through while stale:true, with nothing at the substrate to
+    // stop it).
+    if (taskRow?.stale === true && args.reason !== 'stale-patch-review' && args.reason !== 'revise-scope-review') {
+      throw new Error(
+        `Task is stale (tasks.stale=true) — cannot compose a state-advancing brief (reason '${args.reason}'). ` +
+        `Route through harmony-stale-patch (files a 'stale-patch-review' brief) or harmony-revise-scope first.`,
+      );
+    }
     let q = client.from('workflow_transitions').select('to_state').eq('activity', pendingActivity);
     q = fromState === null ? q.is('from_state', null) : q.eq('from_state', fromState);
     const { data: tr, error: trErr } = await q.maybeSingle();

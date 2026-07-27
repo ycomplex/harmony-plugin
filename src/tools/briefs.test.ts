@@ -523,6 +523,56 @@ describe('composeBrief', () => {
   });
 });
 
+describe('composeBrief — B-715 stale gate (substrate guard)', () => {
+  const briefRow = { id: 'brief-1', task_id: 'task-1', reason: 'clarification-draft', content: 'rendered', status: 'active', iteration: 1 };
+
+  it('refuses to compose a state-advancing brief on a stale ticket', async () => {
+    const client = makeClient([{ data: { workflow_state: 'Designed', stale: true } }]);
+    await expect(
+      composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'plan-draft', doc: okDoc as any, pending_activity: 'planning',
+      }),
+    ).rejects.toThrow(/stale/i);
+  });
+
+  it('allows composing a stale-patch-review brief on a stale ticket', async () => {
+    // pending_activity: null means the guard exercises only on `reason`, not a specific transition.
+    // responses: [no active brief] -> [insert row] -> [task update]
+    const client = makeClient([{ data: null }, { data: briefRow }, { data: null }]);
+    await expect(
+      composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'stale-patch-review', doc: okDoc as any, pending_activity: null as any,
+      }),
+    ).resolves.not.toThrow();
+  });
+
+  it('allows composing a revise-scope-review brief on a stale ticket', async () => {
+    // responses: [no active brief] -> [insert row] -> [task update]
+    const client = makeClient([{ data: null }, { data: briefRow }, { data: null }]);
+    await expect(
+      composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'revise-scope-review', doc: okDoc as any, pending_activity: null as any,
+      }),
+    ).resolves.not.toThrow();
+  });
+
+  it('still allows a normal compose when stale is false', async () => {
+    // responses: [task state] -> [transition exists] -> [no active brief] -> [insert row] -> [task update]
+    const client = makeClient([
+      { data: { workflow_state: 'Proposed', stale: false } },
+      { data: { to_state: 'Clarified' } },
+      { data: null },
+      { data: briefRow },
+      { data: null },
+    ]);
+    await expect(
+      composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, pending_activity: 'clarifying',
+      }),
+    ).resolves.not.toThrow();
+  });
+});
+
 // B-645 iterate-prune: the in-place iterate is the elicitation-claim disposal moment. When
 // `underwriting_claim_ids` (the KEPT set) is passed, coupled dangling claims — Asserted rows whose
 // underwriting_brief_id is the active brief — are archived unless kept. The mock can't filter rows,

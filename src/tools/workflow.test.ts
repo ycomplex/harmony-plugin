@@ -46,7 +46,7 @@ vi.mock('./resolve-task-id.js', () => ({
 // Returns the client AND the update spy, so tests can assert the PERSISTED patch
 // (not just the derived return value) — the read goes through tasks.select(); the
 // write goes through tasks.update(), whose payload we capture.
-function mockClientFor(currentState: string | null) {
+function mockClientFor(currentState: string | null, stale = false) {
   const updateSpy = vi.fn((payload: Record<string, unknown>) => ({
     eq: () => ({
       eq: () => ({
@@ -61,10 +61,10 @@ function mockClientFor(currentState: string | null) {
       }
       if (table === 'tasks') {
         return {
-          // advanceWorkflow's read: select('workflow_state').eq().eq().single()
+          // advanceWorkflow's read: select('workflow_state, stale').eq().eq().single()
           select: () => ({
             eq: () => ({
-              eq: () => ({ single: () => Promise.resolve({ data: { workflow_state: currentState }, error: null }) }),
+              eq: () => ({ single: () => Promise.resolve({ data: { workflow_state: currentState, stale }, error: null }) }),
             }),
           }),
           update: updateSpy,
@@ -99,6 +99,32 @@ describe('advanceWorkflow', () => {
     // stated task, or a NULL→FK violation for an un-stated one). Drop the special-case in
     // workflow.ts and this goes red.
     expect(updateSpy.mock.calls[0][0]).not.toHaveProperty('workflow_state');
+  });
+
+  it('refuses a forward activity when the task is stale', async () => {
+    const { client } = mockClientFor('Planned', true);
+    await expect(
+      advanceWorkflow(client, 'proj', { task_id: 'B-1', activity: 'building' }),
+    ).rejects.toThrow(/stale/i);
+  });
+
+  it('allows a revising-* backflow on a stale task', async () => {
+    const { client } = mockClientFor('Built', true);
+    const res = await advanceWorkflow(client, 'proj', { task_id: 'B-1', activity: 'revising-building' });
+    expect(res.to_state).toBe('Planned');
+  });
+
+  it('allows parking/cancelling a stale task', async () => {
+    const { client } = mockClientFor('Planned', true);
+    const res = await advanceWorkflow(client, 'proj', { task_id: 'B-1', activity: 'parking' });
+    expect(res.to_state).toBe('Parked');
+  });
+
+  it('allows researching on a stale task (no state change)', async () => {
+    const { client } = mockClientFor('Designed', true);
+    await expect(
+      advanceWorkflow(client, 'proj', { task_id: 'B-1', activity: 'researching' }),
+    ).resolves.not.toThrow();
   });
 });
 

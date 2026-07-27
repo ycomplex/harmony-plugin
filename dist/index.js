@@ -32603,9 +32603,15 @@ async function composeBrief(client, projectId, userId, args) {
   const taskId = await resolveTaskId(client, projectId, args.task_id);
   const pendingActivity = typeof args.pending_activity === "string" && args.pending_activity.trim().toLowerCase() === "null" ? null : args.pending_activity;
   if (pendingActivity) {
-    const { data: task, error: tErr } = await client.from("tasks").select("workflow_state").eq("id", taskId).single();
+    const { data: task, error: tErr } = await client.from("tasks").select("workflow_state, stale").eq("id", taskId).single();
     if (tErr) throw new Error(tErr.message);
-    const fromState = task?.workflow_state ?? null;
+    const taskRow = task;
+    const fromState = taskRow?.workflow_state ?? null;
+    if (taskRow?.stale === true && args.reason !== "stale-patch-review" && args.reason !== "revise-scope-review") {
+      throw new Error(
+        `Task is stale (tasks.stale=true) \u2014 cannot compose a state-advancing brief (reason '${args.reason}'). Route through harmony-stale-patch (files a 'stale-patch-review' brief) or harmony-revise-scope first.`
+      );
+    }
     let q = client.from("workflow_transitions").select("to_state").eq("activity", pendingActivity);
     q = fromState === null ? q.is("from_state", null) : q.eq("from_state", fromState);
     const { data: tr, error: trErr } = await q.maybeSingle();
@@ -35952,11 +35958,18 @@ var advanceWorkflowTool = {
 };
 async function advanceWorkflow(client, projectId, args) {
   const id = await resolveTaskId(client, projectId, args.task_id);
-  const { data: task, error: e1 } = await client.from("tasks").select("workflow_state").eq("id", id).eq("project_id", projectId).single();
+  const { data: task, error: e1 } = await client.from("tasks").select("workflow_state, stale").eq("id", id).eq("project_id", projectId).single();
   if (e1) throw e1;
+  const taskRow = task;
+  const isStaleExempt = args.activity.startsWith("revising-") || args.activity === "researching" || args.activity in UNIVERSAL;
+  if (taskRow.stale === true && !isStaleExempt) {
+    throw new Error(
+      `Task is stale (tasks.stale=true) \u2014 cannot apply forward activity '${args.activity}'. Route through harmony-stale-patch (files a 'stale-patch-review' brief) or a 'revising-*' backflow first.`
+    );
+  }
   const { data: transitions, error: e2 } = await client.from("workflow_transitions").select("from_state, activity, to_state");
   if (e2) throw e2;
-  const fromState = task.workflow_state;
+  const fromState = taskRow.workflow_state;
   const toState = deriveToState(fromState, args.activity, transitions ?? []);
   const patch = args.activity === "researching" ? { workflow_activity: args.activity } : { workflow_state: toState, workflow_activity: args.activity };
   const { data: updated, error: e3 } = await client.from("tasks").update(patch).eq("id", id).eq("project_id", projectId).select("id, workflow_state, workflow_activity").single();
