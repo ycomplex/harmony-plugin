@@ -147,6 +147,8 @@ Everything operational is an env knob or a profile file — never a code edit:
 | `HARMONY_DAEMON_POLL_MS` | `25000` | Pass cadence (one watch/heartbeat pass per interval). |
 | `HARMONY_DAEMON_HEARTBEAT_MS` | `30000` | Lease heartbeat cadence (poll ≤ heartbeat). |
 | `HARMONY_DAEMON_STALE_MS` | `300000` | Silence threshold after which another daemon may CAS-take the lease. |
+| `HARMONY_DAEMON_RETRY_CAP` | `2` | Bounded retries for a dirty worker exit before the conduction parks. `0` disables retry (immediate park, pre-B-713 behavior). |
+| `HARMONY_DAEMON_RETRY_BACKOFF_MS` | `15000` | Backoff between a dirty exit and its retried re-fire. |
 | `HARMONY_DAEMON_LOG` | *(unset)* | Optional extra log file (stdout is primary; launchd redirects it). |
 
 Worker containers are named `harmony-worker-<conduction_id>` (the example

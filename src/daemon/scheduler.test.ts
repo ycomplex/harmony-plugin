@@ -43,6 +43,10 @@ const config: DaemonConfig = {
   pollMs: 25_000,
   heartbeatMs: 30_000,
   staleMs: 300_000,
+  // B-713: retryCap 0 here reproduces the pre-B-713 immediate-park behavior for every existing
+  // test in this file that doesn't opt into retry via HarnessOpts.config below.
+  retryCap: 0,
+  retryBackoffMs: 15_000,
   profile: { launch: 'launch {conduction_id} {ticket}', reap: 'reap {conduction_id}' },
 };
 
@@ -51,6 +55,10 @@ interface HarnessOpts {
   tasks: Record<string, DaemonTask | Error>;
   launchExitCode?: number | null;
   childCount?: number;
+  config?: DaemonConfig;
+  /** B-713: per-launch exit codes, consumed in order (falls back to launchExitCode/0 once
+   *  exhausted) — lets a test script "dirty, dirty, clean" across retried attempts. */
+  launchExitCodes?: Array<number | null>;
 }
 
 // A stateful fake world: conduction rows mutate through updateConduction/takeoverConduction (the
@@ -70,7 +78,7 @@ function makeHarness(opts: HarnessOpts) {
       t += ms;
     }),
     leaseHolder: ME,
-    config,
+    config: opts.config ?? config,
     log: (line: string) => logs.push(line),
     listConductions: vi.fn(async (args: { status?: string }) =>
       conductions.filter((c) => !args.status || c.status === args.status).map((c) => ({ ...c })),
@@ -102,6 +110,9 @@ function makeHarness(opts: HarnessOpts) {
       commands.push(cmd);
       if (cmd.startsWith('launch')) {
         hooks.onLaunch?.(cmd);
+        if (opts.launchExitCodes && opts.launchExitCodes.length > 0) {
+          return { exitCode: opts.launchExitCodes.shift()! };
+        }
         return { exitCode: opts.launchExitCode === undefined ? 0 : opts.launchExitCode };
       }
       return { exitCode: 0 };
@@ -216,6 +227,94 @@ describe('runSchedulerPass', () => {
     await runSchedulerPass(h.deps, state);
     expect(h.launches()).toHaveLength(1);
     expect(h.getConduction('cond-1').retry_count).toBe(0); // retry_count untouched
+  });
+
+  const retryConfig: DaemonConfig = { ...config, retryCap: 2, retryBackoffMs: 15_000 };
+
+  it("case 4a (B-713): dirty exit retried, cap exhausted, parks with 'dirty-exit', no further fire after parking", async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      config: retryConfig,
+      launchExitCodes: [1, 1, 1], // every attempt (initial + 2 retries) dies dirty
+    });
+    const state = new Map<string, WatchBaseline>();
+    await runSchedulerPass(h.deps, state);
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await runSchedulerPass(h.deps, state);
+
+    // Initial fire + 2 retries = 3 launches; reap runs before each of the 2 retries.
+    expect(h.launches()).toHaveLength(3);
+    expect(h.commands.filter((c) => c.startsWith('reap'))).toHaveLength(2);
+    expect(h.deps.sleep).toHaveBeenCalledWith(15_000);
+    expect(h.getConduction('cond-1').retry_count).toBe(2);
+    expect(h.deps.updateConduction).toHaveBeenCalledWith('cond-1', {
+      status: 'parked',
+      last_worker_exit_code: 1,
+      last_worker_exit_class: 'dirty-exit',
+    });
+    expect(h.getConduction('cond-1').status).toBe('parked');
+
+    // Cap exhausted → parked-and-stopped, exactly like the no-retry case: no further fire.
+    await runSchedulerPass(h.deps, state);
+    expect(h.launches()).toHaveLength(3);
+  });
+
+  it('case 4b (B-713): dirty exit retried, succeeds before cap, stays active, retry_count not reset', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      config: retryConfig,
+      launchExitCodes: [1, 0], // first attempt dirty, the retry comes back clean
+    });
+    const state = new Map<string, WatchBaseline>();
+    await runSchedulerPass(h.deps, state);
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    h.hooks.onLaunch = () => {
+      const task = h.tasks['task-1'] as DaemonTask;
+      // Only the SECOND (retried) launch resolves the gate — the first dirty attempt changes
+      // nothing, so the classifier still sees it as a dirty exit rather than a clean no-progress.
+      if (h.launches().length === 2) task.awaiting_human_input = true;
+    };
+    await runSchedulerPass(h.deps, state);
+
+    expect(h.launches()).toHaveLength(2); // initial dirty attempt + 1 successful retry
+    expect(h.commands.filter((c) => c.startsWith('reap'))).toHaveLength(1);
+    // retry_count reflects the one retry taken and is NOT reset back to 0 on success.
+    expect(h.getConduction('cond-1').retry_count).toBe(1);
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.deps.updateConduction).not.toHaveBeenCalledWith(
+      'cond-1',
+      expect.objectContaining({ status: 'parked' }),
+    );
+  });
+
+  it('case 4c (B-713): HARMONY_DAEMON_RETRY_CAP=0 reproduces exact pre-B-713 immediate-park behavior', async () => {
+    const zeroRetryConfig: DaemonConfig = { ...config, retryCap: 0, retryBackoffMs: 15_000 };
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      config: zeroRetryConfig,
+      launchExitCode: 1,
+    });
+    const state = new Map<string, WatchBaseline>();
+    await runSchedulerPass(h.deps, state);
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await runSchedulerPass(h.deps, state);
+
+    // A single launch, no reap, no sleep, no retry_count bump — identical to the no-retry-config case.
+    expect(h.launches()).toHaveLength(1);
+    expect(h.commands.filter((c) => c.startsWith('reap'))).toHaveLength(0);
+    expect(h.deps.sleep).not.toHaveBeenCalled();
+    expect(h.getConduction('cond-1').retry_count).toBe(0);
+    expect(h.deps.updateConduction).toHaveBeenCalledWith('cond-1', {
+      status: 'parked',
+      last_worker_exit_code: 1,
+      last_worker_exit_class: 'dirty-exit',
+    });
   });
 
   it("case 5: a split-umbrella exit completes the conduction ('completed'/'split-umbrella', never park)", async () => {

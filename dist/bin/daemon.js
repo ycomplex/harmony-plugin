@@ -18917,6 +18917,15 @@ function envMs(env, key, fallback) {
   }
   return n;
 }
+function envNonNegativeInt(env, key, fallback) {
+  const raw = envValue(env, key);
+  if (raw === void 0) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    throw new Error(`${key} must be a non-negative integer, got: ${raw}`);
+  }
+  return n;
+}
 function loadDaemonConfig(env, readFile) {
   const profilePath = envValue(env, "HARMONY_DAEMON_PROFILE");
   if (!profilePath) {
@@ -18944,6 +18953,8 @@ function loadDaemonConfig(env, readFile) {
     pollMs: envMs(env, "HARMONY_DAEMON_POLL_MS", 25e3),
     heartbeatMs: envMs(env, "HARMONY_DAEMON_HEARTBEAT_MS", 3e4),
     staleMs: envMs(env, "HARMONY_DAEMON_STALE_MS", 3e5),
+    retryCap: envNonNegativeInt(env, "HARMONY_DAEMON_RETRY_CAP", 2),
+    retryBackoffMs: envNonNegativeInt(env, "HARMONY_DAEMON_RETRY_BACKOFF_MS", 15e3),
     profile: { launch: profile.launch, reap: profile.reap },
     logPath: envValue(env, "HARMONY_DAEMON_LOG")
   };
@@ -19074,26 +19085,42 @@ async function handleConduction(deps, state, row) {
   const wake = detectWake(baseline, current);
   if (wake === null) return;
   deps.log(`conduction ${row.id}: wake (${wake}) \u2014 launching worker`);
-  const { exitCode } = await deps.runCommand(
-    renderTemplate(deps.config.profile.launch, templateVars(row))
-  );
-  const after = await deps.getTaskMeta(row.task_id);
-  const nonArchivedChildCount = after.workflow_state === "Decomposed" ? await deps.countNonArchivedChildren(row.task_id) : 0;
-  const progressed = (after.workflow_state ?? null) !== (current.workflow_state ?? null) || (after.awaiting_human_input ?? null) !== (current.awaiting_human_input ?? null);
-  const classifyArgs = { row: after, nonArchivedChildCount, exitCode, progressed };
-  const outcome = classifyWorkerExit(classifyArgs);
-  const cls = exitClass(outcome, classifyArgs);
-  deps.log(`conduction ${row.id}: worker exit code=${exitCode ?? "null"} \u2192 ${outcome.action} (${cls})`);
-  if (outcome.action === "wait") {
-    state.set(row.id, captureBaseline(after));
+  let retryCount = row.retry_count;
+  for (; ; ) {
+    const { exitCode } = await deps.runCommand(
+      renderTemplate(deps.config.profile.launch, templateVars(row))
+    );
+    const after = await deps.getTaskMeta(row.task_id);
+    const nonArchivedChildCount = after.workflow_state === "Decomposed" ? await deps.countNonArchivedChildren(row.task_id) : 0;
+    const progressed = (after.workflow_state ?? null) !== (current.workflow_state ?? null) || (after.awaiting_human_input ?? null) !== (current.awaiting_human_input ?? null);
+    const classifyArgs = { row: after, nonArchivedChildCount, exitCode, progressed };
+    const outcome = classifyWorkerExit(classifyArgs);
+    const cls = exitClass(outcome, classifyArgs);
+    deps.log(
+      `conduction ${row.id}: worker exit code=${exitCode ?? "null"} \u2192 ${outcome.action} (${cls})`
+    );
+    if (outcome.action === "wait") {
+      state.set(row.id, captureBaseline(after));
+      return;
+    }
+    if (outcome.action === "park" && cls === "dirty-exit" && retryCount < deps.config.retryCap) {
+      retryCount += 1;
+      await deps.updateConduction(row.id, { retry_count: retryCount });
+      deps.log(
+        `conduction ${row.id}: dirty exit \u2014 retrying (attempt ${retryCount}/${deps.config.retryCap}) after reap + ${deps.config.retryBackoffMs}ms backoff`
+      );
+      await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+      await deps.sleep(deps.config.retryBackoffMs);
+      continue;
+    }
+    state.delete(row.id);
+    await deps.updateConduction(row.id, {
+      status: outcome.action === "complete" ? "completed" : "parked",
+      last_worker_exit_code: exitCode,
+      last_worker_exit_class: cls
+    });
     return;
   }
-  state.delete(row.id);
-  await deps.updateConduction(row.id, {
-    status: outcome.action === "complete" ? "completed" : "parked",
-    last_worker_exit_code: exitCode,
-    last_worker_exit_class: cls
-  });
 }
 async function runScheduler(deps) {
   const state = /* @__PURE__ */ new Map();
