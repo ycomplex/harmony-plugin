@@ -92,8 +92,26 @@ its own open PR/branch — it is a normal ticket: skip this section and continue
 
 ### O1. Confirm the release decision (accept clears the gate — it does NOT release yet)
 
-`mcp__harmony__get_task({ task_id })` (read `.harmony-task.json` for the id) and
-`mcp__harmony__get_brief({ task_id })`. Show the `release-decision-pending` brief.
+**Resume-vs-draft check (run this FIRST, before anything else — B-714, closes the release-gate loop).**
+Every entry to O1 is one of two shapes: a **fresh** Built ticket that needs its release brief drafted, or a
+**re-entry** where the human already accepted the release out-of-band (the browser, or a daemon worker
+re-firing on the flag flip) and the accept just hasn't been *executed* yet. `resolve_brief({ command:
+"accept" })` on a `pending_activity: null` brief only clears `awaiting_human_input` — it does NOT move
+`workflow_state` off `Built` (Built→Deployed is a SYSTEM transition triggered by the deploy actually
+succeeding, not by the accept). Conflating the two shapes is what loops: drafting ANOTHER
+`release-decision-pending` brief on top of one that was already accepted (B-265, B-713).
+
+1. `mcp__harmony__get_task({ task_id })` and `mcp__harmony__get_brief({ task_id })`.
+2. **Detect "already accepted, execution pending":** `workflow_state === 'Built'` AND
+   `awaiting_human_input === false` AND `get_brief` returns **null** (no active brief). This shape is
+   unambiguous — a fresh Built ticket always has its release brief composed (hence
+   `awaiting_human_input: true`) in the very same start-work invocation that advanced it to Built, and a
+   *deferred* release brief moves the ticket to `Parked`, not `Built`. So Built + not-awaiting + no-active-
+   brief can only mean "the human already accepted" — it can never mean "fresh, undrafted". When this shape
+   matches: **skip drafting/composing another brief entirely and go straight to O2** to execute the merge +
+   deploy.
+3. Otherwise — a brief is already active (show it), or the ticket is freshly Built and `awaiting_human_input`
+   is still true (draft one) — continue below.
 
 **Risk-class signal on the release brief (B-516).** Before surfacing the brief, compute a **path-based**
 risk signal from the build's changed paths and show it as an **attention line** above the decision, so the
@@ -119,14 +137,42 @@ mcp__harmony__resolve_brief({ task_id, command: "accept" })   // pending_activit
 
 The release brief carries `pending_activity: null` (state-machine §6.1 — Built→Deployed is
 SYSTEM-on-deploy-success, not human-accept). So accept is only the human's "go"; the ticket stays **Built**
-until the deploy actually succeeds (O2). (If the human defers, `resolve_brief({ command: "defer" })` parks
-it — do not merge.)
+until the deploy actually succeeds (O2). In a live, synchronous session the accept above falls straight into
+O2 in this same invocation — no gap for the loop to occur. A *later* re-entry (the human accepted from the
+browser, or a daemon worker resumes on the flag flip after the fact) is exactly what the resume-vs-draft
+check at the top of this section catches — it skips redrafting and resumes straight into O2 there instead.
+(If the human defers, `resolve_brief({ command: "defer" })` parks it — do not merge.)
 **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
 
 ### O2. Run the merge + deploy, THEN advance to Deployed
 
-Run the **manual-mode merge sequence below** (pre-flight checks → rebase → force-push → wait for CI →
-squash merge → cleanup). **Only after the deploy actually succeeds:**
+**Branch on `field_values.build_pr`** (B-722's recorded pushed-PR reference — shape `{ branch, head_sha,
+pr_number, pr_url, base: "main", opened_at }`) to decide how to land the code. This is what makes O2 work
+for a daemon-built PR whose worktree is long gone by the time release runs (it was built inside an ephemeral
+`--rm` container) — the LOCAL-WORKTREE precondition is no longer a hard requirement, it's just one of three
+paths:
+
+- **`build_pr` present (the common case — daemon- or human-built, B-722 recorded it):** merge it via the
+  REST endpoint already established for the bypass floor (B-712), directly — **no local worktree required:
+  no checkout, no rebase, no force-push.**
+  1. **Wait for CI** — `gh pr checks <pr_number> --watch`. The checks already ran against the pushed head
+     from the build step; there is no rebase/force-push here to re-trigger them.
+  2. **Squash-merge** — `gh api -X PUT "repos/{owner}/{repo}/pulls/<pr_number>/merge" -f merge_method=squash`
+     (the same REST form as the manual-mode flow below — `gh pr merge`'s GraphQL path still does not honor
+     `bypass_pull_request_allowances` under the required-review merge floor, B-695). `gh` resolves
+     `{owner}/{repo}` from the git remote of whatever directory the command runs in, not from a specific
+     checked-out branch — running it from the project root, or any clone of the repo, is sufficient.
+  3. **Delete the remote branch** — `gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"` (this
+     mirrors the manual flow's local branch-delete step, just done remotely instead of locally since there is
+     no local worktree/branch here to delete).
+- **`build_pr` absent, but a local worktree with its own open PR for the current branch still exists** (a
+  pre-B-722 interactive ticket that hasn't been through the now-mandatory artefact step): fall back to the
+  **manual-mode merge sequence below**, unchanged (pre-flight checks → rebase → force-push → wait for CI →
+  squash merge → local cleanup).
+- **`build_pr` absent, and no PR anywhere** (the true no-diff/already-live case, B-265 — the fix was already
+  live, nothing left to merge): there is no merge step to run; proceed straight to the advance below.
+
+**Only after the deploy actually succeeds** (the merge above landed, or the no-diff case is confirmed):
 
 ```
 mcp__harmony__advance_workflow({ task_id, activity: "deploying" })   // Built -> Deployed (now reality matches)
