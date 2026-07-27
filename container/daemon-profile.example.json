@@ -1,4 +1,4 @@
 {
-  "launch": "docker run --rm --name harmony-worker-{conduction_id} --env-file $HOME/.harmony-container.env harmony-build-env headless '/harmony-plugin:harmony-conduct {ticket} --one-shot'",
+  "launch": "mkdir -p $HOME/.harmony-conductions/{ticket}/{conduction_id}/projects $HOME/.harmony-conductions/{ticket}/{conduction_id}/logs && docker run --rm --name harmony-worker-{conduction_id} -v $HOME/.harmony-conductions/{ticket}/{conduction_id}/projects:/home/worker/.claude/projects -v $HOME/.harmony-conductions/{ticket}/{conduction_id}/logs:/home/worker/.claude/logs --env-file $HOME/.harmony-container.env harmony-build-env headless '/harmony-plugin:harmony-conduct {ticket} --one-shot'",
   "reap": "docker rm -f harmony-worker-{conduction_id}"
 }

@@ -51,3 +51,50 @@ describe('daemon-profile.example.json ↔ provision.sh mode contract', () => {
     expect(modes).toContain(modeToken);
   });
 });
+
+// B-724 transcript-persistence contract: the worker's Claude session logs must survive the
+// container's --rm. The launch template therefore bind-mounts per-conduction host dirs over the
+// worker's ~/.claude/projects and ~/.claude/logs — and must `mkdir -p` those host dirs BEFORE
+// `docker run`, because Docker auto-creates missing bind sources root-owned, which the uid-1001
+// worker cannot write (probe-proven at the B-724 design gate).
+
+/** The `-v host:container` mappings of the docker run command line. */
+function volumeMappings(launch: string): Array<{ host: string; container: string }> {
+  const words = launch.split(/\s+/);
+  const mappings: Array<{ host: string; container: string }> = [];
+  for (let i = 0; i < words.length - 1; i++) {
+    if (words[i] === '-v' || words[i] === '--volume') {
+      const [host, container] = words[i + 1].split(':');
+      mappings.push({ host, container });
+    }
+  }
+  return mappings;
+}
+
+describe('daemon-profile.example.json transcript-mount contract (B-724)', () => {
+  const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as { launch: string };
+  const mounts = volumeMappings(profile.launch);
+
+  it('bind-mounts both Claude session-log locations (projects + logs)', () => {
+    const targets = mounts.map((m) => m.container);
+    expect(targets).toContain('/home/worker/.claude/projects');
+    expect(targets).toContain('/home/worker/.claude/logs');
+  });
+
+  it('namespaces every transcript mount host-side by {ticket} AND {conduction_id}', () => {
+    for (const m of mounts) {
+      expect(m.host).toContain('{ticket}');
+      expect(m.host).toContain('{conduction_id}');
+    }
+  });
+
+  it('pre-creates every mounted host dir (mkdir -p …) BEFORE docker run', () => {
+    const dockerRunAt = profile.launch.indexOf('docker run');
+    expect(dockerRunAt).toBeGreaterThan(0);
+    const preamble = profile.launch.slice(0, dockerRunAt);
+    expect(preamble).toMatch(/^mkdir -p /);
+    for (const m of mounts) {
+      expect(preamble).toContain(m.host);
+    }
+  });
+});
