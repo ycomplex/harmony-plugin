@@ -98,3 +98,29 @@ describe('daemon-profile.example.json transcript-mount contract (B-724)', () => 
     }
   });
 });
+
+// B-724 reopen (verify-found): Docker creates mount-point PARENTS root-owned inside the
+// container, so mounting under ~/.claude breaks any non-mounted sibling writer — the B-719
+// declared-agent install (mkdir ~/.claude/agents) died with Permission denied on a live daemon
+// leg. The image must therefore pre-create every container-side mount target (and the agents
+// dir) worker-owned, so mounts land on pre-existing dirs and the parent stays writable.
+
+const dockerfilePath = fileURLToPath(new URL('../../container/Dockerfile', import.meta.url));
+
+describe('daemon-profile.example.json ↔ Dockerfile mount-parent ownership contract (B-724)', () => {
+  const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as { launch: string };
+  const dockerfile = readFileSync(dockerfilePath, 'utf8');
+  const mounts = volumeMappings(profile.launch);
+
+  it('the Dockerfile pre-creates every container-side mount target of the launch template', () => {
+    expect(mounts.length).toBeGreaterThan(0); // guard the guard — no mounts means the parse drifted
+    for (const m of mounts) {
+      expect(dockerfile).toContain(m.container);
+    }
+  });
+
+  it('the Dockerfile pre-creates the declared-agent install dir and chowns ~/.claude to worker', () => {
+    expect(dockerfile).toContain('/home/worker/.claude/agents');
+    expect(dockerfile).toMatch(/chown -R worker:worker \/home\/worker\/\.claude/);
+  });
+});

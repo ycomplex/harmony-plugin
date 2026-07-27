@@ -175,7 +175,8 @@ To debug a worker, open the newest `.jsonl` under the conduction's
 them. The daemon never reads these files — capture is for a human,
 never for control flow (the same boundary as worker-stdout capture).
 
-Two constraints, probe-proven at the B-724 design gate:
+Three constraints — the first two probe-proven at the B-724 design gate, the
+third caught by a live daemon leg at verify:
 
 - **The base dir must sit under a Docker-file-shared path** (`$HOME`
   qualifies). Outside the sharing map the "mount" lands inside the VM and the
@@ -183,13 +184,22 @@ Two constraints, probe-proven at the B-724 design gate:
 - **The template must `mkdir -p` the host dirs BEFORE `docker run`.** Docker
   auto-creates missing bind sources root-owned, and the uid-1001 worker then
   gets `Permission denied` writing its own transcript.
+- **The image must pre-create the container-side mount targets worker-owned**
+  (the Dockerfile agent target does). Docker creates mount-point *parents*
+  root-owned inside the container, so mounting under `~/.claude` otherwise
+  breaks any non-mounted sibling writer — the B-719 declared-agent install
+  (`mkdir ~/.claude/agents`) died exactly this way on a live leg.
 
 `src/daemon/profile-contract.test.ts` pins both mounts, the per-conduction
-namespacing, and the mkdir-p preamble.
+namespacing, the mkdir-p preamble, and the Dockerfile's worker-owned
+pre-creation of every mount target.
 
 **Deploy note:** the example profile is not read at runtime — apply the same
 template change to the live profile named by `HARMONY_DAEMON_PROFILE`, then
 restart the daemon (`launchctl bootout` + `bootstrap`, per Install above).
+The mount-parent fix lives in the image: **rebuild it** (`docker build -f
+container/Dockerfile --target agent -t harmony-build-env container`) so the
+next worker leg runs with worker-owned `~/.claude`.
 
 **Security:** transcripts can carry tool-call payloads including tokens. The
 hardening — access-scoping the base dir, a retention/cleanup sweep, token
