@@ -66,6 +66,44 @@ describe('loadDaemonConfig', () => {
     ).toThrow(/HARMONY_DAEMON_POLL_MS/);
   });
 
+  it('applies the B-713 retry defaults: cap 2, backoff 15s', () => {
+    const cfg = loadDaemonConfig(envWith(), readProfile);
+    expect(cfg.retryCap).toBe(2);
+    expect(cfg.retryBackoffMs).toBe(15000);
+  });
+
+  it('reads the B-713 retry knobs from env when set', () => {
+    const cfg = loadDaemonConfig(
+      envWith({
+        HARMONY_DAEMON_RETRY_CAP: '4',
+        HARMONY_DAEMON_RETRY_BACKOFF_MS: '5000',
+      }),
+      readProfile,
+    );
+    expect(cfg.retryCap).toBe(4);
+    expect(cfg.retryBackoffMs).toBe(5000);
+  });
+
+  it('accepts HARMONY_DAEMON_RETRY_CAP=0 (disables retry)', () => {
+    const cfg = loadDaemonConfig(envWith({ HARMONY_DAEMON_RETRY_CAP: '0' }), readProfile);
+    expect(cfg.retryCap).toBe(0);
+  });
+
+  it('throws loudly on non-numeric retry knobs', () => {
+    expect(() =>
+      loadDaemonConfig(envWith({ HARMONY_DAEMON_RETRY_CAP: 'soon' }), readProfile),
+    ).toThrow(/HARMONY_DAEMON_RETRY_CAP/);
+    expect(() =>
+      loadDaemonConfig(envWith({ HARMONY_DAEMON_RETRY_BACKOFF_MS: 'a-bit' }), readProfile),
+    ).toThrow(/HARMONY_DAEMON_RETRY_BACKOFF_MS/);
+  });
+
+  it('throws loudly on a negative retry cap', () => {
+    expect(() =>
+      loadDaemonConfig(envWith({ HARMONY_DAEMON_RETRY_CAP: '-1' }), readProfile),
+    ).toThrow(/HARMONY_DAEMON_RETRY_CAP/);
+  });
+
   it('carries the optional log path from HARMONY_DAEMON_LOG', () => {
     expect(loadDaemonConfig(envWith(), readProfile).logPath).toBeUndefined();
     expect(

@@ -15,9 +15,13 @@
 //   5. non-zero (or unknown) exitCode                  ⇒ park     / 'dirty-exit'
 //   6. exitCode=0, flag false, progressed=false        ⇒ park     / 'no-progress'
 //
-// Park is IMMEDIATE — no auto-retry (Accepted design d153970b); a parked conduction waits for a
-// human. Fallthrough (clean exit, progressed, ball still agent-side) is a wait: the next pass's
-// wake detection re-fires.
+// Park is IMMEDIATE at classification time (Accepted design d153970b) — this module always
+// returns 'park' for reasons 4-6 above, never a retry. B-713 layers a bounded retry ON TOP of a
+// 'dirty-exit' park (reap, backoff, re-fire, up to a cap) in the SCHEDULER (scheduler.ts), before
+// it ever writes the 'parked' status this module's outcome implies; classification itself is
+// unchanged. A parked conduction (cap exhausted, or any other park reason) waits for a human.
+// Fallthrough (clean exit, progressed, ball still agent-side) is a wait: the next pass's wake
+// detection re-fires.
 //
 // Pure functions, no I/O.
 

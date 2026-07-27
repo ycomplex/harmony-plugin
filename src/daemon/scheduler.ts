@@ -16,8 +16,12 @@
 //      a fresh ticket read (never worker stdout) and write the outcome:
 //        wait     → store the post-exit read as the new baseline (stay active);
 //        complete → status 'completed' + exit code/class;
-//        park     → status 'parked' + exit code/class — park-IMMEDIATELY, no auto-retry (the
-//                   B-659 endless-re-arm class), retry_count untouched.
+//        park     → status 'parked' + exit code/class — park-IMMEDIATELY (the B-659 endless-re-arm
+//                   class), EXCEPT a 'dirty-exit' reason gets a bounded retry first (B-713):
+//                   reap, deps.sleep(retryBackoffMs), re-fire, up to config.retryCap attempts,
+//                   bumping retry_count on the conduction record each attempt — before parking.
+//                   config.retryCap=0 reproduces the pre-B-713 immediate-park behavior exactly;
+//                   every other park reason (stale, no-progress) is still immediate, no retry.
 //   6. Errors in one conduction's handling are logged and that row skipped — never the pass.
 
 import { captureBaseline, detectWake, type WatchBaseline } from './watch.js';
@@ -163,34 +167,59 @@ async function handleConduction(
 
   // ── Fire → classify → write (step 5) ──────────────────────────────────────────────────────────
   deps.log(`conduction ${row.id}: wake (${wake}) — launching worker`);
-  const { exitCode } = await deps.runCommand(
-    renderTemplate(deps.config.profile.launch, templateVars(row)),
-  );
 
-  const after = await deps.getTaskMeta(row.task_id);
-  const nonArchivedChildCount =
-    after.workflow_state === 'Decomposed' ? await deps.countNonArchivedChildren(row.task_id) : 0;
-  const progressed =
-    (after.workflow_state ?? null) !== (current.workflow_state ?? null) ||
-    (after.awaiting_human_input ?? null) !== (current.awaiting_human_input ?? null);
+  // B-713: a 'dirty-exit' park is retried in place — reap, back off, re-fire — up to
+  // config.retryCap attempts before the conduction ever parks. Every other outcome (wait,
+  // complete, or a park for any OTHER reason) falls straight through to the write below exactly
+  // as before B-713. retryCount starts from the row's own durable retry_count so a takeover or a
+  // prior pass's partial progress is never double-counted or reset.
+  let retryCount = row.retry_count;
+  for (;;) {
+    const { exitCode } = await deps.runCommand(
+      renderTemplate(deps.config.profile.launch, templateVars(row)),
+    );
 
-  const classifyArgs: ClassifyArgs = { row: after, nonArchivedChildCount, exitCode, progressed };
-  const outcome = classifyWorkerExit(classifyArgs);
-  const cls = exitClass(outcome, classifyArgs);
-  deps.log(`conduction ${row.id}: worker exit code=${exitCode ?? 'null'} → ${outcome.action} (${cls})`);
+    const after = await deps.getTaskMeta(row.task_id);
+    const nonArchivedChildCount =
+      after.workflow_state === 'Decomposed' ? await deps.countNonArchivedChildren(row.task_id) : 0;
+    const progressed =
+      (after.workflow_state ?? null) !== (current.workflow_state ?? null) ||
+      (after.awaiting_human_input ?? null) !== (current.awaiting_human_input ?? null);
 
-  if (outcome.action === 'wait') {
-    state.set(row.id, captureBaseline(after));
+    const classifyArgs: ClassifyArgs = { row: after, nonArchivedChildCount, exitCode, progressed };
+    const outcome = classifyWorkerExit(classifyArgs);
+    const cls = exitClass(outcome, classifyArgs);
+    deps.log(
+      `conduction ${row.id}: worker exit code=${exitCode ?? 'null'} → ${outcome.action} (${cls})`,
+    );
+
+    if (outcome.action === 'wait') {
+      state.set(row.id, captureBaseline(after));
+      return;
+    }
+
+    if (outcome.action === 'park' && cls === 'dirty-exit' && retryCount < deps.config.retryCap) {
+      retryCount += 1;
+      await deps.updateConduction(row.id, { retry_count: retryCount });
+      deps.log(
+        `conduction ${row.id}: dirty exit — retrying (attempt ${retryCount}/${deps.config.retryCap}) ` +
+          `after reap + ${deps.config.retryBackoffMs}ms backoff`,
+      );
+      await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+      await deps.sleep(deps.config.retryBackoffMs);
+      continue;
+    }
+
+    // Park (retry cap exhausted, or a non-dirty-exit park reason) / complete: one terminal status
+    // write, exactly as before B-713. retry_count is left at whatever it reached — never reset.
+    state.delete(row.id);
+    await deps.updateConduction(row.id, {
+      status: outcome.action === 'complete' ? 'completed' : 'parked',
+      last_worker_exit_code: exitCode,
+      last_worker_exit_class: cls,
+    });
     return;
   }
-
-  // Park-immediately / complete: one terminal status write; retry_count untouched (no auto-retry).
-  state.delete(row.id);
-  await deps.updateConduction(row.id, {
-    status: outcome.action === 'complete' ? 'completed' : 'parked',
-    last_worker_exit_code: exitCode,
-    last_worker_exit_class: cls,
-  });
 }
 
 /** The forever loop: pass; sleep(pollMs). A pass-level failure (e.g. a transient list error) is
