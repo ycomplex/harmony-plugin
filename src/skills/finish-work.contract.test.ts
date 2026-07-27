@@ -97,6 +97,58 @@ describe('finish-work skill contract (evolved)', () => {
     expect(o0.toLowerCase()).toMatch(/get_task.{0,15}each child/);
   });
 
+  // B-703: the verify gate must READ the acceptance criteria before it composes its brief.
+  // WHY a structural test and not prose alone: prose is exactly what failed here. brief-authoring.md
+  // §Verify has required the verify brief to be a runbook built from the ticket's ACs since B-660, yet
+  // O3's recipe only ever called get_build_evidence_status — which returns booleans (`all_acs_checked`)
+  // and selects only `id, checked`, so the AC TEXT never entered the session. The contract was
+  // unsatisfiable by construction and no test noticed. This pins the ordering mechanically.
+  const o3Section = (body: string): string => {
+    const start = body.indexOf('### O3. Verify');
+    expect(start, 'finish-work has no "### O3. Verify" section').toBeGreaterThan(-1);
+    const rest = body.slice(start);
+    const ends = [rest.search(/\n## /), rest.search(/\n---\s*\n/)].filter((i) => i > 0);
+    return ends.length ? rest.slice(0, Math.min(...ends)) : rest;
+  };
+
+  it('reads the acceptance criteria BEFORE composing the verify brief (the read must precede the compose)', () => {
+    const o3 = o3Section(skill.body);
+    const readIdx = o3.indexOf('list_acceptance_criteria');
+    const composeIdx = o3.search(/mcp__harmony__compose_brief\s*\(\s*\{/);
+
+    expect(
+      readIdx,
+      'O3 never calls list_acceptance_criteria — get_build_evidence_status cannot substitute for it: it ' +
+        'returns booleans (all_acs_checked) and selects only `id, checked`, so the AC text never reaches ' +
+        'the session and the §Verify runbook cannot be built (B-703)',
+    ).toBeGreaterThan(-1);
+    expect(composeIdx, 'O3 has no compose_brief call site — the verify brief is composed here').toBeGreaterThan(-1);
+    expect(
+      readIdx,
+      'O3 composes the verify brief BEFORE reading the acceptance criteria. The read must precede the ' +
+        'compose — a runbook composed from evidence booleans is the B-703 defect, not a runbook',
+    ).toBeLessThan(composeIdx);
+  });
+
+  it('states the runbook requirement in O3 so a future edit cannot silently gut it (B-703)', () => {
+    const o3 = o3Section(skill.body);
+    // The runbook framing itself…
+    expect(o3.toLowerCase(), 'O3 never says the verify brief is a runbook (brief-authoring.md §Verify)').toContain('runbook');
+    // …pointing at the SSoT for its shape rather than restating the contract.
+    expect(o3, 'O3 must point at brief-authoring.md as the runbook contract SSoT').toContain('brief-authoring.md');
+    expect(o3, 'O3 must point specifically at the §Verify gate contract').toContain('§Verify');
+    // …and the no-criteria case is handled honestly instead of rendering an empty list.
+    expect(
+      o3.toLowerCase(),
+      'O3 must cover the no-acceptance-criteria ticket (umbrella / decision-only) rather than rendering an empty runbook',
+    ).toMatch(/no acceptance criteria|empty runbook/);
+    // …plus the re-entry freshness check, so a criterion edited during a long pause is re-read.
+    expect(
+      o3.toLowerCase(),
+      'O3 must carry the re-entry freshness check — re-read the criteria when re-entering an already-paused verify gate',
+    ).toMatch(/freshness/);
+  });
+
   // B-471 review fold #3 (NIT): state the umbrella's task_id provenance (ticket id passed to the skill,
   // NOT .harmony-task.json, since an umbrella has no worktree of its own).
   it("states the umbrella's task_id comes from the ticket id passed in, not .harmony-task.json", () => {
