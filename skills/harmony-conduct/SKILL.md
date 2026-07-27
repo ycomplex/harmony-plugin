@@ -621,6 +621,10 @@ and surfaced on the **release brief** instead, §3a/B-516; see *The release-brie
 
 Surface the active brief so the human can decide:
 
+- **At a `verify` hard-floor pause, route to `/harmony-plugin:finish-work`'s O3 *re-entry freshness check*
+  BEFORE surfacing (B-703)** — it re-reads the ticket's acceptance criteria and re-composes the runbook in
+  place if one was edited while the pause sat, so a criterion changed during the pause is reflected in what
+  the human acks. Then surface the (possibly re-composed) brief below as normal.
 - `mcp__harmony__get_brief({ task_id })` and display the rendered `content` blob **verbatim** in a fenced
   block (it is already BLUF-formatted and lint-clean — do not re-summarise it). Note `iteration` if > 1.
 - **Null brief on a `verification-ack-pending` umbrella (B-471):** `get_brief` can be **null** when

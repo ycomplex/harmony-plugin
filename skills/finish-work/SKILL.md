@@ -213,11 +213,40 @@ rather than a state that ran ahead of reality (the B-60 conflation — review F4
 After deploy, file the verification brief so the human can acknowledge real-world behaviour matches the
 design (state-machine §6.1 — verifying is human-ack by default).
 
-**Evidence-status line on the verify brief (B-560) — ALWAYS PRESENT, mechanical by construction.**
-Before composing the brief, call `mcp__harmony__get_build_evidence_status({ task_id })` — the canonical
+**1. Read the ticket's acceptance criteria (B-703) — NOT optional, and nothing substitutes for it.**
+Before composing, make the dedicated read, at the point of use:
+
+```
+mcp__harmony__list_acceptance_criteria({ task_id })
+```
+
+`get_build_evidence_status` (step 3) **cannot** stand in for this. It returns *booleans* — `all_acs_checked`,
+`has_test_cases`, `complete` — and never the criteria themselves: it selects only `id, checked` from
+`acceptance_criteria`, so the AC **text never enters the session** through it. That was the B-703 defect —
+the recipe composed the verify brief from evidence booleans, which made the §Verify **runbook** contract
+*unsatisfiable by construction*: the brief could assert "evidence complete" but could not hand the human a
+single step to check. Read the criteria, or you are not composing a runbook.
+
+**2. Compose the runbook FROM that read.** Author the brief per `skills/harmony-shared/brief-authoring.md`
+§Verify — the single source of truth for the **runbook**'s shape (hand-checkable ACs become do-X →
+expect-Y steps; non-hand-checkable ACs are stated honestly and backed by what the agent ran plus a command
+the human can run themselves), along with the question, must-haves, engagement, and the legibility
+contract. Consult it; do not restate it. Every criterion returned by step 1 is accounted for on the brief —
+it becomes a step, or it is named and explained as not hand-checkable.
+
+**When the ticket has no acceptance criteria of its own**, step 1 returns empty — an umbrella whose work sat
+in its children, or a `decision-only` ticket that completes on its Accepted decision. Say that plainly on
+the brief (*"this ticket carries no acceptance criteria of its own — the work was verified in its
+children"* / *"… its deliverable is the Accepted decision"*) and give the human whatever *is* checkable at
+this level (an umbrella's integration check; the decision's landed artefact). Never render an empty runbook
+list as though criteria existed — an empty list reads as "nothing to verify", a different and false claim.
+
+**3. Evidence-status line on the verify brief (B-560) — ALWAYS PRESENT, mechanical by construction.**
+Call `mcp__harmony__get_build_evidence_status({ task_id })` — the canonical
 single-source-of-truth definition of whether this conducted ticket carries the build evidence we require
 by Verified (test cases + all ACs checked + a PR/merge/deploy comment trail; an umbrella is exempt). Render
-its result as a **one-line evidence-status line** prepended to the brief — never optional prose. Frame it
+its result as a **one-line evidence-status line** — never optional prose — sitting **underneath the runbook
+as supporting confidence**, not as the thing being acked (brief-authoring.md §Verify). Frame it
 exactly like the B-516 release-brief risk signal: present on every verify brief, computed mechanically, so
 a missing piece is surfaced on the brief the human accepts (it does NOT block accept — it informs it):
 
@@ -228,15 +257,26 @@ a missing piece is surfaced on the brief the human accepts (it does NOT block ac
 (If incomplete and the build genuinely had its own work, land the missing evidence first — record the test
 cases via `manage_test_cases`, check the ACs via `manage_acceptance_criteria` — then recompute the line.)
 
-Author the brief per `skills/harmony-shared/brief-authoring.md` §Verify — the question, must-haves, and
-engagement it owes the human, plus the legibility contract. Consult it; do not restate it.
-
 ```
 mcp__harmony__compose_brief({
   task_id, reason: "verification-ack-pending", pending_activity: "verifying",
   doc: { decide: "Does production behaviour match the design?", items: [{ kind: "decision", text: "Acknowledge verified", recommendation: "verify once confirmed" }] }
 })
 ```
+
+**Re-entry freshness check (B-703) — arriving at a verify gate ALREADY paused with an active brief.** A
+verify pause can sit for days, and the criteria can be edited while it sits (the human tightens an AC; a
+re-opened clarify adds one). Before surfacing an existing brief, **re-read the criteria** (step 1) and
+compare them against the runbook steps in the active brief:
+
+- A criterion **missing** from the runbook, or one whose **wording no longer matches** the step built from
+  it → **re-compose in place**: rebuild the runbook per step 2 and call `compose_brief` again. It updates
+  the active brief in place and bumps `iteration` (+1) — it does not file a second brief.
+- Otherwise → surface the existing brief **unchanged**. Do not churn `iteration` for a no-op.
+
+**Named residual:** a browser acknowledgement submitted with **no session running** cannot re-read anything
+— there is no agent to compare against, so it acks whatever the brief last said. This check covers session
+re-entry only; it does not close the headless-browser-ack window.
 
 On the human's **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept" })` advances
 Deployed→Verified (terminal-positive).
