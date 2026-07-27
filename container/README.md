@@ -154,3 +154,46 @@ Everything operational is an env knob or a profile file — never a code edit:
 Worker containers are named `harmony-worker-<conduction_id>` (the example
 profile's templates), so `docker ps` maps running workers to conductions and
 the reap template can remove a dead holder's worker by name.
+
+### Worker transcripts survive the container (B-724)
+
+Worker containers run `--rm`, but the raw Claude session transcript — every
+tool call and tool result, verbatim, including exact error/permission
+messages — is the thing you need when asking "why did the worker do that?".
+The launch template therefore pre-creates a per-conduction host directory and
+bind-mounts it over the worker's session-log locations before `docker run`:
+
+```
+$HOME/.harmony-conductions/<ticket-uuid>/<conduction-id>/
+├── projects/<cwd-hash>/<session-uuid>.jsonl   # one transcript per one-shot leg
+└── logs/                                      # Claude Code's own logs
+```
+
+To debug a worker, open the newest `.jsonl` under the conduction's
+`projects/` dir. Each one-shot leg is a fresh Claude session writing its own
+`<session-uuid>.jsonl`, so legs never overwrite each other; file mtime orders
+them. The daemon never reads these files — capture is for a human,
+never for control flow (the same boundary as worker-stdout capture).
+
+Two constraints, probe-proven at the B-724 design gate:
+
+- **The base dir must sit under a Docker-file-shared path** (`$HOME`
+  qualifies). Outside the sharing map the "mount" lands inside the VM and the
+  host dir never appears.
+- **The template must `mkdir -p` the host dirs BEFORE `docker run`.** Docker
+  auto-creates missing bind sources root-owned, and the uid-1001 worker then
+  gets `Permission denied` writing its own transcript.
+
+`src/daemon/profile-contract.test.ts` pins both mounts, the per-conduction
+namespacing, and the mkdir-p preamble.
+
+**Deploy note:** the example profile is not read at runtime — apply the same
+template change to the live profile named by `HARMONY_DAEMON_PROFILE`, then
+restart the daemon (`launchctl bootout` + `bootstrap`, per Install above).
+
+**Security:** transcripts can carry tool-call payloads including tokens. The
+hardening — access-scoping the base dir, a retention/cleanup sweep, token
+redaction where feasible — is **B-725** (Conductor Daemon v1.5); until it
+lands, transcripts sit host-side with default file permissions (interim
+posture accepted at the B-724 clarify). **B-718** (session resume) reuses
+this same per-conduction `projects/` dir by re-mounting it into the next leg.
