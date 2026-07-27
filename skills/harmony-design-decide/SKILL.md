@@ -118,6 +118,23 @@ const decision = mcp__harmony__record_decision({
 mcp__harmony__reference_knowledge({ task_id, decision_id: decision.id })
 ```
 
+**Revising THIS ticket's own governing sub-track decision (B-715 defense in depth).** Before drafting a
+brand-new decision on a `revising-*` re-entry, check whether this same ticket already has an Accepted
+decision for this sub-track:
+```
+const refs = mcp__harmony__list_ticket_knowledge({ task_id })
+const priorOwn = refs.find(r => r.type === '<this sub-track's decision type>' && r.status === 'Accepted')
+```
+If `priorOwn` exists, this revision is superseding this SAME ticket's own governing decision — prefer
+`mcp__harmony__update_knowledge_entry` (amend-in-place with a dated "REVISED by <ticket>" banner, status
+stays Accepted) over authoring a fresh `record_decision`, per the B-460/B-581 amend-not-supersede
+convention (§6 below) and `harmony-stale-patch`'s existing amend-vs-supersede rule. Amending in place keeps
+the ticket from spuriously self-flagging Stale off its own revision. The stale-coupling trigger's
+self-supersede skip (B-715, Part 4 of this fix) is a second, DB-level backstop for when this is missed or
+skipped — not a substitute for choosing amend here. Only fall through to a fresh `record_decision` when no
+prior Accepted decision exists for this sub-track on this ticket, or the human explicitly chooses "retire
+and replace" over "amend" for this revision.
+
 ### 4. Compose the brief — advance only on the LAST required sub-track
 
 Author the brief per `skills/harmony-shared/brief-authoring.md` §Design — the question, must-haves,

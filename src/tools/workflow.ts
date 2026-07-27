@@ -63,18 +63,35 @@ export async function advanceWorkflow(
 
   const { data: task, error: e1 } = await client
     .from('tasks')
-    .select('workflow_state')
+    .select('workflow_state, stale')
     .eq('id', id)
     .eq('project_id', projectId)
     .single();
   if (e1) throw e1;
+
+  const taskRow = task as { workflow_state: string | null; stale: boolean | null };
+
+  // B-715: mirror compose_brief's stale guard here — advance_workflow is the OTHER substrate write
+  // path that can move workflow_state, and it has no human brief in front of it (it's the
+  // AGENT/SYSTEM-transition path), so it needs its own backstop. Forward gate progress is refused on
+  // a stale ticket; the two documented clear paths stay open: a 'revising-*' backflow (the reconciliation
+  // itself) and the universal off-ramps (parking/cancelling) plus researching (records activity, never
+  // advances state — nothing to refuse).
+  const isStaleExempt =
+    args.activity.startsWith('revising-') || args.activity === 'researching' || args.activity in UNIVERSAL;
+  if (taskRow.stale === true && !isStaleExempt) {
+    throw new Error(
+      `Task is stale (tasks.stale=true) — cannot apply forward activity '${args.activity}'. ` +
+      `Route through harmony-stale-patch (files a 'stale-patch-review' brief) or a 'revising-*' backflow first.`,
+    );
+  }
 
   const { data: transitions, error: e2 } = await client
     .from('workflow_transitions')
     .select('from_state, activity, to_state');
   if (e2) throw e2;
 
-  const fromState: string | null = (task as { workflow_state: string | null }).workflow_state;
+  const fromState: string | null = taskRow.workflow_state;
   const toState = deriveToState(fromState, args.activity, (transitions ?? []) as WorkflowTransitionRow[]);
 
   // F8: researching records the activity-in-progress WITHOUT touching workflow_state. Writing toState
