@@ -137,6 +137,52 @@ launchctl bootout gui/$UID/com.ycomplex.harmony-daemon # stop + unload
   daemon process, so a daemon-side leak can never mint commits or spend
   Claude credits.
 
+### Worker PRs are authored by the bot (B-732)
+
+The B-695 merge floor only engages on PRs the founder **cannot** merge without a
+review — and GitHub decides that by PR **author**. While workers authenticated
+with a founder PAT, every daemon PR was founder-authored and took the bypass
+lane, so the floor protected nothing.
+
+So the launch profile mints a credential per run:
+
+1. `scripts/mint-installation-token.mjs` signs an RS256 JWT from the
+   `harmony-daemon` App key and exchanges it for a **~1h installation token**.
+2. It writes a **per-run env-file at mode 0600** — the static env-file above
+   plus that token as `GIT_TOKEN`, with any pre-existing `GIT_TOKEN` **stripped**
+   rather than merely overridden. The token is never passed as `docker run -e`
+   and never crosses a command line, so it cannot be read from the host process
+   table.
+3. `reap` deletes the per-run file, so a minted credential never outlives its
+   worker.
+
+Set these on the **launcher host** (they never enter the container — only the
+minted `GIT_TOKEN` does):
+
+| Knob | Meaning |
+|---|---|
+| `HARMONY_APP_ID` | The `harmony-daemon` App id. |
+| `HARMONY_APP_INSTALLATION_ID` | The installation to mint a token for. |
+| `HARMONY_APP_PRIVATE_KEY_PATH` | Path to the App private key PEM (preferred over the inline `HARMONY_APP_PRIVATE_KEY`, which needs newline escaping). |
+| `HARMONY_PLUGIN_DIR` | Checkout the launch template runs the mint script from. |
+
+**The App must be installed on every repo the container clones** — `harmony-web`,
+`harmony-plugin` **and** `harmony-workspace`. Its installation is repo-selected,
+so a repo left out fails at the clone step, not at push time.
+
+**Consequence at the release gate:** a bot-authored PR cannot be merged until you
+approve it on GitHub. `finish-work` asserts bot authorship inside a worker run and
+**hard-errors rather than merging** if the PR came out founder-authored (that means
+the identity swap failed, and merging would silently ride the bypass again). When
+the PR is un-approved it flags the ticket `release-approval-pending` with the PR
+attached, so it lands in your queue and your resolution wakes the daemon to retry.
+
+**Token expiry is known behaviour, not a solved problem.** The token lasts ~1h. A
+build that outruns it fails at push, which is a dirty exit, which fires B-713's
+bounded retry with a fresh container and a fresh token; whether in-progress work
+survives depends on B-722's patch-preservation ladder. Revisit if a real build is
+ever observed exceeding the lifetime.
+
 ### Config, not constants (B-711)
 
 Everything operational is an env knob or a profile file — never a code edit:

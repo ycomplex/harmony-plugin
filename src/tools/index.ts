@@ -53,6 +53,7 @@ import {
   resolveBrief, resolveBriefTool,
   consumeAcceptRemark, consumeAcceptRemarkTool,
 } from './briefs.js';
+import { flagReleaseApprovalPending, flagReleaseApprovalPendingTool } from './release-approval.js';
 import {
   startElicitationTool, startElicitation,
   fileElicitationRoundTool, fileElicitationRound,
@@ -109,6 +110,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     createEntityTool, updateEntityTool, reconcileEntityTool,
     composeBriefTool, getBriefTool, resolveBriefTool, consumeAcceptRemarkTool,
+    flagReleaseApprovalPendingTool,
     startElicitationTool, fileElicitationRoundTool, getElicitationTool, concludeElicitationTool,
     advanceWorkflowTool,
     referenceKnowledgeTool,
@@ -316,6 +318,9 @@ export async function handleToolCall(
         break;
       case 'consume_accept_remark':
         result = await consumeAcceptRemark(client, projectId, args as any);
+        break;
+      case 'flag_release_approval_pending':
+        result = await flagReleaseApprovalPending(client, projectId, args as any);
         break;
       case 'start_elicitation':
         result = await startElicitation(client, projectId, userId, args as any);

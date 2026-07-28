@@ -35947,6 +35947,49 @@ async function manageSubtasks(client, projectId, userId, args) {
   return result;
 }
 
+// src/tools/release-approval.ts
+var RELEASE_APPROVAL_REASON = "release-approval-pending";
+async function flagReleaseApprovalPending(client, projectId, args) {
+  if (!args.pr_url) throw new Error("pr_url is required \u2014 the pause must name the PR to approve");
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const ref = {
+    kind: "release-approval",
+    ...args.pr_number === void 0 ? {} : { pr_number: args.pr_number },
+    pr_url: args.pr_url
+  };
+  const { error: error2 } = await client.from("tasks").update({
+    awaiting_human_input: true,
+    awaiting_human_reason: RELEASE_APPROVAL_REASON,
+    awaiting_human_ref: ref
+  }).eq("id", taskId);
+  if (error2) throw new Error(error2.message);
+  return {
+    task_id: taskId,
+    awaiting_human_input: true,
+    awaiting_human_reason: RELEASE_APPROVAL_REASON,
+    awaiting_human_ref: ref
+  };
+}
+var flagReleaseApprovalPendingTool = {
+  name: "flag_release_approval_pending",
+  description: "B-732: pause a release leg on the founder's GitHub approval of a bot-authored PR. Once daemon PRs are authored by the harmony-daemon App, GitHub forbids the author approving its own PR, so the worker cannot merge until a human approves \u2014 and a GitHub approval touches no ticket row, so without this the ticket would sit at Built in nobody's queue with nothing to wake the daemon. Sets awaiting_human_input with reason 'release-approval-pending' and an awaiting_human_ref naming the PR, so the ticket enters the human's queue with the PR linked and its resolution produces the true\u2192false flip the daemon wakes on. Never touches workflow_state \u2014 the ticket legitimately stays Built until the deploy succeeds. Idempotent: re-flagging rewrites the same triple. Use ONLY for the modeled release-approval pause; an ad-hoc worker question belongs in an elicitation round instead.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)"
+      },
+      pr_number: { type: "number", description: "The pull request number awaiting approval." },
+      pr_url: {
+        type: "string",
+        description: "The pull request URL the human must approve. Required \u2014 the pause must name what to approve."
+      }
+    },
+    required: ["task_id", "pr_url"]
+  }
+};
+
 // src/tools/workflow.ts
 var UNIVERSAL = {
   parking: "Parked",
@@ -36531,6 +36574,7 @@ function registerTools(disabledFeatures) {
     getBriefTool,
     resolveBriefTool,
     consumeAcceptRemarkTool,
+    flagReleaseApprovalPendingTool,
     startElicitationTool,
     fileElicitationRoundTool,
     getElicitationTool,
@@ -36728,6 +36772,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "consume_accept_remark":
         result = await consumeAcceptRemark(client, projectId, args);
+        break;
+      case "flag_release_approval_pending":
+        result = await flagReleaseApprovalPending(client, projectId, args);
         break;
       case "start_elicitation":
         result = await startElicitation(client, projectId, userId, args);
