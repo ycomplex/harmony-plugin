@@ -124,3 +124,61 @@ describe('daemon-profile.example.json ↔ Dockerfile mount-parent ownership cont
     expect(dockerfile).toMatch(/chown -R worker:worker \/home\/worker\/\.claude/);
   });
 });
+
+// B-732 bot-identity credential contract: daemon workers must author PRs as the harmony-daemon
+// App, not as the founder. That hinges entirely on WHICH token reaches the container, so the
+// launch template must mint a fresh installation token into a PER-RUN env-file and hand THAT to
+// docker — never the static founder-PAT file. The reap template must then delete it, so a minted
+// credential does not outlive the worker it was minted for.
+
+const mintScriptPath = fileURLToPath(
+  new URL('../../scripts/mint-installation-token.mjs', import.meta.url),
+);
+
+/** The value of the launch template's `--env-file` flag. */
+function envFileArg(launch: string): string | undefined {
+  const words = launch.split(/\s+/);
+  const at = words.indexOf('--env-file');
+  return at >= 0 ? words[at + 1] : undefined;
+}
+
+describe('daemon-profile.example.json bot-identity credential contract (B-732)', () => {
+  const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as {
+    launch: string;
+    reap: string;
+  };
+
+  it('mints the installation token BEFORE docker run', () => {
+    const dockerRunAt = profile.launch.indexOf('docker run');
+    expect(dockerRunAt).toBeGreaterThan(0);
+    expect(profile.launch.slice(0, dockerRunAt)).toContain('mint-installation-token.mjs');
+  });
+
+  it('hands docker the PER-RUN minted env-file, not the static founder-PAT one', () => {
+    const envFile = envFileArg(profile.launch);
+    expect(envFile).toBeDefined();
+    // Per-run: namespaced by conduction, so concurrent workers never share a token file.
+    expect(envFile).toContain('{conduction_id}');
+    // The mint's --out and docker's --env-file must be the SAME file, or the worker silently
+    // launches with whatever the old file held — the fail-open this ticket exists to close.
+    expect(profile.launch).toContain(`--out ${envFile}`);
+  });
+
+  it('deletes the minted env-file at reap so the credential does not outlive its worker', () => {
+    const envFile = envFileArg(profile.launch);
+    expect(profile.reap).toContain('rm -f');
+    expect(profile.reap).toContain(envFile as string);
+  });
+
+  it('never passes the token inline, where the host process table would expose it', () => {
+    expect(profile.launch).not.toMatch(/-e\s+GIT_TOKEN/);
+    expect(profile.launch).not.toMatch(/--env\s+GIT_TOKEN/);
+    expect(profile.launch).not.toMatch(/GIT_TOKEN=/);
+  });
+
+  it('the mint script the template invokes actually exists', () => {
+    // Guard the guard: a renamed script would otherwise leave the assertions above passing
+    // against a template that fails at launch.
+    expect(readFileSync(mintScriptPath, 'utf8')).toContain('export function composeEnvFile');
+  });
+});

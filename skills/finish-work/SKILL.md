@@ -129,7 +129,18 @@ class — the signal surfaces *here* instead (see harmony-conduct §3a / §4 "re
    (List the classes from `risk_classes`, comma-joined.) If it is empty, show nothing extra.
 
 Prefer this path-derived signal over any prose-derived set — the path signal is high-precision and avoids the
-prose false-positives B-516 fixed. On the human's **accept**:
+prose false-positives B-516 fixed.
+
+**Approval-required line on a bot-authored PR (B-732).** A daemon-built PR is authored by the
+`harmony-daemon` App, and GitHub forbids a PR author approving its own PR — so the merge cannot happen on
+the human's Harmony accept alone. Check `gh pr view <pr_number> --json author` for the `build_pr` PR; if
+`author.is_bot` is true, add a second attention line alongside the risk signal, naming the PR:
+
+> *"⚠ This PR is authored by `harmony-daemon[bot]` and needs your approval on GitHub before it can merge:
+> `<pr_url>`. Accepting here is your go-ahead; the merge runs once the approval lands."*
+
+Say it on the brief rather than only at the merge, so the human can approve while they are already looking
+at the release decision instead of being stopped afterwards. On the human's **accept**:
 
 ```
 mcp__harmony__resolve_brief({ task_id, command: "accept" })   // pending_activity: null → clears the flag, NO state change
@@ -157,6 +168,54 @@ paths:
   no checkout, no rebase, no force-push.**
   1. **Wait for CI** — `gh pr checks <pr_number> --watch`. The checks already ran against the pushed head
      from the build step; there is no rebase/force-push here to re-trigger them.
+  1a. **THE IDENTITY + APPROVAL GATE — FAILS CLOSED (B-732).** Daemon PRs are authored by the
+     `harmony-daemon` App so the B-695 merge floor actually engages on them. Read both signals in one call:
+     `gh pr view <pr_number> --json author,reviewDecision`. Then branch on the **RUN CONTEXT**, never on the
+     PR's author alone:
+
+     - **Worker run** (`HARMONY_BUILD_CONTAINER` is set — the image-baked marker, B-694): **ASSERT that
+       `author.is_bot` is true.** If it is false, the identity swap FAILED (the mint errored, the env slot
+       was unset, or a stale founder `GIT_TOKEN` survived into the run) — **HARD-ERROR and STOP. Never fall
+       through to the merge.** A founder-authored PR inside a worker run is by definition a broken identity
+       swap: merging it would ride the founder bypass and silently reproduce the exact inertness B-732 fixes.
+       Comment the failure on the ticket and stop; do not park-and-continue, and do not "retry as founder".
+     - **Interactive founder run** (marker absent): the PR is legitimately founder-authored, the bypass
+       applies, and this gate no-ops. Proceed to the merge.
+
+     **Why the run context and not `author.is_bot` alone:** inspecting the artefact cannot distinguish "the
+     mechanism engaged and produced this" from "the mechanism never engaged and the fallback produced this".
+     Gating on the author flag alone fails OPEN in exactly the failure it is meant to catch. B-695 read green
+     for the same reason — its checks ran against an actor that was never in use.
+
+     Then, for a bot-authored PR, **require an approving review before merging**. GitHub forbids a PR author
+     approving its own PR, so the required review is one the bot cannot supply — that IS the floor. If
+     `reviewDecision` is **not** `APPROVED`, do **NOT** attempt the merge. Instead hand the ball to the human
+     (below) and stop this leg.
+  1b. **Prompt the human and leave a wake trigger (B-732).** A PR waiting on approval must be something the
+     human is TOLD about, not something they discover. Merely stopping would leave the ticket at `Built` with
+     `awaiting_human_input: false` — in nobody's queue — and a GitHub approval touches no ticket row, so
+     nothing would ever wake the daemon to retry. That is a stall by design. So set the flag with the PR
+     attached:
+
+     ```
+     mcp__harmony__flag_release_approval_pending({ task_id, pr_number, pr_url })
+     mcp__harmony__add_comment({ task_id, content: "Awaiting your approval on <pr_url> before the merge can proceed — the PR is bot-authored, so GitHub requires a review the worker cannot supply." })
+     ```
+
+     Use `flag_release_approval_pending`, **not** `update_task` — the awaiting flag triple is a
+     human-pause assertion, and `update_task` deliberately does not expose it (every writer of that
+     triple is the tool whose semantics justify it: `compose_brief` owns the brief pause,
+     `file_elicitation_round` owns the question pause, and this owns the release-approval pause). It
+     sets the flag, the `release-approval-pending` reason and a PR-naming ref, and touches nothing
+     else — in particular it never moves `workflow_state`, because the ticket legitimately stays at
+     `Built` until the deploy succeeds. It is idempotent, so a retried leg re-flags safely.
+
+     The ticket now appears in the human's queue with the PR linked, and their resolution produces the
+     `true → false` flag flip the daemon already wakes on. Under `--one-shot` this is a clean human pause:
+     **exit here**. In an interactive session, surface the PR URL and wait. Either way, when the run resumes
+     the O1 resume-vs-draft check routes straight back into O2 and retries the merge — no redraft, no new
+     brief. (This is a *modeled* pause with a first-class reason, which is why it does not go through B-733's
+     ad-hoc-question channel.)
   2. **Squash-merge** — `gh api -X PUT "repos/{owner}/{repo}/pulls/<pr_number>/merge" -f merge_method=squash`
      (the same REST form as the manual-mode flow below — `gh pr merge`'s GraphQL path still does not honor
      `bypass_pull_request_allowances` under the required-review merge floor, B-695). `gh` resolves

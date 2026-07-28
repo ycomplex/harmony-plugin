@@ -312,6 +312,8 @@ export const ACK_PASS_THROUGH: Record<string, string> = {
     'Already minimal: { task_id, decision_id, linked } — the link confirmation IS the ack.',
   manage_labels:
     'Already id-lists only: { added: [label ids], removed: [label ids] } — no record echo to strip.',
+  flag_release_approval_pending:
+    'Already a compact confirmation of the flag triple it just wrote ({task_id, awaiting_human_input, awaiting_human_reason, awaiting_human_ref}). The ref echoes the caller\'s pr_url deliberately: it IS the pause\'s identity, and reading it back is how the caller confirms WHICH PR the human was queued against.',
 };
 
 /**
