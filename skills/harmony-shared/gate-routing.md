@@ -45,6 +45,27 @@ the verify result AND its brief always carries a mechanical evidence-status line
 carried by its children. A **decision-only ticket is likewise exempt** (B-681) — its evidence IS the
 Accepted decision knowledge (`exempt_reason: 'decision-only'`).
 
+## Resolution provenance — every accept declares how it arrived (B-734)
+
+Every `resolve_brief` call declares **`provenance`** — how this resolution arrived. It is **required**: the
+`brief_resolved` entry the resolution records is attributed from it, and an absent or unrecognised
+declaration is stored unattributed and is **never read as a human decision**. Consumers read the entry,
+never the absence of one — "there is no brief, so a human must have accepted" is exactly the inference
+B-734 removes (`finish-work` O1 is the first consumer re-keyed onto the entry; a B-697 worker was right to
+refuse an irreversible merge justified only by that absence).
+
+| how the resolution arrived | `provenance` |
+|---|---|
+| the human's accept/defer given in the **running session** — every gate skill's normal accept path | `human-in-session` |
+| **`harmony-conduct` §4b** synthesized the accept under a delegation mode | `agent-synthesized:<mode>` — `<mode>` is the run's effective mode: `unattended`, `escalate`, or `pause-at` |
+| the human clicked Accept/Deny in the **web** | `human-in-browser` — **the web's alone**; the plugin is never the browser, so its `resolve_brief` REJECTS this value |
+
+**One call site, two provenances.** §4b routes a delegated gate through the owning gate skill's *own* accept
+path — that is what preserves the side effects and the Accepted knowledge — so the same `resolve_brief` call
+serves both: it declares `human-in-session` when the human decided, and carries `agent-synthesized:<mode>`
+through when the conductor did. The conductor synthesizes the accept using the founder's token, so an
+undeclared auto-advance would be recorded as a decision the founder personally made.
+
 ## The decision-only fast-forward (B-681)
 
 A ticket carrying the **`decision-only` label** finishes its deliverable at an early gate and has nothing

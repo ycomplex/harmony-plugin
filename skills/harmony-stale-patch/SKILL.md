@@ -123,11 +123,14 @@ ticket now appears in **both** queue reads — the `awaiting_human_input` read (
 ### 5. Display + resolve
 
 Show the rendered `content` verbatim. On the human's command:
-- **accept** → `mcp__harmony__resolve_brief({ task_id, command: 'accept' })`. P3's extended `resolve_brief`
+- **accept** → `mcp__harmony__resolve_brief({ task_id, command: 'accept', provenance: 'human-in-session' })`.
+  A stale-patch review is never auto-advanced in any mode, so this gate's provenance is always the human's
+  own (B-734). P3's extended `resolve_brief`
   clears the Stale flag (`tasks.stale=false, stale_ref=NULL`) on a `stale-patch-review` resolution, and — if
   the brief carried a `revising-*` `pending_activity` — **backflows state** through the existing path. Report
   the cleared flag + the new `workflow_state` (if it changed).
-- **defer** → `mcp__harmony__resolve_brief({ task_id, command: 'defer', detail: '<why diverging>' })`. For a
+- **defer** →
+  `mcp__harmony__resolve_brief({ task_id, command: 'defer', detail: '<why diverging>', provenance: 'human-in-session' })`. For a
   `stale-patch-review` brief, **defer means reject / knowing-divergence**, not park: P3's `resolve_brief`
   clears the Stale flag and records the rejection in `resolved_detail` (`knowing-divergence: <why>`), but does
   **NOT** Park the ticket (it keeps its current state — the human knowingly accepts the divergence). This is

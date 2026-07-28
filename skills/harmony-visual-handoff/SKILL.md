@@ -136,7 +136,12 @@ mcp__harmony__compose_brief({
 
 ### 6. Resolve
 
-- **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept" })` → promotes the decision
+> **Provenance (B-734):** `human-in-session` below is the human deciding *here* — a conductor-synthesized
+> accept carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
+> §Resolution provenance).
+
+- **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })`
+  → promotes the decision
   Asserted→Accepted; if it carried `pending_activity: "designing"`, advances Decomposed→Designed. `accept`
   binds to the **framed decision**, not every datum the surface depicted. Report whether the ticket is now
   Designed or still needs other sub-tracks, then return to `harmony-design-decide`.
@@ -150,10 +155,10 @@ mcp__harmony__compose_brief({
     source_type: "manual", source_activity: "defer", source_task_id: "<task uuid>",
   })
   mcp__harmony__reference_knowledge({ task_id, decision_id: deferral.id })
-  mcp__harmony__resolve_brief({ task_id, command: "defer", detail: "<why>" })
+  mcp__harmony__resolve_brief({ task_id, command: "defer", detail: "<why>", provenance: "human-in-session" })
   ```
   **Fallback (F4/B-352):** a defer with no rationale **still parks** — prompt once for the rationale ("what
   should we revisit, and when?"), but if the human declines, skip the `record_decision`/`reference_knowledge`
-  and just `resolve_brief({ task_id, command: "defer" })`. Never hard-block the "not now". (Web `defer` is
-  mechanical-only and never authors this — documented v1 asymmetry.)
+  and just `resolve_brief({ task_id, command: "defer", provenance: "human-in-session" })`. Never hard-block
+  the "not now". (Web `defer` is mechanical-only and never authors this — documented v1 asymmetry.)
 - **iterate** → step 4 (regenerate); **expand**/**related** → show the pre-generated sections from `get_brief`.

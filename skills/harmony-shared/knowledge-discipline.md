@@ -61,7 +61,7 @@ deferred decision — ad59f7d5; do not invent numbers.)
 When the human **defers** a brief (the `defer` command), a "not now" is itself a decision worth keeping —
 knowledge-model-v1 §5a is locked: a deferral **writes a `knowledge_decisions` deferral entry** (the
 rationale + a `review_by`/watch date), so it outlives the ticket and resurfaces. So in **every** skill's
-`defer` path, BEFORE calling `resolve_brief({ command: 'defer' })`, author the deferral:
+`defer` path, BEFORE calling `resolve_brief({ command: 'defer', … })`, author the deferral:
 
 ```
 const deferral = mcp__harmony__record_decision({
@@ -75,13 +75,17 @@ const deferral = mcp__harmony__record_decision({
   source_task_id: "<task uuid>",
 })
 mcp__harmony__reference_knowledge({ task_id, decision_id: deferral.id })
-mcp__harmony__resolve_brief({ task_id, command: "defer", detail: "<why>" })   // parks the ticket
+mcp__harmony__resolve_brief({ task_id, command: "defer", detail: "<why>", provenance: "human-in-session" })   // parks the ticket
 ```
+
+(A defer is the human's own "not now", so it is always `human-in-session` from the plugin — the conductor
+synthesizes only accepts, never defers. `provenance` itself is covered in
+`skills/harmony-shared/gate-routing.md` §Resolution provenance — B-734.)
 
 **Graceful fallback (B-352).** A defer with **no rationale still parks** — never hard-block the human's
 "not now." If the human gives no rationale, **prompt once** ("what should we revisit, and when?") but if
 they decline, skip the `record_decision`/`reference_knowledge` and just `resolve_brief({ command:
-'defer' })`. The authoring is best-effort; the park is guaranteed.
+'defer', provenance: 'human-in-session' })`. The authoring is best-effort; the park is guaranteed.
 
 **Documented asymmetry (reconciliation contract §4.3 / F4).** The **web** `defer` (P5) is
 **mechanical-only** — it parks via `resolve_brief` but does **NOT** author the deferral entry (authoring

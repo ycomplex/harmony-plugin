@@ -296,6 +296,11 @@ brief it no longer underwrites (the engine contract's iterate-prune).
 ### 5. Display + resolve
 
 Show the rendered `content` verbatim. On the human's command:
+
+> **Provenance (B-734):** `human-in-session` below is the human deciding *here* — a conductor-synthesized
+> accept carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
+> §Resolution provenance).
+
 - **accept** → **first file the proposed ACs (B-648), then execute the de-scope block (B-518), then
   resolve.** File the brief's proposed happy-path set onto the ticket, unchecked:
   ```
@@ -311,7 +316,8 @@ Show the rendered `content` verbatim. On the human's command:
   inbox). **Idempotent — skip any item whose ticket already exists** (`search_tasks` by the working
   title). The human's brief accept authorizes exactly the de-scopes listed on the brief — never
   re-ticket anything not in the block. Then
-  `mcp__harmony__resolve_brief({ task_id, command: "accept" })` → promotes the specification
+  `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })` → promotes
+  the specification
   Asserted→Accepted, advances Proposed→Clarified, and (when an exchange ran) promotes the coupled
   human-grounded claims — force-quit claims stay Asserted, quarantined (the DB disposal skips them).
   **Decision-only fast-forward (B-681):** if the ticket carries the `decision-only` label (the brief
@@ -336,12 +342,12 @@ Show the rendered `content` verbatim. On the human's command:
     source_type: "manual", source_activity: "defer", source_task_id: "<task uuid>",
   })
   mcp__harmony__reference_knowledge({ task_id, decision_id: deferral.id })
-  mcp__harmony__resolve_brief({ task_id, command: "defer", detail: "<why>" })   // → Parked; coupled Asserted claims archive (DB-side)
+  mcp__harmony__resolve_brief({ task_id, command: "defer", detail: "<why>", provenance: "human-in-session" })   // → Parked; coupled Asserted claims archive (DB-side)
   ```
   **Fallback (B-352):** a defer with no rationale still parks — prompt once for the rationale, but if the
   human declines, skip the `record_decision`/`reference_knowledge` and just `resolve_brief({ command:
-  "defer" })`. (The web `defer`, P5, is mechanical-only and never authors this entry — the documented v1
-  asymmetry.)
+  "defer", provenance: "human-in-session" })`. (The web `defer`, P5, is mechanical-only and never authors
+  this entry — the documented v1 asymmetry.)
 - **expand** / **related** → show the pre-generated sections from `get_brief`.
 - **edit** / **iterate** → revise the `doc` per the human's input and re-call `compose_brief` (updates
   in place, bumps `iteration`; pass `underwriting_claim_ids` when claims are coupled — see step 4).

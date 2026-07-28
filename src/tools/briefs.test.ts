@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, getBrief, resolveBrief, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, type BriefDoc, type BriefItem } from './briefs.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, getBrief, resolveBrief, resolveBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, type BriefDoc, type BriefItem } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -796,33 +798,139 @@ describe('resolveBrief', () => {
 
   it('looks up the (unique) active brief then calls the resolve_brief RPC for accept', async () => {
     const client = makeRpcClient({ id: 'brief-1' }, { brief_id: 'brief-1', workflow_state: 'Clarified', brief_status: 'accepted' });
-    const result = await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept' });
-    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-1', _command: 'accept', _detail: null });
+    const result = await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', provenance: 'human-in-session' });
+    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-1', _command: 'accept', _detail: null, p_provenance: 'human-in-session' });
     expect(result).toEqual({ brief_id: 'brief-1', workflow_state: 'Clarified', brief_status: 'accepted' });
   });
 
   it('passes the detail through for defer', async () => {
     const client = makeRpcClient({ id: 'brief-1' }, { brief_status: 'deferred' });
-    await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'defer', detail: 'later' });
-    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-1', _command: 'defer', _detail: 'later' });
+    await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'defer', detail: 'later', provenance: 'human-in-session' });
+    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-1', _command: 'defer', _detail: 'later', p_provenance: 'human-in-session' });
   });
 
   it('rejects commands other than accept/defer', async () => {
     const client = makeRpcClient({ id: 'brief-1' }, {});
-    await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'iterate' as any }))
+    await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'iterate' as any, provenance: 'human-in-session' }))
       .rejects.toThrow(/only accept\/defer/i);
   });
 
   it('throws when there is no active brief', async () => {
     const client = makeRpcClient(null, {});
-    await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept' }))
+    await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', provenance: 'human-in-session' }))
       .rejects.toThrow(/no active brief/i);
   });
 
   it('returns the RPC payload verbatim, including the idempotent flag', async () => {
     const client = makeRpcClient({ id: 'brief-1' }, { brief_id: 'brief-1', command: 'accept', workflow_state: 'Clarified', brief_status: 'accepted', idempotent: true });
-    const result = await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept' });
+    const result = await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', provenance: 'human-in-session' });
     expect(result).toEqual({ brief_id: 'brief-1', command: 'accept', workflow_state: 'Clarified', brief_status: 'accepted', idempotent: true });
+  });
+});
+
+// B-734 Phase B: provenance is a REQUIRED, VALIDATED input. The DB stores it verbatim and harmony-web
+// attributes on an EXACT match, so a wrong value is not a soft failure — it renders as unattributed
+// forever and reads as a data problem. The plugin therefore rejects rather than passes through.
+describe('resolveBrief — provenance (B-734)', () => {
+  function makeRpcClient(active: unknown, rpcResult: unknown) {
+    const chain: any = {};
+    for (const m of ['from', 'select', 'eq']) chain[m] = vi.fn(() => chain);
+    chain.maybeSingle = vi.fn(async () => ({ data: active, error: null }));
+    chain.rpc = vi.fn(async () => ({ data: rpcResult, error: null }));
+    return chain;
+  }
+
+  const accept = (client: any, provenance: any) =>
+    resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', provenance });
+
+  it.each([
+    ['human-in-session', 'the human typed the decision in the running session'],
+    ['agent-synthesized', 'the conductor synthesized it, mode unstated'],
+    ['agent-synthesized:unattended', 'synthesized under --unattended'],
+    ['agent-synthesized:escalate', 'synthesized under --escalate'],
+    ['agent-synthesized:pause-at:designed', 'a mode string may itself contain a colon'],
+  ])('accepts %s (%s) and threads it to the RPC as p_provenance', async (value) => {
+    const client = makeRpcClient({ id: 'brief-1' }, { brief_status: 'accepted' });
+    await accept(client, value);
+    expect(client.rpc).toHaveBeenCalledWith(
+      'resolve_brief',
+      expect.objectContaining({ p_provenance: value }),
+    );
+  });
+
+  it("REJECTS 'human-in-browser' — the plugin is never the browser", async () => {
+    const client = makeRpcClient({ id: 'brief-1' }, {});
+    await expect(accept(client, 'human-in-browser')).rejects.toThrow(
+      /'human-in-browser' is the web client's alone/,
+    );
+    // The anti-forgery property: nothing reached the DB.
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("REJECTS the British-spelling near-miss 'agent-synthesised' rather than storing it", async () => {
+    const client = makeRpcClient({ id: 'brief-1' }, {});
+    await expect(accept(client, 'agent-synthesised')).rejects.toThrow(
+      /unrecognised provenance 'agent-synthesised'/,
+    );
+    await expect(accept(client, 'agent-synthesised')).rejects.toThrow(
+      /accepted values are 'human-in-session', 'agent-synthesized', or 'agent-synthesized:<mode>'/,
+    );
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['human', 'a truncation'],
+    ['HUMAN-IN-SESSION', 'wrong case — the web match is exact'],
+    ['agent', 'a truncation'],
+    ['agentsynthesized', 'a missing hyphen'],
+    ['agent-synthesized:', 'a colon naming no mode'],
+    ['agent-synthesized:   ', 'a colon naming only whitespace'],
+  ])('REJECTS %s (%s)', async (value) => {
+    const client = makeRpcClient({ id: 'brief-1' }, {});
+    await expect(accept(client, value)).rejects.toThrow();
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['empty', ''],
+    ['whitespace-only', '   '],
+    ['a non-string', 42],
+  ])('REJECTS a %s provenance — absence of provenance is never evidence of a human', async (_label, value) => {
+    const client = makeRpcClient({ id: 'brief-1' }, {});
+    await expect(accept(client, value)).rejects.toThrow(/provenance is required/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('tolerates surrounding whitespace (not a semantic near-miss) and stores the trimmed value', async () => {
+    const client = makeRpcClient({ id: 'brief-1' }, { brief_status: 'accepted' });
+    await accept(client, '  human-in-session  ');
+    expect(client.rpc).toHaveBeenCalledWith(
+      'resolve_brief',
+      expect.objectContaining({ p_provenance: 'human-in-session' }),
+    );
+  });
+
+  it('the tool schema declares provenance REQUIRED, and the description names the accepted values', () => {
+    expect(resolveBriefTool.inputSchema.properties).toHaveProperty('provenance');
+    expect(resolveBriefTool.inputSchema.required).toContain('provenance');
+    expect(resolveBriefTool.description).toContain('human-in-session');
+    expect(resolveBriefTool.description).toContain('agent-synthesized');
+    expect(resolveBriefTool.description).toMatch(/FAILS CLOSED/);
+  });
+});
+
+describe('validateResolutionProvenance (B-734) — the unit behind the tool', () => {
+  it('returns the accepted value unchanged', () => {
+    expect(validateResolutionProvenance('human-in-session')).toBe('human-in-session');
+    expect(validateResolutionProvenance('agent-synthesized')).toBe('agent-synthesized');
+    expect(validateResolutionProvenance('agent-synthesized:unattended')).toBe('agent-synthesized:unattended');
+  });
+
+  it('never returns a rejected value — it throws, so nothing can be passed through by accident', () => {
+    for (const bad of ['human-in-browser', 'agent-synthesised', 'human', '', null, undefined, 7]) {
+      expect(() => validateResolutionProvenance(bad)).toThrow();
+    }
   });
 });
 
@@ -851,33 +959,75 @@ describe('resolveBrief — brief-less umbrella verify-ack (B-517)', () => {
   it('on accept with NO active brief, calls ack_umbrella_verify and returns its result', async () => {
     const rpcResult = { task_id: 'task-1', workflow_state: 'Verified' };
     const client = makeUmbrellaClient(null, sentinel, rpcResult);
-    const result = await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept' });
+    const result = await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', provenance: 'human-in-session' });
     expect(client.rpc).toHaveBeenCalledWith('ack_umbrella_verify', { _task_id: 'task-1' });
     // and it did NOT fall through to the resolve_brief RPC
     expect(client.rpc).not.toHaveBeenCalledWith('resolve_brief', expect.anything());
     expect(result).toEqual(rpcResult);
   });
 
+  // B-734: ack_umbrella_verify is a FIXED-CONTRACT RPC that takes no provenance. The plugin still
+  // requires the input (it is one tool), but must NOT thread it into this call.
+  it('does NOT thread provenance into the fixed-contract ack_umbrella_verify RPC', async () => {
+    const client = makeUmbrellaClient(null, sentinel, { task_id: 'task-1', workflow_state: 'Verified' });
+    await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', provenance: 'agent-synthesized:unattended' });
+    expect(client.rpc).toHaveBeenCalledWith('ack_umbrella_verify', { _task_id: 'task-1' });
+    expect(client.rpc.mock.calls[0][1]).not.toHaveProperty('p_provenance');
+  });
+
   it('leaves the normal active-brief accept path UNCHANGED — still calls resolve_brief, never ack_umbrella_verify', async () => {
     // active brief present -> umbrella branch is never entered.
     const client = makeUmbrellaClient({ id: 'brief-1' }, sentinel, { brief_status: 'accepted' });
-    await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept' });
-    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-1', _command: 'accept', _detail: null });
+    await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', provenance: 'human-in-session' });
+    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-1', _command: 'accept', _detail: null, p_provenance: 'human-in-session' });
     expect(client.rpc).not.toHaveBeenCalledWith('ack_umbrella_verify', expect.anything());
   });
 
   it('still errors (no ack) when the brief-less task is NOT an umbrella-auto-verify sentinel', async () => {
     const notSentinel = { workflow_state: 'Built', awaiting_human_reason: null, awaiting_human_ref: null };
     const client = makeUmbrellaClient(null, notSentinel, { task_id: 'task-1' });
-    await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept' }))
+    await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', provenance: 'human-in-session' }))
       .rejects.toThrow(/no active brief/i);
     expect(client.rpc).not.toHaveBeenCalled();
   });
 
   it('does NOT ack a brief-less umbrella on defer — that stays out of scope (still errors)', async () => {
     const client = makeUmbrellaClient(null, sentinel, { task_id: 'task-1' });
-    await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'defer', detail: 'later' }))
+    await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'defer', detail: 'later', provenance: 'human-in-session' }))
       .rejects.toThrow(/no active brief/i);
     expect(client.rpc).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// B-734 — harmony-conduct §4b prose ↔ provenance contract.
+//
+// §4b is the ONE path that resolves a brief without a human present: the conductor synthesizes the
+// human's accept and routes it through the owning gate skill's own accept path, authenticating with
+// the founder's token. If that call omits `agent-synthesized`, the resulting `brief_resolved` entry
+// records the founder as having personally decided — forging exactly the warrant B-734 creates, and
+// on the common case rather than a corner (forward gates are all delegation may touch).
+//
+// Prose cannot be type-checked, so this pins it. The sibling guard for finish-work's release-evidence
+// pause lives in release-evidence.test.ts.
+const conductPath = fileURLToPath(new URL('../../skills/harmony-conduct/SKILL.md', import.meta.url));
+
+describe('harmony-conduct §4b synthesized-accept prose ↔ provenance contract (B-734)', () => {
+  const prose = readFileSync(conductPath, 'utf8');
+
+  it('declares the agent-synthesized provenance on the auto-advance path', () => {
+    expect(prose).toContain(PROVENANCE_AGENT_SYNTHESIZED);
+  });
+
+  it('carries the delegation mode with it, not a bare marker', () => {
+    expect(prose).toContain(`${PROVENANCE_AGENT_SYNTHESIZED}:<mode>`);
+  });
+
+  it('never tells the conductor to claim a browser click', () => {
+    // human-in-browser is the web's alone. The conductor reaching for it would let an agent assert
+    // that a person clicked Accept; the plugin tool rejects the value, and the prose must not ask.
+    expect(prose).not.toMatch(
+      new RegExp(`resolve_brief\\([^)]*${PROVENANCE_WEB_ONLY}`),
+    );
   });
 });

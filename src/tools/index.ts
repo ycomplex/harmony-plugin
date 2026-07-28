@@ -54,6 +54,7 @@ import {
   consumeAcceptRemark, consumeAcceptRemarkTool,
 } from './briefs.js';
 import { flagReleaseApprovalPending, flagReleaseApprovalPendingTool } from './release-approval.js';
+import { flagReleaseEvidenceMissing, flagReleaseEvidenceMissingTool } from './release-evidence.js';
 import {
   startElicitationTool, startElicitation,
   fileElicitationRoundTool, fileElicitationRound,
@@ -111,6 +112,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     createEntityTool, updateEntityTool, reconcileEntityTool,
     composeBriefTool, getBriefTool, resolveBriefTool, consumeAcceptRemarkTool,
     flagReleaseApprovalPendingTool,
+    flagReleaseEvidenceMissingTool,
     startElicitationTool, fileElicitationRoundTool, getElicitationTool, concludeElicitationTool,
     advanceWorkflowTool,
     referenceKnowledgeTool,
@@ -321,6 +323,9 @@ export async function handleToolCall(
         break;
       case 'flag_release_approval_pending':
         result = await flagReleaseApprovalPending(client, projectId, args as any);
+        break;
+      case 'flag_release_evidence_missing':
+        result = await flagReleaseEvidenceMissing(client, projectId, args as any);
         break;
       case 'start_elicitation':
         result = await startElicitation(client, projectId, userId, args as any);

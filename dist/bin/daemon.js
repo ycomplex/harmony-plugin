@@ -18474,6 +18474,9 @@ async function fetchPendingRemark(client, taskId) {
     return null;
   }
 }
+var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
+var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
+var ACCEPTED_PROVENANCE = `'${PROVENANCE_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_SYNTHESIZED}', or '${PROVENANCE_AGENT_SYNTHESIZED}:<mode>'`;
 
 // src/elicitation/engine.ts
 var MAX_QUESTIONS_PER_ROUND = 5;

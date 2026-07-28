@@ -704,7 +704,60 @@ export async function getBrief(
   return { ...(data as Record<string, unknown>), pending_resolution };
 }
 
-export interface ResolveBriefArgs { task_id: string; command: string; detail?: string; }
+// ——— B-734 Phase B: resolution provenance ————————————————————————————————————————————————————————
+//
+// resolve_brief now records a `brief_resolved` decision entry carrying WHO decided. Provenance FAILS
+// CLOSED at the DB (a NULL is stored as JSON null and renders unattributed), so the plugin makes it a
+// REQUIRED input rather than an optional flourish — a caller that forgets it would silently produce
+// an unattributed decision forever.
+//
+// The plugin may declare only two things, because they are the only two it can witness:
+//   'human-in-session'                — the human typed accept/defer in the running session.
+//   'agent-synthesized[:<mode>]'      — the conductor synthesized it under a delegation mode.
+//
+// 'human-in-browser' is the WEB CLIENT'S ALONE (harmony-web's WEB_RESOLUTION_PROVENANCE). The plugin
+// is never the browser, so accepting it here would let an agent claim a human clicked. Rejected.
+//
+// Everything else is rejected too — INCLUDING near-misses. 'agent-synthesised' (British spelling)
+// would otherwise be stored verbatim, fall through harmony-web's exact-match attribution, and render
+// as unattributed forever: a typo that looks like a data problem. An error at the call site is
+// strictly better than a wrong value in an audit trail.
+export const PROVENANCE_HUMAN_IN_SESSION = 'human-in-session';
+export const PROVENANCE_AGENT_SYNTHESIZED = 'agent-synthesized';
+/** harmony-web's own value — the plugin must never send it. */
+export const PROVENANCE_WEB_ONLY = 'human-in-browser';
+
+const ACCEPTED_PROVENANCE = `'${PROVENANCE_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_SYNTHESIZED}', or '${PROVENANCE_AGENT_SYNTHESIZED}:<mode>'`;
+
+/**
+ * Validate-and-reject (never pass through). Returns the trimmed, accepted value.
+ * Surrounding whitespace is tolerated — it is not a semantic near-miss — but nothing else is.
+ */
+export function validateResolutionProvenance(raw: unknown): string {
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  if (!value) {
+    throw new Error(`provenance is required — declare who decided this: ${ACCEPTED_PROVENANCE}`);
+  }
+  if (value === PROVENANCE_HUMAN_IN_SESSION) return value;
+  if (value === PROVENANCE_AGENT_SYNTHESIZED) return value;
+  if (value.startsWith(`${PROVENANCE_AGENT_SYNTHESIZED}:`)) {
+    const mode = value.slice(PROVENANCE_AGENT_SYNTHESIZED.length + 1).trim();
+    if (mode) return `${PROVENANCE_AGENT_SYNTHESIZED}:${mode}`;
+    throw new Error(
+      `invalid provenance '${value}' — '${PROVENANCE_AGENT_SYNTHESIZED}:' must name a delegation mode (e.g. '${PROVENANCE_AGENT_SYNTHESIZED}:unattended'), or use bare '${PROVENANCE_AGENT_SYNTHESIZED}'`,
+    );
+  }
+  if (value === PROVENANCE_WEB_ONLY) {
+    throw new Error(
+      `provenance '${PROVENANCE_WEB_ONLY}' is the web client's alone — the plugin is never the browser, and accepting it here would let an agent claim a human clicked. Use '${PROVENANCE_HUMAN_IN_SESSION}' when the human decided in this session, or '${PROVENANCE_AGENT_SYNTHESIZED}[:<mode>]' when the conductor synthesized it.`,
+    );
+  }
+  throw new Error(
+    `unrecognised provenance '${value}' — accepted values are ${ACCEPTED_PROVENANCE}. Rejected rather than stored: an unrecognised value renders as unattributed forever, so a near-miss (e.g. the British 'agent-synthesised') would look like a data problem instead of a typo.`,
+  );
+}
+
+export interface ResolveBriefArgs { task_id: string; command: string; detail?: string; provenance: string; }
 
 export async function resolveBrief(
   client: SupabaseClient,
@@ -715,6 +768,7 @@ export async function resolveBrief(
   if (args.command !== 'accept' && args.command !== 'defer') {
     throw new Error('resolve_brief handles only accept/defer; edit/iterate are skill-side, expand/related are reads on get_brief');
   }
+  const provenance = validateResolutionProvenance(args.provenance);
   const taskId = await resolveTaskId(client, projectId, args.task_id);
   // Unique-lookup guard (partial unique index): exactly one active brief, or none.
   const { data: active, error: lookupErr } = await client
@@ -757,6 +811,8 @@ export async function resolveBrief(
     _brief_id: (active as { id: string }).id,
     _command: args.command,
     _detail: args.detail ?? null,
+    // B-734: the decision entry's attribution. Validated above — never a caller's raw string.
+    p_provenance: provenance,
   });
   if (error) throw new Error(error.message);
   return data;
@@ -774,14 +830,22 @@ export const getBriefTool = {
 
 export const resolveBriefTool = {
   name: 'resolve_brief',
-  description: "Resolve the active brief on a task. accept = promote the Asserted knowledge entry to Accepted, advance the state machine, clear the flag. defer = park the ticket. Idempotent (re-issuing the same command is safe). (edit/iterate are skill-side LLM work via compose_brief; expand/related are reads via get_brief.)",
+  description:
+    "Resolve the active brief on a task. accept = promote the Asserted knowledge entry to Accepted, advance the state machine, clear the flag. defer = park the ticket. Idempotent (re-issuing the same command is safe). (edit/iterate are skill-side LLM work via compose_brief; expand/related are reads via get_brief.) " +
+    "B-734: `provenance` is REQUIRED — it attributes the recorded decision entry, and absent provenance is stored as null and read as UNATTRIBUTED, never as a human. Accepted from the plugin: 'human-in-session' (the human typed accept/defer in this session) or 'agent-synthesized' / 'agent-synthesized:<mode>' (the conductor synthesized it under a delegation mode, e.g. 'agent-synthesized:unattended'). " +
+    "FAILS CLOSED: 'human-in-browser' is the web client's alone and is REJECTED here (the plugin is never the browser), and any other value — including near-misses like the British 'agent-synthesised' — is REJECTED rather than stored, because a wrong value would render as unattributed forever.",
   inputSchema: {
     type: 'object' as const,
     properties: {
       task_id: { type: 'string', description: 'The task whose active brief to resolve — UUID, task number, or visual ID (e.g., B-43)' },
       command: { type: 'string', description: "'accept' | 'defer'" },
       detail: { type: 'string', description: 'Optional note (e.g. the defer reason)' },
+      provenance: {
+        type: 'string',
+        description:
+          "REQUIRED. Who decided: 'human-in-session' (the human typed it in this session) | 'agent-synthesized' | 'agent-synthesized:<mode>' (conductor delegation mode). 'human-in-browser' is the web client's alone and is rejected here; any other value is rejected too.",
+      },
     },
-    required: ['task_id', 'command'],
+    required: ['task_id', 'command', 'provenance'],
   },
 };
