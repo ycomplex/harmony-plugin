@@ -220,17 +220,42 @@ describe('queryTasks', () => {
 });
 
 // Records each builder call so we can assert filters + selected columns.
-function recordingClient(rows: Record<string, unknown>[]) {
-  const calls: { eq: [string, unknown][]; select?: string } = { eq: [] };
+//
+// B-690: routes by TABLE NAME and counts projects.mode reads, so the mode-validation path can be
+// asserted rather than merely not-thrown (B-607: an unasserted mocked filter false-greens). Note the
+// await point — queryTasks awaits `.range(...)`, unlike listTasks which awaits the builder itself, so
+// the shipped makeListClient harness in tasks.test.ts cannot be copied verbatim.
+function recordingClient(rows: Record<string, unknown>[], opts: { mode?: string } = {}) {
+  const calls: {
+    eq: [string, unknown][];
+    in: [string, unknown][];
+    select?: string;
+    projectsModeReads: number;
+  } = { eq: [], in: [], projectsModeReads: 0 };
   const builder: Record<string, unknown> = {
     select(cols: string) { calls.select = cols; return builder; },
     eq(col: string, val: unknown) { calls.eq.push([col, val]); return builder; },
+    in(col: string, val: unknown) { calls.in.push([col, val]); return builder; },
     gte() { return builder; },
     lte() { return builder; },
     order() { return builder; },
     range() { return Promise.resolve({ data: rows, error: null }); },
   };
-  const client = { from: () => builder } as unknown as SupabaseClient;
+  const client = {
+    from(table: string) {
+      if (table === 'projects') {
+        calls.projectsModeReads++;
+        return {
+          select: () => ({
+            eq: () => ({
+              single: () => Promise.resolve({ data: { mode: opts.mode ?? 'opinionated' }, error: null }),
+            }),
+          }),
+        };
+      }
+      return builder;
+    },
+  } as unknown as SupabaseClient;
   return { client, calls };
 }
 
@@ -262,5 +287,121 @@ describe('query_tasks workflow filters', () => {
     const { client, calls } = recordingClient([]);
     await queryTasks(client, 'proj', { stale: true });
     expect(calls.eq).toContainEqual(['stale', true]);
+  });
+});
+
+// B-690: lean-by-default row projection + mode-validated opinionated-only filters + widened
+// workflow_state arity. Mirrors the shipped list_tasks fix (B-686).
+describe('queryTasks lean projection (B-690)', () => {
+  it('default (lean) select omits description but keeps the lifecycle + label columns', async () => {
+    const { client, calls } = recordingClient([]);
+    await queryTasks(client, 'proj', {});
+    expect(calls.select).toBeDefined();
+    expect(calls.select).not.toContain('description');
+    for (const col of ['workflow_state', 'workflow_activity', 'awaiting_human_input', 'awaiting_human_reason', 'stale', 'status', 'task_labels']) {
+      expect(calls.select).toContain(col);
+    }
+  });
+
+  it("view:'full' restores description in the select (and keeps the new fields)", async () => {
+    const { client, calls } = recordingClient([]);
+    await queryTasks(client, 'proj', { view: 'full' });
+    expect(calls.select).toContain('description');
+    expect(calls.select).toContain('workflow_state');
+  });
+
+  it('exposes the view enum in its schema', () => {
+    const props = queryTasksTool.inputSchema.properties as Record<string, any>;
+    expect(props.view?.enum).toEqual(['lean', 'full']);
+  });
+});
+
+describe('queryTasks workflow_state arity (B-690)', () => {
+  it('applies a string workflow_state via .eq', async () => {
+    const { client, calls } = recordingClient([], { mode: 'opinionated' });
+    await queryTasks(client, 'proj', { workflow_state: 'Built' });
+    expect(calls.eq).toContainEqual(['workflow_state', 'Built']);
+    expect(calls.in).toHaveLength(0);
+  });
+
+  it('applies an array workflow_state via .in', async () => {
+    const { client, calls } = recordingClient([], { mode: 'opinionated' });
+    await queryTasks(client, 'proj', { workflow_state: ['Built', 'Deployed'] });
+    expect(calls.in).toContainEqual(['workflow_state', ['Built', 'Deployed']]);
+    expect(calls.eq.find(([col]) => col === 'workflow_state')).toBeUndefined();
+  });
+
+  it('accepts a string or an array in its schema', () => {
+    const props = queryTasksTool.inputSchema.properties as Record<string, any>;
+    expect(props.workflow_state?.oneOf).toEqual([
+      { type: 'string' },
+      { type: 'array', items: { type: 'string' } },
+    ]);
+  });
+});
+
+describe('queryTasks mode validation (B-690)', () => {
+  it('does NOT read projects.mode when none of the three filters is passed', async () => {
+    const { client, calls } = recordingClient([]);
+    await queryTasks(client, 'proj', { status: 'To Do', priority: 'high', epic_id: 'e1' });
+    expect(calls.projectsModeReads).toBe(0);
+  });
+
+  it('reads projects.mode exactly ONCE even when all three filters are passed', async () => {
+    const { client, calls } = recordingClient([], { mode: 'opinionated' });
+    await queryTasks(client, 'proj', {
+      workflow_state: 'Built',
+      workflow_activity: 'building',
+      awaiting_human_input: true,
+    });
+    expect(calls.projectsModeReads).toBe(1);
+  });
+
+  it.each([
+    ['workflow_state', { workflow_state: 'Built' }],
+    ['workflow_activity', { workflow_activity: 'building' }],
+    ['awaiting_human_input', { awaiting_human_input: true }],
+  ])('rejects the %s filter on a manual-mode project, naming it', async (name, args) => {
+    const { client } = recordingClient([], { mode: 'manual' });
+    await expect(queryTasks(client, 'proj', args)).rejects.toThrow(
+      new RegExp(`${name}.*opinionated-mode projects only`, 's'),
+    );
+  });
+
+  it('names EVERY offending filter when several are passed at a manual-mode project', async () => {
+    const { client } = recordingClient([], { mode: 'manual' });
+    await expect(
+      queryTasks(client, 'proj', { workflow_state: 'Built', awaiting_human_input: false }),
+    ).rejects.toThrow(/workflow_state, awaiting_human_input filters apply/);
+  });
+
+  // awaiting_human_input: false is the DANGEROUS value, not a no-op: the column is NOT NULL DEFAULT
+  // false, so in a manual project it matches EVERY row. A truthy guard would skip validation here.
+  it('validates on awaiting_human_input: FALSE (guard is !== undefined, not truthy)', async () => {
+    const { client, calls } = recordingClient([], { mode: 'opinionated' });
+    await queryTasks(client, 'proj', { awaiting_human_input: false });
+    expect(calls.projectsModeReads).toBe(1);
+    expect(calls.eq).toContainEqual(['awaiting_human_input', false]);
+  });
+
+  // ── The stale exclusion (B-690, founder-stated) ───────────────────────────────────────────────
+  // stale is MODE-INDEPENDENT: knowledge_decision_supersede_stale has no project-mode gate, unlike
+  // tasks_default_workflow_state. A manual-mode project using knowledge entries can legitimately
+  // carry stale tasks, so mode-validating this filter would reject a VALID query. The exclusion is
+  // an ABSENT identifier in OPINIONATED_ONLY_FILTERS, which a later "complete the set" pass would
+  // silently undo — these two tests are what make that break loudly.
+  it('does NOT mode-validate the stale filter, even on a manual-mode project', async () => {
+    const { client, calls } = recordingClient([{ id: 't1', stale: true, task_labels: [] }], { mode: 'manual' });
+    const result = await queryTasks(client, 'proj', { stale: true });
+    expect(calls.projectsModeReads).toBe(0);
+    expect(calls.eq).toContainEqual(['stale', true]);
+    expect(result).toHaveLength(1);
+  });
+
+  it('does not mode-validate stale even alongside other mode-independent filters', async () => {
+    const { client, calls } = recordingClient([], { mode: 'manual' });
+    await queryTasks(client, 'proj', { stale: false, status: 'To Do', priority: 'low' });
+    expect(calls.projectsModeReads).toBe(0);
+    expect(calls.eq).toContainEqual(['stale', false]);
   });
 });

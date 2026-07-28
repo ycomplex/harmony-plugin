@@ -25048,10 +25048,22 @@ function registerTaskCommands(program3) {
 }
 
 // src/tools/query-tasks.ts
+var OPINIONATED_ONLY_FILTERS = ["workflow_state", "workflow_activity", "awaiting_human_input"];
 async function queryTasks(client, projectId, args) {
-  let query = client.from("tasks").select(
-    "id, title, status, priority, task_number, assignee_id, epic_id, description, field_values, archived, due_date, created_at, updated_at, workflow_state, workflow_activity, awaiting_human_input, awaiting_human_reason, awaiting_human_ref, stale, task_labels(labels(id, name, color))"
-  ).eq("project_id", projectId).eq("archived", args.archived ?? false);
+  const passedOpinionatedFilters = OPINIONATED_ONLY_FILTERS.filter((f) => args[f] !== void 0);
+  if (passedOpinionatedFilters.length > 0) {
+    const { data: proj, error: projError } = await client.from("projects").select("mode").eq("id", projectId).single();
+    if (projError) throw projError;
+    if (proj?.mode !== "opinionated") {
+      const names = passedOpinionatedFilters.join(", ");
+      throw new Error(
+        `The ${names} filter${passedOpinionatedFilters.length > 1 ? "s apply" : " applies"} to opinionated-mode projects only; this project is manual-mode \u2014 use the status filter instead.`
+      );
+    }
+  }
+  const baseCols = "id, title, status, priority, task_number, assignee_id, epic_id, field_values, archived, due_date, created_at, updated_at, workflow_state, workflow_activity, awaiting_human_input, awaiting_human_reason, awaiting_human_ref, stale";
+  const cols = args.view === "full" ? `${baseCols}, description` : baseCols;
+  let query = client.from("tasks").select(`${cols}, task_labels(labels(id, name, color))`).eq("project_id", projectId).eq("archived", args.archived ?? false);
   if (args.status) query = query.eq("status", args.status);
   if (args.assignee_id) query = query.eq("assignee_id", args.assignee_id);
   if (args.epic_id) query = query.eq("epic_id", args.epic_id);
@@ -25059,8 +25071,10 @@ async function queryTasks(client, projectId, args) {
   if (args.milestone_id) query = query.eq("milestone_id", args.milestone_id);
   if (args.priority) query = query.eq("priority", args.priority);
   if (args.awaiting_human_input !== void 0) query = query.eq("awaiting_human_input", args.awaiting_human_input);
-  if (args.workflow_state) query = query.eq("workflow_state", args.workflow_state);
-  if (args.workflow_activity) query = query.eq("workflow_activity", args.workflow_activity);
+  if (args.workflow_state !== void 0) {
+    query = Array.isArray(args.workflow_state) ? query.in("workflow_state", args.workflow_state) : query.eq("workflow_state", args.workflow_state);
+  }
+  if (args.workflow_activity !== void 0) query = query.eq("workflow_activity", args.workflow_activity);
   if (args.stale !== void 0) query = query.eq("stale", args.stale);
   if (args.due_date_from) query = query.gte("due_date", args.due_date_from);
   if (args.due_date_to) query = query.lte("due_date", args.due_date_to);
@@ -25092,7 +25106,7 @@ async function queryTasks(client, projectId, args) {
 function registerQueryCommand(program3) {
   const tasks = program3.commands.find((c) => c.name() === "tasks");
   if (!tasks) throw new Error("tasks command not found \u2014 register task commands first");
-  tasks.command("query").description("Search tasks with rich filters").option("--status <status>", "Filter by status").option("--assignee <id>", "Filter by assignee ID").option("--epic <id>", "Filter by epic ID").option("--cycle <id>", "Filter by cycle ID").option("--milestone <id>", "Filter by milestone ID").option("--priority <priority>", "Filter by priority: high, medium, low").option("--label <ids...>", "Filter by label IDs (must have ALL)").option("--due-from <date>", "Due date on or after (YYYY-MM-DD)").option("--due-to <date>", "Due date on or before (YYYY-MM-DD)").option("--stale <days>", "Tasks not updated in this many days").option("--archived", "Include archived tasks", false).option("--sort <field>", "Sort by: position, due_date, priority, updated_at", "position").option("--limit <n>", "Max results", "50").option("--offset <n>", "Skip results", "0").action(async (opts) => {
+  tasks.command("query").description("Search tasks with rich filters").option("--status <status>", "Filter by status").option("--assignee <id>", "Filter by assignee ID").option("--epic <id>", "Filter by epic ID").option("--cycle <id>", "Filter by cycle ID").option("--milestone <id>", "Filter by milestone ID").option("--priority <priority>", "Filter by priority: high, medium, low").option("--label <ids...>", "Filter by label IDs (must have ALL)").option("--due-from <date>", "Due date on or after (YYYY-MM-DD)").option("--due-to <date>", "Due date on or before (YYYY-MM-DD)").option("--stale <days>", "Tasks not updated in this many days").option("--archived", "Include archived tasks", false).option("--full", "Include each task's full description (rows are lean by default)", false).option("--sort <field>", "Sort by: position, due_date, priority, updated_at", "position").option("--limit <n>", "Max results", "50").option("--offset <n>", "Skip results", "0").action(async (opts) => {
     await runCommand(
       program3.opts(),
       async (ctx) => queryTasks(ctx.client, ctx.projectId, {
@@ -25107,6 +25121,7 @@ function registerQueryCommand(program3) {
         due_date_to: opts.dueTo,
         stale_days: opts.stale ? parseInt(opts.stale) : void 0,
         archived: opts.archived,
+        view: opts.full ? "full" : void 0,
         sort_by: opts.sort,
         limit: parseInt(opts.limit),
         offset: parseInt(opts.offset)
