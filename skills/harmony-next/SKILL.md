@@ -64,6 +64,10 @@ referenced decision, advance state via `pending_activity`, clear the flag. It do
 For three gates the *real* work (create children / merge+deploy / observe production) lives **outside**
 `resolve_brief`, so resolving inline here would flip state while the ticket's reality lags. So:
 
+**Provenance (B-734):** every `resolve_brief` in this skill is the human's own command, given in this
+session → `provenance: 'human-in-session'`. `harmony-next` never synthesizes a resolution, so it never
+declares anything else.
+
 - **defer** (any reason) → **deferral is knowledge** (knowledge-discipline.md §"Deferral is knowledge"):
   before parking, author the deferral so the "not now" outlives the ticket (knowledge-model-v1 §5a) —
   ```
@@ -74,12 +78,12 @@ For three gates the *real* work (create children / merge+deploy / observe produc
     source_type: 'manual', source_activity: 'defer', source_task_id: '<task uuid>',
   })
   mcp__harmony__reference_knowledge({ task_id, decision_id: deferral.id })
-  mcp__harmony__resolve_brief({ task_id, command: 'defer', detail: '<reason>' })   // → Parked
+  mcp__harmony__resolve_brief({ task_id, command: 'defer', detail: '<reason>', provenance: 'human-in-session' })   // → Parked
   ```
   **Fallback (B-352):** a defer with no rationale still parks — prompt once for the rationale, but if the
   human declines, skip the `record_decision`/`reference_knowledge` and just `resolve_brief({ command:
-  'defer' })`. Always safe inline (no external side-effect). (The web `defer`, P5, is mechanical-only and
-  never authors this entry — the documented v1 asymmetry.)
+  'defer', provenance: 'human-in-session' })`. Always safe inline (no external side-effect). (The web
+  `defer`, P5, is mechanical-only and never authors this entry — the documented v1 asymmetry.)
   - **Exception — a `stale-patch-review` brief:** `defer` here is **reject / knowing-divergence**, not park
     (see the Stale bullet below + `harmony-stale-patch`). Do NOT author a `deferral` entry for it;
     `resolve_brief` clears Stale and records the divergence.
@@ -88,7 +92,8 @@ For three gates the *real* work (create children / merge+deploy / observe produc
 - **accept** → branch on `awaiting_human_reason`:
   - **Pure gates** — `design-decision-draft`, `plan-draft` (accept ==
     `resolve_brief` with no external side-effect) → resolve inline:
-    `mcp__harmony__resolve_brief({ task_id, command: 'accept' })`; report the new `workflow_state`.
+    `mcp__harmony__resolve_brief({ task_id, command: 'accept', provenance: 'human-in-session' })`; report
+    the new `workflow_state`.
   - **Side-effecting gates** — `clarification-draft` (the clarify-authored happy-path ACs must be filed
     first — `manage_acceptance_criteria`, idempotent, then `resolve_brief`; B-648),
     `decomposition-proposal` (children must be created first), `release-decision-pending` (merge +

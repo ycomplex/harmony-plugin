@@ -294,7 +294,7 @@ Show the rendered `content` verbatim. On the human's command:
 - **reject** → **no-op.** Abandon the draft. Resolve the revise-scope-review brief WITHOUT any state change,
   WITHOUT superseding anything, and WITHOUT recording a knowing-divergence (that record is only for
   stale-patch). The run is left **untouched** at its current gate with its original downstream brief intact.
-  Use `mcp__harmony__resolve_brief({ task_id, command: 'defer', detail: 'revise-scope declined — addressing in-gate' })`
+  Use `mcp__harmony__resolve_brief({ task_id, command: 'defer', detail: 'revise-scope declined — addressing in-gate', provenance: 'human-in-session' })`
   ONLY to clear the revise-scope draft if the draft replaced the original brief; if the original downstream
   brief is still the active brief (you only *proposed* a back-up without composing over it), there is literally
   nothing to undo — just stop. **For the agent-proposed-mid-iterate case, the agent then addresses the

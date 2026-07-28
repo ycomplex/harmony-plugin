@@ -58,8 +58,12 @@ mcp__harmony__compose_brief({
 })
 ```
 
-On **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept" })` advances Designed→Planned.
-The accept IS the "go" to build.
+On **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })`
+advances Designed→Planned. The accept IS the "go" to build.
+
+> **Provenance (B-734):** `human-in-session` is the human deciding *here* — a conductor-synthesized accept
+> carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
+> §Resolution provenance).
 **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
 
 ### O3. Build (Planned → Built)

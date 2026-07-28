@@ -32791,11 +32791,39 @@ async function getBrief(client, projectId, args) {
   const pending_resolution = await fetchPendingResolution(client, taskId);
   return { ...data, pending_resolution };
 }
+var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
+var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
+var PROVENANCE_WEB_ONLY = "human-in-browser";
+var ACCEPTED_PROVENANCE = `'${PROVENANCE_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_SYNTHESIZED}', or '${PROVENANCE_AGENT_SYNTHESIZED}:<mode>'`;
+function validateResolutionProvenance(raw) {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  if (!value) {
+    throw new Error(`provenance is required \u2014 declare who decided this: ${ACCEPTED_PROVENANCE}`);
+  }
+  if (value === PROVENANCE_HUMAN_IN_SESSION) return value;
+  if (value === PROVENANCE_AGENT_SYNTHESIZED) return value;
+  if (value.startsWith(`${PROVENANCE_AGENT_SYNTHESIZED}:`)) {
+    const mode = value.slice(PROVENANCE_AGENT_SYNTHESIZED.length + 1).trim();
+    if (mode) return `${PROVENANCE_AGENT_SYNTHESIZED}:${mode}`;
+    throw new Error(
+      `invalid provenance '${value}' \u2014 '${PROVENANCE_AGENT_SYNTHESIZED}:' must name a delegation mode (e.g. '${PROVENANCE_AGENT_SYNTHESIZED}:unattended'), or use bare '${PROVENANCE_AGENT_SYNTHESIZED}'`
+    );
+  }
+  if (value === PROVENANCE_WEB_ONLY) {
+    throw new Error(
+      `provenance '${PROVENANCE_WEB_ONLY}' is the web client's alone \u2014 the plugin is never the browser, and accepting it here would let an agent claim a human clicked. Use '${PROVENANCE_HUMAN_IN_SESSION}' when the human decided in this session, or '${PROVENANCE_AGENT_SYNTHESIZED}[:<mode>]' when the conductor synthesized it.`
+    );
+  }
+  throw new Error(
+    `unrecognised provenance '${value}' \u2014 accepted values are ${ACCEPTED_PROVENANCE}. Rejected rather than stored: an unrecognised value renders as unattributed forever, so a near-miss (e.g. the British 'agent-synthesised') would look like a data problem instead of a typo.`
+  );
+}
 async function resolveBrief(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
   if (args.command !== "accept" && args.command !== "defer") {
     throw new Error("resolve_brief handles only accept/defer; edit/iterate are skill-side, expand/related are reads on get_brief");
   }
+  const provenance = validateResolutionProvenance(args.provenance);
   const taskId = await resolveTaskId(client, projectId, args.task_id);
   const { data: active, error: lookupErr } = await client.from("briefs").select("id").eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
@@ -32815,7 +32843,9 @@ async function resolveBrief(client, projectId, args) {
   const { data, error: error2 } = await client.rpc("resolve_brief", {
     _brief_id: active.id,
     _command: args.command,
-    _detail: args.detail ?? null
+    _detail: args.detail ?? null,
+    // B-734: the decision entry's attribution. Validated above — never a caller's raw string.
+    p_provenance: provenance
   });
   if (error2) throw new Error(error2.message);
   return data;
@@ -32831,15 +32861,19 @@ var getBriefTool = {
 };
 var resolveBriefTool = {
   name: "resolve_brief",
-  description: "Resolve the active brief on a task. accept = promote the Asserted knowledge entry to Accepted, advance the state machine, clear the flag. defer = park the ticket. Idempotent (re-issuing the same command is safe). (edit/iterate are skill-side LLM work via compose_brief; expand/related are reads via get_brief.)",
+  description: "Resolve the active brief on a task. accept = promote the Asserted knowledge entry to Accepted, advance the state machine, clear the flag. defer = park the ticket. Idempotent (re-issuing the same command is safe). (edit/iterate are skill-side LLM work via compose_brief; expand/related are reads via get_brief.) B-734: `provenance` is REQUIRED \u2014 it attributes the recorded decision entry, and absent provenance is stored as null and read as UNATTRIBUTED, never as a human. Accepted from the plugin: 'human-in-session' (the human typed accept/defer in this session) or 'agent-synthesized' / 'agent-synthesized:<mode>' (the conductor synthesized it under a delegation mode, e.g. 'agent-synthesized:unattended'). FAILS CLOSED: 'human-in-browser' is the web client's alone and is REJECTED here (the plugin is never the browser), and any other value \u2014 including near-misses like the British 'agent-synthesised' \u2014 is REJECTED rather than stored, because a wrong value would render as unattributed forever.",
   inputSchema: {
     type: "object",
     properties: {
       task_id: { type: "string", description: "The task whose active brief to resolve \u2014 UUID, task number, or visual ID (e.g., B-43)" },
       command: { type: "string", description: "'accept' | 'defer'" },
-      detail: { type: "string", description: "Optional note (e.g. the defer reason)" }
+      detail: { type: "string", description: "Optional note (e.g. the defer reason)" },
+      provenance: {
+        type: "string",
+        description: "REQUIRED. Who decided: 'human-in-session' (the human typed it in this session) | 'agent-synthesized' | 'agent-synthesized:<mode>' (conductor delegation mode). 'human-in-browser' is the web client's alone and is rejected here; any other value is rejected too."
+      }
     },
-    required: ["task_id", "command"]
+    required: ["task_id", "command", "provenance"]
   }
 };
 
@@ -35990,6 +36024,52 @@ var flagReleaseApprovalPendingTool = {
   }
 };
 
+// src/tools/release-evidence.ts
+var RELEASE_EVIDENCE_REASON = "release-evidence-missing";
+async function flagReleaseEvidenceMissing(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const ref = {
+    kind: "release-evidence",
+    ...args.brief_id === void 0 ? {} : { brief_id: args.brief_id },
+    ...args.task_visual_id === void 0 ? {} : { task_visual_id: args.task_visual_id }
+  };
+  const { error: error2 } = await client.from("tasks").update({
+    awaiting_human_input: true,
+    awaiting_human_reason: RELEASE_EVIDENCE_REASON,
+    awaiting_human_ref: ref
+  }).eq("id", taskId);
+  if (error2) throw new Error(error2.message);
+  return {
+    task_id: taskId,
+    awaiting_human_input: true,
+    awaiting_human_reason: RELEASE_EVIDENCE_REASON,
+    awaiting_human_ref: ref
+  };
+}
+var flagReleaseEvidenceMissingTool = {
+  name: "flag_release_evidence_missing",
+  description: "B-734: pause a release leg because the ticket carries NO recorded evidence that a human accepted the release. finish-work's O1 resume check requires a positive `brief_resolved` decision entry (B-734 gave ticket history that record) before an irreversible merge \u2014 it no longer infers acceptance from a missing brief \u2014 so it fails CLOSED when the entry is absent. Stopping silently would strand the ticket: a worker's prose to stdout is discarded by the daemon (B-697), the ticket would sit at Built with awaiting_human_input false \u2014 in nobody's queue \u2014 and nothing would wake the daemon. Sets awaiting_human_input with reason 'release-evidence-missing' and an awaiting_human_ref naming the release brief whose decision entry is absent, so the ticket enters the human's queue with the reason stated and its resolution produces the true\u2192false flip the daemon wakes on. Never touches workflow_state \u2014 the ticket legitimately stays Built, because the release did not happen. Idempotent: re-flagging rewrites the same triple. Use ONLY for this modeled missing-evidence pause; a bot-authored PR awaiting GitHub approval is flag_release_approval_pending, and an ad-hoc worker question belongs in an elicitation round.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)"
+      },
+      brief_id: {
+        type: "string",
+        description: "The release brief (UUID) whose decision entry is absent \u2014 what the human is being asked to account for."
+      },
+      task_visual_id: {
+        type: "string",
+        description: "The ticket's visual ID (e.g., B-734), for a queue entry that reads without a lookup."
+      }
+    },
+    required: ["task_id"]
+  }
+};
+
 // src/tools/workflow.ts
 var UNIVERSAL = {
   parking: "Parked",
@@ -36575,6 +36655,7 @@ function registerTools(disabledFeatures) {
     resolveBriefTool,
     consumeAcceptRemarkTool,
     flagReleaseApprovalPendingTool,
+    flagReleaseEvidenceMissingTool,
     startElicitationTool,
     fileElicitationRoundTool,
     getElicitationTool,
@@ -36775,6 +36856,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "flag_release_approval_pending":
         result = await flagReleaseApprovalPending(client, projectId, args);
+        break;
+      case "flag_release_evidence_missing":
+        result = await flagReleaseEvidenceMissing(client, projectId, args);
         break;
       case "start_elicitation":
         result = await startElicitation(client, projectId, userId, args);

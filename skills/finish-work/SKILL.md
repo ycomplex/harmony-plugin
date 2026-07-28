@@ -84,8 +84,9 @@ sequence, and do NOT touch git):
   ```
 
 - **Resolve on human ack:** show the brief; on the human's **accept** →
-  `mcp__harmony__resolve_brief({ task_id, command: "accept" })` advances **Deployed → Verified**
-  (terminal-positive). **No git.** Report completion and stop — do not fall through to O1/O2/O3.
+  `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })` advances
+  **Deployed → Verified** (terminal-positive). **No git.** Report completion and stop — do not fall through
+  to O1/O2/O3.
 
 (If `awaiting_human_ref.kind` is not `'umbrella-auto-verify'` — e.g. the ticket has NO children, or it has
 its own open PR/branch — it is a normal ticket: skip this section and continue to O1.)
@@ -96,22 +97,57 @@ its own open PR/branch — it is a normal ticket: skip this section and continue
 Every entry to O1 is one of two shapes: a **fresh** Built ticket that needs its release brief drafted, or a
 **re-entry** where the human already accepted the release out-of-band (the browser, or a daemon worker
 re-firing on the flag flip) and the accept just hasn't been *executed* yet. `resolve_brief({ command:
-"accept" })` on a `pending_activity: null` brief only clears `awaiting_human_input` — it does NOT move
+"accept", … })` on a `pending_activity: null` brief only clears `awaiting_human_input` — it does NOT move
 `workflow_state` off `Built` (Built→Deployed is a SYSTEM transition triggered by the deploy actually
-succeeding, not by the accept). Conflating the two shapes is what loops: drafting ANOTHER
-`release-decision-pending` brief on top of one that was already accepted (B-265, B-713).
+succeeding, not by the accept). Conflating the two is what loops: drafting ANOTHER
+`release-decision-pending` brief on top of one that was already accepted (B-265, B-713). Telling them apart
+is the whole job of this check — and since B-734 it is decided by **recorded evidence of the accept**, not
+by the shape of the ticket row.
 
 1. `mcp__harmony__get_task({ task_id })` and `mcp__harmony__get_brief({ task_id })`.
-2. **Detect "already accepted, execution pending":** `workflow_state === 'Built'` AND
-   `awaiting_human_input === false` AND `get_brief` returns **null** (no active brief). This shape is
-   unambiguous — a fresh Built ticket always has its release brief composed (hence
-   `awaiting_human_input: true`) in the very same start-work invocation that advanced it to Built, and a
-   *deferred* release brief moves the ticket to `Parked`, not `Built`. So Built + not-awaiting + no-active-
-   brief can only mean "the human already accepted" — it can never mean "fresh, undrafted". When this shape
-   matches: **skip drafting/composing another brief entirely and go straight to O2** to execute the merge +
-   deploy.
-3. Otherwise — a brief is already active (show it), or the ticket is freshly Built and `awaiting_human_input`
-   is still true (draft one) — continue below.
+2. **A brief is active, or the flag is up for `release-decision-pending`** → this is the ordinary release
+   gate, not a resume: show the active brief, or draft one if the flag was set before a brief was composed.
+   Continue below.
+3. **Otherwise — no active brief, and no `release-decision-pending` flag. Detect a prior accept by POSITIVE
+   EVIDENCE (B-734), never by absence.** The evidence is the **`brief_resolved` activity entry for the
+   release brief**, written by whichever surface resolved it (web or session). Call
+   `mcp__harmony__list_activity({ task_id })` and, over that chronological timeline, take:
+   - the LAST `type: 'event'` with `event_type === 'field_change'`, `field_name === 'workflow_state'` and
+     `new_value === 'Built'` — the start of THIS release cycle; then
+   - any **later** `type: 'event'` with `event_type === 'brief_resolved'`,
+     `metadata.reason === 'release-decision-pending'` and `metadata.command === 'accept'`.
+
+   **That entry is the accept.** Found → the release decision was genuinely made (`metadata.provenance`
+   names who made it — `human-in-browser` from the web, `human-in-session` from a session): **skip
+   drafting/composing another brief entirely and go straight to O2** to execute the merge + deploy.
+   Requiring the entry to sit AFTER the latest advance into `Built` is what stops a re-opened ticket
+   (`revising-building` → re-built) from resuming on its *previous* cycle's accept.
+4. **No such entry → FAIL CLOSED. Absence of the entry is NOT an accept — never merge on it.** Do not fall
+   back to the row shape, do not draft a fresh brief on top of a possible one, and do not end the run
+   quietly. Put the ticket in the human's queue:
+
+   ```
+   mcp__harmony__flag_release_evidence_missing({ task_id })
+   mcp__harmony__add_comment({ task_id, content: "Release resume blocked: no `brief_resolved` accept recorded for this ticket's release brief, so I can't confirm the release was ever accepted. Re-accept the release gate and I'll merge (B-734)." })
+   ```
+
+   `flag_release_evidence_missing` sets `awaiting_human_input` with reason **`release-evidence-missing`**,
+   so the ticket surfaces in the queue and its resolution produces the `true → false` flip the daemon wakes
+   on. **Naming the tool is the point:** B-697 proved that a worker which emits its objection to stdout and
+   exits is *discarded* by the daemon — "surface it to the human" is not a mechanism, a flag-writing tool
+   is. This is also what covers **tickets that predate B-734**: they carry no `brief_resolved` entry at all,
+   so they must never be auto-merged on a matching row shape — the human re-accepts once, and the entry
+   exists from then on. Declining to merge on absence-of-evidence is exactly what the B-697 worker did, and
+   it was right.
+
+**Why positive evidence, and not the row shape (the claim this replaces).** This check used to infer the
+accept from `workflow_state === 'Built'` AND `awaiting_human_input === false` AND a null `get_brief`, and
+called that shape *unambiguous*. **It is not.** `harmony-conduct`'s *one-shot exit contract* classifies
+**exactly** that shape — state advanced, no composed brief — as a **TORN pause = DIRTY** (a crash in the
+advance→compose window). Two skills read one row shape as opposite things, and the merge is the
+irreversible side of that disagreement: reading a torn pause as an accept converts a crash into a merge
+nobody authorised. The row shape now says only that a resume *might* be due; the `brief_resolved` entry is
+what authorises one.
 
 **Risk-class signal on the release brief (B-516).** Before surfacing the brief, compute a **path-based**
 risk signal from the build's changed paths and show it as an **attention line** above the decision, so the
@@ -143,8 +179,13 @@ Say it on the brief rather than only at the merge, so the human can approve whil
 at the release decision instead of being stopped afterwards. On the human's **accept**:
 
 ```
-mcp__harmony__resolve_brief({ task_id, command: "accept" })   // pending_activity: null → clears the flag, NO state change
+mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })   // pending_activity: null → clears the flag, NO state change
 ```
+
+`provenance: "human-in-session"` is the human's decision, made here (B-734) — and it is the **only** value
+this gate can ever carry from the plugin: release is the hard floor, so the conductor never synthesizes it
+(`skills/harmony-shared/gate-routing.md` §Resolution provenance). That accept is also what writes the
+`brief_resolved` entry a later resume reads at the top of this section.
 
 The release brief carries `pending_activity: null` (state-machine §6.1 — Built→Deployed is
 SYSTEM-on-deploy-success, not human-accept). So accept is only the human's "go"; the ticket stays **Built**
@@ -152,7 +193,8 @@ until the deploy actually succeeds (O2). In a live, synchronous session the acce
 O2 in this same invocation — no gap for the loop to occur. A *later* re-entry (the human accepted from the
 browser, or a daemon worker resumes on the flag flip after the fact) is exactly what the resume-vs-draft
 check at the top of this section catches — it skips redrafting and resumes straight into O2 there instead.
-(If the human defers, `resolve_brief({ command: "defer" })` parks it — do not merge.)
+(If the human defers, `resolve_brief({ command: "defer", provenance: "human-in-session" })` parks it — do
+not merge.)
 **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
 
 ### O2. Run the merge + deploy, THEN advance to Deployed
@@ -337,8 +379,10 @@ compare them against the runbook steps in the active brief:
 — there is no agent to compare against, so it acks whatever the brief last said. This check covers session
 re-entry only; it does not close the headless-browser-ack window.
 
-On the human's **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept" })` advances
-Deployed→Verified (terminal-positive).
+On the human's **accept** →
+`mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })` advances
+Deployed→Verified (terminal-positive). Verify is the other hard-floor gate, so like release it is only ever
+`human-in-session` from the plugin (B-734).
 **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
 
 **Land the verify result on the ticket (B-560) — NON-OPTIONAL.** Immediately after the accept, comment

@@ -188,7 +188,13 @@ load-bearing handshake the cheapest *high-information* experiment is the live sm
 ### 5. Display + resolve
 
 Show the rendered `content`. On the human's command:
-- **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept" })` → promotes this decision
+
+> **Provenance (B-734):** `human-in-session` below is the human deciding *here* — a conductor-synthesized
+> accept carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
+> §Resolution provenance).
+
+- **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })`
+  → promotes this decision
   Asserted→Accepted; if it carried `pending_activity: "designing"`, advances Decomposed→Designed. Report
   whether the ticket is now Designed or still needs other sub-tracks.
   **Decision-only fast-forward (B-681):** if the ticket carries the `decision-only` label AND this was the
@@ -210,7 +216,7 @@ Show the rendered `content`. On the human's command:
     source_type: "manual", source_activity: "defer", source_task_id: "<task uuid>",
   })
   mcp__harmony__reference_knowledge({ task_id, decision_id: deferral.id })
-  mcp__harmony__resolve_brief({ task_id, command: "defer", detail: "<why>" })
+  mcp__harmony__resolve_brief({ task_id, command: "defer", detail: "<why>", provenance: "human-in-session" })
   ```
   **Fallback (B-352):** no rationale still parks — prompt once, then skip the authoring if declined. (Web
   `defer` is mechanical-only and never authors this — documented v1 asymmetry.)

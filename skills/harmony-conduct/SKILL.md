@@ -387,7 +387,8 @@ the *same routing* the controlled flow uses when the human types "accept" in-ses
 only adds a *pause* decision in front of this one. It does **not** invent a new write path:
 
 - **Pure gates** — design (`*-design-decision` per sub-track), plan
-  (`plan-draft`): the accept is the gate skill's `resolve_brief({ decision: 'accept', … })`. Routing to the
+  (`plan-draft`): the accept is the gate skill's
+  `resolve_brief({ command: 'accept', provenance: 'agent-synthesized:<mode>', … })`. Routing to the
   owning gate skill's accept path (NOT a raw conductor `resolve_brief`) ensures the gate skill records its
   Accepted knowledge decision and runs its own completion logic.
 - **Side-effecting CLARIFY** (`brief-review`, B-648): clarify's accept **files the happy-path ACs**
@@ -403,12 +404,23 @@ only adds a *pause* decision in front of this one. It does **not** invent a new 
   `--unattended`/`--pause-at` (it auto-advances — its classes are recorded for the release-brief signal, §4);
   only in `--escalate` does the risk-class floor (delegation test step 3) send it to §4 first instead.
 
+**The synthesized accept declares itself (B-734) — NON-OPTIONAL.** Every `resolve_brief` performed in a
+synthesized accept carries **`provenance: 'agent-synthesized:<mode>'`**, where `<mode>` is this run's
+effective mode — `unattended`, `escalate`, or `pause-at` (the flag name for `mode = partial`). **Never
+`human-in-session`.** The conductor synthesizes the accept through the human's *own* accept path using the
+founder's token, so an undeclared auto-advance would be recorded as a decision the founder personally made —
+and a consumer reading that trail would attribute an agent's call to a human. Pass the provenance through
+whichever gate skill you route to; its accept path takes it in place of the `human-in-session` it declares
+when the human decides. See `skills/harmony-shared/gate-routing.md` §Resolution provenance.
+
 **Parity invariant (AC5):** an auto-advanced gate records the **SAME Accepted knowledge** a controlled run
 would. Auto-advance only skips the human *pause* — it does not skip the *decision record*. Because the
 conductor reuses the owning gate skill's accept path (the human's exact routing), the Accepted knowledge
 entry, state transition, and side effects are identical to a human-accepted controlled run. If a gate skill
 would NOT record a decision on a plain human accept, neither does its auto-advance — the contract is
-"identical to a human accept, minus the pause", nothing more.
+"identical to a human accept, minus the pause", nothing more. Parity is over **what was decided**, never
+over **who decided it**: the provenance above records that difference honestly, and it is the one field an
+auto-advance deliberately does not match to a controlled run.
 
 After the synthesized accept, briefly note it for the human's audit trail, e.g.: *"Auto-advanced the
 **<gate>** gate (accepted on your behalf per `--unattended`); recorded its decision. Continuing…"* Then
@@ -806,7 +818,12 @@ resolved (in the browser or terminal); classify which resolution it was:
 1. **State advanced — a browser accept/defer was applied** (`resolve_brief` ran from the web). The
    `workflow_state` moved forward (accept) or is now `Parked` (defer/deny), and `awaiting_human_input` is
    `false`. The web's accept/defer is the **mechanical** half (`resolve_brief` + the B-482 reconciliation
-   guard). What remains is any **side effect** that only runs where the agent runs:
+   guard). **The web already recorded the resolution as `human-in-browser`, and that record stands (B-734).**
+   When you route to a gate skill's accept path below for the side effects, its `resolve_brief` is an
+   idempotent no-op on the already-resolved brief and writes **no second event** — so the conductor neither
+   re-records nor re-attributes a resolution it did not make. (`human-in-browser` is the web's value alone;
+   the plugin's `resolve_brief` rejects it outright.) What remains is any **side effect** that only runs
+   where the agent runs:
    - **Pure gate** (design sub-tracks, plan `plan-draft`): nothing further — the
      accept fully resolved mechanically. **Continue the loop at step 1** from the new state.
    - **Side-effecting CLARIFY** (`brief-review`, B-648): the web accept advanced Proposed→Clarified **but
@@ -912,7 +929,9 @@ session** by routing to `/harmony-plugin:finish-work <ticket>`:
   (the release brief carries `pending_activity: null` — Built→Deployed is SYSTEM-on-deploy-success, not
   human-accept; see finish-work O1/O2). So on detecting a human browser-accept of release (flag cleared,
   still `Built`, no `pending_resolution`), route to `finish-work` to run the **merge + deploy** in-session;
-  finish-work advances Built→Deployed only after the deploy actually succeeds.
+  finish-work advances Built→Deployed only after the deploy actually succeeds. Note that finish-work's O1
+  re-confirms the accept from its **`brief_resolved` entry** — which the web wrote (B-734) — and not from
+  the row shape; a live-observed flag flip here and that recorded entry are the same event seen twice.
 - **verify**: likewise route to `finish-work`'s verify step on a human browser-accept; it advances
   Deployed→Verified.
 If the human did NOT act (no browser accept), release/verify stay paused — the conductor waits or the watch
@@ -937,7 +956,9 @@ row shape the exit leaves behind (daemon spec §3 step 4):
   includes a TORN pause: `workflow_state` advanced but no composed brief** (a crash in the
   advance→compose window). A torn pause must never be mistaken for a clean one — it is the same flag+row
   atomicity family as **B-498** (the browser reshape's single-RPC write); both exit-contract owners stay
-  consistent with that classification.
+  consistent with that classification. **`finish-work` O1 now agrees (B-734):** it used to read that very
+  shape at `Built` as "the human already accepted" — the direct contradiction of this line — and has been
+  re-keyed onto the `brief_resolved` accept entry, so a torn pause can no longer be resumed into a merge.
 
 Suppression is total by construction: the step-0 guard sits at the sole poll.js spawn site, so a one-shot
 run leaves **no background watch process** — `pgrep -f "dist/bin/poll.js"` after a one-shot exit finds

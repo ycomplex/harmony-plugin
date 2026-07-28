@@ -79,6 +79,11 @@ record a short `specification` decision documenting *why* — then `reference_kn
 ### 4. Display + resolve
 
 Show the rendered `content`. On the human's command:
+
+> **Provenance (B-734):** `human-in-session` below is the human deciding *here* — a conductor-synthesized
+> accept carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
+> §Resolution provenance).
+
 - **accept** → first create the children, then advance:
   1. For confirmed-EXISTING children, skip `manage_subtasks add_new` entirely — they are already the
      hierarchy. Call `mcp__harmony__manage_subtasks({ task_id, add_new: [{ title: "...", description: "..." }, ...] })`
@@ -91,8 +96,8 @@ Show the rendered `content`. On the human's command:
      call `capturing` first (the child is already Captured, so `capturing` has no valid edge and the
      transition guard rejects it):
      `mcp__harmony__advance_workflow({ task_id: <child>, activity: "proposing" })`.
-  3. `mcp__harmony__resolve_brief({ task_id, command: "accept" })` → advances the parent
-     Clarified→Decomposed. (For "no decomposition needed", skip 1–2 and just accept.)
+  3. `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })` →
+     advances the parent Clarified→Decomposed. (For "no decomposition needed", skip 1–2 and just accept.)
 
   The existing-children branch also makes accept idempotent for free: a re-run after a crash
   mid-accept (children created, resolve not yet run) sees them as existing and confirms instead of
@@ -107,7 +112,7 @@ Show the rendered `content`. On the human's command:
     source_type: "manual", source_activity: "defer", source_task_id: "<task uuid>",
   })
   mcp__harmony__reference_knowledge({ task_id, decision_id: deferral.id })
-  mcp__harmony__resolve_brief({ task_id, command: "defer", detail: "<why>" })
+  mcp__harmony__resolve_brief({ task_id, command: "defer", detail: "<why>", provenance: "human-in-session" })
   ```
   **Fallback (B-352):** no rationale still parks — prompt once, then skip the authoring if declined. (Web
   `defer` is mechanical-only and never authors this — documented v1 asymmetry.)
