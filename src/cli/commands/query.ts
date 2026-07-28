@@ -20,6 +20,7 @@ export function registerQueryCommand(program: Command): void {
     .option('--due-to <date>', 'Due date on or before (YYYY-MM-DD)')
     .option('--stale <days>', 'Tasks not updated in this many days')
     .option('--archived', 'Include archived tasks', false)
+    .option('--full', 'Include each task\'s full description (rows are lean by default)', false)
     .option('--sort <field>', 'Sort by: position, due_date, priority, updated_at', 'position')
     .option('--limit <n>', 'Max results', '50')
     .option('--offset <n>', 'Skip results', '0')
@@ -37,6 +38,7 @@ export function registerQueryCommand(program: Command): void {
           due_date_to: opts.dueTo,
           stale_days: opts.stale ? parseInt(opts.stale) : undefined,
           archived: opts.archived,
+          view: opts.full ? 'full' : undefined,
           sort_by: opts.sort as 'position' | 'due_date' | 'priority' | 'updated_at',
           limit: parseInt(opts.limit),
           offset: parseInt(opts.offset),
