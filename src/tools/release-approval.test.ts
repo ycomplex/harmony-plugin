@@ -119,3 +119,37 @@ describe('finish-work O2 release-approval prose ↔ tool contract (B-732)', () =
     expect(prose).toContain('APPROVED');
   });
 });
+
+// --- B-732 reopen: the release brief is composed by start-work O3, NOT finish-work O1 ----------
+//
+// The original AC-3 fix put the approval line in finish-work's O1. The daemon flow never runs it:
+// start-work composes the release brief at the end of the build, and finish-work's
+// resume-vs-draft check sees Built + not-awaiting + no-active-brief and jumps straight to O2.
+// B-738 therefore shipped a release brief with no mention of approval. These assertions pin the
+// guidance to the file that actually composes the brief.
+
+const startWorkPath = fileURLToPath(new URL('../../skills/start-work/SKILL.md', import.meta.url));
+
+describe('start-work O3 release-brief ↔ approval requirement (B-732 reopen)', () => {
+  const prose = readFileSync(startWorkPath, 'utf8');
+
+  it('instructs querying the PR author + reviewDecision at COMPOSE time', () => {
+    expect(prose).toMatch(/gh pr view <pr_number> --json author,reviewDecision/);
+  });
+
+  it('makes the approval line conditional on a bot-authored PR', () => {
+    expect(prose).toMatch(/author\.is_bot/);
+    expect(prose).toMatch(/approval on GitHub/i);
+  });
+
+  it('records author_is_bot on build_pr — the field the compose_brief lint keys on', () => {
+    expect(prose).toContain('author_is_bot');
+  });
+
+  it('no longer asks "to production?" for a merge that deploys to STAGING', () => {
+    // B-726(a1) read-plane/deploy-plane conflation: merging to main deploys to staging;
+    // production is a separate promote-prod.sh step.
+    expect(prose).not.toMatch(/Release <ticket> to production\?/);
+    expect(prose).toMatch(/deploy to staging/i);
+  });
+});

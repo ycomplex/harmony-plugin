@@ -111,10 +111,15 @@ advance past a failed sub-step:
 3. **Open the PR:** `gh pr create` (base `main`), then verify it is open — `gh pr view <url> --json state,url`
    must report `OPEN`.
 4. **Record the structured pushed-PR reference on the ticket** — written ONLY from the just-verified
-   live outputs of sub-steps 2–3, never from intent:
+   live outputs of sub-steps 2–3, never from intent. **Include the PR's AUTHOR IDENTITY (B-732)**:
+   read it from the same `gh pr view <pr_number> --json state,url,author` call that verified the PR is
+   open, and record `author_is_bot` + `author_login`. This is what makes the release brief's approval
+   requirement mechanically enforceable — `compose_brief` reads `build_pr.author_is_bot` and REJECTS a
+   bot-authored release brief that omits the approval line. Omit it and the guard silently cannot fire.
    ```
    mcp__harmony__update_task({ task_id, field_values: { build_pr: {
-     branch, head_sha, pr_number, pr_url, base: "main", opened_at
+     branch, head_sha, pr_number, pr_url, base: "main", opened_at,
+     author_login, author_is_bot
    } } })
    ```
    The record IS the verification: `get_build_evidence_status` keys `has_pushed_pr` (and therefore
@@ -166,11 +171,35 @@ it owes the human, plus the legibility contract. Consult it; do not restate it. 
 The release brief must reference the recorded PR — the human's "ship it" points at a real, verifiable
 artefact (read `branch` / `pr_url` back from `field_values.build_pr`):
 
+**Query the PR's identity and review state at COMPOSE time — never assume (B-732).** Before composing,
+read both signals off the PR you just recorded:
+
+```
+gh pr view <pr_number> --json author,reviewDecision
+```
+
+**If `author.is_bot` is true** (a daemon-built PR authored by the `harmony-daemon` App), the brief MUST
+say that a human approval on GitHub is required before the merge can happen, name the PR, and surface
+the current `reviewDecision`. GitHub forbids a PR author approving its own PR, so the worker cannot
+merge it alone — a brief that omits this walks the human into accepting a release that then cannot
+proceed. **`compose_brief` enforces this**: a bot-authored `build_pr` whose brief says nothing about the
+approval requirement is REJECTED by the lint, so this is not optional and cannot be forgotten.
+(B-738 shipped exactly that brief — its whole ask was "Release B-738 … to production?" — and the run
+only went smoothly because the founder had been told out-of-band to approve first.)
+
+**Say "to staging", not "to production".** Merging to `main` deploys to **staging**; production is a
+separate, deliberate `./promote-prod.sh` step (workspace CLAUDE.md → Deploy & Environments). The old
+wording conflated the two (the B-726 read-plane/deploy-plane conflation).
+
 ```
 mcp__harmony__compose_brief({
   task_id, reason: "release-decision-pending", pending_activity: null,
-  doc: { decide: "Release <ticket> to production?",
-    context: ["PR: <pr_url> (branch <branch>, head <head_sha>)"],
+  doc: { decide: "Release <ticket> — merge PR <pr_number> and deploy to staging?",
+    context: [
+      "PR: <pr_url> (branch <branch>, head <head_sha>)",
+      // BOT-AUTHORED ONLY — omit this line for a founder-authored PR:
+      "⚠ This PR is authored by <author.login> and needs your approval on GitHub before it can merge: <pr_url>. Current reviewDecision: <reviewDecision>. Accepting here is your go-ahead; the merge runs once the approval lands.",
+    ],
     items: [{ kind: "decision", text: "Ship the built artefact — PR <pr_url>", recommendation: "release" }] }
 })
 ```

@@ -1031,3 +1031,106 @@ describe('harmony-conduct §4b synthesized-accept prose ↔ provenance contract 
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// B-732 AC-3: a release brief for a BOT-AUTHORED PR must name the approval requirement
+// ---------------------------------------------------------------------------
+//
+// Why this is a lint and not just prose: the instruction DID exist in finish-work's O1, but the
+// daemon flow composes its release brief in start-work's O3 and finish-work skips drafting
+// entirely — so the guidance sat in a path that never ran. B-738 then shipped a release brief
+// whose entire ask was "Release B-738 … to production?" with no mention of approval. Enforcing it
+// in compose_brief makes the omission impossible regardless of which skill composes the brief.
+
+describe('lintBrief — bot-authored release brief must name the approval requirement (B-732)', () => {
+  const releaseDoc = (extraContext: string[] = []): BriefDoc => ({
+    decide: 'Release B-999 — merge the built artefact?',
+    recommend: { text: 'Merge it. Gates are green.', confidence: 'high' },
+    context: ['PR: https://github.com/ycomplex/harmony-web/pull/362', ...extraContext],
+    items: [
+      {
+        kind: 'decision',
+        text: 'Ship the built artefact',
+        recommendation: 'release',
+      },
+    ],
+  });
+
+  const botPr = {
+    author_is_bot: true,
+    pr_url: 'https://github.com/ycomplex/harmony-web/pull/362',
+    pr_number: 362,
+  };
+
+  it('REJECTS a bot-authored release brief that says nothing about approval', () => {
+    const doc = releaseDoc();
+    const lint = lintBrief(doc, renderBrief(doc), {
+      reason: 'release-decision-pending',
+      buildPr: botPr,
+    });
+
+    expect(lint.ok).toBe(false);
+    expect(lint.errors.join(' ')).toMatch(/BOT-AUTHORED/);
+    // The error must name the PR so the author knows which one needs approving.
+    expect(lint.errors.join(' ')).toContain('pull/362');
+  });
+
+  it('ACCEPTS a bot-authored release brief that names the approval requirement', () => {
+    const doc = releaseDoc([
+      'This PR is authored by harmony-daemon[bot] and needs your approval on GitHub before it can merge. Current reviewDecision: REVIEW_REQUIRED.',
+    ]);
+    const lint = lintBrief(doc, renderBrief(doc), {
+      reason: 'release-decision-pending',
+      buildPr: botPr,
+    });
+
+    expect(lint.ok).toBe(true);
+  });
+
+  it('does NOT require the approval line for a FOUNDER-authored PR (the interactive path)', () => {
+    const doc = releaseDoc();
+    const lint = lintBrief(doc, renderBrief(doc), {
+      reason: 'release-decision-pending',
+      buildPr: { author_is_bot: false, pr_url: 'https://example.test/pr/1', pr_number: 1 },
+    });
+
+    expect(lint.ok).toBe(true);
+  });
+
+  it('does not apply to a pre-B-732 ticket whose build_pr records no author', () => {
+    // Backward compatibility: build_pr records written before author_is_bot existed must not
+    // suddenly fail the release gate.
+    const doc = releaseDoc();
+    const lint = lintBrief(doc, renderBrief(doc), {
+      reason: 'release-decision-pending',
+      buildPr: { pr_url: 'https://example.test/pr/1', pr_number: 1 },
+    });
+
+    expect(lint.ok).toBe(true);
+  });
+
+  it('does not apply to non-release briefs even when a bot build_pr exists', () => {
+    const doc: BriefDoc = {
+      decide: 'Is this the right approach?',
+      recommend: { text: 'Yes', confidence: 'high' },
+      items: [{ kind: 'decision', text: 'Approach', recommendation: 'proceed' }],
+    };
+    const lint = lintBrief(doc, renderBrief(doc), {
+      reason: 'design-decision-draft',
+      buildPr: botPr,
+    });
+
+    expect(lint.ok).toBe(true);
+  });
+
+  it('is not fooled by the word "approve" used for the brief-accept verb alone', () => {
+    // "Approve this plan?" must NOT satisfy the rule — the requirement is about a GitHub review.
+    const doc = releaseDoc(['Approve this and I will merge.']);
+    const lint = lintBrief(doc, renderBrief(doc), {
+      reason: 'release-decision-pending',
+      buildPr: botPr,
+    });
+
+    expect(lint.ok).toBe(false);
+  });
+});

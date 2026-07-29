@@ -127,15 +127,63 @@ tail -f ~/Library/Logs/harmony-daemon.log              # logs
 launchctl bootout gui/$UID/com.ycomplex.harmony-daemon # stop + unload
 ```
 
-### The two-envelope credential rule
+### Run it directly (no launchd)
 
-- **Daemon env** (the plist's `EnvironmentVariables`) carries **only**
-  `HARMONY_API_TOKEN` — ticket reads + conduction writes. Nothing else.
-- **Worker creds** (git token, `CLAUDE_CODE_OAUTH_TOKEN`, Supabase overrides)
-  live **only** in the `--env-file` referenced by the launch profile's
-  command template (`env.example` documents the set). They never enter the
-  daemon process, so a daemon-side leak can never mint commits or spend
-  Claude credits.
+launchd is one option, not the mechanism. All that matters is that **the daemon
+process's environment carries the knobs** — the launch profile's `launch`
+template runs as a shell command spawned by the daemon and inherits its env. So
+running it straight from a terminal works identically:
+
+```bash
+HARMONY_DAEMON_PROFILE=~/.harmony-daemon-profile.json \
+HARMONY_API_TOKEN=harmony_… \
+HARMONY_APP_ID=… \
+HARMONY_APP_INSTALLATION_ID=… \
+HARMONY_APP_PRIVATE_KEY_PATH=/absolute/path/to/harmony-daemon.private-key.pem \
+HARMONY_PLUGIN_DIR=/absolute/path/to/harmony-plugin \
+node plugin/dist/bin/daemon.js
+```
+
+Two gotchas specific to this form:
+
+- **Use an absolute path for the key, or leave the tilde unquoted.** The mint
+  script does a plain `readFileSync` and Node does not expand `~`. Your shell
+  expands `VAR=~/key.pem` in a command prefix, but `VAR="~/key.pem"` it does not
+  — that fails with ENOENT.
+- **Prefer `HARMONY_APP_PRIVATE_KEY_PATH` over the inline
+  `HARMONY_APP_PRIVATE_KEY`.** A command prefix puts values in the host process
+  table, so pasting PEM contents there exposes the private key to anything
+  running as you. The path form exposes only a filename.
+
+Whichever form you use, the live profile is whatever `HARMONY_DAEMON_PROFILE`
+points at — a **copy** of `daemon-profile.example.json`. Editing the example in
+this repo does **not** update your live profile; re-copy it after a template
+change.
+
+### The credential envelopes
+
+- **Worker creds** (`CLAUDE_CODE_OAUTH_TOKEN`, Supabase overrides, and the
+  minted `GIT_TOKEN`) live **only** in the `--env-file` referenced by the launch
+  profile's command template (`env.example` documents the set). They never enter
+  the daemon process, so a daemon-side leak cannot spend Claude credits.
+- **Daemon env** carries `HARMONY_API_TOKEN` — ticket reads and conduction
+  writes — **plus the `harmony-daemon` App mint knobs** (`HARMONY_APP_ID`,
+  `HARMONY_APP_INSTALLATION_ID`, `HARMONY_APP_PRIVATE_KEY_PATH`) since B-732,
+  because the launcher mints the worker's git token before `docker run`.
+
+**What a daemon-side leak actually costs (corrected at B-732).** This section
+previously claimed the daemon env carried *only* `HARMONY_API_TOKEN` and that a
+daemon-side leak "can never mint commits". That is no longer true: whoever holds
+the App private key can mint a ~1h installation token. The honest property, and
+the one B-695 designed for, is narrower but still strong:
+
+> A leaked daemon credential is a **PR-spam risk, not a merge risk.**
+
+The App is non-admin (`contents: write` + `pull_requests: write` + `metadata:
+read`) and holds **zero bypass allowance** on all three repos (`apps: []`). So a
+stolen key can push branches and open PRs, but **cannot reach `main`** — the
+required review is one no bot-credentialed actor can supply, because GitHub
+forbids a PR author approving its own PR. Claude credits remain worker-only.
 
 ### Worker PRs are authored by the bot (B-732)
 

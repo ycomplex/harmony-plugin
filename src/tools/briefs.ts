@@ -227,11 +227,66 @@ export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null): st
   return out.join('\n');
 }
 
+/** Task-derived context the lint needs but cannot see in the doc alone (B-732). */
+export interface BriefLintContext {
+  /** The gate reason this brief is being composed for. */
+  reason?: string;
+  /** `tasks.field_values.build_pr` — the B-722 pushed-PR record, when one exists. */
+  buildPr?: { author_is_bot?: boolean; pr_url?: string; pr_number?: number } | null;
+}
+
+/** Does the rendered brief actually tell the human an approval is REQUIRED? (B-732)
+ *
+ *  Generous about phrasing, strict about meaning. An earlier draft accepted "approv*" anywhere
+ *  alongside "github" — which every release brief satisfies trivially, because the PR URL itself
+ *  contains github.com. So the match is scoped to a SENTENCE containing both an approval word and
+ *  a requirement word: "needs your approval before it can merge" passes, "approve this and I'll
+ *  merge" (the brief-accept verb) does not. A literal reviewDecision/REVIEW_REQUIRED mention also
+ *  passes on its own, since surfacing it is the other half of what the rule asks for. */
+function mentionsApprovalRequirement(content: string): boolean {
+  const c = content.toLowerCase();
+
+  // Surfacing the PR's actual review state satisfies the rule outright.
+  if (/reviewdecision|review_required/.test(c)) return true;
+
+  const APPROVAL = /\bapprov\w*/;
+  const REQUIREMENT = /\brequir\w*|\bneed\w*|\bmust\b|\bbefore\b|\buntil\b|\bcannot\b|\bcan't\b|\bunable\b/;
+
+  // Sentence-scoped so an approval word here and a requirement word paragraphs away don't combine.
+  return c
+    .split(/[.!?\n]+/)
+    .some((sentence) => APPROVAL.test(sentence) && REQUIREMENT.test(sentence));
+}
+
 /** Enforce the §3.2 disciplines on the canonical doc. `content` is the rendered blob (for the word budget). */
-export function lintBrief(doc: BriefDoc, content: string): BriefLintResult {
+export function lintBrief(
+  doc: BriefDoc,
+  content: string,
+  ctx: BriefLintContext = {},
+): BriefLintResult {
   const errors: string[] = [];
   const warnings: string[] = [];
   const research = doc.research ?? [];
+
+  // B-732 — the release brief must not hide the approval requirement.
+  //
+  // Once daemon PRs are authored by the harmony-daemon App, a bot-authored PR CANNOT be merged
+  // until a human approves it. A release brief that omits this walks the human into accepting a
+  // release that then cannot proceed — which is exactly what happened on B-738: the brief's whole
+  // ask was "Release B-738 … to production?" with no mention of approval, and the run only went
+  // smoothly because the founder had been told out-of-band to approve first.
+  //
+  // Prose alone did not prevent it (the instruction existed, in a code path the daemon flow never
+  // takes), so this is enforced mechanically: `start-work` records `author_is_bot` on the build_pr
+  // at artefact time, and a bot-authored PR makes the approval line a HARD requirement of the
+  // brief. The author cannot forget it, because compose_brief refuses the brief.
+  if (ctx.reason === 'release-decision-pending' && ctx.buildPr?.author_is_bot === true) {
+    if (!mentionsApprovalRequirement(content)) {
+      errors.push(
+        `This release brief is for a BOT-AUTHORED pull request${ctx.buildPr.pr_url ? ` (${ctx.buildPr.pr_url})` : ''}, which GitHub will not let the worker merge until a human approves it. The brief must SAY so — name the pull request, state that your approval on GitHub is required before the merge, and surface its current reviewDecision. Without that, accepting this brief starts a release that cannot proceed.`,
+      );
+    }
+  }
 
   for (const item of doc.items) {
     // Rule 2 (the single most-repeated failure, B-320/B-327): a derived constraint already fixed
@@ -335,15 +390,32 @@ export async function composeBrief(
   }
   if (!args.doc?.decide?.trim()) throw new Error('doc.decide is required');
 
+  // Resolve the task identifier (UUID / task number / visual ID), matching the sibling task tools.
+  // B-732: this now runs BEFORE the lint, because the release-brief approval rule needs the task's
+  // build_pr record — the lint can no longer be a pure function of the doc alone.
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+
+  // B-732: read the B-722 pushed-PR record so the lint knows whether this release brief is for a
+  // bot-authored PR. Guarded: a task with no build_pr (every non-release brief, and any pre-B-722
+  // ticket) simply yields undefined and the rule does not apply. A read failure must never block
+  // brief composition — the rule degrades to "not applicable" rather than erroring the gate.
+  let buildPr: BriefLintContext['buildPr'];
+  if (args.reason === 'release-decision-pending') {
+    const { data: taskRow } = await client
+      .from('tasks')
+      .select('field_values')
+      .eq('id', taskId)
+      .maybeSingle();
+    const fv = (taskRow as { field_values?: Record<string, unknown> } | null)?.field_values;
+    buildPr = (fv?.build_pr as BriefLintContext['buildPr']) ?? undefined;
+  }
+
   // Render the canonical doc to the blob, then lint the doc (what's checked is what's rendered).
   const content = renderBrief(args.doc, args.decision_ref);
-  const lint = lintBrief(args.doc, content);
+  const lint = lintBrief(args.doc, content, { reason: args.reason, buildPr });
   if (!lint.ok) {
     throw new Error(`Brief failed the §3.2 pre-send lint:\n- ${lint.errors.join('\n- ')}`);
   }
-
-  // Resolve the task identifier (UUID / task number / visual ID), matching the sibling task tools.
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
 
   // B-625: a literal-string "null" (case-insensitive, trimmed) is the string-serialized form of JSON null
   // — treat it as omitted (parity with B-466's null≡omitted), advancing no state. Narrow: ONLY the exact
