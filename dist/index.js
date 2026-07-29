@@ -32525,10 +32525,24 @@ function renderBrief(doc, decisionRef) {
   out.push(`> ${doc.tail ?? DEFAULT_TAIL}`);
   return out.join("\n");
 }
-function lintBrief(doc, content) {
+function mentionsApprovalRequirement(content) {
+  const c = content.toLowerCase();
+  if (/reviewdecision|review_required/.test(c)) return true;
+  const APPROVAL = /\bapprov\w*/;
+  const REQUIREMENT = /\brequir\w*|\bneed\w*|\bmust\b|\bbefore\b|\buntil\b|\bcannot\b|\bcan't\b|\bunable\b/;
+  return c.split(/[.!?\n]+/).some((sentence) => APPROVAL.test(sentence) && REQUIREMENT.test(sentence));
+}
+function lintBrief(doc, content, ctx = {}) {
   const errors = [];
   const warnings = [];
   const research = doc.research ?? [];
+  if (ctx.reason === "release-decision-pending" && ctx.buildPr?.author_is_bot === true) {
+    if (!mentionsApprovalRequirement(content)) {
+      errors.push(
+        `This release brief is for a BOT-AUTHORED pull request${ctx.buildPr.pr_url ? ` (${ctx.buildPr.pr_url})` : ""}, which GitHub will not let the worker merge until a human approves it. The brief must SAY so \u2014 name the pull request, state that your approval on GitHub is required before the merge, and surface its current reviewDecision. Without that, accepting this brief starts a release that cannot proceed.`
+      );
+    }
+  }
   for (const item of doc.items) {
     if (item.kind === "derived-constraint") {
       errors.push(
@@ -32594,13 +32608,19 @@ async function composeBrief(client, projectId, userId, args) {
     throw new Error(`reason must be one of: ${VALID_REASONS.join(", ")}`);
   }
   if (!args.doc?.decide?.trim()) throw new Error("doc.decide is required");
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  let buildPr;
+  if (args.reason === "release-decision-pending") {
+    const { data: taskRow } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
+    const fv = taskRow?.field_values;
+    buildPr = fv?.build_pr ?? void 0;
+  }
   const content = renderBrief(args.doc, args.decision_ref);
-  const lint = lintBrief(args.doc, content);
+  const lint = lintBrief(args.doc, content, { reason: args.reason, buildPr });
   if (!lint.ok) {
     throw new Error(`Brief failed the \xA73.2 pre-send lint:
 - ${lint.errors.join("\n- ")}`);
   }
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const pendingActivity = typeof args.pending_activity === "string" && args.pending_activity.trim().toLowerCase() === "null" ? null : args.pending_activity;
   if (pendingActivity) {
     const { data: task, error: tErr } = await client.from("tasks").select("workflow_state, stale").eq("id", taskId).single();
