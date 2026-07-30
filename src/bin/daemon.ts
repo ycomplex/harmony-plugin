@@ -34,10 +34,13 @@ import {
   listConductions,
   takeoverConduction,
   updateConduction,
+  updateConductionIfHeld,
 } from '../tools/conduction-record.js';
+import { createHeartbeatKeeper } from '../daemon/heartbeat.js';
 import { loadDaemonConfig } from '../daemon/config.js';
 import {
   PersistentAuthFailure,
+  PersistentReapFailure,
   runScheduler,
   type DaemonTask,
   type SchedulerDeps,
@@ -114,6 +117,22 @@ async function main(): Promise<void> {
       return children.filter((c) => !c.archived).length;
     },
     updateConduction: (id, patch) => updateConduction(client, id, patch),
+    // B-739: every post-claim write is lease-guarded — null means another daemon owns this run.
+    updateConductionIfHeld: (id, expectedLeaseHolder, patch) =>
+      updateConductionIfHeld(client, id, expectedLeaseHolder, patch),
+    // B-739: real timers, unref'd so they can never hold the process open on their own. The
+    // heartbeat MUST stay in-process: a wedged event loop has to stop it, so a genuinely dead
+    // daemon still goes stale and its run stays recoverable by takeover.
+    startInterval: (ms, fn) => {
+      const timer = setInterval(fn, ms);
+      timer.unref?.();
+      return () => clearInterval(timer);
+    },
+    startTimeout: (ms, fn) => {
+      const timer = setTimeout(fn, ms);
+      timer.unref?.();
+      return () => clearTimeout(timer);
+    },
     takeoverConduction: (args) => takeoverConduction(client, args),
     runCommand,
     log,
@@ -121,7 +140,18 @@ async function main(): Promise<void> {
     config,
   };
 
+  const keeper = createHeartbeatKeeper({
+    now: Date.now,
+    startInterval: deps.startInterval,
+    updateConductionIfHeld: (id, patch) => updateConductionIfHeld(client, id, leaseHolder, patch),
+    log,
+    heartbeatMs: config.heartbeatMs,
+  });
+
   const stop = (signal: string): void => {
+    // B-739: a lease must go quiet the MOMENT this process leaves, so it goes stale on schedule
+    // and its run stays recoverable by another daemon's takeover.
+    keeper.stopAll();
     log(`received ${signal} — exiting (launchd owns restart)`);
     process.exit(0);
   };
@@ -130,15 +160,25 @@ async function main(): Promise<void> {
 
   log(
     `conductor daemon up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, ` +
-      `heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms`,
+      `heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms, ` +
+      `worker timeout ${config.workerTimeoutMs}ms`,
   );
   try {
-    await runScheduler(deps);
+    await runScheduler(deps, keeper);
   } catch (err) {
     // B-696 backstop: persistent auth failure exits non-zero so launchd restarts the daemon with
     // fresh auth — a restart beats a zombie that heartbeats but can never conduct.
     if (err instanceof PersistentAuthFailure) {
       log(`${err.message} — exiting 1 (launchd restarts with fresh auth)`);
+      process.exit(1);
+    }
+    // B-739 backstop: a worker this daemon ruled overrun could not be reaped, so the pass is still
+    // blocked with its deadline spent. Die loudly rather than heartbeat from inside a state we
+    // cannot leave. The restart's fresh lease holder lets the stale-lease takeover path — whose
+    // first action is REAP-THEN-FIRE — recover the run.
+    if (err instanceof PersistentReapFailure) {
+      keeper.stopAll();
+      log(`${err.message} — exiting 1 (launchd restarts; takeover reclaims the run)`);
       process.exit(1);
     }
     throw err;
