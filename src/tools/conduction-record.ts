@@ -242,17 +242,11 @@ export type ConductionPatch = Partial<
   Pick<ConductionRecord, (typeof CONDUCTION_PATCHABLE_FIELDS)[number]>
 >;
 
-/** Patch a conduction. REJECTS (loudly, before any write) a patch naming any non-patchable field
- *  — silently dropping an attempted `task_id`/`started_at` rewrite would mask a caller bug on the
- *  lease substrate — and validates `status` against the canonical vocabulary. Throws when the row
- *  does not exist. */
-export async function updateConduction(
-  client: SupabaseClient,
-  id: string,
-  patch: ConductionPatch,
-): Promise<ConductionRecord> {
-  if (!id) throw new Error('id is required');
-
+/** The ONE patch-shape rule, shared by every writer (`updateConduction` and the lease-guarded
+ *  `updateConductionIfHeld`). REJECTS loudly, BEFORE any write, a patch naming any non-patchable
+ *  field — silently dropping an attempted `task_id`/`started_at` rewrite would mask a caller bug
+ *  on the lease substrate — and validates `status` against the canonical vocabulary. */
+function assertPatchable(patch: ConductionPatch): void {
   const keys = Object.keys(patch ?? {});
   if (keys.length === 0) {
     throw new Error(`patch must contain at least one of: ${CONDUCTION_PATCHABLE_FIELDS.join(', ')}`);
@@ -269,6 +263,17 @@ export async function updateConduction(
   if ('status' in patch && !(CONDUCTION_STATUSES as readonly string[]).includes(patch.status as string)) {
     throw new Error(`status must be one of: ${CONDUCTION_STATUSES.join(', ')}`);
   }
+}
+
+/** Patch a conduction, UNGUARDED — for callers that hold no lease (creation paths, the web).
+ *  Daemon code must use `updateConductionIfHeld` instead. Throws when the row does not exist. */
+export async function updateConduction(
+  client: SupabaseClient,
+  id: string,
+  patch: ConductionPatch,
+): Promise<ConductionRecord> {
+  if (!id) throw new Error('id is required');
+  assertPatchable(patch);
 
   const { data, error } = await client
     .from('conductions')
@@ -339,6 +344,44 @@ export async function takeoverConduction(
       : query.eq('lease_holder', args.observed_lease_holder);
   const { data, error } = await query
     .or(`last_heartbeat_at.is.null,last_heartbeat_at.lt.${args.stale_before}`)
+    .select(CONDUCTION_COLS)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as unknown as ConductionRecord) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// updateConductionIfHeld — the lease-guarded write (B-739)
+// ---------------------------------------------------------------------------
+
+/** Patch a conduction ONLY IF this caller still holds its lease. The UPDATE is guarded on
+ *  id + lease_holder, mirroring `takeoverConduction`'s contract exactly:
+ *
+ *    row   — still held, the patch was applied;
+ *    null  — NO ROW MATCHED: the lease was taken over, or the row is gone. We do not own this
+ *            run any more, so we must go quiet on it immediately;
+ *    throw — an OPERATIONAL error: nothing is known, and nothing may be inferred.
+ *
+ *  That three-way split is load-bearing (B-739). The daemon's pass loop is the only other place
+ *  lease loss could be noticed, and during a blocked worker launch the pass is exactly what is
+ *  stuck — so this write IS the daemon's lease probe. Treating a thrown error as lease loss would
+ *  stop the heartbeat during precisely the transient blip that makes a healthy daemon look dead,
+ *  which is this ticket's own bug re-created inside its fix. Only `null` means the lease is gone. */
+export async function updateConductionIfHeld(
+  client: SupabaseClient,
+  id: string,
+  expectedLeaseHolder: string,
+  patch: ConductionPatch,
+): Promise<ConductionRecord | null> {
+  if (!id) throw new Error('id is required');
+  if (!expectedLeaseHolder) throw new Error('expectedLeaseHolder is required');
+  assertPatchable(patch);
+
+  const { data, error } = await client
+    .from('conductions')
+    .update(patch)
+    .eq('id', id)
+    .eq('lease_holder', expectedLeaseHolder)
     .select(CONDUCTION_COLS)
     .maybeSingle();
   if (error) throw new Error(error.message);

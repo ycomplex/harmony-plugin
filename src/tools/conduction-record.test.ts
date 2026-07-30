@@ -4,6 +4,7 @@ import {
   getConduction,
   getActiveConduction,
   updateConduction,
+  updateConductionIfHeld,
   listConductions,
   takeoverConduction,
   ActiveConductionExistsError,
@@ -311,6 +312,67 @@ describe('takeoverConduction', () => {
   it('throws on an operational error (distinct from losing the race)', async () => {
     const client = makeClient([{ data: null, error: { message: 'permission denied' } }]);
     await expect(takeoverConduction(client, casArgs)).rejects.toThrow('permission denied');
+  });
+});
+
+describe('updateConductionIfHeld', () => {
+  it('guards the UPDATE on id + lease_holder and returns the row when still held', async () => {
+    const client = makeClient([{ data: conductionRow }]);
+    const result = await updateConductionIfHeld(client, 'cond-1', 'daemon-a', {
+      last_heartbeat_at: '2026-07-30T00:00:00.000Z',
+    });
+
+    expect(client.from).toHaveBeenCalledWith('conductions');
+    expect(client.update).toHaveBeenCalledWith({
+      last_heartbeat_at: '2026-07-30T00:00:00.000Z',
+    });
+    expect(client.eq).toHaveBeenCalledWith('id', 'cond-1');
+    expect(client.eq).toHaveBeenCalledWith('lease_holder', 'daemon-a');
+    expect(client.maybeSingle).toHaveBeenCalled();
+    expect(result).toEqual(conductionRow);
+  });
+
+  // The null-vs-throw split is the whole point (B-739): a transient failure must NEVER read as
+  // lease loss, or the heartbeat stops during exactly the blip that makes a healthy daemon look
+  // dead — this ticket's own bug, re-created inside its fix.
+  it('returns null when no row matched — the LEASE IS GONE, not an error', async () => {
+    const client = makeClient([{ data: null }]);
+    expect(
+      await updateConductionIfHeld(client, 'cond-1', 'daemon-a', { retry_count: 1 }),
+    ).toBeNull();
+  });
+
+  it('throws on an operational error — distinct from losing the lease', async () => {
+    const client = makeClient([{ data: null, error: { message: 'JWT expired' } }]);
+    await expect(
+      updateConductionIfHeld(client, 'cond-1', 'daemon-a', { retry_count: 1 }),
+    ).rejects.toThrow('JWT expired');
+  });
+
+  it('rejects a non-patchable field before any write (same rule as updateConduction)', async () => {
+    const client = makeClient([{ data: conductionRow }]);
+    await expect(
+      updateConductionIfHeld(client, 'cond-1', 'daemon-a', {
+        task_id: 'x',
+      } as unknown as Parameters<typeof updateConductionIfHeld>[3]),
+    ).rejects.toThrow('non-patchable');
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty patch before any write', async () => {
+    const client = makeClient([{ data: conductionRow }]);
+    await expect(updateConductionIfHeld(client, 'cond-1', 'daemon-a', {})).rejects.toThrow(
+      'patch must contain at least one of',
+    );
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
+  it('requires an expected lease holder — an unguarded write must be impossible here', async () => {
+    const client = makeClient([{ data: conductionRow }]);
+    await expect(
+      updateConductionIfHeld(client, 'cond-1', '', { retry_count: 1 }),
+    ).rejects.toThrow('expectedLeaseHolder is required');
+    expect(client.update).not.toHaveBeenCalled();
   });
 });
 
