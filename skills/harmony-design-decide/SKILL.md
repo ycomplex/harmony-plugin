@@ -223,6 +223,7 @@ Show the rendered `content`. On the human's command:
 - **expand** / **related** → show the pre-generated sections from `get_brief`.
 - **edit** / **iterate** → revise and re-call `compose_brief`.
 - **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
+- **A staged `pending_resolution` you can only partially apply** → apply what you structurally can, then file a `worker-question` round scoped to the blocked residue per `skills/harmony-shared/elicitation-engine.md` §Resuming onto a staged pending_resolution you can only partially apply (file the round before recomposing — crash-safety ordering, never wholesale-discard an actionable resolution).
 
 ### 6. Cross-cutting scope (optional)
 

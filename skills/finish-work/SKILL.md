@@ -196,6 +196,7 @@ check at the top of this section catches — it skips redrafting and resumes str
 (If the human defers, `resolve_brief({ command: "defer", provenance: "human-in-session" })` parks it — do
 not merge.)
 **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
+**A staged `pending_resolution` you can only partially apply** → apply what you structurally can, then file a `worker-question` round scoped to the blocked residue per `skills/harmony-shared/elicitation-engine.md` §Resuming onto a staged pending_resolution you can only partially apply (file the round before recomposing — crash-safety ordering, never wholesale-discard an actionable resolution).
 
 ### O2. Run the merge + deploy, THEN advance to Deployed
 
@@ -384,6 +385,7 @@ On the human's **accept** →
 Deployed→Verified (terminal-positive). Verify is the other hard-floor gate, so like release it is only ever
 `human-in-session` from the plugin (B-734).
 **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
+**A staged `pending_resolution` you can only partially apply** → apply what you structurally can, then file a `worker-question` round scoped to the blocked residue per `skills/harmony-shared/elicitation-engine.md` §Resuming onto a staged pending_resolution you can only partially apply (file the round before recomposing — crash-safety ordering, never wholesale-discard an actionable resolution).
 
 **Land the verify result on the ticket (B-560) — NON-OPTIONAL.** Immediately after the accept, comment
 the verify outcome so the ticket carries the closing leg of the build→release→verify trail as durable

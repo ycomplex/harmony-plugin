@@ -65,6 +65,7 @@ advances Designed→Planned. The accept IS the "go" to build.
 > carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
 > §Resolution provenance).
 **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
+**A staged `pending_resolution` you can only partially apply** → apply what you structurally can, then file a `worker-question` round scoped to the blocked residue per `skills/harmony-shared/elicitation-engine.md` §Resuming onto a staged pending_resolution you can only partially apply (file the round before recomposing — crash-safety ordering, never wholesale-discard an actionable resolution).
 
 ### O3. Build (Planned → Built)
 
@@ -85,6 +86,20 @@ build subagent (context-thinning; worktree per B-628) — WHICH subagent depends
   attempt the ad-hoc build — its Edit/Write will be denied and the run dies mid-build with no clear cause.
 - **Absent, no marker** (every human machine) → today's behavior, unchanged: the ordinary ad-hoc build
   subagent. The bypass agent never lands on a human machine (B-719 design: container-only).
+
+**Parse `harmony-build`'s final report for a `WORKER-QUESTION:` marker (B-733) — before treating it as
+a completed or failed build.** `harmony-build` has no MCP tool access, so it cannot file an elicitation
+round itself; when it hits a genuine judgment-call question or a capability denial mid-build it stops
+working and ends its report with the literal fenced marker:
+```
+WORKER-QUESTION: <judgment-call|capability-denial>
+<the question / the denied tool + target + redirect options>
+```
+On seeing this literal string, do NOT treat the subagent's return as done or failed — call
+`mcp__harmony__start_elicitation({ task_id, trigger: 'worker-question', gate: 'building' })` then
+`mcp__harmony__file_elicitation_round` naming `harmony-build` as the source in the round's context line
+and quoting the marker's content as the question. Then end the turn — the round is a clean human pause
+(per `skills/harmony-shared/elicitation-engine.md` §The worker-question trigger), not a build failure.
 
 **Verify the base before building (B-585) — NON-OPTIONAL for a redefine or a "relative-to-today" change.**
 Before a `CREATE OR REPLACE` of a DB function / trigger / view that has been redefined across migrations, find

@@ -158,3 +158,62 @@ describe('discuss verb pointers (B-461 — the five verb surfaces reference the 
     });
   }
 });
+
+// B-733: a worker with a mid-run question files a `worker-question` elicitation round instead of
+// dying silently. The harmony-build hand-off relies entirely on a literal string match between the
+// container agent's prompt and start-work's parser — pin both sides so they can't drift apart (the
+// same prose-drift guard pattern B-732 established for the release-approval line).
+describe('worker-question contract (B-733)', () => {
+  it('elicitation-engine.md documents the worker-question trigger + backstop invariant', () => {
+    const doc = readSharedDoc('elicitation-engine');
+    const lower = doc.toLowerCase();
+    expect(doc).toContain('## The worker-question trigger (B-733)');
+    expect(doc).toMatch(/trigger:\s*'worker-question'/);
+    expect(lower).toMatch(/capability denial/);
+    expect(lower).toMatch(/backstop invariant/);
+    expect(lower).toMatch(/involuntary termination/);
+  });
+
+  it('elicitation-engine.md documents the file-then-recompose ordering for a partially-applicable staged resolution', () => {
+    const doc = readSharedDoc('elicitation-engine');
+    expect(doc).toContain('## Resuming onto a staged pending_resolution you can only partially apply (B-733)');
+    expect(doc.toLowerCase()).toMatch(/crash-safety/);
+    expect(doc.toLowerCase()).toMatch(/blocked residue/);
+  });
+
+  it('harmony-conduct carries the §4e worker-question filing subsection', () => {
+    const body = readSkill('harmony-conduct').body;
+    expect(body).toMatch(/### 4e\. Filing a worker-question/);
+    expect(body.toLowerCase()).toMatch(/clean pause, not a park/);
+  });
+
+  it('the WORKER-QUESTION marker is the IDENTICAL literal string in harmony-build.md and start-work.md (bidirectional pin)', () => {
+    const buildAgentDoc = readFileSync(join(process.cwd(), 'container/agents/harmony-build.md'), 'utf8');
+    const startWorkDoc = readSkill('start-work').body;
+    const MARKER = 'WORKER-QUESTION:';
+    expect(buildAgentDoc, 'container/agents/harmony-build.md missing the WORKER-QUESTION: marker').toContain(MARKER);
+    expect(startWorkDoc, 'start-work SKILL.md missing the WORKER-QUESTION: marker it must parse').toContain(MARKER);
+  });
+
+  it('start-work parses the marker before treating the build subagent report as complete/failed', () => {
+    const body = readSkill('start-work').body;
+    expect(body.toLowerCase()).toMatch(/parses? .*harmony-build.*final report|final report for a `worker-question`/);
+    expect(body).toContain("trigger: 'worker-question'");
+  });
+
+  it('names the harmony-build hand-off: no MCP tools, reports upward via the marker', () => {
+    const buildAgentDoc = readFileSync(join(process.cwd(), 'container/agents/harmony-build.md'), 'utf8');
+    expect(buildAgentDoc.toLowerCase()).toMatch(/no mcp tools/);
+  });
+});
+
+describe('worker-question pointers — the five resume-onto-own-brief surfaces (B-733)', () => {
+  const POINTER =
+    /A staged `pending_resolution` you can only partially apply.*§Resuming onto a staged pending_resolution you can only partially apply/s;
+
+  for (const name of ['harmony-clarify', 'harmony-decompose', 'harmony-design-decide', 'start-work', 'finish-work']) {
+    it(`${name} carries the B-733 partial-apply pointer`, () => {
+      expect(readSkill(name).body, `${name} missing the B-733 partial-apply pointer`).toMatch(POINTER);
+    });
+  }
+});
