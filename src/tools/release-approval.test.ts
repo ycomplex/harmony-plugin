@@ -17,6 +17,12 @@ import {
   RELEASE_APPROVAL_REASON,
 } from './release-approval.js';
 import { updateTaskTool } from './tasks.js';
+import {
+  classifyWorkerExit,
+  exitClass,
+  TICKET_TERMINAL_STATES,
+  type ClassifyArgs,
+} from '../daemon/classify.js';
 
 vi.mock('./resolve-task-id.js', () => ({
   resolveTaskId: async (_c: unknown, _p: string, id: string) => `uuid-for-${id}`,
@@ -285,4 +291,105 @@ describe('B-745: flag_release_evidence_missing is fully retired from skills pros
       ).toThrow();
     },
   );
+});
+
+// --- B-745: the evidence-missing re-fire loop is BOUNDED, not merely interrupted once ------------
+//
+// The re-fire in O1 composes a release-decision-pending brief when no `brief_resolved` accept is
+// recorded. If the human DEFERS that brief the ticket parks — and the question this block answers is
+// whether anything can then come back and compose ANOTHER one. "Interrupted once" would be a defer
+// that stops the current run; "bounded" means no resume path can re-enter the re-fire at all.
+//
+// Note what is and is not proven here. finish-work is prose — nothing executes it — so the conductor
+// half can only be pinned as a contract against the prose. The DAEMON half, however, is real code:
+// classifyWorkerExit decides whether a worker is re-fired, so a Parked ticket completing there is
+// executable proof that no second worker runs and therefore no second brief is composed. The
+// executable assertion is the load-bearing one; the prose assertions guard the paths around it.
+
+describe('B-745: deferring the evidence-missing re-fire parks the ticket, and no resume re-composes (provably bounded)', () => {
+  const finishWork = readFileSync(finishWorkPath, 'utf8');
+
+  // Baseline classify args; each test overrides only the axis it is about. Deliberately mirrors
+  // classify.test.ts's local helper rather than importing it — a test helper is not public API, and
+  // this block must keep working if that file is restructured.
+  function classifyArgs(overrides: Partial<ClassifyArgs> = {}): ClassifyArgs {
+    return {
+      row: { workflow_state: 'Built', awaiting_human_input: false, stale: false },
+      nonArchivedChildCount: 0,
+      exitCode: 0,
+      progressed: true,
+      timedOut: false,
+      ...overrides,
+    };
+  }
+
+  const conductPath = fileURLToPath(new URL('../../skills/harmony-conduct/SKILL.md', import.meta.url));
+  const conduct = readFileSync(conductPath, 'utf8');
+
+  // ── the executable half: the daemon cannot re-fire a worker against a Parked ticket ──
+
+  it('DAEMON (executable): the post-defer row — Parked, flag cleared — classifies as complete, so no second worker is ever launched', () => {
+    const postDefer = classifyArgs({
+      row: { workflow_state: 'Parked', awaiting_human_input: false, stale: false },
+    });
+    const outcome = classifyWorkerExit(postDefer);
+    expect(outcome).toEqual({ action: 'complete' });
+    expect(exitClass(outcome, postDefer)).toBe('terminal');
+    // Explicitly NOT a resume: 'wait' would keep the conduction active and let the next pass fire a
+    // worker, which would re-enter O1 and compose brief #2.
+    expect(outcome).not.toEqual({ action: 'wait' });
+  });
+
+  it('DAEMON (executable): bounded, not interrupted once — the classification is stable across repeated passes', () => {
+    const postDefer = classifyArgs({
+      row: { workflow_state: 'Parked', awaiting_human_input: false, stale: false },
+    });
+    // A "merely interrupted" loop would classify differently on a later pass (e.g. wait → fire →
+    // park → wait). Parked is absorbing: every pass returns the same terminal completion.
+    for (let pass = 0; pass < 5; pass++) {
+      expect(classifyWorkerExit(postDefer)).toEqual({ action: 'complete' });
+    }
+  });
+
+  it('DAEMON (executable): Parked completes even on a dirty exit code, so a crashed worker cannot reopen the loop either', () => {
+    const postDefer = classifyArgs({
+      row: { workflow_state: 'Parked', awaiting_human_input: false, stale: false },
+      exitCode: 1,
+      progressed: false,
+    });
+    expect(classifyWorkerExit(postDefer)).toEqual({ action: 'complete' });
+  });
+
+  it("DAEMON (executable): 'Parked' is a member of the terminal allowlist constant — the bound is data, not a hand-written check", () => {
+    expect(TICKET_TERMINAL_STATES).toContain('Parked');
+  });
+
+  // ── the prose half: the conductor's pickup path agrees, and O1 documents the guard ──
+
+  it('CONDUCTOR (contract): harmony-conduct lists Parked as a TERMINAL state that ends the loop, so a re-run cannot reach the release gate', () => {
+    expect(conduct).toMatch(/Verified \/ Parked \/ Cancelled \| TERMINAL — loop ends/);
+    expect(conduct).toMatch(/workflow_state === 'Parked'[\s\S]{0,120}deferred\/cancelled at a gate/);
+  });
+
+  it('O1 (contract): the re-fire branch documents the Parked loop guard explicitly, naming both pickup paths', () => {
+    const guard = finishWork.slice(finishWork.indexOf('Loop guard'));
+    expect(guard).toContain('Loop guard');
+    // Both routers must be named — each is keyed on a different field, so each needs its own reason
+    // for not routing a Parked ticket back in.
+    expect(guard).toMatch(/harmony-conduct/);
+    expect(guard).toMatch(/harmony-next/);
+    expect(guard).toMatch(/Parked/);
+  });
+
+  it('O1 (contract): defer on the re-composed brief is the ORDINARY resolve_brief defer — no bespoke parking path to get wrong', () => {
+    expect(finishWork).toMatch(/\*\*defer\*\* parks the ticket via `resolve_brief\(\{ command: "defer" \}\)`/);
+  });
+
+  it('gate-routing (contract): the terminal-state rule the loop guard leans on actually says terminal states have no gate', () => {
+    const routing = readFileSync(
+      fileURLToPath(new URL('../../skills/harmony-shared/gate-routing.md', import.meta.url)),
+      'utf8',
+    );
+    expect(routing).toMatch(/Terminal states \(`Verified`, `Parked`, `Cancelled`\) have no gate/);
+  });
 });
