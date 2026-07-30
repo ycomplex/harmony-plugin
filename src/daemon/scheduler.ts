@@ -222,6 +222,10 @@ async function handleConduction(
       // REAP-THEN-FIRE: the dead holder may have left a worker running; remove it BEFORE this
       // daemon ever fires one, so two workers can never conduct the same ticket.
       await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+      // B-742: the reaped zombie's leg is definitively over — clear the stale marker now, so a
+      // pass that finds no wake right after this takeover doesn't leave leg_started_at pointing
+      // at a dead leg forever.
+      if (!(await writeIfHeld(deps, state, keeper, row, { leg_started_at: null }))) return;
       deps.log(`conduction ${row.id}: took over stale lease from ${row.lease_holder} — reaped`);
     }
   }
@@ -264,6 +268,10 @@ async function handleConduction(
     // the exec timeout stopped neither the container nor the daemon. Running the reap produced
     // both at once. So the reap is not cleanup AFTER the timeout; the reap IS the mechanism, for
     // stopping the worker and for freeing this pass.
+    // B-742: stamp a FRESH leg-start for this attempt (including retries) immediately before
+    // firing the launch — mirrors the heartbeat's lease-guarded write above.
+    if (!(await writeIfHeld(deps, state, keeper, row, { leg_started_at: iso(deps.now()) }))) return;
+
     let timedOut = false;
     let settled = false;
     const launch = deps
@@ -300,6 +308,9 @@ async function handleConduction(
     });
 
     const { exitCode } = await Promise.race([launch, escalation]);
+    // B-742: the launch call has returned — clear immediately, regardless of how it ended. A
+    // later park/complete/retry write (below) is a SEPARATE patch; do not fold this into it.
+    if (!(await writeIfHeld(deps, state, keeper, row, { leg_started_at: null }))) return;
 
     const after = await deps.getTaskMeta(row.task_id);
     const nonArchivedChildCount =

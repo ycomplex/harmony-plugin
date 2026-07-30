@@ -27,6 +27,7 @@ function conduction(over: Partial<ConductionRecord> = {}): ConductionRecord {
     lease_holder: ME,
     lease_acquired_at: iso(T0),
     last_heartbeat_at: iso(T0),
+    leg_started_at: null,
     retry_count: 0,
     worker_kind: null,
     worker_ref: null,
@@ -244,6 +245,11 @@ function makeHarness(opts: HarnessOpts) {
       (deps.updateConductionIfHeld as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter(
         (c) => c[0] === id && Object.keys(c[2] as object).join() === 'last_heartbeat_at',
       ),
+    /** B-742: leg_started_at writes ATTEMPTED by this daemon (set or clear), in call order. */
+    legStartedWrites: (id: string) =>
+      (deps.updateConductionIfHeld as unknown as { mock: { calls: unknown[][] } }).mock.calls
+        .filter((c) => c[0] === id && Object.keys(c[2] as object).join() === 'leg_started_at')
+        .map((c) => (c[2] as Record<string, unknown>).leg_started_at as string | null),
     /** Status-write ATTEMPTS (the guarded call is still made when the lease is gone — it just
      *  returns null and lands nothing). Assert on the row itself to prove what actually landed. */
     statusWrites: () =>
@@ -923,5 +929,123 @@ describe('B-739: the per-launch deadline is enforced by firing the REAP template
     for (let i = 0; i < 4; i += 1) await h.fireReapGrace();
 
     expect(await settled).toBeInstanceOf(PersistentReapFailure);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-742 — leg_started_at: stamped fresh immediately before every launch attempt (retries
+// included), cleared the instant the launch call returns for ANY reason, both lease-guarded via
+// the same writeIfHeld/updateConductionIfHeld path as every other post-claim write.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('B-742: leg_started_at', () => {
+  it('a clean launch sets leg_started_at to the pass-time clock immediately before firing, and clears it once the launch returns', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    const state = new Map<string, WatchBaseline>();
+
+    await runSchedulerPass(h.deps, state, h.keeper); // baseline pass — still awaiting, no wake
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false; // the human resolved
+    h.hooks.onLaunch = () => {
+      (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true; // the worker paused again
+    };
+    await runSchedulerPass(h.deps, state, h.keeper);
+
+    expect(h.launches()).toEqual(['launch cond-1 task-1']);
+    // The pre-launch set, stamped from the pass-time clock…
+    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
+      leg_started_at: iso(T0),
+    });
+    // …and the post-return clear, both lease-guarded.
+    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
+      leg_started_at: null,
+    });
+    expect(h.getConduction('cond-1').leg_started_at).toBeNull();
+  });
+
+  const retryConfig: DaemonConfig = { ...config, retryCap: 2, retryBackoffMs: 15_000 };
+
+  it('a B-713 dirty-exit retry sets leg_started_at FRESH on each attempt — no attempt inherits a previous stamp', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      config: retryConfig,
+      launchExitCodes: [1, 0], // initial attempt dies dirty, the retry comes back clean
+    });
+    const state = new Map<string, WatchBaseline>();
+    await runSchedulerPass(h.deps, state, h.keeper); // baseline
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    h.hooks.onLaunch = () => {
+      const task = h.tasks['task-1'] as DaemonTask;
+      // Only the SECOND (retried) launch resolves the gate, mirroring case 4b.
+      if (h.launches().length === 2) task.awaiting_human_input = true;
+    };
+    await runSchedulerPass(h.deps, state, h.keeper);
+
+    expect(h.launches()).toHaveLength(2);
+    // Set → clear for the initial attempt, then a FRESH set (at the post-backoff clock, never the
+    // stale first-attempt stamp) → clear for the retry. Every attempt gets its own set+clear pair.
+    expect(h.legStartedWrites('cond-1')).toEqual([
+      iso(T0),
+      null,
+      iso(T0 + retryConfig.retryBackoffMs),
+      null,
+    ]);
+    expect(h.getConduction('cond-1').leg_started_at).toBeNull();
+  });
+
+  it('a takeover of a stale lease clears leg_started_at right after the reap, as part of the takeover pass itself', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'dead-host:9:zzzz9999',
+          last_heartbeat_at: iso(T0 - 600_000), // 10 min silent ≫ 5-min stale threshold
+          leg_started_at: iso(T0 - 600_000), // the dead holder's leg — never cleared when it died
+        }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+    });
+    const state = new Map<string, WatchBaseline>();
+
+    await runSchedulerPass(h.deps, state, h.keeper); // takeover pass: CAS win → reap → clear
+
+    // The reap-then-clear ordering: only ONE command ran (the reap) this pass — no launch fired
+    // yet — so the clear observed below can only have come from the takeover path, not the
+    // launch-return clear (B2/B3), which fires on a LATER pass.
+    expect(h.commands).toEqual(['reap cond-1']);
+    expect(h.launches()).toEqual([]);
+    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
+      leg_started_at: null,
+    });
+    expect(h.getConduction('cond-1').leg_started_at).toBeNull();
+  });
+
+  it('a lease lost mid-launch: the pre-launch set was lease-guarded, and no leg_started_at write from this daemon lands after the steal', async () => {
+    const h = makeHarness({
+      blockLaunch: true,
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+    });
+    const state = new Map<string, WatchBaseline>();
+    const { pass } = await blockedOnWorker(h, state);
+
+    // The pre-launch set landed while this daemon still held the lease.
+    expect(h.getConduction('cond-1').leg_started_at).toBe(iso(T0));
+
+    // A peer wins the CAS takeover while we are blocked, and reaps our container.
+    h.getConduction('cond-1').lease_holder = 'other-daemon:9:zzzz';
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.releaseLaunch(1); // dirty exit, as a reaped worker would look
+    await pass;
+
+    // The guarded clear IS attempted (through updateConductionIfHeld) — it just lands nothing,
+    // because this daemon no longer holds the lease.
+    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
+      leg_started_at: null,
+    });
+    expect(h.getConduction('cond-1').lease_holder).toBe('other-daemon:9:zzzz');
+    // Untouched by us: still the pre-steal value, not cleared.
+    expect(h.getConduction('cond-1').leg_started_at).toBe(iso(T0));
   });
 });

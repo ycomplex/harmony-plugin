@@ -95,6 +95,9 @@ export interface ConductionRecord {
   lease_holder: string | null;
   lease_acquired_at: string | null;
   last_heartbeat_at: string | null;
+  /** B-698/B-742: when the current worker leg was launched; cleared on exit. Null when no leg is
+   *  running. Left set if the daemon dies mid-leg (deliberate — see scheduler.ts). */
+  leg_started_at: string | null;
   retry_count: number;
   worker_kind: string | null;
   worker_ref: string | null;
@@ -108,7 +111,8 @@ export interface ConductionRecord {
 }
 
 const CONDUCTION_COLS =
-  'id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, retry_count, ' +
+  'id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, ' +
+  'retry_count, ' +
   'worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, ' +
   'started_at, created_by, created_at, updated_at';
 
@@ -230,6 +234,7 @@ export const CONDUCTION_PATCHABLE_FIELDS = [
   'lease_holder',
   'lease_acquired_at',
   'last_heartbeat_at',
+  'leg_started_at',
   'retry_count',
   'worker_kind',
   'worker_ref',
