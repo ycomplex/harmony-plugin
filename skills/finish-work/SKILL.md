@@ -123,22 +123,44 @@ by the shape of the ticket row.
    Requiring the entry to sit AFTER the latest advance into `Built` is what stops a re-opened ticket
    (`revising-building` → re-built) from resuming on its *previous* cycle's accept.
 4. **No such entry → FAIL CLOSED. Absence of the entry is NOT an accept — never merge on it.** Do not fall
-   back to the row shape, do not draft a fresh brief on top of a possible one, and do not end the run
-   quietly. Put the ticket in the human's queue:
+   back to the row shape, and do not end the run quietly. B-745 retired the bespoke pause tool this branch
+   used to call — a stranded pause with no web-side clearing mechanism strands the ticket worse than none —
+   so instead, RE-FIRE the ordinary release brief, the exact same composition used to draft a fresh
+   Built→awaiting-release decision, just re-invoked because the prior acceptance wasn't recorded:
 
    ```
-   mcp__harmony__flag_release_evidence_missing({ task_id })
-   mcp__harmony__add_comment({ task_id, content: "Release resume blocked: no `brief_resolved` accept recorded for this ticket's release brief, so I can't confirm the release was ever accepted. Re-accept the release gate and I'll merge (B-734)." })
+   mcp__harmony__compose_brief({
+     task_id, reason: "release-decision-pending", pending_activity: null,
+     doc: { decide: "Release <ticket> — merge PR <pr_number> and deploy to staging?",
+       context: [
+         "The prior acceptance wasn't recorded — please re-affirm.",
+         "PR: <pr_url> (branch <branch>, head <head_sha>)",
+       ],
+       items: [{ kind: "decision", text: "Re-affirm shipping the built artefact — PR <pr_url>", recommendation: "release" }] }
+   })
    ```
 
-   `flag_release_evidence_missing` sets `awaiting_human_input` with reason **`release-evidence-missing`**,
-   so the ticket surfaces in the queue and its resolution produces the `true → false` flip the daemon wakes
-   on. **Naming the tool is the point:** B-697 proved that a worker which emits its objection to stdout and
-   exits is *discarded* by the daemon — "surface it to the human" is not a mechanism, a flag-writing tool
-   is. This is also what covers **tickets that predate B-734**: they carry no `brief_resolved` entry at all,
-   so they must never be auto-merged on a matching row shape — the human re-accepts once, and the entry
-   exists from then on. Declining to merge on absence-of-evidence is exactly what the B-697 worker did, and
-   it was right.
+   `pending_activity: null` is load-bearing, not incidental: Built→Deployed is SYSTEM-on-deploy-success,
+   never human-accept (state-machine §6.1), so any other `pending_activity` would make the human's accept
+   attempt an invalid `workflow_transitions` edge. This is an ORDINARY `release-decision-pending` brief —
+   the same shape O1 drafts for a fresh Built ticket in step 2 above — so the human sees an ordinary release
+   gate, not a bespoke pause: **accept** clears the flag and resumes straight into O2 (this same
+   resume-vs-draft check now finds the fresh `brief_resolved` entry this composition writes on accept), and
+   **defer** parks the ticket via `resolve_brief({ command: "defer" })`'s ordinary, existing behavior —
+   nothing bespoke is needed for that either. This is also what covers **tickets that predate B-734**: they
+   carry no `brief_resolved` entry at all, so they must never be auto-merged on a matching row shape — the
+   human re-affirms once, and the entry exists from then on. Declining to merge on absence-of-evidence is
+   exactly what the original B-734 fail-closed check did, and it was right — B-745 only changes HOW the
+   human is asked, from a dead-end pause to an ordinary, resolvable brief.
+
+   **Loop guard — a `Parked` ticket must never re-enter this check.** If the human **defers** the
+   re-composed brief, `workflow_state` becomes `Parked`. `Parked` is a terminal state with no gate
+   (`skills/harmony-shared/gate-routing.md` — "Terminal states (`Verified`, `Parked`, `Cancelled`) have no
+   gate: they end the lifecycle"), so neither `harmony-conduct` (keyed on `workflow_state`) nor
+   `harmony-next` (keyed on `awaiting_human_reason`, which `defer` clears) route a `Parked` ticket back into
+   this O1 resume check on a later pickup. A torn evidence-missing pause therefore cannot loop forever
+   re-composing briefs: a deferred one simply stops here, at `Parked`, same as any other deferred release
+   decision.
 
 **Why positive evidence, and not the row shape (the claim this replaces).** This check used to infer the
 accept from `workflow_state === 'Built'` AND `awaiting_human_input === false` AND a null `get_brief`, and
@@ -241,17 +263,24 @@ paths:
      attached:
 
      ```
-     mcp__harmony__flag_release_approval_pending({ task_id, pr_number, pr_url })
+     mcp__harmony__flag_release_approval_pending({ task_id, pr_number, pr_url, review_decision: reviewDecision })
      mcp__harmony__add_comment({ task_id, content: "Awaiting your approval on <pr_url> before the merge can proceed — the PR is bot-authored, so GitHub requires a review the worker cannot supply." })
      ```
+
+     Pass `review_decision: reviewDecision` **unconditionally, every call** — it is exactly the value
+     already fetched a few steps above via `gh pr view <pr_number> --json author,reviewDecision`
+     (B-745), so it is never re-fetched here; thread the same variable through whether this is the
+     first time the leg hits this gate or a retried one. `flag_release_approval_pending` is a
+     stateless writer with no way to tell "is this a repeat flag", so this is never conditioned on that.
 
      Use `flag_release_approval_pending`, **not** `update_task` — the awaiting flag triple is a
      human-pause assertion, and `update_task` deliberately does not expose it (every writer of that
      triple is the tool whose semantics justify it: `compose_brief` owns the brief pause,
      `file_elicitation_round` owns the question pause, and this owns the release-approval pause). It
-     sets the flag, the `release-approval-pending` reason and a PR-naming ref, and touches nothing
-     else — in particular it never moves `workflow_state`, because the ticket legitimately stays at
-     `Built` until the deploy succeeds. It is idempotent, so a retried leg re-flags safely.
+     sets the flag, the `release-approval-pending` reason, a PR-naming ref (now carrying the
+     `review_decision` snapshot alongside it, B-745), and touches nothing else — in particular it
+     never moves `workflow_state`, because the ticket legitimately stays at `Built` until the deploy
+     succeeds. It is idempotent, so a retried leg re-flags safely.
 
      The ticket now appears in the human's queue with the PR linked, and their resolution produces the
      `true → false` flag flip the daemon already wakes on. Under `--one-shot` this is a clean human pause:

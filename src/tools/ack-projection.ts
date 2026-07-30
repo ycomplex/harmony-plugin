@@ -313,9 +313,7 @@ export const ACK_PASS_THROUGH: Record<string, string> = {
   manage_labels:
     'Already id-lists only: { added: [label ids], removed: [label ids] } — no record echo to strip.',
   flag_release_approval_pending:
-    'Already a compact confirmation of the flag triple it just wrote ({task_id, awaiting_human_input, awaiting_human_reason, awaiting_human_ref}). The ref echoes the caller\'s pr_url deliberately: it IS the pause\'s identity, and reading it back is how the caller confirms WHICH PR the human was queued against.',
-  flag_release_evidence_missing:
-    'Already a compact confirmation of the flag triple it just wrote ({task_id, awaiting_human_input, awaiting_human_reason, awaiting_human_ref}). Same rationale as flag_release_approval_pending: the ref echoes the caller\'s brief_id/task_visual_id deliberately — it IS the pause\'s identity, and reading it back confirms WHICH missing decision entry the human was queued against.',
+    'Already a compact confirmation of the flag triple it just wrote ({task_id, awaiting_human_input, awaiting_human_reason, awaiting_human_ref}). The ref echoes the caller\'s pr_url (and, since B-745, review_decision when the caller passed it) deliberately: it IS the pause\'s identity, and reading it back is how the caller confirms WHICH PR — and its current GitHub review state — the human was queued against.',
 };
 
 /**

@@ -30,13 +30,20 @@ export interface FlagReleaseApprovalArgs {
   task_id: string;
   pr_number?: number;
   pr_url: string;
+  /** B-745: the PR's current `gh pr view --json reviewDecision` value at flag time (e.g.
+   *  'APPROVED', 'CHANGES_REQUESTED', or absent/null pre-review). Threaded through UNCONDITIONALLY
+   *  on every call — this tool is a stateless writer with no way to know "is this a repeat flag",
+   *  so nothing here is gated on repeat-vs-first-call. Recording it lets the human (and the web
+   *  half's UI) see the review state that was true at the moment the pause was (re)written, without
+   *  a second GitHub round-trip. */
+  review_decision?: string;
 }
 
 export interface FlagReleaseApprovalResult {
   task_id: string;
   awaiting_human_input: true;
   awaiting_human_reason: string;
-  awaiting_human_ref: { kind: 'release-approval'; pr_number?: number; pr_url: string };
+  awaiting_human_ref: { kind: 'release-approval'; pr_number?: number; pr_url: string; review_decision?: string };
 }
 
 export async function flagReleaseApprovalPending(
@@ -52,6 +59,7 @@ export async function flagReleaseApprovalPending(
     kind: 'release-approval' as const,
     ...(args.pr_number === undefined ? {} : { pr_number: args.pr_number }),
     pr_url: args.pr_url,
+    ...(args.review_decision === undefined ? {} : { review_decision: args.review_decision }),
   };
 
   // Idempotent by construction: re-flagging an already-flagged pause rewrites the same triple.
@@ -90,6 +98,11 @@ export const flagReleaseApprovalPendingTool = {
         type: 'string',
         description:
           'The pull request URL the human must approve. Required — the pause must name what to approve.',
+      },
+      review_decision: {
+        type: 'string',
+        description:
+          "B-745: the PR's current `gh pr view --json reviewDecision` value at flag time (e.g. 'APPROVED', 'CHANGES_REQUESTED'). Optional — pass it whenever it was already fetched; recorded verbatim on the ref, unconditionally, every call.",
       },
     },
     required: ['task_id', 'pr_url'],

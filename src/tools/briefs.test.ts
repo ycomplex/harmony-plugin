@@ -1008,8 +1008,8 @@ describe('resolveBrief — brief-less umbrella verify-ack (B-517)', () => {
 // records the founder as having personally decided — forging exactly the warrant B-734 creates, and
 // on the common case rather than a corner (forward gates are all delegation may touch).
 //
-// Prose cannot be type-checked, so this pins it. The sibling guard for finish-work's release-evidence
-// pause lives in release-evidence.test.ts.
+// Prose cannot be type-checked, so this pins it. The B-745 guard for finish-work's O1 evidence-
+// missing re-fire (now an ordinary compose_brief re-fire, not a dedicated tool) lives in release-approval.test.ts.
 const conductPath = fileURLToPath(new URL('../../skills/harmony-conduct/SKILL.md', import.meta.url));
 
 describe('harmony-conduct §4b synthesized-accept prose ↔ provenance contract (B-734)', () => {
