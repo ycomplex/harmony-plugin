@@ -9,6 +9,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
 
 import {
   flagReleaseApprovalPending,
@@ -82,6 +83,91 @@ describe('flagReleaseApprovalPending', () => {
       }),
     ).rejects.toThrow(/pr_url is required/);
   });
+
+  // --- B-745: review_decision threaded through, unconditionally, every call --------------------
+  //
+  // The tool is a stateless writer with no way to know "is this a repeat flag" — so review_decision
+  // is recorded whenever the caller passes it, on the FIRST call exactly the same as a later one.
+
+  it('B-745: records review_decision on the ref on a FIRST call when the caller passes it', async () => {
+    const captured: { update?: Record<string, unknown>; id?: string } = {};
+
+    const result = await flagReleaseApprovalPending(clientCapturing(captured), 'proj', {
+      task_id: 'B-732',
+      pr_number: 124,
+      pr_url: 'https://github.com/ycomplex/harmony-plugin/pull/124',
+      review_decision: 'CHANGES_REQUESTED',
+    });
+
+    expect(captured.update).toEqual({
+      awaiting_human_input: true,
+      awaiting_human_reason: 'release-approval-pending',
+      awaiting_human_ref: {
+        kind: 'release-approval',
+        pr_number: 124,
+        pr_url: 'https://github.com/ycomplex/harmony-plugin/pull/124',
+        review_decision: 'CHANGES_REQUESTED',
+      },
+    });
+    expect(result.awaiting_human_ref).toEqual({
+      kind: 'release-approval',
+      pr_number: 124,
+      pr_url: 'https://github.com/ycomplex/harmony-plugin/pull/124',
+      review_decision: 'CHANGES_REQUESTED',
+    });
+  });
+
+  it('B-745: records review_decision again on a REPEAT call — the same shape, unconditionally, not just on repeats', async () => {
+    const captured: { update?: Record<string, unknown>; id?: string } = {};
+    const client = clientCapturing(captured);
+    const args = {
+      task_id: 'B-732',
+      pr_number: 124,
+      pr_url: 'https://github.com/ycomplex/harmony-plugin/pull/124',
+    };
+
+    const first = await flagReleaseApprovalPending(client, 'proj', { ...args, review_decision: 'CHANGES_REQUESTED' });
+    const second = await flagReleaseApprovalPending(client, 'proj', { ...args, review_decision: 'APPROVED' });
+
+    expect(first.awaiting_human_ref).toEqual({
+      kind: 'release-approval',
+      pr_number: 124,
+      pr_url: 'https://github.com/ycomplex/harmony-plugin/pull/124',
+      review_decision: 'CHANGES_REQUESTED',
+    });
+    expect(second.awaiting_human_ref).toEqual({
+      kind: 'release-approval',
+      pr_number: 124,
+      pr_url: 'https://github.com/ycomplex/harmony-plugin/pull/124',
+      review_decision: 'APPROVED',
+    });
+    expect(captured.update).toEqual({
+      awaiting_human_input: true,
+      awaiting_human_reason: 'release-approval-pending',
+      awaiting_human_ref: second.awaiting_human_ref,
+    });
+  });
+
+  it('B-745: review_decision is genuinely OPTIONAL — omitting it omits the key rather than writing null', async () => {
+    const captured: { update?: Record<string, unknown> } = {};
+    await flagReleaseApprovalPending(clientCapturing(captured), 'proj', {
+      task_id: 'B-732',
+      pr_url: 'https://example.test/pr/1',
+    });
+
+    expect(captured.update?.awaiting_human_ref).toEqual({
+      kind: 'release-approval',
+      pr_url: 'https://example.test/pr/1',
+    });
+  });
+});
+
+describe('flag_release_approval_pending tool schema (B-745)', () => {
+  it('declares review_decision as an OPTIONAL property, not required', () => {
+    expect(Object.keys(flagReleaseApprovalPendingTool.inputSchema.properties)).toContain('review_decision');
+    expect(flagReleaseApprovalPendingTool.inputSchema.required).toEqual(['task_id', 'pr_url']);
+    expect(flagReleaseApprovalPendingTool.inputSchema.required).not.toContain('review_decision');
+  });
 });
 
 // --- cross-file drift guard: finish-work prose ↔ real tool surface ------------------------------
@@ -152,4 +238,51 @@ describe('start-work O3 release-brief ↔ approval requirement (B-732 reopen)', 
     expect(prose).not.toMatch(/Release <ticket> to production\?/);
     expect(prose).toMatch(/deploy to staging/i);
   });
+});
+
+// --- B-745: retire flag_release_evidence_missing, replace its call site with an ordinary --------
+// compose_brief re-fire, on the SAME Built→awaiting-release decision start-work's O3 already uses.
+//
+// The old dedicated tool (B-734) put a ticket in a pause the web app had no way to clear — this
+// re-fire keeps the fail-closed check but resolves it through the ordinary release-decision-pending
+// gate, so accept/defer both work exactly as any other release decision would.
+
+describe("finish-work O1 evidence-missing re-fire ↔ compose_brief contract (B-745)", () => {
+  const prose = readFileSync(finishWorkPath, 'utf8');
+
+  it('re-fires an ordinary compose_brief call carrying both reason: "release-decision-pending" and pending_activity: null together', () => {
+    const calls = prose.split('mcp__harmony__compose_brief(').slice(1);
+    const hit = calls.find(
+      (block) =>
+        /reason:\s*["']release-decision-pending["']/.test(block) &&
+        /pending_activity:\s*null/.test(block),
+    );
+    expect(hit).toBeDefined();
+  });
+
+  it('no longer calls the retired flag_release_evidence_missing tool anywhere in this prose', () => {
+    expect(prose).not.toContain('flag_release_evidence_missing');
+    expect(prose).not.toContain('release-evidence-missing');
+  });
+});
+
+describe('B-745: flag_release_evidence_missing is fully retired from skills prose — zero references', () => {
+  const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
+
+  // Scoped to the skills tree + container/README.md (not the whole repo — this test FILE itself
+  // legitimately names the retired tool as a string literal, to assert its absence elsewhere).
+  it.each(['flag_release_evidence_missing', 'release-evidence-missing'])(
+    'git grep finds no tracked occurrence of %s in skills/ or container/README.md',
+    (needle) => {
+      // `git grep -l` exits 1 (and execSync throws) when the pattern matches NOTHING in the given
+      // pathspecs — the desired outcome here. A successful (non-throwing) grep means a stray
+      // reference survived in skill prose or the container README.
+      expect(() =>
+        execSync(`git grep -l -F ${JSON.stringify(needle)} -- skills/ container/README.md`, {
+          cwd: repoRoot,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }),
+      ).toThrow();
+    },
+  );
 });

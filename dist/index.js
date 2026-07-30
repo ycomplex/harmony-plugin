@@ -36009,7 +36009,8 @@ async function flagReleaseApprovalPending(client, projectId, args) {
   const ref = {
     kind: "release-approval",
     ...args.pr_number === void 0 ? {} : { pr_number: args.pr_number },
-    pr_url: args.pr_url
+    pr_url: args.pr_url,
+    ...args.review_decision === void 0 ? {} : { review_decision: args.review_decision }
   };
   const { error: error2 } = await client.from("tasks").update({
     awaiting_human_input: true,
@@ -36038,55 +36039,13 @@ var flagReleaseApprovalPendingTool = {
       pr_url: {
         type: "string",
         description: "The pull request URL the human must approve. Required \u2014 the pause must name what to approve."
+      },
+      review_decision: {
+        type: "string",
+        description: "B-745: the PR's current `gh pr view --json reviewDecision` value at flag time (e.g. 'APPROVED', 'CHANGES_REQUESTED'). Optional \u2014 pass it whenever it was already fetched; recorded verbatim on the ref, unconditionally, every call."
       }
     },
     required: ["task_id", "pr_url"]
-  }
-};
-
-// src/tools/release-evidence.ts
-var RELEASE_EVIDENCE_REASON = "release-evidence-missing";
-async function flagReleaseEvidenceMissing(client, projectId, args) {
-  if (!args.task_id) throw new Error("task_id is required");
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
-  const ref = {
-    kind: "release-evidence",
-    ...args.brief_id === void 0 ? {} : { brief_id: args.brief_id },
-    ...args.task_visual_id === void 0 ? {} : { task_visual_id: args.task_visual_id }
-  };
-  const { error: error2 } = await client.from("tasks").update({
-    awaiting_human_input: true,
-    awaiting_human_reason: RELEASE_EVIDENCE_REASON,
-    awaiting_human_ref: ref
-  }).eq("id", taskId);
-  if (error2) throw new Error(error2.message);
-  return {
-    task_id: taskId,
-    awaiting_human_input: true,
-    awaiting_human_reason: RELEASE_EVIDENCE_REASON,
-    awaiting_human_ref: ref
-  };
-}
-var flagReleaseEvidenceMissingTool = {
-  name: "flag_release_evidence_missing",
-  description: "B-734: pause a release leg because the ticket carries NO recorded evidence that a human accepted the release. finish-work's O1 resume check requires a positive `brief_resolved` decision entry (B-734 gave ticket history that record) before an irreversible merge \u2014 it no longer infers acceptance from a missing brief \u2014 so it fails CLOSED when the entry is absent. Stopping silently would strand the ticket: a worker's prose to stdout is discarded by the daemon (B-697), the ticket would sit at Built with awaiting_human_input false \u2014 in nobody's queue \u2014 and nothing would wake the daemon. Sets awaiting_human_input with reason 'release-evidence-missing' and an awaiting_human_ref naming the release brief whose decision entry is absent, so the ticket enters the human's queue with the reason stated and its resolution produces the true\u2192false flip the daemon wakes on. Never touches workflow_state \u2014 the ticket legitimately stays Built, because the release did not happen. Idempotent: re-flagging rewrites the same triple. Use ONLY for this modeled missing-evidence pause; a bot-authored PR awaiting GitHub approval is flag_release_approval_pending, and an ad-hoc worker question belongs in an elicitation round.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      task_id: {
-        type: "string",
-        description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)"
-      },
-      brief_id: {
-        type: "string",
-        description: "The release brief (UUID) whose decision entry is absent \u2014 what the human is being asked to account for."
-      },
-      task_visual_id: {
-        type: "string",
-        description: "The ticket's visual ID (e.g., B-734), for a queue entry that reads without a lookup."
-      }
-    },
-    required: ["task_id"]
   }
 };
 
@@ -36675,7 +36634,6 @@ function registerTools(disabledFeatures) {
     resolveBriefTool,
     consumeAcceptRemarkTool,
     flagReleaseApprovalPendingTool,
-    flagReleaseEvidenceMissingTool,
     startElicitationTool,
     fileElicitationRoundTool,
     getElicitationTool,
@@ -36876,9 +36834,6 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "flag_release_approval_pending":
         result = await flagReleaseApprovalPending(client, projectId, args);
-        break;
-      case "flag_release_evidence_missing":
-        result = await flagReleaseEvidenceMissing(client, projectId, args);
         break;
       case "start_elicitation":
         result = await startElicitation(client, projectId, userId, args);

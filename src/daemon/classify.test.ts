@@ -112,6 +112,23 @@ describe('classifyWorkerExit — the B-693 worker exit contract, in order', () =
     const a = args();
     expect(classifyWorkerExit(a)).toEqual({ action: 'wait' });
   });
+
+  // B-745 AC2b: the release-approval pause (B-732) has TWO clearing paths now — a founder GitHub
+  // approval landing (mechanism 2) or the re-composed release-decision brief being accepted
+  // (mechanism 1) — plus the pre-existing release-decision-pending / verification-ack-pending
+  // gates. Whichever mechanism cleared awaiting_human_input, the ROW this module reads afterward is
+  // the same shape: Built, not awaiting, not stale. This pins that this exact row — independent of
+  // WHICH tool did the clearing — resumes the conduction (the 'wait' outcome at this fallthrough
+  // branch IS the daemon's wake signal: this file's own header names it "the next pass's wake
+  // detection re-fires") rather than getting the ticket wrongly stuck in 'park' or falsely
+  // 'complete'.
+  it('B-745 AC2b: Built + awaiting_human_input=false + stale=false + clean progressed exit resumes — never park, never complete, regardless of what cleared the flag', () => {
+    const a = args({ row: { workflow_state: 'Built', awaiting_human_input: false, stale: false } });
+    const outcome = classifyWorkerExit(a);
+    expect(outcome).toEqual({ action: 'wait' });
+    expect(outcome.action).not.toBe('park');
+    expect(outcome.action).not.toBe('complete');
+  });
 });
 
 // B-739. The deadline's job is to stop a STUCK worker, never to discard an outcome the ticket row
