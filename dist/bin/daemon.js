@@ -18862,8 +18862,7 @@ var CONDUCTION_PATCHABLE_FIELDS = [
   "last_worker_exit_class",
   "current_pr_ref"
 ];
-async function updateConduction(client, id, patch) {
-  if (!id) throw new Error("id is required");
+function assertPatchable(patch) {
   const keys = Object.keys(patch ?? {});
   if (keys.length === 0) {
     throw new Error(`patch must contain at least one of: ${CONDUCTION_PATCHABLE_FIELDS.join(", ")}`);
@@ -18879,6 +18878,10 @@ async function updateConduction(client, id, patch) {
   if ("status" in patch && !CONDUCTION_STATUSES.includes(patch.status)) {
     throw new Error(`status must be one of: ${CONDUCTION_STATUSES.join(", ")}`);
   }
+}
+async function updateConduction(client, id, patch) {
+  if (!id) throw new Error("id is required");
+  assertPatchable(patch);
   const { data, error } = await client.from("conductions").update(patch).eq("id", id).select(CONDUCTION_COLS).single();
   if (error) throw new Error(error.message);
   return data;
@@ -18904,6 +18907,61 @@ async function takeoverConduction(client, args) {
   const { data, error } = await query.or(`last_heartbeat_at.is.null,last_heartbeat_at.lt.${args.stale_before}`).select(CONDUCTION_COLS).maybeSingle();
   if (error) throw new Error(error.message);
   return data ?? null;
+}
+async function updateConductionIfHeld(client, id, expectedLeaseHolder, patch) {
+  if (!id) throw new Error("id is required");
+  if (!expectedLeaseHolder) throw new Error("expectedLeaseHolder is required");
+  assertPatchable(patch);
+  const { data, error } = await client.from("conductions").update(patch).eq("id", id).eq("lease_holder", expectedLeaseHolder).select(CONDUCTION_COLS).maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ?? null;
+}
+
+// src/daemon/heartbeat.ts
+function createHeartbeatKeeper(deps) {
+  const timers = /* @__PURE__ */ new Map();
+  const stop = (id) => {
+    const cancel = timers.get(id);
+    if (cancel === void 0) return;
+    cancel();
+    timers.delete(id);
+  };
+  const beat = async (id) => {
+    try {
+      const row = await deps.updateConductionIfHeld(id, {
+        last_heartbeat_at: new Date(deps.now()).toISOString()
+      });
+      if (row === null) {
+        deps.log(`conduction ${id}: lease no longer held \u2014 heartbeat stopped`);
+        stop(id);
+      }
+    } catch (err) {
+      deps.log(
+        `conduction ${id}: heartbeat write failed, retrying next tick (${err instanceof Error ? err.message : String(err)})`
+      );
+    }
+  };
+  return {
+    ensure(id) {
+      if (timers.has(id)) return;
+      timers.set(
+        id,
+        deps.startInterval(deps.heartbeatMs, () => {
+          void beat(id);
+        })
+      );
+    },
+    stop,
+    retain(activeIds) {
+      for (const id of [...timers.keys()]) if (!activeIds.has(id)) stop(id);
+    },
+    stopAll() {
+      for (const id of [...timers.keys()]) stop(id);
+    },
+    running() {
+      return [...timers.keys()];
+    }
+  };
 }
 
 // src/daemon/config.ts
@@ -18958,6 +19016,7 @@ function loadDaemonConfig(env, readFile) {
     staleMs: envMs(env, "HARMONY_DAEMON_STALE_MS", 3e5),
     retryCap: envNonNegativeInt(env, "HARMONY_DAEMON_RETRY_CAP", 2),
     retryBackoffMs: envNonNegativeInt(env, "HARMONY_DAEMON_RETRY_BACKOFF_MS", 15e3),
+    workerTimeoutMs: envMs(env, "HARMONY_DAEMON_WORKER_TIMEOUT_MS", 54e5),
     profile: { launch: profile.launch, reap: profile.reap },
     logPath: envValue(env, "HARMONY_DAEMON_LOG")
   };
@@ -19010,6 +19069,7 @@ function classifyWorkerExit(args) {
     return { action: "complete" };
   }
   if (row.stale === true) return { action: "park", reason: "stale" };
+  if (args.timedOut) return { action: "park", reason: "worker-timeout" };
   if (exitCode !== 0) return { action: "park", reason: "dirty-exit" };
   if (!progressed) return { action: "park", reason: "no-progress" };
   return { action: "wait" };
@@ -19036,6 +19096,18 @@ var PersistentAuthFailure = class extends Error {
   }
 };
 var AUTH_FAILURE_PASS_LIMIT = 3;
+var REAP_ATTEMPT_LIMIT = 3;
+var REAP_GRACE_MS = 3e4;
+var PersistentReapFailure = class extends Error {
+  conductionId;
+  constructor(conductionId) {
+    super(
+      `persistent reap failure: the worker for conduction ${conductionId} did not stop after ${REAP_ATTEMPT_LIMIT} reap attempts`
+    );
+    this.name = "PersistentReapFailure";
+    this.conductionId = conductionId;
+  }
+};
 function isAuthShapedError(err) {
   const message = err instanceof Error ? err.message : String(err);
   return /\b401\b|jwt expired|invalid (jwt|token)|token .*expired/i.test(message);
@@ -19043,15 +19115,17 @@ function isAuthShapedError(err) {
 function templateVars(row) {
   return { conduction_id: row.id, ticket: row.task_id };
 }
-async function runSchedulerPass(deps, state) {
+async function runSchedulerPass(deps, state, keeper) {
   const rows = await deps.listConductions({ status: "active" });
   const activeIds = new Set(rows.map((r) => r.id));
   for (const id of [...state.keys()]) if (!activeIds.has(id)) state.delete(id);
+  keeper.retain(activeIds);
   let authShapedFailures = 0;
   for (const row of rows) {
     try {
-      await handleConduction(deps, state, row);
+      await handleConduction(deps, state, keeper, row);
     } catch (err) {
+      if (err instanceof PersistentReapFailure) throw err;
       if (isAuthShapedError(err)) authShapedFailures += 1;
       deps.log(
         `conduction ${row.id}: pass error \u2014 row skipped (${err instanceof Error ? err.message : String(err)})`
@@ -19060,7 +19134,15 @@ async function runSchedulerPass(deps, state) {
   }
   return { attempted: rows.length, authShapedFailures };
 }
-async function handleConduction(deps, state, row) {
+async function writeIfHeld(deps, state, keeper, row, patch) {
+  const updated = await deps.updateConductionIfHeld(row.id, deps.leaseHolder, patch);
+  if (updated !== null) return true;
+  deps.log(`conduction ${row.id}: lease lost to another daemon \u2014 abandoning this run`);
+  keeper.stop(row.id);
+  state.delete(row.id);
+  return false;
+}
+async function handleConduction(deps, state, keeper, row) {
   if (row.lease_holder !== deps.leaseHolder) {
     const won = await deps.takeoverConduction({
       id: row.id,
@@ -19078,7 +19160,8 @@ async function handleConduction(deps, state, row) {
       deps.log(`conduction ${row.id}: took over stale lease from ${row.lease_holder} \u2014 reaped`);
     }
   }
-  await deps.updateConduction(row.id, { last_heartbeat_at: iso(deps.now()) });
+  if (!await writeIfHeld(deps, state, keeper, row, { last_heartbeat_at: iso(deps.now()) })) return;
+  keeper.ensure(row.id);
   const current = await deps.getTaskMeta(row.task_id);
   const baseline = state.get(row.id);
   if (!baseline) {
@@ -19090,13 +19173,45 @@ async function handleConduction(deps, state, row) {
   deps.log(`conduction ${row.id}: wake (${wake}) \u2014 launching worker`);
   let retryCount = row.retry_count;
   for (; ; ) {
-    const { exitCode } = await deps.runCommand(
-      renderTemplate(deps.config.profile.launch, templateVars(row))
-    );
+    let timedOut = false;
+    let settled = false;
+    const launch = deps.runCommand(renderTemplate(deps.config.profile.launch, templateVars(row))).then((result) => {
+      settled = true;
+      return result;
+    });
+    const escalation = new Promise((_resolve, reject) => {
+      const cancelDeadline = deps.startTimeout(deps.config.workerTimeoutMs, () => {
+        timedOut = true;
+        deps.log(
+          `conduction ${row.id}: worker exceeded ${deps.config.workerTimeoutMs}ms \u2014 reaping`
+        );
+        void (async () => {
+          for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
+            void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+            await new Promise((resolveGrace) => {
+              deps.startTimeout(REAP_GRACE_MS, resolveGrace);
+            });
+            if (settled) return;
+            deps.log(
+              `conduction ${row.id}: reap ${attempt}/${REAP_ATTEMPT_LIMIT} did not free the launch`
+            );
+          }
+          reject(new PersistentReapFailure(row.id));
+        })();
+      });
+      void launch.finally(cancelDeadline);
+    });
+    const { exitCode } = await Promise.race([launch, escalation]);
     const after = await deps.getTaskMeta(row.task_id);
     const nonArchivedChildCount = after.workflow_state === "Decomposed" ? await deps.countNonArchivedChildren(row.task_id) : 0;
     const progressed = (after.workflow_state ?? null) !== (current.workflow_state ?? null) || (after.awaiting_human_input ?? null) !== (current.awaiting_human_input ?? null);
-    const classifyArgs = { row: after, nonArchivedChildCount, exitCode, progressed };
+    const classifyArgs = {
+      row: after,
+      nonArchivedChildCount,
+      exitCode,
+      progressed,
+      timedOut
+    };
     const outcome = classifyWorkerExit(classifyArgs);
     const cls = exitClass(outcome, classifyArgs);
     deps.log(
@@ -19108,7 +19223,7 @@ async function handleConduction(deps, state, row) {
     }
     if (outcome.action === "park" && cls === "dirty-exit" && retryCount < deps.config.retryCap) {
       retryCount += 1;
-      await deps.updateConduction(row.id, { retry_count: retryCount });
+      if (!await writeIfHeld(deps, state, keeper, row, { retry_count: retryCount })) return;
       deps.log(
         `conduction ${row.id}: dirty exit \u2014 retrying (attempt ${retryCount}/${deps.config.retryCap}) after reap + ${deps.config.retryBackoffMs}ms backoff`
       );
@@ -19117,7 +19232,8 @@ async function handleConduction(deps, state, row) {
       continue;
     }
     state.delete(row.id);
-    await deps.updateConduction(row.id, {
+    keeper.stop(row.id);
+    await writeIfHeld(deps, state, keeper, row, {
       status: outcome.action === "complete" ? "completed" : "parked",
       last_worker_exit_code: exitCode,
       last_worker_exit_class: cls
@@ -19125,15 +19241,16 @@ async function handleConduction(deps, state, row) {
     return;
   }
 }
-async function runScheduler(deps) {
+async function runScheduler(deps, keeper) {
   const state = /* @__PURE__ */ new Map();
   let consecutiveAuthFailingPasses = 0;
   for (; ; ) {
     let authFailingPass;
     try {
-      const summary = await runSchedulerPass(deps, state);
+      const summary = await runSchedulerPass(deps, state, keeper);
       authFailingPass = summary.attempted > 0 && summary.authShapedFailures === summary.attempted;
     } catch (err) {
+      if (err instanceof PersistentReapFailure) throw err;
       deps.log(`scheduler pass failed: ${err instanceof Error ? err.message : String(err)}`);
       authFailingPass = isAuthShapedError(err);
     }
@@ -19203,26 +19320,54 @@ ${err instanceof Error ? err.message : String(err)}
       return children.filter((c) => !c.archived).length;
     },
     updateConduction: (id, patch) => updateConduction(client, id, patch),
+    // B-739: every post-claim write is lease-guarded — null means another daemon owns this run.
+    updateConductionIfHeld: (id, expectedLeaseHolder, patch) => updateConductionIfHeld(client, id, expectedLeaseHolder, patch),
+    // B-739: real timers, unref'd so they can never hold the process open on their own. The
+    // heartbeat MUST stay in-process: a wedged event loop has to stop it, so a genuinely dead
+    // daemon still goes stale and its run stays recoverable by takeover.
+    startInterval: (ms, fn) => {
+      const timer = setInterval(fn, ms);
+      timer.unref?.();
+      return () => clearInterval(timer);
+    },
+    startTimeout: (ms, fn) => {
+      const timer = setTimeout(fn, ms);
+      timer.unref?.();
+      return () => clearTimeout(timer);
+    },
     takeoverConduction: (args) => takeoverConduction(client, args),
     runCommand,
     log,
     leaseHolder,
     config
   };
+  const keeper = createHeartbeatKeeper({
+    now: Date.now,
+    startInterval: deps.startInterval,
+    updateConductionIfHeld: (id, patch) => updateConductionIfHeld(client, id, leaseHolder, patch),
+    log,
+    heartbeatMs: config.heartbeatMs
+  });
   const stop = (signal) => {
+    keeper.stopAll();
     log(`received ${signal} \u2014 exiting (launchd owns restart)`);
     process.exit(0);
   };
   process.on("SIGTERM", () => stop("SIGTERM"));
   process.on("SIGINT", () => stop("SIGINT"));
   log(
-    `conductor daemon up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms`
+    `conductor daemon up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms, worker timeout ${config.workerTimeoutMs}ms`
   );
   try {
-    await runScheduler(deps);
+    await runScheduler(deps, keeper);
   } catch (err) {
     if (err instanceof PersistentAuthFailure) {
       log(`${err.message} \u2014 exiting 1 (launchd restarts with fresh auth)`);
+      process.exit(1);
+    }
+    if (err instanceof PersistentReapFailure) {
+      keeper.stopAll();
+      log(`${err.message} \u2014 exiting 1 (launchd restarts; takeover reclaims the run)`);
       process.exit(1);
     }
     throw err;
