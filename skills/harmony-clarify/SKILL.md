@@ -352,6 +352,7 @@ Show the rendered `content` verbatim. On the human's command:
 - **edit** / **iterate** → revise the `doc` per the human's input and re-call `compose_brief` (updates
   in place, bumps `iteration`; pass `underwriting_claim_ids` when claims are coupled — see step 4).
 - **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
+- **A staged `pending_resolution` you can only partially apply** → apply what you structurally can, then file a `worker-question` round scoped to the blocked residue per `skills/harmony-shared/elicitation-engine.md` §Resuming onto a staged pending_resolution you can only partially apply (file the round before recomposing — crash-safety ordering, never wholesale-discard an actionable resolution).
 
 #### Acting on a related-ticket disposition (B-475)
 

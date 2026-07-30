@@ -164,3 +164,65 @@ the human.
 window can race a mechanical cancel. When an engine write returns the typed
 `{ noop: true, cause: 'exchange-cancelled' }` no-op, the agent **ARCHIVES the claims it minted that
 turn** — they must never promote at the brief's accept.
+
+## The worker-question trigger (B-733)
+
+A worker running inside a conducted run — the top-level `harmony-conduct` session, any gate skill it
+delegates to (`harmony-clarify`, `harmony-decompose`, `harmony-design-decide`, `start-work`,
+`finish-work`), or a `harmony-build`-delegated subagent — that hits (a) a genuine judgment-call
+question it cannot safely decide alone, or (b) a capability denial it correctly declines to route
+around, must never write the question to stdout and exit. It files a round instead, reusing this
+engine unchanged:
+
+- **`trigger: 'worker-question'`** (a free-text value — no migration, per this file's trigger column),
+  **`gate`** = the current `workflow_activity`, one question with **`stakes: 'load-bearing'`** /
+  **`kind: 'open'`** (the same load-bearing-must-be-open binding as everywhere else in this engine —
+  a worker's own judgment call is never a rubber-stampable validate).
+- **The question always carries three things:** what triggered it (judgment-call vs
+  capability-denial), enough context to answer without reading a container log, and — for a
+  capability denial — the specific tool, the target, and concrete redirect options ("skip the edit
+  and report back" vs "reopen this for a build-capable context", etc.).
+- **The `harmony-build` hand-off.** `harmony-build`'s subagent has no MCP tool access
+  (`Read, Edit, Write, Bash, Glob, Grep` only), so it cannot call `start_elicitation` /
+  `file_elicitation_round` itself. It reports upward instead: it stops working and ends its final
+  report with the literal fenced marker `WORKER-QUESTION: <judgment-call|capability-denial>` followed
+  by the question. The delegating gate skill (`start-work`, which owns the build delegation) parses
+  its subagent's final report for this exact literal string and, on a match, files the round on
+  `harmony-build`'s behalf — naming `harmony-build` as the source in the round's context line — instead
+  of treating the subagent's return as a completed or failed build.
+- **Filing the round is a clean pause, not an abandonment.** It sets `awaiting_human_reason:
+  'elicitation-round'` exactly like any other round — the same first-class, web-visible pause every
+  other trigger in this file produces, and the same clean-pause outcome the daemon's worker-exit
+  classifier already recognizes generically off `awaiting_human_input` (B-693's one-shot exit
+  contract already lists "an active brief or elicitation exchange" as a clean pause).
+
+**The backstop invariant (voluntary stops only).** Before a session voluntarily ends its turn — chooses
+to stop rather than continue — it must leave the ticket in exactly one of: state advanced normally (a
+gate accepted/completed), an explicit park with an authored reason, or an open elicitation round. No
+other voluntary stop path exists; writing a question to stdout and exiting is never one of the three.
+This does **not** cover involuntary termination (a SIGKILL/OOM'd worker, exit 137, no output) — that
+worker never chose to stop, and is squarely the daemon's dirty-exit classifier's domain, not this
+invariant's.
+
+## Resuming onto a staged pending_resolution you can only partially apply (B-733)
+
+A gate skill that resumes onto its own active brief may find a staged `pending_resolution` (a browser
+iterate/accept the human already submitted) that it can only **partially** execute — e.g. a capability
+denial blocks one part of a multi-part instruction. Never wholesale-discard an actionable resolution
+and never re-ask about a part already applied:
+
+1. **Apply everything you structurally can, first.** Execute every part of the staged instruction
+   that does not hit a denial or a genuine judgment call.
+2. **Scope the round to ONLY the blocked residue.** File a `worker-question` round (per the trigger
+   above) naming exactly the part(s) you could not apply and why — never the parts already done.
+3. **File before you recompose — in that order, always.** Call `file_elicitation_round` first; only
+   after it returns success, re-call your own `compose_brief` on the same active brief (an in-place
+   iterate), which nulls `pending_resolution` as part of its write. This order is a **crash-safety**
+   property, not a race-safety one — nothing else touches the row concurrently inside one
+   single-threaded gate-skill invocation, so there is no race to guard against. The hazard is the
+   process dying **between** the two writes: file-then-recompose means a crash after the round lands
+   but before the recompose still leaves the instruction recoverable (the round exists,
+   `pending_resolution` is still staged, and a fresh resume can retry the recompose); recompose-then-file
+   would, on the identical crash, have already cleared `pending_resolution` with no round yet filed —
+   permanently losing the instruction. Do not re-derive this ordering as "there's no race, so it
+   doesn't matter" — the hazard is crash timing, and crash timing survives being single-threaded.

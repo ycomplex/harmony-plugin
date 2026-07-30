@@ -1004,6 +1004,41 @@ mechanically; **the LLM iterate runs where the agent runs — here**. Consume it
 The reshape is **not** an accept and **not** a state advance — it is a revise-and-resurface. The conductor
 never accepts on the human's behalf here; it only does the LLM work the browser deferred to the agent.
 
+### 4e. Filing a worker-question — when the RUNNING SESSION itself hits a judgment call or capability denial (B-733)
+
+Everything in §4/§4c/§4d covers the human's decision on a brief the conductor (or a gate skill) has
+already drafted. This section covers the opposite direction: **the running session itself** — this
+conductor loop, or a gate skill it is currently delegating to — hits genuine mid-run uncertainty with
+no gate brief that fits: a load-bearing judgment call it cannot safely make alone, or a capability
+denial it correctly declines to route around (e.g. an `Edit` denial on a repo outside this skill's
+remit — never quietly route around a denial with a different tool). **Never write the question to
+stdout and end the turn.** File a `worker-question` elicitation round instead, per
+`skills/harmony-shared/elicitation-engine.md` §The worker-question trigger — the SAME B-645 substrate
+every other trigger in this skill already uses, reused unchanged. `harmony-build`-delegated build work
+reports upward via the literal `WORKER-QUESTION:` marker (`start-work` parses it and files the round on
+`harmony-build`'s behalf); the conductor session files directly for its own judgment calls / denials.
+
+**This is a clean pause, not a park.** Filing the round sets `awaiting_human_reason:
+'elicitation-round'` — loop step 2's existing "elicitation-round → ALWAYS wait" handling applies
+unchanged: surface the round, then **arm the §4c watch and end the turn** exactly as any other
+elicitation pause (in `--one-shot`, the step-0 guard exits here instead of arming — same clean pause,
+no watch; the daemon's worker-exit classifier already reads a filed round as `clean-pause` generically
+off `awaiting_human_input`, per the one-shot exit contract's "an active brief or elicitation exchange").
+Never `no-progress`, never a silent stall.
+
+**A staged `pending_resolution` you can only partially apply** — the reciprocal case, where a human's
+own staged browser resolution is what turns out to be partly unexecutable — is handled per
+`skills/harmony-shared/elicitation-engine.md` §Resuming onto a staged pending_resolution you can only
+partially apply: apply everything you structurally can, scope the round to the blocked residue only,
+and file the round before recomposing the brief (crash-safety ordering, never wholesale-discard an
+actionable resolution).
+
+**The backstop invariant.** Before this session voluntarily ends its turn, it must leave the ticket in
+exactly one of: state advanced normally, an explicit park with an authored reason, or an open
+elicitation round. No other voluntary stop exists — writing a question to stdout and exiting is never
+one of the three. (Involuntary termination — a SIGKILL/OOM'd worker — is out of scope for this
+invariant; that is the daemon's dirty-exit classifier's domain.)
+
 ### 5. Terminal conditions — when the loop ends (not pauses)
 
 The loop **ends** (does not pause for resume) when, after re-reading the ticket at step 2:
