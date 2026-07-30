@@ -39,4 +39,18 @@ describe('harmony-clarify skill contract', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
     expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);
   });
+  it('AC-filing idempotency is a per-clarification-brief filing-pass record, not a ticket-wide AC-presence check (B-744)', () => {
+    expect(skill.body).toContain('AC-FILING-PASS');
+    expect(skill.body).toContain('filing-pass');
+    expect(skill.body.toLowerCase()).toContain('this clarification brief\'s id');
+    // the old ticket-wide guard must be gone, not merely supplemented:
+    expect(skill.body).not.toMatch(/skip the filing if the ticket already carries acceptance criteria/);
+    // the marker predicate is never brief_resolved-keyed:
+    expect(skill.body).toMatch(/never `brief_resolved`/);
+    // zero-count passes are exactly as loud as N:
+    expect(skill.body.toLowerCase()).toContain('a zero-count pass still writes');
+    const tools = referencedHarmonyTools(skill.body);
+    expect(tools).toContain('list_comments');
+    expect(tools).toContain('add_comment');
+  });
 });

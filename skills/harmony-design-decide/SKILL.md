@@ -85,17 +85,56 @@ load-bearing gap blocks the decision, go research-first (see knowledge-disciplin
 
 ### 2b. Acceptance criteria — refine and extend (product track, B-648)
 
-Clarify ORIGINATES the happy-path ACs — they land at the clarification brief's accept. The product
-track REFINES AND EXTENDS that set. Read the current set first:
+Clarify ORIGINATES the happy-path ACs — they land at the clarification brief's accept
+(`harmony-clarify/SKILL.md` §5). A **web accept with no session running** defers that filing to HERE —
+this sub-track's self-heal — before the product track REFINES AND EXTENDS the set with its own
+design-dependent criteria.
 
-```
-mcp__harmony__list_acceptance_criteria({ task_id })
-```
+**Self-heal filing-pass check (B-744) — the SAME predicate as clarify's own accept-path, never a
+ticket-wide "has any AC" check and never a `brief_resolved` read.** A `list_acceptance_criteria`
+EMPTY check is the exact B-698 defect under a new name (some unrelated AC already on the ticket
+reads as "clarify already ran"), and `brief_resolved` fires the instant the human accepts —
+*before* filing runs — so a web-accepted-no-session clarification carries a `brief_resolved` entry
+while filing is still outstanding. Both are rejected as the trigger here.
 
-- **If EMPTY** (a web-accepted clarification with no running session, or a ticket clarified before
-  B-648): derive the happy-path set from the Accepted clarification FIRST — the self-heal — then
-  proceed.
-- Then **ADD** the design-dependent criteria — edge cases, error paths, non-functional
+1. **Find the clarification's brief_id** — this site is filing CLARIFY's proposed set on its behalf,
+   so it keys on CLARIFY's brief, never this sub-track's own in-flight product-design brief (a
+   different brief type entirely). Locate the ticket's Accepted `specification` decision (clarify's
+   own record — `harmony-clarify/SKILL.md` §3.1):
+   ```
+   const refs = mcp__harmony__list_ticket_knowledge({ task_id })
+   const clarification = refs.find(r => r.type === 'specification' && r.status === 'Accepted')
+   ```
+   `clarification.decision_id` IS the shared `brief_id` key — the same `brief.decision_ref.id`
+   clarify's own accept-path uses, stable for the clarification's whole lifetime (unlike the
+   `briefs` row itself, which stops being queryable via `get_brief` the moment it resolves). This is
+   what makes the two sites interlock under one key instead of writing two non-interlocking records.
+2. **Check for an existing filing-pass record scoped to that id:**
+   ```
+   mcp__harmony__list_comments({ task_id })
+   ```
+   Match a line `AC-FILING-PASS brief_id=<clarification.decision_id> filed=<N>` — an exact
+   `brief_id` match, never fuzzy text matching against rendered brief prose.
+   - **Found → the happy-path set is already filed** (by clarify's own accept-path, or a prior run
+     of this self-heal) — do not re-file it. Read the current set (`list_acceptance_criteria`) and
+     go straight to the ADD/SHARPEN step below.
+   - **Not found → file the clarification's proposed happy-path set now, unconditionally** —
+     regardless of what other unrelated ACs already exist on the ticket — from the clarification
+     brief's structured proposed-ACs data (the Accepted specification decision's content — never
+     re-parsed from THIS brief's rendered markdown, which never carried them):
+     ```
+     mcp__harmony__manage_acceptance_criteria({ task_id, add: [{ content: "..." }, ...] })
+     ```
+     then write the filing-pass record — **a zero-count pass still writes it** (a silent zero is
+     exactly the original bug's failure mode, so zero must be exactly as loud as N):
+     ```
+     mcp__harmony__add_comment({ task_id, content: `AC-FILING-PASS brief_id=${clarification.decision_id} filed=${N}` })
+     ```
+   This one comment IS the idempotency marker — no second mechanism layered on top.
+
+Then, either way:
+
+- **ADD** the design-dependent criteria — edge cases, error paths, non-functional
   (mechanism-register criteria belong here, not at clarify). You may **SHARPEN** a happy-path AC
   (update). **NEVER silently drop a clarify-authored AC** — a drop is an explicit decision item on the
   design brief that the human accepts.
