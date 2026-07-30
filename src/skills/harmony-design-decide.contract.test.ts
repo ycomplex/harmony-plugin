@@ -50,4 +50,18 @@ describe('harmony-design-decide skill contract', () => {
     // N1: pin the actual phrase (was /generated.*surface|manipulable/ — "manipulable" alone kept this green):
     expect(skill.body.toLowerCase()).toMatch(/generated,?\s+manipulable\s+surface/);
   });
+  it('the product-design self-heal keys AC-filing idempotency on the CLARIFICATION brief, via the same filing-pass-record predicate as clarify (B-744)', () => {
+    expect(skill.body).toContain('AC-FILING-PASS');
+    expect(skill.body).toContain('filing-pass');
+    // the old EMPTY-set self-heal trigger must be gone, not merely supplemented:
+    expect(skill.body).not.toMatch(/\*\*If EMPTY\*\*/);
+    // scoped to CLARIFY's brief, never this sub-track's own product-design brief:
+    expect(skill.body.toLowerCase()).toContain('clarification\'s brief_id');
+    expect(skill.body).toMatch(/never .*`brief_resolved`/);
+    expect(skill.body.toLowerCase()).toContain('a zero-count pass still writes');
+    const tools = referencedHarmonyTools(skill.body);
+    expect(tools).toContain('list_comments');
+    expect(tools).toContain('add_comment');
+    expect(tools).toContain('list_ticket_knowledge');
+  });
 });

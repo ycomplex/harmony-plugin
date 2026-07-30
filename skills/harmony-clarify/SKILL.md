@@ -302,12 +302,39 @@ Show the rendered `content` verbatim. On the human's command:
 > §Resolution provenance).
 
 - **accept** → **first file the proposed ACs (B-648), then execute the de-scope block (B-518), then
-  resolve.** File the brief's proposed happy-path set onto the ticket, unchecked:
+  resolve.** **Idempotency (B-744) — the filing-pass RECORD is the marker, never a ticket-wide
+  "has any AC" check.** A ticket-wide check is the exact B-698 defect: some unrelated AC predating
+  this clarification would silently read as "clarify already ran" and drop the happy-path set this
+  accept owes the ticket. The record is scoped to **this clarification brief's id** —
+  `brief.decision_ref.id`, the id of the Accepted `specification` decision this clarification produced
+  (step 3's `decision.id` on a same-turn compose→accept; the loaded brief's `decision_ref.id` on a
+  resumed one). That id is stable for this clarification's whole lifetime, unlike the `briefs` row
+  itself (which stops being queryable via `get_brief` the instant it resolves) — which is exactly
+  what lets the design-gate self-heal (`harmony-design-decide/SKILL.md` §2b) recognize the SAME
+  record under the SAME key even though it resolves a different brief (its own product-design brief)
+  entirely. Check first:
   ```
-  mcp__harmony__manage_acceptance_criteria({ task_id, add: [{ content: "..." }, ...] })
+  mcp__harmony__list_comments({ task_id })
   ```
-  **Idempotent — skip the filing if the ticket already carries acceptance criteria** (a web accept
-  consumed by a running session may have already filed them). Then, if the brief carries a
+  Match a line `AC-FILING-PASS brief_id=<brief.decision_ref.id> filed=<N>` — an exact `brief_id`
+  match, never fuzzy text matching against rendered brief prose.
+  - **Found → skip the filing** (the legitimate same-accept-reapplied case — a web accept raced by
+    a running session's self-heal, or a re-conducted accept). No new write.
+  - **Not found → file the brief's full proposed happy-path set unconditionally** — regardless of
+    what other unrelated ACs already exist on the ticket — from the brief's structured proposed-ACs
+    data (step 3's derived set, not re-parsed from rendered markdown), onto the ticket unchecked:
+    ```
+    mcp__harmony__manage_acceptance_criteria({ task_id, add: [{ content: "..." }, ...] })
+    ```
+    then write the filing-pass record — **a zero-count pass still writes it** (a silent zero is
+    exactly the original bug's failure mode, so zero must be exactly as loud as N):
+    ```
+    mcp__harmony__add_comment({ task_id, content: `AC-FILING-PASS brief_id=${brief.decision_ref.id} filed=${N}` })
+    ```
+  This one comment IS the idempotency marker — no second mechanism, and never `brief_resolved` (it
+  fires the instant the human accepts, before filing runs, so a web-accepted-no-session clarification
+  reads as "already filed" while filing is still outstanding — the same bug under a new name).
+  Then, if the brief carries a
   **"De-scope — re-ticketed on accept:"** block, re-ticket each listed later phase:
   ```
   mcp__harmony__create_task({ title: "<product-visible outcome>", description: "<intent>\n\nDe-scoped from <ticket> at clarify (phase-split probe, B-518)." })
