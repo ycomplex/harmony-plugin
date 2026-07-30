@@ -48,6 +48,7 @@ const conductionRow: ConductionRecord = {
   lease_holder: null,
   lease_acquired_at: null,
   last_heartbeat_at: null,
+  leg_started_at: null,
   retry_count: 0,
   worker_kind: null,
   worker_ref: null,
@@ -427,5 +428,9 @@ describe('the canonical status axis', () => {
     for (const immutable of ['id', 'task_id', 'started_at', 'created_by', 'created_at', 'updated_at']) {
       expect(CONDUCTION_PATCHABLE_FIELDS).not.toContain(immutable);
     }
+  });
+
+  it('CONDUCTION_PATCHABLE_FIELDS includes leg_started_at (B-742)', () => {
+    expect(CONDUCTION_PATCHABLE_FIELDS).toContain('leg_started_at');
   });
 });

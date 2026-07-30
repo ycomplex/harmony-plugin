@@ -18849,12 +18849,13 @@ var CONDUCTION_STATUSES = [
   ...CONDUCTION_HUMAN_OWNED_STATUSES,
   ...CONDUCTION_TERMINAL_STATUSES
 ];
-var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at";
+var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at";
 var CONDUCTION_PATCHABLE_FIELDS = [
   "status",
   "lease_holder",
   "lease_acquired_at",
   "last_heartbeat_at",
+  "leg_started_at",
   "retry_count",
   "worker_kind",
   "worker_ref",
@@ -19157,6 +19158,7 @@ async function handleConduction(deps, state, keeper, row) {
       deps.log(`conduction ${row.id}: first claim of a never-held conduction`);
     } else {
       await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+      if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: null })) return;
       deps.log(`conduction ${row.id}: took over stale lease from ${row.lease_holder} \u2014 reaped`);
     }
   }
@@ -19173,6 +19175,7 @@ async function handleConduction(deps, state, keeper, row) {
   deps.log(`conduction ${row.id}: wake (${wake}) \u2014 launching worker`);
   let retryCount = row.retry_count;
   for (; ; ) {
+    if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: iso(deps.now()) })) return;
     let timedOut = false;
     let settled = false;
     const launch = deps.runCommand(renderTemplate(deps.config.profile.launch, templateVars(row))).then((result) => {
@@ -19202,6 +19205,7 @@ async function handleConduction(deps, state, keeper, row) {
       void launch.finally(cancelDeadline);
     });
     const { exitCode } = await Promise.race([launch, escalation]);
+    if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: null })) return;
     const after = await deps.getTaskMeta(row.task_id);
     const nonArchivedChildCount = after.workflow_state === "Decomposed" ? await deps.countNonArchivedChildren(row.task_id) : 0;
     const progressed = (after.workflow_state ?? null) !== (current.workflow_state ?? null) || (after.awaiting_human_input ?? null) !== (current.awaiting_human_input ?? null);
