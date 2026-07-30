@@ -25,6 +25,12 @@ export interface DaemonConfig {
   retryCap: number;
   /** B-713: backoff between a dirty exit and its retried re-fire, in milliseconds. */
   retryBackoffMs: number;
+  /** B-739: the bounded deadline for ONE worker launch. On expiry the launching daemon reaps its
+   *  own worker through the profile's reap template — which is also what unblocks the awaited
+   *  launch (an exec timeout does neither; verified live). Sized GENEROUSLY on purpose: this
+   *  exists to catch a hung worker, not to police a slow one, and a slow-but-progressing run must
+   *  never be destroyed by it. Scoped per LAUNCH, so a retried attempt gets its own full deadline. */
+  workerTimeoutMs: number;
   profile: LaunchProfile;
   logPath?: string;
 }
@@ -96,6 +102,7 @@ export function loadDaemonConfig(
     staleMs: envMs(env, 'HARMONY_DAEMON_STALE_MS', 300_000),
     retryCap: envNonNegativeInt(env, 'HARMONY_DAEMON_RETRY_CAP', 2),
     retryBackoffMs: envNonNegativeInt(env, 'HARMONY_DAEMON_RETRY_BACKOFF_MS', 15_000),
+    workerTimeoutMs: envMs(env, 'HARMONY_DAEMON_WORKER_TIMEOUT_MS', 5_400_000),
     profile: { launch: profile.launch, reap: profile.reap },
     logPath: envValue(env, 'HARMONY_DAEMON_LOG'),
   };
