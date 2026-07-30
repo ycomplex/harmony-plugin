@@ -37,6 +37,28 @@ describe('loadDaemonConfig', () => {
     expect(cfg.staleMs).toBe(60000);
   });
 
+  // B-739: the worker deadline is deliberately GENEROUS — it catches a hung worker, it does not
+  // police a slow one. The 32.6-minute stall that motivated the ticket recovered on its own, so a
+  // deadline anywhere near normal build times would destroy healthy runs.
+  it('defaults the worker deadline to 90 minutes, well above a normal long build', () => {
+    const cfg = loadDaemonConfig(envWith(), readProfile);
+    expect(cfg.workerTimeoutMs).toBe(5_400_000);
+  });
+
+  it('reads HARMONY_DAEMON_WORKER_TIMEOUT_MS from env when set', () => {
+    const cfg = loadDaemonConfig(
+      envWith({ HARMONY_DAEMON_WORKER_TIMEOUT_MS: '600000' }),
+      readProfile,
+    );
+    expect(cfg.workerTimeoutMs).toBe(600_000);
+  });
+
+  it('rejects a non-positive worker deadline (a zero deadline would reap every worker instantly)', () => {
+    expect(() =>
+      loadDaemonConfig(envWith({ HARMONY_DAEMON_WORKER_TIMEOUT_MS: '0' }), readProfile),
+    ).toThrow(/HARMONY_DAEMON_WORKER_TIMEOUT_MS/);
+  });
+
   it('parses the profile JSON from the HARMONY_DAEMON_PROFILE path', () => {
     const cfg = loadDaemonConfig(envWith(), readProfile);
     expect(cfg.profile.launch).toContain('harmony-worker-{conduction_id}');

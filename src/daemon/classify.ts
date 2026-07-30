@@ -12,11 +12,12 @@
 //      children carry the work forward under their own conductions; NEVER park it)
 //   4. stale=true                                      ⇒ park     / 'stale'
 //      (terminal-only stale constraint, B-507/B-575 class)
-//   5. non-zero (or unknown) exitCode                  ⇒ park     / 'dirty-exit'
-//   6. exitCode=0, flag false, progressed=false        ⇒ park     / 'no-progress'
+//   5. timedOut=true (B-739 — THIS daemon's deadline) ⇒ park     / 'worker-timeout'
+//   6. non-zero (or unknown) exitCode                  ⇒ park     / 'dirty-exit'
+//   7. exitCode=0, flag false, progressed=false        ⇒ park     / 'no-progress'
 //
 // Park is IMMEDIATE at classification time (Accepted design d153970b) — this module always
-// returns 'park' for reasons 4-6 above, never a retry. B-713 layers a bounded retry ON TOP of a
+// returns 'park' for reasons 4-7 above, never a retry. B-713 layers a bounded retry ON TOP of a
 // 'dirty-exit' park (reap, backoff, re-fire, up to a cap) in the SCHEDULER (scheduler.ts), before
 // it ever writes the 'parked' status this module's outcome implies; classification itself is
 // unchanged. A parked conduction (cap exhausted, or any other park reason) waits for a human.
@@ -46,6 +47,11 @@ export interface ClassifyArgs {
   exitCode: number | null;
   /** Did the ticket move (workflow_state or awaiting flag changed vs the pre-fire read)? */
   progressed: boolean;
+  /** B-739: did THIS daemon rule this launch OVERRUN and reap it? Keyed on an in-process flag,
+   *  NEVER on the exit code — a reaped container exits 137, but so does an out-of-memory kill and
+   *  so does a worker reaped by a peer's takeover. The exit code cannot say who decided; the flag
+   *  says this daemon did. */
+  timedOut: boolean;
 }
 
 export function classifyWorkerExit(args: ClassifyArgs): ExitOutcome {
@@ -68,7 +74,17 @@ export function classifyWorkerExit(args: ClassifyArgs): ExitOutcome {
   // 4. Stale ticket ⇒ the conduction parks (a human must reconcile via harmony-stale-patch).
   if (row.stale === true) return { action: 'park', reason: 'stale' };
 
-  // 5. Dirty exit — non-zero or unknown code with nothing above explaining it.
+  // 5. This daemon's own deadline fired (B-739). Placed HERE, at the dirty-exit position, and
+  //    deliberately NOT at the top: branches 1-4 must still win, so a worker that filed a brief,
+  //    drove the ticket terminal, or produced a live split umbrella BEFORE it hung is still
+  //    classified on what the ticket row proves. The deadline stops a stuck worker; it must never
+  //    discard an outcome that genuinely landed. Its own class (not 'dirty-exit') is what keeps it
+  //    out of B-713's retry ladder, which is guarded on cls === 'dirty-exit' — a run that burned a
+  //    generous deadline without exiting is structurally stuck, not transient, so it parks first
+  //    time. Retry remains available as a HUMAN action via Re-conduct.
+  if (args.timedOut) return { action: 'park', reason: 'worker-timeout' };
+
+  // 6. Dirty exit — non-zero or unknown code with nothing above explaining it.
   if (exitCode !== 0) return { action: 'park', reason: 'dirty-exit' };
 
   // 6. Clean exit that moved nothing and paused nothing — the worker spun; park for a human.
