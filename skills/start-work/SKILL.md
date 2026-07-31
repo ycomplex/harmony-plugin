@@ -69,7 +69,44 @@ advances Designed→Planned. The accept IS the "go" to build.
 
 ### O3. Build (Planned → Built)
 
-Create the isolated worktree (invoke `superpowers:using-git-worktrees`) and save `.harmony-task.json`
+**FIRST — PRE-CHECK the acceptance-criteria floor, BEFORE any build work begins (B-747). NON-OPTIONAL,
+and the position in this step is load-bearing.**
+
+```
+const ev = mcp__harmony__get_build_evidence_status({ task_id })
+```
+
+`ev.has_acceptance_criteria` is PRESENCE only — at least one criterion, checked state irrelevant. It is
+read from the same SQL authority (`task_criteria_floor_status`) that the substrate transition guard calls,
+so the floor cannot mean two different things in two places. It is deliberately NOT `all_acs_checked`:
+that stricter predicate is B-560's deferred evidence test and would refuse every legitimately in-progress
+build.
+
+- **`ev.has_acceptance_criteria` true, or `ev.exempt_reason` non-null** (umbrella / `decision-only`) →
+  proceed with the build below.
+- **Otherwise → STOP HERE. Do not create a worktree, do not implement, do not commit, do not open a PR.**
+  Open an **elicitation round** asking the human for the criteria (`start_elicitation` with
+  `gate: 'building'` + `file_elicitation_round`), naming what is missing, and end the leg. Answering it
+  lets the run continue with no manual repair.
+
+**WHY THIS IS FIRST, and not next to the advance.** A ticket with no acceptance criteria has nothing the
+shipped work could be judged against, so **the point is to prevent the work, not to record that it
+happened.** B-698 is the cost — 1,358 lines built against a single-button criterion. The substrate guard
+sits on the `Planned→Built` edge, which fires only *after* the build has run: it reliably stops the
+**escape**, but by then the effort is already spent. These are two different placements doing two
+different jobs, and the start-of-build check is the one that saves the work. Moving this block down next
+to the advance silently collapses the pair into one late check and reintroduces exactly the waste the
+floor exists to prevent.
+
+**Why pre-check rather than let the transition fail.** The DB guard refuses by RAISING, and neither
+`advance_workflow` nor `resolve_brief` catches it — the exception surfaces as an opaque tool error. In a
+daemon leg an uncaught refusal is a **dirty exit**, so the daemon parks the conduction and flags an
+operator, turning "this ticket needs criteria" into an incident. The pre-check is what makes the floor
+answerable; the guard is the backstop for paths that skip it. Never swallow the guard's error as a
+substitute for checking first.
+
+Then, with the floor clear: create the isolated worktree (invoke `superpowers:using-git-worktrees`) and
+save `.harmony-task.json`
 exactly as in the manual flow. Implement, write tests, self-validate against acceptance criteria
 (`mcp__harmony__manage_acceptance_criteria`, `mcp__harmony__manage_test_cases`).
 
@@ -173,30 +210,11 @@ the release brief:
 (This is the canonical evidence the verify gate's mechanical evidence-status line reads — see
 `get_build_evidence_status` and finish-work O3.)
 
-**Then PRE-CHECK the acceptance-criteria floor before advancing — NON-OPTIONAL (B-747).** Build must not
-be recorded on a ticket carrying an empty criteria set: with nothing to fail against, the work has no
-specification it can be judged by. B-698 is the cost — 1,358 lines built against a single-button
-criterion.
-
-```
-const ev = mcp__harmony__get_build_evidence_status({ task_id })
-```
-
-`ev.has_acceptance_criteria` is PRESENCE only (>=1 criterion, checked state irrelevant) and is read from
-the same SQL authority the substrate transition guard calls. Then:
-
-- **`ev.has_acceptance_criteria` true, or `ev.exempt_reason` non-null** (umbrella / `decision-only`) →
-  proceed to the advance below.
-- **Otherwise → do NOT attempt the advance.** Open an **elicitation round** asking the human for the
-  criteria (`start_elicitation` with `gate: 'building'` + `file_elicitation_round`), naming what is
-  missing, and end the leg. Answering it lets the run continue with no manual repair.
-
-**Why pre-check rather than let the transition fail.** The DB guard refuses by RAISING, and neither
-`advance_workflow` nor `resolve_brief` catches it — the exception surfaces as an opaque tool error. In a
-daemon leg an uncaught refusal is a **dirty exit**, so the daemon parks the conduction and flags an
-operator, turning "this ticket needs criteria" into an incident. The pre-check is what makes the floor
-answerable; the guard is the backstop for paths that skip it. Never swallow the guard's error as a
-substitute for checking first.
+**The floor was already checked at the TOP of this step (B-747) — deliberately not here.** A ticket with
+no acceptance criteria never reaches this point, because the check that stops it runs before any build
+work begins. Do NOT re-add a floor check next to the advance: the substrate guard already covers this
+edge, and duplicating the check here while dropping the early one is precisely the regression that made
+the floor record wasted work instead of preventing it.
 
 Then advance:
 

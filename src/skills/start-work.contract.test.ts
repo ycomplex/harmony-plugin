@@ -102,6 +102,39 @@ describe('start-work skill contract (evolved)', () => {
 
   describe('acceptance-criteria floor at the build edge (B-747)', () => {
     const body = skill.body;
+
+    it('the floor check runs BEFORE any build work — position, not just presence', () => {
+      // THE REGRESSION THIS EXISTS TO CATCH. B-747 first shipped this check sitting next to the
+      // `advance_workflow` at the END of O3, so a criteria-less ticket created a worktree, implemented,
+      // committed, pushed and opened a PR, and only THEN got refused. The floor recorded the waste
+      // instead of preventing it — while every presence-only assertion still passed.
+      //
+      // The design called for TWO placements doing two different jobs: the substrate guard on the
+      // Planned->Built edge stops the ESCAPE (it fires after the build), and this check stops the WORK.
+      // Asserting only that the check exists cannot tell those apart, so assert the ORDER.
+      const o3 = body.indexOf('### O3. Build (Planned');
+      expect(o3, 'O3 section not found').toBeGreaterThan(-1);
+
+      const precheck = body.indexOf('PRE-CHECK the acceptance-criteria floor, BEFORE any build work begins', o3);
+      const worktree = body.indexOf('create the isolated worktree', o3);
+      const advance = body.indexOf('activity: "building"', o3);
+
+      expect(precheck, 'the start-of-build floor check is missing').toBeGreaterThan(-1);
+      expect(worktree, 'worktree creation not found in O3').toBeGreaterThan(-1);
+      expect(advance, 'the building advance not found in O3').toBeGreaterThan(-1);
+
+      // The whole point: the check precedes the first thing that costs anything.
+      expect(precheck, 'the floor check must precede worktree creation').toBeLessThan(worktree);
+      expect(worktree).toBeLessThan(advance);
+    });
+
+    it('does NOT re-add a second floor check next to the advance', () => {
+      // A duplicate next to the advance is how the early check got dropped the first time: both blocks
+      // looked correct in isolation, and the late one satisfied every presence assertion on its own.
+      expect(body).toMatch(/deliberately not here/i);
+      expect(body).not.toMatch(/\*\*Then PRE-CHECK the acceptance-criteria floor before advancing/);
+    });
+
     it('PRE-CHECKS the floor before advancing to Built, and refuses via an elicitation round', () => {
       // The pre-check is what makes the refusal answerable. Letting the substrate guard raise instead
       // reaches a daemon leg as a dirty exit, which parks the conduction and pages an operator.
