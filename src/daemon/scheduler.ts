@@ -246,7 +246,14 @@ async function handleConduction(
     return;
   }
   const wake = detectWake(baseline, current);
-  if (wake === null) return;
+  if (wake === null) {
+    // B-691: ROLL the baseline on a no-wake pass. Previously the stored baseline was refreshed only
+    // after a worker exited 'wait', so between wakes it stayed pinned to whatever the FIRST sight
+    // happened to catch — and a conduction first seen before its pause existed could never wake,
+    // because the flag rising afterwards was invisible and no later clear produced a transition.
+    state.set(row.id, captureBaseline(current));
+    return;
+  }
 
   // ── Fire → classify → write (step 5) ──────────────────────────────────────────────────────────
   deps.log(`conduction ${row.id}: wake (${wake}) — launching worker`);

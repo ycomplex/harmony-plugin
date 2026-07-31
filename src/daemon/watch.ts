@@ -18,7 +18,16 @@
 // src/conductor/poll-loop.ts's gate-then-classify (same defect class, different consumer: the poll
 // resolves an in-session pause; the daemon launches a fresh worker).
 
-import type { Taskish, ActiveExchangeish } from '../conductor/poll-loop.js';
+// B-691: the gate rule comes from the shared ball-axis authority, which the interactive poll consumes
+// too — the two surfaces can no longer drift, because there is only one statement of the rule. (The
+// types come from there as well, so the daemon no longer imports its core types from the conductor.)
+import {
+  ballWithHuman,
+  ballReturned,
+  exchangeWentInactive,
+  type Taskish,
+  type ActiveExchangeish,
+} from '../conductor/ball-axis.js';
 
 export type WakeSignal = 'agent-ball' | 'discussion-cancelled';
 
@@ -35,47 +44,44 @@ export function captureBaseline(row: Taskish): WatchBaseline {
   };
 }
 
-/** B-611/B-461 (mirrors poll-loop.ts): the baseline's ACTIVE exchange is no longer active on the
- *  current read — status changed, row gone from the active projection, or a different exchange
- *  replaced it. A current read of the SAME exchange with the status field simply absent is
- *  INDETERMINATE, not a cancel. */
-function baselineExchangeWentInactive(
-  base: ActiveExchangeish | null,
-  cur: ActiveExchangeish | null,
-): boolean {
-  if (base == null || base.status !== 'active') return false;
-  if (cur == null) return true;
-  if ((cur.exchange_id ?? null) !== (base.exchange_id ?? null)) return true;
-  return cur.status != null && cur.status !== 'active';
+/** Project the stored baseline back into the row shape the shared ball-axis predicates take. */
+function asTaskish(baseline: WatchBaseline): Taskish {
+  return {
+    awaiting_human_input: baseline.awaitingHumanInput,
+    active_exchange: baseline.activeExchange,
+  };
 }
 
 /**
  * Compare a fresh read against the stored baseline and report whether the ball returned to the
  * agent. Returns null while the human still owns the move (keep watching).
+ *
+ * B-691: `baseline` is the PREVIOUS READ — the scheduler rolls it forward on every no-wake pass, not
+ * only after a worker exits. With a pinned baseline, a conduction first seen before its pause existed
+ * could never wake.
  */
 export function detectWake(baseline: WatchBaseline, current: Taskish): WakeSignal | null {
-  const curFlag = current.awaiting_human_input ?? null;
+  const previous = asTaskish(baseline);
 
-  // Canonical flip: the baseline was awaiting a human; the fresh read no longer is.
-  if (baseline.awaitingHumanInput === true && curFlag === false) return 'agent-ball';
+  // Canonical flip: the ball was with the human on the previous read and is no longer.
+  if (ballReturned(previous, current)) return 'agent-ball';
 
-  // First pickup: the flag was ALREADY false at baseline (a just-created conduction — `harmony
-  // conduct` files no brief) and nothing awaits a human anywhere: no flag, no active brief marker,
-  // no active exchange. The ball starts with the agent.
-  if (
-    baseline.awaitingHumanInput !== true &&
-    curFlag !== true &&
-    (current.pending_resolution ?? null) == null &&
-    (current.active_exchange ?? null) == null
-  ) {
-    return 'agent-ball';
-  }
+  // First pickup: the ball was not with the human on either read, so it is the agent's — a
+  // just-created conduction (`harmony conduct` files no brief), or a leg that ended with something
+  // still outstanding for the agent to consume.
+  //
+  // B-691: this deliberately no longer requires the absence of a pending_resolution or an active
+  // exchange. Those are AGENT-side markers: a flag-down row carrying submitted answers or a browser
+  // reshape is the agent's ball WITH work outstanding, and requiring their absence made exactly that
+  // state unwakeable — a conduction first seen with an already-answered exchange sat forever. The
+  // fired worker re-derives state and consumes any marker at its own step 1 (B-696 spec §3), so the
+  // watch does not need to pre-qualify what is waiting; it only needs to know whose turn it is.
+  // Re-firing is bounded by the lease and the worker-running guard, not by these conditions.
+  if (!ballWithHuman(previous) && !ballWithHuman(current)) return 'agent-ball';
 
-  // B-611 edge — checked OUTSIDE the flag gate (the flag never transitions on a mechanical
-  // cancel): the baseline's ACTIVE exchange went non-active without the flip.
-  if (baselineExchangeWentInactive(baseline.activeExchange, current.active_exchange ?? null)) {
-    return 'discussion-cancelled';
-  }
+  // B-611/B-461 edge — checked OUTSIDE the flag gate (the flag never transitions on a mechanical
+  // cancel): the previous read's ACTIVE exchange went non-active without the flip.
+  if (exchangeWentInactive(previous, current)) return 'discussion-cancelled';
 
   return null;
 }

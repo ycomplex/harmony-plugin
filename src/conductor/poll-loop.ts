@@ -11,39 +11,28 @@
 // is unit-testable with a fake clock and a fake reader, no real timers or network. The entrypoint
 // (src/bin/poll.ts) supplies the real `Date.now`, a real `setTimeout` sleep, and a real `getTask` read.
 
-/** The subset of a Harmony task row the watch cares about (a `getTask` result is structurally assignable). */
-export interface Taskish {
-  workflow_state?: string | null;
-  pending_resolution?: PendingResolutionish | null;
-  awaiting_human_input?: boolean | null;
-  active_exchange?: ActiveExchangeish | null;
-  pending_remark?: PendingRemarkish | null;
-}
+// B-691: the row types and the ball predicates now live in the shared ball-axis authority, which the
+// daemon's watch consumes too. Re-exported here so existing importers (src/bin/poll.ts, the tests)
+// keep working unchanged.
+import {
+  ballWithHuman,
+  ballReturned,
+  exchangeWentInactive,
+  type Taskish,
+  type PendingResolutionish,
+  type ActiveExchangeish,
+  type PendingRemarkish,
+} from './ball-axis.js';
 
-/** The browser-submitted reshape marker (`briefs.pending_resolution`); shape mirrors PendingResolution. */
-export interface PendingResolutionish {
-  command?: string;
-  detail?: string | null;
-}
+export type { Taskish, PendingResolutionish, ActiveExchangeish, PendingRemarkish };
 
-/** get_task's compact active-elicitation-exchange projection (B-645); shape mirrors
- *  ActiveExchangeSummary. The watch only classifies on the two consumable markers. */
-export interface ActiveExchangeish {
-  exchange_id?: string;
-  status?: string;
-  round?: number;
-  answers_submitted_at?: string | null;
-  force_quit_requested_at?: string | null;
-}
-
-/** get_task's unconsumed accept-with-remark projection (B-503); shape mirrors PendingRemark. */
-export interface PendingRemarkish {
-  brief_id?: string;
-  reason?: string;
-  detail?: string | null;
-}
-
-/** The state captured at launch, against which every poll is compared. */
+/**
+ * The state the current read is compared against.
+ *
+ * B-691: this is the PREVIOUS READ, rolled forward on every poll — NOT a pinned launch-time snapshot.
+ * `runPollLoop` owns the rolling. The old pinned semantics are exactly what made a watch armed before
+ * its pause was filed unable to ever fire.
+ */
 export interface PollBaseline {
   workflowState?: string | null;
   pendingResolution?: PendingResolutionish | null;
@@ -93,7 +82,12 @@ export interface ChangeDetail {
 
 export type PollResult =
   | { reason: 'changed'; detail: ChangeDetail }
-  | { reason: 'timeout' };
+  | { reason: 'timeout' }
+  /** B-691: the watch was armed but the ball is not with the human and no pause appeared — it has
+   *  nothing to wait for and can never fire. Distinct from 'timeout' (a real pause the human simply
+   *  did not resolve in time): the conductor turns THIS into a worker-question elicitation round so
+   *  the run says it cannot proceed instead of appearing to wait out the window. */
+  | { reason: 'unwatchable'; polls: number };
 
 // ── Cadence / backoff (tunable) ───────────────────────────────────────────────────────────────────
 // The total watch window — long enough for the human to step away and resolve from the browser later,
@@ -115,6 +109,19 @@ export const POLL_CADENCE = {
   /** After ~30 min with no change, widen to the coarse tail. */
   tailAfterMs: 30 * 60 * 1000,
 } as const;
+
+/**
+ * B-691: how many consecutive polls the ball may sit AWAY from the human, from the very start of the
+ * watch, before the watch declares itself unwatchable.
+ *
+ * TUNABLE, and deliberately named rather than inlined. Two polls (~2 min at the opening cadence) is
+ * chosen to be comfortably longer than the arming race it guards — the observed race was a 16-second
+ * gap between opening an exchange and filing its first round — while still being far shorter than the
+ * ~90-minute window whose silent expiry is the defect. It must stay >= 2: a single at-rest poll is
+ * exactly what a watch armed a moment early looks like, and that case now self-recovers rather than
+ * needing a human.
+ */
+export const UNWATCHABLE_AFTER_POLLS = 2;
 
 /** The default elapsed→delay schedule: ramps first(120s) → steady(<300s) → coarse tail(~900s). */
 export function defaultCadence(elapsedMs: number): number {
@@ -142,20 +149,29 @@ function exchangeMarkerPresent(ex: ActiveExchangeish | null | undefined): ex is 
   return ex != null && (ex.answers_submitted_at != null || ex.force_quit_requested_at != null);
 }
 
-/** B-461: the baseline's ACTIVE exchange is no longer active on the current read — its status changed,
- *  the row is gone from the active projection (get_task's `active_exchange` only surfaces status='active'
- *  rows, so a cancelled exchange reads as null), or a different exchange has replaced it. Requires the
- *  baseline exchange to have been captured as ACTIVE (fetchActiveExchange always stamps status). A current
- *  read of the SAME exchange with the status field simply absent is INDETERMINATE, not a cancel — keep
- *  polling (a real cancel presents as row-gone or an explicit non-active status). */
-function baselineExchangeWentInactive(
-  base: ActiveExchangeish | null | undefined,
-  cur: ActiveExchangeish | null | undefined,
-): boolean {
-  if (base == null || base.status !== 'active') return false;
-  if (cur == null) return true;
-  if ((cur.exchange_id ?? null) !== (base.exchange_id ?? null)) return true;
-  return cur.status != null && cur.status !== 'active';
+/** B-691: project a PollBaseline back into the row shape the shared ball-axis predicates take. The
+ *  baseline is stored field-wise for the loop's own bookkeeping; the predicates are row-shaped so the
+ *  daemon can pass its reads to them directly. */
+function asTaskish(baseline: PollBaseline): Taskish {
+  return {
+    workflow_state: baseline.workflowState,
+    pending_resolution: baseline.pendingResolution,
+    awaiting_human_input: baseline.awaitingHumanInput,
+    active_exchange: baseline.activeExchange,
+    pending_remark: baseline.pendingRemark,
+  };
+}
+
+/** B-691: capture a fresh read as the next baseline — the rolling step `runPollLoop` applies after
+ *  every non-firing poll. */
+export function captureBaseline(task: Taskish): PollBaseline {
+  return {
+    workflowState: task.workflow_state ?? null,
+    pendingResolution: task.pending_resolution ?? null,
+    awaitingHumanInput: task.awaiting_human_input ?? null,
+    activeExchange: task.active_exchange ?? null,
+    pendingRemark: task.pending_remark ?? null,
+  };
 }
 
 /** B-503: same remark ⇔ same brief + identical detail. A remark equal to the baseline's is STALE
@@ -230,7 +246,11 @@ function sameExchangeMarker(
  */
 export function detectChange(baseline: PollBaseline, task: Taskish): ChangeDetail | null {
   // GATE (B-611): the SOLE flag-based exit signal is awaiting_human_input transitioning true→false.
-  const gateFired = baseline.awaitingHumanInput === true && task.awaiting_human_input === false;
+  // B-691: the rule now comes from the shared ball-axis authority, so the daemon's watch cannot drift
+  // from it. `baseline` is the PREVIOUS READ (rolled by runPollLoop), which is what lets a pause filed
+  // AFTER the watch was armed still fire this gate.
+  const previous = asTaskish(baseline);
+  const gateFired = ballReturned(previous, task);
 
   if (!gateFired) {
     // B-461 'discussion-cancelled' — deliberately its OWN check, NOT inside the flag-gated
@@ -239,7 +259,7 @@ export function detectChange(baseline: PollBaseline, task: Taskish): ChangeDetai
     // true→false transition never happens and the flag gate alone would miss it. The signal is the
     // baseline's ACTIVE exchange going non-active (status changed / row gone) without the flag
     // transition. The poll exits on it like any other classification.
-    if (baselineExchangeWentInactive(baseline.activeExchange, task.active_exchange ?? null)) {
+    if (exchangeWentInactive(previous, task)) {
       return { trigger: 'discussion-cancelled', workflow_state: task.workflow_state ?? null };
     }
     // Until the human resolves (the flag drops), nothing else is consumable — keep polling no matter
@@ -289,13 +309,7 @@ export function detectChange(baseline: PollBaseline, task: Taskish): ChangeDetai
  * like a human resolution. Extracted as a pure helper so the fallback shape is unit-testable.
  */
 export function baselineReadFallback(baseline: PollBaseline): Taskish {
-  return {
-    workflow_state: baseline.workflowState,
-    pending_resolution: baseline.pendingResolution,
-    awaiting_human_input: baseline.awaitingHumanInput,
-    active_exchange: baseline.activeExchange,
-    pending_remark: baseline.pendingRemark,
-  };
+  return asTaskish(baseline);
 }
 
 export interface PollLoopOpts {
@@ -313,6 +327,9 @@ export interface PollLoopOpts {
   windowMs?: number;
   /** Elapsed→delay schedule; defaults to {@link defaultCadence}. */
   cadence?: (elapsedMs: number) => number;
+  /** B-691: consecutive at-rest polls before declaring the watch unwatchable; defaults to
+   *  {@link UNWATCHABLE_AFTER_POLLS}. Injected in tests. */
+  unwatchableAfterPolls?: number;
 }
 
 /**
@@ -330,13 +347,49 @@ export async function runPollLoop(opts: PollLoopOpts): Promise<PollResult> {
   const windowMs = opts.windowMs ?? WATCH_WINDOW_MS;
   const cadence = opts.cadence ?? defaultCadence;
 
+  // B-691: the baseline ROLLS. Each poll is compared against the previous read, not against a pinned
+  // launch snapshot, so a pause filed after the watch was armed is still witnessed.
+  let baseline = opts.baseline;
+
+  // B-691: consecutive polls, from the start, in which the ball was NOT with the human. Once the
+  // human has held it at all, the watch is legitimately watching and this stops mattering.
+  const unwatchableAfter = opts.unwatchableAfterPolls ?? UNWATCHABLE_AFTER_POLLS;
+  let atRestPolls = 0;
+  let sawHumanBall = false;
+
   for (;;) {
-    const task = await opts.readTask();
-    const change = detectChange(opts.baseline, task);
+    // A transient read error degrades to "no change" against the CURRENT baseline. This must live
+    // here rather than in the caller (B-691): a caller-side fallback can only return the LAUNCH
+    // baseline, and once the baseline rolls, substituting a stale flag value can manufacture a
+    // false true→false transition and fire the gate on a failed read.
+    let task: Taskish;
+    try {
+      task = await opts.readTask();
+    } catch {
+      task = asTaskish(baseline);
+    }
+
+    const change = detectChange(baseline, task);
     if (change) return { reason: 'changed', detail: change };
+
+    // B-691: has this watch ever had anything to watch? The ball sitting away from the human from the
+    // very first poll means it was armed against a non-pause — it can never fire, and waiting out the
+    // window would be the silent stall this ticket exists to remove.
+    if (ballWithHuman(task)) {
+      sawHumanBall = true;
+      atRestPolls = 0;
+    } else if (!sawHumanBall) {
+      atRestPolls += 1;
+      if (atRestPolls >= unwatchableAfter) {
+        return { reason: 'unwatchable', polls: atRestPolls };
+      }
+    }
 
     const elapsed = opts.now() - opts.launchStamp;
     if (elapsed >= windowMs) return { reason: 'timeout' };
+
+    // Roll AFTER the no-change verdict: this read becomes what the next one is compared against.
+    baseline = captureBaseline(task);
 
     const remaining = windowMs - elapsed;
     const delay = Math.min(cadence(elapsed), remaining);

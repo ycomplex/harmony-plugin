@@ -92,4 +92,44 @@ describe('detectWake', () => {
       }),
     ).toBeNull();
   });
+
+  // ── B-691: the first-sight variant ──────────────────────────────────────────────────────────────
+  // First pickup used to require the absence of an active exchange AND of a pending_resolution. Those
+  // are AGENT-side markers, so requiring their absence made a flag-down row carrying one unwakeable:
+  // a conduction first seen with an already-answered exchange sat forever. Whose turn it is is
+  // decided by the flag alone; the fired worker consumes whatever is waiting at its own step 1.
+
+  it('B-691: wakes on a first sight with the ball at rest and an ALREADY-ANSWERED exchange', () => {
+    const answered = {
+      exchange_id: 'ex-1',
+      status: 'active',
+      round: 1,
+      answers_submitted_at: '2026-07-31T09:50:18.398Z',
+    };
+    const baseline = captureBaseline({ awaiting_human_input: false, active_exchange: answered });
+    expect(detectWake(baseline, { awaiting_human_input: false, active_exchange: answered })).toBe(
+      'agent-ball',
+    );
+  });
+
+  it('B-691: wakes on a first sight with the ball at rest and an unconsumed browser reshape', () => {
+    const baseline = captureBaseline({ awaiting_human_input: false });
+    expect(
+      detectWake(baseline, {
+        awaiting_human_input: false,
+        pending_resolution: { command: 'iterate', detail: 'tighten it' },
+      }),
+    ).toBe('agent-ball');
+  });
+
+  it('B-691: a pause that appears AFTER the baseline still wakes once the human resolves it', () => {
+    // The daemon rolls its baseline every no-wake pass, so by the time the human resolves, the
+    // previous read is the paused one — the transition is visible. This mirrors the poll's fix.
+    const atRest = captureBaseline({ awaiting_human_input: false, active_exchange: null });
+    // Pass 1: a pause has appeared; the human holds the ball, so no wake.
+    const paused = { awaiting_human_input: true, active_exchange: { exchange_id: 'ex-1', status: 'active' } };
+    expect(detectWake(atRest, paused)).toBeNull();
+    // Pass 2: baseline rolled to the paused read; the human resolves.
+    expect(detectWake(captureBaseline(paused), { awaiting_human_input: false })).toBe('agent-ball');
+  });
 });

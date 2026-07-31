@@ -928,6 +928,25 @@ resolved (in the browser or terminal); classify which resolution it was:
    `/harmony-plugin:harmony-conduct <ticket>`; the resolution (if any) persists on the ticket row; **end the
    turn**. The next run resumes from the ticket row (the no-session degradation). Do not keep an indefinite
    watch.
+8. **`unwatchable` — the watch had nothing to wait for (B-691).** The poll exits early with
+   `{"reason":"unwatchable","polls":N}` (exit code 3): the ball was never with the human, so this watch
+   could never fire. It means the watch was armed against a **non-pause** — the ticket was not awaiting
+   a human when it was armed and no pause appeared. Do **NOT** treat this as a resolution and do **NOT**
+   silently re-arm: re-read the ticket, and
+   - if the ticket **is now awaiting a human** (a pause landed after the poll gave up), surface it per
+     §4 and arm a fresh watch — the ordinary case, no human action needed;
+   - otherwise **file a `worker-question` elicitation round** per §4e naming what happened: the run
+     believed it was waiting on you, and it was not. This is the one channel that renders on both the
+     web and the terminal — the daemon discards worker stdout (B-697), and inventing a new
+     `awaiting_human_reason` reaches only the Manual-override fallback (B-745), whose semantics are
+     wrong for this. Then end the turn; the round is a clean human pause, not a failure.
+
+   **The arming discipline this exit exists to enforce: never arm a watch before the pause is filed.**
+   Compose the brief (or file the elicitation round) FIRST, confirm `awaiting_human_input` is `true`,
+   and only then arm. The watch now recovers from a mis-ordered arm on its own — the baseline rolls, so
+   a pause that appears after arming is still witnessed — but an arm against a ticket that is not
+   pausing at all is a bug in the caller, and this exit is how it surfaces instead of costing a silent
+   ~90-minute window.
 
 **Accept-with-remark (B-503) — an ADJUNCT to cases 1 and 5, never a replacement.** The flag cleared, the
 state advanced (case 1) or a non-advancing sub-track accept resolved (case 5), AND `get_task` shows an

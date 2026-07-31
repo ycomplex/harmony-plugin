@@ -625,6 +625,67 @@ describe('runSchedulerPass', () => {
     await runSchedulerPass(h.deps, state, h.keeper); // wake (first pickup) → fire, still reap-free
     expect(h.commands).toEqual(['launch cond-1 task-1']);
   });
+
+  it('case 12 (B-691 class): a pause that appears AFTER the baseline still wakes — the stored baseline ROLLS on a no-wake pass', async () => {
+    // B-696's spec item 9 promised B-691 would become a repro case the daemon's watch must pass,
+    // alongside B-651's (case 9) and B-659's (case 4). B-651's and B-659's landed; this one did not,
+    // so the daemon shipped the same defect class the poll had: a baseline captured on FIRST SIGHT
+    // and then never refreshed until a worker exited. A conduction first seen before its pause
+    // existed could never wake — the flag rising afterwards was invisible, and no later clear
+    // produced a transition.
+    const h = makeHarness({
+      // First sight catches the ticket with the ball at rest, mid-flight: an exchange is already
+      // open (so the old first-pickup guard could not fire either) but no round is filed yet.
+      conductions: [conduction()],
+      tasks: {
+        'task-1': pausedTask({
+          awaiting_human_input: false,
+          active_exchange: { exchange_id: 'ex-1', status: 'active', round: 0 },
+        }),
+      },
+    });
+    const state = new Map<string, WatchBaseline>();
+
+    // Pass 1 — FIRST SIGHT: the scheduler captures the baseline and returns without wake detection.
+    await runSchedulerPass(h.deps, state, h.keeper);
+    expect(h.commands).toEqual([]);
+
+    // Pass 2 — the ball is the agent's (flag down) with answers waiting to be consumed, so a leg
+    // must fire. The OLD first-pickup guard required NO active exchange, so this row could never
+    // wake: the conduction sat indefinitely with the human's answers unconsumed.
+    await runSchedulerPass(h.deps, state, h.keeper);
+    expect(h.commands).toEqual(['launch cond-1 task-1']);
+  });
+
+  it('case 12b (B-691 class): a no-wake pass ROLLS the stored baseline instead of leaving it pinned to first sight', async () => {
+    // The baseline used to be refreshed only after a worker exited 'wait'. Between wakes it stayed
+    // pinned to whatever first sight caught — the same pinning that made the interactive poll unable
+    // to witness a pause filed after it was armed.
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ workflow_state: 'Proposed' }) },
+    });
+    const state = new Map<string, WatchBaseline>();
+
+    await runSchedulerPass(h.deps, state, h.keeper); // first sight — baseline captured
+    expect(state.get('cond-1')?.activeExchange ?? null).toBeNull();
+
+    // The human is still holding the ball, but an exchange has now opened under them.
+    (h.tasks['task-1'] as DaemonTask).active_exchange = {
+      exchange_id: 'ex-1',
+      status: 'active',
+      round: 1,
+    };
+    await runSchedulerPass(h.deps, state, h.keeper);
+
+    expect(h.commands).toEqual([]); // no wake — the human still holds the ball
+    // …but the stored baseline must now reflect THIS read, not first sight.
+    expect(state.get('cond-1')?.activeExchange).toEqual({
+      exchange_id: 'ex-1',
+      status: 'active',
+      round: 1,
+    });
+  });
 });
 
 describe('isAuthShapedError', () => {

@@ -18815,6 +18815,22 @@ async function getTask(client, projectId, args) {
   return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, pending_remark, risk_classes };
 }
 
+// src/conductor/ball-axis.ts
+function ballWithHuman(row) {
+  return row.awaiting_human_input === true;
+}
+function ballReturned(previous, current) {
+  return ballWithHuman(previous) && !ballWithHuman(current);
+}
+function exchangeWentInactive(previous, current) {
+  const base = previous.active_exchange ?? null;
+  const cur = current.active_exchange ?? null;
+  if (base == null || base.status !== "active") return false;
+  if (cur == null) return true;
+  if ((cur.exchange_id ?? null) !== (base.exchange_id ?? null)) return true;
+  return cur.status != null && cur.status !== "active";
+}
+
 // src/conductor/poll-loop.ts
 var WATCH_WINDOW_MS = 90 * 60 * 1e3;
 var POLL_CADENCE = {
@@ -18829,6 +18845,7 @@ var POLL_CADENCE = {
   /** After ~30 min with no change, widen to the coarse tail. */
   tailAfterMs: 30 * 60 * 1e3
 };
+var UNWATCHABLE_AFTER_POLLS = 2;
 function defaultCadence(elapsedMs) {
   if (elapsedMs < POLL_CADENCE.steadyAfterMs) return POLL_CADENCE.firstDelayMs;
   if (elapsedMs < POLL_CADENCE.tailAfterMs) return POLL_CADENCE.steadyDelayMs;
@@ -18845,11 +18862,23 @@ function samePending(a, b) {
 function exchangeMarkerPresent(ex) {
   return ex != null && (ex.answers_submitted_at != null || ex.force_quit_requested_at != null);
 }
-function baselineExchangeWentInactive(base, cur) {
-  if (base == null || base.status !== "active") return false;
-  if (cur == null) return true;
-  if ((cur.exchange_id ?? null) !== (base.exchange_id ?? null)) return true;
-  return cur.status != null && cur.status !== "active";
+function asTaskish(baseline) {
+  return {
+    workflow_state: baseline.workflowState,
+    pending_resolution: baseline.pendingResolution,
+    awaiting_human_input: baseline.awaitingHumanInput,
+    active_exchange: baseline.activeExchange,
+    pending_remark: baseline.pendingRemark
+  };
+}
+function captureBaseline(task) {
+  return {
+    workflowState: task.workflow_state ?? null,
+    pendingResolution: task.pending_resolution ?? null,
+    awaitingHumanInput: task.awaiting_human_input ?? null,
+    activeExchange: task.active_exchange ?? null,
+    pendingRemark: task.pending_remark ?? null
+  };
 }
 function sameRemark(a, b) {
   if (a == null && b == null) return true;
@@ -18869,9 +18898,10 @@ function sameExchangeMarker(a, b) {
   return (a.exchange_id ?? null) === (b.exchange_id ?? null) && (a.answers_submitted_at ?? null) === (b.answers_submitted_at ?? null) && (a.force_quit_requested_at ?? null) === (b.force_quit_requested_at ?? null);
 }
 function detectChange(baseline, task) {
-  const gateFired = baseline.awaitingHumanInput === true && task.awaiting_human_input === false;
+  const previous = asTaskish(baseline);
+  const gateFired = ballReturned(previous, task);
   if (!gateFired) {
-    if (baselineExchangeWentInactive(baseline.activeExchange, task.active_exchange ?? null)) {
+    if (exchangeWentInactive(previous, task)) {
       return { trigger: "discussion-cancelled", workflow_state: task.workflow_state ?? null };
     }
     return null;
@@ -18897,24 +18927,34 @@ function detectChange(baseline, task) {
   }
   return withRemark({ trigger: "resolved", workflow_state: state }, baseline, task);
 }
-function baselineReadFallback(baseline) {
-  return {
-    workflow_state: baseline.workflowState,
-    pending_resolution: baseline.pendingResolution,
-    awaiting_human_input: baseline.awaitingHumanInput,
-    active_exchange: baseline.activeExchange,
-    pending_remark: baseline.pendingRemark
-  };
-}
 async function runPollLoop(opts) {
   const windowMs = opts.windowMs ?? WATCH_WINDOW_MS;
   const cadence = opts.cadence ?? defaultCadence;
+  let baseline = opts.baseline;
+  const unwatchableAfter = opts.unwatchableAfterPolls ?? UNWATCHABLE_AFTER_POLLS;
+  let atRestPolls = 0;
+  let sawHumanBall = false;
   for (; ; ) {
-    const task = await opts.readTask();
-    const change = detectChange(opts.baseline, task);
+    let task;
+    try {
+      task = await opts.readTask();
+    } catch {
+      task = asTaskish(baseline);
+    }
+    const change = detectChange(baseline, task);
     if (change) return { reason: "changed", detail: change };
+    if (ballWithHuman(task)) {
+      sawHumanBall = true;
+      atRestPolls = 0;
+    } else if (!sawHumanBall) {
+      atRestPolls += 1;
+      if (atRestPolls >= unwatchableAfter) {
+        return { reason: "unwatchable", polls: atRestPolls };
+      }
+    }
     const elapsed = opts.now() - opts.launchStamp;
     if (elapsed >= windowMs) return { reason: "timeout" };
+    baseline = captureBaseline(task);
     const remaining = windowMs - elapsed;
     const delay = Math.min(cadence(elapsed), remaining);
     await opts.sleep(delay);
@@ -18930,8 +18970,12 @@ var EXIT = {
   // a change was detected — re-read get_task and consume
   timeout: 2,
   // ~90-min window expired — degrade to persist-and-resume
-  error: 1
+  error: 1,
   // could not run (no token / unrecoverable error)
+  // B-691: armed against a non-pause — the ball was never with the human, so this watch can never
+  // fire. Distinct from `timeout` because the conductor's response differs: timeout degrades to
+  // persist-and-resume, this files a worker-question elicitation round (harmony-conduct §4c/§4e).
+  unwatchable: 3
 };
 async function main() {
   const ticket = process.argv[2];
@@ -18948,21 +18992,9 @@ async function main() {
   const client = await createAuthenticatedClient(auth);
   const projectId = auth.getProjectId();
   const baselineTask = await getTask(client, projectId, { task_id: ticket, view: "meta" });
-  const baseline = {
-    workflowState: baselineTask.workflow_state ?? null,
-    pendingResolution: baselineTask.pending_resolution ?? null,
-    awaitingHumanInput: baselineTask.awaiting_human_input ?? null,
-    activeExchange: baselineTask.active_exchange ?? null,
-    pendingRemark: baselineTask.pending_remark ?? null
-  };
+  const baseline = captureBaseline(baselineTask);
   const launchStamp = Date.now();
-  const readTask = async () => {
-    try {
-      return await getTask(client, projectId, { task_id: ticket, view: "meta" });
-    } catch {
-      return baselineReadFallback(baseline);
-    }
-  };
+  const readTask = async () => await getTask(client, projectId, { task_id: ticket, view: "meta" });
   const result = await runPollLoop({
     readTask,
     now: Date.now,
@@ -18972,9 +19004,11 @@ async function main() {
     baseline
   });
   const elapsedMs = Date.now() - launchStamp;
-  const summary = result.reason === "changed" ? { ok: true, ticket, reason: result.reason, ...result.detail, elapsed_ms: elapsedMs } : { ok: true, ticket, reason: result.reason, elapsed_ms: elapsedMs };
+  const summary = result.reason === "changed" ? { ok: true, ticket, reason: result.reason, ...result.detail, elapsed_ms: elapsedMs } : result.reason === "unwatchable" ? { ok: true, ticket, reason: result.reason, polls: result.polls, elapsed_ms: elapsedMs } : { ok: true, ticket, reason: result.reason, elapsed_ms: elapsedMs };
   process.stdout.write(JSON.stringify(summary) + "\n");
-  return result.reason === "changed" ? EXIT.changed : EXIT.timeout;
+  if (result.reason === "changed") return EXIT.changed;
+  if (result.reason === "unwatchable") return EXIT.unwatchable;
+  return EXIT.timeout;
 }
 main().then((code) => process.exit(code)).catch((err) => {
   process.stderr.write(`poll failed: ${err instanceof Error ? err.message : String(err)}

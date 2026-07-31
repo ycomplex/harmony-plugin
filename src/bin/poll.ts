@@ -31,7 +31,7 @@ import { createAuthenticatedClient } from '../supabase.js';
 import { getTask } from '../tools/tasks.js';
 import {
   runPollLoop,
-  baselineReadFallback,
+  captureBaseline,
   WATCH_WINDOW_MS,
   type Taskish,
   type PollBaseline,
@@ -47,6 +47,10 @@ const EXIT = {
   changed: 0, // a change was detected — re-read get_task and consume
   timeout: 2, // ~90-min window expired — degrade to persist-and-resume
   error: 1, // could not run (no token / unrecoverable error)
+  // B-691: armed against a non-pause — the ball was never with the human, so this watch can never
+  // fire. Distinct from `timeout` because the conductor's response differs: timeout degrades to
+  // persist-and-resume, this files a worker-question elicitation round (harmony-conduct §4c/§4e).
+  unwatchable: 3,
 } as const;
 
 async function main(): Promise<number> {
@@ -67,35 +71,28 @@ async function main(): Promise<number> {
   const client = await createAuthenticatedClient(auth);
   const projectId = auth.getProjectId();
 
-  // Baseline read: the state the watch diffs every poll against. active_exchange (B-645) and
+  // Baseline read: the state the FIRST poll is compared against. active_exchange (B-645) and
   // pending_remark (B-503) are captured so an unconsumed marker already present at launch reads as
   // stale, never as fresh news.
   // B-684: the watch reads via the lean 'meta' view — it consumes only workflow_state /
   // pending_resolution / awaiting_human_input / active_exchange / pending_remark, all of which meta
   // carries.
+  // B-691: this seeds the baseline; it does NOT pin it. runPollLoop rolls the baseline forward on
+  // every poll, which is what lets a watch armed before its pause was filed still fire.
   const baselineTask = (await getTask(client, projectId, { task_id: ticket, view: 'meta' })) as Taskish;
-  const baseline: PollBaseline = {
-    workflowState: baselineTask.workflow_state ?? null,
-    pendingResolution: baselineTask.pending_resolution ?? null,
-    awaitingHumanInput: baselineTask.awaiting_human_input ?? null,
-    activeExchange: baselineTask.active_exchange ?? null,
-    pendingRemark: baselineTask.pending_remark ?? null,
-  };
+  const baseline: PollBaseline = captureBaseline(baselineTask);
 
   // Anchor the window to a single launch stamp (B-548): elapsed is always measured against this.
+  // B-691: the launch stamp and the change baseline are SEPARATE concerns and must stay separate —
+  // the stamp bounds the ~90-minute window and never moves; the baseline rolls every poll.
   const launchStamp = Date.now();
 
-  // A transient read error must NOT kill the watch — degrade that poll to "no change" (return the baseline
-  // shape via baselineReadFallback) so the loop keeps watching; the bounded window still ends it. The
-  // fallback carries awaiting_human_input from the baseline (still "awaiting"), so the B-611 exit gate
-  // cannot false-trip on a transient error.
-  const readTask = async (): Promise<Taskish> => {
-    try {
-      return (await getTask(client, projectId, { task_id: ticket, view: 'meta' })) as Taskish;
-    } catch {
-      return baselineReadFallback(baseline);
-    }
-  };
+  // A transient read error must NOT kill the watch. B-691: the degradation now lives INSIDE
+  // runPollLoop, which substitutes its own current (rolled) baseline. Doing it here would substitute
+  // the LAUNCH baseline, and against a rolled baseline a stale flag value can manufacture a false
+  // true→false transition — i.e. a failed read could fire the gate. So this simply propagates.
+  const readTask = async (): Promise<Taskish> =>
+    (await getTask(client, projectId, { task_id: ticket, view: 'meta' })) as Taskish;
 
   const result = await runPollLoop({
     readTask,
@@ -110,10 +107,14 @@ async function main(): Promise<number> {
   const summary =
     result.reason === 'changed'
       ? { ok: true, ticket, reason: result.reason, ...result.detail, elapsed_ms: elapsedMs }
-      : { ok: true, ticket, reason: result.reason, elapsed_ms: elapsedMs };
+      : result.reason === 'unwatchable'
+        ? { ok: true, ticket, reason: result.reason, polls: result.polls, elapsed_ms: elapsedMs }
+        : { ok: true, ticket, reason: result.reason, elapsed_ms: elapsedMs };
   process.stdout.write(JSON.stringify(summary) + '\n');
 
-  return result.reason === 'changed' ? EXIT.changed : EXIT.timeout;
+  if (result.reason === 'changed') return EXIT.changed;
+  if (result.reason === 'unwatchable') return EXIT.unwatchable;
+  return EXIT.timeout;
 }
 
 main()
