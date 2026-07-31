@@ -64,4 +64,13 @@ describe('harmony-design-decide skill contract', () => {
     expect(tools).toContain('add_comment');
     expect(tools).toContain('list_ticket_knowledge');
   });
+
+  it('runs the filing self-heal on EVERY sub-track, not only the product track (B-747)', () => {
+    // B-744 fixed WHAT the self-heal checks; the reachability was the remaining defect. Scoping the
+    // self-heal to the product track meant a browser-accepted product brief — or a ticket needing no
+    // product track — never re-entered the step that owns the filing.
+    expect(skill.body).toMatch(/EVERY sub-track/);
+    // The refine/extend half legitimately stays product-track-only; the split must be explicit.
+    expect(skill.body.toLowerCase()).toMatch(/refine and extend step that follows stays product-track/);
+  });
 });

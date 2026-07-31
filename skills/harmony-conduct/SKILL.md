@@ -214,6 +214,36 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    re-read, regenerate and render the progress overview from the ticket row** (see *The progress overview*
    below). This happens on **every** iteration so the checklist always reflects the just-read state.
 
+1b. **On the FIRST pickup of a run, consume any side effect a resolution left outstanding (B-747 — the
+   leg-start consume).** §4c's consume branches only exist *inside a live watch's poll-exit*. A daemon leg
+   exits at its pause, the human resolves in the browser with nothing watching, and the daemon fires a
+   NEW leg — which starts here, at step 1, and routes straight to the next forward gate. Nothing would
+   ever run the outstanding side effect. That is the operative route by which a clarified ticket reaches
+   build with no acceptance criteria, so this check is not belt-and-braces.
+
+   Run it **once per run, on the first pickup only** (not every iteration — later iterations are covered
+   by the live watch), and only when `workflow_state` is past `Clarified`:
+
+   ```
+   const refs = mcp__harmony__list_ticket_knowledge({ task_id })
+   const clarification = refs.find(r => r.type === 'specification' && r.status === 'Accepted')
+   const comments = mcp__harmony__list_comments({ task_id })
+   // Exact brief_id match on the marker line — never fuzzy text matching against rendered brief prose:
+   //   AC-FILING-PASS brief_id=<clarification.decision_id> filed=<N>
+   ```
+
+   **No filing-pass record for the clarification ⇒ the acceptance-criteria filing never ran.** Route to
+   **`/harmony-plugin:harmony-design-decide <ticket>`'s product-track self-heal** (§2b), which owns the
+   filing and writes the record. Reuse that predicate rather than inventing a marker: it is B-744's, it is
+   already the interlock between clarify's accept-path and the design self-heal, and a second marker
+   could disagree with the first. A record that IS present means the filing already happened — do
+   nothing. Then continue to step 2.
+
+   *(This is a plumbing consume, not a gate: it files what a human already authorized by accepting the
+   clarification. It advances no state, composes no brief, and needs no pause — so no mode, flag, or
+   floor applies. If the clarification carries no proposed set at all, there is nothing to file and the
+   build/verify floor is what catches the ticket.)*
+
 2. **If the ticket is already awaiting a human decision → handle per mode.** First check the reason:
 
    **`awaiting_human_reason === 'elicitation-round'` → NOT a brief, NOT a gate decision — ALWAYS wait
@@ -386,11 +416,17 @@ the *same routing* the controlled flow uses when the human types "accept" in-ses
 `--unattended`, `--escalate`'s decide-and-record) — `--escalate` does **not** introduce a new accept path; it
 only adds a *pause* decision in front of this one. It does **not** invent a new write path:
 
-- **Pure gates** — design (`*-design-decision` per sub-track), plan
-  (`plan-draft`): the accept is the gate skill's
+- **Pure gate** — plan (`plan-draft`): the accept is the gate skill's
   `resolve_brief({ command: 'accept', provenance: 'agent-synthesized:<mode>', … })`. Routing to the
   owning gate skill's accept path (NOT a raw conductor `resolve_brief`) ensures the gate skill records its
   Accepted knowledge decision and runs its own completion logic.
+- **Side-effecting DESIGN** (`*-design-decision` per sub-track, B-747): design is **NOT** a pure gate. The
+  product sub-track's accept **writes acceptance criteria** — it files the clarification's proposed
+  happy-path set when no filing-pass record exists (the B-744 self-heal) and lands its own refine/extend
+  edits via `manage_acceptance_criteria`. Synthesize the accept by routing to
+  **`/harmony-plugin:harmony-design-decide`'s accept path**, exactly as clarify and decompose are routed.
+  A raw `resolve_brief` here advances the sub-track and silently drops those criteria — which is the
+  B-747 defect itself: B-648 made this accept side-effecting but left it listed as pure.
 - **Side-effecting CLARIFY** (`brief-review`, B-648): clarify's accept **files the happy-path ACs**
   (`manage_acceptance_criteria`, idempotent) **before** `resolve_brief`. Synthesize the accept by routing
   to `harmony-clarify`'s accept path exactly as decompose routes through `harmony-decompose`'s, so the ACs
@@ -824,8 +860,16 @@ resolved (in the browser or terminal); classify which resolution it was:
    re-records nor re-attributes a resolution it did not make. (`human-in-browser` is the web's value alone;
    the plugin's `resolve_brief` rejects it outright.) What remains is any **side effect** that only runs
    where the agent runs:
-   - **Pure gate** (design sub-tracks, plan `plan-draft`): nothing further — the
+   - **Pure gate** (plan `plan-draft`): nothing further — the
      accept fully resolved mechanically. **Continue the loop at step 1** from the new state.
+   - **Side-effecting DESIGN** (design sub-tracks, B-747): a web accept of a design brief resolved the
+     sub-track **but wrote no acceptance criteria** (the web is mechanical-only; it cannot run the product
+     track's criteria writes or the B-744 filing-pass self-heal). Route the human's **actual** accept to
+     **`/harmony-plugin:harmony-design-decide <ticket>`'s accept path** so those writes land **in this
+     running session**; its `resolve_brief` is idempotent on the already-resolved brief. Then continue the
+     loop. If no session was running at the web accept, §1b's leg-start consume covers it on the next
+     pickup — that is the path a daemon leg takes, since this consume branch only exists inside a live
+     watch.
    - **Side-effecting CLARIFY** (`brief-review`, B-648): the web accept advanced Proposed→Clarified **but
      filed no ACs** (the web is mechanical-only; it cannot file the clarify-authored happy-path ACs).
      Route the human's **actual** accept to **`/harmony-plugin:harmony-clarify <ticket>`'s accept path**

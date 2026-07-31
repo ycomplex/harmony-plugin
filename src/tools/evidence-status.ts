@@ -70,6 +70,14 @@ export interface BuildEvidenceStatus {
   has_test_cases: boolean;
   /** >=1 acceptance criterion AND every one of them is checked. */
   all_acs_checked: boolean;
+  /**
+   * B-747 — PRESENCE only: >=1 acceptance criterion, checked state IRRELEVANT. This is the criteria
+   * FLOOR's predicate, and it is deliberately distinct from `all_acs_checked`: that stricter test is
+   * B-560's explicitly DEFERRED evidence predicate, and flooring on it would refuse every legitimately
+   * in-progress build. Read from the `task_criteria_floor_status` SQL function — the same authority the
+   * substrate guard calls — so the floor cannot mean two different things in two places.
+   */
+  has_acceptance_criteria: boolean;
   /** >=1 comment whose body matches the PR/merge/deploy/CI trail pattern. Informational — no longer gates `complete` (B-722). */
   has_comment_trail: boolean;
   /** A verified pushed-PR reference is recorded: `field_values.build_pr` with non-empty branch + head_sha + pr_url (B-722). */
@@ -85,7 +93,7 @@ export interface BuildEvidenceStatus {
 export const getBuildEvidenceStatusTool = {
   name: 'get_build_evidence_status',
   description:
-    "Read-only. The CANONICAL definition (single source of truth) of whether a conducted ticket carries the build evidence required by Verified. Derives — never writes — from the ticket's own records: `has_test_cases` (>=1 test case), `all_acs_checked` (>=1 acceptance criterion AND every one checked), `has_pushed_pr` (a verified pushed-PR reference recorded by the build gate in `tasks.field_values.build_pr` — non-empty branch + head_sha + pr_url; B-722), and `has_comment_trail` (>=1 comment mentioning a PR/merge/deploy/CI signal — INFORMATIONAL only; it no longer gates completeness, killing the B-713 keyword false-green). `is_umbrella` is true when the task has >=1 non-archived child; an umbrella is EXEMPT (its evidence is carried by its children — e.g. a B-471 split-umbrella roll-up), so `complete` is true and `exempt_reason` is set. `is_decision_only` is true when the task carries the `decision-only` label; it is likewise EXEMPT (B-681 — the ticket completes via the deliverable-gate fast-forward and its evidence IS the Accepted decision knowledge); umbrella keeps precedence in `exempt_reason` when both apply. For a leaf ticket carrying its own build, `complete` = has_test_cases && all_acs_checked && has_pushed_pr, and `missing` lists the gaps in human-readable form. Used by finish-work's verify brief to render a mechanical evidence-status line (like the B-516 release-brief risk signal) and reusable by the Decision Trail.",
+    "Read-only. The CANONICAL definition (single source of truth) of whether a conducted ticket carries the build evidence required by Verified. Derives — never writes — from the ticket's own records: `has_test_cases` (>=1 test case), `all_acs_checked` (>=1 acceptance criterion AND every one checked), `has_pushed_pr` (a verified pushed-PR reference recorded by the build gate in `tasks.field_values.build_pr` — non-empty branch + head_sha + pr_url; B-722), and `has_comment_trail` (>=1 comment mentioning a PR/merge/deploy/CI signal — INFORMATIONAL only; it no longer gates completeness, killing the B-713 keyword false-green). `is_umbrella` is true when the task has >=1 non-archived child; an umbrella is EXEMPT (its evidence is carried by its children — e.g. a B-471 split-umbrella roll-up), so `complete` is true and `exempt_reason` is set. `is_decision_only` is true when the task carries the `decision-only` label; it is likewise EXEMPT (B-681 — the ticket completes via the deliverable-gate fast-forward and its evidence IS the Accepted decision knowledge); umbrella keeps precedence in `exempt_reason` when both apply. For a leaf ticket carrying its own build, `complete` = has_test_cases && all_acs_checked && has_pushed_pr, and `missing` lists the gaps in human-readable form. Used by finish-work's verify brief to render a mechanical evidence-status line (like the B-516 release-brief risk signal) and reusable by the Decision Trail. B-747 adds `has_acceptance_criteria` — PRESENCE only (>=1 criterion, checked state irrelevant), read from the `task_criteria_floor_status` SQL function that the substrate transition guard also calls, so the acceptance-criteria FLOOR has one definition rather than two. It is deliberately NOT `all_acs_checked` (that stricter predicate is B-560's deferred evidence test and would refuse every in-progress build); the build and verify gates pre-check THIS field before attempting their transition, so a refusal reaches the human as an answerable question instead of a raised database exception.",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -149,6 +157,12 @@ export async function getBuildEvidenceStatus(
     typeof buildPr?.pr_url === 'string' &&
     buildPr.pr_url.length > 0;
 
+  // B-747 — the criteria FLOOR's presence bit, read from the SQL function that is also what
+  // `tasks_workflow_guard` calls, so the floor has exactly one definition across the substrate and the
+  // plugin. Degrades to the local computation on SQLSTATE 42883 (undefined_function) ONLY — see
+  // readCriteriaPresence for why a broader catch would fail OPEN.
+  const has_acceptance_criteria = await readCriteriaPresence(client, resolvedId, acs.length >= 1);
+
   const exempt = is_umbrella || is_decision_only;
   const complete = exempt ? true : has_test_cases && all_acs_checked && has_pushed_pr;
   // Umbrella keeps precedence when both apply — children carrying evidence is the more specific claim.
@@ -178,10 +192,49 @@ export async function getBuildEvidenceStatus(
     is_decision_only,
     has_test_cases,
     all_acs_checked,
+    has_acceptance_criteria,
     has_comment_trail,
     has_pushed_pr,
     complete,
     exempt_reason,
     missing,
   };
+}
+
+/**
+ * B-747 — read the criteria-floor presence bit from `task_criteria_floor_status`, the single authority
+ * the substrate guard also calls.
+ *
+ * FAIL-CLOSED ERROR HANDLING, and the distinction matters. Exactly ONE condition may degrade to the
+ * caller's locally-computed value: SQLSTATE **42883** (`undefined_function`), which means this
+ * environment predates the B-747 migration. That degrade is required rather than optional — the
+ * Conductor Daemon runs plugin `main` against the PROD board by default (`PLUGIN_REF=main`,
+ * `HARMONY_TARGET=prod` in container/entrypoint.sh + provision.sh), bypassing the marketplace pin that
+ * normally enforces B-383, so this code legitimately runs against a database that lacks the function
+ * during the merge-to-promote window.
+ *
+ * EVERY other error propagates. A generic catch here would swallow a `42501` privilege denial, or an
+ * error raised inside the function, and report "criteria present" for a ticket the authority would have
+ * blocked — turning the floor into a hole at precisely the moment something is wrong. A floor that opens
+ * when it malfunctions is not a floor.
+ *
+ * The local fallback is free: the caller has already queried the criteria rows.
+ */
+async function readCriteriaPresence(
+  client: SupabaseClient,
+  taskId: string,
+  localPresence: boolean,
+): Promise<boolean> {
+  const { data, error } = await client.rpc('task_criteria_floor_status', { p_task_id: taskId });
+
+  if (error) {
+    const code = (error as { code?: string }).code;
+    if (code === '42883') return localPresence; // pre-migration environment — no floor to enforce yet
+    throw error;
+  }
+
+  // RETURNS TABLE ⇒ an array of one row.
+  const row = (Array.isArray(data) ? data[0] : data) as { has_criteria?: boolean } | undefined;
+  // An empty result set says nothing about the ticket; prefer the local read over inventing a false.
+  return typeof row?.has_criteria === 'boolean' ? row.has_criteria : localPresence;
 }

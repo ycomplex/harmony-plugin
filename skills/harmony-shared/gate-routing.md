@@ -16,7 +16,7 @@ drift hazard this file removes).
 |---|---|---|---|---|---|
 | clarify | Proposed | `clarification-draft` | `harmony-clarify` | **side-effecting** (accept files the clarify-authored happy-path ACs first — `manage_acceptance_criteria`, idempotent — then `resolve_brief`; B-648) | no |
 | decompose | Clarified | `decomposition-proposal` | `harmony-decompose` | **side-effecting** (accept creates children first) | no |
-| design | Decomposed | `design-decision-draft` | `harmony-design-decide --track <sub-track>` | **pure** (per sub-track; serialized) | no |
+| design | Decomposed | `design-decision-draft` | `harmony-design-decide --track <sub-track>` | **side-effecting** (per sub-track; serialized. The product track's accept WRITES acceptance criteria — the B-744 filing-pass self-heal plus its own refine/extend edits — so it must be routed to the gate skill's accept path, never resolved inline; B-747) | no |
 | plan | Designed | `plan-draft` | `start-work` | **pure** (accept = `resolve_brief`; the "go" to build) | no |
 | build | Planned | (files `release-decision-pending`) | `start-work` | build work, then files the release brief | no |
 | **release** | Built | `release-decision-pending` | `finish-work` | **side-effecting** (accept → merge + deploy) | **YES — always human** |
@@ -26,12 +26,23 @@ Terminal states (`Verified`, `Parked`, `Cancelled`) have no gate — they end th
 
 **Pure vs side-effecting (the inline-vs-delegate fact).** `resolve_brief` does exactly three things on
 accept — promote the referenced decision, advance state via `pending_activity`, clear the flag. For the
-**pure** gates (`design-decision-draft`, `plan-draft`) that is the whole accept, so a
+**pure** gate (`plan-draft`) that is the whole accept, so a
 caller may resolve inline. For the **side-effecting** gates the real work lives **outside** `resolve_brief`
 (`clarification-draft` files the happy-path ACs — B-648, `decomposition-proposal` creates children,
-`release-decision-pending` merges + deploys,
+`design-decision-draft` writes acceptance criteria on the product sub-track — B-744's filing-pass
+self-heal plus refine/extend, B-747, `release-decision-pending` merges + deploys,
 `verification-ack-pending` observes production), so accept must be **delegated** to the owning skill, which
 performs the work in the correct order.
+
+> **See also `ac-pickup-points.md`** — the enumeration of every point at which a clarified ticket can be
+> picked up with its acceptance criteria still unfiled, and which mechanism covers each. Keep it current
+> when adding a gate or a consume path.
+
+> **`design-decision-draft` was listed as pure until B-747, and that was the bug.** B-648 moved the
+> product track's acceptance-criteria writes into its accept but left this row saying *pure*, so a caller
+> that resolved inline — the conductor's browser-accept consume path did exactly that — advanced the
+> sub-track and dropped the criteria. A row that says "pure" is a licence to resolve inline; keep this
+> column honest or the licence is wrong.
 
 **The hard floor.** The **release** and **verify** gates are one-way / irreversible and **always require a
 human** — never auto-resolved, under any flag or dial.

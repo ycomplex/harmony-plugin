@@ -388,6 +388,24 @@ a missing piece is surfaced on the brief the human accepts (it does NOT block ac
 (If incomplete and the build genuinely had its own work, land the missing evidence first — record the test
 cases via `manage_test_cases`, check the ACs via `manage_acceptance_criteria` — then recompute the line.)
 
+**The ONE part of this that is a floor, not a signal (B-747).** Everything above informs the accept without
+blocking it. An **empty** criteria set is different in kind: there is nothing for the shipped work to be
+judged against, so acking it is a rubber stamp rather than a judgement. **B-738 is the proof** — Verified
+with zero criteria, its verify acked against nothing, on a brief that had *displayed* the
+`⚠ Evidence incomplete: acceptance criteria (none created)` line and was accepted anyway. Detection was
+never the gap; blocking was.
+
+So before composing (and before resolving) the verify brief:
+
+- **`ev.has_acceptance_criteria` true, or `ev.exempt_reason` non-null** → carry on as above.
+- **Otherwise → do NOT compose an ackable verify brief and do NOT attempt `verifying`.** Open an
+  **elicitation round** asking the human for the criteria, naming what is missing, and end the leg.
+
+This is the same predicate and the same surface the build gate uses (`start-work` O3) — one floor applied
+at the two edges where cost turns irreversible, never a second definition. As there, the pre-check exists
+so the refusal is answerable: the substrate guard would refuse by RAISING, which reaches a daemon leg as a
+dirty exit and an operator page.
+
 ```
 mcp__harmony__compose_brief({
   task_id, reason: "verification-ack-pending", pending_activity: "verifying",
