@@ -99,4 +99,21 @@ describe('start-work skill contract (evolved)', () => {
       expect(body).toContain('Ship the built artefact — PR <pr_url>');
     });
   });
+
+  describe('acceptance-criteria floor at the build edge (B-747)', () => {
+    const body = skill.body;
+    it('PRE-CHECKS the floor before advancing to Built, and refuses via an elicitation round', () => {
+      // The pre-check is what makes the refusal answerable. Letting the substrate guard raise instead
+      // reaches a daemon leg as a dirty exit, which parks the conduction and pages an operator.
+      expect(body).toMatch(/has_acceptance_criteria/);
+      expect(referencedHarmonyTools(body)).toContain('get_build_evidence_status');
+      expect(body).toMatch(/elicitation round/i);
+      // Presence, never the all-checked predicate (that is B-560's deferred evidence test).
+      expect(body).toMatch(/PRESENCE only/);
+      // Both exemptions are honoured via exempt_reason rather than re-derived here.
+      expect(body).toMatch(/exempt_reason/);
+      // And the guard is named as the backstop, not the mechanism.
+      expect(body.toLowerCase()).toMatch(/never swallow the guard's error/);
+    });
+  });
 });

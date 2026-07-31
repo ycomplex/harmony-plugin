@@ -171,7 +171,34 @@ the release brief:
    satisfied should be checked.
 
 (This is the canonical evidence the verify gate's mechanical evidence-status line reads — see
-`get_build_evidence_status` and finish-work O3.) Then advance:
+`get_build_evidence_status` and finish-work O3.)
+
+**Then PRE-CHECK the acceptance-criteria floor before advancing — NON-OPTIONAL (B-747).** Build must not
+be recorded on a ticket carrying an empty criteria set: with nothing to fail against, the work has no
+specification it can be judged by. B-698 is the cost — 1,358 lines built against a single-button
+criterion.
+
+```
+const ev = mcp__harmony__get_build_evidence_status({ task_id })
+```
+
+`ev.has_acceptance_criteria` is PRESENCE only (>=1 criterion, checked state irrelevant) and is read from
+the same SQL authority the substrate transition guard calls. Then:
+
+- **`ev.has_acceptance_criteria` true, or `ev.exempt_reason` non-null** (umbrella / `decision-only`) →
+  proceed to the advance below.
+- **Otherwise → do NOT attempt the advance.** Open an **elicitation round** asking the human for the
+  criteria (`start_elicitation` with `gate: 'building'` + `file_elicitation_round`), naming what is
+  missing, and end the leg. Answering it lets the run continue with no manual repair.
+
+**Why pre-check rather than let the transition fail.** The DB guard refuses by RAISING, and neither
+`advance_workflow` nor `resolve_brief` catches it — the exception surfaces as an opaque tool error. In a
+daemon leg an uncaught refusal is a **dirty exit**, so the daemon parks the conduction and flags an
+operator, turning "this ticket needs criteria" into an incident. The pre-check is what makes the floor
+answerable; the guard is the backstop for paths that skip it. Never swallow the guard's error as a
+substitute for checking first.
+
+Then advance:
 
 ```
 mcp__harmony__advance_workflow({ task_id, activity: "building" })   // Planned -> Built

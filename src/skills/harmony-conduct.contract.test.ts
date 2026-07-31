@@ -423,4 +423,31 @@ describe('harmony-conduct skill contract', () => {
     // The interactive default is untouched: B-500's auto-watch-default language survives the edit.
     expect(body).toMatch(/Auto-watch is the default/);
   });
+
+  it('classifies DESIGN as side-effecting, not pure, at BOTH the synthesize and consume sites (B-747)', () => {
+    const body = skill.body; // raw: these assertions are case-sensitive
+    // B-648 moved the product track's acceptance-criteria writes into its accept but left design listed
+    // as a "pure gate", so a caller that resolved inline dropped them. Both sites must now delegate.
+    expect(body).toMatch(/Side-effecting DESIGN/);
+    // The §4b pure list must no longer name design...
+    expect(body).not.toMatch(/\*\*Pure gates\*\* — design/);
+    // ...and neither must §4c case 1's consume branch.
+    expect(body).not.toMatch(/\*\*Pure gate\*\* \(design sub-tracks/);
+    // Both branches route to the owning gate skill rather than resolving inline.
+    expect(body).toContain('harmony-design-decide');
+  });
+
+  it('consumes an outstanding side effect on LEG START, not only inside a live watch (B-747)', () => {
+    const body = skill.body; // raw: AC-FILING-PASS is case-sensitive
+    // A daemon leg exits at its pause; the human resolves in the browser with nothing watching; the next
+    // leg starts at step 1. Without a leg-start consume nothing ever runs the deferred side effect.
+    expect(body).toMatch(/leg-start consume/);
+    expect(body).toMatch(/AC-FILING-PASS/);
+    // It reuses B-744's filing-pass predicate rather than minting a second marker that could disagree.
+    const tools = referencedHarmonyTools(body);
+    expect(tools).toContain('list_ticket_knowledge');
+    expect(tools).toContain('list_comments');
+    // It is plumbing: no brief, no pause, no mode/floor interaction.
+    expect(body).toMatch(/advances no state, composes no brief/);
+  });
 });

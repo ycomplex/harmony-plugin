@@ -36295,7 +36295,7 @@ async function attachFile(client, projectId, args) {
 var COMMENT_TRAIL_RE = /\b(?:prs?|pull requests?|ci|merg\w*|deploy\w*|#\d+)\b/i;
 var getBuildEvidenceStatusTool = {
   name: "get_build_evidence_status",
-  description: "Read-only. The CANONICAL definition (single source of truth) of whether a conducted ticket carries the build evidence required by Verified. Derives \u2014 never writes \u2014 from the ticket's own records: `has_test_cases` (>=1 test case), `all_acs_checked` (>=1 acceptance criterion AND every one checked), `has_pushed_pr` (a verified pushed-PR reference recorded by the build gate in `tasks.field_values.build_pr` \u2014 non-empty branch + head_sha + pr_url; B-722), and `has_comment_trail` (>=1 comment mentioning a PR/merge/deploy/CI signal \u2014 INFORMATIONAL only; it no longer gates completeness, killing the B-713 keyword false-green). `is_umbrella` is true when the task has >=1 non-archived child; an umbrella is EXEMPT (its evidence is carried by its children \u2014 e.g. a B-471 split-umbrella roll-up), so `complete` is true and `exempt_reason` is set. `is_decision_only` is true when the task carries the `decision-only` label; it is likewise EXEMPT (B-681 \u2014 the ticket completes via the deliverable-gate fast-forward and its evidence IS the Accepted decision knowledge); umbrella keeps precedence in `exempt_reason` when both apply. For a leaf ticket carrying its own build, `complete` = has_test_cases && all_acs_checked && has_pushed_pr, and `missing` lists the gaps in human-readable form. Used by finish-work's verify brief to render a mechanical evidence-status line (like the B-516 release-brief risk signal) and reusable by the Decision Trail.",
+  description: "Read-only. The CANONICAL definition (single source of truth) of whether a conducted ticket carries the build evidence required by Verified. Derives \u2014 never writes \u2014 from the ticket's own records: `has_test_cases` (>=1 test case), `all_acs_checked` (>=1 acceptance criterion AND every one checked), `has_pushed_pr` (a verified pushed-PR reference recorded by the build gate in `tasks.field_values.build_pr` \u2014 non-empty branch + head_sha + pr_url; B-722), and `has_comment_trail` (>=1 comment mentioning a PR/merge/deploy/CI signal \u2014 INFORMATIONAL only; it no longer gates completeness, killing the B-713 keyword false-green). `is_umbrella` is true when the task has >=1 non-archived child; an umbrella is EXEMPT (its evidence is carried by its children \u2014 e.g. a B-471 split-umbrella roll-up), so `complete` is true and `exempt_reason` is set. `is_decision_only` is true when the task carries the `decision-only` label; it is likewise EXEMPT (B-681 \u2014 the ticket completes via the deliverable-gate fast-forward and its evidence IS the Accepted decision knowledge); umbrella keeps precedence in `exempt_reason` when both apply. For a leaf ticket carrying its own build, `complete` = has_test_cases && all_acs_checked && has_pushed_pr, and `missing` lists the gaps in human-readable form. Used by finish-work's verify brief to render a mechanical evidence-status line (like the B-516 release-brief risk signal) and reusable by the Decision Trail. B-747 adds `has_acceptance_criteria` \u2014 PRESENCE only (>=1 criterion, checked state irrelevant), read from the `task_criteria_floor_status` SQL function that the substrate transition guard also calls, so the acceptance-criteria FLOOR has one definition rather than two. It is deliberately NOT `all_acs_checked` (that stricter predicate is B-560's deferred evidence test and would refuse every in-progress build); the build and verify gates pre-check THIS field before attempting their transition, so a refusal reaches the human as an answerable question instead of a raised database exception.",
   inputSchema: {
     type: "object",
     properties: {
@@ -36336,6 +36336,7 @@ async function getBuildEvidenceStatus(client, projectId, args) {
   const has_comment_trail = comments.some((c) => typeof c.content === "string" && COMMENT_TRAIL_RE.test(c.content));
   const buildPr = taskRows[0]?.field_values?.["build_pr"];
   const has_pushed_pr = typeof buildPr?.branch === "string" && buildPr.branch.length > 0 && typeof buildPr?.head_sha === "string" && buildPr.head_sha.length > 0 && typeof buildPr?.pr_url === "string" && buildPr.pr_url.length > 0;
+  const has_acceptance_criteria = await readCriteriaPresence(client, resolvedId, acs.length >= 1);
   const exempt = is_umbrella || is_decision_only;
   const complete = exempt ? true : has_test_cases && all_acs_checked && has_pushed_pr;
   const exempt_reason = is_umbrella ? "umbrella \u2014 evidence carried by children" : is_decision_only ? "decision-only \u2014 the Accepted decision knowledge is the evidence" : null;
@@ -36358,12 +36359,23 @@ async function getBuildEvidenceStatus(client, projectId, args) {
     is_decision_only,
     has_test_cases,
     all_acs_checked,
+    has_acceptance_criteria,
     has_comment_trail,
     has_pushed_pr,
     complete,
     exempt_reason,
     missing
   };
+}
+async function readCriteriaPresence(client, taskId, localPresence) {
+  const { data, error: error2 } = await client.rpc("task_criteria_floor_status", { p_task_id: taskId });
+  if (error2) {
+    const code = error2.code;
+    if (code === "42883") return localPresence;
+    throw error2;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  return typeof row?.has_criteria === "boolean" ? row.has_criteria : localPresence;
 }
 
 // src/tools/ack-projection.ts

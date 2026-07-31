@@ -205,4 +205,18 @@ describe('finish-work skill contract (evolved)', () => {
     // The true no-diff case (B-265) advances without a merge step.
     expect(o2).toContain('B-265');
   });
+
+  it('the verify gate FLOORS an empty acceptance-criteria set rather than only reporting it (B-747)', () => {
+    const body = skill.body;
+    // B-738 reached Verified with zero criteria on a brief that had DISPLAYED the incomplete-evidence
+    // line and was accepted anyway. Detection was never the gap — blocking was. So the empty case must
+    // be a floor, distinct in kind from the informational evidence signal around it.
+    expect(body).toMatch(/has_acceptance_criteria/);
+    expect(body).toMatch(/B-738/);
+    expect(body.toLowerCase()).toMatch(/floor, not a signal/);
+    // It refuses through the same answerable surface the build edge uses — never a raised exception.
+    expect(body).toMatch(/elicitation round/i);
+    // And it is explicitly the same predicate as the build gate's, not a second definition.
+    expect(body.toLowerCase()).toMatch(/never a second definition/);
+  });
 });

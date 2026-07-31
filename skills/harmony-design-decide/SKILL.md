@@ -83,12 +83,18 @@ Ground the decision in what you find; surface gaps. If a
 load-bearing gap blocks the decision, go research-first (see knowledge-discipline) and invoke
 `/harmony-plugin:harmony-research`.
 
-### 2b. Acceptance criteria — refine and extend (product track, B-648)
+### 2b. Acceptance criteria — self-heal the filing (EVERY sub-track), then refine and extend (product track)
 
 Clarify ORIGINATES the happy-path ACs — they land at the clarification brief's accept
-(`harmony-clarify/SKILL.md` §5). A **web accept with no session running** defers that filing to HERE —
-this sub-track's self-heal — before the product track REFINES AND EXTENDS the set with its own
-design-dependent criteria.
+(`harmony-clarify/SKILL.md` §5). A **web accept with no session running** defers that filing to HERE.
+
+**The filing-pass self-heal below runs on EVERY sub-track invocation — not only the product track
+(B-747).** It previously sat inside the product track's step, and that scoping was the defect: a ticket
+whose product-design brief was accepted in the browser, or one that requires no product track at all,
+could run technical design, plan and build without the filing ever happening, because the step that owned
+it was never re-entered. B-744 fixed *what* the self-heal checks; this fixes *whether it runs*. The
+REFINE AND EXTEND step that follows stays product-track-only — adding design-dependent criteria genuinely
+is that track's job, and only that track composes a brief they can land on.
 
 **Self-heal filing-pass check (B-744) — the SAME predicate as clarify's own accept-path, never a
 ticket-wide "has any AC" check and never a `brief_resolved` read.** A `list_acceptance_criteria`

@@ -34,9 +34,24 @@ function makeClient(tables: {
   task_comments?: any[]; // { content }
   task_labels?: any[]; // { labels: { name } }
   errorOn?: string; // a table name whose query should error
+  /**
+   * B-747 — the `task_criteria_floor_status` RPC response. Omit to have the RPC report the same presence
+   * the local rows imply (the ordinary post-migration case); pass `{ error: {...} }` to exercise the
+   * 42883-only degrade and the fail-closed propagation.
+   */
+  floorRpc?: { data?: any; error?: { message: string; code?: string } | null };
 }) {
   const rowsFor = (table: string): any[] => (tables as any)[table] ?? [];
   return {
+    rpc: vi.fn((fn: string, _args: Record<string, unknown>) => {
+      if (fn !== 'task_criteria_floor_status') {
+        return Promise.resolve({ data: null, error: { message: `unexpected rpc ${fn}` } });
+      }
+      if (tables.floorRpc) return Promise.resolve({ data: null, error: null, ...tables.floorRpc });
+      // Default: agree with the local rows, which is what the deployed function does.
+      const acs = tables.acceptance_criteria ?? [];
+      return Promise.resolve({ data: [{ has_criteria: acs.length >= 1, is_exempt: false, exempt_reason: null }], error: null });
+    }),
     from: vi.fn((table: string) => {
       const chain: any = {
         select: vi.fn().mockReturnThis(),
@@ -74,6 +89,7 @@ describe('getBuildEvidenceStatus', () => {
       is_decision_only: false,
       has_test_cases: true,
       all_acs_checked: true,
+      has_acceptance_criteria: true, // B-747 — presence, read from the floor authority
       has_comment_trail: true,
       has_pushed_pr: true,
       complete: true,
@@ -317,5 +333,107 @@ describe('getBuildEvidenceStatus', () => {
     await expect(getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1' })).rejects.toThrow(
       'DB failure on test_cases',
     );
+  });
+
+  // ── B-747: has_acceptance_criteria — the criteria FLOOR's presence bit ──────────────────────────
+  describe('has_acceptance_criteria (B-747)', () => {
+    const base = {
+      tasks: [] as any[],
+      task_row: [{ field_values: {} }],
+      test_cases: [] as any[],
+      task_comments: [] as any[],
+    };
+
+    it('reads the floor authority — the same SQL function the substrate guard calls', async () => {
+      const client = makeClient({ ...base, acceptance_criteria: [{ id: 'a1', checked: false }] });
+      await getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1' });
+      expect(client.rpc).toHaveBeenCalledWith('task_criteria_floor_status', { p_task_id: 'task-uuid' });
+    });
+
+    it('is TRUE for one UNCHECKED criterion — presence, not all-checked', async () => {
+      // This is the distinction that keeps the floor off B-560's deferred predicate: an in-progress build
+      // has criteria but has not ticked them, and it must NOT be refused.
+      const client = makeClient({ ...base, acceptance_criteria: [{ id: 'a1', checked: false }] });
+      const res = await getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1' });
+      expect(res.has_acceptance_criteria).toBe(true);
+      expect(res.all_acs_checked).toBe(false); // the two fields genuinely differ
+    });
+
+    it('is FALSE when the ticket carries no criteria at all', async () => {
+      const client = makeClient({ ...base, acceptance_criteria: [] });
+      const res = await getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1' });
+      expect(res.has_acceptance_criteria).toBe(false);
+    });
+
+    it('degrades to the local read on 42883 ONLY — the pre-migration / daemon-ahead-of-prod window', async () => {
+      const client = makeClient({
+        ...base,
+        acceptance_criteria: [{ id: 'a1', checked: false }],
+        floorRpc: { error: { message: 'function does not exist', code: '42883' } },
+      });
+      const res = await getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1' });
+      expect(res.has_acceptance_criteria).toBe(true); // fell back to the local rows
+    });
+
+    it('PROPAGATES a 42501 privilege denial rather than failing open', async () => {
+      // Failing open here would report "criteria present" for a ticket the authority would block —
+      // a floor that opens when it malfunctions is not a floor.
+      const client = makeClient({
+        ...base,
+        acceptance_criteria: [],
+        floorRpc: { error: { message: 'permission denied for function', code: '42501' } },
+      });
+      await expect(getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1' })).rejects.toMatchObject({
+        code: '42501',
+      });
+    });
+
+    it('PROPAGATES an error raised inside the function rather than failing open', async () => {
+      const client = makeClient({
+        ...base,
+        acceptance_criteria: [],
+        floorRpc: { error: { message: 'raised inside the function', code: 'P0001' } },
+      });
+      await expect(getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1' })).rejects.toMatchObject({
+        code: 'P0001',
+      });
+    });
+
+    it('PROPAGATES an error with no SQLSTATE rather than failing open', async () => {
+      const client = makeClient({
+        ...base,
+        acceptance_criteria: [],
+        floorRpc: { error: { message: 'network died' } },
+      });
+      await expect(getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1' })).rejects.toMatchObject({
+        message: 'network died',
+      });
+    });
+
+    it('prefers the local read over inventing a false when the function returns no row', async () => {
+      const client = makeClient({
+        ...base,
+        acceptance_criteria: [{ id: 'a1', checked: true }],
+        floorRpc: { data: [] },
+      });
+      const res = await getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1' });
+      expect(res.has_acceptance_criteria).toBe(true);
+    });
+
+    it('does NOT gate `complete` — the floor is a separate predicate from the evidence definition', async () => {
+      // An exempt umbrella stays complete regardless; and a leaf's completeness still keys on
+      // all_acs_checked, not on the floor bit. B-560's evidence contract is untouched.
+      const client = makeClient({
+        tasks: [{ id: 'c1', archived: false }],
+        task_row: [{ field_values: {} }],
+        test_cases: [],
+        acceptance_criteria: [],
+        task_comments: [],
+      });
+      const res = await getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1' });
+      expect(res.has_acceptance_criteria).toBe(false);
+      expect(res.complete).toBe(true); // umbrella exemption unchanged
+      expect(res.exempt_reason).toMatch(/^umbrella/);
+    });
   });
 });
