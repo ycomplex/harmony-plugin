@@ -36293,6 +36293,27 @@ async function attachFile(client, projectId, args) {
 
 // src/tools/evidence-status.ts
 var COMMENT_TRAIL_RE = /\b(?:prs?|pull requests?|ci|merg\w*|deploy\w*|#\d+)\b/i;
+var CRITERIA_FLOOR_CONTRACT = {
+  /** The SQL function that is the single authority. */
+  rpc: "task_criteria_floor_status",
+  /** Its only argument. */
+  arg: "p_task_id",
+  /** The column this tool reads. A rename here MUST break a test, never degrade silently. */
+  presenceColumn: "has_criteria",
+  /** Read by the gate pre-checks to honour an exemption without re-deriving it. */
+  exemptColumn: "is_exempt",
+  exemptReasonColumn: "exempt_reason",
+  /**
+   * Presence means >=1 criterion, checked state IRRELEVANT. It is emphatically NOT "all checked" —
+   * that is B-560's deliberately deferred evidence predicate, and flooring on it would refuse every
+   * legitimately in-progress build (B-747 itself would have blocked its own build).
+   */
+  presenceCountsUncheckedCriteria: true,
+  /** When a ticket is both an umbrella and decision-only, umbrella wins in `exempt_reason`. */
+  exemptPrecedence: ["umbrella", "decision-only"],
+  /** The ONE SQLSTATE that may degrade to a local read: the function is absent (pre-migration). */
+  degradableSqlState: "42883"
+};
 var getBuildEvidenceStatusTool = {
   name: "get_build_evidence_status",
   description: "Read-only. The CANONICAL definition (single source of truth) of whether a conducted ticket carries the build evidence required by Verified. Derives \u2014 never writes \u2014 from the ticket's own records: `has_test_cases` (>=1 test case), `all_acs_checked` (>=1 acceptance criterion AND every one checked), `has_pushed_pr` (a verified pushed-PR reference recorded by the build gate in `tasks.field_values.build_pr` \u2014 non-empty branch + head_sha + pr_url; B-722), and `has_comment_trail` (>=1 comment mentioning a PR/merge/deploy/CI signal \u2014 INFORMATIONAL only; it no longer gates completeness, killing the B-713 keyword false-green). `is_umbrella` is true when the task has >=1 non-archived child; an umbrella is EXEMPT (its evidence is carried by its children \u2014 e.g. a B-471 split-umbrella roll-up), so `complete` is true and `exempt_reason` is set. `is_decision_only` is true when the task carries the `decision-only` label; it is likewise EXEMPT (B-681 \u2014 the ticket completes via the deliverable-gate fast-forward and its evidence IS the Accepted decision knowledge); umbrella keeps precedence in `exempt_reason` when both apply. For a leaf ticket carrying its own build, `complete` = has_test_cases && all_acs_checked && has_pushed_pr, and `missing` lists the gaps in human-readable form. Used by finish-work's verify brief to render a mechanical evidence-status line (like the B-516 release-brief risk signal) and reusable by the Decision Trail. B-747 adds `has_acceptance_criteria` \u2014 PRESENCE only (>=1 criterion, checked state irrelevant), read from the `task_criteria_floor_status` SQL function that the substrate transition guard also calls, so the acceptance-criteria FLOOR has one definition rather than two. It is deliberately NOT `all_acs_checked` (that stricter predicate is B-560's deferred evidence test and would refuse every in-progress build); the build and verify gates pre-check THIS field before attempting their transition, so a refusal reaches the human as an answerable question instead of a raised database exception.",
@@ -36368,14 +36389,23 @@ async function getBuildEvidenceStatus(client, projectId, args) {
   };
 }
 async function readCriteriaPresence(client, taskId, localPresence) {
-  const { data, error: error2 } = await client.rpc("task_criteria_floor_status", { p_task_id: taskId });
+  const { data, error: error2 } = await client.rpc(CRITERIA_FLOOR_CONTRACT.rpc, {
+    [CRITERIA_FLOOR_CONTRACT.arg]: taskId
+  });
   if (error2) {
     const code = error2.code;
     if (code === "42883") return localPresence;
     throw error2;
   }
   const row = Array.isArray(data) ? data[0] : data;
-  return typeof row?.has_criteria === "boolean" ? row.has_criteria : localPresence;
+  if (row === null || row === void 0) return localPresence;
+  const presence = row[CRITERIA_FLOOR_CONTRACT.presenceColumn];
+  if (typeof presence !== "boolean") {
+    throw new Error(
+      `${CRITERIA_FLOOR_CONTRACT.rpc} returned a row without a boolean \`${CRITERIA_FLOOR_CONTRACT.presenceColumn}\` (got ${JSON.stringify(row)}). The plugin and the SQL function have DIVERGED \u2014 reconcile against harmony-web supabase/migrations/*_b747_acceptance_criteria_floor.sql and its supabase/tests/b747_criteria_floor.test.sql.`
+    );
+  }
+  return presence;
 }
 
 // src/tools/ack-projection.ts
