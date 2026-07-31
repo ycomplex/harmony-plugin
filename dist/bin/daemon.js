@@ -19032,6 +19032,22 @@ function renderTemplate(tpl, vars) {
   });
 }
 
+// src/conductor/ball-axis.ts
+function ballWithHuman(row) {
+  return row.awaiting_human_input === true;
+}
+function ballReturned(previous, current) {
+  return ballWithHuman(previous) && !ballWithHuman(current);
+}
+function exchangeWentInactive(previous, current) {
+  const base = previous.active_exchange ?? null;
+  const cur = current.active_exchange ?? null;
+  if (base == null || base.status !== "active") return false;
+  if (cur == null) return true;
+  if ((cur.exchange_id ?? null) !== (base.exchange_id ?? null)) return true;
+  return cur.status != null && cur.status !== "active";
+}
+
 // src/daemon/watch.ts
 function captureBaseline(row) {
   return {
@@ -19039,21 +19055,17 @@ function captureBaseline(row) {
     activeExchange: row.active_exchange ?? null
   };
 }
-function baselineExchangeWentInactive(base, cur) {
-  if (base == null || base.status !== "active") return false;
-  if (cur == null) return true;
-  if ((cur.exchange_id ?? null) !== (base.exchange_id ?? null)) return true;
-  return cur.status != null && cur.status !== "active";
+function asTaskish(baseline) {
+  return {
+    awaiting_human_input: baseline.awaitingHumanInput,
+    active_exchange: baseline.activeExchange
+  };
 }
 function detectWake(baseline, current) {
-  const curFlag = current.awaiting_human_input ?? null;
-  if (baseline.awaitingHumanInput === true && curFlag === false) return "agent-ball";
-  if (baseline.awaitingHumanInput !== true && curFlag !== true && (current.pending_resolution ?? null) == null && (current.active_exchange ?? null) == null) {
-    return "agent-ball";
-  }
-  if (baselineExchangeWentInactive(baseline.activeExchange, current.active_exchange ?? null)) {
-    return "discussion-cancelled";
-  }
+  const previous = asTaskish(baseline);
+  if (ballReturned(previous, current)) return "agent-ball";
+  if (!ballWithHuman(previous) && !ballWithHuman(current)) return "agent-ball";
+  if (exchangeWentInactive(previous, current)) return "discussion-cancelled";
   return null;
 }
 
@@ -19171,7 +19183,10 @@ async function handleConduction(deps, state, keeper, row) {
     return;
   }
   const wake = detectWake(baseline, current);
-  if (wake === null) return;
+  if (wake === null) {
+    state.set(row.id, captureBaseline(current));
+    return;
+  }
   deps.log(`conduction ${row.id}: wake (${wake}) \u2014 launching worker`);
   let retryCount = row.retry_count;
   for (; ; ) {
