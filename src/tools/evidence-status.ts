@@ -60,6 +60,46 @@ import { resolveTaskId } from './resolve-task-id.js';
 // detector over real trail phrasings (true positives) + benign comments (no false positives).
 const COMMENT_TRAIL_RE = /\b(?:prs?|pull requests?|ci|merg\w*|deploy\w*|#\d+)\b/i;
 
+/**
+ * B-747 — the CONTRACT this tool depends on from harmony-web's `task_criteria_floor_status`.
+ *
+ * The acceptance-criteria floor is enforced in TWO places that must agree: the substrate trigger
+ * (`tasks_workflow_guard`, which calls this function directly) and this tool (which reads it for
+ * `has_acceptance_criteria`, and which every gate pre-check consults). "One definition" is only true if
+ * the plugin's dependency on that definition is PINNED — otherwise a rename on the SQL side degrades this
+ * tool to its local fallback and the two silently stop agreeing.
+ *
+ * So the dependency is named here rather than inlined as string literals, `criteria-floor-contract.test.ts`
+ * asserts every field of it, and `readCriteriaPresence` THROWS when a returned row does not match.
+ *
+ * The counterpart assertions live in harmony-web `supabase/tests/b747_criteria_floor.test.sql` (run via
+ * `npm run test:db:b747-criteria-floor`). That pair — this file's test and that SQL test — IS the contract
+ * test. Note the residual honestly: the two case tables are kept in step by whoever edits either side, not
+ * by a mechanism, because the repos are separate. What IS mechanical is that a shape divergence throws
+ * here instead of degrading.
+ */
+export const CRITERIA_FLOOR_CONTRACT = {
+  /** The SQL function that is the single authority. */
+  rpc: 'task_criteria_floor_status',
+  /** Its only argument. */
+  arg: 'p_task_id',
+  /** The column this tool reads. A rename here MUST break a test, never degrade silently. */
+  presenceColumn: 'has_criteria',
+  /** Read by the gate pre-checks to honour an exemption without re-deriving it. */
+  exemptColumn: 'is_exempt',
+  exemptReasonColumn: 'exempt_reason',
+  /**
+   * Presence means >=1 criterion, checked state IRRELEVANT. It is emphatically NOT "all checked" —
+   * that is B-560's deliberately deferred evidence predicate, and flooring on it would refuse every
+   * legitimately in-progress build (B-747 itself would have blocked its own build).
+   */
+  presenceCountsUncheckedCriteria: true,
+  /** When a ticket is both an umbrella and decision-only, umbrella wins in `exempt_reason`. */
+  exemptPrecedence: ['umbrella', 'decision-only'],
+  /** The ONE SQLSTATE that may degrade to a local read: the function is absent (pre-migration). */
+  degradableSqlState: '42883',
+} as const;
+
 export interface BuildEvidenceStatus {
   task_id: string;
   /** Task has >=1 non-archived child → it is an umbrella; evidence is carried by the children. */
@@ -225,7 +265,9 @@ async function readCriteriaPresence(
   taskId: string,
   localPresence: boolean,
 ): Promise<boolean> {
-  const { data, error } = await client.rpc('task_criteria_floor_status', { p_task_id: taskId });
+  const { data, error } = await client.rpc(CRITERIA_FLOOR_CONTRACT.rpc, {
+    [CRITERIA_FLOOR_CONTRACT.arg]: taskId,
+  });
 
   if (error) {
     const code = (error as { code?: string }).code;
@@ -234,7 +276,25 @@ async function readCriteriaPresence(
   }
 
   // RETURNS TABLE ⇒ an array of one row.
-  const row = (Array.isArray(data) ? data[0] : data) as { has_criteria?: boolean } | undefined;
-  // An empty result set says nothing about the ticket; prefer the local read over inventing a false.
-  return typeof row?.has_criteria === 'boolean' ? row.has_criteria : localPresence;
+  const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null | undefined;
+
+  // NO ROW: the function ran and said nothing about this task. Degrade to the local read rather than
+  // inventing a `false` that would refuse a ticket the authority never actually judged.
+  if (row === null || row === undefined) return localPresence;
+
+  // A ROW WITH THE WRONG SHAPE IS A CONTRACT VIOLATION, NOT A DEGRADE. If the presence column is ever
+  // renamed or dropped on the SQL side, silently substituting the local read would hide the break: the
+  // plugin would keep answering plausibly while no longer consulting the authority at all — a floor that
+  // has quietly stopped being one. Throw, so the divergence is visible the first time it happens.
+  const presence = row[CRITERIA_FLOOR_CONTRACT.presenceColumn];
+  if (typeof presence !== 'boolean') {
+    throw new Error(
+      `${CRITERIA_FLOOR_CONTRACT.rpc} returned a row without a boolean \`` +
+        `${CRITERIA_FLOOR_CONTRACT.presenceColumn}\` (got ${JSON.stringify(row)}). The plugin and the SQL ` +
+        `function have DIVERGED — reconcile against harmony-web ` +
+        `supabase/migrations/*_b747_acceptance_criteria_floor.sql and its ` +
+        `supabase/tests/b747_criteria_floor.test.sql.`,
+    );
+  }
+  return presence;
 }
