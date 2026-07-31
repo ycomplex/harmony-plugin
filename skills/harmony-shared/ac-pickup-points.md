@@ -45,6 +45,33 @@ Two ticket kinds are **exempt**, read from the same authority rather than re-der
 decision knowledge). Both predate B-747 — they are the existing evidence-exemption set applied to a new
 predicate, not new exemptions.
 
+### Placement is load-bearing, not cosmetic
+
+The floor lives in **two places doing two different jobs**, and collapsing them is a silent regression:
+
+| Placement | Job | Fires |
+|---|---|---|
+| `start-work` O3, at the **very top** | prevents the **work** | before a worktree exists |
+| `tasks_workflow_guard`, on the `Planned→Built` edge | prevents the **escape** | after the build has run |
+
+B-747 shipped with the prose check sitting next to the `advance_workflow` at the *end* of O3. Every
+presence-only assertion passed, and a criteria-less ticket still did a full build — worktree, implementation,
+commit, push, PR — before being refused. The floor recorded the waste instead of preventing it, which is the
+opposite of why B-698 (1,358 lines against a single-button criterion) motivated it.
+
+`start-work.contract.test.ts` now asserts the **order** — pre-check before worktree before advance — because
+a presence assertion structurally cannot tell a start-of-build check from a late one.
+
+### Two exemptions were not enough — enumerate the traffic, not just the exemptions
+
+B-560 deferred this guard citing *"risk of false-blocking legitimate evidence-light tickets."* B-747's design
+answered that by pointing at the two existing exemptions. It was **incomplete**: the E2E guard fixtures walk
+umbrella **children** — leaf tickets, correctly non-exempt — to `Verified` without criteria, and the floor
+refused seven of them. The nightly caught it; no PR gate could, because `E2E Nightly` runs on `event: schedule`.
+
+The transferable rule: **when adding a floor, enumerate the legitimate traffic it will refuse.** Reasoning
+forward from the exemption set you already thought of will miss exactly the cases you did not.
+
 ## Where the predicate lives
 
 **One** definition, in SQL: `task_criteria_floor_status(p_task_id)` returning
