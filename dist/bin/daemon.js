@@ -18808,6 +18808,7 @@ async function getTask(client, projectId, args) {
       parent_task_id: t.parent_task_id,
       archived: t.archived,
       subsumed_by_task_id: t.subsumed_by_task_id,
+      conductor_excluded_at: t.conductor_excluded_at,
       pending_resolution,
       active_exchange,
       pending_remark,
@@ -19196,6 +19197,13 @@ async function handleConduction(deps, state, keeper, row) {
   }
   const wake = detectWake(baseline, current);
   if (wake === null) {
+    state.set(row.id, captureBaseline(current));
+    return;
+  }
+  if (current.conductor_excluded_at) {
+    deps.log(
+      `${label(row, current, deps.projectKey)}: taken away from conductor (conductor_excluded_at set) \u2014 skipping fire`
+    );
     state.set(row.id, captureBaseline(current));
     return;
   }

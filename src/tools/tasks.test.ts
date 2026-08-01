@@ -700,6 +700,7 @@ describe('getTask', () => {
       'id', 'task_number', 'title', 'workflow_state', 'workflow_activity',
       'awaiting_human_input', 'awaiting_human_reason', 'awaiting_human_ref',
       'stale', 'stale_ref', 'parent_task_id', 'archived', 'subsumed_by_task_id',
+      'conductor_excluded_at',
       'pending_resolution', 'active_exchange', 'pending_remark', 'risk_classes',
       'updated_at', 'content_updated_at', 'last_activity_at',
     ];
