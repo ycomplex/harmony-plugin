@@ -155,4 +155,34 @@ describe('listTicketKnowledge', () => {
       { decision_id: 'd2', id: 'd2', type: 'technical-design', status: 'Asserted', title: 'TD' },
     ]);
   });
+
+  // B-744 (reopened round 2): a ticket can carry more than one Accepted `specification` decision
+  // (clarify's clarified-intent record AND decompose's no-split record). Callers need
+  // `source_activity` projected so they can discriminate which gate authored the decision, rather
+  // than falling back to an ordering-dependent `.find()` on type + status alone.
+  it('projects source_activity in the select so callers can discriminate same-type decisions', async () => {
+    const rows = [
+      {
+        decision_id: 'd1',
+        knowledge_decisions: {
+          id: 'd1',
+          type: 'specification',
+          status: 'Accepted',
+          title: 'clarified intent',
+          source_activity: 'clarify',
+        },
+      },
+    ];
+    const eq = vi.fn(() => Promise.resolve({ data: rows, error: null }));
+    const selectSpy = vi.fn(() => ({ eq }));
+    const client = { from: vi.fn(() => ({ select: selectSpy })) } as unknown as import('@supabase/supabase-js').SupabaseClient;
+    const res = await listTicketKnowledge(client, 'proj', { task_id: 'B-1' });
+    // The projection string itself must ask for source_activity — this is what makes the column
+    // available to downstream `.find()` predicates at all.
+    expect(selectSpy).toHaveBeenCalledWith(expect.stringContaining('source_activity'));
+    // And it must flow through into the flattened row, not get dropped on the way out.
+    expect(res).toEqual([
+      { decision_id: 'd1', id: 'd1', type: 'specification', status: 'Accepted', title: 'clarified intent', source_activity: 'clarify' },
+    ]);
+  });
 });

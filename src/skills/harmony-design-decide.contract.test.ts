@@ -83,4 +83,47 @@ describe('harmony-design-decide skill contract', () => {
     const tools = referencedHarmonyTools(skill.body);
     expect(tools).toContain('list_activity');
   });
+
+  it('B-744 (reopened round 2): the specification selector discriminates on source_activity, never on type alone — a ticket can carry BOTH an Accepted clarify spec and an Accepted decompose no-split spec', () => {
+    // Textual pin: the selector must read source_activity, and the old ordering-dependent
+    // type+status-only .find() (the exact regression) must be gone.
+    expect(skill.body).toMatch(/r\.source_activity === 'clarify'/);
+    expect(skill.body).not.toMatch(
+      /refs\.find\(r => r\.type === 'specification' && r\.status === 'Accepted'\)\s*$/m,
+    );
+
+    // Behavioural regression: extract the live predicate straight out of the skill body and run
+    // it — not a hand-rewritten copy — against a fixture list_ticket_knowledge response carrying
+    // BOTH decisions (decompose's "no split" record listed FIRST, exactly as it was in the
+    // production ticket that surfaced this bug), to prove the self-heal resolves to clarify's
+    // record and reads clarify's content, never decompose's.
+    const m = skill.body.match(/const clarification = refs\.find\((r => [^\n]+)\)/);
+    expect(m, 'could not locate the clarification selector in the skill body').toBeTruthy();
+    const predicate = new Function(`return (${m![1]})`)() as (r: Record<string, unknown>) => boolean;
+
+    const refs = [
+      // decompose's no-split record — same type + status as clarify's, listed first on purpose:
+      // this is exactly the ordering the production defect depended on.
+      {
+        decision_id: 'dec-nosplit',
+        type: 'specification',
+        status: 'Accepted',
+        title: 'B-744: decomposition — no split',
+        source_activity: 'decompose',
+        content: 'DECOMPOSE-CONTENT: no split needed',
+      },
+      // clarify's clarified-intent record — the one the self-heal must file ACs from:
+      {
+        decision_id: 'dec-clarify',
+        type: 'specification',
+        status: 'Accepted',
+        title: 'B-744: clarified intent',
+        source_activity: 'clarify',
+        content: 'CLARIFY-CONTENT: happy-path ACs',
+      },
+    ];
+    const found = refs.find(predicate);
+    expect(found?.decision_id).toBe('dec-clarify');
+    expect(found?.content).toBe('CLARIFY-CONTENT: happy-path ACs');
+  });
 });

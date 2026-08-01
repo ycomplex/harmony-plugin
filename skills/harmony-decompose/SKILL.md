@@ -74,7 +74,24 @@ recommended `"create"`; a removal/restructure of an existing child is its own ex
 never silent.
 
 For "no decomposition needed", file a single decision item recommending "no split", and (optionally)
-record a short `specification` decision documenting *why* — then `reference_knowledge` it.
+record a short `specification` decision documenting *why* — then `reference_knowledge` it. When you do
+record one, set `source_activity: "decompose"` so downstream readers (e.g. `harmony-design-decide`'s
+AC-filing self-heal, B-744) can tell this record apart from clarify's own Accepted `specification`
+decision — both share `type: "specification"`, and a selector that discriminates on `type` alone can
+silently pick this one instead of clarify's:
+
+```
+const noSplit = mcp__harmony__record_decision({
+  type: "specification",
+  title: "<ticket>: decomposition — no split",
+  content: "<why no decomposition is needed>",
+  domain: ["product", "process"],
+  source_type: "manual",
+  source_activity: "decompose",
+  source_task_id: "<task uuid>",
+})
+mcp__harmony__reference_knowledge({ task_id, decision_id: noSplit.id })
+```
 
 ### 4. Display + resolve
 
