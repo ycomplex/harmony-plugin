@@ -29,6 +29,7 @@ import { randomUUID } from 'node:crypto';
 import { HarmonyAuth } from '../auth.js';
 import { createAuthenticatedClient } from '../supabase.js';
 import { getTask } from '../tools/tasks.js';
+import { getProject } from '../tools/project.js';
 import { listSubtasks } from '../tools/decomposition.js';
 import {
   listConductions,
@@ -87,6 +88,11 @@ async function main(): Promise<void> {
   const auth = new HarmonyAuth(token);
   const client = await createAuthenticatedClient(auth);
   const projectId = auth.getProjectId();
+  // B-723: the project KEY, read once here alongside the id — the daemon's log names tickets by
+  // their visual id (e.g. B-723), and that prefix is per-deployment CONFIG, never a baked constant.
+  // Deliberately its OWN read: get_task's view:'meta' projection is a pinned 20-key shape and the
+  // key is a PROJECT field, not a task one.
+  const projectKey = (await getProject(client, projectId)).key as string;
 
   const leaseHolder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 
@@ -138,6 +144,7 @@ async function main(): Promise<void> {
     log,
     leaseHolder,
     config,
+    projectKey,
   };
 
   const keeper = createHeartbeatKeeper({
