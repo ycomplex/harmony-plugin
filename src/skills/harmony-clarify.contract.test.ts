@@ -42,7 +42,7 @@ describe('harmony-clarify skill contract', () => {
   it('AC-filing idempotency is a per-clarification-brief filing-pass record, not a ticket-wide AC-presence check (B-744)', () => {
     expect(skill.body).toContain('AC-FILING-PASS');
     expect(skill.body).toContain('filing-pass');
-    expect(skill.body.toLowerCase()).toContain('this clarification brief\'s id');
+    expect(skill.body.toLowerCase()).toContain('this clarification brief\'s own id');
     // the old ticket-wide guard must be gone, not merely supplemented:
     expect(skill.body).not.toMatch(/skip the filing if the ticket already carries acceptance criteria/);
     // the marker predicate is never brief_resolved-keyed:
@@ -52,5 +52,13 @@ describe('harmony-clarify skill contract', () => {
     const tools = referencedHarmonyTools(skill.body);
     expect(tools).toContain('list_comments');
     expect(tools).toContain('add_comment');
+  });
+  it('B-744 rework: the filing-pass key is the brief\'s own id, never the decision id (regression: verify-caught mismatch against B-756/B-691)', () => {
+    // A prose-only match (e.g. "this clarification brief's id") is not enough — round 1 of this fix
+    // said exactly that while plugging in `brief.decision_ref.id` (a DECISION id) underneath. Pin the
+    // literal expression written into the marker, not just the surrounding prose.
+    expect(skill.body).toMatch(/AC-FILING-PASS brief_id=\$\{brief\.id\}/);
+    expect(skill.body).toMatch(/AC-FILING-PASS brief_id=<brief\.id> filed=<N>/);
+    expect(skill.body).not.toMatch(/brief\.decision_ref\.id/);
   });
 });

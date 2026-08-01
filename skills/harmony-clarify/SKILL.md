@@ -302,21 +302,30 @@ Show the rendered `content` verbatim. On the human's command:
 > §Resolution provenance).
 
 - **accept** → **first file the proposed ACs (B-648), then execute the de-scope block (B-518), then
-  resolve.** **Idempotency (B-744) — the filing-pass RECORD is the marker, never a ticket-wide
-  "has any AC" check.** A ticket-wide check is the exact B-698 defect: some unrelated AC predating
-  this clarification would silently read as "clarify already ran" and drop the happy-path set this
-  accept owes the ticket. The record is scoped to **this clarification brief's id** —
-  `brief.decision_ref.id`, the id of the Accepted `specification` decision this clarification produced
-  (step 3's `decision.id` on a same-turn compose→accept; the loaded brief's `decision_ref.id` on a
-  resumed one). That id is stable for this clarification's whole lifetime, unlike the `briefs` row
-  itself (which stops being queryable via `get_brief` the instant it resolves) — which is exactly
-  what lets the design-gate self-heal (`harmony-design-decide/SKILL.md` §2b) recognize the SAME
-  record under the SAME key even though it resolves a different brief (its own product-design brief)
-  entirely. Check first:
+  resolve.** **Idempotency (B-744, corrected — reopened after a verify rejection) — the filing-pass
+  RECORD is the marker, never a ticket-wide "has any AC" check.** A ticket-wide check is the exact
+  B-698 defect: some unrelated AC predating this clarification would silently read as "clarify
+  already ran" and drop the happy-path set this accept owes the ticket. The record is scoped to
+  **this clarification brief's own id** — `brief.id` (the `briefs` row id: what `compose_brief`
+  returns on a same-turn compose→accept, what `get_brief` returns on a resumed one, and the same id
+  `resolve_brief` later records as `brief_resolved`'s `metadata.brief_id`) — **never the brief's
+  `decision_ref.id`** (a different id space entirely: the Accepted `specification` DECISION
+  this clarification produced, not the brief that produced it). Using the decision id is exactly the
+  live-production defect this rework fixes (caught at verify against B-756 and B-691): the marker is
+  written under a `brief_id=` label but holds a decision id, so a later lookup keyed on the real
+  brief id never matches and the guard silently re-files the whole set. `brief.id` needs no
+  round-trip through `get_brief` to stay a usable key — once captured as plain text in the comment
+  at file-time, the value is permanent regardless of whether the brief later stops being queryable as
+  "active"; the earlier "the `briefs` row goes stale" reasoning does not actually favor the decision
+  id, since a plain-text UUID copied into a comment doesn't need the row to stay queryable at all.
+  This is the same id that lets the design-gate self-heal (`harmony-design-decide/SKILL.md` §2b)
+  recognize the SAME record under the SAME key even though it resolves a different brief (its own
+  product-design brief) entirely — see that section for how it recovers this clarification brief's
+  id without ever holding the brief object itself. Check first:
   ```
   mcp__harmony__list_comments({ task_id })
   ```
-  Match a line `AC-FILING-PASS brief_id=<brief.decision_ref.id> filed=<N>` — an exact `brief_id`
+  Match a line `AC-FILING-PASS brief_id=<brief.id> filed=<N>` — an exact `brief_id`
   match, never fuzzy text matching against rendered brief prose.
   - **Found → skip the filing** (the legitimate same-accept-reapplied case — a web accept raced by
     a running session's self-heal, or a re-conducted accept). No new write.
@@ -329,7 +338,7 @@ Show the rendered `content` verbatim. On the human's command:
     then write the filing-pass record — **a zero-count pass still writes it** (a silent zero is
     exactly the original bug's failure mode, so zero must be exactly as loud as N):
     ```
-    mcp__harmony__add_comment({ task_id, content: `AC-FILING-PASS brief_id=${brief.decision_ref.id} filed=${N}` })
+    mcp__harmony__add_comment({ task_id, content: `AC-FILING-PASS brief_id=${brief.id} filed=${N}` })
     ```
   This one comment IS the idempotency marker — no second mechanism, and never `brief_resolved` (it
   fires the instant the human accepts, before filing runs, so a web-accepted-no-session clarification

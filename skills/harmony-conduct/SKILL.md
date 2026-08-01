@@ -227,9 +227,16 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    ```
    const refs = mcp__harmony__list_ticket_knowledge({ task_id })
    const clarification = refs.find(r => r.type === 'specification' && r.status === 'Accepted')
+   const activity = mcp__harmony__list_activity({ task_id })
+   const resolved = activity.find(e =>
+     e.event_type === 'brief_resolved' && e.metadata?.reason === 'clarification-draft')
    const comments = mcp__harmony__list_comments({ task_id })
-   // Exact brief_id match on the marker line — never fuzzy text matching against rendered brief prose:
-   //   AC-FILING-PASS brief_id=<clarification.decision_id> filed=<N>
+   // Exact brief_id match on the marker line — never fuzzy text matching against rendered brief prose.
+   // Keyed on the clarification BRIEF's own id (resolved.metadata.brief_id), never
+   // the clarification specification decision's id (a different id space — the DECISION, not the brief
+   // that produced it; see harmony-clarify/SKILL.md §5 and harmony-design-decide/SKILL.md §2b for
+   // the corrected B-744 key):
+   //   AC-FILING-PASS brief_id=<resolved.metadata.brief_id> filed=<N>
    ```
 
    **No filing-pass record for the clarification ⇒ the acceptance-criteria filing never ran.** Route to
