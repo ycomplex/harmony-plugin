@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { readSkill, readSharedDoc, referencedHarmonyTools } from './skill-contract.js';
+import { VALID_TRIGGERS } from '../tools/elicitation.js';
 
 const SKILLS = join(process.cwd(), 'skills');
 
@@ -204,6 +205,31 @@ describe('worker-question contract (B-733)', () => {
   it('names the harmony-build hand-off: no MCP tools, reports upward via the marker', () => {
     const buildAgentDoc = readFileSync(join(process.cwd(), 'container/agents/harmony-build.md'), 'utf8');
     expect(buildAgentDoc.toLowerCase()).toMatch(/no mcp tools/);
+  });
+
+  it('every trigger value named in skills/ prose is a member of VALID_TRIGGERS (closes the prose-to-prose blind spot)', () => {
+    // PR #129 pinned `trigger: 'worker-question'` prose against OTHER prose (a bidirectional
+    // literal-string contract test) but never against the real runtime enum in
+    // src/tools/elicitation.ts — so the validator kept rejecting the trigger the docs promised
+    // worked. Walk every .md file under skills/ (recursively — the trigger is referenced both in
+    // SKILL.md files and in harmony-shared/*.md reference docs) and assert every literal
+    // `trigger: '<value>'` found in prose is actually accepted by the live VALID_TRIGGERS array —
+    // not a hardcoded copy of it, which is exactly how the original bug happened.
+    const mdFiles = readdirSync(SKILLS, { recursive: true })
+      .filter((entry): entry is string => typeof entry === 'string' && entry.endsWith('.md'));
+
+    const found = new Set<string>();
+    for (const rel of mdFiles) {
+      const text = readFileSync(join(SKILLS, rel), 'utf8');
+      for (const m of text.matchAll(/trigger:\s*'([a-z-]+)'/g)) {
+        found.add(m[1]);
+      }
+    }
+
+    expect(found.size, 'expected to find at least one trigger: \'...\' reference in skills/ prose').toBeGreaterThan(0);
+    for (const trigger of found) {
+      expect(VALID_TRIGGERS, `trigger '${trigger}' is referenced in skills/ prose but missing from VALID_TRIGGERS`).toContain(trigger);
+    }
   });
 });
 
