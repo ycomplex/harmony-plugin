@@ -150,7 +150,7 @@ export async function referenceKnowledge(
 export const listTicketKnowledgeTool = {
   name: 'list_ticket_knowledge',
   description:
-    "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status. Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket — query_knowledge has no ticket filter (it projects no source_task_id).",
+    "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status + source_activity (the gate/skill that authored it — use this to discriminate between multiple Accepted decisions of the same type, e.g. clarify's and decompose's specification records). Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket — query_knowledge has no ticket filter (it projects no source_task_id).",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -170,7 +170,7 @@ export async function listTicketKnowledge(
   // knowledge_decisions RLS applies to the embed; ticket_references_knowledge is members-rw (P2 plan A6).
   const { data, error } = await client
     .from('ticket_references_knowledge')
-    .select('decision_id, knowledge_decisions(id, type, status, title, domain)')
+    .select('decision_id, knowledge_decisions(id, type, status, title, domain, source_activity)')
     .eq('task_id', id);
   if (error) throw error;
   // PostgREST types the embed as an array, but the decision_id->id FK is to-one so it returns a single

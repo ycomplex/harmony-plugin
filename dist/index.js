@@ -36126,7 +36126,7 @@ async function referenceKnowledge(client, projectId, args) {
 }
 var listTicketKnowledgeTool = {
   name: "list_ticket_knowledge",
-  description: "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status. Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket \u2014 query_knowledge has no ticket filter (it projects no source_task_id).",
+  description: "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status + source_activity (the gate/skill that authored it \u2014 use this to discriminate between multiple Accepted decisions of the same type, e.g. clarify's and decompose's specification records). Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket \u2014 query_knowledge has no ticket filter (it projects no source_task_id).",
   inputSchema: {
     type: "object",
     properties: {
@@ -36137,7 +36137,7 @@ var listTicketKnowledgeTool = {
 };
 async function listTicketKnowledge(client, projectId, args) {
   const id = await resolveTaskId(client, projectId, args.task_id);
-  const { data, error: error2 } = await client.from("ticket_references_knowledge").select("decision_id, knowledge_decisions(id, type, status, title, domain)").eq("task_id", id);
+  const { data, error: error2 } = await client.from("ticket_references_knowledge").select("decision_id, knowledge_decisions(id, type, status, title, domain, source_activity)").eq("task_id", id);
   if (error2) throw error2;
   const rows = data ?? [];
   return rows.map((r) => ({

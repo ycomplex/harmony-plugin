@@ -108,12 +108,18 @@ while filing is still outstanding. Both are rejected as the trigger here.
    different brief type entirely) and never the Accepted `specification` DECISION's own id (a
    different id space — the exact B-744 rework fix: using the decision id in a field named
    `brief_id` produced a marker that could never match a lookup keyed on the real brief id). Locate
-   the ticket's Accepted `specification` decision (clarify's own record —
-   `harmony-clarify/SKILL.md` §3.1) to confirm a clarification exists and to read its proposed-ACs
-   content:
+   the ticket's Accepted `specification` decision that clarify itself authored —
+   `harmony-clarify/SKILL.md` §3.1 — to confirm a clarification exists and to read its proposed-ACs
+   content. **A ticket can carry more than one Accepted `specification` decision** — clarify's own
+   clarified-intent record AND decompose's "no split" record (`harmony-decompose/SKILL.md`) are both
+   `type: 'specification'` — so the selector must discriminate on `source_activity`, the gate/skill
+   that authored the decision, never on `type` alone. `.find()` on `type` + `status` alone is
+   ordering-dependent and can silently pick decompose's record instead of clarify's, filing the wrong
+   AC content (or none) while still writing a filing-pass marker that reports success (B-744, reopened
+   round 2):
    ```
    const refs = mcp__harmony__list_ticket_knowledge({ task_id })
-   const clarification = refs.find(r => r.type === 'specification' && r.status === 'Accepted')
+   const clarification = refs.find(r => r.type === 'specification' && r.status === 'Accepted' && r.source_activity === 'clarify')
    ```
    Then recover the clarification BRIEF's own `id` — never `clarification`'s `decision_id` — from the
    ticket's activity trail, since this self-heal never holds the clarification brief object itself
@@ -147,8 +153,9 @@ while filing is still outstanding. Both are rejected as the trigger here.
      go straight to the ADD/SHARPEN step below.
    - **Not found → file the clarification's proposed happy-path set now, unconditionally** —
      regardless of what other unrelated ACs already exist on the ticket — from the clarification
-     brief's structured proposed-ACs data (the Accepted specification decision's content — never
-     re-parsed from THIS brief's rendered markdown, which never carried them):
+     brief's structured proposed-ACs data (`clarification`'s content, the `source_activity === 'clarify'`
+     decision resolved in step 1 above, never decompose's — and never re-parsed from THIS brief's
+     rendered markdown, which never carried them):
      ```
      mcp__harmony__manage_acceptance_criteria({ task_id, add: [{ content: "..." }, ...] })
      ```
