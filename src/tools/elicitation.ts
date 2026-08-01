@@ -33,7 +33,7 @@ const EXCHANGE_COLS =
 // The DB column is free text (documented values); the plugin validates the known triggers at
 // point-of-use so a typo'd trigger fails loudly here rather than silently minting a novel kind.
 // A new trigger class ships with the skill that uses it, so extending this list is a plugin change.
-const VALID_TRIGGERS = ['pre-draft-clarify', 'discuss', 'phase-split-probe'];
+export const VALID_TRIGGERS = ['pre-draft-clarify', 'discuss', 'phase-split-probe', 'worker-question', 'inception-semantics'];
 
 const VALID_OUTCOMES = ['converged', 'force-quit', 'abandoned'];
 

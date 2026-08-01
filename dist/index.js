@@ -32991,7 +32991,7 @@ function echoPriorAnswers(rounds, priorAnswers, answeredAt) {
 
 // src/tools/elicitation.ts
 var EXCHANGE_COLS = "id, task_id, trigger, gate, brief_id, status, rounds, answers_submitted_at, force_quit_requested_at, created_by, created_at, updated_at";
-var VALID_TRIGGERS = ["pre-draft-clarify", "discuss", "phase-split-probe"];
+var VALID_TRIGGERS = ["pre-draft-clarify", "discuss", "phase-split-probe", "worker-question", "inception-semantics"];
 var VALID_OUTCOMES = ["converged", "force-quit", "abandoned"];
 var isMissingPendingResolutionColumn = (msg) => !!msg && /pending_resolution/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
 async function findActiveExchange(client, taskId) {
