@@ -56,6 +56,8 @@ const config: DaemonConfig = {
 
 interface HarnessOpts {
   conductions: ConductionRecord[];
+  /** B-723: the deployment's project key the daemon pinned at launch (defaults to this board's). */
+  projectKey?: string;
   tasks: Record<string, DaemonTask | Error>;
   launchExitCode?: number | null;
   childCount?: number;
@@ -101,6 +103,7 @@ function makeHarness(opts: HarnessOpts) {
       t += ms;
     }),
     leaseHolder: ME,
+    projectKey: opts.projectKey ?? 'B',
     config: opts.config ?? config,
     log: (line: string) => logs.push(line),
     listConductions: vi.fn(async (args: { status?: string }) =>
@@ -1108,5 +1111,101 @@ describe('B-742: leg_started_at', () => {
     expect(h.getConduction('cond-1').lease_holder).toBe('other-daemon:9:zzzz');
     // Untouched by us: still the pre-steal value, not cleared.
     expect(h.getConduction('cond-1').leg_started_at).toBe(iso(T0));
+  });
+});
+describe('B-723: the per-leg log lines name the TICKET, alongside the full conduction id', () => {
+  const TITLE = 'Name the ticket on the daemon log';
+
+  const identified = (over: Partial<DaemonTask> = {}): DaemonTask =>
+    pausedTask({ task_number: 756, title: TITLE, ...over });
+
+  const wakeLine = (h: { logs: string[] }): string =>
+    h.logs.find((l) => l.includes('launching worker'))!;
+
+  /** Baseline pass, then the human resolves and ONE leg fires. */
+  async function fireOnce(h: ReturnType<typeof makeHarness>): Promise<void> {
+    const state = new Map<string, WatchBaseline>();
+    await runSchedulerPass(h.deps, state, h.keeper); // baseline (still awaiting) — no fire
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false; // the human resolved
+    h.hooks.onLaunch ??= () => {
+      (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true; // the worker paused again
+    };
+    await runSchedulerPass(h.deps, state, h.keeper);
+  }
+
+  it('an identified ticket LEADS the wake line, with the FULL conduction id trailing', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': identified() } });
+    await fireOnce(h);
+
+    expect(wakeLine(h)).toBe(
+      `B-756 "${TITLE}" (conduction cond-1): wake (agent-ball) — launching worker`,
+    );
+    // The conduction id is never shortened or dropped: the line has to stay matchable to the
+    // worker container (harmony-worker-<id>) and to the run's transcript directory.
+    expect(wakeLine(h)).toContain('(conduction cond-1)');
+  });
+
+  it("degrades to TODAY's bare conduction form when the ticket read carries no identity", async () => {
+    // pausedTask() has neither task_number nor title — what every pre-B-723 fixture looks like,
+    // and what a degraded or partial ticket read looks like at runtime.
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    await fireOnce(h);
+
+    expect(wakeLine(h)).toBe('conduction cond-1: wake (agent-ball) — launching worker');
+    expect(wakeLine(h)).not.toContain('B-');
+    expect(wakeLine(h)).not.toContain('undefined');
+
+    // The half-identified read degrades the SAME way — a number with no title must never render
+    // as `B-756 "undefined"`. A logging path may not break the loop it reports on.
+    const half = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ task_number: 756 }) },
+    });
+    await fireOnce(half);
+    expect(wakeLine(half)).toBe('conduction cond-1: wake (agent-ball) — launching worker');
+    expect(wakeLine(half)).not.toContain('undefined');
+  });
+
+  it('a long title is cut at 48 chars with a single ellipsis; the conduction id still rides in full', async () => {
+    const long = 'Name the ticket on the daemon log line so an operator can tell which leg is which';
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': identified({ title: long }) },
+    });
+    await fireOnce(h);
+
+    expect(wakeLine(h)).toBe(
+      'B-756 "Name the ticket on the daemon log line so an ope…" (conduction cond-1): ' +
+        'wake (agent-ball) — launching worker',
+    );
+    expect(wakeLine(h)).toContain('(conduction cond-1)');
+  });
+
+  it('the project key is CONFIG pinned at launch, not a baked constant — another board logs its own', async () => {
+    const h = makeHarness({
+      projectKey: 'ACME',
+      conductions: [conduction()],
+      tasks: { 'task-1': identified() },
+    });
+    await fireOnce(h);
+
+    expect(wakeLine(h)).toContain(`ACME-756 "${TITLE}" (conduction cond-1)`);
+    expect(wakeLine(h)).not.toContain('B-756');
+  });
+
+  it('the exit-classification line carries identity too — from the POST-EXIT read, not the pre-launch one', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': identified() } });
+    h.hooks.onLaunch = () => {
+      const task = h.tasks['task-1'] as DaemonTask;
+      task.title = 'Renamed while the leg ran'; // the worker edited the ticket
+      task.awaiting_human_input = true; // …and paused cleanly on the next gate
+    };
+    await fireOnce(h);
+
+    // Pre-launch read on the wake line, fresh post-exit read on the classification line.
+    expect(wakeLine(h)).toContain(`B-756 "${TITLE}"`);
+    expect(h.logs.find((l) => l.includes('worker exit code='))).toBe(
+      'B-756 "Renamed while the leg ran" (conduction cond-1): worker exit code=0 → wait (clean-pause)',
+    );
   });
 });

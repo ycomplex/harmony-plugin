@@ -18705,8 +18705,8 @@ var PATH_REGEX_TABLE = {
   "irreversible-destructive": PATH_GLOB_TABLE["irreversible-destructive"].map(globToRegExp),
   "shared-core": PATH_GLOB_TABLE["shared-core"].map(globToRegExp)
 };
-function labelToRiskClass(label) {
-  const l = label.trim().toLowerCase().replace(/^risk[:/-]/, "");
+function labelToRiskClass(label2) {
+  const l = label2.trim().toLowerCase().replace(/^risk[:/-]/, "");
   switch (l) {
     case "auth":
       return "auth";
@@ -18736,8 +18736,8 @@ function detectRiskClasses(input) {
   const paths = Array.isArray(input.changedPaths) ? input.changedPaths.filter((p) => typeof p === "string") : [];
   const labels = Array.isArray(input.labels) ? input.labels.filter((l) => typeof l === "string") : [];
   const hasDiff = paths.length > 0;
-  for (const label of labels) {
-    const cls = labelToRiskClass(label);
+  for (const label2 of labels) {
+    const cls = labelToRiskClass(label2);
     if (cls) hits.add(cls);
   }
   for (const cls of RISK_CLASSES) {
@@ -19128,6 +19128,18 @@ function isAuthShapedError(err) {
 function templateVars(row) {
   return { conduction_id: row.id, ticket: row.task_id };
 }
+var TITLE_MAX = 48;
+function truncateTitle(title, max = TITLE_MAX) {
+  return title.length > max ? `${title.slice(0, max)}\u2026` : title;
+}
+function label(row, task, projectKey) {
+  const number = task?.task_number;
+  const title = task?.title;
+  if (typeof number !== "number" || typeof title !== "string" || title === "") {
+    return `conduction ${row.id}`;
+  }
+  return `${projectKey}-${number} "${truncateTitle(title)}" (conduction ${row.id})`;
+}
 async function runSchedulerPass(deps, state, keeper) {
   const rows = await deps.listConductions({ status: "active" });
   const activeIds = new Set(rows.map((r) => r.id));
@@ -19187,7 +19199,7 @@ async function handleConduction(deps, state, keeper, row) {
     state.set(row.id, captureBaseline(current));
     return;
   }
-  deps.log(`conduction ${row.id}: wake (${wake}) \u2014 launching worker`);
+  deps.log(`${label(row, current, deps.projectKey)}: wake (${wake}) \u2014 launching worker`);
   let retryCount = row.retry_count;
   for (; ; ) {
     if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: iso(deps.now()) })) return;
@@ -19201,7 +19213,7 @@ async function handleConduction(deps, state, keeper, row) {
       const cancelDeadline = deps.startTimeout(deps.config.workerTimeoutMs, () => {
         timedOut = true;
         deps.log(
-          `conduction ${row.id}: worker exceeded ${deps.config.workerTimeoutMs}ms \u2014 reaping`
+          `${label(row, current, deps.projectKey)}: worker exceeded ${deps.config.workerTimeoutMs}ms \u2014 reaping`
         );
         void (async () => {
           for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
@@ -19211,7 +19223,7 @@ async function handleConduction(deps, state, keeper, row) {
             });
             if (settled) return;
             deps.log(
-              `conduction ${row.id}: reap ${attempt}/${REAP_ATTEMPT_LIMIT} did not free the launch`
+              `${label(row, current, deps.projectKey)}: reap ${attempt}/${REAP_ATTEMPT_LIMIT} did not free the launch`
             );
           }
           reject(new PersistentReapFailure(row.id));
@@ -19234,7 +19246,7 @@ async function handleConduction(deps, state, keeper, row) {
     const outcome = classifyWorkerExit(classifyArgs);
     const cls = exitClass(outcome, classifyArgs);
     deps.log(
-      `conduction ${row.id}: worker exit code=${exitCode ?? "null"} \u2192 ${outcome.action} (${cls})`
+      `${label(row, after, deps.projectKey)}: worker exit code=${exitCode ?? "null"} \u2192 ${outcome.action} (${cls})`
     );
     if (outcome.action === "wait") {
       state.set(row.id, captureBaseline(after));
@@ -19244,7 +19256,7 @@ async function handleConduction(deps, state, keeper, row) {
       retryCount += 1;
       if (!await writeIfHeld(deps, state, keeper, row, { retry_count: retryCount })) return;
       deps.log(
-        `conduction ${row.id}: dirty exit \u2014 retrying (attempt ${retryCount}/${deps.config.retryCap}) after reap + ${deps.config.retryBackoffMs}ms backoff`
+        `${label(row, after, deps.projectKey)}: dirty exit \u2014 retrying (attempt ${retryCount}/${deps.config.retryCap}) after reap + ${deps.config.retryBackoffMs}ms backoff`
       );
       await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
       await deps.sleep(deps.config.retryBackoffMs);
@@ -19318,6 +19330,7 @@ ${err instanceof Error ? err.message : String(err)}
   const auth = new HarmonyAuth(token);
   const client = await createAuthenticatedClient(auth);
   const projectId = auth.getProjectId();
+  const projectKey = (await getProject(client, projectId)).key;
   const leaseHolder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
   const runCommand = (cmd) => new Promise((resolve) => {
     const child = exec(cmd);
@@ -19358,7 +19371,8 @@ ${err instanceof Error ? err.message : String(err)}
     runCommand,
     log,
     leaseHolder,
-    config
+    config,
+    projectKey
   };
   const keeper = createHeartbeatKeeper({
     now: Date.now,

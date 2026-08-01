@@ -44,6 +44,7 @@ export type DaemonTask = Taskish & {
   workflow_state?: string | null;
   stale?: boolean | null;
   task_number?: number | null;
+  title?: string | null;
 };
 
 export interface SchedulerDeps {
@@ -72,6 +73,9 @@ export interface SchedulerDeps {
   log(line: string): void;
   leaseHolder: string;
   config: DaemonConfig;
+  /** B-723: the deployment's project key, pinned once at daemon launch — visual IDs are composed
+   *  from config, never a baked constant (the per-deployment-config architecture entry). */
+  projectKey: string;
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString();
@@ -135,6 +139,29 @@ function templateVars(row: ConductionRecord): { conduction_id: string; ticket: s
   // {ticket} carries the task UUID — resolveTaskId fast-paths UUIDs in every consumer, with no
   // project-key lookup and no cross-project ambiguity.
   return { conduction_id: row.id, ticket: row.task_id };
+}
+
+/** B-723: how much of a ticket title a log line carries — enough to recognize the ticket, short
+ *  enough that the line stays scannable. */
+const TITLE_MAX = 48;
+
+function truncateTitle(title: string, max = TITLE_MAX): string {
+  // A single ellipsis CHARACTER (U+2026), not three dots — one glyph keeps the budget honest.
+  return title.length > max ? `${title.slice(0, max)}…` : title;
+}
+
+/** B-723: the human-facing line prefix for a per-leg log line. The ticket LEADS (that is what an
+ *  operator scans for); the FULL conduction id follows in parentheses — never shortened, because a
+ *  line must stay matchable to its worker container (harmony-worker-<id>) and its transcript
+ *  directory. Degrades to the bare conduction form when ticket identity is unavailable: a logging
+ *  path must not be able to break the loop it reports on. */
+function label(row: ConductionRecord, task: DaemonTask | null, projectKey: string): string {
+  const number = task?.task_number;
+  const title = task?.title;
+  if (typeof number !== 'number' || typeof title !== 'string' || title === '') {
+    return `conduction ${row.id}`;
+  }
+  return `${projectKey}-${number} "${truncateTitle(title)}" (conduction ${row.id})`;
 }
 
 /** What one pass observed — consumed only by runScheduler's auth-failure counter. */
@@ -256,7 +283,7 @@ async function handleConduction(
   }
 
   // ── Fire → classify → write (step 5) ──────────────────────────────────────────────────────────
-  deps.log(`conduction ${row.id}: wake (${wake}) — launching worker`);
+  deps.log(`${label(row, current, deps.projectKey)}: wake (${wake}) — launching worker`);
 
   // B-713: a 'dirty-exit' park is retried in place — reap, back off, re-fire — up to
   // config.retryCap attempts before the conduction ever parks. Every other outcome (wait,
@@ -293,7 +320,8 @@ async function handleConduction(
       const cancelDeadline = deps.startTimeout(deps.config.workerTimeoutMs, () => {
         timedOut = true;
         deps.log(
-          `conduction ${row.id}: worker exceeded ${deps.config.workerTimeoutMs}ms — reaping`,
+          `${label(row, current, deps.projectKey)}: worker exceeded ` +
+            `${deps.config.workerTimeoutMs}ms — reaping`,
         );
         void (async () => {
           for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
@@ -305,7 +333,8 @@ async function handleConduction(
             });
             if (settled) return;
             deps.log(
-              `conduction ${row.id}: reap ${attempt}/${REAP_ATTEMPT_LIMIT} did not free the launch`,
+              `${label(row, current, deps.projectKey)}: reap ${attempt}/${REAP_ATTEMPT_LIMIT} ` +
+                `did not free the launch`,
             );
           }
           reject(new PersistentReapFailure(row.id));
@@ -336,7 +365,8 @@ async function handleConduction(
     const outcome = classifyWorkerExit(classifyArgs);
     const cls = exitClass(outcome, classifyArgs);
     deps.log(
-      `conduction ${row.id}: worker exit code=${exitCode ?? 'null'} → ${outcome.action} (${cls})`,
+      `${label(row, after, deps.projectKey)}: worker exit code=${exitCode ?? 'null'} → ` +
+        `${outcome.action} (${cls})`,
     );
 
     if (outcome.action === 'wait') {
@@ -350,7 +380,8 @@ async function handleConduction(
       retryCount += 1;
       if (!(await writeIfHeld(deps, state, keeper, row, { retry_count: retryCount }))) return;
       deps.log(
-        `conduction ${row.id}: dirty exit — retrying (attempt ${retryCount}/${deps.config.retryCap}) ` +
+        `${label(row, after, deps.projectKey)}: dirty exit — retrying ` +
+          `(attempt ${retryCount}/${deps.config.retryCap}) ` +
           `after reap + ${deps.config.retryBackoffMs}ms backoff`,
       );
       await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
