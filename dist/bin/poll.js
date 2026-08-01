@@ -18802,6 +18802,7 @@ async function getTask(client, projectId, args) {
       parent_task_id: t.parent_task_id,
       archived: t.archived,
       subsumed_by_task_id: t.subsumed_by_task_id,
+      conductor_excluded_at: t.conductor_excluded_at,
       pending_resolution,
       active_exchange,
       pending_remark,

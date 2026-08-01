@@ -689,6 +689,52 @@ describe('runSchedulerPass', () => {
       round: 1,
     });
   });
+
+  it('case 13 (B-756): a non-null conductor_excluded_at skips the fire on a pass that would otherwise wake', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: true, conductor_excluded_at: null }) },
+    });
+    const state = new Map<string, WatchBaseline>();
+
+    // Pass 1 — first sight: baseline captured, no wake detection yet.
+    await runSchedulerPass(h.deps, state, h.keeper);
+    expect(h.commands).toEqual([]);
+
+    // The human resolved the pause (the flag flip that would normally wake the conductor), but a
+    // human ALSO took the ticket away from the conductor via the web UI in the meantime.
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    (h.tasks['task-1'] as DaemonTask).conductor_excluded_at = '2026-08-01T00:00:00.000Z';
+
+    await runSchedulerPass(h.deps, state, h.keeper);
+    expect(h.commands).toEqual([]); // no launch — the exclusion guard skipped the fire
+    expect(h.launches()).toEqual([]);
+  });
+
+  it('case 13b (B-756): clearing conductor_excluded_at back to null lets the pending wake fire normally (baseline-roll did not wedge detection)', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: true, conductor_excluded_at: null }) },
+    });
+    const state = new Map<string, WatchBaseline>();
+
+    await runSchedulerPass(h.deps, state, h.keeper); // first sight — baseline captured
+
+    // Excluded while the flag flips — the wake is suppressed, and the guard rolls the baseline
+    // forward (case 13 above) so this pass's ball-with-agent read becomes the new baseline.
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    (h.tasks['task-1'] as DaemonTask).conductor_excluded_at = '2026-08-01T00:00:00.000Z';
+    await runSchedulerPass(h.deps, state, h.keeper);
+    expect(h.commands).toEqual([]);
+
+    // The human "returns" the ticket to the conductor (clears the column). The flag is still false
+    // (the agent's turn was never taken back) — proving the earlier baseline-roll did not wedge
+    // future detection, the very next pass fires the pending wake via detectWake's first-pickup rule
+    // (ball with agent on both the rolled baseline and this fresh read).
+    (h.tasks['task-1'] as DaemonTask).conductor_excluded_at = null;
+    await runSchedulerPass(h.deps, state, h.keeper);
+    expect(h.commands).toEqual(['launch cond-1 task-1']);
+  });
 });
 
 describe('isAuthShapedError', () => {
