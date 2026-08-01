@@ -45,6 +45,7 @@ export type DaemonTask = Taskish & {
   stale?: boolean | null;
   task_number?: number | null;
   title?: string | null;
+  conductor_excluded_at?: string | null;
 };
 
 export interface SchedulerDeps {
@@ -278,6 +279,20 @@ async function handleConduction(
     // after a worker exited 'wait', so between wakes it stayed pinned to whatever the FIRST sight
     // happened to catch — and a conduction first seen before its pause existed could never wake,
     // because the flag rising afterwards was invisible and no later clear produced a transition.
+    state.set(row.id, captureBaseline(current));
+    return;
+  }
+
+  // B-756: a human took this ticket away from the conductor via the web UI (conductor_excluded_at
+  // set, NULL by default) — the daemon must not fire the NEXT leg. This is purely a "don't start
+  // the next one" guard: nothing already running is touched here. ROLL the baseline for the same
+  // B-691 reason as the no-wake branch above — when the human later "returns" the ticket (clears
+  // the column back to NULL), the daemon must detect the next REAL wake cleanly, not compare
+  // against a baseline pinned from before the exclusion.
+  if (current.conductor_excluded_at) {
+    deps.log(
+      `${label(row, current, deps.projectKey)}: taken away from conductor (conductor_excluded_at set) — skipping fire`,
+    );
     state.set(row.id, captureBaseline(current));
     return;
   }
