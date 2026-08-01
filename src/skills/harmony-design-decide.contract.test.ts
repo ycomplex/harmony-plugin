@@ -73,4 +73,14 @@ describe('harmony-design-decide skill contract', () => {
     // The refine/extend half legitimately stays product-track-only; the split must be explicit.
     expect(skill.body.toLowerCase()).toMatch(/refine and extend step that follows stays product-track/);
   });
+  it('B-744 rework: the self-heal recovers the clarification BRIEF id via brief_resolved.metadata.brief_id, never clarification.decision_id (regression: verify-caught mismatch against B-756/B-691)', () => {
+    expect(skill.body).toMatch(/AC-FILING-PASS brief_id=\$\{clarificationBriefId\}/);
+    expect(skill.body).toMatch(/AC-FILING-PASS brief_id=<clarificationBriefId> filed=<N>/);
+    expect(skill.body).not.toMatch(/clarification\.decision_id/);
+    expect(skill.body).toMatch(/brief_resolved/);
+    expect(skill.body).toMatch(/metadata\.brief_id/);
+    expect(skill.body).toContain("reason === 'clarification-draft'");
+    const tools = referencedHarmonyTools(skill.body);
+    expect(tools).toContain('list_activity');
+  });
 });

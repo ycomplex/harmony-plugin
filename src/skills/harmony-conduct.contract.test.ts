@@ -450,4 +450,11 @@ describe('harmony-conduct skill contract', () => {
     // It is plumbing: no brief, no pause, no mode/floor interaction.
     expect(body).toMatch(/advances no state, composes no brief/);
   });
+  it('B-744 rework: leg-start consume keys the filing-pass lookup on the clarification brief_resolved id, never the decision id', () => {
+    const body = skill.body;
+    expect(body).toMatch(/resolved\.metadata\.brief_id/);
+    expect(body).not.toMatch(/clarification\.decision_id/);
+    const tools = referencedHarmonyTools(body);
+    expect(tools).toContain('list_activity');
+  });
 });

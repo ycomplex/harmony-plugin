@@ -105,21 +105,42 @@ while filing is still outstanding. Both are rejected as the trigger here.
 
 1. **Find the clarification's brief_id** — this site is filing CLARIFY's proposed set on its behalf,
    so it keys on CLARIFY's brief, never this sub-track's own in-flight product-design brief (a
-   different brief type entirely). Locate the ticket's Accepted `specification` decision (clarify's
-   own record — `harmony-clarify/SKILL.md` §3.1):
+   different brief type entirely) and never the Accepted `specification` DECISION's own id (a
+   different id space — the exact B-744 rework fix: using the decision id in a field named
+   `brief_id` produced a marker that could never match a lookup keyed on the real brief id). Locate
+   the ticket's Accepted `specification` decision (clarify's own record —
+   `harmony-clarify/SKILL.md` §3.1) to confirm a clarification exists and to read its proposed-ACs
+   content:
    ```
    const refs = mcp__harmony__list_ticket_knowledge({ task_id })
    const clarification = refs.find(r => r.type === 'specification' && r.status === 'Accepted')
    ```
-   `clarification.decision_id` IS the shared `brief_id` key — the same `brief.decision_ref.id`
-   clarify's own accept-path uses, stable for the clarification's whole lifetime (unlike the
-   `briefs` row itself, which stops being queryable via `get_brief` the moment it resolves). This is
-   what makes the two sites interlock under one key instead of writing two non-interlocking records.
+   Then recover the clarification BRIEF's own `id` — never `clarification`'s `decision_id` — from the
+   ticket's activity trail, since this self-heal never holds the clarification brief object itself
+   and `get_brief` only returns the currently-*active* brief (long since resolved by the time design
+   runs):
+   ```
+   const activity = mcp__harmony__list_activity({ task_id })
+   const resolved = activity.find(e =>
+     e.event_type === 'brief_resolved' && e.metadata?.reason === 'clarification-draft')
+   const clarificationBriefId = resolved.metadata.brief_id
+   ```
+   This is NOT the race B-744's first draft was rejected for: that draft would have gated the FILING
+   decision itself on whether a `brief_resolved` event exists yet, which races clarify's own accept
+   path (filing runs BEFORE `resolve_brief` there, so a web-accepted-no-session clarification can
+   carry `brief_resolved` while filing is still outstanding). Here the event is read only to recover
+   *which id to key on* — by the time this self-heal ever runs the ticket has already left
+   `Clarified`, so clarify's `resolve_brief` (and therefore this event) unconditionally exists,
+   filed or not. Whether the filing itself already happened is answered by step 2 below, never by
+   this lookup. `clarificationBriefId` is the exact same `brief.id` clarify's own accept-path uses
+   (`harmony-clarify/SKILL.md` §5) — captured once, as plain text, in the marker comment; it needs
+   no further round-trip through `get_brief` to stay usable, which is what makes the two sites
+   interlock under one key instead of writing two non-interlocking records.
 2. **Check for an existing filing-pass record scoped to that id:**
    ```
    mcp__harmony__list_comments({ task_id })
    ```
-   Match a line `AC-FILING-PASS brief_id=<clarification.decision_id> filed=<N>` — an exact
+   Match a line `AC-FILING-PASS brief_id=<clarificationBriefId> filed=<N>` — an exact
    `brief_id` match, never fuzzy text matching against rendered brief prose.
    - **Found → the happy-path set is already filed** (by clarify's own accept-path, or a prior run
      of this self-heal) — do not re-file it. Read the current set (`list_acceptance_criteria`) and
@@ -134,7 +155,7 @@ while filing is still outstanding. Both are rejected as the trigger here.
      then write the filing-pass record — **a zero-count pass still writes it** (a silent zero is
      exactly the original bug's failure mode, so zero must be exactly as loud as N):
      ```
-     mcp__harmony__add_comment({ task_id, content: `AC-FILING-PASS brief_id=${clarification.decision_id} filed=${N}` })
+     mcp__harmony__add_comment({ task_id, content: `AC-FILING-PASS brief_id=${clarificationBriefId} filed=${N}` })
      ```
    This one comment IS the idempotency marker — no second mechanism layered on top.
 
