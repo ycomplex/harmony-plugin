@@ -206,6 +206,55 @@ describe('finish-work skill contract (evolved)', () => {
     expect(o2).toContain('B-265');
   });
 
+  // B-774: the post-merge deploy confirmation must block IN-FOREGROUND, in the same turn, never
+  // backgrounded — a real incident had the worker `run_in_background` this wait and end its turn, which
+  // in a `--one-shot` container kills the background wait with the process, silently stranding a
+  // successfully-deployed ticket looking like a stall.
+  it('O2 blocks in-foreground on the post-merge deploy confirmation before advancing (B-774)', () => {
+    const body = skill.body;
+    const o2Idx = body.indexOf('### O2.');
+    const o3Idx = body.indexOf('### O3.');
+    expect(o2Idx).toBeGreaterThan(-1);
+    expect(o3Idx).toBeGreaterThan(o2Idx);
+    const o2 = body.slice(o2Idx, o3Idx);
+
+    // (a) The step is named/marked with B-774 and "post-merge" deploy confirmation, and it is
+    // textually positioned between the merge/branch-delete area and the advance_workflow('deploying')
+    // call.
+    expect(o2).toContain('B-774');
+    expect(o2.toLowerCase()).toMatch(/post-merge/);
+    expect(o2.toLowerCase()).toContain('deploy');
+    const b774Idx = o2.indexOf('B-774');
+    const deleteRemoteBranchIdx = o2.indexOf('Delete the remote branch');
+    const advanceIdx = o2.search(/mcp__harmony__advance_workflow\(\{\s*task_id,\s*activity:\s*"deploying"/);
+    expect(deleteRemoteBranchIdx).toBeGreaterThan(-1);
+    expect(advanceIdx).toBeGreaterThan(-1);
+    expect(b774Idx, 'the B-774 deploy-confirmation step must sit after the merge/branch-delete steps').toBeGreaterThan(deleteRemoteBranchIdx);
+    expect(b774Idx, 'the B-774 deploy-confirmation step must sit before advance_workflow(deploying)').toBeLessThan(advanceIdx);
+
+    // (b) The prose explicitly forbids run_in_background for this wait, and requires the wait to
+    // complete before the turn ends.
+    expect(o2).toContain('run_in_background');
+    expect(o2.toLowerCase()).toMatch(/never `run_in_background`/);
+    expect(o2.toLowerCase()).toMatch(/never end the turn while it is\s+outstanding/);
+
+    // (c) The documented-inference fallback text is present (B-765), and the trail-comment example for
+    // it explicitly contains the word "inferred".
+    expect(o2).toContain('B-765');
+    expect(o2.toLowerCase()).toMatch(/documented-inference/);
+    expect(o2).toContain('deploy confirmation inferred from merge landing, CI read unavailable (see B-765)');
+
+    // (d) The authoritative conclusion check is pinned…
+    expect(o2).toContain('gh run view');
+    expect(o2).toMatch(/gh run view <run-id> --json conclusion/);
+    expect(o2.toLowerCase()).toMatch(/authoritative conclusion check/);
+    // …and the observed-failure retry branch is pinned.
+    expect(o2).toMatch(/gh run rerun <run-id> --failed/);
+    expect(o2.toLowerCase()).toMatch(/observed failure/);
+    // The observed-failure branch must never route into the inference fallback.
+    expect(o2.toLowerCase()).toMatch(/never route an observed failure into the\s+documented-inference fallback/);
+  });
+
   it('the verify gate FLOORS an empty acceptance-criteria set rather than only reporting it (B-747)', () => {
     const body = skill.body;
     // B-738 reached Verified with zero criteria on a brief that had DISPLAYED the incomplete-evidence
