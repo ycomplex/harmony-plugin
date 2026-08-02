@@ -19099,6 +19099,15 @@ function exitClass(outcome, args) {
 
 // src/daemon/scheduler.ts
 var iso = (ms) => new Date(ms).toISOString();
+var exclusionMemory = /* @__PURE__ */ new WeakMap();
+function exclusionSetFor(state) {
+  let set = exclusionMemory.get(state);
+  if (!set) {
+    set = /* @__PURE__ */ new Set();
+    exclusionMemory.set(state, set);
+  }
+  return set;
+}
 var PersistentAuthFailure = class extends Error {
   consecutivePasses;
   constructor(consecutivePasses) {
@@ -19145,11 +19154,13 @@ async function runSchedulerPass(deps, state, keeper) {
   const rows = await deps.listConductions({ status: "active" });
   const activeIds = new Set(rows.map((r) => r.id));
   for (const id of [...state.keys()]) if (!activeIds.has(id)) state.delete(id);
+  const excluded = exclusionSetFor(state);
+  for (const id of [...excluded]) if (!activeIds.has(id)) excluded.delete(id);
   keeper.retain(activeIds);
   let authShapedFailures = 0;
   for (const row of rows) {
     try {
-      await handleConduction(deps, state, keeper, row);
+      await handleConduction(deps, state, keeper, excluded, row);
     } catch (err) {
       if (err instanceof PersistentReapFailure) throw err;
       if (isAuthShapedError(err)) authShapedFailures += 1;
@@ -19168,7 +19179,7 @@ async function writeIfHeld(deps, state, keeper, row, patch) {
   state.delete(row.id);
   return false;
 }
-async function handleConduction(deps, state, keeper, row) {
+async function handleConduction(deps, state, keeper, excluded, row) {
   if (row.lease_holder !== deps.leaseHolder) {
     const won = await deps.takeoverConduction({
       id: row.id,
@@ -19201,11 +19212,19 @@ async function handleConduction(deps, state, keeper, row) {
     return;
   }
   if (current.conductor_excluded_at) {
-    deps.log(
-      `${label(row, current, deps.projectKey)}: taken away from conductor (conductor_excluded_at set) \u2014 skipping fire`
-    );
+    if (!excluded.has(row.id)) {
+      deps.log(
+        `${label(row, current, deps.projectKey)}: taken away from conductor (conductor_excluded_at set) \u2014 skipping fire`
+      );
+      excluded.add(row.id);
+    }
     state.set(row.id, captureBaseline(current));
     return;
+  }
+  if (excluded.delete(row.id)) {
+    deps.log(
+      `${label(row, current, deps.projectKey)}: returned to conductor (conductor_excluded_at cleared)`
+    );
   }
   deps.log(`${label(row, current, deps.projectKey)}: wake (${wake}) \u2014 launching worker`);
   let retryCount = row.retry_count;

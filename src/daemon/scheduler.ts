@@ -81,6 +81,22 @@ export interface SchedulerDeps {
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 
+// B-771: per-conduction "have I already logged this exclusion state" memory, keyed by the SAME
+// `state` baseline map instance runSchedulerPass already receives — so a fresh state map (daemon
+// restart, or a fresh test map) gets fresh, empty exclusion memory automatically, with no extra
+// plumbing. This is in-memory/per-process by design (no new DB column): a daemon restart
+// re-observing an already-excluded conduction and logging it once more is acceptable (B-771 AC).
+const exclusionMemory = new WeakMap<Map<string, WatchBaseline>, Set<string>>();
+
+function exclusionSetFor(state: Map<string, WatchBaseline>): Set<string> {
+  let set = exclusionMemory.get(state);
+  if (!set) {
+    set = new Set<string>();
+    exclusionMemory.set(state, set);
+  }
+  return set;
+}
+
 /** B-696 backstop: thrown by runScheduler after AUTH_FAILURE_PASS_LIMIT consecutive passes in
  *  which every attempted conduction handling (or the pass itself) failed auth-shaped. The
  *  entrypoint catches it and exits non-zero so launchd restarts the daemon with fresh auth —
@@ -183,12 +199,14 @@ export async function runSchedulerPass(
   // (completed/parked elsewhere) — the two live on the same lifecycle.
   const activeIds = new Set(rows.map((r) => r.id));
   for (const id of [...state.keys()]) if (!activeIds.has(id)) state.delete(id);
+  const excluded = exclusionSetFor(state);
+  for (const id of [...excluded]) if (!activeIds.has(id)) excluded.delete(id);
   keeper.retain(activeIds);
 
   let authShapedFailures = 0;
   for (const row of rows) {
     try {
-      await handleConduction(deps, state, keeper, row);
+      await handleConduction(deps, state, keeper, excluded, row);
     } catch (err) {
       // B-739: "I cannot free myself" is NOT a per-row transient — it must escape this isolation
       // and kill the process, or the daemon keeps heartbeating from inside a state it cannot
@@ -228,6 +246,7 @@ async function handleConduction(
   deps: SchedulerDeps,
   state: Map<string, WatchBaseline>,
   keeper: HeartbeatKeeper,
+  excluded: Set<string>,
   row: ConductionRecord,
 ): Promise<void> {
   // ── Takeover (step 2) ──────────────────────────────────────────────────────────────────────────
@@ -290,11 +309,27 @@ async function handleConduction(
   // the column back to NULL), the daemon must detect the next REAL wake cleanly, not compare
   // against a baseline pinned from before the exclusion.
   if (current.conductor_excluded_at) {
-    deps.log(
-      `${label(row, current, deps.projectKey)}: taken away from conductor (conductor_excluded_at set) — skipping fire`,
-    );
+    // B-771: log the take-away line only on the FIRST pass that observes this exclusion (steady
+    // state — still excluded, nothing changed — logs nothing on every later pass), or the daemon
+    // log fills with an identical line every poll pass, forever, for as long as the ticket stays
+    // excluded (which is until a human manually returns it).
+    if (!excluded.has(row.id)) {
+      deps.log(
+        `${label(row, current, deps.projectKey)}: taken away from conductor (conductor_excluded_at set) — skipping fire`,
+      );
+      excluded.add(row.id);
+    }
     state.set(row.id, captureBaseline(current));
     return;
+  }
+  // B-771: the pass that first observes a previously-excluded conduction's conductor_excluded_at
+  // has been cleared (returned to the conductor) logs the transition once, then falls through to
+  // the normal wake/fire logic below — a real wake this same pass must still fire normally (case
+  // 13b), so this must NOT return.
+  if (excluded.delete(row.id)) {
+    deps.log(
+      `${label(row, current, deps.projectKey)}: returned to conductor (conductor_excluded_at cleared)`,
+    );
   }
 
   // ── Fire → classify → write (step 5) ──────────────────────────────────────────────────────────
