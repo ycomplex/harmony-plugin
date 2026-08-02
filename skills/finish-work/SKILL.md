@@ -303,7 +303,38 @@ paths:
 - **`build_pr` absent, and no PR anywhere** (the true no-diff/already-live case, B-265 — the fix was already
   live, nothing left to merge): there is no merge step to run; proceed straight to the advance below.
 
-**Only after the deploy actually succeeds** (the merge above landed, or the no-diff case is confirmed):
+**Confirm the post-merge deploy — IN-FOREGROUND, bounded, before advancing (B-774). NON-OPTIONAL whenever a
+merge just landed (either path above); skip only for the true no-diff case, which has no merge to confirm.**
+Once the squash-merge lands, confirm the post-merge CI/CD deploy run that fires on `main` **in the same
+turn, with a bounded poll — never `run_in_background` this wait, and never end the turn while it is
+outstanding.** This is exactly the move `--one-shot` already forbids at every other pause (B-693); "I'll
+continue automatically" is false the instant the turn ends, in a worker run or an interactive session
+alike — there is no run context where backgrounding this wait is safe.
+
+1. **Resolve the post-merge workflow run** for the merge commit — `gh run list --branch main --commit
+   <merge_sha> --limit 1 --json databaseId,status,conclusion,workflowName` (or equivalent).
+2. **Block on it in-foreground with a bounded poll** — `gh run watch <run-id> --exit-status`, capped at
+   ~20 minutes (comfortably under the worker's ~90-minute one-shot deadline for an ordinary ~10-minute
+   deploy; a genuinely hung run should fail loud instead of silently consuming the whole deadline).
+3. **Authoritative conclusion check — required, never skip.** Once the poll returns, confirm the outcome
+   via `gh run view <run-id> --json conclusion` — never trust the exit status of `gh run watch` (or
+   `gh pr checks --watch`) alone as the final word; both have documented false-greens in this workspace
+   (`gh run watch` has exited 0 on a run that concluded failure; `gh pr checks --watch` passes on "no
+   checks reported").
+4. **`conclusion: success`** → proceed to the advance below.
+5. **`conclusion: failure` (an observed failure)** → retry once via `gh run rerun <run-id> --failed` (the
+   B-539 esm.sh flake class). If it still fails, do **not** advance — end the leg legibly with the failure
+   stated in the trail comment; the ticket stays Built. Never route an observed failure into the
+   documented-inference fallback below — that fallback is for CI that cannot be read, not for a CI read
+   that came back red.
+6. **CI read genuinely unavailable** (the B-765 confounder — e.g. a repo-scoped 403 on harmony-web post
+   identity-swap) → fall back to the **documented-inference completion path**: advance to Deployed,
+   inferring success from the clean merge landing — but the B-560 trail comment below **must say so
+   explicitly** (see the inferred variant there). Never silently treat unreadable CI as a confirmed green
+   run with no note.
+
+**Only after the deploy actually succeeds** (the merge above landed and the post-merge deploy confirmed
+green or was legitimately inferred per step 6, or the no-diff case is confirmed):
 
 ```
 mcp__harmony__advance_workflow({ task_id, activity: "deploying" })   // Built -> Deployed (now reality matches)
@@ -316,6 +347,13 @@ ticket, so without this the trail is lost — B-551 hit Verified with zero build
 
 ```
 mcp__harmony__add_comment({ task_id, content: "Deployed via PR #<number> — squash-merged to main; deploy succeeded (<run-id/url>)." })
+```
+
+**When the deploy was inferred rather than confirmed (step 6 above), the trail comment MUST state that
+explicitly** — never phrase an inferred deploy the same as a confirmed one:
+
+```
+mcp__harmony__add_comment({ task_id, content: "Deployed via PR #<number> — squash-merged to main; deploy confirmation inferred from merge landing, CI read unavailable (see B-765)." })
 ```
 
 **DRAIN the "Follow-ups rollup" buffer at the release gate + surface the audit (B-585, B-641).** If
