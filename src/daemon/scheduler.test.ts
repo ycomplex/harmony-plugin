@@ -735,6 +735,75 @@ describe('runSchedulerPass', () => {
     await runSchedulerPass(h.deps, state, h.keeper);
     expect(h.commands).toEqual(['launch cond-1 task-1']);
   });
+
+  it('case 13c (B-771): the take-away line logs exactly once across 3+ consecutive excluded passes, not on every pass', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: true, conductor_excluded_at: null }) },
+    });
+    const state = new Map<string, WatchBaseline>();
+    const takeAwayLines = () =>
+      h.logs.filter((l) => l.includes('taken away from conductor (conductor_excluded_at set)'));
+
+    await runSchedulerPass(h.deps, state, h.keeper); // pass 1: first sight — baseline captured, no wake yet
+
+    // Pass 2: the human resolves the pause AND takes the ticket away in the same beat — the
+    // exclusion guard is entered for the FIRST time and logs.
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    (h.tasks['task-1'] as DaemonTask).conductor_excluded_at = '2026-08-01T00:00:00.000Z';
+    await runSchedulerPass(h.deps, state, h.keeper);
+    expect(takeAwayLines()).toHaveLength(1);
+
+    // Passes 3, 4, 5: steady state — still excluded, nothing else changes. detectWake's
+    // first-pickup rule (ball with agent on both the rolled baseline and this fresh read) fires
+    // 'agent-ball' every single one of these passes by design, so the exclusion guard branch is
+    // re-entered every pass — but the take-away line must NOT be re-logged.
+    await runSchedulerPass(h.deps, state, h.keeper);
+    await runSchedulerPass(h.deps, state, h.keeper);
+    await runSchedulerPass(h.deps, state, h.keeper);
+    expect(takeAwayLines()).toHaveLength(1); // still exactly once, total, across all 5 passes
+    expect(h.commands).toEqual([]); // never fired
+  });
+
+  it('case 13d (B-771): the return-to-conductor line logs exactly once when conductor_excluded_at clears, and stays silent on later still-cleared passes', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: true, conductor_excluded_at: null }) },
+    });
+    const state = new Map<string, WatchBaseline>();
+    const returnLines = () =>
+      h.logs.filter((l) => l.includes('returned to conductor (conductor_excluded_at cleared)'));
+
+    await runSchedulerPass(h.deps, state, h.keeper); // pass 1: first sight — baseline captured
+
+    // Pass 2: excluded while the flag flips — the guard fires and rolls the baseline (case 13).
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    (h.tasks['task-1'] as DaemonTask).conductor_excluded_at = '2026-08-01T00:00:00.000Z';
+    await runSchedulerPass(h.deps, state, h.keeper);
+    expect(returnLines()).toHaveLength(0);
+
+    // Pass 3: the human returns the ticket (clears the column) AND this same pass's pending wake
+    // fires normally (case 13b) — the return line must log exactly once, and the fire must still
+    // happen this same pass (the return-line log must not suppress or delay it). The worker moves
+    // the ticket forward mid-launch (workflow_state change ⇒ progressed=true) but leaves the ball
+    // with the agent (awaiting_human_input stays false) — a clean 'wait' outcome, so the conduction
+    // stays active AND the next pass's first-pickup rule fires a genuine wake again.
+    (h.tasks['task-1'] as DaemonTask).conductor_excluded_at = null;
+    h.hooks.onLaunch = () => {
+      (h.tasks['task-1'] as DaemonTask).workflow_state = 'InReview';
+    };
+    await runSchedulerPass(h.deps, state, h.keeper);
+    expect(returnLines()).toHaveLength(1);
+    expect(h.commands).toEqual(['launch cond-1 task-1']);
+
+    // Pass 4: still cleared, nothing about the exclusion changed — a genuine wake fires again (the
+    // first-pickup rule, since the ball is still with the agent on both reads), but the
+    // return-to-conductor line must NOT be re-logged.
+    h.hooks.onLaunch = undefined;
+    await runSchedulerPass(h.deps, state, h.keeper);
+    expect(h.commands).toEqual(['launch cond-1 task-1', 'launch cond-1 task-1']);
+    expect(returnLines()).toHaveLength(1); // still exactly once, total
+  });
 });
 
 describe('isAuthShapedError', () => {
