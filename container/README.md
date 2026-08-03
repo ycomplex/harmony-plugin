@@ -358,6 +358,16 @@ constants): `HARMONY_CLOUD_RUN_REGION`, `HARMONY_CLOUD_RUN_JOB`,
    the job definition. (Unlike the per-execution `GIT_TOKEN`, these two are
    NOT passed per-run any more — they're bound once, to the job, not the
    execution.)
+
+   **Required flags, from live observation (2026-08-03) — the defaults below would silently kill or
+   starve a real build leg:**
+   - `--service-account=harmony-worker@harmony-conductor.iam.gserviceaccount.com` — REQUIRED; job
+     creation fails `actAs` on the default compute SA under the scoped `harmony-daemon` SA without it.
+   - `--max-retries=0` — Cloud Run defaults to 3 internal task retries, which would stack under the
+     daemon's own B-713 retry ladder and could run one failing leg up to 4x.
+   - `--task-timeout=5400s` — observed default (600s) would kill a real build leg mid-run.
+   - `--memory=8Gi --cpu=4` — observed defaults (512Mi / 1 vCPU) would starve a real build leg;
+     matches B-694's proven sizing.
 2. Copy `daemon-profile.cloud.example.json` to a live profile file and point
    `HARMONY_DAEMON_PROFILE` at it (same mechanism as the docker profile —
    editing the example here never updates a live profile).
@@ -379,24 +389,35 @@ equivalent host filesystem to mount into a remote Cloud Run job execution. A
 GCS-based replacement is explicitly out of scope for this leg; until something
 lands, cloud-launched workers have **no transcript capture**.
 
-**Deferred / not live-verified (no `gcloud` access in the build container that
-wrote this profile — see the comments at each site in the two wrapper
-scripts):**
+**Confirmed via live observation (2026-08-03):**
 
-- The exit-code parsing (`status.succeededCount` / `status.failedCount` /
-  `status.completionTime`) is grounded in the documented Cloud Run Jobs
-  Execution resource schema, not an actually-observed `executions describe`
-  output. Confirm against a live deliberately-succeeding and
-  deliberately-failing execution before trusting this in production.
-- The exact `gcloud run jobs execute` flag/format for a FILE-based env-vars
-  input (`--update-env-vars-file` here) is a best guess, isolated in
-  `write_exec_env_file()` in `cloud-worker-launch.sh` so it's a one-line fix if
-  the real flag name differs — verify against `gcloud run jobs execute --help`
-  on the real project.
-- Whether a pending `execute --wait` actually unblocks promptly when a
-  concurrent `executions cancel` lands is not verified live (hang-robustness
-  only — classification correctness doesn't depend on it; the daemon's own
-  `timedOut` flag resolves that independently).
+- Exit-code parsing is correct: `status.succeededCount` / `status.failedCount` / `status.completionTime`
+  matches the real `executions describe` output. Observed shapes: succeeded =
+  `conditions[type=Completed].status=="True"` + `succeededCount:1`; failed = `status=="False"`,
+  `reason:"NonZeroExitCode"`, `failedCount:1`. The wrapper still parses only the count fields for
+  control flow, never the conditions array.
+- `execute --wait` collapses the launched container's own exit code down to a simple pass/fail signal
+  (observed: container exit code 7 -> `gcloud` exit code 1).
+- A pending `execute --wait` unblocks promptly on a concurrent `executions cancel`: it unblocked within
+  ~7s in observation (wait returned 12:10:54Z; cancel's own confirmation printed 12:11:01Z), exit code
+  1, streamed "Cancelled by user." The primary `--wait` strategy is sufficient; the bounded-poll
+  contingency once considered is confirmed not needed.
+- The inline `--update-env-vars` flag (no `-file` suffix) is also accepted by `execute` and lands on
+  that execution's spec — but is deliberately NOT adopted for GIT_TOKEN: this ticket's own test suite
+  requires the secret never appear on the command line, so GIT_TOKEN stays file-based. Whether the
+  inline form can be combined with the file-based form for the two non-secret scalars (CONDUCTION_ID,
+  TICKET) is unresolved — needs a live check that both flags can be passed together in one `execute`
+  call.
+
+**Still deferred / not live-verified:**
+
+- The exact `gcloud run jobs execute` flag/format for the FILE-based env-vars input
+  (`--update-env-vars-file` here) is still a best guess, isolated in `write_exec_env_file()` in
+  `cloud-worker-launch.sh` so it's a one-line fix if the real flag name differs — verify against
+  `gcloud run jobs execute --help` on the real project.
+- A reaped/cancelled execution is indistinguishable from a failed one by exit code, and this must
+  remain so — the daemon's own in-process `timedOut` flag (`src/daemon/scheduler.ts`) owns
+  worker-timeout classification, per `classify.ts`'s never-key-on-the-code rule.
 
 **B-717 (serial-execution/concurrency, named constraint):**
 `--update-env-vars` mutates the Cloud Run **job definition** itself before

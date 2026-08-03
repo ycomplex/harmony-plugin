@@ -36,10 +36,15 @@ EXECUTION_NAME="$(
 
 if [ -n "$EXECUTION_NAME" ]; then
   # CONFIRM AT VERIFY (accepted design cf579f0f pt.2): does a pending `execute --wait` actually
-  # unblock promptly when a concurrent `executions cancel` lands? Not verified live. This is a
-  # hang-robustness check only — NOT a classification-correctness gate, since the daemon's own
-  # `timedOut` in-process flag (src/daemon/scheduler.ts) resolves classification independent of
-  # whatever the blocked --wait call eventually returns.
+  # unblock promptly when a concurrent `executions cancel` lands? CONFIRMED (2026-08-03): a
+  # concurrent `executions cancel` unblocked a pending `execute --wait` within ~7s (wait returned
+  # 12:10:54Z; cancel's own confirmation printed 12:11:01Z), exit code 1, streamed "Cancelled by
+  # user." The primary --wait strategy is sufficient; the bounded-poll contingency once considered
+  # here is confirmed NOT needed. This remains a hang-robustness confirmation only — NOT a
+  # classification-correctness gate, since the daemon's own `timedOut` in-process flag
+  # (src/daemon/scheduler.ts) resolves classification independent of whatever the blocked --wait
+  # call eventually returns. See cloud-worker-launch.sh's SMOKE-TEST GAP comment: a reaped/cancelled
+  # execution remains indistinguishable from a failed one by exit code, by design.
   gcloud run jobs executions cancel "$EXECUTION_NAME" \
     --region="$HARMONY_CLOUD_RUN_REGION" \
     --async \

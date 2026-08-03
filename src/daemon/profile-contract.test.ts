@@ -279,6 +279,11 @@ describe('cloud-worker-launch.sh: exit-code contract (accepted design cf579f0f p
     expect(script).toContain('SMOKE-TEST GAP (accepted design cf579f0f pt.1)');
     expect(script).toContain('status.succeededCount/failedCount/completionTime');
   });
+
+  it('the SMOKE-TEST GAP comment is marked CONFIRMED via live observation, not left hedged', () => {
+    expect(script).toContain('CONFIRMED via live observation (2026-08-03)');
+    expect(script).not.toContain('status.conditions');
+  });
 });
 
 describe('cloud-worker-launch.sh + cloud-worker-reap.sh: label-based execute/reap (accepted design cf579f0f pt.2)', () => {
@@ -306,6 +311,11 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: label-based execute/rea
   it('carries the CONFIRM AT VERIFY cancel-unblocks-wait comment at the cancel call site', () => {
     expect(reapScript).toContain('CONFIRM AT VERIFY (accepted design cf579f0f pt.2)');
     expect(reapScript).toMatch(/does a pending `execute --wait` actually/);
+  });
+
+  it('the cancel-unblocks-wait comment is marked CONFIRMED via live observation, not left hedged', () => {
+    expect(reapScript).toContain('CONFIRMED (2026-08-03)');
+    expect(reapScript).toMatch(/unblocked a pending `execute --wait`/);
   });
 });
 
@@ -361,6 +371,15 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
 
   it('the mint script the cloud template invokes actually exists and is the same shared script', () => {
     expect(readFileSync(mintScriptPath, 'utf8')).toContain('export function composeEnvFile');
+  });
+
+  it('documents the inline --update-env-vars confirmation without adopting it for GIT_TOKEN', () => {
+    const fnAt = launchScript.indexOf('write_exec_env_file() {');
+    const fnBody = launchScript.slice(fnAt, launchScript.indexOf('\n}', fnAt));
+    expect(fnBody).toContain('CONFIRMED (2026-08-03)');
+    expect(fnBody).toMatch(/inline `--update-env-vars` flag/);
+    // still file-based for GIT_TOKEN — the security contract this describe block enforces
+    expect(launchScript).toContain('--update-env-vars-file="$EXEC_ENV_FILE"');
   });
 });
 

@@ -50,6 +50,14 @@ write_exec_env_file() {
   # env-vars input to `gcloud run jobs execute` (to avoid the minted GIT_TOKEN appearing in shell
   # history / `ps`) is not live-confirmed — verify against `gcloud run jobs execute --help` on a
   # real project and correct this function if the flag name differs.
+  #
+  # CONFIRMED (2026-08-03): the inline `--update-env-vars` flag (no `-file` suffix) is also accepted
+  # by `execute` and the value lands on that execution's spec. Deliberately NOT adopted here: this
+  # ticket's own test suite requires GIT_TOKEN never appear on the command line, so GIT_TOKEN stays
+  # file-based. Whether the inline form could be combined with this file-based form for the two
+  # non-secret scalars (CONDUCTION_ID, TICKET) is unresolved — needs a live check that both flags can
+  # be passed together in one `execute` call — so the whole mechanism stays file-based for now rather
+  # than partially migrating on a guess.
   local file="$1"
   ( umask 077
     {
@@ -65,9 +73,12 @@ write_exec_env_file "$EXEC_ENV_FILE"
 # 3. Fire the job execution, labelled so reap (and step 4 below) can find it without a
 #    caller-assigned name (Cloud Run assigns the execution name/ID itself).
 #
-# `--wait`'s OWN exit code is not the classification signal: it is not precisely documented whether
-# it reliably reflects the execution's true terminal outcome, so this wrapper NEVER trusts it and
-# always falls through to the authoritative post-hoc read in step 4, regardless of what happens here.
+# `--wait`'s OWN exit code is not the classification signal here: CONFIRMED via live observation
+# (2026-08-03) that `execute --wait` collapses the launched container's own exit code down to a
+# simple pass/fail signal (observed: container process exit code 7 -> `gcloud` process exit code 1)
+# — fine for classify.ts's zero/non-zero contract, but too coarse to trust directly, so this wrapper
+# still NEVER keys off it and always falls through to the authoritative post-hoc read in step 4,
+# regardless of what happens here.
 set +e
 gcloud run jobs execute "$HARMONY_CLOUD_RUN_JOB" \
   --region="$HARMONY_CLOUD_RUN_REGION" \
@@ -89,13 +100,17 @@ set -e
 # time. Delete it the moment that call returns — success or failure, it is never reused.
 rm -f "$EXEC_ENV_FILE"
 
-# 4. SMOKE-TEST GAP (accepted design cf579f0f pt.1): parsing is grounded in the documented Cloud Run
-# Jobs Execution resource schema (status.succeededCount/failedCount/completionTime), NOT an
-# actually-observed `executions describe` output — the elicitation round's referenced smoke-test
-# paste resolved to placeholders with no concrete values. CONFIRM against a live
-# deliberately-succeeding and deliberately-failing execution before trusting this in production
-# (design's own build-time verification requirement); all 4 ACs on B-754 stay unchecked pending
-# that live confirmation (human's explicit deferral, 2026-08-03).
+# 4. SMOKE-TEST GAP (accepted design cf579f0f pt.1) — CONFIRMED via live observation (2026-08-03):
+# parsing on status.succeededCount/failedCount/completionTime is CORRECT and matches the real
+# `executions describe` output. Observed shapes, for reference (this wrapper still parses ONLY the
+# count fields below, never the conditions array, for control flow):
+#   succeeded: conditions[type=Completed].status=="True", succeededCount:1
+#   failed:    conditions[type=Completed].status=="False", reason:"NonZeroExitCode", failedCount:1
+# A reaped/cancelled execution is INDISTINGUISHABLE from a failed one by this exit code, and this must
+# remain so: the daemon's own in-process `timedOut` flag (src/daemon/scheduler.ts) owns worker-timeout
+# classification, per classify.ts's never-key-on-the-code rule — do not special-case cancellation here.
+# All 4 ACs on B-754 stay unchecked regardless: they require a live Cloud Run job to check against,
+# and code-only evidence satisfies none of them (human's explicit deferral, 2026-08-03).
 resolve_execution_name() {
   gcloud run jobs executions list \
     --job="$HARMONY_CLOUD_RUN_JOB" \
