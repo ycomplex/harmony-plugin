@@ -82,6 +82,15 @@ write_exec_env_file "$EXEC_ENV_FILE"
 #     2026-08-03 — see write_exec_env_file() above); the file-based form is `--env-vars-file` on
 #     `gcloud run jobs update`, so that must run before `execute` can pick the values up.
 #
+#     This same `update` call also carries `--update-labels="conduction-id=$CONDUCTION_ID"`, for the
+#     same reason: CONFIRMED (2026-08-03, live `gcloud run jobs execute --help` check) that `execute`
+#     has NO `--labels` flag at all (an earlier version of this script wrongly passed one there, which
+#     killed every launch on an unknown-flag error). `update` is the only call site that CAN set the
+#     label, and the label on the JOB DEFINITION propagates to the execution: CONFIRMED live that the
+#     execution's own `metadata.labels` carries the job's `conduction-id` label, so reap's
+#     `metadata.labels.conduction-id=…` filter (container/cloud-worker-reap.sh) still finds it — see
+#     the note at the `execute` call site below.
+#
 #     `--env-vars-file` REPLACES the job's ENTIRE literal env-var set — it is not a merge. Every
 #     per-leg literal env var (GIT_TOKEN, CONDUCTION_ID, TICKET) must therefore ride this ONE file,
 #     and the job definition must otherwise carry NO other literal env vars, or this call would wipe
@@ -103,11 +112,15 @@ write_exec_env_file "$EXEC_ENV_FILE"
 # discovering the race live.
 gcloud run jobs update "$HARMONY_CLOUD_RUN_JOB" \
   --region="$HARMONY_CLOUD_RUN_REGION" \
-  --env-vars-file="$EXEC_ENV_FILE"
+  --env-vars-file="$EXEC_ENV_FILE" \
+  --update-labels="conduction-id=$CONDUCTION_ID"
 
-# 3b. Fire the job execution, labelled so reap (and step 4 below) can find it without a
-#     caller-assigned name (Cloud Run assigns the execution name/ID itself). This launches with the
-#     env vars the `update` call immediately above just pushed onto the job definition.
+# 3b. Fire the job execution. `gcloud run jobs execute` has no `--labels` flag (CONFIRMED live,
+#     2026-08-03 — see the `update` call site above); the execution is instead found by reap (and step
+#     4 below) via the `conduction-id` label the `update` call above just set on the JOB DEFINITION,
+#     which the execution inherits (CONFIRMED live) into its own `metadata.labels` — no
+#     caller-assigned name needed (Cloud Run assigns the execution name/ID itself). This launches with
+#     the env vars the `update` call immediately above just pushed onto the job definition, too.
 #
 # B-717 (accepted design cf579f0f pt.3, round-2 feedback; STRENGTHENED round 3): see the identical
 # comment at the `update --env-vars-file` call site immediately above — this `execute` call is the
@@ -123,8 +136,7 @@ gcloud run jobs update "$HARMONY_CLOUD_RUN_JOB" \
 set +e
 gcloud run jobs execute "$HARMONY_CLOUD_RUN_JOB" \
   --region="$HARMONY_CLOUD_RUN_REGION" \
-  --wait \
-  --labels="conduction-id=$CONDUCTION_ID"
+  --wait
 EXECUTE_EXIT=$?
 set -e
 
