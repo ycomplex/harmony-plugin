@@ -44,20 +44,27 @@ if [ -z "$GIT_TOKEN" ]; then
 fi
 
 # 2. Compose the per-execution env-vars FILE. A small, isolated function on purpose — see the
-#    CONFIRM AT VERIFY note inside it.
+#    CONFIRMED note inside it (round 3: the flag/format question this note originally raised is now
+#    resolved by a live check, see below).
 write_exec_env_file() {
-  # CONFIRM AT VERIFY (accepted design cf579f0f pt.3): exact gcloud flag/format for a FILE-based
-  # env-vars input to `gcloud run jobs execute` (to avoid the minted GIT_TOKEN appearing in shell
-  # history / `ps`) is not live-confirmed — verify against `gcloud run jobs execute --help` on a
-  # real project and correct this function if the flag name differs.
+  # CONFIRMED (2026-08-03, live `gcloud run jobs execute --help` check): `gcloud run jobs execute`
+  # has NO file-based env-vars flag at all — the previously-assumed `--update-env-vars-file` does not
+  # exist on `execute`. `--help` only offers the inline `--update-env-vars` (KEY=VALUE form) merge-override
+  # form there (gcloud's own documented wording: it merges into, rather than replaces, the job's
+  # existing literal env set). The file-based form (`--env-vars-file`) exists only on
+  # `gcloud run jobs update`. This function's output is therefore consumed by an `update` call that
+  # must run BEFORE `execute` (see the call sites below), not by `execute` directly.
   #
-  # CONFIRMED (2026-08-03): the inline `--update-env-vars` flag (no `-file` suffix) is also accepted
-  # by `execute` and the value lands on that execution's spec. Deliberately NOT adopted here: this
-  # ticket's own test suite requires GIT_TOKEN never appear on the command line, so GIT_TOKEN stays
-  # file-based. Whether the inline form could be combined with this file-based form for the two
-  # non-secret scalars (CONDUCTION_ID, TICKET) is unresolved — needs a live check that both flags can
-  # be passed together in one `execute` call — so the whole mechanism stays file-based for now rather
-  # than partially migrating on a guess.
+  # Deliberately NOT using the inline `--update-env-vars` merge-override for GIT_TOKEN even though it
+  # exists: this ticket's own test suite requires GIT_TOKEN never appear on the command line, so
+  # GIT_TOKEN stays file-based via `update --env-vars-file`. Whether the inline merge-override form on
+  # `execute` could later carry the two non-secret scalars (CONDUCTION_ID, TICKET) instead is
+  # unresolved and not adopted here.
+  #
+  # CONFIRMED (2026-08-03, live smoke probe): the minted token still lands in the job/execution spec
+  # metadata either way — inline or file form. The file-based route's real benefit was never keeping
+  # the token out of the spec; it keeps the token off THIS daemon host's argv/process list (`ps`,
+  # shell history), which it still does.
   local file="$1"
   ( umask 077
     {
@@ -70,8 +77,42 @@ write_exec_env_file() {
 }
 write_exec_env_file "$EXEC_ENV_FILE"
 
-# 3. Fire the job execution, labelled so reap (and step 4 below) can find it without a
-#    caller-assigned name (Cloud Run assigns the execution name/ID itself).
+# 3a. Push the per-execution env vars onto the JOB DEFINITION FIRST. `gcloud run jobs execute` has no
+#     file-based env-vars flag (CONFIRMED via a live `gcloud run jobs execute --help` check,
+#     2026-08-03 — see write_exec_env_file() above); the file-based form is `--env-vars-file` on
+#     `gcloud run jobs update`, so that must run before `execute` can pick the values up.
+#
+#     `--env-vars-file` REPLACES the job's ENTIRE literal env-var set — it is not a merge. Every
+#     per-leg literal env var (GIT_TOKEN, CONDUCTION_ID, TICKET) must therefore ride this ONE file,
+#     and the job definition must otherwise carry NO other literal env vars, or this call would wipe
+#     them. Standing secrets (HARMONY_API_TOKEN, CLAUDE_CODE_OAUTH_TOKEN) stay as `--set-secrets`
+#     bindings, which are a separate mechanism from literal env vars and are untouched by this call
+#     (there's a separate `--clear-secrets` flag if secret bindings ever need clearing — not used
+#     here).
+#
+# B-717 (accepted design cf579f0f pt.3, round-2 feedback; STRENGTHENED round 3): `update
+# --env-vars-file` mutates (replaces) the Cloud Run JOB DEFINITION itself before the `execute` call
+# immediately below reads that same job definition to launch the execution — there is no
+# per-execution-only variant. Round 3 makes this TWO non-atomic gcloud calls (`update` then `execute`)
+# against that one shared job definition, not one — which STRENGTHENS, not relaxes, the existing named
+# constraint: two concurrent update+execute pairs could interleave and race each other's env values
+# through this shared mutation. Safe ONLY because the daemon is strictly serial today (one build at a
+# time) — B-717 (serial-execution/concurrency model) must treat this as a named, inherited constraint:
+# either keep executions serialized past this call, or move per-execution values off
+# `update --env-vars-file` onto a mechanism that doesn't mutate shared job state, rather than
+# discovering the race live.
+gcloud run jobs update "$HARMONY_CLOUD_RUN_JOB" \
+  --region="$HARMONY_CLOUD_RUN_REGION" \
+  --env-vars-file="$EXEC_ENV_FILE"
+
+# 3b. Fire the job execution, labelled so reap (and step 4 below) can find it without a
+#     caller-assigned name (Cloud Run assigns the execution name/ID itself). This launches with the
+#     env vars the `update` call immediately above just pushed onto the job definition.
+#
+# B-717 (accepted design cf579f0f pt.3, round-2 feedback; STRENGTHENED round 3): see the identical
+# comment at the `update --env-vars-file` call site immediately above — this `execute` call is the
+# second of the two non-atomic calls against the shared JOB DEFINITION that comment describes. Safe
+# ONLY because the daemon is strictly serial today.
 #
 # `--wait`'s OWN exit code is not the classification signal here: CONFIRMED via live observation
 # (2026-08-03) that `execute --wait` collapses the launched container's own exit code down to a
@@ -83,16 +124,7 @@ set +e
 gcloud run jobs execute "$HARMONY_CLOUD_RUN_JOB" \
   --region="$HARMONY_CLOUD_RUN_REGION" \
   --wait \
-  --labels="conduction-id=$CONDUCTION_ID" \
-  --update-env-vars-file="$EXEC_ENV_FILE"
-# B-717 (accepted design cf579f0f pt.3, round-2 feedback): --update-env-vars mutates the Cloud Run
-# JOB DEFINITION itself before `execute` reads it to launch the execution — there is no
-# per-execution-only variant. Two concurrent `execute` calls would race each other's env values
-# through this shared mutation. Safe ONLY because the daemon is strictly serial today (one build at
-# a time) — B-717 (serial-execution/concurrency model) must treat this as a named, inherited
-# constraint: either keep executions serialized past this call, or move per-execution values off
-# `--update-env-vars` onto a mechanism that doesn't mutate shared job state, rather than discovering
-# the race live.
+  --labels="conduction-id=$CONDUCTION_ID"
 EXECUTE_EXIT=$?
 set -e
 

@@ -340,20 +340,61 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
     expect(launchScript).toContain('/run.env');
   });
 
-  it('passes per-execution values via a FILE-based env-vars input, never inline on the gcloud command line', () => {
-    expect(launchScript).toContain('--update-env-vars-file="$EXEC_ENV_FILE"');
-    // No inline KEY=VALUE form anywhere near the execute call.
+  it('passes GIT_TOKEN via the `update --env-vars-file` call, never via a nonexistent `execute --update-env-vars-file` flag', () => {
+    expect(launchScript).toContain('gcloud run jobs update');
+    expect(launchScript).toContain('--env-vars-file="$EXEC_ENV_FILE"');
+    // CONFIRMED via a live `gcloud run jobs execute --help` check (2026-08-03): `execute` has no
+    // file-based env-vars flag at all, so the (nonexistent) flag USAGE must never appear anywhere in
+    // the script — the flag NAME may still appear in prose explaining why it was dropped.
+    expect(launchScript).not.toContain('--update-env-vars-file=');
+    // No inline KEY=VALUE form anywhere in the script either.
     expect(launchScript).not.toMatch(/--update-env-vars=/);
   });
 
+  it('issues the `update` call and then the `execute` call as two sequential gcloud invocations, in that order, before wait-classification logic runs', () => {
+    // Match the REAL invocations (start of line, no leading `#`), not prose mentions of the same
+    // words inside comments.
+    const updateMatch = /^gcloud run jobs update "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    const executeMatch = /^gcloud run jobs execute "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(updateMatch).not.toBeNull();
+    expect(executeMatch).not.toBeNull();
+    const updateAt = updateMatch!.index;
+    const executeAt = executeMatch!.index;
+    const executeExitAt = launchScript.indexOf('EXECUTE_EXIT=$?');
+    const describeAt = launchScript.indexOf('gcloud run jobs executions describe');
+
+    expect(updateAt).toBeGreaterThan(0);
+    expect(executeAt).toBeGreaterThan(updateAt); // update strictly before execute
+    expect(executeExitAt).toBeGreaterThan(executeAt);
+    expect(describeAt).toBeGreaterThan(executeExitAt); // wait-classification logic runs after both
+
+    // The `execute` call itself carries no env-vars flag anymore — the env now rides the job
+    // definition the `update` call above just set.
+    const executeInvocation = launchScript.slice(executeAt, executeExitAt);
+    expect(executeInvocation).not.toMatch(/--env-vars-file/);
+    expect(executeInvocation).not.toMatch(/--update-env-vars/);
+  });
+
   it('the exec-env-vars file is deleted immediately after the execute call, not deferred to reap', () => {
-    const executeAt = launchScript.indexOf('gcloud run jobs execute');
-    const afterExecute = launchScript.slice(executeAt);
+    const executeMatch = /^gcloud run jobs execute "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(executeMatch).not.toBeNull();
+    const afterExecute = launchScript.slice(executeMatch!.index);
     expect(afterExecute).toMatch(/rm -f "\$EXEC_ENV_FILE"/);
   });
 
-  it('never puts GIT_TOKEN inline on the gcloud execute command line itself', () => {
-    const executeAt = launchScript.indexOf('gcloud run jobs execute');
+  it('never puts GIT_TOKEN inline on either the `update` or `execute` gcloud command lines', () => {
+    const updateMatch = /^gcloud run jobs update "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(updateMatch).not.toBeNull();
+    const updateAt = updateMatch!.index;
+    const updateEnd = launchScript.indexOf('\n\n', updateAt);
+    const updateInvocation = launchScript.slice(updateAt, updateEnd);
+    expect(updateInvocation).not.toMatch(/GIT_TOKEN=/);
+    expect(updateInvocation).not.toMatch(/-e\s+GIT_TOKEN/);
+    expect(updateInvocation).not.toMatch(/--env\s+GIT_TOKEN/);
+
+    const executeMatch = /^gcloud run jobs execute "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(executeMatch).not.toBeNull();
+    const executeAt = executeMatch!.index;
     const flagBlockEnd = launchScript.indexOf('EXECUTE_EXIT=$?', executeAt);
     const executeInvocation = launchScript.slice(executeAt, flagBlockEnd);
     expect(executeInvocation).not.toMatch(/GIT_TOKEN=/);
@@ -361,39 +402,71 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
     expect(executeInvocation).not.toMatch(/--env\s+GIT_TOKEN/);
   });
 
-  it('isolates the env-vars-file construction in its own function, with the CONFIRM AT VERIFY flag-name gap flagged there', () => {
+  it('isolates the env-vars-file construction in its own function, with the flag/format gap now CONFIRMED resolved there', () => {
     expect(launchScript).toMatch(/write_exec_env_file\s*\(\)\s*\{/);
     const fnAt = launchScript.indexOf('write_exec_env_file() {');
     const fnBody = launchScript.slice(fnAt, launchScript.indexOf('\n}', fnAt));
-    expect(fnBody).toContain('CONFIRM AT VERIFY (accepted design cf579f0f pt.3)');
-    expect(fnBody).toMatch(/exact gcloud flag\/format for a FILE-based/);
+    expect(fnBody).toContain('CONFIRMED (2026-08-03, live `gcloud run jobs execute --help` check)');
+    expect(fnBody).toMatch(/has NO file-based env-vars flag at all/);
+    // The flag that does not exist must never appear as an actual USAGE (trailing `=`) — mentioning
+    // its bare name in prose, to explain why it was dropped, is fine and expected.
+    expect(fnBody).not.toContain('--update-env-vars-file=');
   });
 
   it('the mint script the cloud template invokes actually exists and is the same shared script', () => {
     expect(readFileSync(mintScriptPath, 'utf8')).toContain('export function composeEnvFile');
   });
 
-  it('documents the inline --update-env-vars confirmation without adopting it for GIT_TOKEN', () => {
+  it('documents the inline --update-env-vars merge-override without adopting it for GIT_TOKEN, and softens the token-out-of-spec claim', () => {
     const fnAt = launchScript.indexOf('write_exec_env_file() {');
     const fnBody = launchScript.slice(fnAt, launchScript.indexOf('\n}', fnAt));
-    expect(fnBody).toContain('CONFIRMED (2026-08-03)');
-    expect(fnBody).toMatch(/inline `--update-env-vars` flag/);
+    // Flatten wrapped comment lines (strip the leading `# `/`  # ` continuation) so prose assertions
+    // aren't brittle to exactly where a sentence happens to wrap.
+    const flat = fnBody.replace(/\n\s*#\s?/g, ' ');
+    expect(flat).toMatch(/inline `--update-env-vars` merge-override/);
+    expect(flat).toMatch(/merge-override/);
+    // Honesty fix (live smoke probe, 2026-08-03): the token lands in the spec either way — the
+    // file-based route's benefit is keeping it off argv/process list, not off the spec.
+    expect(flat).toMatch(/lands in the job\/execution spec metadata either way/);
+    expect(flat).toMatch(/argv\/process list/);
     // still file-based for GIT_TOKEN — the security contract this describe block enforces
-    expect(launchScript).toContain('--update-env-vars-file="$EXEC_ENV_FILE"');
+    expect(launchScript).toContain('--env-vars-file="$EXEC_ENV_FILE"');
+    expect(launchScript).not.toContain('--update-env-vars-file=');
   });
 });
 
-describe('cloud-worker-launch.sh: B-717 named constraint at the --update-env-vars mutation site', () => {
+describe('cloud-worker-launch.sh: B-717 named constraint at the update/execute mutation call sites', () => {
   const launchScript = readFileSync(cloudLaunchScriptPath, 'utf8');
 
-  it('carries the B-717 comment immediately at the --update-env-vars-file call site', () => {
-    const flagAt = launchScript.indexOf('--update-env-vars-file=');
-    expect(flagAt).toBeGreaterThan(0);
-    const nearby = launchScript.slice(flagAt, flagAt + 1200);
-    expect(nearby).toContain('B-717 (accepted design cf579f0f pt.3, round-2 feedback)');
-    expect(nearby).toContain('mutates the Cloud Run');
+  it('carries the B-717 comment immediately at the `update --env-vars-file` call site', () => {
+    const updateMatch = /^gcloud run jobs update "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(updateMatch).not.toBeNull();
+    const updateAt = updateMatch!.index;
+    const nearby = launchScript.slice(Math.max(0, updateAt - 1600), updateAt + 200);
+    expect(nearby).toContain('B-717 (accepted design cf579f0f pt.3, round-2 feedback');
+    expect(nearby).toContain('mutates (replaces) the Cloud Run');
     expect(nearby).toMatch(/JOB DEFINITION itself/);
     expect(nearby).toMatch(/strictly serial today/);
+    expect(nearby).toMatch(/STRENGTHENED round 3/);
+  });
+
+  it('carries the B-717 comment (or a copy) immediately at the `execute` call site too, describing the two-call sequence', () => {
+    const executeMatch = /^gcloud run jobs execute "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(executeMatch).not.toBeNull();
+    const executeAt = executeMatch!.index;
+    const nearby = launchScript.slice(Math.max(0, executeAt - 1400), executeAt);
+    expect(nearby).toContain('B-717 (accepted design cf579f0f pt.3, round-2 feedback');
+    expect(nearby).toMatch(/STRENGTHENED round 3/);
+    expect(nearby).toMatch(/second of the two non-atomic calls/);
+  });
+
+  it('the B-717 comment documents that update-then-execute is now TWO non-atomic calls, strengthening (not relaxing) the constraint', () => {
+    const updateMatch = /^gcloud run jobs update "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(updateMatch).not.toBeNull();
+    const updateAt = updateMatch!.index;
+    const nearby = launchScript.slice(Math.max(0, updateAt - 1600), updateAt + 200);
+    expect(nearby).toMatch(/TWO non-atomic gcloud calls/);
+    expect(nearby).toMatch(/STRENGTHENS, not relaxes/);
   });
 });
 
