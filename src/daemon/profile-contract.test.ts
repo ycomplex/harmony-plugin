@@ -503,3 +503,51 @@ describe('cloud-worker scripts: config-not-constants (B-711) — no hardcoded li
     expect(launchScript).toContain('us-central1');
   });
 });
+
+// B-754 fix (2026-08-03): the execution was firing with NO container args at all, so the container
+// entrypoint fell into its no-arg "shell" default and exited 0 having done no work (a live-observed
+// silent no-progress park). This describe block pins the `--args` fix at the `execute` call site.
+
+describe('cloud-worker-launch.sh: --args carries the worker invocation (B-754 fix)', () => {
+  const launchScript = readFileSync(cloudLaunchScriptPath, 'utf8');
+
+  it('the `execute` call carries an --args= flag whose value invokes headless conduct with the ticket', () => {
+    const executeMatch = /^gcloud run jobs execute "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(executeMatch).not.toBeNull();
+    const executeAt = executeMatch!.index;
+    const executeExitAt = launchScript.indexOf('EXECUTE_EXIT=$?', executeAt);
+    const executeInvocation = launchScript.slice(executeAt, executeExitAt);
+
+    const argsMatch = /--args="([^"]*)"/.exec(executeInvocation);
+    expect(argsMatch).not.toBeNull();
+    const argsValue = argsMatch![1];
+    expect(argsValue).toContain('$TICKET');
+    expect(argsValue).toContain('--one-shot');
+  });
+});
+
+// B-754 fix (2026-08-03): container/provision.sh must fail loud, not silently exit 0 having done
+// no work, when it receives NO mode argument AND stdin is not a TTY (the exact shape of a
+// mis-provisioned Cloud Run execution before the --args fix above). An explicit `shell` argument,
+// or an interactive TTY session with no argument (dogfooding), must still behave as before.
+
+describe('provision.sh: fails loud on no-arg + non-TTY instead of silently defaulting to shell (B-754 fix)', () => {
+  const provisionScript = readFileSync(provisionPath, 'utf8');
+
+  it('guards the mode default with a zero-args + non-TTY check BEFORE `MODE="${1:-shell}"`', () => {
+    const guardMatch = /\[\s*\$#\s*-eq\s*0\s*\]\s*&&\s*\[\s*!\s*-t\s*0\s*\]/.exec(provisionScript);
+    expect(guardMatch).not.toBeNull();
+    const guardAt = guardMatch!.index;
+    const modeDefaultAt = provisionScript.indexOf('MODE="${1:-shell}"');
+    expect(modeDefaultAt).toBeGreaterThan(guardAt);
+  });
+
+  it('exits non-zero on that guard clause, rather than always defaulting silently to shell', () => {
+    const guardMatch = /\[\s*\$#\s*-eq\s*0\s*\]\s*&&\s*\[\s*!\s*-t\s*0\s*\]/.exec(provisionScript);
+    expect(guardMatch).not.toBeNull();
+    const guardAt = guardMatch!.index;
+    const modeDefaultAt = provisionScript.indexOf('MODE="${1:-shell}"');
+    const guardBlock = provisionScript.slice(guardAt, modeDefaultAt);
+    expect(guardBlock).toMatch(/exit 1/);
+  });
+});

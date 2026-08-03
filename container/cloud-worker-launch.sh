@@ -133,9 +133,14 @@ gcloud run jobs update "$HARMONY_CLOUD_RUN_JOB" \
 # — fine for classify.ts's zero/non-zero contract, but too coarse to trust directly, so this wrapper
 # still NEVER keys off it and always falls through to the authoritative post-hoc read in step 4,
 # regardless of what happens here.
+# B-754 fix (2026-08-03): execute fired with NO container args, so the entrypoint's no-arg
+# default silently exited 0, no work done. `--args` CONFIRMED live (2026-08-03) on `execute`; the
+# comma splits the two positional args (`headless`, prompt) — spaces inside the prompt survive
+# since gcloud only splits on commas.
 set +e
 gcloud run jobs execute "$HARMONY_CLOUD_RUN_JOB" \
   --region="$HARMONY_CLOUD_RUN_REGION" \
+  --args="headless,/harmony-plugin:harmony-conduct $TICKET --one-shot" \
   --wait
 EXECUTE_EXIT=$?
 set -e

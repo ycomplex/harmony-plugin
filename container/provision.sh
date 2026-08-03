@@ -92,6 +92,14 @@ fi
 echo "Environment confirmed: target=$ACTUAL_TARGET plugin_version=$PLUGIN_VERSION workdir=$WORKDIR"
 
 # --- Hand off. --------------------------------------------------------------
+if [ $# -eq 0 ] && [ ! -t 0 ]; then
+  # A mis-provisioned non-interactive invocation (e.g. a Cloud Run job execution with no
+  # --args) must fail loud, not silently drop into the dogfood shell and exit 0 having done
+  # no work — that exact silent-empty-run cost a park and a live diagnosis (B-754, 2026-08-03).
+  echo "ERROR: no mode argument given and stdin is not a TTY — refusing to silently drop into the dogfood shell." >&2
+  echo "Pass 'shell' explicitly for an interactive dogfood session, or 'headless <prompt>' for an agent run." >&2
+  exit 1
+fi
 MODE="${1:-shell}"
 case "$MODE" in
   shell)
