@@ -290,8 +290,22 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: label-based execute/rea
   const launchScript = readFileSync(cloudLaunchScriptPath, 'utf8');
   const reapScript = readFileSync(cloudReapScriptPath, 'utf8');
 
-  it('launch labels the execution with conduction-id at execute time', () => {
-    expect(launchScript).toMatch(/--labels="conduction-id=\$CONDUCTION_ID"/);
+  it('launch labels the JOB DEFINITION with conduction-id via `update --update-labels` (B-754 reopened: `execute` has no `--labels` flag)', () => {
+    const updateMatch = /^gcloud run jobs update "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(updateMatch).not.toBeNull();
+    const updateAt = updateMatch!.index;
+    const updateEnd = launchScript.indexOf('\n\n', updateAt);
+    const updateInvocation = launchScript.slice(updateAt, updateEnd);
+    expect(updateInvocation).toMatch(/--update-labels="conduction-id=\$CONDUCTION_ID"/);
+  });
+
+  it('never puts a `--labels` flag on the `execute` call — `gcloud run jobs execute` has no such flag (confirmed live, B-754 reopened)', () => {
+    const executeMatch = /^gcloud run jobs execute "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(executeMatch).not.toBeNull();
+    const executeAt = executeMatch!.index;
+    const executeExitAt = launchScript.indexOf('EXECUTE_EXIT=$?', executeAt);
+    const executeInvocation = launchScript.slice(executeAt, executeExitAt);
+    expect(executeInvocation).not.toMatch(/--labels=/);
   });
 
   it('reap resolves the execution by that SAME conduction-id label — never a caller-assigned name', () => {
