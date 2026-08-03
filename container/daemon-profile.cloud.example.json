@@ -1,0 +1,4 @@
+{
+  "launch": "bash \"$HARMONY_PLUGIN_DIR/container/cloud-worker-launch.sh\" {conduction_id} {ticket}",
+  "reap": "bash \"$HARMONY_PLUGIN_DIR/container/cloud-worker-reap.sh\" {conduction_id} {ticket}"
+}

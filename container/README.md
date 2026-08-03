@@ -301,3 +301,132 @@ redaction where feasible — is **B-725** (Conductor Daemon v1.5); until it
 lands, transcripts sit host-side with default file permissions (interim
 posture accepted at the B-724 clarify). **B-718** (session resume) reuses
 this same per-conduction `projects/` dir by re-mounting it into the next leg.
+
+### Cloud launch profile (B-754)
+
+The local-Docker profile above (`daemon-profile.example.json`) is the v1
+dogfood default and stays exactly as-is. **`daemon-profile.cloud.example.json`**
+is a SECOND, additive launch profile: it fires each worker as a **Cloud Run
+job execution** instead of `docker run`, so builds run on a properly-sized
+cloud worker (8 GB / 4 vCPU, per B-694's `harmony-build-env` image) instead of
+the founder's laptop. Selection is via the SAME `HARMONY_DAEMON_PROFILE` env
+var — there is no new selection mechanism; point it at a copy of the cloud
+profile instead of the docker one to switch. The daemon's scheduler/classify
+code (`src/daemon/scheduler.ts`, `src/daemon/classify.ts`) is completely
+untouched: it still just runs the profile's `launch` command to completion and
+reads its exit code. All Cloud Run CLI ambiguity is absorbed inside two new
+wrapper scripts the profile points at:
+
+- `container/cloud-worker-launch.sh` — mints the per-run bot-identity token
+  exactly as the docker profile does (B-732, unchanged), fires
+  `gcloud run jobs execute --wait` labelled `conduction-id=<id>`, and then
+  — REGARDLESS of `--wait`'s own exit code, which is not precisely documented
+  — makes an authoritative second call
+  (`gcloud run jobs executions describe`) and derives its OWN exit code only
+  from `status.succeededCount` / `status.failedCount` (0 for succeeded, 1 for
+  everything else, including "still reconciling" — never a guess at success).
+- `container/cloud-worker-reap.sh` — resolves the still-running execution by
+  the same `conduction-id` label (Cloud Run assigns the execution name itself,
+  so reap can't blind-name-target like `docker rm -f harmony-worker-{id}`),
+  cancels it async, tolerates "not found" as a no-op, and deletes the per-run
+  minted env-file.
+
+**Already done (founder, one-time GCP project setup):**
+
+| Item | Value |
+|---|---|
+| Project | `harmony-conductor` |
+| Region | `us-central1` |
+| Daemon-host SA | `harmony-daemon@harmony-conductor.iam.gserviceaccount.com` (`roles/run.developer`, `actAs` on the worker SA) |
+| Worker runtime SA | `harmony-worker@harmony-conductor.iam.gserviceaccount.com` (`secretAccessor` on both secrets below) |
+| Secret Manager | `HARMONY_API_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` |
+| Artifact Registry | `harmony-workers` docker repo, `us-central1` |
+| Daemon-host key file | `~/.harmony/gcp-daemon-sa.json` |
+
+The two wrapper scripts pin `CLOUDSDK_CORE_ACCOUNT` /
+`CLOUDSDK_CORE_PROJECT` to these values as **example env-var defaults** (B-711
+"config not constants" — override on the daemon host, they are not baked-in
+constants): `HARMONY_CLOUD_RUN_REGION`, `HARMONY_CLOUD_RUN_JOB`,
+`CLOUDSDK_CORE_PROJECT`, `CLOUDSDK_CORE_ACCOUNT`.
+
+**Still outstanding before flipping the daemon over to this profile:**
+
+1. Create/verify the actual Cloud Run **job resource** — pointing at the
+   `harmony-build-env` image in the `harmony-workers` Artifact Registry repo,
+   sized 8 GB / 4 vCPU, with `--set-secrets` binding
+   `HARMONY_API_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` from Secret Manager onto
+   the job definition. (Unlike the per-execution `GIT_TOKEN`, these two are
+   NOT passed per-run any more — they're bound once, to the job, not the
+   execution.)
+
+   **Required flags, from live observation (2026-08-03) — the defaults below would silently kill or
+   starve a real build leg:**
+   - `--service-account=harmony-worker@harmony-conductor.iam.gserviceaccount.com` — REQUIRED; job
+     creation fails `actAs` on the default compute SA under the scoped `harmony-daemon` SA without it.
+   - `--max-retries=0` — Cloud Run defaults to 3 internal task retries, which would stack under the
+     daemon's own B-713 retry ladder and could run one failing leg up to 4x.
+   - `--task-timeout=5400s` — observed default (600s) would kill a real build leg mid-run.
+   - `--memory=8Gi --cpu=4` — observed defaults (512Mi / 1 vCPU) would starve a real build leg;
+     matches B-694's proven sizing.
+2. Copy `daemon-profile.cloud.example.json` to a live profile file and point
+   `HARMONY_DAEMON_PROFILE` at it (same mechanism as the docker profile —
+   editing the example here never updates a live profile).
+
+**Cross-build note (do this or executions 404/CrashLoop):** the daemon host is
+very likely Apple Silicon (arm64 — launchd/colima), but Cloud Run job
+executions are **linux/amd64-only**. Publish the worker image with
+`docker buildx build --platform linux/amd64 ... --push` to the
+`harmony-workers` Artifact Registry repo — never a plain host-native
+`docker build`, which would produce an arm64 image Cloud Run can't run.
+
+**Credentials:** the daemon host needs its own least-privilege GCP identity to
+call `execute` / `executions cancel` / `executions list` — `roles/run.developer`
+scoped to this one job (already granted to `harmony-daemon@...`, above).
+
+**Known gap, carried forward, not this ticket's job to fix:** transcript
+persistence (B-724, directly above) is a local bind-mount — there is no
+equivalent host filesystem to mount into a remote Cloud Run job execution. A
+GCS-based replacement is explicitly out of scope for this leg; until something
+lands, cloud-launched workers have **no transcript capture**.
+
+**Confirmed via live observation (2026-08-03):**
+
+- Exit-code parsing is correct: `status.succeededCount` / `status.failedCount` / `status.completionTime`
+  matches the real `executions describe` output. Observed shapes: succeeded =
+  `conditions[type=Completed].status=="True"` + `succeededCount:1`; failed = `status=="False"`,
+  `reason:"NonZeroExitCode"`, `failedCount:1`. The wrapper still parses only the count fields for
+  control flow, never the conditions array.
+- `execute --wait` collapses the launched container's own exit code down to a simple pass/fail signal
+  (observed: container exit code 7 -> `gcloud` exit code 1).
+- A pending `execute --wait` unblocks promptly on a concurrent `executions cancel`: it unblocked within
+  ~7s in observation (wait returned 12:10:54Z; cancel's own confirmation printed 12:11:01Z), exit code
+  1, streamed "Cancelled by user." The primary `--wait` strategy is sufficient; the bounded-poll
+  contingency once considered is confirmed not needed.
+- The inline `--update-env-vars` flag (no `-file` suffix) is also accepted by `execute` and lands on
+  that execution's spec — but is deliberately NOT adopted for GIT_TOKEN: this ticket's own test suite
+  requires the secret never appear on the command line, so GIT_TOKEN stays file-based. Whether the
+  inline form can be combined with the file-based form for the two non-secret scalars (CONDUCTION_ID,
+  TICKET) is unresolved — needs a live check that both flags can be passed together in one `execute`
+  call.
+
+**Still deferred / not live-verified:**
+
+- The exact `gcloud run jobs execute` flag/format for the FILE-based env-vars input
+  (`--update-env-vars-file` here) is still a best guess, isolated in `write_exec_env_file()` in
+  `cloud-worker-launch.sh` so it's a one-line fix if the real flag name differs — verify against
+  `gcloud run jobs execute --help` on the real project.
+- A reaped/cancelled execution is indistinguishable from a failed one by exit code, and this must
+  remain so — the daemon's own in-process `timedOut` flag (`src/daemon/scheduler.ts`) owns
+  worker-timeout classification, per `classify.ts`'s never-key-on-the-code rule.
+
+**B-717 (serial-execution/concurrency, named constraint):**
+`--update-env-vars` mutates the Cloud Run **job definition** itself before
+`execute` reads it — there's no per-execution-only variant of that flag. Two
+concurrent `execute` calls would race each other's env values through that
+shared mutation. This is safe only because the daemon fires strictly one
+build at a time today; see the comment at the call site in
+`cloud-worker-launch.sh` for the full constraint.
+
+Extended coverage lives in `src/daemon/profile-contract.test.ts` (new
+describe blocks, additive only — none of the existing docker-profile tests
+were touched).

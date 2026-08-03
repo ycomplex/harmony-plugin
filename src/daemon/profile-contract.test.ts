@@ -182,3 +182,310 @@ describe('daemon-profile.example.json bot-identity credential contract (B-732)',
     expect(readFileSync(mintScriptPath, 'utf8')).toContain('export function composeEnvFile');
   });
 });
+
+// ------------------------------------------------------------------------------------------------
+// B-754: the SECOND, alternative "cloud" launch profile (Cloud Run job execution in place of
+// `docker run`). Selected via the SAME HARMONY_DAEMON_PROFILE env var — no new selection mechanism.
+// The docker profile above stays completely untouched; these are NEW, additive describe blocks that
+// exercise only the new profile + its two wrapper scripts. The daemon's scheduler/classify code is
+// deliberately NOT exercised here — the whole point of the wrapper-script design is that the daemon
+// never changes, so these tests pin the wrapper scripts' text instead.
+
+const cloudProfilePath = fileURLToPath(
+  new URL('../../container/daemon-profile.cloud.example.json', import.meta.url),
+);
+const cloudLaunchScriptPath = fileURLToPath(
+  new URL('../../container/cloud-worker-launch.sh', import.meta.url),
+);
+const cloudReapScriptPath = fileURLToPath(
+  new URL('../../container/cloud-worker-reap.sh', import.meta.url),
+);
+
+describe('daemon-profile.cloud.example.json shape', () => {
+  it('is a valid { launch, reap } profile, structurally interchangeable with the docker one', () => {
+    const profile = JSON.parse(readFileSync(cloudProfilePath, 'utf8')) as {
+      launch: string;
+      reap: string;
+    };
+    expect(typeof profile.launch).toBe('string');
+    expect(profile.launch.length).toBeGreaterThan(0);
+    expect(typeof profile.reap).toBe('string');
+    expect(profile.reap.length).toBeGreaterThan(0);
+  });
+
+  it('carries the {conduction_id} / {ticket} placeholders on BOTH templates, same as the docker profile', () => {
+    const profile = JSON.parse(readFileSync(cloudProfilePath, 'utf8')) as {
+      launch: string;
+      reap: string;
+    };
+    expect(profile.launch).toContain('{conduction_id}');
+    expect(profile.launch).toContain('{ticket}');
+    expect(profile.reap).toContain('{conduction_id}');
+    expect(profile.reap).toContain('{ticket}');
+  });
+
+  it('points launch and reap at the two dedicated cloud wrapper scripts, not an inline docker/gcloud command', () => {
+    const profile = JSON.parse(readFileSync(cloudProfilePath, 'utf8')) as {
+      launch: string;
+      reap: string;
+    };
+    expect(profile.launch).toContain('cloud-worker-launch.sh');
+    expect(profile.reap).toContain('cloud-worker-reap.sh');
+    // The whole point of the wrapper design: no `docker run` / `gcloud` invocation lives inline in
+    // the profile JSON itself — all CLI ambiguity is absorbed inside the wrapper scripts.
+    expect(profile.launch).not.toContain('docker run');
+    expect(profile.launch).not.toMatch(/\bgcloud\b/);
+  });
+
+  it('both referenced wrapper scripts actually exist on disk', () => {
+    expect(readFileSync(cloudLaunchScriptPath, 'utf8').length).toBeGreaterThan(0);
+    expect(readFileSync(cloudReapScriptPath, 'utf8').length).toBeGreaterThan(0);
+  });
+});
+
+describe('cloud-worker-launch.sh: exit-code contract (accepted design cf579f0f pt.1)', () => {
+  const script = readFileSync(cloudLaunchScriptPath, 'utf8');
+
+  it('fires the execution with --wait but does NOT trust --wait/execute\'s own exit code for classification', () => {
+    expect(script).toContain('gcloud run jobs execute');
+    expect(script).toContain('--wait');
+    // The exit code of the execute call is captured into a variable, never `exit $?` right after it.
+    expect(script).toMatch(/EXECUTE_EXIT=\$\?/);
+  });
+
+  it('ALWAYS makes an authoritative post-wait describe call, regardless of the execute exit code', () => {
+    expect(script).toContain('gcloud run jobs executions describe');
+    // The describe call must not be gated behind a check of the execute exit code succeeding.
+    const describeAt = script.indexOf('gcloud run jobs executions describe');
+    const guard = script.slice(0, describeAt);
+    expect(guard).not.toMatch(/if\s*\[\s*"\$EXECUTE_EXIT"\s*-eq\s*0\s*\]/);
+  });
+
+  it('parses status.succeededCount/failedCount/completionTime — the documented resource shape — not status.conditions', () => {
+    expect(script).toContain('status.succeededCount');
+    expect(script).toContain('status.failedCount');
+    expect(script).toContain('status.completionTime');
+    expect(script).not.toContain('status.conditions');
+  });
+
+  it('treats "neither succeeded nor failed yet" as dirty (exit 1), never as a guessed success', () => {
+    // succeeded branch exits 0, everything else (including the still-reconciling fallthrough) is 1.
+    const exitZeroCount = (script.match(/exit 0/g) ?? []).length;
+    expect(exitZeroCount).toBe(1);
+    expect(script).toMatch(/treating as dirty/);
+  });
+
+  it('carries the SMOKE-TEST GAP comment at the parsing site, verbatim marker', () => {
+    expect(script).toContain('SMOKE-TEST GAP (accepted design cf579f0f pt.1)');
+    expect(script).toContain('status.succeededCount/failedCount/completionTime');
+  });
+
+  it('the SMOKE-TEST GAP comment is marked CONFIRMED via live observation, not left hedged', () => {
+    expect(script).toContain('CONFIRMED via live observation (2026-08-03)');
+    expect(script).not.toContain('status.conditions');
+  });
+});
+
+describe('cloud-worker-launch.sh + cloud-worker-reap.sh: label-based execute/reap (accepted design cf579f0f pt.2)', () => {
+  const launchScript = readFileSync(cloudLaunchScriptPath, 'utf8');
+  const reapScript = readFileSync(cloudReapScriptPath, 'utf8');
+
+  it('launch labels the execution with conduction-id at execute time', () => {
+    expect(launchScript).toMatch(/--labels="conduction-id=\$CONDUCTION_ID"/);
+  });
+
+  it('reap resolves the execution by that SAME conduction-id label — never a caller-assigned name', () => {
+    expect(reapScript).toContain('executions list');
+    expect(reapScript).toContain('metadata.labels.conduction-id=$CONDUCTION_ID');
+  });
+
+  it('reap cancels the resolved execution asynchronously and tolerates "not found" as a no-op', () => {
+    expect(reapScript).toContain('executions cancel');
+    expect(reapScript).toContain('--async');
+    // Tolerance mirrors today's `docker rm -f` no-op-on-absent pattern: `|| true` at the call site.
+    const cancelAt = reapScript.indexOf('executions cancel');
+    const cancelStatement = reapScript.slice(cancelAt, reapScript.indexOf('\n\n', cancelAt) + 1);
+    expect(cancelStatement).toContain('|| true');
+  });
+
+  it('carries the CONFIRM AT VERIFY cancel-unblocks-wait comment at the cancel call site', () => {
+    expect(reapScript).toContain('CONFIRM AT VERIFY (accepted design cf579f0f pt.2)');
+    expect(reapScript).toMatch(/does a pending `execute --wait` actually/);
+  });
+
+  it('the cancel-unblocks-wait comment is marked CONFIRMED via live observation, not left hedged', () => {
+    expect(reapScript).toContain('CONFIRMED (2026-08-03)');
+    expect(reapScript).toMatch(/unblocked a pending `execute --wait`/);
+  });
+});
+
+describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + credential handling (accepted design cf579f0f pt.3)', () => {
+  const launchScript = readFileSync(cloudLaunchScriptPath, 'utf8');
+  const reapScript = readFileSync(cloudReapScriptPath, 'utf8');
+
+  it('mints the per-run env-file via the UNCHANGED mint script, WITHOUT --base (no static secrets file to merge)', () => {
+    expect(launchScript).toContain('mint-installation-token.mjs');
+    expect(launchScript).toContain('--out "$ENV_FILE"');
+    expect(launchScript).not.toMatch(/mint-installation-token\.mjs[^\n]*--base/);
+  });
+
+  it('namespaces the minted env-file by BOTH {ticket} and {conduction_id} (same discipline as the docker profile)', () => {
+    expect(launchScript).toContain('$HOME/.harmony-conductions/$TICKET/$CONDUCTION_ID');
+  });
+
+  it('reap deletes the SAME per-run minted env-file the launch wrapper wrote', () => {
+    expect(reapScript).toContain('rm -f "$ENV_FILE"');
+    expect(reapScript).toContain('$HOME/.harmony-conductions/$TICKET/$CONDUCTION_ID');
+    expect(reapScript).toContain('/run.env');
+    expect(launchScript).toContain('/run.env');
+  });
+
+  it('passes GIT_TOKEN via the `update --env-vars-file` call, never via a nonexistent `execute --update-env-vars-file` flag', () => {
+    expect(launchScript).toContain('gcloud run jobs update');
+    expect(launchScript).toContain('--env-vars-file="$EXEC_ENV_FILE"');
+    // CONFIRMED via a live `gcloud run jobs execute --help` check (2026-08-03): `execute` has no
+    // file-based env-vars flag at all, so the (nonexistent) flag USAGE must never appear anywhere in
+    // the script — the flag NAME may still appear in prose explaining why it was dropped.
+    expect(launchScript).not.toContain('--update-env-vars-file=');
+    // No inline KEY=VALUE form anywhere in the script either.
+    expect(launchScript).not.toMatch(/--update-env-vars=/);
+  });
+
+  it('issues the `update` call and then the `execute` call as two sequential gcloud invocations, in that order, before wait-classification logic runs', () => {
+    // Match the REAL invocations (start of line, no leading `#`), not prose mentions of the same
+    // words inside comments.
+    const updateMatch = /^gcloud run jobs update "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    const executeMatch = /^gcloud run jobs execute "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(updateMatch).not.toBeNull();
+    expect(executeMatch).not.toBeNull();
+    const updateAt = updateMatch!.index;
+    const executeAt = executeMatch!.index;
+    const executeExitAt = launchScript.indexOf('EXECUTE_EXIT=$?');
+    const describeAt = launchScript.indexOf('gcloud run jobs executions describe');
+
+    expect(updateAt).toBeGreaterThan(0);
+    expect(executeAt).toBeGreaterThan(updateAt); // update strictly before execute
+    expect(executeExitAt).toBeGreaterThan(executeAt);
+    expect(describeAt).toBeGreaterThan(executeExitAt); // wait-classification logic runs after both
+
+    // The `execute` call itself carries no env-vars flag anymore — the env now rides the job
+    // definition the `update` call above just set.
+    const executeInvocation = launchScript.slice(executeAt, executeExitAt);
+    expect(executeInvocation).not.toMatch(/--env-vars-file/);
+    expect(executeInvocation).not.toMatch(/--update-env-vars/);
+  });
+
+  it('the exec-env-vars file is deleted immediately after the execute call, not deferred to reap', () => {
+    const executeMatch = /^gcloud run jobs execute "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(executeMatch).not.toBeNull();
+    const afterExecute = launchScript.slice(executeMatch!.index);
+    expect(afterExecute).toMatch(/rm -f "\$EXEC_ENV_FILE"/);
+  });
+
+  it('never puts GIT_TOKEN inline on either the `update` or `execute` gcloud command lines', () => {
+    const updateMatch = /^gcloud run jobs update "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(updateMatch).not.toBeNull();
+    const updateAt = updateMatch!.index;
+    const updateEnd = launchScript.indexOf('\n\n', updateAt);
+    const updateInvocation = launchScript.slice(updateAt, updateEnd);
+    expect(updateInvocation).not.toMatch(/GIT_TOKEN=/);
+    expect(updateInvocation).not.toMatch(/-e\s+GIT_TOKEN/);
+    expect(updateInvocation).not.toMatch(/--env\s+GIT_TOKEN/);
+
+    const executeMatch = /^gcloud run jobs execute "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(executeMatch).not.toBeNull();
+    const executeAt = executeMatch!.index;
+    const flagBlockEnd = launchScript.indexOf('EXECUTE_EXIT=$?', executeAt);
+    const executeInvocation = launchScript.slice(executeAt, flagBlockEnd);
+    expect(executeInvocation).not.toMatch(/GIT_TOKEN=/);
+    expect(executeInvocation).not.toMatch(/-e\s+GIT_TOKEN/);
+    expect(executeInvocation).not.toMatch(/--env\s+GIT_TOKEN/);
+  });
+
+  it('isolates the env-vars-file construction in its own function, with the flag/format gap now CONFIRMED resolved there', () => {
+    expect(launchScript).toMatch(/write_exec_env_file\s*\(\)\s*\{/);
+    const fnAt = launchScript.indexOf('write_exec_env_file() {');
+    const fnBody = launchScript.slice(fnAt, launchScript.indexOf('\n}', fnAt));
+    expect(fnBody).toContain('CONFIRMED (2026-08-03, live `gcloud run jobs execute --help` check)');
+    expect(fnBody).toMatch(/has NO file-based env-vars flag at all/);
+    // The flag that does not exist must never appear as an actual USAGE (trailing `=`) — mentioning
+    // its bare name in prose, to explain why it was dropped, is fine and expected.
+    expect(fnBody).not.toContain('--update-env-vars-file=');
+  });
+
+  it('the mint script the cloud template invokes actually exists and is the same shared script', () => {
+    expect(readFileSync(mintScriptPath, 'utf8')).toContain('export function composeEnvFile');
+  });
+
+  it('documents the inline --update-env-vars merge-override without adopting it for GIT_TOKEN, and softens the token-out-of-spec claim', () => {
+    const fnAt = launchScript.indexOf('write_exec_env_file() {');
+    const fnBody = launchScript.slice(fnAt, launchScript.indexOf('\n}', fnAt));
+    // Flatten wrapped comment lines (strip the leading `# `/`  # ` continuation) so prose assertions
+    // aren't brittle to exactly where a sentence happens to wrap.
+    const flat = fnBody.replace(/\n\s*#\s?/g, ' ');
+    expect(flat).toMatch(/inline `--update-env-vars` merge-override/);
+    expect(flat).toMatch(/merge-override/);
+    // Honesty fix (live smoke probe, 2026-08-03): the token lands in the spec either way — the
+    // file-based route's benefit is keeping it off argv/process list, not off the spec.
+    expect(flat).toMatch(/lands in the job\/execution spec metadata either way/);
+    expect(flat).toMatch(/argv\/process list/);
+    // still file-based for GIT_TOKEN — the security contract this describe block enforces
+    expect(launchScript).toContain('--env-vars-file="$EXEC_ENV_FILE"');
+    expect(launchScript).not.toContain('--update-env-vars-file=');
+  });
+});
+
+describe('cloud-worker-launch.sh: B-717 named constraint at the update/execute mutation call sites', () => {
+  const launchScript = readFileSync(cloudLaunchScriptPath, 'utf8');
+
+  it('carries the B-717 comment immediately at the `update --env-vars-file` call site', () => {
+    const updateMatch = /^gcloud run jobs update "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(updateMatch).not.toBeNull();
+    const updateAt = updateMatch!.index;
+    const nearby = launchScript.slice(Math.max(0, updateAt - 1600), updateAt + 200);
+    expect(nearby).toContain('B-717 (accepted design cf579f0f pt.3, round-2 feedback');
+    expect(nearby).toContain('mutates (replaces) the Cloud Run');
+    expect(nearby).toMatch(/JOB DEFINITION itself/);
+    expect(nearby).toMatch(/strictly serial today/);
+    expect(nearby).toMatch(/STRENGTHENED round 3/);
+  });
+
+  it('carries the B-717 comment (or a copy) immediately at the `execute` call site too, describing the two-call sequence', () => {
+    const executeMatch = /^gcloud run jobs execute "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(executeMatch).not.toBeNull();
+    const executeAt = executeMatch!.index;
+    const nearby = launchScript.slice(Math.max(0, executeAt - 1400), executeAt);
+    expect(nearby).toContain('B-717 (accepted design cf579f0f pt.3, round-2 feedback');
+    expect(nearby).toMatch(/STRENGTHENED round 3/);
+    expect(nearby).toMatch(/second of the two non-atomic calls/);
+  });
+
+  it('the B-717 comment documents that update-then-execute is now TWO non-atomic calls, strengthening (not relaxing) the constraint', () => {
+    const updateMatch = /^gcloud run jobs update "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    expect(updateMatch).not.toBeNull();
+    const updateAt = updateMatch!.index;
+    const nearby = launchScript.slice(Math.max(0, updateAt - 1600), updateAt + 200);
+    expect(nearby).toMatch(/TWO non-atomic gcloud calls/);
+    expect(nearby).toMatch(/STRENGTHENS, not relaxes/);
+  });
+});
+
+describe('cloud-worker scripts: config-not-constants (B-711) — no hardcoded live GCP identity', () => {
+  const launchScript = readFileSync(cloudLaunchScriptPath, 'utf8');
+  const reapScript = readFileSync(cloudReapScriptPath, 'utf8');
+
+  it('project/account/region/job are all overridable env vars with := defaults, on both scripts', () => {
+    for (const script of [launchScript, reapScript]) {
+      expect(script).toMatch(/CLOUDSDK_CORE_PROJECT:=/);
+      expect(script).toMatch(/CLOUDSDK_CORE_ACCOUNT:=/);
+      expect(script).toMatch(/HARMONY_CLOUD_RUN_REGION:=/);
+      expect(script).toMatch(/HARMONY_CLOUD_RUN_JOB:=/);
+    }
+  });
+
+  it('the example defaults match the already-completed founder GCP setup (accepted design pt.7)', () => {
+    expect(launchScript).toContain('harmony-conductor');
+    expect(launchScript).toContain('harmony-daemon@harmony-conductor.iam.gserviceaccount.com');
+    expect(launchScript).toContain('us-central1');
+  });
+});
