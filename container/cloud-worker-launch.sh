@@ -20,6 +20,15 @@
 # same label), THEN releases the lock, THEN polls `executions describe` (unchanged, step 4 below)
 # until the execution reaches a terminal state.
 #
+# B-717 REOPENED FIX (live concurrency test, 2026-08-04): dropping `--wait` alone did NOT bound the
+# lock to "a few seconds" as designed — `execute` without `--wait` still blocks until the operation
+# in progress (the execution actually STARTING) completes, and a cold start of the worker image
+# takes 1.5-2.5 minutes. The lock was therefore held ~2.5 minutes in practice, and a peer wrapper hit
+# the (then 60s) lock-wait timeout and dirty-exited waiting for it. Fixed by adding `--async` to the
+# `execute` call (see the call site below) — genuinely returns as soon as submission is accepted, no
+# more waiting for the execution to start — plus raising `LOCK_WAIT_TIMEOUT_S`'s default from 60 to
+# 300 as belt-and-braces for any residual slow creation.
+#
 # Usage: cloud-worker-launch.sh <conduction_id> <ticket>
 set -euo pipefail
 
@@ -44,7 +53,7 @@ export CLOUDSDK_CORE_PROJECT CLOUDSDK_CORE_ACCOUNT
 # TMPDIR per host is fine; override HARMONY_CLOUD_LAUNCH_LOCK_DIR if the host needs a different path.
 : "${HARMONY_CLOUD_LAUNCH_LOCK_DIR:=${TMPDIR:-/tmp}/harmony-cloud-worker-launch.lock}"
 LOCK_DIR="$HARMONY_CLOUD_LAUNCH_LOCK_DIR"
-LOCK_WAIT_TIMEOUT_S="${HARMONY_CLOUD_LAUNCH_LOCK_TIMEOUT_S:-60}"
+LOCK_WAIT_TIMEOUT_S="${HARMONY_CLOUD_LAUNCH_LOCK_TIMEOUT_S:-300}"
 LOCK_POLL_S=1
 
 # B-717 / plan-gate correction 3: release via an EXIT trap (crash-safety — a killed wrapper must not
@@ -206,10 +215,19 @@ gcloud run jobs update "$HARMONY_CLOUD_RUN_JOB" \
   --env-vars-file="$EXEC_ENV_FILE" \
   --update-labels="conduction-id=$CONDUCTION_ID"
 
-# 3b. Fire the job execution WITHOUT --wait (B-717 plan-gate correction 1): `execute --wait` is a
-#     single blocking call with no "submission returns an execution id" moment — this wrapper must
-#     release the launch lock as soon as the execution EXISTS, well before it completes, so N
-#     concurrent wrapper invocations' multi-minute waits run fully unlocked (see step 4 below).
+# 3b. Fire the job execution WITHOUT --wait (B-717 plan-gate correction 1) AND WITH --async (B-717
+#     reopened fix, live concurrency test 2026-08-04): `execute --wait` is a single blocking call
+#     with no "submission returns an execution id" moment. But dropping `--wait` alone was NOT
+#     enough — `execute` without `--wait` still blocks until the operation in progress (the
+#     execution actually STARTING) completes, and a cold start of the worker image takes 1.5-2.5
+#     minutes, not the "few seconds" the launch lock (acquire_lock/release_lock above) was designed
+#     to be held for. A peer wrapper hit the lock's wait timeout and dirty-exited while this call was
+#     still blocked. `--async` (CONFIRMED present on `gcloud run jobs execute --help`: "Return
+#     immediately, without waiting for the operation in progress to complete.") fixes this: the lock
+#     is now held only for the `update`+`execute`-submission round trip, genuinely a few seconds. Env
+#     vars/labels are snapshotted at job-execute time regardless of `--async`, and this wrapper
+#     already resolves the execution afterward via the conduction-id label lookup (below) rather than
+#     parsing `execute`'s own output, so no other logic here needs to change.
 #     `gcloud run jobs execute` has no `--labels` flag (CONFIRMED live, 2026-08-03 — see the `update`
 #     call site above); the execution is instead found via the `conduction-id` label the `update`
 #     call above just set on the JOB DEFINITION, which the execution inherits (CONFIRMED live) into
@@ -227,6 +245,7 @@ gcloud run jobs update "$HARMONY_CLOUD_RUN_JOB" \
 set +e
 gcloud run jobs execute "$HARMONY_CLOUD_RUN_JOB" \
   --region="$HARMONY_CLOUD_RUN_REGION" \
+  --async \
   --args="headless,/harmony-plugin:harmony-conduct $TICKET --one-shot"
 EXECUTE_SUBMIT_EXIT=$?
 set -e
