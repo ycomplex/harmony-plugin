@@ -30,18 +30,28 @@ mkdir -p "$RUN_DIR"
 ENV_FILE="$RUN_DIR/run.env"           # per-run minted GIT_TOKEN, same lifetime/shape as B-732
 EXEC_ENV_FILE="$RUN_DIR/exec-env-vars.yaml"  # per-EXECUTE-call file, deleted right after use
 
-# 1. Mint a fresh per-run GitHub App installation token (B-732 mechanism, unchanged). Called
-#    WITHOUT --base: unlike the docker profile there is no static secrets file to merge, because
-#    HARMONY_API_TOKEN and CLAUDE_CODE_OAUTH_TOKEN are bound to the Cloud Run JOB DEFINITION itself
-#    via --set-secrets (accepted design cf579f0f pt.3, founder one-time setup — see README), not
-#    passed per-execution. The minted env-file therefore carries only GIT_TOKEN.
-node "$HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs" --out "$ENV_FILE"
+# 1. Mint a fresh per-run GitHub App installation token (B-732 mechanism, unchanged).
+#    B-726 followup (2026-08-04 live probe): this call used to be made WITHOUT --base, on the
+#    (wrong) assumption that there was no static secrets file to merge on the cloud path. That
+#    omission was the actual root cause of B-726's ack flag never reaching the cloud container:
+#    the minted env-file only ever carried GIT_TOKEN, so the HARMONY_ACK_PLUGIN_AHEAD_OF_PROD
+#    acquisition below had nothing to read. Now minted WITH --base "$HOME/.harmony-container.env",
+#    matching the local docker profile's launch template exactly (see
+#    container/daemon-profile.example.json's `launch` field) — that static file is where the ack
+#    flag actually lives on this host, same as the docker profile.
+node "$HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs" --base "$HOME/.harmony-container.env" --out "$ENV_FILE"
 
 GIT_TOKEN="$(grep -m1 '^GIT_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
 if [ -z "$GIT_TOKEN" ]; then
   echo "cloud-worker-launch: minted env-file at $ENV_FILE carries no GIT_TOKEN" >&2
   exit 1
 fi
+
+# B-726 followup: now sourced from the SAME minted env-file as GIT_TOKEN above (which merges
+# $HOME/.harmony-container.env via --base), read the same way (grep + cut). Deliberately NO
+# non-empty check here, unlike GIT_TOKEN: an unset/empty ack must still fail closed downstream in
+# provision.sh's ref/target fidelity guard, so this is allowed to come through empty.
+HARMONY_ACK_PLUGIN_AHEAD_OF_PROD="$(grep -m1 '^HARMONY_ACK_PLUGIN_AHEAD_OF_PROD=' "$ENV_FILE" | cut -d= -f2- || true)"
 
 # 2. Compose the per-execution env-vars FILE. A small, isolated function on purpose — see the
 #    CONFIRMED note inside it (round 3: the flag/format question this note originally raised is now
@@ -74,9 +84,11 @@ write_exec_env_file() {
       # B-726 followup: `update --env-vars-file` REPLACES the job's entire literal env-var set (see
       # the block comment above this function), so HARMONY_ACK_PLUGIN_AHEAD_OF_PROD has no other
       # channel to reach the cloud container's provision.sh ref/target fidelity check (the guard
-      # B-726 itself added). Read it from THIS wrapper's own environment (the daemon host / whoever
-      # invokes cloud-worker-launch.sh) and forward it only when set — an unset ack must still fail
-      # closed exactly as provision.sh intends, so this is deliberately conditional, never unconditional.
+      # B-726 itself added). This is now a local shell variable populated from the minted env-file
+      # above (via `mint-installation-token.mjs --base "$HOME/.harmony-container.env"`), NOT
+      # inherited from this wrapper's own invoking environment (the daemon host process) — forward
+      # it only when set — an unset ack must still fail closed exactly as provision.sh intends, so
+      # this is deliberately conditional, never unconditional.
       if [ -n "${HARMONY_ACK_PLUGIN_AHEAD_OF_PROD:-}" ]; then
         printf 'HARMONY_ACK_PLUGIN_AHEAD_OF_PROD: "%s"\n' "$HARMONY_ACK_PLUGIN_AHEAD_OF_PROD"
       fi

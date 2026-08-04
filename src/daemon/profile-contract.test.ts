@@ -5,8 +5,11 @@
 // rejects as an unknown mode. Both files are read from disk so either side drifting breaks CI.
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 
 const profilePath = fileURLToPath(
   new URL('../../container/daemon-profile.example.json', import.meta.url),
@@ -354,10 +357,15 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
   const launchScript = readFileSync(cloudLaunchScriptPath, 'utf8');
   const reapScript = readFileSync(cloudReapScriptPath, 'utf8');
 
-  it('mints the per-run env-file via the UNCHANGED mint script, WITHOUT --base (no static secrets file to merge)', () => {
+  it('mints the per-run env-file WITH --base "$HOME/.harmony-container.env" (B-726 followup, 2026-08-04 live probe: the prior no-base form was the root cause of the ack flag never reaching the cloud container)', () => {
     expect(launchScript).toContain('mint-installation-token.mjs');
     expect(launchScript).toContain('--out "$ENV_FILE"');
-    expect(launchScript).not.toMatch(/mint-installation-token\.mjs[^\n]*--base/);
+    // Matches the local docker profile's launch template exactly (daemon-profile.example.json's
+    // `launch` field mints WITH --base $HOME/.harmony-container.env) — the --base flag must appear
+    // on the mint invocation, immediately before --out.
+    expect(launchScript).toMatch(
+      /mint-installation-token\.mjs" --base "\$HOME\/\.harmony-container\.env" --out "\$ENV_FILE"/,
+    );
   });
 
   it('namespaces the minted env-file by BOTH {ticket} and {conduction_id} (same discipline as the docker profile)', () => {
@@ -444,12 +452,15 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
     expect(fnBody).not.toContain('--update-env-vars-file=');
   });
 
-  it("conditionally forwards HARMONY_ACK_PLUGIN_AHEAD_OF_PROD from the wrapper's own environment (B-726 followup: cloud ack channel)", () => {
+  it("conditionally forwards HARMONY_ACK_PLUGIN_AHEAD_OF_PROD, now sourced from the minted env-file rather than the wrapper's own invoking environment (B-726 followup: cloud ack channel base-flag fix)", () => {
     // `update --env-vars-file` REPLACES the job's entire literal env set (documented at length
     // around this function), so the ack flag has no other channel to reach the cloud container's
     // provision.sh ref/target fidelity check (the guard B-726 itself added). It must be written
     // ONLY when the wrapper's own environment actually carries it — never unconditionally, so a
-    // cloud launch with no ack set still fails closed exactly as provision.sh intends.
+    // cloud launch with no ack set still fails closed exactly as provision.sh intends. The
+    // conditional-forward logic itself is unchanged by the B-726 followup fix (only the SOURCE of
+    // the HARMONY_ACK_PLUGIN_AHEAD_OF_PROD shell variable changed, see the acquisition-line tests
+    // below and the executed test further down).
     const fnAt = launchScript.indexOf('write_exec_env_file() {');
     const fnBody = launchScript.slice(fnAt, launchScript.indexOf('\n}', fnAt));
     expect(fnBody).toContain('HARMONY_ACK_PLUGIN_AHEAD_OF_PROD');
@@ -461,6 +472,106 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
     expect(guardMatch![1]).toMatch(
       /printf 'HARMONY_ACK_PLUGIN_AHEAD_OF_PROD: "%s"\\n' "\$HARMONY_ACK_PLUGIN_AHEAD_OF_PROD"/,
     );
+  });
+
+  it('acquires HARMONY_ACK_PLUGIN_AHEAD_OF_PROD from the SAME minted $ENV_FILE as GIT_TOKEN, via grep + cut, with no non-empty check (unlike GIT_TOKEN — an unset ack must still fail closed downstream)', () => {
+    const gitTokenAt = launchScript.indexOf('GIT_TOKEN="$(grep -m1');
+    expect(gitTokenAt).toBeGreaterThanOrEqual(0);
+    const ackAt = launchScript.indexOf('HARMONY_ACK_PLUGIN_AHEAD_OF_PROD="$(grep -m1');
+    expect(ackAt).toBeGreaterThanOrEqual(0);
+    // The ack acquisition must come from the launch script (step 1), strictly AFTER the GIT_TOKEN
+    // acquisition + its non-empty check, and strictly BEFORE write_exec_env_file() is defined —
+    // i.e. it is a step-1 local shell variable, not something write_exec_env_file() itself derives.
+    const fnAt = launchScript.indexOf('write_exec_env_file() {');
+    expect(ackAt).toBeGreaterThan(gitTokenAt);
+    expect(ackAt).toBeLessThan(fnAt);
+
+    const ackLineEnd = launchScript.indexOf('\n', ackAt);
+    const ackLine = launchScript.slice(ackAt, ackLineEnd);
+    expect(ackLine).toContain("grep -m1 '^HARMONY_ACK_PLUGIN_AHEAD_OF_PROD=' \"$ENV_FILE\"");
+    expect(ackLine).toContain('cut -d= -f2-');
+    // Deliberately no `-z`/non-empty guard on this line (contrast with GIT_TOKEN's immediately
+    // preceding `if [ -z "$GIT_TOKEN" ]; then ... exit 1; fi`).
+    expect(ackLine).not.toMatch(/-z "\$HARMONY_ACK_PLUGIN_AHEAD_OF_PROD"/);
+  });
+
+  describe('EXECUTED write_exec_env_file() behavior (B-726 followup — prose-pinned contract tests alone are no longer trusted for this wrapper)', () => {
+    // Three consecutive cloud-path defects in this wrapper (the env-file subset gap, the
+    // describe-result field-shift, and now this missing --base) each passed prose-pinned contract
+    // tests (regex assertions against the script's TEXT) and were only caught live. This block
+    // actually EXECUTES the real acquisition lines + write_exec_env_file() body, extracted
+    // VERBATIM from the live script text (never hand-retyped), so drift in the script's real
+    // logic breaks this test too, not just its prose.
+
+    /** Extract the single line in `script` that begins with `marker`, verbatim. */
+    function extractLine(script: string, marker: string): string {
+      const at = script.indexOf(marker);
+      expect(at).toBeGreaterThanOrEqual(0);
+      const end = script.indexOf('\n', at);
+      expect(end).toBeGreaterThan(at);
+      return script.slice(at, end);
+    }
+
+    /** Extract the full `write_exec_env_file() { ... }` function definition, closing brace included. */
+    function extractFunctionBody(script: string): string {
+      const fnAt = script.indexOf('write_exec_env_file() {');
+      expect(fnAt).toBeGreaterThanOrEqual(0);
+      const closeAt = script.indexOf('\n}', fnAt);
+      expect(closeAt).toBeGreaterThan(fnAt);
+      return script.slice(fnAt, closeAt + 2); // include the closing "\n}"
+    }
+
+    function runWriteExecEnvFile(fixtureEnvContent: string): string {
+      const dir = mkdtempSync(join(tmpdir(), 'b726-write-exec-env-'));
+      const envFile = join(dir, 'run.env');
+      const outFile = join(dir, 'exec-env-vars.yaml');
+      const scriptFile = join(dir, 'harness.sh');
+
+      writeFileSync(envFile, fixtureEnvContent);
+
+      const gitTokenAcquisition = extractLine(launchScript, 'GIT_TOKEN="$(grep -m1');
+      const ackAcquisition = extractLine(
+        launchScript,
+        'HARMONY_ACK_PLUGIN_AHEAD_OF_PROD="$(grep -m1',
+      );
+      const fnBody = extractFunctionBody(launchScript);
+
+      const harness = [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        'CONDUCTION_ID="cond-test-1"',
+        'TICKET="B-726"',
+        `ENV_FILE="${envFile}"`,
+        gitTokenAcquisition,
+        ackAcquisition,
+        fnBody,
+        `write_exec_env_file "${outFile}"`,
+        '',
+      ].join('\n');
+
+      writeFileSync(scriptFile, harness, { mode: 0o700 });
+      execFileSync('bash', [scriptFile]);
+
+      return readFileSync(outFile, 'utf8');
+    }
+
+    it('produces HARMONY_ACK_PLUGIN_AHEAD_OF_PROD: "1" in the output YAML when the fixture minted env-file carries the ack flag', () => {
+      const output = runWriteExecEnvFile(
+        ['GIT_TOKEN=ghs_dummytoken', 'HARMONY_ACK_PLUGIN_AHEAD_OF_PROD=1', ''].join('\n'),
+      );
+      expect(output).toContain('CONDUCTION_ID: "cond-test-1"');
+      expect(output).toContain('TICKET: "B-726"');
+      expect(output).toContain('GIT_TOKEN: "ghs_dummytoken"');
+      expect(output).toContain('HARMONY_ACK_PLUGIN_AHEAD_OF_PROD: "1"');
+    });
+
+    it('omits the HARMONY_ACK_PLUGIN_AHEAD_OF_PROD line entirely when the fixture minted env-file does not carry it', () => {
+      const output = runWriteExecEnvFile(['GIT_TOKEN=ghs_dummytoken', ''].join('\n'));
+      expect(output).toContain('CONDUCTION_ID: "cond-test-1"');
+      expect(output).toContain('TICKET: "B-726"');
+      expect(output).toContain('GIT_TOKEN: "ghs_dummytoken"');
+      expect(output).not.toContain('HARMONY_ACK_PLUGIN_AHEAD_OF_PROD');
+    });
   });
 
   it('the mint script the cloud template invokes actually exists and is the same shared script', () => {
