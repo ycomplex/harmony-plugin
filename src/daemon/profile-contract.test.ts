@@ -275,6 +275,23 @@ describe('cloud-worker-launch.sh: exit-code contract (accepted design cf579f0f p
     expect(script).toMatch(/treating as dirty/);
   });
 
+  it('parses the describe result via null-safe --format=json + jq, never the field-shifting --format=value(...) form (B-754-element fix, 2026-08-04)', () => {
+    // `--format=value(...)` prints tab/space-separated columns and silently drops a null/absent
+    // column instead of an empty field, so `read` shifts the remaining fields left — a FAILED
+    // execution (succeededCount null, failedCount=1) would parse as SUCCEEDED=1. Pin the fix: the
+    // describe call for SUCCEEDED/FAILED/COMPLETION must use --format=json piped into jq, and must
+    // NOT use the value(...) form for this parse.
+    const describeAt = script.indexOf('gcloud run jobs executions describe');
+    const readEnd = script.indexOf(')', script.indexOf('read -r SUCCEEDED FAILED COMPLETION'));
+    const describeBlock = script.slice(describeAt, readEnd);
+    expect(describeBlock).not.toMatch(/--format='value\(status\.succeededCount/);
+    expect(describeBlock).toContain('--format=json');
+    expect(describeBlock).toMatch(/\|\s*jq -r/);
+    expect(describeBlock).toMatch(/\.status\.succeededCount \/\/ 0/);
+    expect(describeBlock).toMatch(/\.status\.failedCount \/\/ 0/);
+    expect(describeBlock).toMatch(/\.status\.completionTime \/\/ ""/);
+  });
+
   it('carries the SMOKE-TEST GAP comment at the parsing site, verbatim marker', () => {
     expect(script).toContain('SMOKE-TEST GAP (accepted design cf579f0f pt.1)');
     expect(script).toContain('status.succeededCount/failedCount/completionTime');
@@ -425,6 +442,25 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
     // The flag that does not exist must never appear as an actual USAGE (trailing `=`) — mentioning
     // its bare name in prose, to explain why it was dropped, is fine and expected.
     expect(fnBody).not.toContain('--update-env-vars-file=');
+  });
+
+  it("conditionally forwards HARMONY_ACK_PLUGIN_AHEAD_OF_PROD from the wrapper's own environment (B-726 followup: cloud ack channel)", () => {
+    // `update --env-vars-file` REPLACES the job's entire literal env set (documented at length
+    // around this function), so the ack flag has no other channel to reach the cloud container's
+    // provision.sh ref/target fidelity check (the guard B-726 itself added). It must be written
+    // ONLY when the wrapper's own environment actually carries it — never unconditionally, so a
+    // cloud launch with no ack set still fails closed exactly as provision.sh intends.
+    const fnAt = launchScript.indexOf('write_exec_env_file() {');
+    const fnBody = launchScript.slice(fnAt, launchScript.indexOf('\n}', fnAt));
+    expect(fnBody).toContain('HARMONY_ACK_PLUGIN_AHEAD_OF_PROD');
+    expect(fnBody).toMatch(/if \[ -n "\$\{HARMONY_ACK_PLUGIN_AHEAD_OF_PROD:-\}" \]; then/);
+    const guardMatch = /if \[ -n "\$\{HARMONY_ACK_PLUGIN_AHEAD_OF_PROD:-\}" \]; then([\s\S]*?)\n\s*fi/.exec(
+      fnBody,
+    );
+    expect(guardMatch).not.toBeNull();
+    expect(guardMatch![1]).toMatch(
+      /printf 'HARMONY_ACK_PLUGIN_AHEAD_OF_PROD: "%s"\\n' "\$HARMONY_ACK_PLUGIN_AHEAD_OF_PROD"/,
+    );
   });
 
   it('the mint script the cloud template invokes actually exists and is the same shared script', () => {
