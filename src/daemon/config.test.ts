@@ -126,6 +126,74 @@ describe('loadDaemonConfig', () => {
     ).toThrow(/HARMONY_DAEMON_RETRY_CAP/);
   });
 
+  it('B-717: defaults maxConcurrentWorkers to 3 and readyAgeMs to 10 minutes', () => {
+    const cfg = loadDaemonConfig(envWith(), readProfile);
+    expect(cfg.maxConcurrentWorkers).toBe(3);
+    expect(cfg.readyAgeMs).toBe(600_000);
+  });
+
+  it('B-717: HARMONY_DAEMON_MAX_CONCURRENT_WORKERS overrides the default', () => {
+    const cfg = loadDaemonConfig(envWith({ HARMONY_DAEMON_MAX_CONCURRENT_WORKERS: '5' }), readProfile);
+    expect(cfg.maxConcurrentWorkers).toBe(5);
+  });
+
+  it('B-717: a profile-level maxConcurrentWorkers is read as the per-profile default, below the env var', () => {
+    const profileWithCap = JSON.stringify({
+      launch: 'launch {conduction_id} {ticket}',
+      reap: 'reap {conduction_id}',
+      maxConcurrentWorkers: 2,
+    });
+    const readWithCap = (p: string) => {
+      if (p !== '/etc/harmony/profile.json') throw new Error(`unexpected path ${p}`);
+      return profileWithCap;
+    };
+    expect(loadDaemonConfig(envWith(), readWithCap).maxConcurrentWorkers).toBe(2);
+    // The env var still wins over the profile's own default.
+    expect(
+      loadDaemonConfig(envWith({ HARMONY_DAEMON_MAX_CONCURRENT_WORKERS: '7' }), readWithCap)
+        .maxConcurrentWorkers,
+    ).toBe(7);
+  });
+
+  it('B-717: rejects a non-integer or negative maxConcurrentWorkers', () => {
+    expect(() =>
+      loadDaemonConfig(envWith({ HARMONY_DAEMON_MAX_CONCURRENT_WORKERS: 'many' }), readProfile),
+    ).toThrow(/HARMONY_DAEMON_MAX_CONCURRENT_WORKERS/);
+    expect(() =>
+      loadDaemonConfig(envWith({ HARMONY_DAEMON_MAX_CONCURRENT_WORKERS: '-1' }), readProfile),
+    ).toThrow(/HARMONY_DAEMON_MAX_CONCURRENT_WORKERS/);
+  });
+
+  it('B-717: HARMONY_DAEMON_READY_AGE_MS overrides the 10-minute default', () => {
+    const cfg = loadDaemonConfig(envWith({ HARMONY_DAEMON_READY_AGE_MS: '120000' }), readProfile);
+    expect(cfg.readyAgeMs).toBe(120_000);
+  });
+
+  it('B-717: reads an optional "probe" template from the profile JSON when present', () => {
+    const probeProfile = JSON.stringify({
+      launch: 'launch {conduction_id} {ticket}',
+      reap: 'reap {conduction_id}',
+      probe: 'probe {conduction_id}',
+    });
+    const readWithProbe = (p: string) => {
+      if (p !== '/etc/harmony/profile.json') throw new Error(`unexpected path ${p}`);
+      return probeProfile;
+    };
+    expect(loadDaemonConfig(envWith(), readWithProbe).profile.probe).toBe('probe {conduction_id}');
+    // Absent by default — reconciliation is opt-in per profile.
+    expect(loadDaemonConfig(envWith(), readProfile).profile.probe).toBeUndefined();
+  });
+
+  it('B-717: rejects an empty-string "probe" template', () => {
+    const badProfile = JSON.stringify({
+      launch: 'launch {conduction_id} {ticket}',
+      reap: 'reap {conduction_id}',
+      probe: '',
+    });
+    const readBad = () => badProfile;
+    expect(() => loadDaemonConfig(envWith(), readBad)).toThrow(/probe/);
+  });
+
   it('carries the optional log path from HARMONY_DAEMON_LOG', () => {
     expect(loadDaemonConfig(envWith(), readProfile).logPath).toBeUndefined();
     expect(

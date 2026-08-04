@@ -237,17 +237,36 @@ Everything operational is an env knob or a profile file — never a code edit:
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `HARMONY_DAEMON_PROFILE` | *(required)* | Path to the launch-profile JSON: `{ launch, reap }` command templates with `{conduction_id}` / `{ticket}` placeholders. No baked-in worker command — swapping agent brands is a profile edit. |
-| `HARMONY_DAEMON_POLL_MS` | `25000` | Pass cadence (one watch/heartbeat pass per interval). |
+| `HARMONY_DAEMON_PROFILE` | *(required)* | Path to the launch-profile JSON: `{ launch, reap }` command templates (plus two OPTIONAL fields, B-717 — see below) with `{conduction_id}` / `{ticket}` placeholders. No baked-in worker command — swapping agent brands is a profile edit. |
+| `HARMONY_DAEMON_POLL_MS` | `25000` | Pass cadence (one watch/heartbeat pass per interval — a pass never blocks on a worker, B-717). |
 | `HARMONY_DAEMON_HEARTBEAT_MS` | `30000` | Lease heartbeat cadence (poll ≤ heartbeat). |
 | `HARMONY_DAEMON_STALE_MS` | `300000` | Silence threshold after which another daemon may CAS-take the lease. |
 | `HARMONY_DAEMON_RETRY_CAP` | `2` | Bounded retries for a dirty worker exit before the conduction parks. `0` disables retry (immediate park, pre-B-713 behavior). |
-| `HARMONY_DAEMON_RETRY_BACKOFF_MS` | `15000` | Backoff between a dirty exit and its retried re-fire. |
+| `HARMONY_DAEMON_RETRY_BACKOFF_MS` | `15000` | Base backoff between a dirty exit and its retried re-fire — B-717 made this EXPONENTIAL (`backoff * 2**(attempt-1)`), so this knob is the FIRST retry's delay, not a flat one. |
+| `HARMONY_DAEMON_MAX_CONCURRENT_WORKERS` | *(profile's own, else `3`)* | B-717: the fire-and-track concurrency cap — how many workers this daemon runs at once. Overrides the launch profile's own `maxConcurrentWorkers` (see below) when set; falls back to 3 (sized for local-docker's host resource ceiling) when neither is set. |
+| `HARMONY_DAEMON_READY_AGE_MS` | `600000` (10 min) | B-717: a ready-but-unfired conduction waiting longer than this is promoted one priority tier for firing order only (aging escalation — prevents starvation under a sustained high-priority stream). |
 | `HARMONY_DAEMON_LOG` | *(unset)* | Optional extra log file (stdout is primary; launchd redirects it). |
+
+**B-717 optional profile fields** (alongside `launch`/`reap` in the profile JSON):
+
+- **`probe`** — a command template that exits 0 when a worker for `{conduction_id}` is still
+  running, non-zero when it is not. Used ONLY for restart reconciliation: on a newly-won takeover
+  of a lease whose worker MIGHT still genuinely be running (this daemon's own restart, or a dead
+  peer), the daemon probes before ever reaping — found ⇒ re-attaches (never re-fires a second
+  worker alongside a live one); not found ⇒ falls back to the pre-B-717 REAP-THEN-FIRE. A profile
+  that omits `probe` simply skips reconciliation entirely (safe, if slightly blunter — every
+  takeover reaps defensively, as it always did).
+- **`maxConcurrentWorkers`** — this profile's own concurrency default (see the env var above,
+  which always wins when set). Sized per launch mechanism: local-docker's example profile sets 3
+  (the host resource ceiling); the cloud example profile sets a more conservative 2 pending live
+  rate-limit data — override on the daemon host to match your subscription/quota.
 
 Worker containers are named `harmony-worker-<conduction_id>` (the example
 profile's templates), so `docker ps` maps running workers to conductions and
-the reap template can remove a dead holder's worker by name.
+the reap template can remove a dead holder's worker by name — this naming is
+ALREADY per-conduction-unique (confirmed B-717 AC6: two conductions firing
+concurrently on the local-docker profile never share a container name, bind
+mount, or env-file — each is namespaced by `{conduction_id}`).
 
 ### Worker transcripts survive the container (B-724)
 

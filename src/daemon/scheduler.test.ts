@@ -2,10 +2,12 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   runSchedulerPass,
   runScheduler,
+  createSchedulerRuntime,
   isAuthShapedError,
   PersistentAuthFailure,
   PersistentReapFailure,
   type SchedulerDeps,
+  type SchedulerRuntime,
   type DaemonTask,
 } from './scheduler.js';
 import { createHeartbeatKeeper } from './heartbeat.js';
@@ -38,6 +40,7 @@ function conduction(over: Partial<ConductionRecord> = {}): ConductionRecord {
     created_by: null,
     created_at: iso(T0),
     updated_at: iso(T0),
+    task_priority: 'medium',
     ...over,
   };
 }
@@ -51,7 +54,17 @@ const config: DaemonConfig = {
   retryCap: 0,
   retryBackoffMs: 15_000,
   workerTimeoutMs: 5_400_000,
+  // B-717: 3 concurrent workers / 10-minute aging, matching config.ts's own defaults, so a test
+  // that doesn't care about concurrency at all still exercises the real default ceiling.
+  maxConcurrentWorkers: 3,
+  readyAgeMs: 600_000,
   profile: { launch: 'launch {conduction_id} {ticket}', reap: 'reap {conduction_id}' },
+};
+
+/** B-717 restart reconciliation: a profile that also carries the optional `probe` template. */
+const reconcilableConfig: DaemonConfig = {
+  ...config,
+  profile: { ...config.profile, probe: 'probe {conduction_id}' },
 };
 
 interface HarnessOpts {
@@ -63,17 +76,29 @@ interface HarnessOpts {
   childCount?: number;
   config?: DaemonConfig;
   /** B-713: per-launch exit codes, consumed in order (falls back to launchExitCode/0 once
-   *  exhausted) — lets a test script "dirty, dirty, clean" across retried attempts. */
+   *  exhausted) — lets a test script "dirty, dirty, clean" across retried attempts. Applies to
+   *  EVERY conduction's launches, in the GLOBAL order they fire — fine for the single-conduction
+   *  retry-ladder tests that use it. */
   launchExitCodes?: Array<number | null>;
-  /** B-739: hold the launch pending so a test can watch the daemon WHILE a worker blocks. */
+  /** B-739: hold EVERY launch pending so a test can watch the daemon WHILE a worker blocks. */
   blockLaunch?: boolean;
+  /** Hold only specific conduction ids' launches pending — for multi-conduction concurrency tests
+   *  that need SOME workers blocked and others not. */
+  blockLaunchIds?: string[];
   /** B-739: simulate a wedged container runtime — the reap never frees the blocked launch. */
   reapNeverFrees?: boolean;
+  /** B-717: default probe exit code (0 = found/still running, non-zero = not found) for any
+   *  conduction id not given an explicit override via `h.setProbe`. */
+  probeDefaultExitCode?: number;
 }
 
-// A stateful fake world: conduction rows mutate through updateConduction/takeoverConduction (the
-// takeover fake applies the REAL CAS semantics — observed holder + stale-or-null heartbeat), task
-// rows are mutable between passes, and every runCommand invocation is recorded in order.
+// A stateful fake world: conduction rows mutate through updateConduction/takeoverConduction/
+// stealConduction (the fakes apply the REAL CAS semantics), task rows are mutable between passes,
+// and every runCommand invocation is recorded in order. `pass()` bundles a scheduler pass with a
+// full macrotask flush, so a fired-but-not-yet-settled launch is guaranteed genuinely settled (or
+// still genuinely pending, for a blocked one) by the time the NEXT `pass()` call inspects it — the
+// B-717 two-call rhythm every test below uses: one pass fires (wake → ready → running), the next
+// observes settlement and classifies.
 function makeHarness(opts: HarnessOpts) {
   let t = T0;
   const commands: string[] = [];
@@ -91,11 +116,17 @@ function makeHarness(opts: HarnessOpts) {
   const intervals: FakeTimer[] = [];
   const timeouts: FakeTimer[] = [];
 
-  // A launch that stays pending until the test releases it, so a test can observe what the daemon
-  // does WHILE a worker blocks the pass — the entire point of this ticket.
-  let releaseLaunch: ((exitCode: number | null) => void) | undefined;
+  // Pending BLOCKED launches, keyed by the conduction id parsed out of the rendered command (the
+  // fixture templates always render "launch <conduction_id> <ticket>").
+  const pendingLaunches = new Map<string, (result: { exitCode: number | null }) => void>();
+  const probeExitCodes = new Map<string, number>();
+  const launchExitCodesQueue = opts.launchExitCodes ? [...opts.launchExitCodes] : undefined;
 
   const cfg = opts.config ?? config;
+  const condId = (cmd: string): string => cmd.split(' ')[1] ?? '';
+
+  const state = new Map<string, WatchBaseline>();
+  const runtime: SchedulerRuntime = createSchedulerRuntime();
 
   const deps: SchedulerDeps = {
     now: () => t,
@@ -104,7 +135,7 @@ function makeHarness(opts: HarnessOpts) {
     }),
     leaseHolder: ME,
     projectKey: opts.projectKey ?? 'B',
-    config: opts.config ?? config,
+    config: cfg,
     log: (line: string) => logs.push(line),
     listConductions: vi.fn(async (args: { status?: string }) =>
       conductions.filter((c) => !args.status || c.status === args.status).map((c) => ({ ...c })),
@@ -156,26 +187,45 @@ function makeHarness(opts: HarnessOpts) {
       row.last_heartbeat_at = iso(t);
       return { ...row };
     }),
+    // B-717 item 3: mirrors takeoverConduction's CAS shape, guarded on leg_started_at IS NULL
+    // instead of staleness.
+    stealConduction: vi.fn(async (args) => {
+      const row = conductions.find((c) => c.id === args.id);
+      if (!row || row.status !== 'active') return null;
+      if (row.lease_holder !== args.observed_lease_holder) return null;
+      if (row.leg_started_at !== null) return null;
+      row.lease_holder = args.new_lease_holder;
+      row.lease_acquired_at = iso(t);
+      row.last_heartbeat_at = iso(t);
+      return { ...row };
+    }),
     runCommand: vi.fn(async (cmd: string) => {
       commands.push(cmd);
+      const id = condId(cmd);
       if (cmd.startsWith('launch')) {
         hooks.onLaunch?.(cmd);
-        if (opts.blockLaunch) {
+        if (opts.blockLaunch || opts.blockLaunchIds?.includes(id)) {
           return new Promise<{ exitCode: number | null }>((resolve) => {
-            releaseLaunch = (exitCode) => resolve({ exitCode });
+            pendingLaunches.set(id, resolve);
           });
         }
-        if (opts.launchExitCodes && opts.launchExitCodes.length > 0) {
-          return { exitCode: opts.launchExitCodes.shift()! };
+        if (launchExitCodesQueue && launchExitCodesQueue.length > 0) {
+          return { exitCode: launchExitCodesQueue.shift()! };
         }
         return { exitCode: opts.launchExitCode === undefined ? 0 : opts.launchExitCode };
       }
-      // A reap FREES a blocked launch — the live-verified behaviour this design rests on: the
-      // container's removal is what makes the attached client finally exit (137).
-      if (cmd.startsWith('reap') && releaseLaunch && !opts.reapNeverFrees) {
-        const free = releaseLaunch;
-        releaseLaunch = undefined;
-        free(137);
+      if (cmd.startsWith('probe')) {
+        const code = probeExitCodes.has(id) ? probeExitCodes.get(id)! : (opts.probeDefaultExitCode ?? 1);
+        return { exitCode: code };
+      }
+      // A reap FREES a blocked launch for that SAME conduction — the live-verified behaviour this
+      // design rests on: the container's removal is what makes the attached client finally exit.
+      if (cmd.startsWith('reap')) {
+        const resolve = pendingLaunches.get(id);
+        if (resolve && !opts.reapNeverFrees) {
+          pendingLaunches.delete(id);
+          resolve({ exitCode: 137 });
+        }
       }
       return { exitCode: 0 };
     }),
@@ -189,10 +239,8 @@ function makeHarness(opts: HarnessOpts) {
     heartbeatMs: cfg.heartbeatMs,
   });
 
-  /** Let pending promise chains settle. Must flush MACROTASKS, not just microtasks: the pass
-   *  chain awaits a dozen fakes before it even issues the launch, and the reap escalation is
-   *  deliberately fire-and-forget. (Real timers are untouched here — only the DAEMON's timers are
-   *  faked, so setTimeout(0) is a safe scheduler yield.) */
+  /** Let pending promise chains settle. Must flush MACROTASKS, not just microtasks. (Real timers
+   *  are untouched here — only the DAEMON's timers are faked, so setTimeout(0) is a safe yield.) */
   const settle = async () => {
     for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
   };
@@ -200,6 +248,8 @@ function makeHarness(opts: HarnessOpts) {
   return {
     deps,
     keeper,
+    state,
+    runtime,
     commands,
     logs,
     tasks,
@@ -209,9 +259,19 @@ function makeHarness(opts: HarnessOpts) {
     setNow: (ms: number) => {
       t = ms;
     },
+    /** ONE scheduler pass, followed by a full flush — see the function-header rhythm note. */
+    pass: async () => {
+      const result = await runSchedulerPass(deps, state, keeper, runtime);
+      await settle();
+      return result;
+    },
     getConduction: (id: string) => conductions.find((c) => c.id === id)!,
     launches: () => commands.filter((c) => c.startsWith('launch')),
     reaps: () => commands.filter((c) => c.startsWith('reap')),
+    probes: () => commands.filter((c) => c.startsWith('probe')),
+    ready: () => [...runtime.ready.keys()],
+    running: () => [...runtime.running.keys()],
+    setProbe: (conductionId: string, exitCode: number) => probeExitCodes.set(conductionId, exitCode),
     /** Fire every live heartbeat interval once. */
     fireHeartbeats: async () => {
       for (const timer of intervals) if (!timer.dead) timer.fn();
@@ -239,9 +299,10 @@ function makeHarness(opts: HarnessOpts) {
     },
     /** How many per-launch deadlines were armed (one per attempt, never per run). */
     armedDeadlines: () => timeouts.filter((timer) => timer.ms === cfg.workerTimeoutMs).length,
-    releaseLaunch: async (exitCode: number | null) => {
-      releaseLaunch?.(exitCode);
-      releaseLaunch = undefined;
+    releaseLaunch: async (exitCode: number | null, conductionId = 'cond-1') => {
+      const resolve = pendingLaunches.get(conductionId);
+      pendingLaunches.delete(conductionId);
+      resolve?.({ exitCode });
       await settle();
     },
     heartbeatWrites: (id: string) =>
@@ -273,20 +334,42 @@ function pausedTask(over: Partial<DaemonTask> = {}): DaemonTask {
   };
 }
 
-describe('runSchedulerPass', () => {
-  it('case 1: wake on the flag flip fires the launch command with the substituted conduction id + ticket', async () => {
-    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
-    const state = new Map<string, WatchBaseline>();
+/** Baseline pass, then the human resolves and the pending wake fires (queued → fired, since a
+ *  fresh harness always has a free slot). Returns after the SECOND pass, i.e. the launch is
+ *  in flight/settled but NOT yet classified — a THIRD pass (or an explicit releaseLaunch + pass)
+ *  observes settlement. Mirrors the B-717 two-call rhythm the harness header documents. */
+async function wakeAndFire(h: ReturnType<typeof makeHarness>): Promise<void> {
+  await h.pass(); // baseline (still awaiting) — no wake
+  (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false; // the human resolved
+  await h.pass(); // wake detected → queued → fired this same pass (a slot is free)
+}
 
-    await runSchedulerPass(h.deps, state, h.keeper); // pass 1: captures the baseline (still awaiting) — no fire
+describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
+  it('case 1: wake on the flag flip queues then fires the launch command with the substituted conduction id + ticket', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+
+    await h.pass(); // pass 1: captures the baseline (still awaiting) — no fire
     expect(h.commands).toEqual([]);
 
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false; // the human resolved
-    h.hooks.onLaunch = () => {
-      (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true; // the worker paused again
-    };
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
     expect(h.commands).toEqual(['launch cond-1 task-1']);
+    expect(h.running()).toEqual(['cond-1']); // fired, tracked, not yet classified
+    expect(h.ready()).toEqual([]);
+  });
+
+  it('a clean-pause exit is classified and the baseline stored ONLY once the launch settles, on a LATER pass', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    await wakeAndFire(h);
+    expect(h.launches()).toHaveLength(1);
+    // The worker exits 0 immediately (default fake) and pauses again — but classification needs
+    // ANOTHER pass to observe the settlement.
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true;
+    expect(h.getConduction('cond-1').status).toBe('active');
+
+    await h.pass(); // observes settlement, classifies 'wait', stores the post-exit baseline
+    expect(h.running()).toEqual([]);
+    expect(h.getConduction('cond-1').status).toBe('active');
   });
 
   it('case 2 (B-611): the discussion-cancelled edge fires with NO flag transition', async () => {
@@ -296,38 +379,35 @@ describe('runSchedulerPass', () => {
         'task-1': pausedTask({ active_exchange: { exchange_id: 'ex-1', status: 'active' } }),
       },
     });
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper); // baseline: awaiting + active exchange
+    await h.pass(); // baseline: awaiting + active exchange
 
     // The mechanical cancel: the exchange goes away while awaiting_human_input STAYS true.
     (h.tasks['task-1'] as DaemonTask).active_exchange = null;
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass(); // wake → fire
     expect(h.launches()).toEqual(['launch cond-1 task-1']);
+    await h.pass(); // settle → classify
     // Post-exit the ticket is still awaiting (clean pause) — the conduction stays active.
     expect(h.getConduction('cond-1').status).toBe('active');
   });
 
   it('case 3: a clean-pause exit stores the new baseline and the conduction stays active (no status write, no re-fire)', async () => {
     const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
 
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
-    h.hooks.onLaunch = () => {
-      const task = h.tasks['task-1'] as DaemonTask;
-      task.workflow_state = 'Designed';
-      task.awaiting_human_input = true; // paused on the next gate's brief
-    };
-    await runSchedulerPass(h.deps, state, h.keeper);
+    hooksOnLaunchPausesAgain(h);
+    await h.pass(); // fire
+    await h.pass(); // settle → classify 'wait'
     expect(h.launches()).toHaveLength(1);
     expect(h.getConduction('cond-1').status).toBe('active');
     expect(h.deps.updateConductionIfHeld).not.toHaveBeenCalledWith(
       'cond-1',
+      ME,
       expect.objectContaining({ status: expect.anything() }),
     );
 
     // Nothing changed since the stored post-exit baseline — a further pass must NOT fire again.
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
     expect(h.launches()).toHaveLength(1);
   });
 
@@ -337,11 +417,11 @@ describe('runSchedulerPass', () => {
       tasks: { 'task-1': pausedTask() },
       launchExitCode: 1,
     });
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
 
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
-    await runSchedulerPass(h.deps, state, h.keeper); // fires; the worker dies dirty having changed nothing
+    await h.pass(); // fires; the worker dies dirty having changed nothing
+    await h.pass(); // settle → classify 'park'/'dirty-exit'
     expect(h.launches()).toHaveLength(1);
     expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
       status: 'parked',
@@ -351,31 +431,48 @@ describe('runSchedulerPass', () => {
     expect(h.getConduction('cond-1').status).toBe('parked');
 
     // Park-immediately means park-and-STOP: no auto-retry on any later pass.
-    await runSchedulerPass(h.deps, state, h.keeper);
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
+    await h.pass();
     expect(h.launches()).toHaveLength(1);
     expect(h.getConduction('cond-1').retry_count).toBe(0); // retry_count untouched
   });
 
   const retryConfig: DaemonConfig = { ...config, retryCap: 2, retryBackoffMs: 15_000 };
 
-  it("case 4a (B-713): dirty exit retried, cap exhausted, parks with 'dirty-exit', no further fire after parking", async () => {
+  it("case 4a (B-713/B-717): dirty exit retried with EXPONENTIAL backoff, cap exhausted, parks with 'dirty-exit'", async () => {
     const h = makeHarness({
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask() },
       config: retryConfig,
       launchExitCodes: [1, 1, 1], // every attempt (initial + 2 retries) dies dirty
     });
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
 
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass(); // fire 1
+    await h.pass(); // settle 1 (dirty) → reap → QUEUE retry gated by notBefore = t + 15_000
 
-    // Initial fire + 2 retries = 3 launches; reap runs before each of the 2 retries.
+    expect(h.launches()).toHaveLength(1);
+    expect(h.reaps()).toHaveLength(1);
+    expect(h.getConduction('cond-1').retry_count).toBe(1);
+    expect(h.deps.sleep).not.toHaveBeenCalled(); // B-717: no blocking sleep — a ready gate instead
+    expect(h.ready()).toEqual(['cond-1']);
+
+    // Not yet due — a pass before the backoff elapses must not re-fire.
+    await h.pass();
+    expect(h.launches()).toHaveLength(1);
+
+    h.setNow(h.now() + 15_000); // first backoff: base * 2**0 = 15_000ms
+    await h.pass(); // fire 2 (now due)
+    await h.pass(); // settle 2 (dirty) → reap → QUEUE retry gated by notBefore = t + 30_000
+    expect(h.launches()).toHaveLength(2);
+    expect(h.getConduction('cond-1').retry_count).toBe(2);
+
+    h.setNow(h.now() + 30_000); // second backoff: base * 2**1 = 30_000ms — EXPONENTIAL, not flat
+    await h.pass(); // fire 3
+    await h.pass(); // settle 3 (dirty, cap exhausted) → park
     expect(h.launches()).toHaveLength(3);
-    expect(h.commands.filter((c) => c.startsWith('reap'))).toHaveLength(2);
-    expect(h.deps.sleep).toHaveBeenCalledWith(15_000);
+    expect(h.reaps()).toHaveLength(2);
     expect(h.getConduction('cond-1').retry_count).toBe(2);
     expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
       status: 'parked',
@@ -384,8 +481,8 @@ describe('runSchedulerPass', () => {
     });
     expect(h.getConduction('cond-1').status).toBe('parked');
 
-    // Cap exhausted → parked-and-stopped, exactly like the no-retry case: no further fire.
-    await runSchedulerPass(h.deps, state, h.keeper);
+    // Cap exhausted → parked-and-stopped: no further fire.
+    await h.pass();
     expect(h.launches()).toHaveLength(3);
   });
 
@@ -396,25 +493,29 @@ describe('runSchedulerPass', () => {
       config: retryConfig,
       launchExitCodes: [1, 0], // first attempt dirty, the retry comes back clean
     });
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
 
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
     h.hooks.onLaunch = () => {
-      const task = h.tasks['task-1'] as DaemonTask;
       // Only the SECOND (retried) launch resolves the gate — the first dirty attempt changes
       // nothing, so the classifier still sees it as a dirty exit rather than a clean no-progress.
-      if (h.launches().length === 2) task.awaiting_human_input = true;
+      if (h.launches().length === 2) (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true;
     };
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass(); // fire 1
+    await h.pass(); // settle 1 (dirty) → queue retry
+
+    h.setNow(h.now() + 15_000);
+    await h.pass(); // fire 2 (retry)
+    await h.pass(); // settle 2 (clean, progressed) → 'wait'
 
     expect(h.launches()).toHaveLength(2); // initial dirty attempt + 1 successful retry
-    expect(h.commands.filter((c) => c.startsWith('reap'))).toHaveLength(1);
+    expect(h.reaps()).toHaveLength(1);
     // retry_count reflects the one retry taken and is NOT reset back to 0 on success.
     expect(h.getConduction('cond-1').retry_count).toBe(1);
     expect(h.getConduction('cond-1').status).toBe('active');
     expect(h.deps.updateConductionIfHeld).not.toHaveBeenCalledWith(
       'cond-1',
+      ME,
       expect.objectContaining({ status: 'parked' }),
     );
   });
@@ -427,16 +528,15 @@ describe('runSchedulerPass', () => {
       config: zeroRetryConfig,
       launchExitCode: 1,
     });
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
 
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
+    await h.pass();
 
-    // A single launch, no reap, no sleep, no retry_count bump — identical to the no-retry-config case.
+    // A single launch, no reap, no re-queue, no retry_count bump — identical to the no-retry-config case.
     expect(h.launches()).toHaveLength(1);
-    expect(h.commands.filter((c) => c.startsWith('reap'))).toHaveLength(0);
-    expect(h.deps.sleep).not.toHaveBeenCalled();
+    expect(h.reaps()).toHaveLength(0);
     expect(h.getConduction('cond-1').retry_count).toBe(0);
     expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
       status: 'parked',
@@ -451,8 +551,7 @@ describe('runSchedulerPass', () => {
       tasks: { 'task-1': pausedTask() },
       childCount: 2,
     });
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
 
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
     h.hooks.onLaunch = () => {
@@ -460,7 +559,8 @@ describe('runSchedulerPass', () => {
       task.workflow_state = 'Decomposed';
       task.awaiting_human_input = false;
     };
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass(); // fire
+    await h.pass(); // settle → classify
     expect(h.deps.countNonArchivedChildren).toHaveBeenCalledWith('task-1');
     expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
       status: 'completed',
@@ -472,8 +572,7 @@ describe('runSchedulerPass', () => {
 
   it("case 6: a stale ticket parks the conduction with 'stale' (terminal-only stale constraint)", async () => {
     const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
 
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
     h.hooks.onLaunch = () => {
@@ -481,7 +580,8 @@ describe('runSchedulerPass', () => {
       task.stale = true;
       task.awaiting_human_input = false;
     };
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
+    await h.pass();
     expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
       status: 'parked',
       last_worker_exit_code: 0,
@@ -500,9 +600,8 @@ describe('runSchedulerPass', () => {
       // The ball is already with the agent: first pickup fires on the pass AFTER the takeover.
       tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
     });
-    const state = new Map<string, WatchBaseline>();
 
-    await runSchedulerPass(h.deps, state, h.keeper); // takeover pass: CAS win → reap, fresh baseline
+    await h.pass(); // takeover pass: CAS win → reap, fresh baseline
     expect(h.deps.takeoverConduction).toHaveBeenCalledWith({
       id: 'cond-1',
       observed_lease_holder: 'dead-host:9:zzzz9999',
@@ -512,40 +611,34 @@ describe('runSchedulerPass', () => {
     expect(h.commands).toEqual(['reap cond-1']);
     expect(h.getConduction('cond-1').lease_holder).toBe(ME);
 
-    h.hooks.onLaunch = () => {
-      (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true;
-    };
-    await runSchedulerPass(h.deps, state, h.keeper); // wake (first pickup) → fire
+    await h.pass(); // wake (first pickup) → fire
     // The reap-then-fire ordering: the dead holder's zombie worker is reaped BEFORE we ever launch.
     expect(h.commands).toEqual(['reap cond-1', 'launch cond-1 task-1']);
   });
 
-  it('case 7b: a foreign lease with a FRESH heartbeat loses the CAS (null) — row untouched, nothing fired', async () => {
+  it('case 7b: a foreign lease with a FRESH heartbeat loses the CAS (null) — no takeover, and no steal without a wake', async () => {
     const h = makeHarness({
       conductions: [
         conduction({ lease_holder: 'other-host:2:bbbb2222', last_heartbeat_at: iso(T0 - 1_000) }),
       ],
       tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
     });
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass(); // first sight of a foreign row: no baseline yet ⇒ no steal-eligible wake either
 
     expect(h.deps.takeoverConduction).toHaveBeenCalled(); // CAS attempted…
-    expect(h.commands).toEqual([]); // …but lost: no reap, no launch
+    expect(h.commands).toEqual([]); // …but lost: no reap, no launch, no steal win
     expect(h.deps.updateConductionIfHeld).not.toHaveBeenCalled(); // no heartbeat on a row we do not hold
-    expect(h.deps.getTaskMeta).not.toHaveBeenCalled(); // the row is skipped entirely
     expect(h.getConduction('cond-1').lease_holder).toBe('other-host:2:bbbb2222');
   });
 
   it('case 8: the heartbeat is stamped every pass for held rows, with the pass-time clock', async () => {
     const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
-    const state = new Map<string, WatchBaseline>();
 
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
     expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, { last_heartbeat_at: iso(T0) });
 
     h.setNow(T0 + 25_000);
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
     expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
       last_heartbeat_at: iso(T0 + 25_000),
     });
@@ -559,11 +652,10 @@ describe('runSchedulerPass', () => {
       ],
       tasks: { 'task-1': pausedTask() },
     });
-    const state = new Map<string, WatchBaseline>();
 
     // Construct first, THEN advance the clock a full hour before the first pass.
     h.setNow(T0 + 3_600_000);
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
 
     // stale_before must be measured from the advanced pass-time clock — a construction-time origin
     // would send iso(T0 - staleMs) and misjudge every row's staleness from then on.
@@ -583,17 +675,14 @@ describe('runSchedulerPass', () => {
         'task-2': pausedTask({ awaiting_human_input: false }),
       },
     });
-    const state = new Map<string, WatchBaseline>();
 
-    await runSchedulerPass(h.deps, state, h.keeper); // task-2 baseline captured; task-1 errors, is skipped
-    h.hooks.onLaunch = () => {
-      (h.tasks['task-2'] as DaemonTask).awaiting_human_input = true;
-    };
-    await runSchedulerPass(h.deps, state, h.keeper); // task-2 first-pickup fires; task-1 errors again
+    await h.pass(); // task-2 baseline captured; task-1 errors, is skipped
+    await h.pass(); // task-2 first-pickup fires; task-1 errors again
 
     expect(h.getConduction('cond-1').status).toBe('active'); // NOT parked by the read error
     expect(h.deps.updateConductionIfHeld).not.toHaveBeenCalledWith(
       'cond-1',
+      ME,
       expect.objectContaining({ status: expect.anything() }),
     );
     expect(h.logs.some((l) => l.includes('cond-1') && l.includes('read blew up'))).toBe(true);
@@ -606,9 +695,8 @@ describe('runSchedulerPass', () => {
       conductions: [conduction({ lease_holder: null, last_heartbeat_at: null })],
       tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
     });
-    const state = new Map<string, WatchBaseline>();
 
-    await runSchedulerPass(h.deps, state, h.keeper); // claim pass: CAS still guards the claim…
+    await h.pass(); // claim pass: CAS still guards the claim…
     expect(h.deps.takeoverConduction).toHaveBeenCalledWith({
       id: 'cond-1',
       observed_lease_holder: null,
@@ -622,23 +710,12 @@ describe('runSchedulerPass', () => {
     expect(h.logs.some((l) => l.includes('cond-1') && /claim/i.test(l))).toBe(true);
     expect(h.logs.some((l) => /took over stale lease/i.test(l))).toBe(false);
 
-    h.hooks.onLaunch = () => {
-      (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true;
-    };
-    await runSchedulerPass(h.deps, state, h.keeper); // wake (first pickup) → fire, still reap-free
+    await h.pass(); // wake (first pickup) → fire, still reap-free
     expect(h.commands).toEqual(['launch cond-1 task-1']);
   });
 
   it('case 12 (B-691 class): a pause that appears AFTER the baseline still wakes — the stored baseline ROLLS on a no-wake pass', async () => {
-    // B-696's spec item 9 promised B-691 would become a repro case the daemon's watch must pass,
-    // alongside B-651's (case 9) and B-659's (case 4). B-651's and B-659's landed; this one did not,
-    // so the daemon shipped the same defect class the poll had: a baseline captured on FIRST SIGHT
-    // and then never refreshed until a worker exited. A conduction first seen before its pause
-    // existed could never wake — the flag rising afterwards was invisible, and no later clear
-    // produced a transition.
     const h = makeHarness({
-      // First sight catches the ticket with the ball at rest, mid-flight: an exchange is already
-      // open (so the old first-pickup guard could not fire either) but no round is filed yet.
       conductions: [conduction()],
       tasks: {
         'task-1': pausedTask({
@@ -647,43 +724,28 @@ describe('runSchedulerPass', () => {
         }),
       },
     });
-    const state = new Map<string, WatchBaseline>();
 
-    // Pass 1 — FIRST SIGHT: the scheduler captures the baseline and returns without wake detection.
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass(); // FIRST SIGHT: captures the baseline, no wake detection yet.
     expect(h.commands).toEqual([]);
 
-    // Pass 2 — the ball is the agent's (flag down) with answers waiting to be consumed, so a leg
-    // must fire. The OLD first-pickup guard required NO active exchange, so this row could never
-    // wake: the conduction sat indefinitely with the human's answers unconsumed.
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass(); // the ball is the agent's — a leg must fire.
     expect(h.commands).toEqual(['launch cond-1 task-1']);
   });
 
   it('case 12b (B-691 class): a no-wake pass ROLLS the stored baseline instead of leaving it pinned to first sight', async () => {
-    // The baseline used to be refreshed only after a worker exited 'wait'. Between wakes it stayed
-    // pinned to whatever first sight caught — the same pinning that made the interactive poll unable
-    // to witness a pause filed after it was armed.
     const h = makeHarness({
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask({ workflow_state: 'Proposed' }) },
     });
-    const state = new Map<string, WatchBaseline>();
 
-    await runSchedulerPass(h.deps, state, h.keeper); // first sight — baseline captured
-    expect(state.get('cond-1')?.activeExchange ?? null).toBeNull();
+    await h.pass(); // first sight — baseline captured
+    expect(h.state.get('cond-1')?.activeExchange ?? null).toBeNull();
 
-    // The human is still holding the ball, but an exchange has now opened under them.
-    (h.tasks['task-1'] as DaemonTask).active_exchange = {
-      exchange_id: 'ex-1',
-      status: 'active',
-      round: 1,
-    };
-    await runSchedulerPass(h.deps, state, h.keeper);
+    (h.tasks['task-1'] as DaemonTask).active_exchange = { exchange_id: 'ex-1', status: 'active', round: 1 };
+    await h.pass();
 
     expect(h.commands).toEqual([]); // no wake — the human still holds the ball
-    // …but the stored baseline must now reflect THIS read, not first sight.
-    expect(state.get('cond-1')?.activeExchange).toEqual({
+    expect(h.state.get('cond-1')?.activeExchange).toEqual({
       exchange_id: 'ex-1',
       status: 'active',
       round: 1,
@@ -695,44 +757,33 @@ describe('runSchedulerPass', () => {
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask({ awaiting_human_input: true, conductor_excluded_at: null }) },
     });
-    const state = new Map<string, WatchBaseline>();
 
-    // Pass 1 — first sight: baseline captured, no wake detection yet.
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass(); // first sight: baseline captured, no wake detection yet.
     expect(h.commands).toEqual([]);
 
-    // The human resolved the pause (the flag flip that would normally wake the conductor), but a
-    // human ALSO took the ticket away from the conductor via the web UI in the meantime.
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
     (h.tasks['task-1'] as DaemonTask).conductor_excluded_at = '2026-08-01T00:00:00.000Z';
 
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
     expect(h.commands).toEqual([]); // no launch — the exclusion guard skipped the fire
-    expect(h.launches()).toEqual([]);
+    expect(h.ready()).toEqual([]);
   });
 
-  it('case 13b (B-756): clearing conductor_excluded_at back to null lets the pending wake fire normally (baseline-roll did not wedge detection)', async () => {
+  it('case 13b (B-756): clearing conductor_excluded_at back to null lets the pending wake fire normally', async () => {
     const h = makeHarness({
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask({ awaiting_human_input: true, conductor_excluded_at: null }) },
     });
-    const state = new Map<string, WatchBaseline>();
 
-    await runSchedulerPass(h.deps, state, h.keeper); // first sight — baseline captured
+    await h.pass(); // first sight — baseline captured
 
-    // Excluded while the flag flips — the wake is suppressed, and the guard rolls the baseline
-    // forward (case 13 above) so this pass's ball-with-agent read becomes the new baseline.
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
     (h.tasks['task-1'] as DaemonTask).conductor_excluded_at = '2026-08-01T00:00:00.000Z';
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
     expect(h.commands).toEqual([]);
 
-    // The human "returns" the ticket to the conductor (clears the column). The flag is still false
-    // (the agent's turn was never taken back) — proving the earlier baseline-roll did not wedge
-    // future detection, the very next pass fires the pending wake via detectWake's first-pickup rule
-    // (ball with agent on both the rolled baseline and this fresh read).
     (h.tasks['task-1'] as DaemonTask).conductor_excluded_at = null;
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
     expect(h.commands).toEqual(['launch cond-1 task-1']);
   });
 
@@ -741,70 +792,55 @@ describe('runSchedulerPass', () => {
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask({ awaiting_human_input: true, conductor_excluded_at: null }) },
     });
-    const state = new Map<string, WatchBaseline>();
     const takeAwayLines = () =>
       h.logs.filter((l) => l.includes('taken away from conductor (conductor_excluded_at set)'));
 
-    await runSchedulerPass(h.deps, state, h.keeper); // pass 1: first sight — baseline captured, no wake yet
+    await h.pass(); // pass 1: first sight
 
-    // Pass 2: the human resolves the pause AND takes the ticket away in the same beat — the
-    // exclusion guard is entered for the FIRST time and logs.
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
     (h.tasks['task-1'] as DaemonTask).conductor_excluded_at = '2026-08-01T00:00:00.000Z';
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
     expect(takeAwayLines()).toHaveLength(1);
 
-    // Passes 3, 4, 5: steady state — still excluded, nothing else changes. detectWake's
-    // first-pickup rule (ball with agent on both the rolled baseline and this fresh read) fires
-    // 'agent-ball' every single one of these passes by design, so the exclusion guard branch is
-    // re-entered every pass — but the take-away line must NOT be re-logged.
-    await runSchedulerPass(h.deps, state, h.keeper);
-    await runSchedulerPass(h.deps, state, h.keeper);
-    await runSchedulerPass(h.deps, state, h.keeper);
-    expect(takeAwayLines()).toHaveLength(1); // still exactly once, total, across all 5 passes
+    await h.pass();
+    await h.pass();
+    await h.pass();
+    expect(takeAwayLines()).toHaveLength(1); // still exactly once, total
     expect(h.commands).toEqual([]); // never fired
   });
 
-  it('case 13d (B-771): the return-to-conductor line logs exactly once when conductor_excluded_at clears, and stays silent on later still-cleared passes', async () => {
+  it('case 13d (B-771): the return-to-conductor line logs exactly once when conductor_excluded_at clears', async () => {
     const h = makeHarness({
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask({ awaiting_human_input: true, conductor_excluded_at: null }) },
     });
-    const state = new Map<string, WatchBaseline>();
     const returnLines = () =>
       h.logs.filter((l) => l.includes('returned to conductor (conductor_excluded_at cleared)'));
 
-    await runSchedulerPass(h.deps, state, h.keeper); // pass 1: first sight — baseline captured
+    await h.pass(); // pass 1: first sight
 
-    // Pass 2: excluded while the flag flips — the guard fires and rolls the baseline (case 13).
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
     (h.tasks['task-1'] as DaemonTask).conductor_excluded_at = '2026-08-01T00:00:00.000Z';
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
     expect(returnLines()).toHaveLength(0);
 
-    // Pass 3: the human returns the ticket (clears the column) AND this same pass's pending wake
-    // fires normally (case 13b) — the return line must log exactly once, and the fire must still
-    // happen this same pass (the return-line log must not suppress or delay it). The worker moves
-    // the ticket forward mid-launch (workflow_state change ⇒ progressed=true) but leaves the ball
-    // with the agent (awaiting_human_input stays false) — a clean 'wait' outcome, so the conduction
-    // stays active AND the next pass's first-pickup rule fires a genuine wake again.
     (h.tasks['task-1'] as DaemonTask).conductor_excluded_at = null;
-    h.hooks.onLaunch = () => {
-      (h.tasks['task-1'] as DaemonTask).workflow_state = 'InReview';
-    };
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass(); // the return line logs AND the pending wake fires, same pass
     expect(returnLines()).toHaveLength(1);
     expect(h.commands).toEqual(['launch cond-1 task-1']);
 
-    // Pass 4: still cleared, nothing about the exclusion changed — a genuine wake fires again (the
-    // first-pickup rule, since the ball is still with the agent on both reads), but the
-    // return-to-conductor line must NOT be re-logged.
+    await h.pass(); // settle → 'wait' (worker exits 0 clean by default, nothing progressed though)
     h.hooks.onLaunch = undefined;
-    await runSchedulerPass(h.deps, state, h.keeper);
-    expect(h.commands).toEqual(['launch cond-1 task-1', 'launch cond-1 task-1']);
     expect(returnLines()).toHaveLength(1); // still exactly once, total
   });
 });
+
+/** Small shared onLaunch fixture: the worker pauses again immediately on exit (a clean no-op leg). */
+function hooksOnLaunchPausesAgain(h: ReturnType<typeof makeHarness>): void {
+  h.hooks.onLaunch = () => {
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true;
+  };
+}
 
 describe('isAuthShapedError', () => {
   it('matches the auth-failure shapes and nothing else', () => {
@@ -893,26 +929,394 @@ describe('runScheduler', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// B-739 — liveness independent of pass progress, and a bounded per-launch deadline.
-//
-// The defect: the heartbeat was written ONCE per pass, immediately BEFORE a launch that blocks
-// for the worker's entire lifetime. With a 5-minute stale window and multi-minute builds, a
-// perfectly healthy daemon routinely aged past the takeover threshold and advertised itself as
-// reapable — and winning that takeover runs REAP-THEN-FIRE against a container that is still
-// running. Observed live at 32.6 minutes (conduction 095397f2, 2026-07-29).
+// B-717 items 1 & 2 — concurrency cap, non-blocking passes, and the priority/aging queue.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/** Drive a conduction to the point where its launch is in flight and blocking the pass.
- *
- *  Returns the pending pass WRAPPED IN AN OBJECT on purpose: an async function that returns a
- *  promise has it unwrapped by the caller's `await`, so returning the still-pending pass directly
- *  would make this helper itself never resolve. */
-async function blockedOnWorker(h: ReturnType<typeof makeHarness>, state: Map<string, WatchBaseline>) {
-  await runSchedulerPass(h.deps, state, h.keeper); // baseline
+describe('B-717 item 1: fire-and-track concurrency', () => {
+  it('AC1/AC2: with more ready rows than free slots, the daemon runs up to the cap concurrently — a long-running leg never blocks the others', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({ id: 'cond-1', task_id: 'task-1' }),
+        conduction({ id: 'cond-2', task_id: 'task-2' }),
+        conduction({ id: 'cond-3', task_id: 'task-3' }),
+        conduction({ id: 'cond-4', task_id: 'task-4' }),
+      ],
+      tasks: {
+        'task-1': pausedTask(),
+        'task-2': pausedTask(),
+        'task-3': pausedTask(),
+        'task-4': pausedTask(),
+      },
+      config: { ...config, maxConcurrentWorkers: 2 },
+      blockLaunch: true, // every launch blocks — nothing settles on its own
+    });
+
+    await h.pass(); // 4 baselines captured, no wake yet
+    for (const t of ['task-1', 'task-2', 'task-3', 'task-4']) {
+      (h.tasks[t] as DaemonTask).awaiting_human_input = false;
+    }
+    await h.pass(); // all 4 wake — only 2 free slots
+
+    // AC1: exactly maxConcurrentWorkers fired, the rest stayed queued.
+    expect(h.launches()).toHaveLength(2);
+    expect(h.running()).toHaveLength(2);
+    expect(h.ready()).toHaveLength(2);
+
+    // AC2: cond-1's blocked leg (still running) does not stop cond-3/cond-4 from EVENTUALLY firing
+    // once a slot frees — release ONE of the two in-flight legs.
+    const firstRunning = h.running()[0];
+    await h.releaseLaunch(0, firstRunning);
+    await h.pass(); // observes the settlement, classifies 'wait', frees the slot
+    await h.pass(); // the freed slot picks up a THIRD ready row this same pass
+
+    expect(h.launches()).toHaveLength(3);
+    expect(h.running()).toHaveLength(2); // cap held throughout — never exceeded
+  });
+
+  it('a pass never blocks: it returns immediately even while every slot is occupied by an unsettled launch (AC5 evidence)', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      blockLaunch: true,
+    });
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass(); // fires, tracked as running, unsettled
+    expect(h.running()).toEqual(['cond-1']);
+
+    // A pass with an unsettled launch in `running` must still complete PROMPTLY — this IS the
+    // property PersistentAuthFailure's counter (AC5, B-696) needs restored: a pass completes on
+    // roughly the poll cadence, not the runtime of the slowest in-flight leg. Demonstrated here by
+    // simply completing several more passes with the launch still blocked the whole time.
+    for (let i = 0; i < 5; i += 1) {
+      const summary = await h.pass();
+      expect(summary.attempted).toBe(1);
+    }
+    expect(h.running()).toEqual(['cond-1']); // still unsettled — the pass never awaited it
+  });
+
+  it('item 2: ready candidates fire in PRIORITY order (high before medium before low) when slots are scarce', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({ id: 'cond-low', task_id: 'task-low', task_priority: 'low' }),
+        conduction({ id: 'cond-high', task_id: 'task-high', task_priority: 'high' }),
+        conduction({ id: 'cond-med', task_id: 'task-med', task_priority: 'medium' }),
+      ],
+      tasks: {
+        'task-low': pausedTask(),
+        'task-high': pausedTask(),
+        'task-med': pausedTask(),
+      },
+      config: { ...config, maxConcurrentWorkers: 1 },
+      blockLaunch: true,
+    });
+
+    await h.pass(); // baselines
+    for (const t of ['task-low', 'task-high', 'task-med']) {
+      (h.tasks[t] as DaemonTask).awaiting_human_input = false;
+    }
+    await h.pass(); // all 3 become ready in the SAME pass — only 1 slot
+
+    expect(h.running()).toEqual(['cond-high']); // highest priority fires first
+    expect(h.ready().sort()).toEqual(['cond-low', 'cond-med']);
+
+    await h.releaseLaunch(0, 'cond-high');
+    await h.pass(); // settle cond-high, frees the slot
+    await h.pass(); // the freed slot goes to the next-highest-priority ready row
+
+    expect(h.running()).toEqual(['cond-med']);
+  });
+
+  it('item 2: aging escalation promotes a long-waiting LOW-priority row one tier, so it beats a fresh MEDIUM arrival by FIFO within the promoted tier', async () => {
+    // 0 free slots at first — the low-priority row queues but cannot fire, so it ages in `ready`.
+    const h = makeHarness({
+      conductions: [conduction({ id: 'cond-aged-low', task_id: 'task-aged-low', task_priority: 'low' })],
+      tasks: { 'task-aged-low': pausedTask() },
+      config: { ...config, maxConcurrentWorkers: 0, readyAgeMs: 600_000 },
+    });
+    await h.pass();
+    (h.tasks['task-aged-low'] as DaemonTask).awaiting_human_input = false;
+    await h.pass(); // becomes ready, but 0 slots ⇒ never fires
+    expect(h.ready()).toEqual(['cond-aged-low']);
+
+    // Advance the clock past readyAgeMs (still sitting in `ready`, unfired) and introduce a FRESH
+    // medium-priority row NOT YET awake (its baseline is only just being captured this pass — it
+    // must not compete yet).
+    h.setNow(h.now() + 600_000);
+    h.tasks['task-fresh-med'] = pausedTask({ awaiting_human_input: true });
+    (h.deps as { listConductions: SchedulerDeps['listConductions'] }).listConductions = vi.fn(async () => [
+      h.getConduction('cond-aged-low'),
+      conduction({ id: 'cond-fresh-med', task_id: 'task-fresh-med', task_priority: 'medium' }),
+    ]) as SchedulerDeps['listConductions'];
+    await h.pass(); // captures task-fresh-med's baseline only — cond-aged-low stays ready, untouched
+
+    // NOW open one slot and wake the fresh row, in the SAME pass both become fire candidates.
+    // Without aging, low (rank 0) would lose outright to medium (rank 1); WITH aging (promoted to
+    // rank 1, tied with medium), the aged row wins the tiebreak purely by having been ready longer
+    // (FIFO within the tier) — proof the promotion happened, not just that medium beats low.
+    (h.deps.config as DaemonConfig).maxConcurrentWorkers = 1;
+    h.tasks['task-fresh-med'] = pausedTask({ awaiting_human_input: false });
+    await h.pass();
+    expect(h.running()).toEqual(['cond-aged-low']); // promoted low beats a same-tier-but-younger row
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-717 item 3 — multi-daemon load-balancing: steal, not just stale-takeover.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('B-717 item 3: stealConduction — AC3', () => {
+  it('AC3: an idle daemon with a free slot steals a peer-held ready row (leg_started_at IS NULL) instead of only taking over dead leases', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({ lease_holder: 'peer-host:2:bbbb2222', last_heartbeat_at: iso(T0 - 1_000), leg_started_at: null }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+    });
+
+    await h.pass(); // first sight of the foreign row — baseline only, no verdict yet
+    expect(h.commands).toEqual([]);
+    expect(h.deps.stealConduction).not.toHaveBeenCalled();
+
+    await h.pass(); // first-pickup wake detected against the rolled baseline → steal attempted + won
+    expect(h.deps.takeoverConduction).toHaveBeenCalled(); // still tries the stale path first…
+    expect(h.deps.stealConduction).toHaveBeenCalledWith({
+      id: 'cond-1',
+      observed_lease_holder: 'peer-host:2:bbbb2222',
+      new_lease_holder: ME,
+    });
+    expect(h.getConduction('cond-1').lease_holder).toBe(ME);
+    // On a win, fire immediately in the SAME pass — no cold-start baseline pass first.
+    expect(h.commands).toEqual(['launch cond-1 task-1']);
+    expect(h.running()).toEqual(['cond-1']);
+    expect(h.logs.some((l) => /stole ready work from peer-host/.test(l))).toBe(true);
+  });
+
+  it('never steals a row with a non-null leg_started_at — a worker might genuinely still be running on the peer', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'peer-host:2:bbbb2222',
+          last_heartbeat_at: iso(T0 - 1_000),
+          leg_started_at: iso(T0 - 500), // the peer's own tracked launch, mid-flight
+        }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+    });
+    await h.pass();
+    await h.pass();
+    expect(h.deps.stealConduction).not.toHaveBeenCalled();
+    expect(h.commands).toEqual([]);
+    expect(h.getConduction('cond-1').lease_holder).toBe('peer-host:2:bbbb2222');
+  });
+
+  it('never steals when this daemon has no free slot of its own', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({ id: 'cond-mine', task_id: 'task-mine' }),
+        conduction({
+          id: 'cond-theirs',
+          task_id: 'task-theirs',
+          lease_holder: 'peer-host:2:bbbb2222',
+          last_heartbeat_at: iso(T0 - 1_000),
+          leg_started_at: null,
+        }),
+      ],
+      tasks: {
+        'task-mine': pausedTask(),
+        'task-theirs': pausedTask({ awaiting_human_input: false }),
+      },
+      config: { ...config, maxConcurrentWorkers: 1 },
+      blockLaunch: true,
+    });
+    await h.pass(); // baseline both
+    (h.tasks['task-mine'] as DaemonTask).awaiting_human_input = false;
+    await h.pass(); // this daemon's own row fires and fills the ONLY slot
+    expect(h.running()).toEqual(['cond-mine']);
+
+    await h.pass(); // no free slot ⇒ the foreign row is never even read/stolen
+    expect(h.deps.stealConduction).not.toHaveBeenCalled();
+    expect(h.getConduction('cond-theirs').lease_holder).toBe('peer-host:2:bbbb2222');
+  });
+
+  it('loses the steal race gracefully — no throw, row untouched, a later pass may reconsider', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({ lease_holder: 'peer-host:2:bbbb2222', last_heartbeat_at: iso(T0 - 1_000), leg_started_at: null }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+    });
+    (h.deps.stealConduction as ReturnType<typeof vi.fn>).mockResolvedValue(null); // lost the race
+    await h.pass();
+    await h.pass();
+    expect(h.deps.stealConduction).toHaveBeenCalled();
+    expect(h.commands).toEqual([]);
+    expect(h.getConduction('cond-1').lease_holder).toBe('peer-host:2:bbbb2222');
+  });
+
+  it('never steals a ticket a human took away from the conductor (conductor_excluded_at set)', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({ lease_holder: 'peer-host:2:bbbb2222', last_heartbeat_at: iso(T0 - 1_000), leg_started_at: null }),
+      ],
+      tasks: {
+        'task-1': pausedTask({ awaiting_human_input: false, conductor_excluded_at: '2026-08-01T00:00:00.000Z' }),
+      },
+    });
+    await h.pass();
+    await h.pass();
+    expect(h.deps.stealConduction).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-717 item 4 — exponential backoff (AC4): covered by case 4a above (verifies 15_000 then 30_000,
+// i.e. base * 2**(retryCount-1), replacing the old flat delay).
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-717 restart reconciliation — a newly-won takeover with a non-null leg_started_at must RE-ATTACH
+// (never re-fire) when the profile's probe finds a live worker, and only reap-then-clear when it
+// does not. Also the point-4 INVARIANT test (not merely a kickoff-return-site test).
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('B-717 restart reconciliation', () => {
+  it('probe FOUND: re-attaches (no reap, no clear, no re-fire) and resumes settlement-polling each pass', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'dead-host:9:zzzz9999',
+          last_heartbeat_at: iso(T0 - 600_000),
+          leg_started_at: iso(T0 - 300_000), // a leg was genuinely in flight when the lease went stale
+        }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+      config: reconcilableConfig,
+      probeDefaultExitCode: 0, // "still running" every time, until the test says otherwise
+    });
+
+    await h.pass(); // takeover win → probe found → RE-ATTACH
+    expect(h.reaps()).toEqual([]); // no reap — the worker is genuinely still out there
+    expect(h.deps.updateConductionIfHeld).not.toHaveBeenCalledWith(
+      'cond-1',
+      ME,
+      expect.objectContaining({ leg_started_at: null }),
+    );
+    expect(h.getConduction('cond-1').leg_started_at).not.toBeNull(); // untouched — still the old stamp
+    expect(h.running()).toEqual(['cond-1']);
+    expect(h.logs.some((l) => /reconciled — re-attached/.test(l))).toBe(true);
+
+    // Still running on later passes — no reap, no re-fire, no clear, ever, while the probe keeps
+    // finding it.
+    await h.pass();
+    await h.pass();
+    expect(h.launches()).toEqual([]); // NEVER a fresh launch for a reconciled row
+    expect(h.reaps()).toEqual([]);
+    expect(h.getConduction('cond-1').leg_started_at).not.toBeNull();
+
+    // Eventually the probe stops finding it — settlement, THEN (and only then) the clear.
+    h.setProbe('cond-1', 1);
+    await h.pass(); // observes non-zero probe → settled (exitCode: null, treated dirty)
+    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, { leg_started_at: null });
+    expect(h.getConduction('cond-1').leg_started_at).toBeNull();
+    // A null exit code with retryCap 0 (the base config's default) parks immediately as dirty-exit.
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('dirty-exit');
+  });
+
+  it('probe NOT FOUND: falls back to reap-then-clear exactly as an ordinary stale takeover', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'dead-host:9:zzzz9999',
+          last_heartbeat_at: iso(T0 - 600_000),
+          leg_started_at: iso(T0 - 300_000),
+        }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+      config: reconcilableConfig,
+      probeDefaultExitCode: 1, // never found
+    });
+
+    await h.pass();
+    expect(h.probes()).toEqual(['probe cond-1']);
+    expect(h.reaps()).toEqual(['reap cond-1']);
+    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, { leg_started_at: null });
+    expect(h.getConduction('cond-1').leg_started_at).toBeNull();
+    expect(h.running()).toEqual([]);
+
+    await h.pass(); // wake → fires a genuinely NEW launch
+    expect(h.commands).toEqual(['probe cond-1', 'reap cond-1', 'launch cond-1 task-1']);
+  });
+
+  it('a profile with NO probe template skips reconciliation entirely — unchanged pre-B-717 REAP-THEN-FIRE', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'dead-host:9:zzzz9999',
+          last_heartbeat_at: iso(T0 - 600_000),
+          leg_started_at: iso(T0 - 300_000),
+        }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+      // Deliberately the BASE config — no `probe` field.
+    });
+    await h.pass();
+    expect(h.probes()).toEqual([]);
+    expect(h.reaps()).toEqual(['reap cond-1']);
+    expect(h.getConduction('cond-1').leg_started_at).toBeNull();
+  });
+
+  it('INVARIANT (B-717 point 4, corrected): leg_started_at is cleared ONLY at tracked-settlement classification, or at reap-after-takeover on a row with NO tracked in-flight worker on this daemon — never both/neither', async () => {
+    // The scenario the correction exists for: a takeover win on a row whose leg was genuinely still
+    // in flight. Reconciliation FOUND it, so `running` now holds it — the reap-after-takeover clear
+    // must be provably SKIPPED for as long as that tracked entry exists, and the clear that
+    // eventually does land must come ONLY from settlement, never from a second, redundant path.
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'dead-host:9:zzzz9999',
+          last_heartbeat_at: iso(T0 - 600_000),
+          leg_started_at: iso(T0 - 300_000),
+        }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+      config: reconcilableConfig,
+      probeDefaultExitCode: 0,
+    });
+
+    const clearsBeforeSettlement = () => h.legStartedWrites('cond-1').filter((v) => v === null).length;
+
+    await h.pass(); // takeover → reconciled re-attach: running.has('cond-1') is true from here on
+    expect(h.running()).toEqual(['cond-1']);
+    expect(clearsBeforeSettlement()).toBe(0); // NO clear while tracked as running
+
+    for (let i = 0; i < 5; i += 1) {
+      await h.pass();
+      // The invariant, checked on EVERY pass while `running` still holds the row: still zero
+      // clears — the reap-after-takeover branch is provably unreachable for a row this daemon
+      // itself currently tracks as running a worker.
+      if (h.running().includes('cond-1')) expect(clearsBeforeSettlement()).toBe(0);
+    }
+
+    // Now let it settle — exactly ONE clear must land, and only now.
+    h.setProbe('cond-1', 1);
+    await h.pass();
+    expect(h.running()).toEqual([]);
+    expect(clearsBeforeSettlement()).toBe(1); // exactly one, from settlement — not two, not zero
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-739 — liveness independent of pass progress, and a bounded per-launch deadline.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Drive a conduction to the point where its launch is in flight (blocked) and TRACKED, but not
+ *  yet settled. Under B-717 a pass never blocks, so this is just two ordinary passes. */
+async function firedAndBlocked(h: ReturnType<typeof makeHarness>): Promise<void> {
+  await h.pass(); // baseline
   (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false; // the human resolved → wake
-  const pass = runSchedulerPass(h.deps, state, h.keeper);
-  await h.settle();
-  return { pass };
+  await h.pass(); // wake → fire; the launch is blocked, tracked, unsettled
 }
 
 describe('B-739: the heartbeat keeps advancing while a worker blocks the pass', () => {
@@ -922,9 +1326,8 @@ describe('B-739: the heartbeat keeps advancing while a worker blocks the pass', 
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask() },
     });
-    const state = new Map<string, WatchBaseline>();
-    const { pass } = await blockedOnWorker(h, state);
-    expect(h.launches()).toEqual(['launch cond-1 task-1']); // in flight, pass is blocked
+    await firedAndBlocked(h);
+    expect(h.launches()).toEqual(['launch cond-1 task-1']); // in flight, tracked
     const before = h.heartbeatWrites('cond-1').length;
 
     // Time passes well beyond the 5-minute stale window while the worker runs.
@@ -938,7 +1341,7 @@ describe('B-739: the heartbeat keeps advancing while a worker blocks the pass', 
     expect(h.getConduction('cond-1').last_heartbeat_at).toBe(iso(T0 + 900_000));
 
     await h.releaseLaunch(0);
-    await pass;
+    await h.pass(); // settle
   });
 
   it('a SECOND held lease keeps stamping while the first is blocked (the serial-pass starvation)', async () => {
@@ -947,11 +1350,9 @@ describe('B-739: the heartbeat keeps advancing while a worker blocks the pass', 
       conductions: [conduction(), conduction({ id: 'cond-2', task_id: 'task-2' })],
       tasks: { 'task-1': pausedTask(), 'task-2': pausedTask() },
     });
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper); // both baselines; both leases now kept
+    await h.pass(); // both baselines; both leases now kept
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
-    const pass = runSchedulerPass(h.deps, state, h.keeper);
-    await h.settle();
+    await h.pass(); // cond-1 fires (blocked); cond-2 still just watched
 
     const before = h.heartbeatWrites('cond-2').length;
     h.setNow(T0 + 600_000);
@@ -960,18 +1361,17 @@ describe('B-739: the heartbeat keeps advancing while a worker blocks the pass', 
     // cond-2's worker is not even running; the serial pass used to starve it anyway.
     expect(h.heartbeatWrites('cond-2').length).toBe(before + 1);
 
-    await h.releaseLaunch(0);
-    await pass;
+    await h.releaseLaunch(0, 'cond-1');
+    await h.pass();
   });
 
   it('stops stamping a lease that left the active set (prune mirrors the watch baselines)', async () => {
     const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
     expect(h.keeper.running()).toEqual(['cond-1']);
 
     h.getConduction('cond-1').status = 'completed'; // closed elsewhere
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
     expect(h.keeper.running()).toEqual([]);
   });
 });
@@ -983,29 +1383,27 @@ describe('B-739: lease-guarded writes — a daemon that lost its lease goes quie
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask() },
     });
-    const state = new Map<string, WatchBaseline>();
-    const { pass } = await blockedOnWorker(h, state);
+    await firedAndBlocked(h);
 
-    // A peer wins the CAS takeover while we are blocked, and reaps our container.
+    // A peer wins the CAS takeover elsewhere while we are blocked, and reaps our container.
     h.getConduction('cond-1').lease_holder = 'other-daemon:9:zzzz';
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
     await h.releaseLaunch(1); // dirty exit, as a reaped worker would look
-    await pass;
 
-    // The guarded write IS attempted — and returns null, so nothing lands. What matters is that
-    // the new holder's record is untouched: no status, no exit code, no exit class from us.
+    await h.pass(); // notices the lease mismatch, drops the orphaned tracked launch — no clobber
+
     const row = h.getConduction('cond-1');
     expect(row.status).toBe('active');
     expect(row.lease_holder).toBe('other-daemon:9:zzzz');
     expect(row.last_worker_exit_code).toBeNull();
     expect(row.last_worker_exit_class).toBeNull();
-    expect(h.logs.join(' ')).toMatch(/lease lost/);
+    expect(h.logs.join(' ')).toMatch(/lease lost to another daemon while a launch was tracked/);
+    expect(h.running()).toEqual([]); // no longer tracked — it is not ours to act on any more
   });
 
   it('stops the heartbeat for a lease it no longer holds', async () => {
     const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
     expect(h.keeper.running()).toEqual(['cond-1']);
 
     h.getConduction('cond-1').lease_holder = 'other-daemon:9:zzzz';
@@ -1024,11 +1422,10 @@ describe('B-739: the per-launch deadline is enforced by firing the REAP template
       tasks: { 'task-1': pausedTask() },
       config: { ...config, retryCap: 2 }, // retry is ENABLED, and must still not engage
     });
-    const state = new Map<string, WatchBaseline>();
-    const { pass } = await blockedOnWorker(h, state);
+    await firedAndBlocked(h);
 
     await h.fireDeadline();
-    await pass;
+    await h.pass(); // observes the reap-freed settlement, classifies worker-timeout, parks
 
     expect(h.reaps()).toEqual(['reap cond-1']);
     expect(h.statusWrites()).toEqual([
@@ -1040,13 +1437,11 @@ describe('B-739: the per-launch deadline is enforced by firing the REAP template
 
   it('cancels the deadline on a normal exit — a healthy worker is never reaped', async () => {
     const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
-    h.hooks.onLaunch = () => {
-      (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true;
-    };
-    await runSchedulerPass(h.deps, state, h.keeper);
+    hooksOnLaunchPausesAgain(h);
+    await h.pass(); // fire
+    await h.pass(); // settle
 
     expect(h.reaps()).toEqual([]);
   });
@@ -1058,87 +1453,76 @@ describe('B-739: the per-launch deadline is enforced by firing the REAP template
       launchExitCodes: [1, 0], // dirty, then clean
       config: { ...config, retryCap: 1 },
     });
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper);
-    // No onLaunch hook: launch 1 exits dirty with nothing moved, so B-713's ladder retries it.
+    await h.pass();
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass(); // fire 1
+    await h.pass(); // settle 1 (dirty) → queue retry
+    h.setNow(h.now() + config.retryBackoffMs);
+    await h.pass(); // fire 2 (retry)
 
     expect(h.launches()).toHaveLength(2);
     expect(h.armedDeadlines()).toBe(2); // a fresh full deadline per attempt
   });
 
-  it('escalates to PersistentReapFailure when the reap cannot free the daemon', async () => {
+  it('escalates to PersistentReapFailure when the reap cannot free the daemon — surfaces on the NEXT pass via the fatal slot', async () => {
     const h = makeHarness({
       blockLaunch: true,
       reapNeverFrees: true, // a wedged container runtime
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask() },
     });
-    const state = new Map<string, WatchBaseline>();
-    const { pass } = await blockedOnWorker(h, state);
-    const settled = pass.catch((err: unknown) => err);
+    await firedAndBlocked(h);
 
     await h.fireDeadline();
     for (let i = 0; i < 4; i += 1) await h.fireReapGrace();
 
-    const err = await settled;
-    expect(err).toBeInstanceOf(PersistentReapFailure);
     // Bounded: it does not re-fire forever.
     expect(h.reaps()).toHaveLength(3);
+    await expect(h.pass()).rejects.toBeInstanceOf(PersistentReapFailure);
   });
 
   it('PersistentReapFailure ESCAPES the per-conduction isolation — it must kill the process', async () => {
-    // A daemon that cannot free itself must die loudly, not skip the row and keep heartbeating
-    // from inside a state it cannot leave. The per-row catch exists for transients; this is not one.
     const h = makeHarness({
       blockLaunch: true,
       reapNeverFrees: true,
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask() },
     });
-    const state = new Map<string, WatchBaseline>();
-    const { pass } = await blockedOnWorker(h, state);
-    const settled = pass.then(
-      () => 'RESOLVED — the error was swallowed by the pass isolation',
-      (err: unknown) => err,
-    );
+    await firedAndBlocked(h);
 
     await h.fireDeadline();
     for (let i = 0; i < 4; i += 1) await h.fireReapGrace();
 
-    expect(await settled).toBeInstanceOf(PersistentReapFailure);
+    const err = await runSchedulerPass(h.deps, h.state, h.keeper, h.runtime).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PersistentReapFailure);
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // B-742 — leg_started_at: stamped fresh immediately before every launch attempt (retries
-// included), cleared the instant the launch call returns for ANY reason, both lease-guarded via
-// the same writeIfHeld/updateConductionIfHeld path as every other post-claim write.
+// included), cleared ONLY at tracked-settlement classification (B-717 correction — see this
+// module's header). Every write lease-guarded via the same writeIfHeld/updateConductionIfHeld path.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-describe('B-742: leg_started_at', () => {
-  it('a clean launch sets leg_started_at to the pass-time clock immediately before firing, and clears it once the launch returns', async () => {
-    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
-    const state = new Map<string, WatchBaseline>();
-
-    await runSchedulerPass(h.deps, state, h.keeper); // baseline pass — still awaiting, no wake
-
-    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false; // the human resolved
-    h.hooks.onLaunch = () => {
-      (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true; // the worker paused again
-    };
-    await runSchedulerPass(h.deps, state, h.keeper);
-
-    expect(h.launches()).toEqual(['launch cond-1 task-1']);
-    // The pre-launch set, stamped from the pass-time clock…
-    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
-      leg_started_at: iso(T0),
+describe('B-742/B-717: leg_started_at', () => {
+  it('a clean launch sets leg_started_at to the pass-time clock immediately before firing, non-null for the ENTIRE runtime, and clears only at settlement', async () => {
+    const h = makeHarness({
+      blockLaunch: true,
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
     });
-    // …and the post-return clear, both lease-guarded.
-    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
-      leg_started_at: null,
-    });
+    await firedAndBlocked(h);
+
+    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, { leg_started_at: iso(T0) });
+    expect(h.getConduction('cond-1').leg_started_at).toBe(iso(T0)); // non-null WHILE still running
+
+    h.setNow(T0 + 300_000);
+    await h.fireHeartbeats(); // liveness ticks; leg_started_at is untouched by the heartbeat write
+    expect(h.getConduction('cond-1').leg_started_at).toBe(iso(T0)); // STILL non-null, minutes later
+
+    await h.releaseLaunch(0);
+    await h.pass(); // NOW it clears — at settlement, not before
+    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, { leg_started_at: null });
     expect(h.getConduction('cond-1').leg_started_at).toBeNull();
   });
 
@@ -1151,20 +1535,19 @@ describe('B-742: leg_started_at', () => {
       config: retryConfig,
       launchExitCodes: [1, 0], // initial attempt dies dirty, the retry comes back clean
     });
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper); // baseline
+    await h.pass(); // baseline
 
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
     h.hooks.onLaunch = () => {
-      const task = h.tasks['task-1'] as DaemonTask;
-      // Only the SECOND (retried) launch resolves the gate, mirroring case 4b.
-      if (h.launches().length === 2) task.awaiting_human_input = true;
+      if (h.launches().length === 2) (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true;
     };
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass(); // fire 1
+    await h.pass(); // settle 1 (dirty) → queue retry
+    h.setNow(h.now() + retryConfig.retryBackoffMs);
+    await h.pass(); // fire 2
+    await h.pass(); // settle 2 (clean, progressed)
 
     expect(h.launches()).toHaveLength(2);
-    // Set → clear for the initial attempt, then a FRESH set (at the post-backoff clock, never the
-    // stale first-attempt stamp) → clear for the retry. Every attempt gets its own set+clear pair.
     expect(h.legStartedWrites('cond-1')).toEqual([
       iso(T0),
       null,
@@ -1174,111 +1557,96 @@ describe('B-742: leg_started_at', () => {
     expect(h.getConduction('cond-1').leg_started_at).toBeNull();
   });
 
-  it('a takeover of a stale lease clears leg_started_at right after the reap, as part of the takeover pass itself', async () => {
+  it('a takeover of a stale lease (no leg in flight) clears leg_started_at right after the reap, as part of the takeover pass itself', async () => {
     const h = makeHarness({
       conductions: [
         conduction({
           lease_holder: 'dead-host:9:zzzz9999',
-          last_heartbeat_at: iso(T0 - 600_000), // 10 min silent ≫ 5-min stale threshold
+          last_heartbeat_at: iso(T0 - 600_000),
           leg_started_at: iso(T0 - 600_000), // the dead holder's leg — never cleared when it died
         }),
       ],
       tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+      // No probe configured — reconciliation is skipped, falling straight to REAP-THEN-CLEAR.
     });
-    const state = new Map<string, WatchBaseline>();
 
-    await runSchedulerPass(h.deps, state, h.keeper); // takeover pass: CAS win → reap → clear
+    await h.pass(); // takeover pass: CAS win → reap → clear
 
-    // The reap-then-clear ordering: only ONE command ran (the reap) this pass — no launch fired
-    // yet — so the clear observed below can only have come from the takeover path, not the
-    // launch-return clear (B2/B3), which fires on a LATER pass.
     expect(h.commands).toEqual(['reap cond-1']);
     expect(h.launches()).toEqual([]);
-    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
-      leg_started_at: null,
-    });
+    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, { leg_started_at: null });
     expect(h.getConduction('cond-1').leg_started_at).toBeNull();
   });
 
-  it('a lease lost mid-launch: the pre-launch set was lease-guarded, and no leg_started_at write from this daemon lands after the steal', async () => {
+  it('a lease lost mid-launch: the pre-launch set landed while held, and no leg_started_at write from this daemon lands after the steal (orphaned tracked launch dropped, not settled)', async () => {
     const h = makeHarness({
       blockLaunch: true,
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask() },
     });
-    const state = new Map<string, WatchBaseline>();
-    const { pass } = await blockedOnWorker(h, state);
-
-    // The pre-launch set landed while this daemon still held the lease.
+    await firedAndBlocked(h);
     expect(h.getConduction('cond-1').leg_started_at).toBe(iso(T0));
 
-    // A peer wins the CAS takeover while we are blocked, and reaps our container.
     h.getConduction('cond-1').lease_holder = 'other-daemon:9:zzzz';
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
-    await h.releaseLaunch(1); // dirty exit, as a reaped worker would look
-    await pass;
+    await h.releaseLaunch(1);
+    await h.pass(); // the lease-mismatch check drops the tracked launch — settlement never observed
 
-    // The guarded clear IS attempted (through updateConductionIfHeld) — it just lands nothing,
-    // because this daemon no longer holds the lease.
-    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
-      leg_started_at: null,
-    });
+    // No leg_started_at write is EVER attempted for cond-1 by this daemon past the pre-launch set —
+    // the row is simply abandoned once the mismatch is noticed, not settled-and-cleared.
+    expect(
+      h.legStartedWrites('cond-1').filter((v) => v === null),
+    ).toEqual([]);
     expect(h.getConduction('cond-1').lease_holder).toBe('other-daemon:9:zzzz');
-    // Untouched by us: still the pre-steal value, not cleared.
-    expect(h.getConduction('cond-1').leg_started_at).toBe(iso(T0));
+    expect(h.getConduction('cond-1').leg_started_at).toBe(iso(T0)); // untouched by us
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-723 — the per-leg log lines name the TICKET, alongside the full conduction id. Split under
+// B-717 into a "queued" line (wake→ready) and a "launching worker" line (ready→running, the fire
+// phase); the exit-classification line is unchanged.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
 describe('B-723: the per-leg log lines name the TICKET, alongside the full conduction id', () => {
   const TITLE = 'Name the ticket on the daemon log';
 
   const identified = (over: Partial<DaemonTask> = {}): DaemonTask =>
     pausedTask({ task_number: 756, title: TITLE, ...over });
 
-  const wakeLine = (h: { logs: string[] }): string =>
+  const launchLine = (h: { logs: string[] }): string =>
     h.logs.find((l) => l.includes('launching worker'))!;
 
-  /** Baseline pass, then the human resolves and ONE leg fires. */
+  /** Baseline pass, then the human resolves and ONE leg fires (queued + fired, same pass). */
   async function fireOnce(h: ReturnType<typeof makeHarness>): Promise<void> {
-    const state = new Map<string, WatchBaseline>();
-    await runSchedulerPass(h.deps, state, h.keeper); // baseline (still awaiting) — no fire
+    await h.pass(); // baseline (still awaiting) — no fire
     (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false; // the human resolved
-    h.hooks.onLaunch ??= () => {
-      (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true; // the worker paused again
-    };
-    await runSchedulerPass(h.deps, state, h.keeper);
+    await h.pass();
   }
 
-  it('an identified ticket LEADS the wake line, with the FULL conduction id trailing', async () => {
+  it('an identified ticket LEADS the launch line, with the FULL conduction id trailing', async () => {
     const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': identified() } });
     await fireOnce(h);
 
-    expect(wakeLine(h)).toBe(
-      `B-756 "${TITLE}" (conduction cond-1): wake (agent-ball) — launching worker`,
-    );
-    // The conduction id is never shortened or dropped: the line has to stay matchable to the
-    // worker container (harmony-worker-<id>) and to the run's transcript directory.
-    expect(wakeLine(h)).toContain('(conduction cond-1)');
+    expect(launchLine(h)).toBe(`B-756 "${TITLE}" (conduction cond-1): launching worker`);
+    expect(launchLine(h)).toContain('(conduction cond-1)');
   });
 
   it("degrades to TODAY's bare conduction form when the ticket read carries no identity", async () => {
-    // pausedTask() has neither task_number nor title — what every pre-B-723 fixture looks like,
-    // and what a degraded or partial ticket read looks like at runtime.
     const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
     await fireOnce(h);
 
-    expect(wakeLine(h)).toBe('conduction cond-1: wake (agent-ball) — launching worker');
-    expect(wakeLine(h)).not.toContain('B-');
-    expect(wakeLine(h)).not.toContain('undefined');
+    expect(launchLine(h)).toBe('conduction cond-1: launching worker');
+    expect(launchLine(h)).not.toContain('B-');
+    expect(launchLine(h)).not.toContain('undefined');
 
-    // The half-identified read degrades the SAME way — a number with no title must never render
-    // as `B-756 "undefined"`. A logging path may not break the loop it reports on.
     const half = makeHarness({
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask({ task_number: 756 }) },
     });
     await fireOnce(half);
-    expect(wakeLine(half)).toBe('conduction cond-1: wake (agent-ball) — launching worker');
-    expect(wakeLine(half)).not.toContain('undefined');
+    expect(launchLine(half)).toBe('conduction cond-1: launching worker');
+    expect(launchLine(half)).not.toContain('undefined');
   });
 
   it('a long title is cut at 48 chars with a single ellipsis; the conduction id still rides in full', async () => {
@@ -1289,11 +1657,10 @@ describe('B-723: the per-leg log lines name the TICKET, alongside the full condu
     });
     await fireOnce(h);
 
-    expect(wakeLine(h)).toBe(
-      'B-756 "Name the ticket on the daemon log line so an ope…" (conduction cond-1): ' +
-        'wake (agent-ball) — launching worker',
+    expect(launchLine(h)).toBe(
+      'B-756 "Name the ticket on the daemon log line so an ope…" (conduction cond-1): launching worker',
     );
-    expect(wakeLine(h)).toContain('(conduction cond-1)');
+    expect(launchLine(h)).toContain('(conduction cond-1)');
   });
 
   it('the project key is CONFIG pinned at launch, not a baked constant — another board logs its own', async () => {
@@ -1304,8 +1671,8 @@ describe('B-723: the per-leg log lines name the TICKET, alongside the full condu
     });
     await fireOnce(h);
 
-    expect(wakeLine(h)).toContain(`ACME-756 "${TITLE}" (conduction cond-1)`);
-    expect(wakeLine(h)).not.toContain('B-756');
+    expect(launchLine(h)).toContain(`ACME-756 "${TITLE}" (conduction cond-1)`);
+    expect(launchLine(h)).not.toContain('B-756');
   });
 
   it('the exit-classification line carries identity too — from the POST-EXIT read, not the pre-launch one', async () => {
@@ -1316,11 +1683,20 @@ describe('B-723: the per-leg log lines name the TICKET, alongside the full condu
       task.awaiting_human_input = true; // …and paused cleanly on the next gate
     };
     await fireOnce(h);
+    await h.pass(); // settle → classify
 
-    // Pre-launch read on the wake line, fresh post-exit read on the classification line.
-    expect(wakeLine(h)).toContain(`B-756 "${TITLE}"`);
+    expect(launchLine(h)).toContain(`B-756 "${TITLE}"`);
     expect(h.logs.find((l) => l.includes('worker exit code='))).toBe(
       'B-756 "Renamed while the leg ran" (conduction cond-1): worker exit code=0 → wait (clean-pause)',
     );
+  });
+
+  it('the wake-detected line reads "queued", distinct from the later "launching worker" line', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': identified() } });
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    expect(h.logs.some((l) => l.includes('wake (agent-ball) — queued'))).toBe(true);
+    expect(h.logs.some((l) => l.includes('launching worker'))).toBe(true);
   });
 });

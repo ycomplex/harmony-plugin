@@ -108,6 +108,12 @@ export interface ConductionRecord {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  /** B-717: the owning task's `priority` ('high'/'medium'/'low'), embedded via the `tasks` FK join
+   *  ONLY by `listConductions` (the daemon's queue-ranking read — see scheduler.ts's fire-ready-
+   *  candidates phase). Every OTHER accessor here (create/get/update/takeover/steal) still selects
+   *  the plain CONDUCTION_COLS with no join, so this is `undefined` on their returned rows — a
+   *  narrower, additive read, not a schema change to the row's identity. */
+  task_priority?: string | null;
 }
 
 const CONDUCTION_COLS =
@@ -300,11 +306,19 @@ export async function listConductions(
   client: SupabaseClient,
   args: { status?: ConductionStatus },
 ): Promise<ConductionRecord[]> {
-  let query = client.from('conductions').select(CONDUCTION_COLS);
+  // B-717: embed the owning task's `priority` via the `conductions.task_id -> tasks.id` FK — the
+  // scheduler's fire-ready-candidates phase (item 2, queue discipline) ranks ready rows by
+  // `tasks.priority` and needs it on the SAME read that already lists every active row each pass,
+  // rather than a second per-row lookup. Nested under the FK table name per PostgREST embedding.
+  let query = client.from('conductions').select(`${CONDUCTION_COLS}, tasks(priority)`);
   if (args.status) query = query.eq('status', args.status);
   const { data, error } = await query.order('started_at', { ascending: true });
   if (error) throw new Error(error.message);
-  return (data as unknown as ConductionRecord[]) ?? [];
+  const rows = (data as unknown as Array<Record<string, unknown>>) ?? [];
+  return rows.map((row) => {
+    const { tasks, ...rest } = row as { tasks?: { priority?: string | null } | null };
+    return { ...(rest as unknown as ConductionRecord), task_priority: tasks?.priority ?? null };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -349,6 +363,54 @@ export async function takeoverConduction(
       : query.eq('lease_holder', args.observed_lease_holder);
   const { data, error } = await query
     .or(`last_heartbeat_at.is.null,last_heartbeat_at.lt.${args.stale_before}`)
+    .select(CONDUCTION_COLS)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as unknown as ConductionRecord) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// stealConduction — the multi-daemon load-balancing CAS (B-717 item 3)
+// ---------------------------------------------------------------------------
+
+export interface StealConductionArgs {
+  id: string;
+  /** The lease holder the caller OBSERVED on its read — an ALIVE peer (not stale, not null). A
+   *  steal is never how a never-held or genuinely-stale row is claimed; those go through
+   *  `takeoverConduction`. */
+  observed_lease_holder: string;
+  new_lease_holder: string;
+}
+
+/** Atomically steal a ready-but-unfired row from an ALIVE peer — the B-717 item 3 counterpart to
+ *  `takeoverConduction`'s stale-lease CAS. Guarded on id + status='active' + the observed (alive)
+ *  lease holder + `leg_started_at IS NULL`, instead of a staleness window: because `leg_started_at`
+ *  now clears ONLY at tracked-settlement classification (never at fire-and-forget kickoff return —
+ *  see scheduler.ts's module header), `leg_started_at IS NULL` can only mean "no worker is
+ *  currently executing for this row, on any daemon", for that row's entire actual runtime — which
+ *  is what makes stealing a row nobody is running SAFE, even though its holder is alive and
+ *  otherwise well within its heartbeat window. Same three-way return contract as
+ *  `takeoverConduction` (row / null-lost-the-race / throw-on-operational-error). */
+export async function stealConduction(
+  client: SupabaseClient,
+  args: StealConductionArgs,
+): Promise<ConductionRecord | null> {
+  if (!args.id) throw new Error('id is required');
+  if (!args.observed_lease_holder) throw new Error('observed_lease_holder is required');
+  if (!args.new_lease_holder) throw new Error('new_lease_holder is required');
+
+  const stamp = new Date().toISOString();
+  const { data, error } = await client
+    .from('conductions')
+    .update({
+      lease_holder: args.new_lease_holder,
+      lease_acquired_at: stamp,
+      last_heartbeat_at: stamp,
+    })
+    .eq('id', args.id)
+    .eq('status', 'active')
+    .eq('lease_holder', args.observed_lease_holder)
+    .is('leg_started_at', null)
     .select(CONDUCTION_COLS)
     .maybeSingle();
   if (error) throw new Error(error.message);
