@@ -18850,13 +18850,14 @@ var CONDUCTION_STATUSES = [
   ...CONDUCTION_HUMAN_OWNED_STATUSES,
   ...CONDUCTION_TERMINAL_STATUSES
 ];
-var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at";
+var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at";
 var CONDUCTION_PATCHABLE_FIELDS = [
   "status",
   "lease_holder",
   "lease_acquired_at",
   "last_heartbeat_at",
   "leg_started_at",
+  "clean_shutdown_at",
   "retry_count",
   "worker_kind",
   "worker_ref",
@@ -18907,10 +18908,13 @@ async function takeoverConduction(client, args) {
   let query = client.from("conductions").update({
     lease_holder: args.new_lease_holder,
     lease_acquired_at: stamp,
-    last_heartbeat_at: stamp
+    last_heartbeat_at: stamp,
+    clean_shutdown_at: null
   }).eq("id", args.id).eq("status", "active");
   query = args.observed_lease_holder === null ? query.is("lease_holder", null) : query.eq("lease_holder", args.observed_lease_holder);
-  const { data, error } = await query.or(`last_heartbeat_at.is.null,last_heartbeat_at.lt.${args.stale_before}`).select(CONDUCTION_COLS).maybeSingle();
+  const { data, error } = await query.or(
+    `last_heartbeat_at.is.null,last_heartbeat_at.lt.${args.stale_before},clean_shutdown_at.not.is.null`
+  ).select(CONDUCTION_COLS).maybeSingle();
   if (error) throw new Error(error.message);
   return data ?? null;
 }
@@ -18926,6 +18930,11 @@ async function stealConduction(client, args) {
   }).eq("id", args.id).eq("status", "active").eq("lease_holder", args.observed_lease_holder).is("leg_started_at", null).select(CONDUCTION_COLS).maybeSingle();
   if (error) throw new Error(error.message);
   return data ?? null;
+}
+async function markCleanShutdown(client, leaseHolder) {
+  if (!leaseHolder) throw new Error("leaseHolder is required");
+  const { error } = await client.from("conductions").update({ clean_shutdown_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("lease_holder", leaseHolder).eq("status", "active");
+  if (error) throw new Error(error.message);
 }
 async function updateConductionIfHeld(client, id, expectedLeaseHolder, patch) {
   if (!id) throw new Error("id is required");
@@ -19065,6 +19074,11 @@ function renderTemplate(tpl, vars) {
   });
 }
 
+// src/daemon/quiet-reap.ts
+function renderQuietReapOutcome(exitCode) {
+  return exitCode === 0 ? "reaped a live container" : "reap: container already gone \u2014 ok";
+}
+
 // src/conductor/ball-axis.ts
 function ballWithHuman(row) {
   return row.awaiting_human_input === true;
@@ -19140,6 +19154,35 @@ function exclusionSetFor(state) {
   }
   return set;
 }
+var waitingMemory = /* @__PURE__ */ new WeakMap();
+function waitingMapFor(state) {
+  let map = waitingMemory.get(state);
+  if (!map) {
+    map = /* @__PURE__ */ new Map();
+    waitingMemory.set(state, map);
+  }
+  return map;
+}
+function sameWaitingMembership(a, b) {
+  if (a.size !== b.size) return false;
+  for (const id of a.keys()) if (!b.has(id)) return false;
+  return true;
+}
+function announceWaiting(deps, state, waitingCandidates) {
+  const previous = waitingMapFor(state);
+  const next = new Map(waitingCandidates.map((w) => [w.id, w.adoptAt]));
+  if (!sameWaitingMembership(previous, next)) {
+    if (next.size > 0) {
+      const earliestAdoptAt = Math.min(...next.values());
+      deps.log(
+        `${next.size} conduction${next.size === 1 ? "" : "s"} waiting out a dead lease's stale window (mid-leg \u2014 no fast steal available) \u2014 earliest adoption at ${iso(earliestAdoptAt)}`
+      );
+    } else {
+      deps.log("no conductions waiting on a dead lease stale window anymore");
+    }
+  }
+  waitingMemory.set(state, next);
+}
 var PersistentAuthFailure = class extends Error {
   consecutivePasses;
   constructor(consecutivePasses) {
@@ -19204,6 +19247,7 @@ async function runSchedulerPass(deps, state, keeper, runtime) {
   for (const id of [...runtime.running.keys()]) if (!activeIds.has(id)) runtime.running.delete(id);
   let authShapedFailures = 0;
   const stealCandidates = [];
+  const waitingCandidates = [];
   for (const row of rows) {
     try {
       const tracked = runtime.running.get(row.id);
@@ -19213,7 +19257,7 @@ async function runSchedulerPass(deps, state, keeper, runtime) {
           `conduction ${row.id}: lease lost to another daemon while a launch was tracked \u2014 abandoning (no clobber)`
         );
       }
-      await handleConduction(deps, state, keeper, excluded, runtime, row, stealCandidates);
+      await handleConduction(deps, state, keeper, excluded, runtime, row, stealCandidates, waitingCandidates);
     } catch (err) {
       if (err instanceof PersistentReapFailure) throw err;
       if (isAuthShapedError(err)) authShapedFailures += 1;
@@ -19225,6 +19269,7 @@ async function runSchedulerPass(deps, state, keeper, runtime) {
   const byId = new Map(rows.map((r) => [r.id, r]));
   authShapedFailures += await fireReadyCandidates(deps, state, keeper, runtime, byId);
   authShapedFailures += await fireStealCandidates(deps, state, keeper, runtime, stealCandidates);
+  announceWaiting(deps, state, waitingCandidates);
   return { attempted: rows.length, authShapedFailures };
 }
 async function writeIfHeld(deps, state, keeper, row, patch) {
@@ -19235,9 +19280,9 @@ async function writeIfHeld(deps, state, keeper, row, patch) {
   state.delete(row.id);
   return false;
 }
-async function handleConduction(deps, state, keeper, excluded, runtime, row, stealCandidates) {
+async function handleConduction(deps, state, keeper, excluded, runtime, row, stealCandidates, waitingCandidates) {
   if (row.lease_holder !== deps.leaseHolder) {
-    await handleForeignConduction(deps, state, keeper, excluded, runtime, row, stealCandidates);
+    await handleForeignConduction(deps, state, keeper, excluded, runtime, row, stealCandidates, waitingCandidates);
     return;
   }
   await handleHeldConduction(deps, state, keeper, excluded, runtime, row);
@@ -19294,7 +19339,7 @@ async function handleHeldConduction(deps, state, keeper, excluded, runtime, row)
     retryCount: row.retry_count
   });
 }
-async function handleForeignConduction(deps, state, keeper, excluded, runtime, row, stealCandidates) {
+async function handleForeignConduction(deps, state, keeper, excluded, runtime, row, stealCandidates, waitingCandidates) {
   const won = await deps.takeoverConduction({
     id: row.id,
     observed_lease_holder: row.lease_holder,
@@ -19306,6 +19351,12 @@ async function handleForeignConduction(deps, state, keeper, excluded, runtime, r
     const fallThrough = await handleWonTakeover(deps, state, keeper, runtime, row, won);
     if (fallThrough) await handleHeldConduction(deps, state, keeper, excluded, runtime, won);
     return;
+  }
+  if (row.leg_started_at !== null) {
+    waitingCandidates.push({
+      id: row.id,
+      adoptAt: (row.last_heartbeat_at ? Date.parse(row.last_heartbeat_at) : deps.now()) + deps.config.staleMs
+    });
   }
   let current;
   try {
@@ -19361,7 +19412,7 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
       `${label(row, null, deps.projectKey)}: reconciliation probe found no live worker \u2014 reaping defensively and clearing the stale leg`
     );
   }
-  await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+  await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)), { quiet: true });
   if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: null })) return false;
   deps.log(`conduction ${row.id}: took over stale lease from ${row.lease_holder} \u2014 reaped`);
   return true;
@@ -19534,6 +19585,29 @@ async function runScheduler(deps, keeper) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+async function markCleanShutdownBounded(client, holder, logFn, timeoutMs) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    const outcome = await Promise.race([
+      markCleanShutdown(client, holder).then(() => "done"),
+      timeout
+    ]);
+    if (outcome === "timeout") {
+      logFn("clean-shutdown marker write did not finish in time \u2014 exiting anyway");
+    }
+  } catch (err) {
+    logFn(
+      `clean-shutdown marker write failed (${err instanceof Error ? err.message : String(err)}) \u2014 exiting anyway`
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+var CLEAN_SHUTDOWN_TIMEOUT_MS = 2e3;
 async function main() {
   const token = process.env.HARMONY_API_TOKEN;
   if (!token) {
@@ -19569,15 +19643,25 @@ ${err instanceof Error ? err.message : String(err)}
   const projectId = auth.getProjectId();
   const projectKey = (await getProject(client, projectId)).key;
   const leaseHolder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
-  const runCommand = (cmd) => new Promise((resolve) => {
+  const runCommand = (cmd, opts) => new Promise((resolve) => {
     const child = exec(cmd);
-    child.stdout?.on("data", (d) => log(`[worker] ${String(d).trimEnd()}`));
-    child.stderr?.on("data", (d) => log(`[worker!] ${String(d).trimEnd()}`));
+    if (opts?.quiet) {
+      child.stdout?.on("data", () => {
+      });
+      child.stderr?.on("data", () => {
+      });
+    } else {
+      child.stdout?.on("data", (d) => log(`[worker] ${String(d).trimEnd()}`));
+      child.stderr?.on("data", (d) => log(`[worker!] ${String(d).trimEnd()}`));
+    }
     child.on("error", (err) => {
       log(`command failed to spawn: ${err.message}`);
       resolve({ exitCode: null });
     });
-    child.on("close", (code) => resolve({ exitCode: code }));
+    child.on("close", (code) => {
+      if (opts?.quiet) log(renderQuietReapOutcome(code));
+      resolve({ exitCode: code });
+    });
   });
   const deps = {
     now: Date.now,
@@ -19620,13 +19704,18 @@ ${err instanceof Error ? err.message : String(err)}
     log,
     heartbeatMs: config.heartbeatMs
   });
-  const stop = (signal) => {
+  const stop = async (signal) => {
     keeper.stopAll();
+    await markCleanShutdownBounded(client, leaseHolder, log, CLEAN_SHUTDOWN_TIMEOUT_MS);
     log(`received ${signal} \u2014 exiting (launchd owns restart)`);
     process.exit(0);
   };
-  process.on("SIGTERM", () => stop("SIGTERM"));
-  process.on("SIGINT", () => stop("SIGINT"));
+  process.on("SIGTERM", () => {
+    void stop("SIGTERM");
+  });
+  process.on("SIGINT", () => {
+    void stop("SIGINT");
+  });
   log(
     `conductor daemon up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms, worker timeout ${config.workerTimeoutMs}ms`
   );
