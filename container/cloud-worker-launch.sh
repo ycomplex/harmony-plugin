@@ -49,10 +49,22 @@ LOCK_POLL_S=1
 
 # B-717 / plan-gate correction 3: release via an EXIT trap (crash-safety — a killed wrapper must not
 # leave the lock held forever) AND explicitly the moment the execution exists (see call site below,
-# well before this trap would otherwise fire) — `rm -rf` on an already-removed dir is a no-op, so
-# calling both is safe.
+# well before this trap would otherwise fire) — both call sites share this one function.
+#
+# B-717 revising-building fix: release is PID-ownership-guarded, not an unconditional `rm -rf`. The
+# unconditional form raced: wrapper A's explicit release could be followed by wrapper B legitimately
+# `mkdir`ing the now-free $LOCK_DIR and starting its own critical section BEFORE A's EXIT trap fires
+# minutes later — A's trap then `rm -rf`'d the directory again, deleting B's lock out from under it,
+# and a third wrapper C could acquire mid-B's-critical-section and clobber B's `update` right before
+# B's `execute` submits (the exact cross-contamination the lock exists to prevent). Only the process
+# whose PID matches the stamp `acquire_lock` wrote (`echo $$ > "$LOCK_DIR/pid"`) may remove it — a
+# non-matching stamp means someone else now legitimately holds the lock, so this is a no-op instead.
 release_lock() {
-  rm -rf "$LOCK_DIR" 2>/dev/null || true
+  local holder_pid
+  holder_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+  if [ "$holder_pid" = "$$" ]; then
+    rm -rf "$LOCK_DIR" 2>/dev/null || true
+  fi
 }
 trap release_lock EXIT
 

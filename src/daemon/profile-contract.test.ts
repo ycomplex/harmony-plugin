@@ -698,6 +698,74 @@ describe('cloud-worker-launch.sh: B-717 item 6 — the mkdir lock RESOLVES the u
     expect(fnBody).toMatch(/sort-by="~metadata\.creationTimestamp"/); // takes the newest — B-713 retries reuse the label
     expect(fnBody).toMatch(/limit=1/);
   });
+
+  // B-717 revising-building fix: release_lock() must be PID-ownership-guarded — a process that no
+  // longer holds the lock (its own explicit release already fired, or it never held it) must not be
+  // able to `rm -rf` a lock directory another process has since (re)acquired. A prose-pin grep on the
+  // script text cannot catch this class (a previous reviewer note on this ticket, verbatim), so this
+  // test EXECUTES the real acquire_lock/release_lock functions, extracted VERBATIM from the live
+  // script text (never hand-retyped, same technique as the write_exec_env_file harness above).
+  it('release_lock is PID-ownership-guarded: a non-holder release must not remove a lock another process (re)acquired', () => {
+    function extractFunctionBody(marker: string): string {
+      const fnAt = launchScript.indexOf(marker);
+      expect(fnAt).toBeGreaterThanOrEqual(0);
+      const closeAt = launchScript.indexOf('\n}', fnAt);
+      expect(closeAt).toBeGreaterThan(fnAt);
+      return launchScript.slice(fnAt, closeAt + 2);
+    }
+
+    const releaseLockFn = extractFunctionBody('release_lock() {');
+    const acquireLockFn = extractFunctionBody('acquire_lock() {');
+
+    const dir = mkdtempSync(join(tmpdir(), 'b717-lock-race-'));
+    const lockDir = join(dir, 'launch.lock');
+    const scriptFile = join(dir, 'harness.sh');
+    const resultFile = join(dir, 'result');
+    const decoyPid = '999999';
+
+    const harness = [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      `LOCK_DIR="${lockDir}"`,
+      'LOCK_WAIT_TIMEOUT_S=60',
+      'LOCK_POLL_S=1',
+      releaseLockFn,
+      '',
+      acquireLockFn,
+      '',
+      '# 1. Process A (this harness process, PID $$) acquires the lock.',
+      'acquire_lock',
+      '',
+      '# 2. A explicitly releases right after its critical section — matches its own PID stamp.',
+      'release_lock',
+      'if [ -d "$LOCK_DIR" ]; then',
+      `  echo "FAIL: A explicit release left the lock behind" > "${resultFile}"`,
+      '  exit 0',
+      'fi',
+      '',
+      '# 3. Process B legitimately acquires the now-free lock. Simulated: bash tests run in one',
+      '#    process, so B is honestly faked by stamping the pid file with a PID that is NOT this',
+      `#    harness's own $$ (decoy pid ${decoyPid}), the same way acquire_lock itself would stamp it.`,
+      'mkdir "$LOCK_DIR"',
+      `echo ${decoyPid} > "$LOCK_DIR/pid"`,
+      '',
+      "# 4. A's EXIT-trap-equivalent release fires again (same $$ as step 2, still not the decoy pid).",
+      "#    An ownership-guarded release_lock must leave B's lock untouched.",
+      'release_lock',
+      '',
+      `if [ -d "$LOCK_DIR" ] && [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "${decoyPid}" ]; then`,
+      `  echo PASS > "${resultFile}"`,
+      'else',
+      `  echo "FAIL: a non-holder release_lock call removed B's lock" > "${resultFile}"`,
+      'fi',
+      '',
+    ].join('\n');
+
+    writeFileSync(scriptFile, harness, { mode: 0o700 });
+    execFileSync('bash', [scriptFile]);
+
+    expect(readFileSync(resultFile, 'utf8').trim()).toBe('PASS');
+  });
 });
 
 describe('cloud-worker scripts: config-not-constants (B-711) — no hardcoded live GCP identity', () => {
