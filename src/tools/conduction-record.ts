@@ -98,6 +98,12 @@ export interface ConductionRecord {
   /** B-698/B-742: when the current worker leg was launched; cleared on exit. Null when no leg is
    *  running. Left set if the daemon dies mid-leg (deliberate — see scheduler.ts). */
   leg_started_at: string | null;
+  /** B-761: stamped by the daemon's SIGTERM/SIGINT handler on every row it held, right before a
+   *  DELIBERATE exit — never set by an unclean death (crash/SIGKILL/OOM/host loss), which is what
+   *  keeps the fail-safe (unclean death still waits the full stale window) true by construction.
+   *  takeoverConduction's CAS treats a non-null value as immediately adoptable and clears it back
+   *  to null on the same write that reassigns lease_holder — single-use. */
+  clean_shutdown_at: string | null;
   retry_count: number;
   worker_kind: string | null;
   worker_ref: string | null;
@@ -118,6 +124,7 @@ export interface ConductionRecord {
 
 const CONDUCTION_COLS =
   'id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, ' +
+  'clean_shutdown_at, ' +
   'retry_count, ' +
   'worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, ' +
   'started_at, created_by, created_at, updated_at';
@@ -241,6 +248,7 @@ export const CONDUCTION_PATCHABLE_FIELDS = [
   'lease_acquired_at',
   'last_heartbeat_at',
   'leg_started_at',
+  'clean_shutdown_at',
   'retry_count',
   'worker_kind',
   'worker_ref',
@@ -336,9 +344,14 @@ export interface TakeoverConductionArgs {
 }
 
 /** Atomically take over a stale active conduction. The UPDATE is guarded on id + status='active' +
- *  the observed lease holder + the stale-heartbeat window, so at most one contender's guard can
- *  match — returns the updated row on the CAS win, `null` when no row matched (lost the race, or
- *  the holder heartbeated in the meantime); throws only on an operational error. */
+ *  the observed lease holder + (the stale-heartbeat window OR a non-null `clean_shutdown_at` —
+ *  B-761: a same-host successor of a DELIBERATE exit adopts the row immediately rather than waiting
+ *  out the full stale window; an unclean death never sets the marker, so that row still falls
+ *  through to the unchanged stale-heartbeat branch), so at most one contender's guard can match —
+ *  returns the updated row on the CAS win, `null` when no row matched (lost the race, or the holder
+ *  heartbeated/re-cleared in the meantime); throws only on an operational error. The winning UPDATE
+ *  also clears `clean_shutdown_at` back to null — the marker is single-use, so the new holder always
+ *  starts clean. */
 export async function takeoverConduction(
   client: SupabaseClient,
   args: TakeoverConductionArgs,
@@ -354,6 +367,7 @@ export async function takeoverConduction(
       lease_holder: args.new_lease_holder,
       lease_acquired_at: stamp,
       last_heartbeat_at: stamp,
+      clean_shutdown_at: null,
     })
     .eq('id', args.id)
     .eq('status', 'active');
@@ -362,7 +376,9 @@ export async function takeoverConduction(
       ? query.is('lease_holder', null)
       : query.eq('lease_holder', args.observed_lease_holder);
   const { data, error } = await query
-    .or(`last_heartbeat_at.is.null,last_heartbeat_at.lt.${args.stale_before}`)
+    .or(
+      `last_heartbeat_at.is.null,last_heartbeat_at.lt.${args.stale_before},clean_shutdown_at.not.is.null`,
+    )
     .select(CONDUCTION_COLS)
     .maybeSingle();
   if (error) throw new Error(error.message);
@@ -415,6 +431,30 @@ export async function stealConduction(
     .maybeSingle();
   if (error) throw new Error(error.message);
   return (data as unknown as ConductionRecord) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// markCleanShutdown — the B-761 clean-exit marker (bulk-scoped, lease-guarded)
+// ---------------------------------------------------------------------------
+
+/** B-761: called ONCE, from the daemon's SIGTERM/SIGINT handler, right before `process.exit(0)` —
+ *  marks every 'active' row THIS process instance currently holds as cleanly shut down, so a
+ *  same-host successor's `takeoverConduction` CAS can adopt it immediately instead of waiting out
+ *  the full stale window. Bulk-scoped by `lease_holder` (not a single row id, unlike
+ *  `updateConductionIfHeld`) because a daemon can hold several concurrent conductions when it
+ *  exits. Still lease-guarded — the WHERE clause names only rows this exact `leaseHolder` (the
+ *  `host:pid:nonce` identity) holds, so a shutdown handler can never touch a foreign peer's row.
+ *  Throws only on an operational error; the caller is expected to bound this with its own timeout
+ *  so a hung write can never block the deliberate exit (this function does not impose one itself —
+ *  it is a plain fire-once write, same shape as every other primitive here). */
+export async function markCleanShutdown(client: SupabaseClient, leaseHolder: string): Promise<void> {
+  if (!leaseHolder) throw new Error('leaseHolder is required');
+  const { error } = await client
+    .from('conductions')
+    .update({ clean_shutdown_at: new Date().toISOString() })
+    .eq('lease_holder', leaseHolder)
+    .eq('status', 'active');
+  if (error) throw new Error(error.message);
 }
 
 // ---------------------------------------------------------------------------

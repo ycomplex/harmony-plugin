@@ -19,7 +19,9 @@
 // in the launch profile's --env-file and never enter the daemon.
 //
 // Supervision: launchd (container/launchd/com.ycomplex.harmony-daemon.plist) owns restart —
-// SIGTERM/SIGINT log and exit 0.
+// SIGTERM/SIGINT stamp a clean-shutdown marker on every row this instance holds (B-761 — lets a
+// same-host successor adopt them immediately instead of waiting out the full stale window), log,
+// and exit 0.
 
 import { appendFileSync, readFileSync } from 'node:fs';
 import { exec } from 'node:child_process';
@@ -37,9 +39,11 @@ import {
   stealConduction,
   updateConduction,
   updateConductionIfHeld,
+  markCleanShutdown,
 } from '../tools/conduction-record.js';
 import { createHeartbeatKeeper } from '../daemon/heartbeat.js';
 import { loadDaemonConfig } from '../daemon/config.js';
+import { renderQuietReapOutcome } from '../daemon/quiet-reap.js';
 import {
   PersistentAuthFailure,
   PersistentReapFailure,
@@ -51,6 +55,40 @@ import {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/** B-761: bound the clean-shutdown marker write so a hung write can never block the deliberate
+ *  exit below it — best-effort, logs (but never throws) on a timeout or an operational error. */
+async function markCleanShutdownBounded(
+  client: Awaited<ReturnType<typeof createAuthenticatedClient>>,
+  holder: string,
+  logFn: (line: string) => void,
+  timeoutMs: number,
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    const outcome = await Promise.race([
+      markCleanShutdown(client, holder).then(() => 'done' as const),
+      timeout,
+    ]);
+    if (outcome === 'timeout') {
+      logFn('clean-shutdown marker write did not finish in time — exiting anyway');
+    }
+  } catch (err) {
+    logFn(
+      `clean-shutdown marker write failed (${err instanceof Error ? err.message : String(err)}) — exiting anyway`,
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** B-761: how long stop() waits for the clean-shutdown marker write before giving up on it — short
+ *  enough that a hung write can never meaningfully delay the deliberate exit it precedes. */
+const CLEAN_SHUTDOWN_TIMEOUT_MS = 2_000;
 
 async function main(): Promise<void> {
   const token = process.env.HARMONY_API_TOKEN;
@@ -97,18 +135,32 @@ async function main(): Promise<void> {
 
   const leaseHolder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 
-  /** Run a rendered launch/reap command; consume ONLY the exit code. Worker output is discarded
-   *  to the log (never parsed — the agent-portability guardrail). */
-  const runCommand = (cmd: string): Promise<{ exitCode: number | null }> =>
+  /** Run a rendered launch/reap/probe command; consume ONLY the exit code. Worker output is
+   *  discarded to the log (never parsed — the agent-portability guardrail), UNLESS `opts.quiet` is
+   *  set (B-761) — used ONLY for the reap-before-adopt call site in scheduler.ts's
+   *  handleWonTakeover, where a nonzero exit is the ROUTINE "container already gone" case, not an
+   *  error: raw Docker stderr there reads as scary when it is actually expected. Quiet mode never
+   *  streams the raw stdout/stderr lines (still drains them, so a chatty command can't backpressure
+   *  the pipe) and instead logs exactly ONE calm line, keyed ONLY on the exit code — see
+   *  renderQuietReapOutcome. */
+  const runCommand = (cmd: string, opts?: { quiet?: boolean }): Promise<{ exitCode: number | null }> =>
     new Promise((resolve) => {
       const child = exec(cmd);
-      child.stdout?.on('data', (d: unknown) => log(`[worker] ${String(d).trimEnd()}`));
-      child.stderr?.on('data', (d: unknown) => log(`[worker!] ${String(d).trimEnd()}`));
+      if (opts?.quiet) {
+        child.stdout?.on('data', () => {});
+        child.stderr?.on('data', () => {});
+      } else {
+        child.stdout?.on('data', (d: unknown) => log(`[worker] ${String(d).trimEnd()}`));
+        child.stderr?.on('data', (d: unknown) => log(`[worker!] ${String(d).trimEnd()}`));
+      }
       child.on('error', (err) => {
         log(`command failed to spawn: ${err.message}`);
         resolve({ exitCode: null });
       });
-      child.on('close', (code) => resolve({ exitCode: code }));
+      child.on('close', (code) => {
+        if (opts?.quiet) log(renderQuietReapOutcome(code));
+        resolve({ exitCode: code });
+      });
     });
 
   const deps: SchedulerDeps = {
@@ -158,15 +210,25 @@ async function main(): Promise<void> {
     heartbeatMs: config.heartbeatMs,
   });
 
-  const stop = (signal: string): void => {
+  const stop = async (signal: string): Promise<void> => {
     // B-739: a lease must go quiet the MOMENT this process leaves, so it goes stale on schedule
     // and its run stays recoverable by another daemon's takeover.
     keeper.stopAll();
+    // B-761: mark every row this process instance still holds as CLEANLY shut down — a same-host
+    // successor's takeoverConduction CAS then adopts it immediately instead of waiting out the
+    // full staleness window. Best-effort and bounded: the write must never block the deliberate
+    // exit below (the fail-safe holds by construction — an unclean death never reaches this line
+    // at all, so the marker just stays unset and the stale-window wait is unchanged).
+    await markCleanShutdownBounded(client, leaseHolder, log, CLEAN_SHUTDOWN_TIMEOUT_MS);
     log(`received ${signal} — exiting (launchd owns restart)`);
     process.exit(0);
   };
-  process.on('SIGTERM', () => stop('SIGTERM'));
-  process.on('SIGINT', () => stop('SIGINT'));
+  process.on('SIGTERM', () => {
+    void stop('SIGTERM');
+  });
+  process.on('SIGINT', () => {
+    void stop('SIGINT');
+  });
 
   log(
     `conductor daemon up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, ` +

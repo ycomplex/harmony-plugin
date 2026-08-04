@@ -8,6 +8,7 @@ import {
   listConductions,
   takeoverConduction,
   stealConduction,
+  markCleanShutdown,
   ActiveConductionExistsError,
   CONDUCTION_LIVE_STATUSES,
   CONDUCTION_HUMAN_OWNED_STATUSES,
@@ -38,6 +39,11 @@ function makeClient(responses: Array<{ data: unknown; error?: unknown }>) {
   // List queries terminate on .order(...) (the builder is awaited as a thenable in real supabase;
   // the mock returns the queued response directly).
   chain.order = vi.fn(async () => next());
+  // B-761: markCleanShutdown awaits the builder DIRECTLY (no trailing .select()/.single() —
+  // real supabase-js's PostgrestFilterBuilder is itself thenable), so the mock needs to be
+  // thenable too, for that ONE caller only — every other caller here always terminates on an
+  // explicit method above, so this is never reached by them.
+  chain.then = (resolve: (v: unknown) => void) => resolve(next());
   return chain;
 }
 
@@ -50,6 +56,7 @@ const conductionRow: ConductionRecord = {
   lease_acquired_at: null,
   last_heartbeat_at: null,
   leg_started_at: null,
+  clean_shutdown_at: null,
   retry_count: 0,
   worker_kind: null,
   worker_ref: null,
@@ -286,25 +293,29 @@ describe('takeoverConduction', () => {
     new_lease_holder: 'daemon-b',
   };
 
-  it('issues the guarded CAS UPDATE (id + active + observed holder + stale guard) and returns the row on win', async () => {
+  it('issues the guarded CAS UPDATE (id + active + observed holder + stale-or-clean-shutdown guard) and returns the row on win', async () => {
     const won = { ...conductionRow, lease_holder: 'daemon-b' };
     const client = makeClient([{ data: won }]);
     const result = await takeoverConduction(client, casArgs);
 
     expect(client.from).toHaveBeenCalledWith('conductions');
+    // B-761: clean_shutdown_at is cleared on the SAME write that reassigns lease_holder — the
+    // marker is single-use, so the new holder always starts clean.
     expect(client.update).toHaveBeenCalledWith({
       lease_holder: 'daemon-b',
       lease_acquired_at: expect.any(String),
       last_heartbeat_at: expect.any(String),
+      clean_shutdown_at: null,
     });
     expect(client.eq).toHaveBeenCalledWith('id', 'cond-1');
     expect(client.eq).toHaveBeenCalledWith('status', 'active');
     expect(client.eq).toHaveBeenCalledWith('lease_holder', 'daemon-a');
     expect(client.is).not.toHaveBeenCalled();
-    // NULL last_heartbeat_at counts as stale — the guard is the or(is-null, lt stale_before) form,
-    // never a bare .lt (a never-heartbeated row must be takeable).
+    // NULL last_heartbeat_at counts as stale — the guard is the or(is-null, lt stale_before,
+    // clean_shutdown_at not null) form, never a bare .lt (a never-heartbeated row must be takeable,
+    // and B-761's clean-shutdown marker must be takeable regardless of heartbeat recency).
     expect(client.or).toHaveBeenCalledWith(
-      `last_heartbeat_at.is.null,last_heartbeat_at.lt.${casArgs.stale_before}`,
+      `last_heartbeat_at.is.null,last_heartbeat_at.lt.${casArgs.stale_before},clean_shutdown_at.not.is.null`,
     );
     expect(client.maybeSingle).toHaveBeenCalled();
     expect(result).toEqual(won);
@@ -325,6 +336,31 @@ describe('takeoverConduction', () => {
   it('throws on an operational error (distinct from losing the race)', async () => {
     const client = makeClient([{ data: null, error: { message: 'permission denied' } }]);
     await expect(takeoverConduction(client, casArgs)).rejects.toThrow('permission denied');
+  });
+});
+
+describe('markCleanShutdown (B-761)', () => {
+  it('bulk-updates every active row this lease_holder holds, stamping clean_shutdown_at', async () => {
+    const client = makeClient([{ data: null, error: null }]);
+    await markCleanShutdown(client, 'this-host:1:abcd1234');
+
+    expect(client.from).toHaveBeenCalledWith('conductions');
+    expect(client.update).toHaveBeenCalledWith({ clean_shutdown_at: expect.any(String) });
+    // Scoped ONLY to this exact lease_holder + status='active' — never a foreign peer's row, and
+    // never a row this process already released (parked/completed/cancelled).
+    expect(client.eq).toHaveBeenCalledWith('lease_holder', 'this-host:1:abcd1234');
+    expect(client.eq).toHaveBeenCalledWith('status', 'active');
+  });
+
+  it('requires a lease holder — an unguarded bulk write must be impossible', async () => {
+    const client = makeClient([{ data: null, error: null }]);
+    await expect(markCleanShutdown(client, '')).rejects.toThrow('leaseHolder is required');
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
+  it('throws on an operational error', async () => {
+    const client = makeClient([{ data: null, error: { message: 'JWT expired' } }]);
+    await expect(markCleanShutdown(client, 'this-host:1:abcd1234')).rejects.toThrow('JWT expired');
   });
 });
 
@@ -493,5 +529,9 @@ describe('the canonical status axis', () => {
 
   it('CONDUCTION_PATCHABLE_FIELDS includes leg_started_at (B-742)', () => {
     expect(CONDUCTION_PATCHABLE_FIELDS).toContain('leg_started_at');
+  });
+
+  it('CONDUCTION_PATCHABLE_FIELDS includes clean_shutdown_at (B-761)', () => {
+    expect(CONDUCTION_PATCHABLE_FIELDS).toContain('clean_shutdown_at');
   });
 });

@@ -72,6 +72,21 @@
 // all `updateConductionIfHeld`-guarded, so a steal-winner mid-flight just makes the original
 // holder's next write a no-op — the existing "lease lost to another daemon" path, no new primitive.
 //
+// B-761: a same-host successor of a DELIBERATE daemon exit (SIGTERM/SIGINT) adopts every row that
+// instance held IMMEDIATELY — `takeoverConduction`'s CAS (conduction-record.ts) now also matches a
+// non-null `clean_shutdown_at`, a marker the daemon's stop() handler stamps right before exit, and
+// clears it on the same write that reassigns `lease_holder` (single-use). An UNCLEAN death never
+// stamps it, so that row still falls through to the unchanged stale-heartbeat branch — the fail-safe
+// holds by construction, no extra logic here. The one case still genuinely costing wall-clock time
+// is a MID-LEG foreign row (`leg_started_at` non-null): it is never steal-eligible (see item 3
+// above), so the stale-window CAS is its only path to adoption — handleForeignConduction now tracks
+// that waiting set every pass and `announceWaiting` logs an edge-triggered summary (count + earliest
+// adoption time) on transition, mirroring B-771's log-once WeakMap-keyed-on-`state` discipline
+// (exclusionMemory/exclusionSetFor, just below) rather than logging every pass. Separately, the
+// routine "reap a container the dead holder already lost" case at handleWonTakeover's
+// reap-before-adopt call site now asks runCommand for quiet rendering (real implementation in
+// src/bin/daemon.ts) — a calm one-line outcome instead of raw Docker stderr.
+//
 // PersistentReapFailure now surfaces from a DETACHED background chain (the deadline/reap escalation
 // is fired-and-forgotten, never awaited by a pass) rather than a synchronous throw a pass's own
 // await chain would propagate. It is stashed on `SchedulerRuntime.fatal` and every pass checks that
@@ -127,8 +142,12 @@ export interface SchedulerDeps {
   /** B-739: start a one-shot timer; returns a cancel function. Same dependency-injection rule. */
   startTimeout(ms: number, fn: () => void): () => void;
   /** Run a rendered launch/reap/probe command to completion; the daemon consumes ONLY the exit
-   *  code (never stdout — the agent-portability guardrail). */
-  runCommand(cmd: string): Promise<{ exitCode: number | null }>;
+   *  code (never stdout — the agent-portability guardrail). `opts.quiet` (B-761) is set ONLY at
+   *  the reap-before-adopt call site in `handleWonTakeover`: the routine "container already gone"
+   *  case there must render calmly rather than as raw Docker stderr — see the real implementation
+   *  (src/bin/daemon.ts) for the quiet rendering itself; this module only decides WHERE to ask
+   *  for it. */
+  runCommand(cmd: string, opts?: { quiet?: boolean }): Promise<{ exitCode: number | null }>;
   log(line: string): void;
   leaseHolder: string;
   config: DaemonConfig;
@@ -153,6 +172,55 @@ function exclusionSetFor(state: Map<string, WatchBaseline>): Set<string> {
     exclusionMemory.set(state, set);
   }
   return set;
+}
+
+// B-761: per-daemon memory of the mid-leg foreign rows currently waiting out a dead lease's stale
+// window — the SAME WeakMap-keyed-on-`state` lifecycle as exclusionMemory above (a fresh state map,
+// e.g. a daemon restart, gets fresh, empty waiting memory automatically). A mid-leg row
+// (leg_started_at non-null) is never steal-eligible (see handleForeignConduction), so the
+// stale-window takeoverConduction CAS is the ONLY path that can ever free it — this is the one case
+// B-761 still costs real wall-clock time for, even after the clean-shutdown fast path. Rebuilt FRESH
+// every pass from that pass's own observations (never incremental), so a row that resolves (fires,
+// gets adopted, leaves the active set) simply does not reappear next time — no separate pruning
+// needed, unlike exclusionMemory/excluded which persist across many passes.
+const waitingMemory = new WeakMap<Map<string, WatchBaseline>, Map<string, number>>();
+
+function waitingMapFor(state: Map<string, WatchBaseline>): Map<string, number> {
+  let map = waitingMemory.get(state);
+  if (!map) {
+    map = new Map<string, number>();
+    waitingMemory.set(state, map);
+  }
+  return map;
+}
+
+function sameWaitingMembership(a: Map<string, number>, b: Map<string, number>): boolean {
+  if (a.size !== b.size) return false;
+  for (const id of a.keys()) if (!b.has(id)) return false;
+  return true;
+}
+
+/** B-771 log-once discipline: log ONE line when the waiting set transitions (empty → non-empty, or
+ *  its membership changes) — never per pass, and never again while the same set of ids persists. */
+function announceWaiting(
+  deps: SchedulerDeps,
+  state: Map<string, WatchBaseline>,
+  waitingCandidates: Array<{ id: string; adoptAt: number }>,
+): void {
+  const previous = waitingMapFor(state);
+  const next = new Map(waitingCandidates.map((w) => [w.id, w.adoptAt] as const));
+  if (!sameWaitingMembership(previous, next)) {
+    if (next.size > 0) {
+      const earliestAdoptAt = Math.min(...next.values());
+      deps.log(
+        `${next.size} conduction${next.size === 1 ? '' : 's'} waiting out a dead lease's stale ` +
+          `window (mid-leg — no fast steal available) — earliest adoption at ${iso(earliestAdoptAt)}`,
+      );
+    } else {
+      deps.log('no conductions waiting on a dead lease stale window anymore');
+    }
+  }
+  waitingMemory.set(state, next);
 }
 
 /** B-696 backstop: thrown by runScheduler after AUTH_FAILURE_PASS_LIMIT consecutive passes in
@@ -339,6 +407,10 @@ export async function runSchedulerPass(
 
   let authShapedFailures = 0;
   const stealCandidates: StealCandidate[] = [];
+  // B-761: rows whose takeover CAS lost AND which are mid-leg (not steal-eligible) — rebuilt fresh
+  // every pass and handed to announceWaiting below. See waitingMemory's own doc for why fresh
+  // rebuild needs no separate pruning.
+  const waitingCandidates: Array<{ id: string; adoptAt: number }> = [];
   for (const row of rows) {
     try {
       // B-717: a row this daemon was tracking as `running` whose FRESH read now shows a different
@@ -356,7 +428,7 @@ export async function runSchedulerPass(
             `abandoning (no clobber)`,
         );
       }
-      await handleConduction(deps, state, keeper, excluded, runtime, row, stealCandidates);
+      await handleConduction(deps, state, keeper, excluded, runtime, row, stealCandidates, waitingCandidates);
     } catch (err) {
       // B-739: "I cannot free myself" is NOT a per-row transient — it must escape this isolation
       // and kill the process, or the daemon keeps heartbeating from inside a state it cannot
@@ -381,6 +453,9 @@ export async function runSchedulerPass(
   const byId = new Map(rows.map((r) => [r.id, r]));
   authShapedFailures += await fireReadyCandidates(deps, state, keeper, runtime, byId);
   authShapedFailures += await fireStealCandidates(deps, state, keeper, runtime, stealCandidates);
+
+  // B-761: announce the mid-leg wait ONCE per transition, not per pass — see announceWaiting.
+  announceWaiting(deps, state, waitingCandidates);
 
   return { attempted: rows.length, authShapedFailures };
 }
@@ -412,9 +487,10 @@ async function handleConduction(
   runtime: SchedulerRuntime,
   row: ConductionRecord,
   stealCandidates: StealCandidate[],
+  waitingCandidates: Array<{ id: string; adoptAt: number }>,
 ): Promise<void> {
   if (row.lease_holder !== deps.leaseHolder) {
-    await handleForeignConduction(deps, state, keeper, excluded, runtime, row, stealCandidates);
+    await handleForeignConduction(deps, state, keeper, excluded, runtime, row, stealCandidates, waitingCandidates);
     return;
   }
   await handleHeldConduction(deps, state, keeper, excluded, runtime, row);
@@ -528,6 +604,7 @@ async function handleForeignConduction(
   runtime: SchedulerRuntime,
   row: ConductionRecord,
   stealCandidates: StealCandidate[],
+  waitingCandidates: Array<{ id: string; adoptAt: number }>,
 ): Promise<void> {
   const won = await deps.takeoverConduction({
     id: row.id,
@@ -543,6 +620,20 @@ async function handleForeignConduction(
     // `excluded` set is reused so B-771's log-once bookkeeping stays correct across a takeover.
     if (fallThrough) await handleHeldConduction(deps, state, keeper, excluded, runtime, won);
     return;
+  }
+
+  // B-761: a mid-leg row (leg_started_at non-null) is never steal-eligible (see the check below) —
+  // the stale-window takeoverConduction CAS just attempted above is the ONLY path that can ever
+  // free it, which is exactly the "still waits" case B-771's wait-announcement is scoped to. Record
+  // it for this pass's summary (announceWaiting, called once after every row is triaged) — we
+  // cannot tell here whether the holder is genuinely dead (will eventually go stale) or genuinely
+  // alive (never will); the daemon has no cheaper signal than that, and the log is informational.
+  if (row.leg_started_at !== null) {
+    waitingCandidates.push({
+      id: row.id,
+      adoptAt:
+        (row.last_heartbeat_at ? Date.parse(row.last_heartbeat_at) : deps.now()) + deps.config.staleMs,
+    });
   }
 
   // ── B-717 item 3: the holder is alive — the takeover lost, so consider a STEAL candidate instead
@@ -640,8 +731,11 @@ async function handleWonTakeover(
   }
 
   // No leg was in flight, or reconciliation found nothing live: today's REAP-THEN-FIRE. The dead
-  // holder may have left a worker running; remove it BEFORE this daemon ever fires one.
-  await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+  // holder may have left a worker running; remove it BEFORE this daemon ever fires one. B-761:
+  // this is the ROUTINE case — the dead holder usually left NOTHING to reap, so quiet=true here
+  // (and ONLY here — the dirty-exit retry reap and the deadline-escalation reap stay verbose,
+  // since those ARE genuinely operationally interesting).
+  await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)), { quiet: true });
   // B-742/B-717 point 4 (corrected): this clear is reached ONLY for a row with NO tracked in-flight
   // worker on THIS daemon — `running` cannot already hold this id (we just won the takeover, and
   // `running` only ever holds rows this daemon currently holds the lease for), and reconciliation

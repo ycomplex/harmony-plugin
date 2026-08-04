@@ -30,6 +30,7 @@ function conduction(over: Partial<ConductionRecord> = {}): ConductionRecord {
     lease_acquired_at: iso(T0),
     last_heartbeat_at: iso(T0),
     leg_started_at: null,
+    clean_shutdown_at: null,
     retry_count: 0,
     worker_kind: null,
     worker_ref: null,
@@ -181,10 +182,15 @@ function makeHarness(opts: HarnessOpts) {
       const row = conductions.find((c) => c.id === args.id);
       if (!row || row.status !== 'active') return null;
       if ((row.lease_holder ?? null) !== args.observed_lease_holder) return null;
-      if (!(row.last_heartbeat_at == null || row.last_heartbeat_at < args.stale_before)) return null;
+      // B-761: the real CAS's widened guard — stale heartbeat OR a non-null clean_shutdown_at
+      // marker (a same-host successor of a DELIBERATE exit adopts immediately).
+      const staleByHeartbeat = row.last_heartbeat_at == null || row.last_heartbeat_at < args.stale_before;
+      const cleanlyShutDown = row.clean_shutdown_at != null;
+      if (!(staleByHeartbeat || cleanlyShutDown)) return null;
       row.lease_holder = args.new_lease_holder;
       row.lease_acquired_at = iso(t);
       row.last_heartbeat_at = iso(t);
+      row.clean_shutdown_at = null; // single-use: cleared on the same write that reassigns the lease
       return { ...row };
     }),
     // B-717 item 3: mirrors takeoverConduction's CAS shape, guarded on leg_started_at IS NULL
@@ -199,7 +205,7 @@ function makeHarness(opts: HarnessOpts) {
       row.last_heartbeat_at = iso(t);
       return { ...row };
     }),
-    runCommand: vi.fn(async (cmd: string) => {
+    runCommand: vi.fn(async (cmd: string, _opts?: { quiet?: boolean }) => {
       commands.push(cmd);
       const id = condId(cmd);
       if (cmd.startsWith('launch')) {
@@ -269,6 +275,12 @@ function makeHarness(opts: HarnessOpts) {
     launches: () => commands.filter((c) => c.startsWith('launch')),
     reaps: () => commands.filter((c) => c.startsWith('reap')),
     probes: () => commands.filter((c) => c.startsWith('probe')),
+    /** B-761: every runCommand call's (cmd, opts) pair, in call order — lets a test assert quiet
+     *  mode was requested at EXACTLY one call site and nowhere else. */
+    runCommandCalls: () =>
+      (deps.runCommand as unknown as { mock: { calls: unknown[][] } }).mock.calls as Array<
+        [string, { quiet?: boolean } | undefined]
+      >,
     ready: () => [...runtime.ready.keys()],
     running: () => [...runtime.running.keys()],
     setProbe: (conductionId: string, exitCode: number) => probeExitCodes.set(conductionId, exitCode),
@@ -832,6 +844,156 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
     await h.pass(); // settle → 'wait' (worker exits 0 clean by default, nothing progressed though)
     h.hooks.onLaunch = undefined;
     expect(returnLines()).toHaveLength(1); // still exactly once, total
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-761 — a same-host successor adopts a DELIBERATELY shut-down lease immediately (no staleness
+// wait), an unclean death still waits the full window unchanged, a foreign live peer is never
+// adopted, the wait is announced once per transition, and the routine reap-miss renders quietly.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('B-761: clean-shutdown adoption + the mid-leg wait announcement', () => {
+  it('a same-host clean-shutdown marker is adopted IMMEDIATELY — no staleness wait, even with a FRESH heartbeat', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'this-host:1:dead0000', // a prior instance of THIS same host
+          last_heartbeat_at: iso(T0 - 1_000), // fresh — nowhere near the 5-minute stale window
+          clean_shutdown_at: iso(T0 - 1_000), // ...but it shut down deliberately right before dying
+        }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+    });
+
+    await h.pass(); // takeover pass: CAS wins on the clean-shutdown marker alone
+    expect(h.deps.takeoverConduction).toHaveBeenCalledWith({
+      id: 'cond-1',
+      observed_lease_holder: 'this-host:1:dead0000',
+      stale_before: iso(T0 - config.staleMs),
+      new_lease_holder: ME,
+    });
+    expect(h.getConduction('cond-1').lease_holder).toBe(ME);
+    // The marker is single-use — cleared on the SAME write that reassigns the lease.
+    expect(h.getConduction('cond-1').clean_shutdown_at).toBeNull();
+
+    await h.pass(); // wake (first pickup) → fire
+    expect(h.commands).toEqual(['reap cond-1', 'launch cond-1 task-1']);
+  });
+
+  it('an unclean death (no clean_shutdown_at) still waits out the FULL staleness window, unchanged', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'this-host:1:dead0000',
+          last_heartbeat_at: iso(T0 - 1_000), // fresh heartbeat, no marker — indistinguishable from alive
+          clean_shutdown_at: null,
+        }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+    });
+
+    await h.pass(); // CAS loses: neither stale nor marked
+    expect(h.getConduction('cond-1').lease_holder).toBe('this-host:1:dead0000'); // untouched
+    expect(h.commands).toEqual([]);
+
+    // Only once the FULL stale window has genuinely elapsed does the takeover win.
+    h.setNow(T0 + config.staleMs + 1_000);
+    await h.pass();
+    expect(h.getConduction('cond-1').lease_holder).toBe(ME);
+  });
+
+  it('a genuinely foreign, ALIVE peer is never adopted, marker or not — the identity check still guards it', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'other-host:2:alive111',
+          last_heartbeat_at: iso(T0 - 1_000), // alive and fresh
+          clean_shutdown_at: null,
+        }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+    });
+
+    await h.pass();
+    expect(h.getConduction('cond-1').lease_holder).toBe('other-host:2:alive111'); // never taken over
+    expect(h.commands).toEqual([]);
+  });
+
+  it('the wait-announcement log fires ONCE on the empty→non-empty transition, not again while the set is unchanged', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'other-host:2:midleg11',
+          last_heartbeat_at: iso(T0 - 1_000), // not yet stale, no clean-shutdown marker
+          leg_started_at: iso(T0 - 30_000), // mid-leg: not steal-eligible either
+        }),
+      ],
+      tasks: { 'task-1': pausedTask() },
+    });
+    const waitLines = () => h.logs.filter((l) => /waiting out a dead lease/.test(l));
+
+    await h.pass(); // first sight — the set transitions empty → non-empty
+    expect(waitLines()).toHaveLength(1);
+    expect(waitLines()[0]).toMatch(/1 conduction/);
+    expect(waitLines()[0]).toMatch(new RegExp(iso(T0 - 1_000 + config.staleMs).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+    await h.pass(); // same row, same mid-leg state — membership unchanged, no new line
+    await h.pass();
+    expect(waitLines()).toHaveLength(1); // still exactly once
+  });
+
+  it('the wait-announcement log fires again when the waiting set CLEARS (e.g. the row finally goes stale and is adopted)', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'other-host:2:midleg11',
+          last_heartbeat_at: iso(T0 - 1_000),
+          leg_started_at: iso(T0 - 30_000),
+        }),
+      ],
+      tasks: { 'task-1': pausedTask() },
+    });
+
+    await h.pass();
+    expect(h.logs.filter((l) => /waiting out a dead lease/.test(l))).toHaveLength(1);
+
+    // Advance well past staleness — the row is genuinely taken over, leaving the waiting set empty.
+    h.setNow(T0 + config.staleMs + 1_000);
+    await h.pass();
+    expect(h.getConduction('cond-1').lease_holder).toBe(ME);
+    expect(h.logs.filter((l) => /no conductions waiting/.test(l))).toHaveLength(1);
+  });
+
+  it('the reap-before-adopt call (handleWonTakeover) requests quiet mode; the dirty-exit retry reap and the deadline reap do not', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'dead-host:9:zzzz9999',
+          last_heartbeat_at: iso(T0 - 600_000), // genuinely stale
+        }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+    });
+
+    await h.pass(); // takeover pass: CAS win → reap (this is the ONE quiet call site)
+    const reapCalls = h.runCommandCalls().filter(([cmd]) => cmd.startsWith('reap'));
+    expect(reapCalls).toHaveLength(1);
+    expect(reapCalls[0][1]).toEqual({ quiet: true });
+  });
+
+  it('the deadline-escalation reap does NOT request quiet mode (that call site stays verbose)', async () => {
+    const h = makeHarness({
+      blockLaunch: true,
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+    });
+    await firedAndBlocked(h);
+    await h.fireDeadline(); // arms the deadline escalation's reap
+
+    const reapCalls = h.runCommandCalls().filter(([cmd]) => cmd.startsWith('reap'));
+    expect(reapCalls.length).toBeGreaterThan(0);
+    for (const [, opts] of reapCalls) expect(opts).toBeUndefined();
   });
 });
 
