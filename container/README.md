@@ -23,7 +23,7 @@ match `HARMONY_TARGET`, aborting on mismatch), and drops you into the dogfood
 shell. From there:
 
 ```bash
-claude --plugin-dir /workspace/plugin      # an agent session in the container
+claude --plugin-dir /workspace/workspace/plugin      # an agent session in the container
 harmony tasks list                          # or drive the CLI directly
 ```
 
@@ -44,11 +44,11 @@ and refuses headless mode with neither set.
 ## Interactive login
 
 `CLAUDE_CODE_OAUTH_TOKEN` (above) only authenticates headless `claude -p` runs. The
-**interactive TUI** (`claude --plugin-dir /workspace/plugin`) needs its own stored OAuth
+**interactive TUI** (`claude --plugin-dir /workspace/workspace/plugin`) needs its own stored OAuth
 session in `~/.claude` — a fresh `--rm` container has none, so it sends you to a browser
 login with no explanation. Two paths:
 
-- **One-time, this container only:** just run `claude --plugin-dir /workspace/plugin` and
+- **One-time, this container only:** just run `claude --plugin-dir /workspace/workspace/plugin` and
   follow the browser prompt. The session lives only as long as this container — a fresh
   `--rm` run logs you in again.
 - **Persistent across runs:** mount a named volume over `~/.claude` so the OAuth session
