@@ -6,6 +6,20 @@
 # parses stdout: the daemon still just runs a shell command to completion and reads its exit code.
 # All Cloud Run CLI ambiguity is absorbed HERE.
 #
+# B-717 item 6 (accepted design c4c975bd, plan-gate correction 1): this wrapper is now spawned as a
+# TRACKED CHILD PROCESS by the daemon's fire-and-track scheduler — it is itself the `TrackedLaunch`
+# handle src/daemon/scheduler.ts's `running` map holds, so N of these can run fully in parallel. The
+# `update`+`execute` pair below mutates ONE SHARED Cloud Run job definition non-atomically (see the
+# comments at those call sites) — safe only inside a mutual-exclusion window, so this wrapper now
+# acquires an mkdir-based lock BEFORE that pair and releases it IMMEDIATELY after `execute` returns
+# an execution id (not after the execution completes) — the lock's held duration is the few seconds
+# of `update`+`execute`-submission, never the multi-minute build itself. `execute` no longer carries
+# `--wait` (there is no "submission returns an execution id" moment with `--wait` present — it blocks
+# until the WHOLE execution completes); this wrapper resolves the execution via the existing
+# conduction-id label lookup instead (polling briefly, taking the newest — B-713 retries reuse the
+# same label), THEN releases the lock, THEN polls `executions describe` (unchanged, step 4 below)
+# until the execution reaches a terminal state.
+#
 # Usage: cloud-worker-launch.sh <conduction_id> <ticket>
 set -euo pipefail
 
@@ -24,13 +38,57 @@ TICKET="${2:?usage: cloud-worker-launch.sh <conduction_id> <ticket>}"
 : "${HARMONY_CLOUD_RUN_JOB:=harmony-build-worker}"
 export CLOUDSDK_CORE_PROJECT CLOUDSDK_CORE_ACCOUNT
 
+# B-717 item 6 / plan-gate correction 3: the lock directory is SHARED across every concurrent
+# wrapper invocation on THIS daemon host (it narrows the update+execute race against the one shared
+# Cloud Run job definition, not a per-conduction resource) — deliberately NOT under RUN_DIR. A fresh
+# TMPDIR per host is fine; override HARMONY_CLOUD_LAUNCH_LOCK_DIR if the host needs a different path.
+: "${HARMONY_CLOUD_LAUNCH_LOCK_DIR:=${TMPDIR:-/tmp}/harmony-cloud-worker-launch.lock}"
+LOCK_DIR="$HARMONY_CLOUD_LAUNCH_LOCK_DIR"
+LOCK_WAIT_TIMEOUT_S="${HARMONY_CLOUD_LAUNCH_LOCK_TIMEOUT_S:-60}"
+LOCK_POLL_S=1
+
+# B-717 / plan-gate correction 3: release via an EXIT trap (crash-safety — a killed wrapper must not
+# leave the lock held forever) AND explicitly the moment the execution exists (see call site below,
+# well before this trap would otherwise fire) — `rm -rf` on an already-removed dir is a no-op, so
+# calling both is safe.
+release_lock() {
+  rm -rf "$LOCK_DIR" 2>/dev/null || true
+}
+trap release_lock EXIT
+
+acquire_lock() {
+  local waited=0
+  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+    # Stamped with the holder's PID (below) — a lock left by a wrapper process that no longer
+    # exists is STALE, not contended; break it rather than wait out the full timeout.
+    local holder_pid
+    holder_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+    if [ -n "$holder_pid" ] && ! kill -0 "$holder_pid" 2>/dev/null; then
+      echo "cloud-worker-launch: breaking a stale launch lock held by dead pid $holder_pid" >&2
+      rm -rf "$LOCK_DIR"
+      continue
+    fi
+    if [ "$waited" -ge "$LOCK_WAIT_TIMEOUT_S" ]; then
+      # BOUNDED wait, fails LOUD: the daemon's own retry ladder (dirty-exit, exponential backoff —
+      # src/daemon/scheduler.ts) owns recovery from here; this script adds no new recovery logic.
+      echo "cloud-worker-launch: timed out after ${LOCK_WAIT_TIMEOUT_S}s waiting for the launch lock — treating as a dirty exit" >&2
+      exit 1
+    fi
+    sleep "$LOCK_POLL_S"
+    waited=$((waited + LOCK_POLL_S))
+  done
+  echo $$ > "$LOCK_DIR/pid"
+}
+
 RUN_DIR="$HOME/.harmony-conductions/$TICKET/$CONDUCTION_ID"
 mkdir -p "$RUN_DIR"
 
 ENV_FILE="$RUN_DIR/run.env"           # per-run minted GIT_TOKEN, same lifetime/shape as B-732
 EXEC_ENV_FILE="$RUN_DIR/exec-env-vars.yaml"  # per-EXECUTE-call file, deleted right after use
 
-# 1. Mint a fresh per-run GitHub App installation token (B-732 mechanism, unchanged).
+# 1. Mint a fresh per-run GitHub App installation token (B-732 mechanism, unchanged). Deliberately
+#    OUTSIDE the launch lock — minting is per-conduction (its own RUN_DIR), not a shared-resource
+#    mutation, and there is no reason to serialize it against other conductions' launches.
 #    B-726 followup (2026-08-04 live probe): this call used to be made WITHOUT --base, on the
 #    (wrong) assumption that there was no static secrets file to merge on the cloud path. That
 #    omission was the actual root cause of B-726's ack flag never reaching the cloud container:
@@ -98,6 +156,11 @@ write_exec_env_file() {
 }
 write_exec_env_file "$EXEC_ENV_FILE"
 
+# B-717 item 6: acquire the shared launch lock NOW — right before the two non-atomic calls that
+# mutate the shared job definition, narrowing the critical section to exactly that pair (plus the
+# execution-id resolve immediately after) rather than the whole multi-minute build.
+acquire_lock
+
 # 3a. Push the per-execution env vars onto the JOB DEFINITION FIRST. `gcloud run jobs execute` has no
 #     file-based env-vars flag (CONFIRMED via a live `gcloud run jobs execute --help` check,
 #     2026-08-03 — see write_exec_env_file() above); the file-based form is `--env-vars-file` on
@@ -120,40 +183,31 @@ write_exec_env_file "$EXEC_ENV_FILE"
 #     (there's a separate `--clear-secrets` flag if secret bindings ever need clearing — not used
 #     here).
 #
-# B-717 (accepted design cf579f0f pt.3, round-2 feedback; STRENGTHENED round 3): `update
-# --env-vars-file` mutates (replaces) the Cloud Run JOB DEFINITION itself before the `execute` call
-# immediately below reads that same job definition to launch the execution — there is no
-# per-execution-only variant. Round 3 makes this TWO non-atomic gcloud calls (`update` then `execute`)
-# against that one shared job definition, not one — which STRENGTHENS, not relaxes, the existing named
-# constraint: two concurrent update+execute pairs could interleave and race each other's env values
-# through this shared mutation. Safe ONLY because the daemon is strictly serial today (one build at a
-# time) — B-717 (serial-execution/concurrency model) must treat this as a named, inherited constraint:
-# either keep executions serialized past this call, or move per-execution values off
-# `update --env-vars-file` onto a mechanism that doesn't mutate shared job state, rather than
-# discovering the race live.
+# B-717 (accepted design c4c975bd pt.6, plan-gate correction 1 — RESOLVED): `update --env-vars-file`
+# mutates (replaces) the Cloud Run JOB DEFINITION itself before the `execute` call immediately below
+# reads that same job definition to launch the execution — TWO non-atomic gcloud calls against one
+# shared job definition. B-717 resolves the race this created (once the daemon stopped being
+# strictly serial) with the mkdir-based lock acquired immediately above: both calls, and the
+# execution-id resolve after them, run inside its critical section — see acquire_lock/release_lock.
 gcloud run jobs update "$HARMONY_CLOUD_RUN_JOB" \
   --region="$HARMONY_CLOUD_RUN_REGION" \
   --env-vars-file="$EXEC_ENV_FILE" \
   --update-labels="conduction-id=$CONDUCTION_ID"
 
-# 3b. Fire the job execution. `gcloud run jobs execute` has no `--labels` flag (CONFIRMED live,
-#     2026-08-03 — see the `update` call site above); the execution is instead found by reap (and step
-#     4 below) via the `conduction-id` label the `update` call above just set on the JOB DEFINITION,
-#     which the execution inherits (CONFIRMED live) into its own `metadata.labels` — no
-#     caller-assigned name needed (Cloud Run assigns the execution name/ID itself). This launches with
-#     the env vars the `update` call immediately above just pushed onto the job definition, too.
+# 3b. Fire the job execution WITHOUT --wait (B-717 plan-gate correction 1): `execute --wait` is a
+#     single blocking call with no "submission returns an execution id" moment — this wrapper must
+#     release the launch lock as soon as the execution EXISTS, well before it completes, so N
+#     concurrent wrapper invocations' multi-minute waits run fully unlocked (see step 4 below).
+#     `gcloud run jobs execute` has no `--labels` flag (CONFIRMED live, 2026-08-03 — see the `update`
+#     call site above); the execution is instead found via the `conduction-id` label the `update`
+#     call above just set on the JOB DEFINITION, which the execution inherits (CONFIRMED live) into
+#     its own `metadata.labels` — no caller-assigned name needed (Cloud Run assigns the execution
+#     name/ID itself). This launches with the env vars the `update` call immediately above just
+#     pushed onto the job definition, too.
 #
-# B-717 (accepted design cf579f0f pt.3, round-2 feedback; STRENGTHENED round 3): see the identical
-# comment at the `update --env-vars-file` call site immediately above — this `execute` call is the
-# second of the two non-atomic calls against the shared JOB DEFINITION that comment describes. Safe
-# ONLY because the daemon is strictly serial today.
-#
-# `--wait`'s OWN exit code is not the classification signal here: CONFIRMED via live observation
-# (2026-08-03) that `execute --wait` collapses the launched container's own exit code down to a
-# simple pass/fail signal (observed: container process exit code 7 -> `gcloud` process exit code 1)
-# — fine for classify.ts's zero/non-zero contract, but too coarse to trust directly, so this wrapper
-# still NEVER keys off it and always falls through to the authoritative post-hoc read in step 4,
-# regardless of what happens here.
+# `execute`'s OWN submit-time exit code is not the classification signal here (unchanged rationale
+# from the old `--wait` form — see step 4's authoritative post-hoc read, which this wrapper always
+# falls through to regardless of what happens at submission).
 # B-754 fix (2026-08-03): execute fired with NO container args, so the entrypoint's no-arg
 # default silently exited 0, no work done. `--args` CONFIRMED live (2026-08-03) on `execute`; the
 # comma splits the two positional args (`headless`, prompt) — spaces inside the prompt survive
@@ -161,16 +215,59 @@ gcloud run jobs update "$HARMONY_CLOUD_RUN_JOB" \
 set +e
 gcloud run jobs execute "$HARMONY_CLOUD_RUN_JOB" \
   --region="$HARMONY_CLOUD_RUN_REGION" \
-  --args="headless,/harmony-plugin:harmony-conduct $TICKET --one-shot" \
-  --wait
-EXECUTE_EXIT=$?
+  --args="headless,/harmony-plugin:harmony-conduct $TICKET --one-shot"
+EXECUTE_SUBMIT_EXIT=$?
 set -e
 
 # The exec-env-vars file held the minted token in cleartext on disk for exactly one call's worth of
-# time. Delete it the moment that call returns — success or failure, it is never reused.
+# time. Delete it the moment BOTH calls above have returned — success or failure, it is never reused.
 rm -f "$EXEC_ENV_FILE"
 
-# 4. SMOKE-TEST GAP (accepted design cf579f0f pt.1) — CONFIRMED via live observation (2026-08-03):
+# B-717 plan-gate correction 1: resolve the execution via the existing conduction-id label lookup —
+# POLL briefly until it appears (submission is async; the execution may not be listable the instant
+# `execute` returns), taking the NEWEST (B-713 retries reuse the same label, so an older execution
+# from a prior attempt must never be mistaken for this one). Do NOT parse `execute`'s own stdout for
+# the execution name — this wrapper never keys on stdout (the agent-portability guardrail extends to
+# this script too), and gcloud's stdout shape for `execute` is not a stable API surface.
+resolve_execution_name() {
+  local attempt
+  for attempt in $(seq 1 15); do
+    local name
+    name="$(gcloud run jobs executions list \
+      --job="$HARMONY_CLOUD_RUN_JOB" \
+      --region="$HARMONY_CLOUD_RUN_REGION" \
+      --filter="metadata.labels.conduction-id=$CONDUCTION_ID" \
+      --sort-by="~metadata.creationTimestamp" \
+      --format='value(metadata.name)' \
+      --limit=1 || true)"
+    if [ -n "$name" ]; then
+      echo "$name"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+EXECUTION_NAME="$(resolve_execution_name || true)"
+
+# B-717 item 6: release the lock the MOMENT the execution exists (or resolution definitively failed)
+# — env/labels are already snapshotted into the execution at creation, so nothing past this point
+# needs the lock. The EXIT trap (release_lock) is the crash-safety backstop; this explicit call is
+# what actually narrows the held duration to the few seconds above.
+release_lock
+
+if [ -z "$EXECUTION_NAME" ]; then
+  echo "cloud-worker-launch: no execution found labelled conduction-id=$CONDUCTION_ID after submitting (execute's own submit exit was $EXECUTE_SUBMIT_EXIT, not trusted)" >&2
+  exit 1
+fi
+
+# 4. Poll for a terminal state — this wrapper used to rely on `execute --wait` to block here; B-717
+#    narrows the lock to the update+execute+resolve section above, so this wrapper now does its own
+#    UNLOCKED poll loop instead (the daemon's own per-launch deadline — src/daemon/scheduler.ts —
+#    bounds the OVERALL wait from the caller's side; this loop just watches for completion).
+#
+# SMOKE-TEST GAP (accepted design cf579f0f pt.1) — CONFIRMED via live observation (2026-08-03):
 # parsing on status.succeededCount/failedCount/completionTime is CORRECT and matches the real
 # `executions describe` output. Observed shapes, for reference (this wrapper still parses ONLY the
 # count fields below, never the conditions array, for control flow):
@@ -181,21 +278,14 @@ rm -f "$EXEC_ENV_FILE"
 # classification, per classify.ts's never-key-on-the-code rule — do not special-case cancellation here.
 # All 4 ACs on B-754 stay unchecked regardless: they require a live Cloud Run job to check against,
 # and code-only evidence satisfies none of them (human's explicit deferral, 2026-08-03).
-resolve_execution_name() {
-  gcloud run jobs executions list \
-    --job="$HARMONY_CLOUD_RUN_JOB" \
+POLL_S="${HARMONY_CLOUD_LAUNCH_POLL_S:-5}"
+while :; do
+  COMPLETION="$(gcloud run jobs executions describe "$EXECUTION_NAME" \
     --region="$HARMONY_CLOUD_RUN_REGION" \
-    --filter="metadata.labels.conduction-id=$CONDUCTION_ID" \
-    --sort-by="~metadata.creationTimestamp" \
-    --format='value(metadata.name)' \
-    --limit=1
-}
-
-EXECUTION_NAME="$(resolve_execution_name || true)"
-if [ -z "$EXECUTION_NAME" ]; then
-  echo "cloud-worker-launch: no execution found labelled conduction-id=$CONDUCTION_ID (execute's own exit was $EXECUTE_EXIT, not trusted)" >&2
-  exit 1
-fi
+    --format='value(status.completionTime)' 2>/dev/null || true)"
+  [ -n "$COMPLETION" ] && break
+  sleep "$POLL_S"
+done
 
 # B-754-element fix (2026-08-04, found while diagnosing B-726's live cloud verify failure):
 # `--format='value(...)'` prints tab/space-separated columns, and when a column (e.g.

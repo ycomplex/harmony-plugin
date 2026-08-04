@@ -246,22 +246,63 @@ describe('daemon-profile.cloud.example.json shape', () => {
   });
 });
 
-describe('cloud-worker-launch.sh: exit-code contract (accepted design cf579f0f pt.1)', () => {
-  const script = readFileSync(cloudLaunchScriptPath, 'utf8');
-
-  it('fires the execution with --wait but does NOT trust --wait/execute\'s own exit code for classification', () => {
-    expect(script).toContain('gcloud run jobs execute');
-    expect(script).toContain('--wait');
-    // The exit code of the execute call is captured into a variable, never `exit $?` right after it.
-    expect(script).toMatch(/EXECUTE_EXIT=\$\?/);
+describe('B-717 restart reconciliation: both example profiles carry an optional probe template + maxConcurrentWorkers', () => {
+  it('daemon-profile.example.json (local-docker) carries probe + maxConcurrentWorkers', () => {
+    const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as {
+      probe?: string;
+      maxConcurrentWorkers?: number;
+    };
+    expect(profile.probe).toContain('{conduction_id}');
+    expect(profile.probe).toContain('docker ps');
+    expect(typeof profile.maxConcurrentWorkers).toBe('number');
+    expect(profile.maxConcurrentWorkers).toBeGreaterThan(0);
   });
 
-  it('ALWAYS makes an authoritative post-wait describe call, regardless of the execute exit code', () => {
+  it('daemon-profile.cloud.example.json carries probe + maxConcurrentWorkers, pointing at the dedicated probe wrapper', () => {
+    const profile = JSON.parse(readFileSync(cloudProfilePath, 'utf8')) as {
+      probe?: string;
+      maxConcurrentWorkers?: number;
+    };
+    expect(profile.probe).toContain('cloud-worker-probe.sh');
+    expect(profile.probe).toContain('{conduction_id}');
+    expect(profile.probe).toContain('{ticket}');
+    expect(typeof profile.maxConcurrentWorkers).toBe('number');
+    expect(profile.maxConcurrentWorkers).toBeGreaterThan(0);
+  });
+
+  it('cloud-worker-probe.sh exists, exits 0 when an incomplete execution is found and non-zero otherwise, and never parses worker stdout', () => {
+    const probeScriptPath = fileURLToPath(new URL('../../container/cloud-worker-probe.sh', import.meta.url));
+    const script = readFileSync(probeScriptPath, 'utf8');
+    expect(script.length).toBeGreaterThan(0);
+    expect(script).toContain("metadata.labels.conduction-id=$CONDUCTION_ID AND status.completionTime=''");
+    expect(script).toMatch(/exit 0 # found/);
+    expect(script).toMatch(/exit 1 # not found/);
+  });
+});
+
+describe('cloud-worker-launch.sh: exit-code contract (accepted design cf579f0f pt.1, B-717 lock-narrowing)', () => {
+  const script = readFileSync(cloudLaunchScriptPath, 'utf8');
+
+  it('fires the execution WITHOUT --wait (B-717 plan-gate correction 1) and does NOT trust the submit exit code for classification', () => {
+    expect(script).toContain('gcloud run jobs execute');
+    // --wait is gone from the execute call itself — search only that invocation's flag block.
+    const executeMatch = /^gcloud run jobs execute "\$HARMONY_CLOUD_RUN_JOB"/m.exec(script);
+    expect(executeMatch).not.toBeNull();
+    const executeAt = executeMatch!.index;
+    const submitExitAt = script.indexOf('EXECUTE_SUBMIT_EXIT=$?', executeAt);
+    expect(submitExitAt).toBeGreaterThan(executeAt);
+    const executeInvocation = script.slice(executeAt, submitExitAt);
+    expect(executeInvocation).not.toMatch(/--wait\b/);
+    // The submit exit code is captured into a variable, never `exit $?` right after it.
+    expect(script).toMatch(/EXECUTE_SUBMIT_EXIT=\$\?/);
+  });
+
+  it('ALWAYS makes an authoritative describe call (via the post-lock poll loop), regardless of the execute submit exit code', () => {
     expect(script).toContain('gcloud run jobs executions describe');
-    // The describe call must not be gated behind a check of the execute exit code succeeding.
-    const describeAt = script.indexOf('gcloud run jobs executions describe');
-    const guard = script.slice(0, describeAt);
-    expect(guard).not.toMatch(/if\s*\[\s*"\$EXECUTE_EXIT"\s*-eq\s*0\s*\]/);
+    // The describe calls must not be gated behind a check of the submit exit code succeeding.
+    const firstDescribeAt = script.indexOf('gcloud run jobs executions describe');
+    const guard = script.slice(0, firstDescribeAt);
+    expect(guard).not.toMatch(/if\s*\[\s*"\$EXECUTE_SUBMIT_EXIT"\s*-eq\s*0\s*\]/);
   });
 
   it('parses status.succeededCount/failedCount/completionTime — the documented resource shape — not status.conditions', () => {
@@ -323,7 +364,7 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: label-based execute/rea
     const executeMatch = /^gcloud run jobs execute "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
     expect(executeMatch).not.toBeNull();
     const executeAt = executeMatch!.index;
-    const executeExitAt = launchScript.indexOf('EXECUTE_EXIT=$?', executeAt);
+    const executeExitAt = launchScript.indexOf('EXECUTE_SUBMIT_EXIT=$?', executeAt);
     const executeInvocation = launchScript.slice(executeAt, executeExitAt);
     expect(executeInvocation).not.toMatch(/--labels=/);
   });
@@ -399,7 +440,7 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
     expect(executeMatch).not.toBeNull();
     const updateAt = updateMatch!.index;
     const executeAt = executeMatch!.index;
-    const executeExitAt = launchScript.indexOf('EXECUTE_EXIT=$?');
+    const executeExitAt = launchScript.indexOf('EXECUTE_SUBMIT_EXIT=$?');
     const describeAt = launchScript.indexOf('gcloud run jobs executions describe');
 
     expect(updateAt).toBeGreaterThan(0);
@@ -434,7 +475,7 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
     const executeMatch = /^gcloud run jobs execute "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
     expect(executeMatch).not.toBeNull();
     const executeAt = executeMatch!.index;
-    const flagBlockEnd = launchScript.indexOf('EXECUTE_EXIT=$?', executeAt);
+    const flagBlockEnd = launchScript.indexOf('EXECUTE_SUBMIT_EXIT=$?', executeAt);
     const executeInvocation = launchScript.slice(executeAt, flagBlockEnd);
     expect(executeInvocation).not.toMatch(/GIT_TOKEN=/);
     expect(executeInvocation).not.toMatch(/-e\s+GIT_TOKEN/);
@@ -596,38 +637,66 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
   });
 });
 
-describe('cloud-worker-launch.sh: B-717 named constraint at the update/execute mutation call sites', () => {
+describe('cloud-worker-launch.sh: B-717 item 6 — the mkdir lock RESOLVES the update/execute race', () => {
   const launchScript = readFileSync(cloudLaunchScriptPath, 'utf8');
 
-  it('carries the B-717 comment immediately at the `update --env-vars-file` call site', () => {
+  it('acquires the lock BEFORE `update` and releases it right after the execution is resolved — not after the build completes', () => {
+    const acquireAt = launchScript.indexOf('acquire_lock\n');
     const updateMatch = /^gcloud run jobs update "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
-    expect(updateMatch).not.toBeNull();
-    const updateAt = updateMatch!.index;
-    const nearby = launchScript.slice(Math.max(0, updateAt - 1600), updateAt + 200);
-    expect(nearby).toContain('B-717 (accepted design cf579f0f pt.3, round-2 feedback');
-    expect(nearby).toContain('mutates (replaces) the Cloud Run');
-    expect(nearby).toMatch(/JOB DEFINITION itself/);
-    expect(nearby).toMatch(/strictly serial today/);
-    expect(nearby).toMatch(/STRENGTHENED round 3/);
-  });
-
-  it('carries the B-717 comment (or a copy) immediately at the `execute` call site too, describing the two-call sequence', () => {
     const executeMatch = /^gcloud run jobs execute "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
+    const resolveCallAt = launchScript.indexOf('EXECUTION_NAME="$(resolve_execution_name');
+    const releaseCallAt = launchScript.indexOf('release_lock\n', resolveCallAt);
+    const pollLoopAt = launchScript.indexOf('while :; do');
+
+    expect(acquireAt).toBeGreaterThan(0);
+    expect(updateMatch).not.toBeNull();
     expect(executeMatch).not.toBeNull();
-    const executeAt = executeMatch!.index;
-    const nearby = launchScript.slice(Math.max(0, executeAt - 1400), executeAt);
-    expect(nearby).toContain('B-717 (accepted design cf579f0f pt.3, round-2 feedback');
-    expect(nearby).toMatch(/STRENGTHENED round 3/);
-    expect(nearby).toMatch(/second of the two non-atomic calls/);
+    expect(resolveCallAt).toBeGreaterThan(0);
+    expect(releaseCallAt).toBeGreaterThan(0);
+    expect(pollLoopAt).toBeGreaterThan(0);
+
+    expect(updateMatch!.index).toBeGreaterThan(acquireAt); // lock held before update
+    expect(executeMatch!.index).toBeGreaterThan(updateMatch!.index); // …and before execute
+    expect(resolveCallAt).toBeGreaterThan(executeMatch!.index);
+    expect(releaseCallAt).toBeGreaterThan(resolveCallAt); // released once the execution is resolved
+    expect(pollLoopAt).toBeGreaterThan(releaseCallAt); // the multi-minute poll runs UNLOCKED
   });
 
-  it('the B-717 comment documents that update-then-execute is now TWO non-atomic calls, strengthening (not relaxing) the constraint', () => {
-    const updateMatch = /^gcloud run jobs update "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
-    expect(updateMatch).not.toBeNull();
-    const updateAt = updateMatch!.index;
-    const nearby = launchScript.slice(Math.max(0, updateAt - 1600), updateAt + 200);
-    expect(nearby).toMatch(/TWO non-atomic gcloud calls/);
-    expect(nearby).toMatch(/STRENGTHENS, not relaxes/);
+  it('releases via an EXIT trap for crash-safety, in addition to the explicit release call', () => {
+    expect(launchScript).toMatch(/trap release_lock EXIT/);
+  });
+
+  it('acquisition is a BOUNDED wait that fails loud (treated as dirty) on timeout — no new recovery logic added here', () => {
+    const fnAt = launchScript.indexOf('acquire_lock() {');
+    expect(fnAt).toBeGreaterThanOrEqual(0);
+    const fnBody = launchScript.slice(fnAt, launchScript.indexOf('\n}', fnAt));
+    expect(fnBody).toMatch(/LOCK_WAIT_TIMEOUT_S/);
+    expect(fnBody).toMatch(/exit 1/);
+    expect(fnBody).toMatch(/treating as a dirty exit/);
+  });
+
+  it('stamps the lock dir with the holder PID and breaks a stale lock from a dead process', () => {
+    const fnAt = launchScript.indexOf('acquire_lock() {');
+    const fnBody = launchScript.slice(fnAt, launchScript.indexOf('\n}', fnAt));
+    expect(fnBody).toContain('echo $$ > "$LOCK_DIR/pid"');
+    expect(fnBody).toMatch(/kill -0 "\$holder_pid"/);
+    expect(fnBody).toMatch(/breaking a stale launch lock/);
+  });
+
+  it('the lock directory is a SHARED, config-not-constants path (overridable), not per-conduction', () => {
+    expect(launchScript).toMatch(/HARMONY_CLOUD_LAUNCH_LOCK_DIR:=/);
+    // Not namespaced by {conduction_id}/$CONDUCTION_ID — it must serialize across ALL conductions.
+    const lockDirLine = /LOCK_DIR="\$HARMONY_CLOUD_LAUNCH_LOCK_DIR"/.exec(launchScript);
+    expect(lockDirLine).not.toBeNull();
+  });
+
+  it('never parses `execute`\'s own stdout for the execution name — resolves it via the existing conduction-id label lookup instead', () => {
+    const fnAt = launchScript.indexOf('resolve_execution_name() {');
+    expect(fnAt).toBeGreaterThanOrEqual(0);
+    const fnBody = launchScript.slice(fnAt, launchScript.indexOf('\nEXECUTION_NAME='));
+    expect(fnBody).toContain('metadata.labels.conduction-id=$CONDUCTION_ID');
+    expect(fnBody).toMatch(/sort-by="~metadata\.creationTimestamp"/); // takes the newest — B-713 retries reuse the label
+    expect(fnBody).toMatch(/limit=1/);
   });
 });
 
@@ -662,7 +731,7 @@ describe('cloud-worker-launch.sh: --args carries the worker invocation (B-754 fi
     const executeMatch = /^gcloud run jobs execute "\$HARMONY_CLOUD_RUN_JOB"/m.exec(launchScript);
     expect(executeMatch).not.toBeNull();
     const executeAt = executeMatch!.index;
-    const executeExitAt = launchScript.indexOf('EXECUTE_EXIT=$?', executeAt);
+    const executeExitAt = launchScript.indexOf('EXECUTE_SUBMIT_EXIT=$?', executeAt);
     const executeInvocation = launchScript.slice(executeAt, executeExitAt);
 
     const argsMatch = /--args="([^"]*)"/.exec(executeInvocation);

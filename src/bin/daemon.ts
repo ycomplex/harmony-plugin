@@ -34,6 +34,7 @@ import { listSubtasks } from '../tools/decomposition.js';
 import {
   listConductions,
   takeoverConduction,
+  stealConduction,
   updateConduction,
   updateConductionIfHeld,
 } from '../tools/conduction-record.js';
@@ -140,6 +141,8 @@ async function main(): Promise<void> {
       return () => clearTimeout(timer);
     },
     takeoverConduction: (args) => takeoverConduction(client, args),
+    // B-717 item 3: the multi-daemon steal CAS.
+    stealConduction: (args) => stealConduction(client, args),
     runCommand,
     log,
     leaseHolder,

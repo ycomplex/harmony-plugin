@@ -18889,11 +18889,15 @@ async function updateConduction(client, id, patch) {
   return data;
 }
 async function listConductions(client, args) {
-  let query = client.from("conductions").select(CONDUCTION_COLS);
+  let query = client.from("conductions").select(`${CONDUCTION_COLS}, tasks(priority)`);
   if (args.status) query = query.eq("status", args.status);
   const { data, error } = await query.order("started_at", { ascending: true });
   if (error) throw new Error(error.message);
-  return data ?? [];
+  const rows = data ?? [];
+  return rows.map((row) => {
+    const { tasks, ...rest } = row;
+    return { ...rest, task_priority: tasks?.priority ?? null };
+  });
 }
 async function takeoverConduction(client, args) {
   if (!args.id) throw new Error("id is required");
@@ -18907,6 +18911,19 @@ async function takeoverConduction(client, args) {
   }).eq("id", args.id).eq("status", "active");
   query = args.observed_lease_holder === null ? query.is("lease_holder", null) : query.eq("lease_holder", args.observed_lease_holder);
   const { data, error } = await query.or(`last_heartbeat_at.is.null,last_heartbeat_at.lt.${args.stale_before}`).select(CONDUCTION_COLS).maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ?? null;
+}
+async function stealConduction(client, args) {
+  if (!args.id) throw new Error("id is required");
+  if (!args.observed_lease_holder) throw new Error("observed_lease_holder is required");
+  if (!args.new_lease_holder) throw new Error("new_lease_holder is required");
+  const stamp = (/* @__PURE__ */ new Date()).toISOString();
+  const { data, error } = await client.from("conductions").update({
+    lease_holder: args.new_lease_holder,
+    lease_acquired_at: stamp,
+    last_heartbeat_at: stamp
+  }).eq("id", args.id).eq("status", "active").eq("lease_holder", args.observed_lease_holder).is("leg_started_at", null).select(CONDUCTION_COLS).maybeSingle();
   if (error) throw new Error(error.message);
   return data ?? null;
 }
@@ -19012,6 +19029,14 @@ function loadDaemonConfig(env, readFile) {
   if (typeof profile.reap !== "string" || profile.reap.length === 0) {
     throw new Error(`launch profile ${profilePath} is missing the "reap" command template`);
   }
+  if (profile.probe !== void 0 && (typeof profile.probe !== "string" || profile.probe.length === 0)) {
+    throw new Error(`launch profile ${profilePath}'s "probe" template, when present, must be a non-empty string`);
+  }
+  if (profile.maxConcurrentWorkers !== void 0 && (!Number.isInteger(profile.maxConcurrentWorkers) || profile.maxConcurrentWorkers < 0)) {
+    throw new Error(
+      `launch profile ${profilePath}'s "maxConcurrentWorkers", when present, must be a non-negative integer`
+    );
+  }
   return {
     pollMs: envMs(env, "HARMONY_DAEMON_POLL_MS", 25e3),
     heartbeatMs: envMs(env, "HARMONY_DAEMON_HEARTBEAT_MS", 3e4),
@@ -19019,7 +19044,14 @@ function loadDaemonConfig(env, readFile) {
     retryCap: envNonNegativeInt(env, "HARMONY_DAEMON_RETRY_CAP", 2),
     retryBackoffMs: envNonNegativeInt(env, "HARMONY_DAEMON_RETRY_BACKOFF_MS", 15e3),
     workerTimeoutMs: envMs(env, "HARMONY_DAEMON_WORKER_TIMEOUT_MS", 54e5),
-    profile: { launch: profile.launch, reap: profile.reap },
+    // B-717 item 2: env var > per-profile override > the 3-for-local-docker default.
+    maxConcurrentWorkers: envNonNegativeInt(
+      env,
+      "HARMONY_DAEMON_MAX_CONCURRENT_WORKERS",
+      profile.maxConcurrentWorkers ?? 3
+    ),
+    readyAgeMs: envMs(env, "HARMONY_DAEMON_READY_AGE_MS", 6e5),
+    profile: { launch: profile.launch, reap: profile.reap, probe: profile.probe, maxConcurrentWorkers: profile.maxConcurrentWorkers },
     logPath: envValue(env, "HARMONY_DAEMON_LOG")
   };
 }
@@ -19150,17 +19182,38 @@ function label(row, task, projectKey) {
   }
   return `${projectKey}-${number} "${truncateTitle(title)}" (conduction ${row.id})`;
 }
-async function runSchedulerPass(deps, state, keeper) {
+function createSchedulerRuntime() {
+  return { ready: /* @__PURE__ */ new Map(), running: /* @__PURE__ */ new Map(), fatal: null };
+}
+var PRIORITY_RANK = { low: 0, medium: 1, high: 2 };
+var MAX_PRIORITY_RANK = PRIORITY_RANK.high;
+function agedPriorityRank(entry, now, readyAgeMs) {
+  const base = PRIORITY_RANK[entry.priority ?? "medium"] ?? PRIORITY_RANK.medium;
+  const waitedLongEnough = now - entry.since >= readyAgeMs;
+  return Math.min(waitedLongEnough ? base + 1 : base, MAX_PRIORITY_RANK);
+}
+async function runSchedulerPass(deps, state, keeper, runtime) {
+  if (runtime.fatal) throw runtime.fatal;
   const rows = await deps.listConductions({ status: "active" });
   const activeIds = new Set(rows.map((r) => r.id));
   for (const id of [...state.keys()]) if (!activeIds.has(id)) state.delete(id);
   const excluded = exclusionSetFor(state);
   for (const id of [...excluded]) if (!activeIds.has(id)) excluded.delete(id);
   keeper.retain(activeIds);
+  for (const id of [...runtime.ready.keys()]) if (!activeIds.has(id)) runtime.ready.delete(id);
+  for (const id of [...runtime.running.keys()]) if (!activeIds.has(id)) runtime.running.delete(id);
   let authShapedFailures = 0;
+  const stealCandidates = [];
   for (const row of rows) {
     try {
-      await handleConduction(deps, state, keeper, excluded, row);
+      const tracked = runtime.running.get(row.id);
+      if (tracked && row.lease_holder !== deps.leaseHolder) {
+        runtime.running.delete(row.id);
+        deps.log(
+          `conduction ${row.id}: lease lost to another daemon while a launch was tracked \u2014 abandoning (no clobber)`
+        );
+      }
+      await handleConduction(deps, state, keeper, excluded, runtime, row, stealCandidates);
     } catch (err) {
       if (err instanceof PersistentReapFailure) throw err;
       if (isAuthShapedError(err)) authShapedFailures += 1;
@@ -19169,6 +19222,9 @@ async function runSchedulerPass(deps, state, keeper) {
       );
     }
   }
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  authShapedFailures += await fireReadyCandidates(deps, state, keeper, runtime, byId);
+  authShapedFailures += await fireStealCandidates(deps, state, keeper, runtime, stealCandidates);
   return { attempted: rows.length, authShapedFailures };
 }
 async function writeIfHeld(deps, state, keeper, row, patch) {
@@ -19179,27 +19235,32 @@ async function writeIfHeld(deps, state, keeper, row, patch) {
   state.delete(row.id);
   return false;
 }
-async function handleConduction(deps, state, keeper, excluded, row) {
+async function handleConduction(deps, state, keeper, excluded, runtime, row, stealCandidates) {
   if (row.lease_holder !== deps.leaseHolder) {
-    const won = await deps.takeoverConduction({
-      id: row.id,
-      observed_lease_holder: row.lease_holder,
-      // B-651 guard: the stale window originates from now() AT PASS TIME, never a stored stamp.
-      stale_before: iso(deps.now() - deps.config.staleMs),
-      new_lease_holder: deps.leaseHolder
-    });
-    if (won === null) return;
-    state.delete(row.id);
-    if (row.lease_holder === null) {
-      deps.log(`conduction ${row.id}: first claim of a never-held conduction`);
-    } else {
-      await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
-      if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: null })) return;
-      deps.log(`conduction ${row.id}: took over stale lease from ${row.lease_holder} \u2014 reaped`);
+    await handleForeignConduction(deps, state, keeper, excluded, runtime, row, stealCandidates);
+    return;
+  }
+  await handleHeldConduction(deps, state, keeper, excluded, runtime, row);
+}
+async function handleHeldConduction(deps, state, keeper, excluded, runtime, row) {
+  const tracked = runtime.running.get(row.id);
+  if (tracked) {
+    if (tracked.reconciled && !tracked.settled) {
+      const probed = await deps.runCommand(
+        renderTemplate(deps.config.profile.probe, templateVars(row))
+      );
+      if (probed.exitCode !== 0) {
+        tracked.settled = true;
+        tracked.exitCode = null;
+      }
     }
+    if (!tracked.settled) return;
+    await settleTrackedLaunch(deps, state, keeper, runtime, row, tracked);
+    return;
   }
   if (!await writeIfHeld(deps, state, keeper, row, { last_heartbeat_at: iso(deps.now()) })) return;
   keeper.ensure(row.id);
+  if (runtime.ready.has(row.id)) return;
   const current = await deps.getTaskMeta(row.task_id);
   const baseline = state.get(row.id);
   if (!baseline) {
@@ -19226,86 +19287,235 @@ async function handleConduction(deps, state, keeper, excluded, row) {
       `${label(row, current, deps.projectKey)}: returned to conductor (conductor_excluded_at cleared)`
     );
   }
-  deps.log(`${label(row, current, deps.projectKey)}: wake (${wake}) \u2014 launching worker`);
-  let retryCount = row.retry_count;
-  for (; ; ) {
-    if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: iso(deps.now()) })) return;
-    let timedOut = false;
-    let settled = false;
-    const launch = deps.runCommand(renderTemplate(deps.config.profile.launch, templateVars(row))).then((result) => {
-      settled = true;
-      return result;
-    });
-    const escalation = new Promise((_resolve, reject) => {
-      const cancelDeadline = deps.startTimeout(deps.config.workerTimeoutMs, () => {
-        timedOut = true;
-        deps.log(
-          `${label(row, current, deps.projectKey)}: worker exceeded ${deps.config.workerTimeoutMs}ms \u2014 reaping`
-        );
-        void (async () => {
-          for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
-            void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
-            await new Promise((resolveGrace) => {
-              deps.startTimeout(REAP_GRACE_MS, resolveGrace);
-            });
-            if (settled) return;
-            deps.log(
-              `${label(row, current, deps.projectKey)}: reap ${attempt}/${REAP_ATTEMPT_LIMIT} did not free the launch`
-            );
-          }
-          reject(new PersistentReapFailure(row.id));
-        })();
-      });
-      void launch.finally(cancelDeadline);
-    });
-    const { exitCode } = await Promise.race([launch, escalation]);
-    if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: null })) return;
-    const after = await deps.getTaskMeta(row.task_id);
-    const nonArchivedChildCount = after.workflow_state === "Decomposed" ? await deps.countNonArchivedChildren(row.task_id) : 0;
-    const progressed = (after.workflow_state ?? null) !== (current.workflow_state ?? null) || (after.awaiting_human_input ?? null) !== (current.awaiting_human_input ?? null);
-    const classifyArgs = {
-      row: after,
-      nonArchivedChildCount,
-      exitCode,
-      progressed,
-      timedOut
-    };
-    const outcome = classifyWorkerExit(classifyArgs);
-    const cls = exitClass(outcome, classifyArgs);
-    deps.log(
-      `${label(row, after, deps.projectKey)}: worker exit code=${exitCode ?? "null"} \u2192 ${outcome.action} (${cls})`
+  deps.log(`${label(row, current, deps.projectKey)}: wake (${wake}) \u2014 queued`);
+  runtime.ready.set(row.id, {
+    since: deps.now(),
+    priority: row.task_priority ?? null,
+    retryCount: row.retry_count
+  });
+}
+async function handleForeignConduction(deps, state, keeper, excluded, runtime, row, stealCandidates) {
+  const won = await deps.takeoverConduction({
+    id: row.id,
+    observed_lease_holder: row.lease_holder,
+    // B-651 guard: the stale window originates from now() AT PASS TIME, never a stored stamp.
+    stale_before: iso(deps.now() - deps.config.staleMs),
+    new_lease_holder: deps.leaseHolder
+  });
+  if (won !== null) {
+    const fallThrough = await handleWonTakeover(deps, state, keeper, runtime, row, won);
+    if (fallThrough) await handleHeldConduction(deps, state, keeper, excluded, runtime, won);
+    return;
+  }
+  let current;
+  try {
+    current = await deps.getTaskMeta(row.task_id);
+  } catch {
+    return;
+  }
+  const baseline = state.get(row.id);
+  const wake = baseline ? detectWake(baseline, current) : null;
+  state.set(row.id, captureBaseline(current));
+  if (wake === null) return;
+  if (current.conductor_excluded_at) return;
+  if (row.leg_started_at !== null) return;
+  stealCandidates.push({ row, current });
+}
+async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
+  state.delete(row.id);
+  if (row.lease_holder === null) {
+    deps.log(`conduction ${row.id}: first claim of a never-held conduction`);
+    return true;
+  }
+  if (won.leg_started_at !== null && deps.config.profile.probe) {
+    const probed = await deps.runCommand(
+      renderTemplate(deps.config.profile.probe, templateVars(row))
     );
-    if (outcome.action === "wait") {
-      state.set(row.id, captureBaseline(after));
-      return;
-    }
-    if (outcome.action === "park" && cls === "dirty-exit" && retryCount < deps.config.retryCap) {
-      retryCount += 1;
-      if (!await writeIfHeld(deps, state, keeper, row, { retry_count: retryCount })) return;
+    if (probed.exitCode === 0) {
+      let current;
+      try {
+        current = await deps.getTaskMeta(row.task_id);
+      } catch {
+        current = {};
+      }
+      if (!await writeIfHeld(deps, state, keeper, row, { last_heartbeat_at: iso(deps.now()) })) {
+        return false;
+      }
+      keeper.ensure(row.id);
       deps.log(
-        `${label(row, after, deps.projectKey)}: dirty exit \u2014 retrying (attempt ${retryCount}/${deps.config.retryCap}) after reap + ${deps.config.retryBackoffMs}ms backoff`
+        `${label(row, current, deps.projectKey)}: reconciled \u2014 re-attached to a still-running worker (no reap, no re-fire)`
       );
-      await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
-      await deps.sleep(deps.config.retryBackoffMs);
-      continue;
+      runtime.running.set(row.id, {
+        current,
+        retryCount: row.retry_count,
+        timedOut: false,
+        settled: false,
+        exitCode: null,
+        cancelDeadline: () => {
+        },
+        reconciled: true
+      });
+      return false;
     }
-    state.delete(row.id);
-    keeper.stop(row.id);
-    await writeIfHeld(deps, state, keeper, row, {
-      status: outcome.action === "complete" ? "completed" : "parked",
-      last_worker_exit_code: exitCode,
-      last_worker_exit_class: cls
+    deps.log(
+      `${label(row, null, deps.projectKey)}: reconciliation probe found no live worker \u2014 reaping defensively and clearing the stale leg`
+    );
+  }
+  await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+  if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: null })) return false;
+  deps.log(`conduction ${row.id}: took over stale lease from ${row.lease_holder} \u2014 reaped`);
+  return true;
+}
+async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
+  runtime.running.delete(row.id);
+  tracked.cancelDeadline();
+  if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: null })) return;
+  const after = await deps.getTaskMeta(row.task_id);
+  const nonArchivedChildCount = after.workflow_state === "Decomposed" ? await deps.countNonArchivedChildren(row.task_id) : 0;
+  const progressed = (after.workflow_state ?? null) !== (tracked.current.workflow_state ?? null) || (after.awaiting_human_input ?? null) !== (tracked.current.awaiting_human_input ?? null);
+  const classifyArgs = {
+    row: after,
+    nonArchivedChildCount,
+    exitCode: tracked.exitCode,
+    progressed,
+    timedOut: tracked.timedOut
+  };
+  const outcome = classifyWorkerExit(classifyArgs);
+  const cls = exitClass(outcome, classifyArgs);
+  deps.log(
+    `${label(row, after, deps.projectKey)}: worker exit code=${tracked.exitCode ?? "null"} \u2192 ${outcome.action} (${cls})`
+  );
+  if (outcome.action === "wait") {
+    state.set(row.id, captureBaseline(after));
+    return;
+  }
+  if (outcome.action === "park" && cls === "dirty-exit" && tracked.retryCount < deps.config.retryCap) {
+    const retryCount = tracked.retryCount + 1;
+    if (!await writeIfHeld(deps, state, keeper, row, { retry_count: retryCount })) return;
+    const backoffMs = deps.config.retryBackoffMs * 2 ** (retryCount - 1);
+    deps.log(
+      `${label(row, after, deps.projectKey)}: dirty exit \u2014 retrying (attempt ${retryCount}/${deps.config.retryCap}) after reap + ${backoffMs}ms backoff`
+    );
+    await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+    runtime.ready.set(row.id, {
+      since: deps.now(),
+      priority: row.task_priority ?? null,
+      notBefore: deps.now() + backoffMs,
+      retryCount
     });
     return;
   }
+  state.delete(row.id);
+  keeper.stop(row.id);
+  await writeIfHeld(deps, state, keeper, row, {
+    status: outcome.action === "complete" ? "completed" : "parked",
+    last_worker_exit_code: tracked.exitCode,
+    last_worker_exit_class: cls
+  });
+}
+async function fireReadyCandidates(deps, state, keeper, runtime, byId) {
+  let authShapedFailures = 0;
+  const now = deps.now();
+  const eligible = [...runtime.ready.entries()].filter(
+    ([id, entry]) => (entry.notBefore === void 0 || entry.notBefore <= now) && byId.has(id)
+  );
+  eligible.sort(([, a], [, b]) => {
+    const rankDiff = agedPriorityRank(b, now, deps.config.readyAgeMs) - agedPriorityRank(a, now, deps.config.readyAgeMs);
+    if (rankDiff !== 0) return rankDiff;
+    return a.since - b.since;
+  });
+  for (const [id, entry] of eligible) {
+    if (runtime.running.size >= deps.config.maxConcurrentWorkers) break;
+    const row = byId.get(id);
+    if (!row) continue;
+    try {
+      await fireLaunch(deps, state, keeper, runtime, row, null, entry.retryCount);
+    } catch (err) {
+      if (isAuthShapedError(err)) authShapedFailures += 1;
+      deps.log(
+        `conduction ${id}: fire error \u2014 row skipped (${err instanceof Error ? err.message : String(err)})`
+      );
+    }
+  }
+  return authShapedFailures;
+}
+async function fireStealCandidates(deps, state, keeper, runtime, candidates) {
+  let authShapedFailures = 0;
+  for (const { row, current } of candidates) {
+    if (runtime.running.size >= deps.config.maxConcurrentWorkers) break;
+    try {
+      const stolen = await deps.stealConduction({
+        id: row.id,
+        observed_lease_holder: row.lease_holder,
+        new_lease_holder: deps.leaseHolder
+      });
+      if (stolen === null) continue;
+      deps.log(`${label(row, current, deps.projectKey)}: stole ready work from ${row.lease_holder}`);
+      state.delete(row.id);
+      keeper.ensure(row.id);
+      await fireLaunch(deps, state, keeper, runtime, stolen, current, stolen.retry_count);
+    } catch (err) {
+      if (isAuthShapedError(err)) authShapedFailures += 1;
+      deps.log(
+        `conduction ${row.id}: steal error \u2014 row skipped (${err instanceof Error ? err.message : String(err)})`
+      );
+    }
+  }
+  return authShapedFailures;
+}
+async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, retryCount) {
+  const current = preReadCurrent ?? await deps.getTaskMeta(row.task_id);
+  if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: iso(deps.now()) })) {
+    runtime.ready.delete(row.id);
+    return;
+  }
+  runtime.ready.delete(row.id);
+  deps.log(`${label(row, current, deps.projectKey)}: launching worker`);
+  const tracked = {
+    current,
+    retryCount,
+    timedOut: false,
+    settled: false,
+    exitCode: null,
+    cancelDeadline: () => {
+    },
+    reconciled: false
+  };
+  runtime.running.set(row.id, tracked);
+  const launch = deps.runCommand(renderTemplate(deps.config.profile.launch, templateVars(row))).then((result) => {
+    tracked.settled = true;
+    tracked.exitCode = result.exitCode;
+  });
+  const cancelDeadline = deps.startTimeout(deps.config.workerTimeoutMs, () => {
+    tracked.timedOut = true;
+    deps.log(
+      `${label(row, current, deps.projectKey)}: worker exceeded ${deps.config.workerTimeoutMs}ms \u2014 reaping`
+    );
+    void (async () => {
+      for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
+        void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+        await new Promise((resolveGrace) => {
+          deps.startTimeout(REAP_GRACE_MS, resolveGrace);
+        });
+        if (tracked.settled) return;
+        deps.log(
+          `${label(row, current, deps.projectKey)}: reap ${attempt}/${REAP_ATTEMPT_LIMIT} did not free the launch`
+        );
+      }
+      runtime.fatal = new PersistentReapFailure(row.id);
+    })();
+  });
+  tracked.cancelDeadline = cancelDeadline;
+  void launch.finally(cancelDeadline);
 }
 async function runScheduler(deps, keeper) {
   const state = /* @__PURE__ */ new Map();
+  const runtime = createSchedulerRuntime();
   let consecutiveAuthFailingPasses = 0;
   for (; ; ) {
     let authFailingPass;
     try {
-      const summary = await runSchedulerPass(deps, state, keeper);
+      const summary = await runSchedulerPass(deps, state, keeper, runtime);
       authFailingPass = summary.attempted > 0 && summary.authShapedFailures === summary.attempted;
     } catch (err) {
       if (err instanceof PersistentReapFailure) throw err;
@@ -19395,6 +19605,8 @@ ${err instanceof Error ? err.message : String(err)}
       return () => clearTimeout(timer);
     },
     takeoverConduction: (args) => takeoverConduction(client, args),
+    // B-717 item 3: the multi-daemon steal CAS.
+    stealConduction: (args) => stealConduction(client, args),
     runCommand,
     log,
     leaseHolder,

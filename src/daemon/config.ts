@@ -14,6 +14,18 @@ export interface LaunchProfile {
   launch: string;
   /** Command template that force-removes a (possibly dead) worker. Same placeholders. */
   reap: string;
+  /** B-717 restart reconciliation: an OPTIONAL command template that exits 0 when a worker for
+   *  {conduction_id} is still running (found), non-zero when it is not (settled/absent). A
+   *  profile that omits it simply skips reconciliation — a newly-claimed row with a non-null
+   *  `leg_started_at` falls back to today's REAP-THEN-FIRE exactly as before this ticket. Same
+   *  placeholders as launch/reap; never keys on stdout (the daemon consumes only the exit code). */
+  probe?: string;
+  /** B-717 item 2: this profile's OWN concurrency ceiling — read as a PER-PROFILE value (config not
+   *  constants) because a sane cap differs by launch mechanism: local-docker is bounded by the host
+   *  resource ceiling, cloud by the subscription/Cloud Run execution quota (item 4). Overridable by
+   *  HARMONY_DAEMON_MAX_CONCURRENT_WORKERS regardless of profile; falls back to 3 when neither the
+   *  env var nor the profile sets it. */
+  maxConcurrentWorkers?: number;
 }
 
 export interface DaemonConfig {
@@ -31,6 +43,15 @@ export interface DaemonConfig {
    *  exists to catch a hung worker, not to police a slow one, and a slow-but-progressing run must
    *  never be destroyed by it. Scoped per LAUNCH, so a retried attempt gets its own full deadline. */
   workerTimeoutMs: number;
+  /** B-717 item 1/2: the fire-and-track concurrency cap — how many workers this daemon runs at
+   *  once. Resolved from HARMONY_DAEMON_MAX_CONCURRENT_WORKERS if set, else the active launch
+   *  profile's own `maxConcurrentWorkers`, else 3 (sized for local-docker's host resource ceiling —
+   *  see LaunchProfile.maxConcurrentWorkers). */
+  maxConcurrentWorkers: number;
+  /** B-717 item 2: a ready candidate that has waited this long is promoted one priority tier for
+   *  ranking purposes only (aging escalation), so a sustained stream of high-priority arrivals
+   *  cannot starve a low-priority ticket indefinitely. */
+  readyAgeMs: number;
   profile: LaunchProfile;
   logPath?: string;
 }
@@ -95,6 +116,17 @@ export function loadDaemonConfig(
   if (typeof profile.reap !== 'string' || profile.reap.length === 0) {
     throw new Error(`launch profile ${profilePath} is missing the "reap" command template`);
   }
+  if (profile.probe !== undefined && (typeof profile.probe !== 'string' || profile.probe.length === 0)) {
+    throw new Error(`launch profile ${profilePath}'s "probe" template, when present, must be a non-empty string`);
+  }
+  if (
+    profile.maxConcurrentWorkers !== undefined &&
+    (!Number.isInteger(profile.maxConcurrentWorkers) || profile.maxConcurrentWorkers < 0)
+  ) {
+    throw new Error(
+      `launch profile ${profilePath}'s "maxConcurrentWorkers", when present, must be a non-negative integer`,
+    );
+  }
 
   return {
     pollMs: envMs(env, 'HARMONY_DAEMON_POLL_MS', 25_000),
@@ -103,7 +135,14 @@ export function loadDaemonConfig(
     retryCap: envNonNegativeInt(env, 'HARMONY_DAEMON_RETRY_CAP', 2),
     retryBackoffMs: envNonNegativeInt(env, 'HARMONY_DAEMON_RETRY_BACKOFF_MS', 15_000),
     workerTimeoutMs: envMs(env, 'HARMONY_DAEMON_WORKER_TIMEOUT_MS', 5_400_000),
-    profile: { launch: profile.launch, reap: profile.reap },
+    // B-717 item 2: env var > per-profile override > the 3-for-local-docker default.
+    maxConcurrentWorkers: envNonNegativeInt(
+      env,
+      'HARMONY_DAEMON_MAX_CONCURRENT_WORKERS',
+      profile.maxConcurrentWorkers ?? 3,
+    ),
+    readyAgeMs: envMs(env, 'HARMONY_DAEMON_READY_AGE_MS', 600_000),
+    profile: { launch: profile.launch, reap: profile.reap, probe: profile.probe, maxConcurrentWorkers: profile.maxConcurrentWorkers },
     logPath: envValue(env, 'HARMONY_DAEMON_LOG'),
   };
 }

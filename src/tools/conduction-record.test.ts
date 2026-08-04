@@ -7,6 +7,7 @@ import {
   updateConductionIfHeld,
   listConductions,
   takeoverConduction,
+  stealConduction,
   ActiveConductionExistsError,
   CONDUCTION_LIVE_STATUSES,
   CONDUCTION_HUMAN_OWNED_STATUSES,
@@ -245,7 +246,9 @@ describe('listConductions', () => {
     expect(client.from).toHaveBeenCalledWith('conductions');
     expect(client.eq).toHaveBeenCalledWith('status', 'active');
     expect(client.order).toHaveBeenCalledWith('started_at', { ascending: true });
-    expect(result).toEqual([conductionRow]);
+    // B-717: task_priority is additive — embedded via the tasks(priority) FK join and flattened;
+    // a row with no nested `tasks` object (the fixture doesn't carry one) reads as null.
+    expect(result).toEqual([{ ...conductionRow, task_priority: null }]);
   });
 
   it('applies NO status filter when none is given', async () => {
@@ -263,6 +266,15 @@ describe('listConductions', () => {
   it('throws on a DB error', async () => {
     const client = makeClient([{ data: null, error: { message: 'boom' } }]);
     await expect(listConductions(client, {})).rejects.toThrow('boom');
+  });
+
+  it('B-717: flattens the embedded tasks(priority) join into task_priority on every row', async () => {
+    const client = makeClient([
+      { data: [{ ...conductionRow, tasks: { priority: 'high' } }] },
+    ]);
+    const result = await listConductions(client, { status: 'active' });
+    expect(result[0].task_priority).toBe('high');
+    expect((result[0] as unknown as { tasks?: unknown }).tasks).toBeUndefined(); // not leaked raw
   });
 });
 
@@ -313,6 +325,55 @@ describe('takeoverConduction', () => {
   it('throws on an operational error (distinct from losing the race)', async () => {
     const client = makeClient([{ data: null, error: { message: 'permission denied' } }]);
     await expect(takeoverConduction(client, casArgs)).rejects.toThrow('permission denied');
+  });
+});
+
+describe('stealConduction', () => {
+  const stealArgs = {
+    id: 'cond-1',
+    observed_lease_holder: 'daemon-a',
+    new_lease_holder: 'daemon-b',
+  };
+
+  it("issues the guarded CAS UPDATE (id + active + observed holder + leg_started_at IS NULL) and returns the row on win", async () => {
+    const won = { ...conductionRow, lease_holder: 'daemon-b' };
+    const client = makeClient([{ data: won }]);
+    const result = await stealConduction(client, stealArgs);
+
+    expect(client.from).toHaveBeenCalledWith('conductions');
+    expect(client.update).toHaveBeenCalledWith({
+      lease_holder: 'daemon-b',
+      lease_acquired_at: expect.any(String),
+      last_heartbeat_at: expect.any(String),
+    });
+    expect(client.eq).toHaveBeenCalledWith('id', 'cond-1');
+    expect(client.eq).toHaveBeenCalledWith('status', 'active');
+    expect(client.eq).toHaveBeenCalledWith('lease_holder', 'daemon-a');
+    expect(client.is).toHaveBeenCalledWith('leg_started_at', null);
+    expect(client.maybeSingle).toHaveBeenCalled();
+    expect(result).toEqual(won);
+  });
+
+  it('returns null when no row matched — the STEAL race was LOST (or leg_started_at was not null), not an error', async () => {
+    const client = makeClient([{ data: null }]);
+    expect(await stealConduction(client, stealArgs)).toBeNull();
+  });
+
+  it('throws on an operational error (distinct from losing the race)', async () => {
+    const client = makeClient([{ data: null, error: { message: 'permission denied' } }]);
+    await expect(stealConduction(client, stealArgs)).rejects.toThrow('permission denied');
+  });
+
+  it('requires id, observed_lease_holder, and new_lease_holder — never an unguarded steal', async () => {
+    const client = makeClient([{ data: conductionRow }]);
+    await expect(stealConduction(client, { ...stealArgs, id: '' })).rejects.toThrow('id is required');
+    await expect(
+      stealConduction(client, { ...stealArgs, observed_lease_holder: '' }),
+    ).rejects.toThrow('observed_lease_holder is required');
+    await expect(
+      stealConduction(client, { ...stealArgs, new_lease_holder: '' }),
+    ).rejects.toThrow('new_lease_holder is required');
+    expect(client.update).not.toHaveBeenCalled();
   });
 });
 

@@ -1,4 +1,6 @@
 {
   "launch": "mkdir -p $HOME/.harmony-conductions/{ticket}/{conduction_id}/projects $HOME/.harmony-conductions/{ticket}/{conduction_id}/logs && node $HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs --base $HOME/.harmony-container.env --out $HOME/.harmony-conductions/{ticket}/{conduction_id}/run.env && docker run --rm --name harmony-worker-{conduction_id} -v $HOME/.harmony-conductions/{ticket}/{conduction_id}/projects:/home/worker/.claude/projects -v $HOME/.harmony-conductions/{ticket}/{conduction_id}/logs:/home/worker/.claude/logs --env-file $HOME/.harmony-conductions/{ticket}/{conduction_id}/run.env harmony-build-env headless '/harmony-plugin:harmony-conduct {ticket} --one-shot'",
-  "reap": "docker rm -f harmony-worker-{conduction_id}; rm -f $HOME/.harmony-conductions/{ticket}/{conduction_id}/run.env"
+  "reap": "docker rm -f harmony-worker-{conduction_id}; rm -f $HOME/.harmony-conductions/{ticket}/{conduction_id}/run.env",
+  "probe": "docker ps --filter name=harmony-worker-{conduction_id} --filter status=running --quiet | grep -q .",
+  "maxConcurrentWorkers": 3
 }
