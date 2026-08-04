@@ -71,6 +71,15 @@ write_exec_env_file() {
       printf 'CONDUCTION_ID: "%s"\n' "$CONDUCTION_ID"
       printf 'TICKET: "%s"\n' "$TICKET"
       printf 'GIT_TOKEN: "%s"\n' "$GIT_TOKEN"
+      # B-726 followup: `update --env-vars-file` REPLACES the job's entire literal env-var set (see
+      # the block comment above this function), so HARMONY_ACK_PLUGIN_AHEAD_OF_PROD has no other
+      # channel to reach the cloud container's provision.sh ref/target fidelity check (the guard
+      # B-726 itself added). Read it from THIS wrapper's own environment (the daemon host / whoever
+      # invokes cloud-worker-launch.sh) and forward it only when set — an unset ack must still fail
+      # closed exactly as provision.sh intends, so this is deliberately conditional, never unconditional.
+      if [ -n "${HARMONY_ACK_PLUGIN_AHEAD_OF_PROD:-}" ]; then
+        printf 'HARMONY_ACK_PLUGIN_AHEAD_OF_PROD: "%s"\n' "$HARMONY_ACK_PLUGIN_AHEAD_OF_PROD"
+      fi
     } > "$file"
   )
   chmod 600 "$file"
@@ -176,10 +185,18 @@ if [ -z "$EXECUTION_NAME" ]; then
   exit 1
 fi
 
+# B-754-element fix (2026-08-04, found while diagnosing B-726's live cloud verify failure):
+# `--format='value(...)'` prints tab/space-separated columns, and when a column (e.g.
+# succeededCount) is null/absent, gcloud emits nothing for it — the shell's `read` strips that
+# leading empty field and every remaining field shifts left, so FAILED's value lands in the
+# SUCCEEDED variable. Every FAILED execution (succeededCount null, failedCount=1) therefore parsed
+# as SUCCEEDED=1 and the wrapper exited 0 on a failed build. Parse via `--format=json` + `jq` instead,
+# defaulting each field with `// 0` / `// ""` so a null/absent field can never shift the others.
 read -r SUCCEEDED FAILED COMPLETION < <(
   gcloud run jobs executions describe "$EXECUTION_NAME" \
     --region="$HARMONY_CLOUD_RUN_REGION" \
-    --format='value(status.succeededCount,status.failedCount,status.completionTime)'
+    --format=json \
+  | jq -r '[.status.succeededCount // 0, .status.failedCount // 0, .status.completionTime // ""] | @tsv'
 )
 SUCCEEDED="${SUCCEEDED:-0}"
 FAILED="${FAILED:-0}"
