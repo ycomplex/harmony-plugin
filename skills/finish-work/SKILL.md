@@ -222,6 +222,26 @@ not merge.)
 
 ### O2. Run the merge + deploy, THEN advance to Deployed
 
+**Multi-PR shape guard (B-726 (c/c1)) — run BEFORE any merge, every time.** Read the ticket's
+`field_values` in full (not just `build_pr`) and scan every OTHER key for a PR-shaped value (an object
+carrying `pr_number` or `pr_url`) — this covers today's observed improvisations `companion_pr` (B-715)
+and `build_pr_phase_a_merged` (B-734), and any future ad-hoc key a build invents when it produced more
+than one PR. **If any PR-shaped key besides `build_pr` is found, do NOT merge anything — not even
+`build_pr`.** Instead:
+
+1. `mcp__harmony__add_comment({ task_id, content: "Release guard: found additional PR-shaped field(s) in field_values beyond build_pr (<key names>) — refusing to merge a subset. This build produced more than one PR; the release path only knows how to land field_values.build_pr safely." })`
+2. This is a build-artefact anomaly, not a normal release choice, so open a `worker-question`
+   elicitation round rather than the ordinary release brief:
+   `mcp__harmony__start_elicitation({ task_id, trigger: 'worker-question' })` then
+   `mcp__harmony__file_elicitation_round` naming every PR-shaped key found and asking the human how to
+   proceed (e.g. merge in a stated order by hand, or split the remaining work into per-repo children).
+3. End the leg. Do not advance `workflow_state`.
+
+This is a pure defensive shape check for the common single-`build_pr` case (unaffected) — it is NOT the
+deferred multi-PR merge loop; decompose-per-repo remains the accepted interim for cross-repo work (B-734
+showed a deliberately-unsplit cross-repo ticket can still reach this guard, which is exactly why it must
+not depend on that interim holding).
+
 **Branch on `field_values.build_pr`** (B-722's recorded pushed-PR reference — shape `{ branch, head_sha,
 pr_number, pr_url, base: "main", opened_at }`) to decide how to land the code. This is what makes O2 work
 for a daemon-built PR whose worktree is long gone by the time release runs (it was built inside an ephemeral

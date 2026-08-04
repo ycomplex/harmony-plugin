@@ -7,9 +7,22 @@
 # BEFORE any work — then drops to a shell (dogfood) or runs the headless agent.
 set -euo pipefail
 
-PLUGIN_DIR=/workspace/plugin
-WORKDIR="${HARMONY_WORKDIR:-/workspace/run}"
+# B-726 (a): PLUGIN_DIR + WORKDIR now live INSIDE the cloned harmony-workspace
+# checkout (mirrors the interactive layout — see entrypoint.sh's clone order)
+# so all three CLAUDE.md levels (workspace, plugin, web) load by ordinary file
+# ancestry, exactly as an interactive session gets.
+PLUGIN_DIR=/workspace/workspace/plugin
+WORKDIR="${HARMONY_WORKDIR:-/workspace/workspace}"
 mkdir -p "$WORKDIR"
+
+# Local-only git-exclude for .claude/ in the workspace clone (B-726 (a)) — NOT
+# the committed .gitignore, so an interactive founder checkout of the same
+# repo doesn't silently ignore a real .claude/. Harmless here: this container
+# clone is ephemeral/--rm (B-694).
+if [ -d "$WORKDIR/.git" ] && ! grep -qxF '.claude/' "$WORKDIR/.git/info/exclude" 2>/dev/null; then
+  mkdir -p "$WORKDIR/.git/info"
+  echo '.claude/' >> "$WORKDIR/.git/info/exclude"
+fi
 
 # --- Resolve the READ PLANE: which Harmony/Supabase the MCP + CLI talk to. --
 # This is NOT deploy targeting. Deploys happen in CI from GitHub secrets after
@@ -89,7 +102,20 @@ if [ "$ACTUAL_TARGET" != "$HARMONY_TARGET" ]; then
   echo "Refusing to proceed — fix the config before running any build." >&2
   exit 1
 fi
-echo "Environment confirmed: target=$ACTUAL_TARGET plugin_version=$PLUGIN_VERSION workdir=$WORKDIR"
+
+# --- Ref/target fidelity (B-726 (d)) — the B-383 invariant: plugin `prod`
+# must never run against a board a `main`-ref plugin may not be schema-
+# compatible with. B-383 is enforced by the marketplace pinning source.ref:
+# "prod"; this container clones PLUGIN_REF directly and never reads that pin,
+# so it needs its own check. Computed here (banner echo, always shown);
+# ENFORCED only in headless mode below — shell/dogfood stays exempt
+# unconditionally.
+PLUGIN_REF="${PLUGIN_REF:-main}"
+AHEAD_OF_PROD_ACK=""
+if [ "$ACTUAL_TARGET" = "prod" ] && [ "$PLUGIN_REF" != "prod" ] && [ "${HARMONY_ACK_PLUGIN_AHEAD_OF_PROD:-}" = "1" ]; then
+  AHEAD_OF_PROD_ACK=" (ACK'd ahead-of-prod override active)"
+fi
+echo "Environment confirmed: target=$ACTUAL_TARGET plugin_ref=$PLUGIN_REF plugin_version=$PLUGIN_VERSION workdir=$WORKDIR$AHEAD_OF_PROD_ACK"
 
 # --- Hand off. --------------------------------------------------------------
 if [ $# -eq 0 ] && [ ! -t 0 ]; then
@@ -110,6 +136,20 @@ case "$MODE" in
   headless)
     shift || true
     PROMPT="${1:?headless mode needs a prompt argument}"
+
+    # B-726 (d): fail closed, headless-mode only, if this worker would run a
+    # plugin ref ahead of the prod board it just confirmed against — unless
+    # the founder has explicitly ack'd that posture. HARMONY_ACK_PLUGIN_AHEAD_OF_PROD
+    # must ride the BASE container env (~/.harmony-container.env) so the mint
+    # script folds it into every per-leg env file — on the cloud profile,
+    # per-leg --env-vars-file REPLACES the job's literal env, so a flag wired
+    # anywhere else never reaches this check on cloud.
+    if [ "$ACTUAL_TARGET" = "prod" ] && [ "$PLUGIN_REF" != "prod" ] && [ "${HARMONY_ACK_PLUGIN_AHEAD_OF_PROD:-}" != "1" ]; then
+      echo "Refusing to start: PLUGIN_REF=$PLUGIN_REF is ahead of the prod board this worker just confirmed against (target=$ACTUAL_TARGET) — the B-383 invariant." >&2
+      echo "Set HARMONY_ACK_PLUGIN_AHEAD_OF_PROD=1 in ~/.harmony-container.env to explicitly accept this dev-heavy posture (echoed in the banner above), or pin PLUGIN_REF=prod." >&2
+      exit 1
+    fi
+
     command -v claude >/dev/null 2>&1 || {
       echo "headless mode needs the agent image (this looks like the base target — no claude installed)." >&2
       exit 1

@@ -551,3 +551,86 @@ describe('provision.sh: fails loud on no-arg + non-TTY instead of silently defau
     expect(guardBlock).toMatch(/exit 1/);
   });
 });
+
+// ------------------------------------------------------------------------------------------------
+// B-726: container layout mirror (a/a1) — entrypoint.sh clones the meta-repo FIRST, then web+plugin
+// INSIDE it, so all three CLAUDE.md levels load exactly as an interactive session's file-ancestry
+// discovery would. provision.sh's PLUGIN_DIR/WORKDIR follow suit.
+
+const entrypointPath = fileURLToPath(new URL('../../container/entrypoint.sh', import.meta.url));
+
+describe('entrypoint.sh: nested workspace-mirror clone layout (B-726 (a))', () => {
+  const script = readFileSync(entrypointPath, 'utf8');
+
+  it('clones harmony-workspace BEFORE web and plugin', () => {
+    const workspaceAt = script.indexOf('clone "$WORKSPACE_REPO"');
+    const webAt = script.indexOf('clone "$WEB_REPO"');
+    const pluginAt = script.indexOf('clone "$PLUGIN_REPO"');
+    expect(workspaceAt).toBeGreaterThan(0);
+    expect(webAt).toBeGreaterThan(workspaceAt);
+    expect(pluginAt).toBeGreaterThan(workspaceAt);
+  });
+
+  it('clones web and plugin INSIDE the workspace checkout, not as siblings', () => {
+    expect(script).toMatch(/clone\s+"\$WEB_REPO"\s+"\$WEB_REF"\s+\/workspace\/workspace\/web/);
+    expect(script).toMatch(/clone\s+"\$PLUGIN_REPO"\s+"\$PLUGIN_REF"\s+\/workspace\/workspace\/plugin/);
+  });
+
+  it("exports PLUGIN_REF so the exec'd provision.sh inherits it", () => {
+    expect(script).toMatch(/^export PLUGIN_REF=/m);
+  });
+
+  it('hands off to provision.sh at its new nested location', () => {
+    expect(script).toContain('exec /workspace/workspace/plugin/container/provision.sh "$@"');
+  });
+});
+
+describe('provision.sh: PLUGIN_DIR/WORKDIR follow the nested layout (B-726 (a))', () => {
+  const script = readFileSync(provisionPath, 'utf8');
+
+  it('PLUGIN_DIR points inside the workspace checkout', () => {
+    expect(script).toContain('PLUGIN_DIR=/workspace/workspace/plugin');
+  });
+
+  it('WORKDIR defaults inside the workspace checkout', () => {
+    expect(script).toContain('WORKDIR="${HARMONY_WORKDIR:-/workspace/workspace}"');
+  });
+
+  it('locally excludes .claude/ in the workspace clone without touching the committed .gitignore', () => {
+    expect(script).toContain('.git/info/exclude');
+    expect(script).toMatch(/echo\s+'\.claude\/'\s*>>/);
+  });
+});
+
+// B-726 (d): ref/target fidelity — a headless worker must not run a plugin ref ahead of a `prod`
+// board target unless the founder has explicitly ack'd that posture.
+
+describe('provision.sh: ref/target fidelity fail-closed check (B-726 (d))', () => {
+  const script = readFileSync(provisionPath, 'utf8');
+
+  it('fails closed on prod target + non-prod PLUGIN_REF, scoped to headless mode only', () => {
+    const shellAt = script.indexOf('shell)');
+    const headlessAt = script.indexOf('headless)');
+    expect(shellAt).toBeGreaterThan(0);
+    expect(headlessAt).toBeGreaterThan(shellAt);
+    const guardAt = script.indexOf('HARMONY_ACK_PLUGIN_AHEAD_OF_PROD', headlessAt);
+    expect(guardAt).toBeGreaterThan(headlessAt);
+    // The guard must not already appear inside the shell branch.
+    const shellBranch = script.slice(shellAt, headlessAt);
+    expect(shellBranch).not.toContain('HARMONY_ACK_PLUGIN_AHEAD_OF_PROD');
+  });
+
+  it('the fail-closed branch actually exits non-zero', () => {
+    const guardMatch =
+      /if \[ "\$ACTUAL_TARGET" = "prod" \] && \[ "\$PLUGIN_REF" != "prod" \] && \[ "\$\{HARMONY_ACK_PLUGIN_AHEAD_OF_PROD:-\}" != "1" \]; then([\s\S]*?)\n {4}fi/.exec(
+        script,
+      );
+    expect(guardMatch).not.toBeNull();
+    expect(guardMatch![1]).toMatch(/exit 1/);
+  });
+
+  it('echoes the ack unconditionally in the environment-confirm banner when active', () => {
+    expect(script).toMatch(/echo\s+"Environment confirmed:[^"]*\$AHEAD_OF_PROD_ACK"/);
+    expect(script).toContain('plugin_ref=$PLUGIN_REF');
+  });
+});

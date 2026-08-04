@@ -10,7 +10,7 @@ WEB_REPO="${WEB_REPO:-https://github.com/ycomplex/harmony-web.git}"
 PLUGIN_REPO="${PLUGIN_REPO:-https://github.com/ycomplex/harmony-plugin.git}"
 WORKSPACE_REPO="${WORKSPACE_REPO:-https://github.com/ycomplex/harmony-workspace.git}"
 WEB_REF="${WEB_REF:-main}"
-PLUGIN_REF="${PLUGIN_REF:-main}"
+export PLUGIN_REF="${PLUGIN_REF:-main}"
 WORKSPACE_REF="${WORKSPACE_REF:-main}"
 
 # Token-authenticated clones without the token landing in .git/config or argv:
@@ -34,10 +34,13 @@ clone() { # $1 = url, $2 = ref, $3 = dir
     git clone --branch "$2" "$1" "$3"
   fi
 }
-clone "$WEB_REPO" "$WEB_REF" /workspace/web
-clone "$PLUGIN_REPO" "$PLUGIN_REF" /workspace/plugin
-# harmony-workspace joins the default clone set (B-710) — meta-repo builds no
-# longer need a manual extra clone; token auth reuses the ASKPASS plumbing above.
+# B-726 (a/a1): clone the meta-repo FIRST, then web+plugin INSIDE it — mirrors
+# the interactive layout so all three CLAUDE.md levels load by ordinary file
+# ancestry (workspace/CLAUDE.md, web/CLAUDE.md, plugin/CLAUDE.md). web/ and
+# plugin/ are gitignored placeholders in the workspace repo (see its
+# .gitignore) precisely for this.
 clone "$WORKSPACE_REPO" "$WORKSPACE_REF" /workspace/workspace
+clone "$WEB_REPO" "$WEB_REF" /workspace/workspace/web
+clone "$PLUGIN_REPO" "$PLUGIN_REF" /workspace/workspace/plugin
 
-exec /workspace/plugin/container/provision.sh "$@"
+exec /workspace/workspace/plugin/container/provision.sh "$@"
