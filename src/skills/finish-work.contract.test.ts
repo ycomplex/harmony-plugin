@@ -343,4 +343,86 @@ describe('finish-work skill contract (evolved)', () => {
     // And it is explicitly the same predicate as the build gate's, not a second definition.
     expect(body.toLowerCase()).toMatch(/never a second definition/);
   });
+
+  // B-765: a daemon worker releasing via finish-work sometimes cannot read CI/deploy status (repo-scoped
+  // 403). These pin the four accepted ACs mechanically so a future edit cannot silently regress them.
+  const o2Section2 = (body: string): string => {
+    const start = body.indexOf('### O2.');
+    const end = body.indexOf('### O3.');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return body.slice(start, end);
+  };
+
+  it('AC1: O2 sanctions the mergeStateStatus:CLEAN substitution on a genuine CI-read capability denial, and requires the trail comment to say it was inferred (B-765)', () => {
+    const o2 = o2Section2(skill.body);
+    expect(o2).toContain('B-765');
+    // The CLEAN branch of the combined pre-merge read explicitly permits proceeding.
+    expect(o2).toMatch(/\*\*`CLEAN`\*\*\s*→\s*proceed/);
+    // ...and requires the trail comment to say "inferred", never "confirmed green".
+    expect(o2.toLowerCase()).toMatch(/inferred, never confirmed green/);
+    expect(o2).toContain('mergeStateStatus: CLEAN (inferred, not confirmed green)');
+    expect(referencedHarmonyTools(o2)).toContain('add_comment');
+  });
+
+  it('AC2: gh pr checks --watch preserves its exit status (never piped through tail), and "no checks reported" is not-yet-registered, not proceed-worthy (B-765)', () => {
+    const o2 = o2Section2(skill.body);
+    expect(o2).toContain('gh pr checks <pr_number> --watch');
+    // The exit status is explicitly captured, and the historical tail-piping bug is named so it can't
+    // silently come back.
+    expect(o2).toMatch(/EXPLICITLY CAPTURED\s*\n?\s*\(`\$\?`\)/);
+    expect(o2).toContain('2>&1 | tail -40');
+    expect(o2.toLowerCase()).toMatch(/silently losing `gh`'s exit\s+status/);
+    // "no checks reported" is treated as not-yet-registered (wait/retry), never proceed-worthy.
+    expect(o2).toContain("no checks reported on the '<branch>' branch");
+    expect(o2.toLowerCase()).toMatch(/not-yet-registered, never proceed-worthy/);
+    // Manual-mode mirror carries the identical fix, kept in sync.
+    const body = skill.body;
+    const manualIdx = body.indexOf('## Manual mode');
+    const manual = body.slice(manualIdx);
+    expect(manual).toContain('gh pr checks <PR-number> --watch; ci_status=$?');
+    expect(manual.toLowerCase()).toMatch(/never pipe this through `tail`/);
+    expect(manual).toContain("no checks reported on the '<branch>' branch");
+    expect(manual.toLowerCase()).toMatch(/not-yet-registered/);
+  });
+
+  it('AC3: a capability-denial doctrine scoped to the release gate distinguishes proceed-worthy from stop-worthy denials, and leaves harmony-conduct §4e unaffected (B-765)', () => {
+    const o2 = o2Section2(skill.body);
+    expect(o2.toLowerCase()).toMatch(/capability-denial doctrine/);
+    expect(o2.toLowerCase()).toMatch(/not a general-purpose classifier/);
+    expect(o2).toMatch(/\*\*Proceed-worthy:\*\*/);
+    expect(o2).toMatch(/\*\*Stop-worthy:\*\*/);
+    // The proceed-worthy case names an independent enforcement mechanism backing the inference.
+    expect(o2.toLowerCase()).toMatch(/independently enforced elsewhere/);
+    expect(o2.toLowerCase()).toMatch(/branch protection/);
+    // The stop-worthy example is the named cross-repo deploy-ordering case.
+    expect(o2.toLowerCase()).toMatch(/cross-repo deploy ordering/);
+    expect(referencedHarmonyTools(o2).length).toBeGreaterThan(0);
+    expect(o2).toMatch(/worker-question/);
+    // §4e is referenced as unaffected, not restated — and harmony-conduct's own SKILL.md is untouched
+    // (this ticket is finish-work-SKILL.md-only; a separate guard, not asserted here, would catch a
+    // stray edit to that file).
+    expect(o2).toContain('§4e');
+    expect(o2.toLowerCase()).toMatch(/unaffected/);
+  });
+
+  it('AC4: the O1 release brief FETCHES CI evidence from statusCheckRollup (run id + conclusion), and an unreadable check surface is a legible attention line, never a silent inference or local-run substitute (B-765)', () => {
+    const body = skill.body;
+    const o1Idx = body.indexOf('### O1.');
+    const o2Idx = body.indexOf('### O2.');
+    expect(o1Idx).toBeGreaterThan(-1);
+    expect(o2Idx).toBeGreaterThan(o1Idx);
+    const o1 = body.slice(o1Idx, o2Idx);
+    // The single extended gh pr view call carries statusCheckRollup alongside author.
+    expect(o1).toContain('gh pr view <pr_number> --json author,statusCheckRollup');
+    // The evidence line is fetched (run id + conclusion), not asserted.
+    expect(o1.toLowerCase()).toMatch(/run id \+ conclusion|run <id> — <conclusion>/);
+    // A 403/capability denial renders a legible attention line — never a silent omission or a
+    // local/partial-evidence substitute.
+    expect(o1).toContain('⚠ Unable to fetch CI status');
+    expect(o1.toLowerCase()).toMatch(/never assert local\/partial evidence/);
+    expect(o1.toLowerCase()).toMatch(/never silently omit the line/);
+    // It cross-references the capability-denial doctrine rather than restating it.
+    expect(o1.toLowerCase()).toMatch(/capability-denial doctrine/);
+  });
 });
