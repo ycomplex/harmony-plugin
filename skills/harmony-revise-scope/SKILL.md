@@ -189,7 +189,7 @@ A non-archived child **has work** iff `workflow_state ∉ {Captured, Proposed}` 
 it has ≥1 non-archived child of its own. Partition into **work-less** (Tier 1) and **work-bearing** (Tier 2);
 the brief (step 4) and the accept (step 5) act on this partition.
 
-### 4. Compose the revise-scope-review brief
+### 4. Author the rationale record, then compose the revise-scope-review brief
 
 File the reconciliation as a brief with the new `revise-scope-review` reason. The brief carries only the
 **back-up proposal** — it does **NOT** carry the revised decision content (that is decided later, at the
@@ -220,6 +220,53 @@ disposition of this ticket's children:
   work; recoverable), **reparent <new-parent>** (move the work; child stays live), or **abort** (abandon the
   revert). The accept does **not** execute until every work-bearing child has a disposition.
 
+**Author the rationale record first (B-763).** Before calling `compose_brief`, draft the durable rationale
+for the back-up as an Asserted `specification` decision — the same draft-then-brief pattern clarify/
+decompose/design already use for their own gate decision (`skills/harmony-shared/knowledge-discipline.md`;
+compare `skills/harmony-clarify/SKILL.md` step 3, item 1). Without this, the trigger, the target-gate
+reasoning, the supersede/keep lists, and the broadened-scope statement are discarded the moment the brief
+resolves — this was the one gate that recorded nothing on accept. Do **not** author the revised upstream
+decision here (that stays the native re-run's job, unchanged, B-529) — this record documents *why the
+back-up happened*, not what the re-run should conclude.
+
+```
+const decision = mcp__harmony__record_decision({
+  type: "specification",
+  title: "<ticket>: revise-scope rationale — back up to <target gate>",
+  content: `
+Trigger: <what was discovered, and at which gate (e.g. "design") it was surfaced>
+
+Target gate + depth: <target gate> — <why this depth; why a shallower back-up (e.g. decompose instead of
+clarify) would not be enough>
+
+Supersede-list:
+- <decision title/id>: <why it falls on this side — the scope change actually invalidates it>
+- ...
+
+Keep-list:
+- <decision title/id>: <why it's unaffected — the "supersede only what's invalidated" precedent>
+- ...
+
+Broadened-scope statement: <the one-paragraph summary the re-run gate is meant to author against>
+
+AC axis classification (surviving acceptance criteria):
+- Keep: <ACs the broadened scope leaves untouched>
+- Restate: <ACs that need rewording under the broadened scope>
+- Discard candidate: <ACs the broadened scope likely invalidates — the re-run gate confirms/discards>
+`,
+  domain: [ /* the domain(s) the broadened scope reaches, per step 2 */ ],
+  source_type: "manual",
+  source_activity: "revise-scope",
+  source_task_id: task_id,
+})
+mcp__harmony__reference_knowledge({ task_id, decision_id: decision.id })
+```
+
+Status defaults to **Asserted** — do not pass an explicit Accepted status; the brief's accept is what
+promotes it (below, via `decision_ref`). `reference_knowledge` makes it ticket-scoped-discoverable via
+`list_ticket_knowledge` — the same read step 1 already uses to recover context, so a resuming leg (or the
+native re-run at the target gate) finds the rationale without anyone reconstructing it from memory.
+
 Author the brief per `skills/harmony-shared/brief-authoring.md` §Auxiliary briefs — it inherits the
 shared core and the legibility contract. Consult it; do not restate it.
 
@@ -229,6 +276,7 @@ mcp__harmony__compose_brief({
   reason: "revise-scope-review",
   pending_activity: "revising-promoting",   // the back-edge to the target gate's INPUT
                                             // ("revising-clarifying" for decompose, "revising-decomposing" for design)
+  decision_ref: { type: "specification", id: decision.id },   // the rationale record (B-763)
   doc: {
     decide: "Back B-123 up to re-clarify against the broadened scope (the design gate revealed the spec was too narrow)?",
     recommend: { text: "Revert to Proposed and re-run clarify natively against the real scope", confidence: "high" },
@@ -243,6 +291,13 @@ mcp__harmony__compose_brief({
   }
 })
 ```
+
+**Why `decision_ref` here, unlike the old behavior.** This is what makes the promotion mechanical and
+race-proof: on accept, the shared `resolve_brief` RPC promotes the rationale decision Asserted→Accepted in
+the SAME transaction as the state-reverting `pending_activity`, regardless of which surface accepts (session
+or browser, watched or unwatched) — no skill-side code needs to run at accept time for the rationale to
+land. (This is unrelated to the revised upstream decision, which still has no ref here — it doesn't exist
+yet at draft time; it's authored later by the native re-run.)
 
 `compose_brief` sets `awaiting_human_input=true` + `awaiting_human_reason='revise-scope-review'`, so the
 ticket surfaces in the human's queue with this decision. The §3.2 lint applies as usual.
@@ -272,9 +327,12 @@ Show the rendered `content` verbatim. On the human's command:
   1. **Supersede the invalidated decisions:** `mcp__harmony__supersede_decision` **each** decision in the
      supersede-list (the target gate's decision + the downstream decisions the scope change invalidates).
      This preserves the Decision Trail; the keep-list is left untouched. There is NO successor to point at —
-     the revised decision is authored later, by the target gate's native re-run, not here. (This skill no
-     longer calls `record_decision`; superseding without an immediate successor is intentional.) Call it in
-     **retire-mode (B-534): OMIT both `type` and `title`** — e.g.
+     the revised decision is authored later, by the target gate's native re-run, not here. (This call never
+     mints a successor — superseding without an immediate successor is intentional. The rationale decision
+     for the back-up itself was already authored at DRAFT time, step 4, and is promoted mechanically by
+     `resolve_brief` via `decision_ref` when the human accepts below — nothing to author here, and
+     re-authoring it here would risk a double-record on an already-processed browser accept, B-763.) Call it
+     in **retire-mode (B-534): OMIT both `type` and `title`** — e.g.
      `mcp__harmony__supersede_decision({ old_decision_id: <id>, reason: "<why>" })`. That marks the old
      decision `Superseded` with `superseded_by=null` and creates NO successor decision (providing exactly one
      of type/title is rejected; provide both only to supersede-with-successor, which this flow never does).
