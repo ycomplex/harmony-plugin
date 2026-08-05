@@ -26708,6 +26708,23 @@ async function createConduction(client, args) {
   }
   return data;
 }
+var ConductorExcludedError = class extends Error {
+  code = "conductor-excluded";
+  task_id;
+  constructor(taskId) {
+    super(
+      `This ticket is taken away from the conductor (task ${taskId}, conductor_excluded_at is set) \u2014 Return it first (the "Return to conductor" action) before handing it off.`
+    );
+    this.name = "ConductorExcludedError";
+    this.task_id = taskId;
+  }
+};
+async function assertNotExcluded(client, taskId) {
+  if (!taskId) throw new Error("task_id is required");
+  const { data, error } = await client.from("tasks").select("conductor_excluded_at").eq("id", taskId).single();
+  if (error) throw new Error(error.message);
+  if (data?.conductor_excluded_at) throw new ConductorExcludedError(taskId);
+}
 
 // src/cli/commands/conduct.ts
 function registerConductCommand(program3) {
@@ -26717,12 +26734,19 @@ function registerConductCommand(program3) {
       async (ctx) => {
         const taskId = await resolveTaskId(ctx.client, ctx.projectId, ticket);
         try {
+          await assertNotExcluded(ctx.client, taskId);
           return await createConduction(ctx.client, {
             task_id: taskId,
             mode: "controlled",
             created_by: ctx.userId
           });
         } catch (err) {
+          if (err instanceof ConductorExcludedError) {
+            throw new Error(
+              `${ticket} is taken away from the conductor \u2014 Return it first (the "Return to conductor" action) before handing it off`,
+              { cause: err }
+            );
+          }
           if (err instanceof ActiveConductionExistsError) {
             throw new Error(
               `${ticket} is already being conducted \u2014 a ticket has at most one active conduction; park or complete the existing run first`,
@@ -26733,7 +26757,8 @@ function registerConductCommand(program3) {
         }
       },
       (row) => `Conduction ${row.id} created for ${ticket} (${row.status}, mode: ${row.mode}).
-The conductor daemon will pick it up on its next pass.`
+The conductor daemon will pick it up on its next pass.
+Note: the duplicate-guard can only detect an active conduction record \u2014 it can't see an in-progress terminal session, so make sure any in-session work on this ticket has stopped before handing it off.`
     );
   });
 }

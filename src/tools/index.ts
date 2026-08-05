@@ -72,17 +72,26 @@ import {
 import {
   getBuildEvidenceStatusTool, getBuildEvidenceStatus,
 } from './evidence-status.js';
+import {
+  createConductionTool, createConduction as createConductionEntry,
+} from './create-conduction.js';
 import { projectAck } from './ack-projection.js';
 
 // B-692 Phase 2: the conduction record's shared-core accessors + canonical status axis. Deliberately
 // NOT registered as an MCP tool and NOT wired into src/cli/commands/ — the future conductor daemon
 // consumes these in-process, exactly as src/bin/poll.ts consumes getTask. Barrel export only.
+// (B-758: createConduction/ActiveConductionExistsError/ConductorExcludedError/assertNotExcluded are
+// ALSO consumed directly by the create_conduction MCP tool (create-conduction.ts) and by the CLI's
+// `conduct` command — those import straight from conduction-record.js, not via this barrel; the
+// re-export here remains for the daemon's in-process consumers.)
 export {
   createConduction,
   getConduction,
   getActiveConduction,
   updateConduction,
   ActiveConductionExistsError,
+  ConductorExcludedError,
+  assertNotExcluded,
   CONDUCTION_LIVE_STATUSES,
   CONDUCTION_HUMAN_OWNED_STATUSES,
   CONDUCTION_TERMINAL_STATUSES,
@@ -116,6 +125,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     referenceKnowledgeTool,
     listTicketKnowledgeTool,
     getBuildEvidenceStatusTool,
+    createConductionTool,
   ];
 
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
@@ -345,6 +355,9 @@ export async function handleToolCall(
         break;
       case 'get_build_evidence_status':
         result = await getBuildEvidenceStatus(client, projectId, args as any);
+        break;
+      case 'create_conduction':
+        result = await createConductionEntry(client, projectId, args as any);
         break;
       case 'download_attachment':
         result = await downloadAttachment(client, args as any);

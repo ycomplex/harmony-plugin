@@ -295,6 +295,19 @@ export const ackProjections: Record<string, AckProjection> = {
     // content_type/byte_size/status come from the server-side finalize sniff; `filename` is derived
     // from the caller's own file_path — dropped.
     pick(result, ['attachment_id', 'task_id', 'content_type', 'byte_size', 'status']),
+
+  // ——— conductor handoff (B-758) ———
+  create_conduction: (result) => {
+    if (!isRecord(result)) return result;
+    // The conduction row shrinks to its identity + status/mode (the rest — lease/heartbeat/worker
+    // fields — is all-null at creation, nothing to strip). `message` is entirely server-authored
+    // (the only caller arg is the task_id identifier) and carries the B-758 operator-contract
+    // sentence about the duplicate-guard's blind spot — kept verbatim, never trimmed.
+    return {
+      conduction: pick(result.conduction, ['id', 'task_id', 'status', 'mode', 'created_at']),
+      message: result.message,
+    };
+  },
 };
 
 /**

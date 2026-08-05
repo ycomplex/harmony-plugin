@@ -36409,6 +36409,108 @@ async function readCriteriaPresence(client, taskId, localPresence) {
   return presence;
 }
 
+// src/tools/conduction-record.ts
+var CONDUCTION_LIVE_STATUSES = ["active"];
+var CONDUCTION_HUMAN_OWNED_STATUSES = ["parked"];
+var CONDUCTION_TERMINAL_STATUSES = ["completed", "cancelled"];
+var CONDUCTION_STATUSES = [
+  ...CONDUCTION_LIVE_STATUSES,
+  ...CONDUCTION_HUMAN_OWNED_STATUSES,
+  ...CONDUCTION_TERMINAL_STATUSES
+];
+var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at";
+var ActiveConductionExistsError = class extends Error {
+  code = "active-conduction-exists";
+  task_id;
+  constructor(taskId, cause) {
+    super(
+      `an active conduction already exists for task ${taskId} \u2014 the atomic insert IS the lease-acquisition primitive, so losing it means another holder owns the run` + (cause ? ` (${cause})` : "")
+    );
+    this.name = "ActiveConductionExistsError";
+    this.task_id = taskId;
+  }
+};
+var isUniqueViolation = (error2) => error2.code === "23505" || /duplicate key value violates unique constraint/i.test(error2.message ?? "");
+async function createConduction(client, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const row = {
+    task_id: args.task_id,
+    status: "active",
+    mode: args.mode ?? "controlled",
+    lease_holder: args.lease_holder ?? null,
+    worker_kind: args.worker_kind ?? null,
+    worker_ref: args.worker_ref ?? null,
+    created_by: args.created_by ?? null
+  };
+  if (args.lease_holder) row.lease_acquired_at = (/* @__PURE__ */ new Date()).toISOString();
+  const { data, error: error2 } = await client.from("conductions").insert(row).select(CONDUCTION_COLS).single();
+  if (error2) {
+    if (isUniqueViolation(error2)) throw new ActiveConductionExistsError(args.task_id, error2.message);
+    throw new Error(error2.message);
+  }
+  return data;
+}
+var ConductorExcludedError = class extends Error {
+  code = "conductor-excluded";
+  task_id;
+  constructor(taskId) {
+    super(
+      `This ticket is taken away from the conductor (task ${taskId}, conductor_excluded_at is set) \u2014 Return it first (the "Return to conductor" action) before handing it off.`
+    );
+    this.name = "ConductorExcludedError";
+    this.task_id = taskId;
+  }
+};
+async function assertNotExcluded(client, taskId) {
+  if (!taskId) throw new Error("task_id is required");
+  const { data, error: error2 } = await client.from("tasks").select("conductor_excluded_at").eq("id", taskId).single();
+  if (error2) throw new Error(error2.message);
+  if (data?.conductor_excluded_at) throw new ConductorExcludedError(taskId);
+}
+
+// src/tools/create-conduction.ts
+var HANDOFF_CONTRACT_NOTE = "the duplicate-guard can only detect an active conduction record \u2014 it can't see an in-progress terminal session, so make sure any in-session work on this ticket has stopped before handing it off.";
+async function createConduction2(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  try {
+    await assertNotExcluded(client, taskId);
+    const conduction = await createConduction(client, { task_id: taskId, mode: "controlled" });
+    return {
+      conduction,
+      message: `Conduction ${conduction.id} created for ${args.task_id} (${conduction.status}, mode: ${conduction.mode}). The conductor daemon will pick it up on its next pass. Note: ${HANDOFF_CONTRACT_NOTE}`
+    };
+  } catch (err) {
+    if (err instanceof ConductorExcludedError) {
+      throw new Error(
+        `${args.task_id} is taken away from the conductor \u2014 Return it first (the "Return to conductor" action) before handing it off`,
+        { cause: err }
+      );
+    }
+    if (err instanceof ActiveConductionExistsError) {
+      throw new Error(
+        `${args.task_id} is already being conducted \u2014 a ticket has at most one active conduction; park or complete the existing run first`,
+        { cause: err }
+      );
+    }
+    throw err;
+  }
+}
+var createConductionTool = {
+  name: "create_conduction",
+  description: `B-758: hand a ticket to the conductor daemon from ANY stage (Proposed through Deployed) \u2014 not just Proposed. Creates the durable conduction record (status 'active', mode 'controlled'); the conductor daemon notices it on its next pass and drives the run. Refuses cleanly (never a raw error) when the ticket is already being conducted (at most one active conduction per ticket) or when a human has explicitly taken this ticket away from the conductor (the web's "Take away from conductor" action) \u2014 in that case, Return it to the conductor first. IMPORTANT: the duplicate-guard can only detect an active conduction record \u2014 it cannot see an in-progress terminal session, so confirm any in-session work on this ticket has stopped before handing it off.`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)."
+      }
+    },
+    required: ["task_id"]
+  }
+};
+
 // src/tools/ack-projection.ts
 var isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 function pick2(value, keys) {
@@ -36621,22 +36723,20 @@ var ackProjections = {
     // content_type/byte_size/status come from the server-side finalize sniff; `filename` is derived
     // from the caller's own file_path — dropped.
     pick2(result, ["attachment_id", "task_id", "content_type", "byte_size", "status"])
-  )
+  ),
+  // ——— conductor handoff (B-758) ———
+  create_conduction: (result) => {
+    if (!isRecord(result)) return result;
+    return {
+      conduction: pick2(result.conduction, ["id", "task_id", "status", "mode", "created_at"]),
+      message: result.message
+    };
+  }
 };
 function projectAck(toolName, result, args) {
   const projection = ackProjections[toolName];
   return projection ? projection(result, args) : result;
 }
-
-// src/tools/conduction-record.ts
-var CONDUCTION_LIVE_STATUSES = ["active"];
-var CONDUCTION_HUMAN_OWNED_STATUSES = ["parked"];
-var CONDUCTION_TERMINAL_STATUSES = ["completed", "cancelled"];
-var CONDUCTION_STATUSES = [
-  ...CONDUCTION_LIVE_STATUSES,
-  ...CONDUCTION_HUMAN_OWNED_STATUSES,
-  ...CONDUCTION_TERMINAL_STATUSES
-];
 
 // src/tools/index.ts
 function registerTools(disabledFeatures) {
@@ -36684,7 +36784,8 @@ function registerTools(disabledFeatures) {
     advanceWorkflowTool,
     referenceKnowledgeTool,
     listTicketKnowledgeTool,
-    getBuildEvidenceStatusTool
+    getBuildEvidenceStatusTool,
+    createConductionTool
   ];
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
   if (!disabledFeatures?.labels) tools.push(listLabelsTool, createLabelTool, manageTaskLabelsTool);
@@ -36901,6 +37002,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "get_build_evidence_status":
         result = await getBuildEvidenceStatus(client, projectId, args);
+        break;
+      case "create_conduction":
+        result = await createConduction2(client, projectId, args);
         break;
       case "download_attachment":
         result = await downloadAttachment(client, args);

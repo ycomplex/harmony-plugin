@@ -201,6 +201,43 @@ export async function createConduction(
 }
 
 // ---------------------------------------------------------------------------
+// assertNotExcluded — the B-758 handoff guard.
+// ---------------------------------------------------------------------------
+
+/** B-758: a task a human has explicitly taken away from the conductor (`tasks.conductor_excluded_at`
+ *  non-null — set via the web's "Take away from conductor" action, B-756) must refuse a NEW handoff
+ *  just as firmly as the scheduler already refuses to fire/steal it (see scheduler.ts). Distinguishable
+ *  from ActiveConductionExistsError (instanceof / `code`) — this is a DIFFERENT reason to refuse: the
+ *  ticket has no active conduction at all, a human simply pulled it out of the conductor's reach. */
+export class ConductorExcludedError extends Error {
+  readonly code = 'conductor-excluded';
+  readonly task_id: string;
+  constructor(taskId: string) {
+    super(
+      `This ticket is taken away from the conductor (task ${taskId}, conductor_excluded_at is ` +
+        `set) — Return it first (the "Return to conductor" action) before handing it off.`,
+    );
+    this.name = 'ConductorExcludedError';
+    this.task_id = taskId;
+  }
+}
+
+/** Guard: throws ConductorExcludedError when the task has been taken away from the conductor.
+ *  A single-column read of `tasks.conductor_excluded_at` — call this BEFORE createConduction so the
+ *  excluded-check runs ahead of (and independent from) the duplicate-conduction guard. Throws a
+ *  plain Error on any other lookup failure (missing task, RLS, etc.). */
+export async function assertNotExcluded(client: SupabaseClient, taskId: string): Promise<void> {
+  if (!taskId) throw new Error('task_id is required');
+  const { data, error } = await client
+    .from('tasks')
+    .select('conductor_excluded_at')
+    .eq('id', taskId)
+    .single();
+  if (error) throw new Error(error.message);
+  if (data?.conductor_excluded_at) throw new ConductorExcludedError(taskId);
+}
+
+// ---------------------------------------------------------------------------
 // getConduction / getActiveConduction
 // ---------------------------------------------------------------------------
 
