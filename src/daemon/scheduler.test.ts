@@ -88,6 +88,12 @@ interface HarnessOpts {
   blockLaunchIds?: string[];
   /** B-739: simulate a wedged container runtime — the reap never frees the blocked launch. */
   reapNeverFrees?: boolean;
+  /** B-761 reopen fix: the exit code a reap call that does NOT free a pending launch returns
+   *  (defaults to 0). Lets a test prove the REAP_ATTEMPT_LIMIT escalation loop's attempt-counting /
+   *  settlement decisions are driven ENTIRELY by `tracked.settled`, never by whatever exit code a
+   *  reap happens to return — irrelevant of the miss-vs-kill exit-code contract change (0/3/other)
+   *  the reap scripts themselves now use. */
+  reapExitCode?: number | null;
   /** B-717: default probe exit code (0 = found/still running, non-zero = not found) for any
    *  conduction id not given an explicit override via `h.setProbe`. */
   probeDefaultExitCode?: number;
@@ -232,6 +238,10 @@ function makeHarness(opts: HarnessOpts) {
           pendingLaunches.delete(id);
           resolve({ exitCode: 137 });
         }
+        // B-761 reopen fix: the reap COMMAND's own return value (as distinct from what it does to
+        // the pending launch above) is configurable per-test — the REAP_ATTEMPT_LIMIT loop must
+        // never care what this is.
+        return { exitCode: opts.reapExitCode === undefined ? 0 : opts.reapExitCode };
       }
       return { exitCode: 0 };
     }),
@@ -853,7 +863,7 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
 // adopted, the wait is announced once per transition, and the routine reap-miss renders quietly.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-describe('B-761: clean-shutdown adoption + the mid-leg wait announcement', () => {
+describe('B-761: clean-shutdown adoption + the dead-lease wait announcement', () => {
   it('a same-host clean-shutdown marker is adopted IMMEDIATELY — no staleness wait, even with a FRESH heartbeat', async () => {
     const h = makeHarness({
       conductions: [
@@ -879,6 +889,10 @@ describe('B-761: clean-shutdown adoption + the mid-leg wait announcement', () =>
 
     await h.pass(); // wake (first pickup) → fire
     expect(h.commands).toEqual(['reap cond-1', 'launch cond-1 task-1']);
+    // B-761 reopen fix (legibility): the marker-driven adoption gets its OWN distinct log line —
+    // no timestamp arithmetic required to tell it apart from a genuine staleness-window adoption.
+    expect(h.logs.some((l) => l === 'conduction cond-1: adopted cleanly-released lease from this-host:1:dead0000')).toBe(true);
+    expect(h.logs.some((l) => /took over stale lease/.test(l))).toBe(false);
   });
 
   it('an unclean death (no clean_shutdown_at) still waits out the FULL staleness window, unchanged', async () => {
@@ -901,6 +915,10 @@ describe('B-761: clean-shutdown adoption + the mid-leg wait announcement', () =>
     h.setNow(T0 + config.staleMs + 1_000);
     await h.pass();
     expect(h.getConduction('cond-1').lease_holder).toBe(ME);
+    // B-761 reopen fix: the ORDINARY staleness-window adoption keeps its OLD wording, unchanged —
+    // the two cases must stay distinguishable in the suite too, not just in the implementation.
+    expect(h.logs.some((l) => l === 'conduction cond-1: took over stale lease from this-host:1:dead0000 — reaped')).toBe(true);
+    expect(h.logs.some((l) => /adopted cleanly-released lease/.test(l))).toBe(false);
   });
 
   it('a genuinely foreign, ALIVE peer is never adopted, marker or not — the identity check still guards it', async () => {
@@ -941,6 +959,30 @@ describe('B-761: clean-shutdown adoption + the mid-leg wait announcement', () =>
     await h.pass(); // same row, same mid-leg state — membership unchanged, no new line
     await h.pass();
     expect(waitLines()).toHaveLength(1); // still exactly once
+  });
+
+  it('an IDLE foreign row (ball-with-human, no leg in flight) ALSO triggers the wait announcement — REOPEN FIX (AC-3)', async () => {
+    // Live production dead windows over rows exactly shaped like this one (leg_started_at null,
+    // nothing running, the task awaiting human input so there is no wake) announced NOTHING for
+    // 4+ minutes each — this used to be gated on leg_started_at !== null (mid-leg only). The fix
+    // (see handleForeignConduction) tracks EVERY row whose takeover CAS just lost, not just the
+    // mid-leg ones, so this idle row must show up in the wait summary too.
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'other-host:2:idle1111',
+          last_heartbeat_at: iso(T0 - 1_000), // not yet stale, no clean-shutdown marker
+          leg_started_at: null, // idle — nothing running, mirrors conduction()'s own default
+        }),
+      ],
+      tasks: { 'task-1': pausedTask() }, // awaiting_human_input: true by default — no wake, ball-with-human
+    });
+    const waitLines = () => h.logs.filter((l) => /waiting out a dead lease/.test(l));
+
+    await h.pass(); // first sight — the set transitions empty → non-empty, even with no leg in flight
+    expect(waitLines()).toHaveLength(1);
+    expect(waitLines()[0]).toMatch(/1 conduction/);
+    expect(waitLines()[0]).toMatch(new RegExp(iso(T0 - 1_000 + config.staleMs).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   });
 
   it('the wait-announcement log fires again when the waiting set CLEARS (e.g. the row finally goes stale and is adopted)', async () => {
@@ -1657,6 +1699,39 @@ describe('B-739: the per-launch deadline is enforced by firing the REAP template
 
     const err = await runSchedulerPass(h.deps, h.state, h.keeper, h.runtime).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PersistentReapFailure);
+  });
+
+  // B-761 reopen fix — CRITICAL CONSTRAINT CHECK: this loop must not be affected by the reap
+  // scripts' exit-code semantics change (miss=3 vs kill=0 vs other=genuine-error). Confirmed by
+  // reading fireLaunch: the deadline-escalation reap call is `void deps.runCommand(...)` — fired
+  // WITHOUT `{ quiet: true }` and its settled Promise's result is never even assigned to a
+  // variable, let alone inspected. Attempt counting and escalation are driven ENTIRELY by
+  // `tracked.settled` (set only by the LAUNCH's own promise settling, never by the reap call). This
+  // test proves it directly: the reap command here returns exit code 3 (the routine-miss code) on
+  // every attempt, and — because it also never frees the blocked launch (reapNeverFrees) — settled
+  // never becomes true either way, so the attempt count and the eventual PersistentReapFailure
+  // escalation are IDENTICAL to the `reapExitCode` left at its default-0 case above.
+  it('the deadline-escalation attempt counter is driven purely by tracked.settled, unaffected by whatever exit code a reap call returns', async () => {
+    const h = makeHarness({
+      blockLaunch: true,
+      reapNeverFrees: true,
+      reapExitCode: 3, // the routine "miss" code — must not read as a different outcome to this loop
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+    });
+    await firedAndBlocked(h);
+
+    await h.fireDeadline();
+    for (let i = 0; i < 4; i += 1) await h.fireReapGrace();
+
+    // Same bound, same escalation, as the reapExitCode-agnostic test above — exit code 3 changed
+    // nothing about attempt counting or escalation.
+    expect(h.reaps()).toHaveLength(3);
+    await expect(h.pass()).rejects.toBeInstanceOf(PersistentReapFailure);
+
+    // And confirm the call site itself: no quiet mode, ever, at this reap call site.
+    const reapCalls = h.runCommandCalls().filter(([cmd]) => cmd.startsWith('reap'));
+    for (const [, opts] of reapCalls) expect(opts).toBeUndefined();
   });
 });
 

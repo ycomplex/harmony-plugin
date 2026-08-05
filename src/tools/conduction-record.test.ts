@@ -340,16 +340,28 @@ describe('takeoverConduction', () => {
 });
 
 describe('markCleanShutdown (B-761)', () => {
-  it('bulk-updates every active row this lease_holder holds, stamping clean_shutdown_at', async () => {
-    const client = makeClient([{ data: null, error: null }]);
-    await markCleanShutdown(client, 'this-host:1:abcd1234');
+  it('bulk-updates every active row this lease_holder holds, stamping clean_shutdown_at, requesting an exact count', async () => {
+    const client = makeClient([{ data: null, error: null, count: 3 }]);
+    const result = await markCleanShutdown(client, 'this-host:1:abcd1234');
 
     expect(client.from).toHaveBeenCalledWith('conductions');
-    expect(client.update).toHaveBeenCalledWith({ clean_shutdown_at: expect.any(String) });
+    expect(client.update).toHaveBeenCalledWith(
+      { clean_shutdown_at: expect.any(String) },
+      { count: 'exact' },
+    );
     // Scoped ONLY to this exact lease_holder + status='active' — never a foreign peer's row, and
     // never a row this process already released (parked/completed/cancelled).
     expect(client.eq).toHaveBeenCalledWith('lease_holder', 'this-host:1:abcd1234');
     expect(client.eq).toHaveBeenCalledWith('status', 'active');
+    // B-761 reopen fix: the caller logs a success line naming the count, so the count must come
+    // back through — no more silent success.
+    expect(result).toBe(3);
+  });
+
+  it('returns 0 (not throw) when a null count comes back from a matched-nothing write', async () => {
+    const client = makeClient([{ data: null, error: null, count: null }]);
+    const result = await markCleanShutdown(client, 'this-host:1:abcd1234');
+    expect(result).toBe(0);
   });
 
   it('requires a lease holder — an unguarded bulk write must be impossible', async () => {

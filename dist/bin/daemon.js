@@ -18933,8 +18933,9 @@ async function stealConduction(client, args) {
 }
 async function markCleanShutdown(client, leaseHolder) {
   if (!leaseHolder) throw new Error("leaseHolder is required");
-  const { error } = await client.from("conductions").update({ clean_shutdown_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("lease_holder", leaseHolder).eq("status", "active");
+  const { error, count } = await client.from("conductions").update({ clean_shutdown_at: (/* @__PURE__ */ new Date()).toISOString() }, { count: "exact" }).eq("lease_holder", leaseHolder).eq("status", "active");
   if (error) throw new Error(error.message);
+  return count ?? 0;
 }
 async function updateConductionIfHeld(client, id, expectedLeaseHolder, patch) {
   if (!id) throw new Error("id is required");
@@ -19076,7 +19077,9 @@ function renderTemplate(tpl, vars) {
 
 // src/daemon/quiet-reap.ts
 function renderQuietReapOutcome(exitCode) {
-  return exitCode === 0 ? "reaped a live container" : "reap: container already gone \u2014 ok";
+  if (exitCode === 0) return "reaped a live worker";
+  if (exitCode === 3) return "reap: worker already gone \u2014 ok";
+  return `reap: unexpected exit code ${exitCode === null ? "null" : exitCode} \u2014 investigate`;
 }
 
 // src/conductor/ball-axis.ts
@@ -19175,7 +19178,7 @@ function announceWaiting(deps, state, waitingCandidates) {
     if (next.size > 0) {
       const earliestAdoptAt = Math.min(...next.values());
       deps.log(
-        `${next.size} conduction${next.size === 1 ? "" : "s"} waiting out a dead lease's stale window (mid-leg \u2014 no fast steal available) \u2014 earliest adoption at ${iso(earliestAdoptAt)}`
+        `${next.size} conduction${next.size === 1 ? "" : "s"} waiting out a dead lease's stale window \u2014 earliest adoption at ${iso(earliestAdoptAt)}`
       );
     } else {
       deps.log("no conductions waiting on a dead lease stale window anymore");
@@ -19352,12 +19355,10 @@ async function handleForeignConduction(deps, state, keeper, excluded, runtime, r
     if (fallThrough) await handleHeldConduction(deps, state, keeper, excluded, runtime, won);
     return;
   }
-  if (row.leg_started_at !== null) {
-    waitingCandidates.push({
-      id: row.id,
-      adoptAt: (row.last_heartbeat_at ? Date.parse(row.last_heartbeat_at) : deps.now()) + deps.config.staleMs
-    });
-  }
+  waitingCandidates.push({
+    id: row.id,
+    adoptAt: (row.last_heartbeat_at ? Date.parse(row.last_heartbeat_at) : deps.now()) + deps.config.staleMs
+  });
   let current;
   try {
     current = await deps.getTaskMeta(row.task_id);
@@ -19414,7 +19415,11 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
   }
   await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)), { quiet: true });
   if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: null })) return false;
-  deps.log(`conduction ${row.id}: took over stale lease from ${row.lease_holder} \u2014 reaped`);
+  if (row.clean_shutdown_at !== null) {
+    deps.log(`conduction ${row.id}: adopted cleanly-released lease from ${row.lease_holder}`);
+  } else {
+    deps.log(`conduction ${row.id}: took over stale lease from ${row.lease_holder} \u2014 reaped`);
+  }
   return true;
 }
 async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
@@ -19593,11 +19598,13 @@ async function markCleanShutdownBounded(client, holder, logFn, timeoutMs) {
   });
   try {
     const outcome = await Promise.race([
-      markCleanShutdown(client, holder).then(() => "done"),
+      markCleanShutdown(client, holder).then((count) => ({ done: true, count })),
       timeout
     ]);
     if (outcome === "timeout") {
       logFn("clean-shutdown marker write did not finish in time \u2014 exiting anyway");
+    } else {
+      logFn(`clean shutdown: marker stamped on ${outcome.count} held row${outcome.count === 1 ? "" : "s"}`);
     }
   } catch (err) {
     logFn(

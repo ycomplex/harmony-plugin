@@ -57,7 +57,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** B-761: bound the clean-shutdown marker write so a hung write can never block the deliberate
- *  exit below it — best-effort, logs (but never throws) on a timeout or an operational error. */
+ *  exit below it — best-effort, logs on EVERY outcome (success, timeout, or operational error;
+ *  never throws). REOPEN FIX: the success path used to log nothing at all — only the timeout and
+ *  error paths did — so a routine, successful clean-shutdown marker write was invisible in the log;
+ *  it now logs one line stating how many held rows got the marker. */
 async function markCleanShutdownBounded(
   client: Awaited<ReturnType<typeof createAuthenticatedClient>>,
   holder: string,
@@ -71,11 +74,13 @@ async function markCleanShutdownBounded(
   });
   try {
     const outcome = await Promise.race([
-      markCleanShutdown(client, holder).then(() => 'done' as const),
+      markCleanShutdown(client, holder).then((count) => ({ done: true as const, count })),
       timeout,
     ]);
     if (outcome === 'timeout') {
       logFn('clean-shutdown marker write did not finish in time — exiting anyway');
+    } else {
+      logFn(`clean shutdown: marker stamped on ${outcome.count} held row${outcome.count === 1 ? '' : 's'}`);
     }
   } catch (err) {
     logFn(

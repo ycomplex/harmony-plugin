@@ -77,15 +77,21 @@
 // non-null `clean_shutdown_at`, a marker the daemon's stop() handler stamps right before exit, and
 // clears it on the same write that reassigns `lease_holder` (single-use). An UNCLEAN death never
 // stamps it, so that row still falls through to the unchanged stale-heartbeat branch — the fail-safe
-// holds by construction, no extra logic here. The one case still genuinely costing wall-clock time
-// is a MID-LEG foreign row (`leg_started_at` non-null): it is never steal-eligible (see item 3
-// above), so the stale-window CAS is its only path to adoption — handleForeignConduction now tracks
-// that waiting set every pass and `announceWaiting` logs an edge-triggered summary (count + earliest
+// holds by construction, no extra logic here. A MID-LEG foreign row (`leg_started_at` non-null) is
+// the one case still genuinely costing wall-clock time: it is never steal-eligible (see item 3
+// above), so the stale-window CAS is its only path to adoption. handleForeignConduction tracks a
+// waiting set every pass and `announceWaiting` logs an edge-triggered summary (count + earliest
 // adoption time) on transition, mirroring B-771's log-once WeakMap-keyed-on-`state` discipline
-// (exclusionMemory/exclusionSetFor, just below) rather than logging every pass. Separately, the
-// routine "reap a container the dead holder already lost" case at handleWonTakeover's
-// reap-before-adopt call site now asks runCommand for quiet rendering (real implementation in
-// src/bin/daemon.ts) — a calm one-line outcome instead of raw Docker stderr.
+// (exclusionMemory/exclusionSetFor, just below) rather than logging every pass. REOPEN FIX (live
+// verify, 2026-08-05): the waiting set used to be gated on `leg_started_at !== null`, so it only
+// ever covered the mid-leg sub-case — real production dead windows over IDLE rows (ball-with-human,
+// nothing running) announced NOTHING for 4+ minutes each, leaving an operator unable to tell
+// "waiting on a stale lease" apart from "no work exists" for that case. The waiting set is now
+// UNCONDITIONAL on leg state: every row whose takeover CAS just lost this pass is tracked, covering
+// the whole dead window, not just the throughput-costing mid-leg sub-case. Separately, the routine
+// "reap a container the dead holder already lost" case at handleWonTakeover's reap-before-adopt call
+// site now asks runCommand for quiet rendering (real implementation in src/bin/daemon.ts) — a calm
+// one-line outcome instead of raw Docker stderr.
 //
 // PersistentReapFailure now surfaces from a DETACHED background chain (the deadline/reap escalation
 // is fired-and-forgotten, never awaited by a pass) rather than a synchronous throw a pass's own
@@ -201,7 +207,12 @@ function sameWaitingMembership(a: Map<string, number>, b: Map<string, number>): 
 }
 
 /** B-771 log-once discipline: log ONE line when the waiting set transitions (empty → non-empty, or
- *  its membership changes) — never per pass, and never again while the same set of ids persists. */
+ *  its membership changes) — never per pass, and never again while the same set of ids persists.
+ *  B-761 reopen fix: the waiting set this is fed used to be mid-leg-only, so the line's old
+ *  "(mid-leg — no fast steal available)" parenthetical was accurate; now that
+ *  handleForeignConduction tracks EVERY row whose takeover CAS lost (idle rows included), that
+ *  qualifier no longer holds universally, so it is dropped — the line covers the whole dead window
+ *  regardless of leg state. */
 function announceWaiting(
   deps: SchedulerDeps,
   state: Map<string, WatchBaseline>,
@@ -214,7 +225,7 @@ function announceWaiting(
       const earliestAdoptAt = Math.min(...next.values());
       deps.log(
         `${next.size} conduction${next.size === 1 ? '' : 's'} waiting out a dead lease's stale ` +
-          `window (mid-leg — no fast steal available) — earliest adoption at ${iso(earliestAdoptAt)}`,
+          `window — earliest adoption at ${iso(earliestAdoptAt)}`,
       );
     } else {
       deps.log('no conductions waiting on a dead lease stale window anymore');
@@ -622,19 +633,23 @@ async function handleForeignConduction(
     return;
   }
 
-  // B-761: a mid-leg row (leg_started_at non-null) is never steal-eligible (see the check below) —
-  // the stale-window takeoverConduction CAS just attempted above is the ONLY path that can ever
-  // free it, which is exactly the "still waits" case B-771's wait-announcement is scoped to. Record
-  // it for this pass's summary (announceWaiting, called once after every row is triaged) — we
-  // cannot tell here whether the holder is genuinely dead (will eventually go stale) or genuinely
-  // alive (never will); the daemon has no cheaper signal than that, and the log is informational.
-  if (row.leg_started_at !== null) {
-    waitingCandidates.push({
-      id: row.id,
-      adoptAt:
-        (row.last_heartbeat_at ? Date.parse(row.last_heartbeat_at) : deps.now()) + deps.config.staleMs,
-    });
-  }
+  // B-761 reopen fix (AC-3): record EVERY row whose takeover CAS just lost for this pass's wait
+  // summary (announceWaiting, called once after every row is triaged) — regardless of leg state.
+  // This used to be gated on `row.leg_started_at !== null` (mid-leg only), because the mid-leg case
+  // is the only one costing real throughput (it is never steal-eligible — see the check below — so
+  // the stale-window CAS is its sole path to adoption). But a live production verify run found real
+  // dead windows over IDLE rows too (ball-with-human, leg_started_at null, nothing running): an
+  // operator watching the log during one of those windows saw NOTHING for 4+ minutes and could not
+  // tell "waiting on a stale lease" apart from "no work exists" — exactly the operator-legibility
+  // gap this AC exists to close, and it applies for the WHOLE dead window, not just the throughput-
+  // costing mid-leg sub-case. We cannot tell here whether the holder is genuinely dead (will
+  // eventually go stale) or genuinely alive (never will); the daemon has no cheaper signal than
+  // that, and the log is informational either way.
+  waitingCandidates.push({
+    id: row.id,
+    adoptAt:
+      (row.last_heartbeat_at ? Date.parse(row.last_heartbeat_at) : deps.now()) + deps.config.staleMs,
+  });
 
   // ── B-717 item 3: the holder is alive — the takeover lost, so consider a STEAL candidate instead
   //    of giving up. Eligibility only; the actual CAS + fire happens later, against whatever
@@ -741,7 +756,17 @@ async function handleWonTakeover(
   // `running` only ever holds rows this daemon currently holds the lease for), and reconciliation
   // above has already re-attached (and returned) the one case that could otherwise collide.
   if (!(await writeIfHeld(deps, state, keeper, row, { leg_started_at: null }))) return false;
-  deps.log(`conduction ${row.id}: took over stale lease from ${row.lease_holder} — reaped`);
+  // B-761 reopen fix (legibility): distinguish a marker-driven adoption (instant, via the clean-
+  // shutdown marker) from a genuine staleness-window adoption (waited out the full window) — the
+  // PRE-takeover `row` (not `won`, whose CAS write always clears clean_shutdown_at back to null as
+  // part of the same UPDATE — see takeoverConduction) is the only place left to read whether the
+  // marker was set going in. Without this, a human reading the log needs timestamp arithmetic to
+  // tell the two cases apart.
+  if (row.clean_shutdown_at !== null) {
+    deps.log(`conduction ${row.id}: adopted cleanly-released lease from ${row.lease_holder}`);
+  } else {
+    deps.log(`conduction ${row.id}: took over stale lease from ${row.lease_holder} — reaped`);
+  }
   return true;
 }
 
@@ -956,6 +981,16 @@ async function fireLaunch(
         `${deps.config.workerTimeoutMs}ms — reaping`,
     );
     void (async () => {
+      // B-761 reopen fix — CONFIRMED (verified against this exact code, not assumed): this loop
+      // does NOT pass `{ quiet: true }` (stays verbose, unlike handleWonTakeover's reap-before-
+      // adopt call site) and does NOT consume the reap command's exit code AT ALL — the call below
+      // is fired-and-forgotten (`void`), its settled Promise's result never assigned anywhere.
+      // Attempt counting / escalation below is driven ENTIRELY by `tracked.settled` (set only by
+      // the LAUNCH promise settling, a few lines up). The reap scripts' exit-code semantics change
+      // (miss=3 / kill=0 / other=genuine-error, see container/cloud-worker-reap.sh and
+      // container/docker-worker-reap.sh) is therefore automatically safe here BY CONSTRUCTION —
+      // see scheduler.test.ts's "the deadline-escalation attempt counter is driven purely by
+      // tracked.settled" test for a direct EXECUTED proof.
       for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
         // NEVER await the reap: a wedged container runtime can hang the reap command itself, and
         // the call we make to unblock ourselves must not be able to block us.

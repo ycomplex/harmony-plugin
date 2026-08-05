@@ -446,15 +446,21 @@ export async function stealConduction(
  *  `host:pid:nonce` identity) holds, so a shutdown handler can never touch a foreign peer's row.
  *  Throws only on an operational error; the caller is expected to bound this with its own timeout
  *  so a hung write can never block the deliberate exit (this function does not impose one itself —
- *  it is a plain fire-once write, same shape as every other primitive here). */
-export async function markCleanShutdown(client: SupabaseClient, leaseHolder: string): Promise<void> {
+ *  it is a plain fire-once write, same shape as every other primitive here).
+ *
+ *  Returns the number of rows the write actually touched (via `{ count: 'exact' }` — no trailing
+ *  `.select()` needed) so the caller can log a success line stating how many held rows got the
+ *  marker; a successful write used to be invisible in the log (only the FAILURE path logged
+ *  anything at this site) — B-761 reopen fix. */
+export async function markCleanShutdown(client: SupabaseClient, leaseHolder: string): Promise<number> {
   if (!leaseHolder) throw new Error('leaseHolder is required');
-  const { error } = await client
+  const { error, count } = await client
     .from('conductions')
-    .update({ clean_shutdown_at: new Date().toISOString() })
+    .update({ clean_shutdown_at: new Date().toISOString() }, { count: 'exact' })
     .eq('lease_holder', leaseHolder)
     .eq('status', 'active');
   if (error) throw new Error(error.message);
+  return count ?? 0;
 }
 
 // ---------------------------------------------------------------------------
