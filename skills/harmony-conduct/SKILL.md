@@ -766,7 +766,9 @@ scope + supersede-list vs keep-list) and files a `revise-scope-review` brief; **
 there** — only a human accept executes the back-up (it reverts state via a `revising-*` back-edge; the
 conductor never reverts state itself). After delegating, **resume the loop at step 1** (re-read): on accept
 the ticket is now at the target discovery milestone and the loop drives it forward from there; on reject the
-run is untouched and still paused at this gate.
+run is untouched and still paused at this gate. **`--to build` is also a valid revise-scope target (B-762)**
+— a release-gate merge conflict reopening the build gate; the same delegation covers it transitively, no new
+mechanism needed here.
 
 **The human may answer in the BROWSER — and the conductor watches for it automatically (B-485 + B-500, §4c).**
 After surfacing the brief, **do not ask** whether to watch and **do not require a re-run** — auto-watch is the

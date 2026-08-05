@@ -129,4 +129,41 @@ describe('harmony-revise-scope skill contract', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
     expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);
   });
+
+  // B-762: the target-gate whitelist widens to accept `build` (a release-gate merge-conflict reopen),
+  // and this skill no longer restates the target->activity->landing table — it points at gate-routing.md,
+  // the new canonical home (B-762 item 1), instead of duplicating it.
+  it('B-762: accepts --to build (source {Built, Deployed}), lands at Planned via revising-building', () => {
+    const body = skill.body;
+    const lower = body.toLowerCase();
+    expect(lower).toMatch(/--to build/);
+    expect(body).toContain('revising-building');
+    expect(body).toMatch(/`Planned`/);
+    // Source states: Built (one hop) and Deployed (two hops via the same activity twice).
+    expect(body).toMatch(/\{Built, Deployed\}|`Built`.*`Deployed`|`Deployed`.*`Built`/);
+    expect(lower).toMatch(/two hops|twice/);
+  });
+
+  it('B-762: --to build is never inferred — only ever an explicit target, per the release-gate merge-conflict case', () => {
+    const lower = skill.body.toLowerCase();
+    expect(lower).toMatch(/never.*inferred|never \*inferred\*/);
+    expect(skill.body).toContain('CONFLICTING');
+  });
+
+  it('B-762: step 5 revert now goes through the shared reopenToGate procedure, not a single raw advance_workflow call, for the build target', () => {
+    const body = skill.body;
+    expect(body).toContain('reopenToGate');
+    expect(body).toContain('skills/harmony-shared/gate-routing.md');
+    expect(body.toLowerCase()).toMatch(/§reopen to a target gate/);
+  });
+
+  it('B-762: points at gate-routing.md as the canonical target->activity->landing table instead of restating it', () => {
+    const body = skill.body;
+    // The canonical pointer text appears (mirrors the B-762 spec's example wording).
+    expect(body).toMatch(/see `skills\/harmony-shared\/gate-routing\.md` §Reopen to a target gate/);
+    // The four-column table is no longer literally restated inline (build row wasn't here before B-762,
+    // so its ABSENCE as a literal markdown table row is the structural signal the table was removed,
+    // not merely extended in place).
+    expect(body).not.toMatch(/\|\s*build\s*\|\s*`revising-building`\s*\|\s*`Planned`\s*\|/);
+  });
 });

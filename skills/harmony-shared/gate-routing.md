@@ -114,6 +114,69 @@ When pointing a human forward, name the **release gate** and the **verify gate**
 (`/harmony-plugin:finish-work`)" over naming the bare skill, so the human-facing vocabulary matches the
 lifecycle rather than the implementation.
 
+## Reopen to a target gate (B-762)
+
+**Vocabulary: every reopen instruction names a target GATE, never a raw `revising-*` activity.** A human or
+agent that wants to send a ticket back to an earlier gate says "reopen to build" / "back up to design" —
+gate names, not `revising-building` / `revising-decomposing`. B-744 and B-733 are two real incidents where
+the same ambiguous `revising-building` instruction produced opposite worker behavior (one worker stopped
+one hop short and then improvised a code edit from outside the build gate; the other correctly walked two
+hops). Naming a step instead of a destination is the ambiguity; naming the destination and asserting
+arrival mechanically (below) removes it.
+
+| target gate | `revising-*` activity | lands at (INPUT) |
+|---|---|---|
+| clarify | `revising-promoting` | `Proposed` |
+| decompose | `revising-clarifying` | `Clarified` |
+| design | `revising-decomposing` | `Decomposed` |
+| build | `revising-building` | `Planned` |
+
+(This table is the single canonical home for this mapping — `harmony-revise-scope/SKILL.md` and any other
+caller reference it here rather than restating it.)
+
+**`reopenToGate(task_id, targetGate)` — the shared bounded one-hop-then-recheck procedure.** Every caller
+(harmony-revise-scope, finish-work, …) reopens a gate by following this same prose recipe with its own
+already-available `mcp__harmony__get_task` / `mcp__harmony__advance_workflow` calls — this is plumbing (an
+AGENT/SYSTEM `advance_workflow` call with no human decision attached, the same class as the conductor's
+`Captured`→`proposing` auto-advance), not a new `src/` helper:
+
+1. **Read** `mcp__harmony__get_task({ task_id, view: 'meta' })` and take its `workflow_state`.
+2. **Derive** `nextGate` from `workflow_state` via the state→gate map in "## The canonical gate table"
+   above.
+3. **Arrived?** If `nextGate === targetGate`, stop — return **`arrived`**.
+4. **Undershot — apply the next hop.** Call `mcp__harmony__advance_workflow({ task_id, activity:
+   REOPEN_VERB[targetGate] })`, where `REOPEN_VERB` is the "`revising-*` activity" column of the table
+   above, keyed by `targetGate`. If the DB guard REJECTS the transition (no edge from the current state
+   toward the target), stop — return **`stuck`**.
+5. **Loop, bounded at 4 iterations.** Go back to step 1. Four is the ceiling because the longest real
+   reopen (`--to build` from `Deployed`) is exactly two hops (`revising-building` Deployed→Built, then
+   `revising-building` again Built→Planned) — 4 iterations is generous headroom, not a tuned bound. Hitting
+   the bound without arriving or going stuck is itself a `stuck`-class outcome — stop and report it exactly
+   like a rejected transition; never keep looping past it.
+
+**`stuck` → file a `worker-question`, never guess.** This is the ONE place product-design rule 3 ("an agent
+may never perform a gate's work from outside that gate, and must never improvise a path forward when no
+edge exists toward the target") is implemented — every caller inherits it for free instead of re-deriving
+it locally. On `stuck` (a rejected transition, or bound-exhaustion), the caller:
+
+1. `mcp__harmony__start_elicitation({ task_id, trigger: 'worker-question' })`
+2. `mcp__harmony__file_elicitation_round(...)` naming the **current `workflow_state`**, the **target
+   gate**, and the **missing edge** (which `revising-*` activity was rejected, or that the 4-iteration
+   bound was hit without arriving) — per `skills/harmony-shared/elicitation-engine.md` §The worker-question
+   trigger.
+3. **End the turn.** Never guess a path forward, never fall back to performing the target gate's work from
+   outside it.
+
+**Rule 3, generalized.** The same standing rule applies even when `reopenToGate` is not in play: an agent
+that lands with no gate to run, or is asked to perform a gate's work while not inside that gate, must stop
+and report via the same `worker-question` mechanism — never improvise. A release-gate merge conflict is the
+named instance this ticket (B-762) fixes: resolving a merge conflict is a code change, so it belongs to the
+build gate. The release gate calls `reopenToGate(task_id, 'build')` (reopening `Built --revising-building-->
+Planned`) and STOPS — it never resolves the conflict in place, regardless of `git`/`Bash` reachability
+(disallowed-tools bounds tools, not effects — B-746). No extra round-trip mechanism is needed: once
+rebuilt, the ticket naturally re-enters release's normal brief-drafting flow, which already requires a
+fresh human approval against the new head.
+
 ## Off-forward-path rows
 
 | condition | owning step / skill | note |

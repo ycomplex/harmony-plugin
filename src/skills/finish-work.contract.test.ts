@@ -255,6 +255,81 @@ describe('finish-work skill contract (evolved)', () => {
     expect(o2.toLowerCase()).toMatch(/never route an observed failure into the\s+documented-inference fallback/);
   });
 
+  // B-762: a genuine merge conflict at the release gate is a code change, so it must reopen the build
+  // gate (revising-building) and STOP — never resolved in place, regardless of git/Bash reachability.
+  it('O2 CONFLICTING-reopen: mentions mergeable, CONFLICTING, reopens build via revising-building/reopenToGate, and stops without git merge/push', () => {
+    const body = skill.body;
+    const o2Idx = body.indexOf('### O2.');
+    const o3Idx = body.indexOf('### O3.');
+    expect(o2Idx).toBeGreaterThan(-1);
+    expect(o3Idx).toBeGreaterThan(o2Idx);
+    const o2 = body.slice(o2Idx, o3Idx);
+
+    expect(o2).toContain('mergeable');
+    expect(o2).toContain('CONFLICTING');
+    expect(o2).toContain('mergeStateStatus');
+    // Reopens the build gate via the shared procedure, landing Built --revising-building--> Planned.
+    expect(o2).toContain("reopenToGate(task_id, 'build')");
+    expect(o2).toContain('revising-building');
+    expect(o2).toContain('Built --revising-building--> Planned');
+    // Never attempts to resolve the conflict in place from the release gate.
+    expect(o2).toContain('git merge');
+    expect(o2).toContain('git push');
+    expect(o2).toMatch(/Do \*\*NOT\*\*[\s\S]{0,20}attempt `git merge`/);
+    // B-746: disallowed-tools bounds tools, not effects — cited explicitly.
+    expect(o2).toContain('B-746');
+    expect(o2.toLowerCase()).toContain('disallowed-tools bounds tools, not effects');
+    // STOPs the leg — never advances past a conflict.
+    expect(o2.toLowerCase()).toMatch(/stop this leg/);
+  });
+
+  // B-762: mergeable reads UNKNOWN for a window right after a push/base move. The check must bound its
+  // re-poll (~60s) and file a worker-question — never guess — if still UNKNOWN at the bound.
+  it('O2 UNKNOWN-at-bound: bounded ~60s re-poll, files a worker-question when still UNKNOWN', () => {
+    const body = skill.body;
+    const o2Idx = body.indexOf('### O2.');
+    const o3Idx = body.indexOf('### O3.');
+    const o2 = body.slice(o2Idx, o3Idx);
+
+    expect(o2).toContain('UNKNOWN');
+    expect(o2.toLowerCase()).toMatch(/~60s|60 seconds|60s total/);
+    expect(o2.toLowerCase()).toMatch(/re-poll/);
+    const tools = referencedHarmonyTools(o2);
+    expect(tools).toContain('start_elicitation');
+    expect(tools).toContain('file_elicitation_round');
+    expect(o2).toContain("trigger: 'worker-question'");
+    expect(o2.toLowerCase()).toMatch(/never guess/);
+  });
+
+  // B-762: the non-conflicting BEHIND case is explicitly out of scope — a separate follow-up, not
+  // implemented here. Pin that the skill says so rather than inventing update-branch prose.
+  it('O2 mergeable check: MERGEABLE (incl. BEHIND) proceeds as today; BEHIND recovery is an explicit out-of-scope follow-up', () => {
+    const body = skill.body;
+    const o2Idx = body.indexOf('### O2.');
+    const o3Idx = body.indexOf('### O3.');
+    const o2 = body.slice(o2Idx, o3Idx);
+    expect(o2).toContain('MERGEABLE');
+    expect(o2).toContain('BEHIND');
+    expect(o2.toLowerCase()).toMatch(/out of scope|out-of-scope/);
+    expect(o2.toLowerCase()).not.toMatch(/update-branch recovery is (now )?implemented/);
+  });
+
+  // B-762: the manual-mode merge sequence (also reused as O2's build_pr-absent fallback) carries the
+  // SAME pre-merge mergeability check, right before its own squash-merge sub-step.
+  it('manual-mode merge sequence: also carries the pre-merge mergeability check before its squash-merge step', () => {
+    const body = skill.body;
+    const manualIdx = body.indexOf('## Manual mode');
+    expect(manualIdx).toBeGreaterThan(-1);
+    const manual = body.slice(manualIdx);
+    const checkIdx = manual.indexOf('mergeable,mergeStateStatus');
+    const squashIdx = manual.indexOf('### 4. Squash merge the PR');
+    expect(checkIdx, 'manual-mode section missing the mergeable pre-check').toBeGreaterThan(-1);
+    expect(squashIdx, 'manual-mode section missing its squash-merge step').toBeGreaterThan(-1);
+    expect(checkIdx, 'the mergeability check must sit BEFORE the squash-merge step').toBeLessThan(squashIdx);
+    expect(manual).toContain('B-762');
+    expect(manual).toContain('CONFLICTING');
+  });
+
   it('the verify gate FLOORS an empty acceptance-criteria set rather than only reporting it (B-747)', () => {
     const body = skill.body;
     // B-738 reached Verified with zero criteria on a brief that had DISPLAYED the incomplete-evidence

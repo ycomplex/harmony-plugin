@@ -22,7 +22,11 @@ In opinionated mode the usual entry point is `/harmony-plugin:harmony-conduct`, 
 
 This path drives `planning` (Designed → Planned) and `building` (Planned → Built) for a ticket that has
 accepted design decisions. It does NOT author design knowledge (build role): if you discover the accepted
-design is wrong, do **not** quietly redesign and do **not** revert state yourself. Instead **raise a
+design is wrong, do **not** quietly redesign and do **not** revert state yourself. (This is one instance of a
+standing rule, for a future reader's context: an agent may never perform a gate's work from outside that
+gate — see `skills/harmony-shared/gate-routing.md` §Reopen to a target gate. `start-work` is only ever invoked
+for its own gate via the existing routing table, so it has no path to improvise another gate's work; this is
+just the design-specific case of that rule.) Instead **raise a
 revise-scope recommendation** — delegate to `/harmony-plugin:harmony-revise-scope <ticket> --to design`. That
 skill drafts a `revise-scope-review` brief; on a **human accept** it supersedes the invalidated design
 decision and reverts the ticket to `Decomposed` via `revising-decomposing` (from `Designed`, `Planned`, or

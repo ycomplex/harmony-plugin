@@ -87,6 +87,63 @@ describe('gate-routing (B-545 SSoT)', () => {
   });
 });
 
+// B-762: reopen instructions name a target GATE, never a raw `revising-*` activity, and arrival is
+// asserted mechanically via the shared `reopenToGate` bounded loop. These assertions live at the SSoT
+// (gate-routing.md), the same idiom the B-545 describe block above already establishes.
+describe('gate-routing — §Reopen to a target gate (B-762 SSoT)', () => {
+  const doc = readSharedDoc('gate-routing');
+  const lower = doc.toLowerCase();
+
+  it('has the §Reopen to a target gate section', () => {
+    expect(doc).toContain('## Reopen to a target gate (B-762)');
+  });
+
+  it('the target→activity→landing table includes the new build row (revising-building → Planned)', () => {
+    // All four rows present, including the new build row this ticket adds.
+    for (const [gate, activity, landing] of [
+      ['clarify', 'revising-promoting', 'Proposed'],
+      ['decompose', 'revising-clarifying', 'Clarified'],
+      ['design', 'revising-decomposing', 'Decomposed'],
+      ['build', 'revising-building', 'Planned'],
+    ]) {
+      expect(doc, `gate-routing.md §Reopen missing the ${gate} row`).toMatch(
+        new RegExp(`\\|\\s*${gate}\\s*\\|\\s*\`${activity}\`\\s*\\|\\s*\`${landing}\``),
+      );
+    }
+  });
+
+  it('documents the reopenToGate(task_id, targetGate) bounded one-hop-then-recheck procedure', () => {
+    expect(doc).toContain('reopenToGate(task_id, targetGate)');
+    expect(lower).toMatch(/bounded/);
+    expect(doc).toMatch(/4 iterations|four iterations/i);
+    expect(lower).toMatch(/one-hop-then-recheck|one hop.*recheck/);
+    // The three outcomes.
+    expect(doc).toContain('`arrived`');
+    expect(doc).toContain('`stuck`');
+    // Reads via the lean meta view.
+    expect(doc).toContain("view: 'meta'");
+  });
+
+  it('on stuck, files a worker-question round and stops — never guesses a path forward', () => {
+    const tools = referencedHarmonyTools(doc);
+    expect(tools).toContain('start_elicitation');
+    expect(tools).toContain('file_elicitation_round');
+    expect(doc).toContain("trigger: 'worker-question'");
+    expect(lower).toMatch(/never guess/);
+  });
+
+  it('states this is the ONE place rule 3 (never perform a gate\'s work from outside it) is implemented', () => {
+    expect(lower).toMatch(/one place product-design rule 3/);
+    expect(lower).toMatch(/never perform a gate'?s work from outside/);
+  });
+
+  it('names the release-gate merge-conflict case as the named instance of rule 3 (B-746: tools bound tools, not effects)', () => {
+    expect(lower).toMatch(/merge conflict/);
+    expect(doc).toContain('B-746');
+    expect(doc.toLowerCase()).toMatch(/disallowed-tools bounds tools, not effects/);
+  });
+});
+
 // B-461: the discuss trigger's semantics live in ONE canonical home (elicitation-engine.md) and are
 // consumed by reference everywhere else. These pins live HERE, at the SSoT (the gate-routing idiom),
 // so the routing prose can't silently drift out from under its consumers (the B-648 discipline).

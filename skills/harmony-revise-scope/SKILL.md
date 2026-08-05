@@ -1,6 +1,6 @@
 ---
 name: harmony-revise-scope
-description: Draft a "revise scope / back up" reconciliation for a ticket whose downstream gate revealed the upstream spec was scoped too narrowly — back the run up to an earlier discovery gate (clarify/decompose/design) and re-run it against the real scope. Triggers on "harmony revise-scope B-123", "back up B-123 to re-clarify", "the scope grew — re-decompose B-123", a `revise-scope`/"back up" verb at a conductor gate pause, or being delegated by harmony-conduct when iterate feedback reveals the upstream scope grew. Drafts a concrete reconciliation brief (target gate + broadened scope + supersede-list vs keep-list) for the human to accept or reject.
+description: Draft a "revise scope / back up" reconciliation for a ticket whose downstream gate revealed the upstream spec was scoped too narrowly — back the run up to an earlier discovery gate (clarify/decompose/design) or the build gate (a release-gate merge conflict) and re-run it against the real scope. Triggers on "harmony revise-scope B-123", "back up B-123 to re-clarify", "the scope grew — re-decompose B-123", a `revise-scope`/"back up" verb at a conductor gate pause, or being delegated by harmony-conduct when iterate feedback reveals the upstream scope grew. Drafts a concrete reconciliation brief (target gate + broadened scope + supersede-list vs keep-list) for the human to accept or reject.
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
@@ -44,8 +44,8 @@ brief reason, and entry points stale-patch lacks.
    **abort**) when any child has work. Each end-state follows the canonical ticket-disposition convention
    (`skills/harmony-shared/ticket-disposition.md`): **drop** = cancel-then-archive (recoverable, `archived:
    true`, never a delete); **reparent** keeps the child live; **abort** abandons the revert (NOT a disposition).
-   A **design**-target revert lands at `Decomposed` with the decompose decision intact, so it does NOT cross the
-   gate and does NOT trigger this guard.
+   A **design**-target revert lands at `Decomposed` and a **build**-target revert lands at `Planned` — both
+   with the decompose decision intact — so neither crosses the gate and neither triggers this guard.
 
 ## Three ways it gets RAISED; one authority DECIDES it (human accept)
 
@@ -61,8 +61,10 @@ This skill produces the same drafted brief regardless of who raised it:
    accept verb, same brief surface). This is NOT the system deciding — it ADDS a human decision; it does not
    remove one.
 
-`--to <gate>` (optional) names the target discovery gate; one of `clarify` / `decompose` / `design`. If
-omitted, infer the **minimal** target the scope change requires (see step 3).
+`--to <gate>` (optional) names the target gate; one of `clarify` / `decompose` / `design` / `build`. If
+omitted, infer the **minimal** target the scope change requires (see step 3). `build` is never inferred —
+it is only ever an explicit `--to build` (the release-gate merge-conflict reopen, B-762; see the Step-1
+guard below).
 
 ## Flow
 
@@ -73,8 +75,9 @@ brief (`awaiting_human_input` / `awaiting_human_reason` — the downstream brief
 mismatch, **if any**), and the work done so far.
 
 **Step-1 guard — the accepted source states depend on the TARGET gate** (`--to`, or the minimal target
-inferred in step 3). Two phases of source are accepted: the discovery phase (`Decomposed` / `Designed`) for
-any target, and — new in **B-609** — the build phase (`Planned` / `Built`) for a **design target only**:
+inferred in step 3). Three phases of source are accepted, keyed by target: the discovery phase (`Decomposed` /
+`Designed`) for any discovery target, the build phase (`Planned` / `Built`) — B-609 — for a **design target
+only**, and the build/deploy phase (`Built` / `Deployed`) — **B-762** — for a **build target only**:
 
 - **`--to design`** (revert to **`Decomposed`**): accept a source of `Decomposed`, `Designed`, **`Planned`, or
   `Built`**. The build states are the build-time "the design is wrong" case — a discovery surfaced *after* the
@@ -82,14 +85,24 @@ any target, and — new in **B-609** — the build phase (`Planned` / `Built`) f
   `Decomposed` from any of these (the B-609 web migration seeds `Planned`/`Built` → `revising-decomposing` →
   `Decomposed`; `Designed` already exists from B-519). NO guard/activity change — the `revising-%` stale-clear
   and the B-482 brief-clear apply for free.
+- **`--to build`** (revert to **`Planned`**, B-762): accept a source of `Built` or `Deployed`. `Built` arrives
+  in one hop via `revising-building` (Built→Planned); `Deployed` needs **two** hops — `revising-building`
+  (Deployed→Built), then `revising-building` again (Built→Planned) — the same activity name applied twice.
+  Step 5 executes this target exclusively via the shared `reopenToGate` procedure
+  (`skills/harmony-shared/gate-routing.md` §Reopen to a target gate), never a single raw `advance_workflow`
+  call, precisely because it may need that second hop. This is the **release-gate merge-conflict reopen**:
+  `--to build` is never *inferred* by step 3's scope-growth logic — it is only ever an explicit `--to build`
+  call, typically from the release gate itself (`skills/finish-work/SKILL.md` O2) discovering a genuine
+  `CONFLICTING` merge that is a code change and so belongs back at the build gate.
 - **`--to decompose`** (→`Clarified`) **or `--to clarify`** (→`Proposed`): accept ONLY `Decomposed` or `Designed`.
-  A **build-state source (`Planned`/`Built`) is REJECTED** for these targets (AC4). Say so and give the
-  **compose-pointer**: *"A build-state ticket can only back up `--to design` (to `Decomposed`) — the
-  build-phase back-edge lands only at `Decomposed`. Back up `--to design` to `Decomposed` first, then revert
-  further from `Decomposed` to re-decompose/re-clarify."* Build states are accepted **only** for a design
-  target.
-- **`Deployed` / `Verified` source:** this extension does **NOT** apply — post-release backflow is human-only
-  (AC6). Say so and stop; do not draft a build-state revert from a deployed/verified ticket.
+  A **build-state source (`Planned`/`Built`/`Deployed`) is REJECTED** for these targets (AC4). Say so and give
+  the **compose-pointer**: *"A build-state ticket can only back up `--to design` (to `Decomposed`, from
+  `Planned`/`Built`) or `--to build` (to `Planned`, from `Built`/`Deployed`) — the build-phase back-edges land
+  only at those two states. Back up `--to design` to `Decomposed` first, then revert further from `Decomposed`
+  to re-decompose/re-clarify."* Build states are accepted **only** for a design or build target.
+- **`Verified` source:** this extension does **NOT** apply — post-release backflow is human-only (AC6). Say so
+  and stop; do not draft a build-state revert from a verified ticket. (`Deployed` **IS** accepted, but ONLY for
+  a `--to build` target per the bullet above — never for design/decompose/clarify.)
 - **`Proposed` (or earlier) source:** already at the earliest discovery state — nothing to back up to. Say so and
   stop.
 
@@ -132,6 +145,11 @@ necessary. The revert lands at that gate's **INPUT** state (so the gate re-runs 
 revised decision through its own surface. This is the B-529 input-state principle; the old behavior reverted
 to each gate's output and folded the revised decision into this flow.)
 
+**`--to build` is never inferred here.** The three bullets above are the scope-growth inference this step
+performs; `build` is a fourth, distinct target reached only via an explicit `--to build` (never inferred) —
+see the Step-1 guard above for its accepted source states and B-762 for why (a release-gate merge conflict is
+a code change, not a scope-growth signal).
+
 **Build-state source for a design target (B-609).** The SOURCE need not be a discovery state. For a **design**
 target the source may also be `Planned` or `Built` — the build-time "the design is wrong" case (a discovery
 surfaced after the plan/build gate). The back-edge is still `revising-decomposing` and the landing is still
@@ -154,8 +172,8 @@ Then, from the gate decisions in step 1, split them into:
 
 A target of **clarify** (→`Proposed`) or **decompose** (→`Clarified`) reverts the ticket to *before* `Decomposed`,
 superseding the decompose decision that **created** this ticket's children — so those children would be
-orphaned. (A **design** target lands at `Decomposed` with the decompose decision intact, so it does **not**
-cross the gate — skip this step.)
+orphaned. (A **design** target lands at `Decomposed` and a **build** target lands at `Planned`, both with the
+decompose decision intact, so neither crosses the gate — skip this step for either.)
 
 When the target crosses the gate, read the children and classify them by whether they have work:
 
@@ -176,13 +194,8 @@ the brief (step 4) and the accept (step 5) act on this partition.
 File the reconciliation as a brief with the new `revise-scope-review` reason. The brief carries only the
 **back-up proposal** — it does **NOT** carry the revised decision content (that is decided later, at the
 native re-run gate). Set `pending_activity` to the `revising-*` activity whose back-edge lands at the target
-gate's **INPUT** state:
-
-| target gate | `revising-*` activity | lands at (INPUT) |
-|---|---|---|
-| clarify | `revising-promoting` | `Proposed` |
-| decompose | `revising-clarifying` | `Clarified` |
-| design | `revising-decomposing` | `Decomposed` |
+gate's **INPUT** state — see `skills/harmony-shared/gate-routing.md` §Reopen to a target gate for the full
+target→activity→landing table, now including `build` (`revising-building` → `Planned`).
 
 (Backflow semantics, B-529: each `revising-*` activity lands at the re-targeted gate's INPUT state — the
 milestone the gate re-runs FROM, not the one it produces. `revising-promoting` lands at `Proposed` (the state the
@@ -265,15 +278,23 @@ Show the rendered `content` verbatim. On the human's command:
      `mcp__harmony__supersede_decision({ old_decision_id: <id>, reason: "<why>" })`. That marks the old
      decision `Superseded` with `superseded_by=null` and creates NO successor decision (providing exactly one
      of type/title is rejected; provide both only to supersede-with-successor, which this flow never does).
-  2. **Revert state to the gate's INPUT via the back-edge:** `mcp__harmony__advance_workflow({ task_id,
-     activity })` with the activity that lands at the target's INPUT — `revising-promoting` (→`Proposed`) for a
-     clarify target, `revising-clarifying` (→`Clarified`) for decompose, `revising-decomposing` (→`Decomposed`)
-     for design. The DB guard then, in the same pass, **auto-clears the orphaned active downstream brief** (the
-     B-482 reconciliation guard — direction-agnostic, closes any active brief on a state change) **AND
-     auto-clears the `stale` flag** that superseding this ticket's own gate decisions would otherwise self-set
-     (the B-519 guard branch matches `revising-%`, so `revising-promoting` is covered for free with no guard
-     change). So this skill does **NOT** manually clear the brief or the stale flag — the guard does both for
-     free. (Order matters: supersede first, then revert, so the final guard pass leaves the ticket clean.)
+  2. **Revert state to the gate's INPUT via the shared `reopenToGate` procedure**
+     (`skills/harmony-shared/gate-routing.md` §Reopen to a target gate): call `reopenToGate(task_id,
+     targetGate)`. For a **clarify**/**decompose**/**design** target this is unaffected — exactly one
+     `advance_workflow` call, same shape as before (`revising-promoting`→`Proposed` for clarify,
+     `revising-clarifying`→`Clarified` for decompose, `revising-decomposing`→`Decomposed` for design; the loop
+     exits after iteration 1). For a **build** target the loop may apply `revising-building` **twice**
+     (`Deployed`→`Built`→`Planned`) before arriving at `Planned` — this is exactly why `--to build` uses the
+     loop rather than a single raw `advance_workflow` call. Each hop's DB guard, in the same pass,
+     **auto-clears the orphaned active downstream brief** (the B-482 reconciliation guard — direction-agnostic,
+     closes any active brief on a state change) **AND auto-clears the `stale` flag** that superseding this
+     ticket's own gate decisions would otherwise self-set (the B-519 guard branch matches `revising-%`, so every
+     `revising-*` activity is covered for free with no guard change). So this skill does **NOT** manually clear
+     the brief or the stale flag — the guard does both for free, on every hop. (Order matters: supersede first,
+     then revert, so the final guard pass leaves the ticket clean.) **On `stuck`** (the procedure found no edge
+     toward the target, or exhausted its 4-iteration bound) — file the `worker-question` round exactly as
+     gate-routing.md specifies, and stop; never guess a path forward or fall back to a raw `advance_workflow`
+     call outside the procedure.
   2a. **Build-state source only — REPORT the dangling build artifacts (B-609).** When the source was a build
      state (`Built`, or `Planned` **with an open PR** — start-work opens the PR during the build), reverting to
      `Decomposed` orphans the in-flight build artifacts: the **open PR**, its **pushed branch**, and the local
@@ -285,11 +306,13 @@ Show the rendered `content` verbatim. On the human's command:
      stale parallel build. (A discovery-source revert — `Decomposed`/`Designed` — has no build artifacts, so
      skip this report.) Automating this cleanup is tracked as the follow-up **B-614**.
   3. **STOP and report** the ticket is now at the target gate's **INPUT** state (`Proposed` for clarify,
-     `Clarified` for decompose, `Decomposed` for design), the brief is cleared, ONLY the listed decisions were
-     superseded, and it is **ready for `harmony-conduct` to re-run the target gate NATIVELY** — the revised
-     decision is authored fresh through that gate's own surface (`/harmony-plugin:harmony-conduct B-123` picks
-     up at the INPUT state and re-runs the target gate, then the gates forward of it). This skill does NOT
-     author the revised decision and does NOT re-run the gate itself.
+     `Clarified` for decompose, `Decomposed` for design, or `Planned` for build), the brief is cleared, ONLY the
+     listed decisions were superseded, and it is **ready for `harmony-conduct` to re-run the target gate NATIVELY**
+     — the revised decision is authored fresh through that gate's own surface (`/harmony-plugin:harmony-conduct
+     B-123` picks up at the INPUT state and re-runs the target gate, then the gates forward of it). This skill
+     does NOT author the revised decision and does NOT re-run the gate itself. **For a build target**, there is
+     no "revised decision" to author natively (a build-target revert reopens the code change, not a discovery
+     decision) — it is instead **ready for `/harmony-plugin:start-work` to rebuild**.
 
 - **reject** → **no-op.** Abandon the draft. Resolve the revise-scope-review brief WITHOUT any state change,
   WITHOUT superseding anything, and WITHOUT recording a knowing-divergence (that record is only for
@@ -308,34 +331,38 @@ Show the rendered `content` verbatim. On the human's command:
 
 ### 6. Report
 
-State the outcome: either **accepted** (ticket reverted to the target gate's INPUT state — `Proposed` for clarify,
-`Clarified` for decompose, `Decomposed` for design; brief cleared; these decisions superseded; ready for
-`harmony-conduct` to re-run the target gate NATIVELY) or **rejected** (no-op; run untouched at its current
-gate; the feedback is addressed in-gate). Either way, name the target gate considered so the human has the
-audit trail. **When the source was a build state** (`Built`, or `Planned` with an open PR), also restate the
-**dangling build artifacts** (open PR + pushed branch + worktree) the human must clean up manually before the
-re-build (step 5 · 2a), and reference **B-614** (the follow-up to automate that cleanup).
+State the outcome: either **accepted** (ticket reverted to the target gate's INPUT state — `Proposed` for
+clarify, `Clarified` for decompose, `Decomposed` for design, or `Planned` for build via `revising-building`;
+brief cleared; these decisions superseded; ready for `harmony-conduct` to re-run the target gate NATIVELY, or —
+for a build target — ready for `/harmony-plugin:start-work` to rebuild) or **rejected** (no-op; run untouched
+at its current gate; the feedback is addressed in-gate) or **stuck** (per the shared `reopenToGate` procedure —
+a `worker-question` round was filed instead; report that, not a false accept/reject). Either way, name the
+target gate considered so the human has the audit trail. See `skills/harmony-shared/gate-routing.md` §Reopen to
+a target gate for the full target→activity→landing table (now including `build`) — the canonical home; it is
+not restated here. **When the source was a build state** (`Built`, or `Planned` with an open PR), also restate
+the **dangling build artifacts** (open PR + pushed branch + worktree) the human must clean up manually before
+the re-build (step 5 · 2a), and reference **B-614** (the follow-up to automate that cleanup).
 
 ## The input-state principle + the `revising-promoting` name (B-529)
 
 A revise-scope revert lands at the re-targeted gate's **INPUT** state, never its output, so the gate re-runs
-**natively** and authors the revised decision through its own surface:
-
-| target gate | revert to (INPUT) | back-edge activity |
-|---|---|---|
-| clarify | `Proposed` | `revising-promoting` |
-| decompose | `Clarified` | `revising-clarifying` |
-| design | `Decomposed` | `revising-decomposing` |
+**natively** and authors the revised decision through its own surface — see
+`skills/harmony-shared/gate-routing.md` §Reopen to a target gate for the canonical target→activity→landing
+table (clarify→`Proposed` via `revising-promoting`, decompose→`Clarified` via `revising-clarifying`,
+design→`Decomposed` via `revising-decomposing`, and — B-762 — build→`Planned` via `revising-building`); it is
+not restated here.
 
 This is why the revise-scope flow no longer authors the revised decision (the old behavior reverted to each
 gate's *output* and folded the revised decision into the brief — accepting it off-flow, never through the
 gate). Now it only supersedes + reverts; the decision is authored at the native re-run.
 
-**Build-state source widening (B-609).** The table above maps each target gate to its INPUT and back-edge; the
-SOURCE is independent of it. For a **design** target the source from-set is `{Decomposed, Designed, Planned,
+**Build-state source widening (B-609).** The canonical table maps each target gate to its INPUT and back-edge;
+the SOURCE is independent of it. For a **design** target the source from-set is `{Decomposed, Designed, Planned,
 Built}` — the back-edge (`revising-decomposing`) and the landing (`Decomposed`) are **unchanged**; only the
 accepted source widened to include the build states (the build-time "design is wrong" case). For decompose/
-clarify targets the source stays `{Decomposed, Designed}` (a build-state source is rejected — step 1).
+clarify targets the source stays `{Decomposed, Designed}` (a build-state source is rejected — step 1). For a
+**build** target (B-762) the source is `{Built, Deployed}` — see the Step-1 guard above; that source widening
+is a second, later case, distinct from this B-609 design-target one.
 
 **About the name `revising-promoting`.** The discovery back-edges are named after the activity that *produces*
 the milestone they land at: `revising-clarifying`→`Clarified` (clarifying produces Clarified),
