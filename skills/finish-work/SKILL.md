@@ -189,16 +189,34 @@ class — the signal surfaces *here* instead (see harmony-conduct §3a / §4 "re
 Prefer this path-derived signal over any prose-derived set — the path signal is high-precision and avoids the
 prose false-positives B-516 fixed.
 
-**Approval-required line on a bot-authored PR (B-732).** A daemon-built PR is authored by the
-`harmony-daemon` App, and GitHub forbids a PR author approving its own PR — so the merge cannot happen on
-the human's Harmony accept alone. Check `gh pr view <pr_number> --json author` for the `build_pr` PR; if
+**One `gh pr view` call, two uses: bot-approval + CI evidence (B-732, B-765 AC4).** Before showing the
+brief, make a single call for the `build_pr` PR, extended with `statusCheckRollup` so the brief's CI
+evidence is FETCHED from the PR's checks rather than asserted from local/partial evidence:
+
+```
+gh pr view <pr_number> --json author,statusCheckRollup
+```
+
+**Bot-approval line.** A daemon-built PR is authored by the `harmony-daemon` App, and GitHub forbids a PR
+author approving its own PR — so the merge cannot happen on the human's Harmony accept alone. If
 `author.is_bot` is true, add a second attention line alongside the risk signal, naming the PR:
 
 > *"⚠ This PR is authored by `harmony-daemon[bot]` and needs your approval on GitHub before it can merge:
 > `<pr_url>`. Accepting here is your go-ahead; the merge runs once the approval lands."*
 
-Say it on the brief rather than only at the merge, so the human can approve while they are already looking
-at the release decision instead of being stopped afterwards. On the human's **accept**:
+**CI evidence line (B-765 AC4).** Cite `statusCheckRollup`'s run id + conclusion as the brief's CI evidence
+line, e.g. *"CI: run <id> — <conclusion>."* This read is informational only, at brief-compose time — time
+passes between accept and the actual merge, so a FRESH read at O2 governs the actual merge decision; this
+line does not itself gate anything. If the call 403s (a capability denial — e.g. a repo-scoped `403
+Resource not accessible by integration`), the check surface is unreadable: add a legible attention line to
+the brief instead, verbatim in shape — *"⚠ Unable to fetch CI status — <error>. Reviewing without check
+confirmation."* Never assert local/partial evidence (a local typecheck/lint run, a partial `gh` read) in
+its place, and never silently omit the line. This is the capability-denial doctrine (stated in full at O2
+below, where it also governs the merge-time CI wait) applied at brief-compose time: a proceed-worthy read
+failure, since branch protection independently backs whatever the checks would have shown.
+
+Say the approval line on the brief rather than only at the merge, so the human can approve while they are
+already looking at the release decision instead of being stopped afterwards. On the human's **accept**:
 
 ```
 mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })   // pending_activity: null → clears the flag, NO state change
@@ -251,8 +269,41 @@ paths:
 - **`build_pr` present (the common case — daemon- or human-built, B-722 recorded it):** merge it via the
   REST endpoint already established for the bypass floor (B-712), directly — **no local worktree required:
   no checkout, no rebase, no force-push.**
-  1. **Wait for CI** — `gh pr checks <pr_number> --watch`. The checks already ran against the pushed head
-     from the build step; there is no rebase/force-push here to re-trigger them.
+  1. **Wait for CI** — run `gh pr checks <pr_number> --watch`, with the exit status EXPLICITLY CAPTURED
+     (`$?`) — never pipe it through `tail` or anything else that discards the exit code (a prior version of
+     this step did exactly that — `... --watch --interval 15 2>&1 | tail -40` — silently losing `gh`'s exit
+     status; B-765). The checks already ran against the pushed head from the build step; there is no
+     rebase/force-push here to re-trigger them.
+
+     - **Output is literally `no checks reported on the '<branch>' branch`** → treat this as
+       NOT-YET-REGISTERED, never proceed-worthy: the checks simply haven't started reporting yet. Wait a
+       short interval and retry, rather than reading the empty result as a pass.
+     - **A genuine CI failure** (checks ran; one or more concluded failure) → this is an OBSERVED failure,
+       not a denial — do **NOT** merge and do **NOT** infer past it. End the leg; the ticket stays Built.
+     - **A capability denial** (e.g. `403 Resource not accessible by integration`, or equivalent — `gh`
+       cannot even read the checks) or **success** (checks read clean) → both fall through to step 1c
+       below, which resolves a denial via `mergeStateStatus` and, on success, still runs the same combined
+       read for the mergeability check next (no duplicated work either way).
+
+  **Capability-denial doctrine (B-765) — scoped narrowly to this release gate's CI/deploy-confirmation
+  denial class, NOT a general-purpose classifier:**
+
+  - **Proceed-worthy:** the release gate cannot READ a signal about work that already happened and is
+    independently enforced elsewhere — CI checks already ran against the pushed head; branch protection
+    independently blocks a non-CLEAN merge; `mergeStateStatus` is GitHub's own computed rollup of those
+    same checks. Infer past it, and say so explicitly in the trail comment.
+  - **Stop-worthy:** the release gate cannot CONFIRM a fact needed to decide what to do NEXT that no other
+    mechanism enforces — e.g. cross-repo deploy ordering (nothing stops merging PR #2 before PR #1's
+    migration is live except the worker's own check). Ask a human (`worker-question`).
+  - **The distinguishing question — state it explicitly before inferring:** is there an independent
+    enforcement mechanism (branch protection, required checks) backing the inference, or is the worker's
+    own read the only thing standing between "proceed" and a real ordering/safety violation? The former is
+    proceed-worthy; the latter is stop-worthy.
+  - `harmony-conduct`'s §4e ("never route around a denial") is UNAFFECTED by this doctrine — it governs
+    denials generally; this is the narrow, named exception for the release gate's own CI/deploy-confirmation
+    reads, backed by an independent enforcement mechanism. Reference this doctrine from here rather than
+    restating it in harmony-conduct.
+
   1a. **THE IDENTITY + APPROVAL GATE — FAILS CLOSED (B-732).** Daemon PRs are authored by the
      `harmony-daemon` App so the B-695 merge floor actually engages on them. Read both signals in one call:
      `gh pr view <pr_number> --json author,reviewDecision`. Then branch on the **RUN CONTEXT**, never on the
@@ -308,15 +359,34 @@ paths:
      the O1 resume-vs-draft check routes straight back into O2 and retries the merge — no redraft, no new
      brief. (This is a *modeled* pause with a first-class reason, which is why it does not go through B-733's
      ad-hoc-question channel.)
-  1c. **Pre-merge mergeability check (B-762) — FAILS CLOSED on a genuine conflict, run immediately before
-     the squash-merge, every time.** `mergeable` is three-valued (`MERGEABLE` / `CONFLICTING` / `UNKNOWN`) and
-     GitHub computes it **asynchronously** — it reads `UNKNOWN` for a window right after a push or base move,
-     which is exactly the moment this check runs (immediately after the final push that landed the checks
-     above). Read both in one call:
+  1c. **The combined pre-merge read (B-762 mergeability + B-765 CI-denial resolution) — FAILS CLOSED on a
+     genuine conflict, run immediately before the squash-merge, every time.** This is the SAME read B-762
+     already needed here, now extended with `statusCheckRollup` so a CI-wait capability denial (step 1
+     above) can resolve through it too, and so the trail comment / brief-evidence symmetry (B-765 AC4) has
+     the check data available either way — no duplicated work, just one extra field. `mergeable` is
+     three-valued (`MERGEABLE` / `CONFLICTING` / `UNKNOWN`) and GitHub computes it **asynchronously** — it
+     reads `UNKNOWN` for a window right after a push or base move, which is exactly the moment this check
+     runs (immediately after the final push that landed the checks above). Read all three fields in one
+     call:
 
      ```
-     gh pr view <pr_number> --json mergeable,mergeStateStatus
+     gh pr view <pr_number> --json mergeable,mergeStateStatus,statusCheckRollup
      ```
+
+     **If step 1 above hit a capability denial reading CI** (never a genuine CI failure — that already
+     ended the leg), resolve it here via `mergeStateStatus`, per the capability-denial doctrine above:
+     - **`CLEAN`** → proceed with the merge below. CI already ran against the pushed head, and
+       `mergeStateStatus` is GitHub's own computed rollup of those same checks, independently backed by
+       branch protection — a proceed-worthy inference per the doctrine above. The release trail comment
+       (step 2 below) MUST state the completion was **inferred, never confirmed green**.
+     - **Anything else** (not `CLEAN` — including `UNKNOWN`, `DIRTY`, `BLOCKED`, `UNSTABLE`) → do **NOT**
+       infer. File a `worker-question` elicitation round — `mcp__harmony__start_elicitation({ task_id,
+       trigger: 'worker-question' })` then `mcp__harmony__file_elicitation_round(...)` naming the PR, the
+       CI-read failure, and the current `mergeStateStatus` value — and **end the leg**; do not attempt the
+       merge.
+
+     **Otherwise** (step 1 read CI cleanly — success, no denial) — continue directly into the `mergeable`
+     branches below, UNCHANGED, just with `statusCheckRollup` now also available:
 
      - **`UNKNOWN`** → re-poll at a few-second interval, **bounded at ~60s total**, until it resolves.
        - Resolves within the bound → fall through to the `MERGEABLE`/`CONFLICTING` branches below.
@@ -342,6 +412,15 @@ paths:
      `bypass_pull_request_allowances` under the required-review merge floor, B-695). `gh` resolves
      `{owner}/{repo}` from the git remote of whatever directory the command runs in, not from a specific
      checked-out branch — running it from the project root, or any clone of the repo, is sufficient.
+
+     **If this merge was reached via step 1c's capability-denial/CLEAN-inference path**, land that on the
+     trail immediately once the merge succeeds — extending the existing B-560 trail-comment pattern (and the
+     matching inferred-completion phrasing used below for the post-merge deploy confirmation) to the
+     pre-merge case (B-765). Never phrase an inferred pre-merge CI pass the same as a confirmed one:
+
+     ```
+     mcp__harmony__add_comment({ task_id, content: "merged via PR #<number> — CI check confirmation unavailable (<error>), proceeding on mergeStateStatus: CLEAN (inferred, not confirmed green)." })
+     ```
   3. **Delete the remote branch** — `gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"` (this
      mirrors the manual flow's local branch-delete step, just done remotely instead of locally since there is
      no local worktree/branch here to delete).
@@ -592,23 +671,43 @@ git push --force-with-lease
 The force-push triggers a new CI run. Wait for it to complete before merging.
 
 ```bash
-gh pr checks <PR-number> --watch
+gh pr checks <PR-number> --watch; ci_status=$?
 ```
 
-If CI fails, stop and investigate — do not merge a failing build.
+Capture the exit status explicitly (`$?`) — never pipe this through `tail` or anything else that discards
+it (B-765; keep this in sync with opinionated mode's O2 step 1 above). Treat output literally
+`no checks reported on the '<branch>' branch` as NOT-YET-REGISTERED — wait a short interval and retry,
+never proceed on it. If CI fails (checks ran; one or more concluded failure), stop and investigate — do not
+merge a failing build, and do not infer past an observed failure.
 
-### 3.5 Pre-merge mergeability check (B-762)
+If `gh` cannot even read the checks (a capability denial — e.g. `403 Resource not accessible by
+integration`), fall through to the mergeability check in step 3.5 below and resolve it there via
+`mergeStateStatus` — per the capability-denial doctrine (`## Opinionated mode` → O2 → the capability-denial
+doctrine above): `CLEAN` → proceed (documenting the inference, same as O2, if a Harmony ticket exists for
+this work); anything else → do NOT infer — stop and report the CI-read failure plus the current
+`mergeStateStatus` value to the user (or file a `worker-question` round if running under opinionated mode's
+O2 fallback).
+
+### 3.5 Pre-merge mergeability check (B-762, extended for B-765)
 
 Run this immediately before the squash-merge step below, every time — the same check as opinionated
 mode's O2 (`## Opinionated mode` → O2 → step 1c above), applied here because this sequence is ALSO the
 fallback path O2 itself uses when `field_values.build_pr` is absent but a local worktree with its own open
 PR still exists. `mergeable` is three-valued (`MERGEABLE` / `CONFLICTING` / `UNKNOWN`) and GitHub computes
 it **asynchronously** — it reads `UNKNOWN` for a window right after the force-push above, which is exactly
-the moment this check runs:
+the moment this check runs. Read all three fields in one call — extended with `statusCheckRollup` so a
+step-3 capability denial can resolve through this same read (no duplicated call):
 
 ```bash
-gh pr view <PR-number> --json mergeable,mergeStateStatus
+gh pr view <PR-number> --json mergeable,mergeStateStatus,statusCheckRollup
 ```
+
+**If step 3 above hit a capability denial reading CI**, resolve it here via `mergeStateStatus` first:
+`CLEAN` → proceed to the mergeable branches below as usual (and note the inference on the trail, matching
+O2's trail-comment phrasing, if this run has a ticket to comment on); anything else → do NOT infer — stop
+and report the CI-read failure plus the current `mergeStateStatus` value (or file a `worker-question` round
+under opinionated mode's O2 fallback). Otherwise (step 3 read CI cleanly), continue directly into the
+`mergeable` branches below, UNCHANGED:
 
 - **`UNKNOWN`** → re-poll at a few-second interval, **bounded at ~60s total**, until it resolves.
   - Resolves within the bound → fall through to the branches below.
