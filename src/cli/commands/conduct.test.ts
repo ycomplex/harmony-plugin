@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { Command } from 'commander';
 import { registerConductCommand } from './conduct.js';
-import { ActiveConductionExistsError } from '../../tools/conduction-record.js';
+import {
+  ActiveConductionExistsError,
+  ConductorExcludedError,
+} from '../../tools/conduction-record.js';
 
 // House gotcha (B-685): module-scope mock impls get stripped by restore/clear — every
 // implementation is (re-)armed in beforeEach, never at module scope.
@@ -9,13 +12,14 @@ const mocks = vi.hoisted(() => ({
   getAuthenticatedContext: vi.fn(),
   resolveTaskId: vi.fn(),
   createConduction: vi.fn(),
+  assertNotExcluded: vi.fn(),
 }));
 
 vi.mock('../auth.js', () => ({ getAuthenticatedContext: mocks.getAuthenticatedContext }));
 vi.mock('../../tools/resolve-task-id.js', () => ({ resolveTaskId: mocks.resolveTaskId }));
 vi.mock('../../tools/conduction-record.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../tools/conduction-record.js')>();
-  return { ...actual, createConduction: mocks.createConduction };
+  return { ...actual, createConduction: mocks.createConduction, assertNotExcluded: mocks.assertNotExcluded };
 });
 
 class ExitSentinel extends Error {
@@ -51,6 +55,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.getAuthenticatedContext.mockResolvedValue(ctx);
   mocks.resolveTaskId.mockResolvedValue('uuid-1');
+  mocks.assertNotExcluded.mockResolvedValue(undefined);
   mocks.createConduction.mockResolvedValue(conductionRow);
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -66,18 +71,28 @@ afterEach(() => {
 });
 
 describe('harmony conduct <ticket>', () => {
-  it('resolves the ticket, creates a controlled conduction credited to the caller, and prints the pickup message', async () => {
+  it('resolves the ticket, checks it is not excluded, creates a controlled conduction credited to the caller, and prints the pickup message + operator-contract note', async () => {
     await run(['conduct', 'B-696']);
 
     expect(mocks.resolveTaskId).toHaveBeenCalledWith(ctx.client, 'proj-1', 'B-696');
+    expect(mocks.assertNotExcluded).toHaveBeenCalledWith(ctx.client, 'uuid-1');
     expect(mocks.createConduction).toHaveBeenCalledWith(ctx.client, {
       task_id: 'uuid-1',
       mode: 'controlled',
       created_by: 'user-1',
     });
+    // B-758: the excluded-check must run BEFORE the duplicate-guard create call.
+    const excludedOrder = mocks.assertNotExcluded.mock.invocationCallOrder[0];
+    const createOrder = mocks.createConduction.mock.invocationCallOrder[0];
+    expect(excludedOrder).toBeLessThan(createOrder);
+
     const output = logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(output).toContain('cond-9');
     expect(output).toMatch(/daemon will pick it up/i);
+    // The B-758 operator-contract sentence — non-optional, must appear verbatim in substance.
+    expect(output).toMatch(
+      /the duplicate-guard can only detect an active conduction record.*in-progress\s+terminal session.*stopped before handing it off/is,
+    );
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
@@ -96,6 +111,18 @@ describe('harmony conduct <ticket>', () => {
     expect(errOutput).toMatch(/already being conducted/i);
     // The clean message, not the raw lease-primitive internals.
     expect(errOutput).not.toMatch(/insert-or-fail/i);
+  });
+
+  it('maps ConductorExcludedError to a clean "taken away from the conductor" refusal and exit 1 (B-758)', async () => {
+    mocks.assertNotExcluded.mockRejectedValue(new ConductorExcludedError('uuid-1'));
+
+    await expect(run(['conduct', 'B-696'])).rejects.toThrow(ExitSentinel);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errOutput = errSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(errOutput).toMatch(/taken away from the conductor/i);
+    expect(errOutput).toMatch(/Return it first/i);
+    // Excluded-check runs BEFORE createConduction — a duplicate-conduction create must never fire.
+    expect(mocks.createConduction).not.toHaveBeenCalled();
   });
 
   it('surfaces the resolver error for an unknown ticket and exits 1', async () => {

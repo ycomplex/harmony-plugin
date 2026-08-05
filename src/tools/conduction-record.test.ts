@@ -9,7 +9,9 @@ import {
   takeoverConduction,
   stealConduction,
   markCleanShutdown,
+  assertNotExcluded,
   ActiveConductionExistsError,
+  ConductorExcludedError,
   CONDUCTION_LIVE_STATUSES,
   CONDUCTION_HUMAN_OWNED_STATUSES,
   CONDUCTION_TERMINAL_STATUSES,
@@ -149,6 +151,44 @@ describe('createConduction', () => {
   it('rejects a missing task_id before any DB access', async () => {
     const client = makeClient([]);
     await expect(createConduction(client, { task_id: '' })).rejects.toThrow(/task_id is required/);
+    expect(client.from).not.toHaveBeenCalled();
+  });
+});
+
+describe('assertNotExcluded (B-758)', () => {
+  it('resolves without throwing when conductor_excluded_at is null', async () => {
+    const client = makeClient([{ data: { conductor_excluded_at: null } }]);
+    await expect(assertNotExcluded(client, 'task-1')).resolves.toBeUndefined();
+    expect(client.from).toHaveBeenCalledWith('tasks');
+    expect(client.select).toHaveBeenCalledWith('conductor_excluded_at');
+    expect(client.eq).toHaveBeenCalledWith('id', 'task-1');
+  });
+
+  it('throws the typed ConductorExcludedError when conductor_excluded_at is set', async () => {
+    const client = makeClient([
+      { data: { conductor_excluded_at: '2026-08-01T00:00:00.000Z' } },
+    ]);
+    const err = await assertNotExcluded(client, 'task-1').catch((e) => e);
+    expect(err).toBeInstanceOf(ConductorExcludedError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.code).toBe('conductor-excluded');
+    expect(err.task_id).toBe('task-1');
+    // Points at the existing "Return to conductor" web action, not raw internals.
+    expect(err.message).toMatch(/Return it first/i);
+    expect(err.message).toMatch(/Return to conductor/i);
+  });
+
+  it('throws a PLAIN error on a lookup failure (distinct from the excluded type)', async () => {
+    const client = makeClient([{ data: null, error: { message: 'permission denied' } }]);
+    const err = await assertNotExcluded(client, 'task-1').catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(ConductorExcludedError);
+    expect(err.message).toBe('permission denied');
+  });
+
+  it('rejects a missing task_id before any DB access', async () => {
+    const client = makeClient([]);
+    await expect(assertNotExcluded(client, '')).rejects.toThrow(/task_id is required/);
     expect(client.from).not.toHaveBeenCalled();
   });
 });
