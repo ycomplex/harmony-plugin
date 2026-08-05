@@ -308,6 +308,35 @@ paths:
      the O1 resume-vs-draft check routes straight back into O2 and retries the merge — no redraft, no new
      brief. (This is a *modeled* pause with a first-class reason, which is why it does not go through B-733's
      ad-hoc-question channel.)
+  1c. **Pre-merge mergeability check (B-762) — FAILS CLOSED on a genuine conflict, run immediately before
+     the squash-merge, every time.** `mergeable` is three-valued (`MERGEABLE` / `CONFLICTING` / `UNKNOWN`) and
+     GitHub computes it **asynchronously** — it reads `UNKNOWN` for a window right after a push or base move,
+     which is exactly the moment this check runs (immediately after the final push that landed the checks
+     above). Read both in one call:
+
+     ```
+     gh pr view <pr_number> --json mergeable,mergeStateStatus
+     ```
+
+     - **`UNKNOWN`** → re-poll at a few-second interval, **bounded at ~60s total**, until it resolves.
+       - Resolves within the bound → fall through to the `MERGEABLE`/`CONFLICTING` branches below.
+       - **Still `UNKNOWN` at the ~60s bound** → never guess in either direction. File a `worker-question`
+         round: `mcp__harmony__start_elicitation({ task_id, trigger: 'worker-question' })` then
+         `mcp__harmony__file_elicitation_round(...)` naming the PR, the current `mergeable`/
+         `mergeStateStatus` values, and how long it polled. **End the leg** — do not attempt the merge.
+     - **`MERGEABLE`** (clean, or `BEHIND`) → the merge proceeds exactly as today; continue to step 2 below.
+       (The non-conflicting `BEHIND` case — recovering via `update-branch` — is explicitly out of scope for
+       this ticket; it is documented as a separate follow-up, not implemented here.)
+     - **`CONFLICTING`** (a genuine merge conflict) → this is a **code change**, so it belongs to the **build
+       gate**, never resolved here — regardless of `git`/`Bash` reachability (B-746: disallowed-tools bounds tools, not effects, so a `Bash`-reachable `git merge` is still off-limits at this gate).
+       Do **NOT** attempt `git merge`, do **NOT** edit the conflicted file, do **NOT** `git push` from the release gate. Instead:
+       1. Call the shared `reopenToGate(task_id, 'build')` procedure (`skills/harmony-shared/gate-routing.md`
+          §Reopen to a target gate) — reopens `Built --revising-building--> Planned`.
+       2. `mcp__harmony__add_comment({ task_id, content: "Release blocked: PR #<pr_number> (<head_sha>) has a
+          merge conflict with main — reopening the build gate to resolve it (B-762)." })`
+       3. **STOP this leg — do not advance past this.** The rebuilt ticket naturally re-enters release's
+          normal brief-drafting flow later, requiring a fresh human approval against the new head; no extra
+          round-trip mechanism is needed.
   2. **Squash-merge** — `gh api -X PUT "repos/{owner}/{repo}/pulls/<pr_number>/merge" -f merge_method=squash`
      (the same REST form as the manual-mode flow below — `gh pr merge`'s GraphQL path still does not honor
      `bypass_pull_request_allowances` under the required-review merge floor, B-695). `gh` resolves
@@ -567,6 +596,40 @@ gh pr checks <PR-number> --watch
 ```
 
 If CI fails, stop and investigate — do not merge a failing build.
+
+### 3.5 Pre-merge mergeability check (B-762)
+
+Run this immediately before the squash-merge step below, every time — the same check as opinionated
+mode's O2 (`## Opinionated mode` → O2 → step 1c above), applied here because this sequence is ALSO the
+fallback path O2 itself uses when `field_values.build_pr` is absent but a local worktree with its own open
+PR still exists. `mergeable` is three-valued (`MERGEABLE` / `CONFLICTING` / `UNKNOWN`) and GitHub computes
+it **asynchronously** — it reads `UNKNOWN` for a window right after the force-push above, which is exactly
+the moment this check runs:
+
+```bash
+gh pr view <PR-number> --json mergeable,mergeStateStatus
+```
+
+- **`UNKNOWN`** → re-poll at a few-second interval, **bounded at ~60s total**, until it resolves.
+  - Resolves within the bound → fall through to the branches below.
+  - **Still `UNKNOWN` at the ~60s bound** → never guess. If running under opinionated mode's O2 fallback,
+    file a `worker-question` round (`mcp__harmony__start_elicitation({ task_id, trigger: 'worker-question' })`
+    + `mcp__harmony__file_elicitation_round(...)` naming the PR, the `mergeable`/`mergeStateStatus` values,
+    and how long it polled) and end the leg. In true manual mode (no Harmony gate), stop and report the same
+    facts to the user instead.
+- **`MERGEABLE`** (clean, or `BEHIND`) → proceed to the squash-merge below exactly as today. (The
+  non-conflicting `BEHIND` case — recovering via `update-branch` — is out of scope for this ticket; a
+  separate follow-up, not implemented here.)
+- **`CONFLICTING`** (a genuine merge conflict) → this is a **code change**, so it never gets resolved here
+  — regardless of `git`/`Bash` reachability (B-746: disallowed-tools bounds tools, not effects). Do **NOT**
+  attempt to resolve the conflict, edit the conflicted file, or force-push a resolution from this step.
+  - **Opinionated-mode caller (this sequence reached as O2's fallback):** call the shared
+    `reopenToGate(task_id, 'build')` procedure (`skills/harmony-shared/gate-routing.md` §Reopen to a target
+    gate) — reopens `Built --revising-building--> Planned` — comment the PR/head SHA + reason on the ticket
+    (`mcp__harmony__add_comment`), and **STOP this leg**. The rebuilt ticket naturally re-enters release's
+    normal brief-drafting flow later, requiring a fresh human approval against the new head.
+  - **True manual-mode caller (no Harmony gate to reopen):** stop and tell the user the PR has a genuine
+    merge conflict with main — they resolve it (or re-run `start-work`/rebuild) and re-invoke finish-work.
 
 ### 4. Squash merge the PR
 
