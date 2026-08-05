@@ -83,13 +83,19 @@ describe('harmony-revise-scope skill contract', () => {
     expect(body).toMatch(/input[- ]state|gate'?s? input|target'?s? input/);
   });
 
-  it('B-529: hands off to a NATIVE re-run — does NOT author the revised decision (no fold) for any target', () => {
+  it("B-529/B-763: hands off to a NATIVE re-run for the TARGET's revised decision, but now authors exactly one draft-time rationale record for the back-up itself", () => {
     const body = skill.body.toLowerCase();
     // the skill hands off; the gate re-runs natively and authors the revised decision through its own surface
     expect(body).toMatch(/native.*re-?run|re-?run.*nativ/);
     expect(body).toMatch(/not? .*author|does not author|no longer.*author|never.*fold|not folded|no.*fold/);
-    // it must NOT reference record_decision anymore — the revised decision is authored at the re-run gate, not here
-    expect(referencedHarmonyTools(skill.body)).not.toContain('record_decision');
+    // the B-529 invariant survives B-763: this skill still never authors the TARGET gate's revised decision.
+    expect(body).toMatch(/does not author the revised decision|does not author the revised upstream decision/);
+    // B-763: it NOW DOES call record_decision, but only to author a durable rationale record for the
+    // back-up itself (trigger, target-gate reasoning, supersede/keep lists, broadened-scope statement) —
+    // not the revised decision content, which still has no ref here at draft time.
+    expect(referencedHarmonyTools(skill.body)).toContain('record_decision');
+    expect(body).toContain('decision_ref');
+    expect(body).toMatch(/rationale record/);
   });
 
   it('REJECT is a no-op — no state change, no supersede, no knowing-divergence record', () => {
