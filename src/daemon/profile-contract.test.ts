@@ -5,7 +5,7 @@
 // rejects as an unknown mode. Both files are read from disk so either side drifting breaks CI.
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -138,6 +138,15 @@ const mintScriptPath = fileURLToPath(
   new URL('../../scripts/mint-installation-token.mjs', import.meta.url),
 );
 
+/** B-761 reopen fix: the local-docker reap template now dispatches to this dedicated wrapper
+ *  script rather than an inline `docker rm -f ...; rm -f ...` (the old `;`-joined inline template
+ *  always exited 0, discarding docker's own "container not found" signal — see the script's own
+ *  header). Declared here (rather than down by its own describe block) so the credential-contract
+ *  test below can also reference it. */
+const dockerReapScriptPath = fileURLToPath(
+  new URL('../../container/docker-worker-reap.sh', import.meta.url),
+);
+
 /** The value of the launch template's `--env-file` flag. */
 function envFileArg(launch: string): string | undefined {
   const words = launch.split(/\s+/);
@@ -169,8 +178,17 @@ describe('daemon-profile.example.json bot-identity credential contract (B-732)',
 
   it('deletes the minted env-file at reap so the credential does not outlive its worker', () => {
     const envFile = envFileArg(profile.launch);
-    expect(profile.reap).toContain('rm -f');
-    expect(profile.reap).toContain(envFile as string);
+    expect(envFile).toBeDefined();
+    // B-761 reopen fix: the reap template now dispatches to a dedicated wrapper script rather than
+    // an inline `rm -f` — confirm both that the profile points at the wrapper, and that the
+    // wrapper's own body deletes the SAME per-run env-file the launch template minted (the
+    // wrapper's $TICKET/$CONDUCTION_ID shell variables are the runtime form of the launch
+    // template's {ticket}/{conduction_id} placeholders).
+    expect(profile.reap).toContain('docker-worker-reap.sh');
+    const dockerReapScript = readFileSync(dockerReapScriptPath, 'utf8');
+    expect(dockerReapScript).toContain('rm -f "$ENV_FILE"');
+    expect(dockerReapScript).toContain('$HOME/.harmony-conductions/$TICKET/$CONDUCTION_ID');
+    expect(dockerReapScript).toContain('run.env');
   });
 
   it('never passes the token inline, where the host process table would expose it', () => {
@@ -243,6 +261,63 @@ describe('daemon-profile.cloud.example.json shape', () => {
   it('both referenced wrapper scripts actually exist on disk', () => {
     expect(readFileSync(cloudLaunchScriptPath, 'utf8').length).toBeGreaterThan(0);
     expect(readFileSync(cloudReapScriptPath, 'utf8').length).toBeGreaterThan(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-761 reopen fix — docker-worker-reap.sh: EXECUTED miss-vs-kill exit-code contract.
+//
+// The old inline docker reap template (`docker rm -f ...; rm -f $ENV_FILE`) always exited 0
+// because the trailing `rm -f` almost always succeeds — a genuinely-missing container's real
+// `docker rm -f` exit code (1, with "No such container" on stderr) never surfaced. This wrapper
+// re-derives a real three-way exit-code contract (0 = kill, 3 = routine miss, 1 = genuine
+// unexpected error). Prose-pinned regex assertions against the script's TEXT alone are not trusted
+// for this kind of exit-code-derivation logic (mirrors the write_exec_env_file() / release_lock()
+// EXECUTED-test precedent above) — this block actually RUNS the real script against a stubbed
+// `docker` on PATH and asserts the real process exit code.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('docker-worker-reap.sh: EXECUTED miss-vs-kill exit-code contract (B-761 reopen fix)', () => {
+  /** Run the REAL docker-worker-reap.sh with a stubbed `docker` on PATH whose body is `dockerFakeBody`
+   *  (a fake docker binary, so no real container runtime is required to run this test). Returns the
+   *  real process's exit status + captured stderr — never throws on a nonzero exit. */
+  function runDockerReap(dockerFakeBody: string): { status: number | null; stderr: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'b761-docker-reap-'));
+    const fakeBinDir = join(dir, 'bin');
+    mkdirSync(fakeBinDir);
+    writeFileSync(join(fakeBinDir, 'docker'), `#!/usr/bin/env bash\n${dockerFakeBody}\n`, {
+      mode: 0o700,
+    });
+    const homeDir = join(dir, 'home');
+    mkdirSync(homeDir);
+
+    try {
+      execFileSync('bash', [dockerReapScriptPath, 'cond-test-1', 'B-761'], {
+        env: { ...process.env, PATH: `${fakeBinDir}:${process.env.PATH}`, HOME: homeDir },
+      });
+      return { status: 0, stderr: '' };
+    } catch (err) {
+      const e = err as { status: number | null; stderr: Buffer | string };
+      return { status: e.status, stderr: e.stderr.toString() };
+    }
+  }
+
+  it('exits 0 when docker itself exits 0 (a real container was found and removed — the kill case)', () => {
+    const result = runDockerReap('exit 0');
+    expect(result.status).toBe(0);
+  });
+
+  it('exits 3 when docker exits nonzero with "No such container" in its output (the routine miss)', () => {
+    const result = runDockerReap(
+      'echo "Error response from daemon: No such container: harmony-worker-cond-test-1" >&2\nexit 1',
+    );
+    expect(result.status).toBe(3);
+  });
+
+  it('exits 1 and prints the captured output to stderr on a genuine, unexpected docker error — NOT swallowed into 0 or 3', () => {
+    const result = runDockerReap('echo "Cannot connect to the Docker daemon" >&2\nexit 1');
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Cannot connect to the Docker daemon');
   });
 });
 

@@ -49,6 +49,15 @@ if [ -n "$EXECUTION_NAME" ]; then
     --region="$HARMONY_CLOUD_RUN_REGION" \
     --async \
     --quiet || true
+  rm -f "$ENV_FILE"
+  # B-761: EXECUTION_NAME was found — a real execution really was there to cancel. Distinct exit
+  # code from the "nothing found" branch below so the daemon's quiet-reap renderer
+  # (src/daemon/quiet-reap.ts) can tell a genuine kill apart from a routine miss.
+  exit 0
 fi
 
 rm -f "$ENV_FILE"
+# B-761: EXECUTION_NAME was empty — the routine miss (nothing found to reap, e.g. the dead holder's
+# execution already completed on its own). Exit 3, not the previous always-0, so the daemon's
+# quiet-reap renderer can render this distinctly from a genuine kill.
+exit 3
