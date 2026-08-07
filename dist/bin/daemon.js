@@ -23147,6 +23147,10 @@ function createHeartbeatKeeper(deps) {
 }
 
 // src/daemon/config.ts
+function selectNamedProfile(deploymentConfig, profileName) {
+  if (!profileName || !deploymentConfig) return null;
+  return deploymentConfig.profiles?.[profileName] ?? null;
+}
 function envValue(env, key) {
   const v = env[key];
   return v == null || v === "" ? void 0 : v;
@@ -23169,37 +23173,43 @@ function envNonNegativeInt(env, key, fallback) {
   }
   return n;
 }
-function loadDaemonConfig(env, readFile) {
-  const profilePath = envValue(env, "HARMONY_DAEMON_PROFILE");
-  if (!profilePath) {
-    throw new Error(
-      "HARMONY_DAEMON_PROFILE is required \u2014 the path to the launch-profile JSON ({ launch, reap } command templates). There is no baked-in worker command."
-    );
+function loadDaemonConfig(env, readFile, opts = {}) {
+  let profile;
+  if (opts.profileOverride) {
+    profile = opts.profileOverride;
+  } else {
+    const profilePath = envValue(env, "HARMONY_DAEMON_PROFILE");
+    if (!profilePath) {
+      throw new Error(
+        `No launch profile resolved: select one BY NAME from a deployment config via --config <path> --profile <name> (src/config/deployment-config.ts's "profiles" section), or set HARMONY_DAEMON_PROFILE to a standalone launch-profile JSON path ({ launch, reap } command templates). There is no baked-in worker command.`
+      );
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(readFile(profilePath));
+    } catch (err) {
+      throw new Error(
+        `could not load the launch profile at ${profilePath}: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err }
+      );
+    }
+    profile = parsed;
+    if (typeof profile.launch !== "string" || profile.launch.length === 0) {
+      throw new Error(`launch profile ${profilePath} is missing the "launch" command template`);
+    }
+    if (typeof profile.reap !== "string" || profile.reap.length === 0) {
+      throw new Error(`launch profile ${profilePath} is missing the "reap" command template`);
+    }
+    if (profile.probe !== void 0 && (typeof profile.probe !== "string" || profile.probe.length === 0)) {
+      throw new Error(`launch profile ${profilePath}'s "probe" template, when present, must be a non-empty string`);
+    }
+    if (profile.maxConcurrentWorkers !== void 0 && (!Number.isInteger(profile.maxConcurrentWorkers) || profile.maxConcurrentWorkers < 0)) {
+      throw new Error(
+        `launch profile ${profilePath}'s "maxConcurrentWorkers", when present, must be a non-negative integer`
+      );
+    }
   }
-  let parsed;
-  try {
-    parsed = JSON.parse(readFile(profilePath));
-  } catch (err) {
-    throw new Error(
-      `could not load the launch profile at ${profilePath}: ${err instanceof Error ? err.message : String(err)}`,
-      { cause: err }
-    );
-  }
-  const profile = parsed;
-  if (typeof profile.launch !== "string" || profile.launch.length === 0) {
-    throw new Error(`launch profile ${profilePath} is missing the "launch" command template`);
-  }
-  if (typeof profile.reap !== "string" || profile.reap.length === 0) {
-    throw new Error(`launch profile ${profilePath} is missing the "reap" command template`);
-  }
-  if (profile.probe !== void 0 && (typeof profile.probe !== "string" || profile.probe.length === 0)) {
-    throw new Error(`launch profile ${profilePath}'s "probe" template, when present, must be a non-empty string`);
-  }
-  if (profile.maxConcurrentWorkers !== void 0 && (!Number.isInteger(profile.maxConcurrentWorkers) || profile.maxConcurrentWorkers < 0)) {
-    throw new Error(
-      `launch profile ${profilePath}'s "maxConcurrentWorkers", when present, must be a non-negative integer`
-    );
-  }
+  const validatedProfile = profile;
   return {
     pollMs: envMs(env, "HARMONY_DAEMON_POLL_MS", 25e3),
     heartbeatMs: envMs(env, "HARMONY_DAEMON_HEARTBEAT_MS", 3e4),
@@ -23211,10 +23221,15 @@ function loadDaemonConfig(env, readFile) {
     maxConcurrentWorkers: envNonNegativeInt(
       env,
       "HARMONY_DAEMON_MAX_CONCURRENT_WORKERS",
-      profile.maxConcurrentWorkers ?? 3
+      validatedProfile.maxConcurrentWorkers ?? 3
     ),
     readyAgeMs: envMs(env, "HARMONY_DAEMON_READY_AGE_MS", 6e5),
-    profile: { launch: profile.launch, reap: profile.reap, probe: profile.probe, maxConcurrentWorkers: profile.maxConcurrentWorkers },
+    profile: {
+      launch: validatedProfile.launch,
+      reap: validatedProfile.reap,
+      probe: validatedProfile.probe,
+      maxConcurrentWorkers: validatedProfile.maxConcurrentWorkers
+    },
     logPath: envValue(env, "HARMONY_DAEMON_LOG")
   };
 }
@@ -23743,6 +23758,14 @@ async function runScheduler(deps, keeper) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+function parseDaemonArgs(argv) {
+  const args = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--config") args.config = argv[++i];
+    else if (argv[i] === "--profile") args.profile = argv[++i];
+  }
+  return args;
+}
 async function markCleanShutdownBounded(client, holder, logFn, timeoutMs) {
   let timer;
   const timeout = new Promise((resolve) => {
@@ -23772,16 +23795,29 @@ async function main() {
   const token = process.env.HARMONY_API_TOKEN;
   if (!token) {
     process.stderr.write(
-      "usage: HARMONY_DAEMON_PROFILE=<profile.json> HARMONY_API_TOKEN=<token> node dist/bin/daemon.js\nHARMONY_API_TOKEN is not set\n"
+      "usage: node dist/bin/daemon.js [--config <deployment-config path>] [--profile <name>] (B-800, or set HARMONY_DAEMON_PROFILE=<profile.json>), plus HARMONY_API_TOKEN=<token>\nHARMONY_API_TOKEN is not set\n"
     );
     process.exit(1);
   }
+  const daemonArgv = parseDaemonArgs(process.argv.slice(2));
   let config;
   try {
-    config = loadDaemonConfig(process.env, (p) => readFileSync3(p, "utf8"));
+    const deploymentConfig = loadDeploymentConfig({ configPath: daemonArgv.config, env: process.env });
+    const namedProfile = selectNamedProfile(deploymentConfig, daemonArgv.profile);
+    if (daemonArgv.profile && deploymentConfig && !namedProfile) {
+      process.stderr.write(
+        `Note: profile "${daemonArgv.profile}" not found in the deployment config's "profiles" section (${resolveDeploymentConfigPath({ configPath: daemonArgv.config, env: process.env })}) \u2014 falling back to HARMONY_DAEMON_PROFILE.
+`
+      );
+    }
+    config = loadDaemonConfig(
+      process.env,
+      (p) => readFileSync3(p, "utf8"),
+      namedProfile ? { profileOverride: namedProfile } : {}
+    );
   } catch (err) {
     process.stderr.write(
-      `usage: HARMONY_DAEMON_PROFILE=<profile.json> HARMONY_API_TOKEN=<token> node dist/bin/daemon.js
+      `usage: node dist/bin/daemon.js [--config <deployment-config path>] [--profile <name>] (B-800, or set HARMONY_DAEMON_PROFILE=<profile.json>), plus HARMONY_API_TOKEN=<token>
 ${err instanceof Error ? err.message : String(err)}
 `
     );

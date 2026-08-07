@@ -237,7 +237,7 @@ Everything operational is an env knob or a profile file — never a code edit:
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `HARMONY_DAEMON_PROFILE` | *(required)* | Path to the launch-profile JSON: `{ launch, reap }` command templates (plus two OPTIONAL fields, B-717 — see below) with `{conduction_id}` / `{ticket}` placeholders. No baked-in worker command — swapping agent brands is a profile edit. |
+| `HARMONY_DAEMON_PROFILE` | *(required unless `--profile` resolves — see below)* | Path to the launch-profile JSON: `{ launch, reap }` command templates (plus two OPTIONAL fields, B-717 — see below) with `{conduction_id}` / `{ticket}` placeholders. No baked-in worker command — swapping agent brands is a profile edit. |
 | `HARMONY_DAEMON_POLL_MS` | `25000` | Pass cadence (one watch/heartbeat pass per interval — a pass never blocks on a worker, B-717). |
 | `HARMONY_DAEMON_HEARTBEAT_MS` | `30000` | Lease heartbeat cadence (poll ≤ heartbeat). |
 | `HARMONY_DAEMON_STALE_MS` | `300000` | Silence threshold after which another daemon may CAS-take the lease. |
@@ -246,6 +246,17 @@ Everything operational is an env knob or a profile file — never a code edit:
 | `HARMONY_DAEMON_MAX_CONCURRENT_WORKERS` | *(profile's own, else `3`)* | B-717: the fire-and-track concurrency cap — how many workers this daemon runs at once. Overrides the launch profile's own `maxConcurrentWorkers` (see below) when set; falls back to 3 (sized for local-docker's host resource ceiling) when neither is set. |
 | `HARMONY_DAEMON_READY_AGE_MS` | `600000` (10 min) | B-717: a ready-but-unfired conduction waiting longer than this is promoted one priority tier for firing order only (aging escalation — prevents starvation under a sustained high-priority stream). |
 | `HARMONY_DAEMON_LOG` | *(unset)* | Optional extra log file (stdout is primary; launchd redirects it). |
+
+**B-800: select a profile BY NAME from a deployment config instead** — `node dist/bin/daemon.js
+--config <deployment.json path> --profile <name>` (mirrors the `harmony config get` CLI's own
+`--config`; `HARMONY_DEPLOYMENT_CONFIG` works too). This wins over `HARMONY_DAEMON_PROFILE`
+whenever it FULLY resolves (the config file is present AND `--profile` names a profile that exists
+in its `profiles` section); short of that, the daemon falls back to `HARMONY_DAEMON_PROFILE`
+unchanged, so an existing single-profile deployment needs zero config changes. One machine can run
+multiple daemon deployments this way, each with its own deployment-config file bound to a different
+board — see **`container/migrate-to-deployment-config.md`** for the human, once, migration
+procedure (two worked examples: the default single-deployment case, and a second differently-named
+deployment at a non-default path).
 
 **B-717 optional profile fields** (alongside `launch`/`reap` in the profile JSON):
 

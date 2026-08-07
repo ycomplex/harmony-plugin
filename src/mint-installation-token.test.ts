@@ -15,6 +15,9 @@ import {
   composeEnvFile,
   writeEnvFile,
   mintInstallationToken,
+  resolveDeploymentConfigPath,
+  flattenEnvSection,
+  resolveBaseContent,
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore -- plain .mjs helper module, deliberately dependency-free and untyped
 } from '../scripts/mint-installation-token.mjs';
@@ -156,5 +159,115 @@ describe('mintInstallationToken', () => {
     await expect(
       mintInstallationToken({ jwt: 'jwt-value', installationId: '1', fetchImpl }),
     ).rejects.toThrow(/no token/);
+  });
+});
+
+// B-800 item 2: --base <file> is superseded by a deployment config's `env` section when one is
+// present at the resolved path — see resolveBaseContent's own doc comment in the .mjs file for
+// the full precedence. Fake fs (no real filesystem touched) mirrors
+// src/config/deployment-config.test.ts's fakeFs style, for the same injectable-IO reason.
+function fakeFs(files: Record<string, string>) {
+  return {
+    existsImpl: (path: string) => path in files,
+    readImpl: (path: string) => {
+      if (!(path in files)) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+      return files[path];
+    },
+  };
+}
+
+describe('resolveDeploymentConfigPath', () => {
+  it('prefers an explicit configPath over everything else', () => {
+    expect(
+      resolveDeploymentConfigPath({
+        configPath: '/explicit/path.json',
+        env: { HARMONY_DEPLOYMENT_CONFIG: '/env/path.json' },
+      }),
+    ).toBe('/explicit/path.json');
+  });
+
+  it('falls back to HARMONY_DEPLOYMENT_CONFIG when no explicit path is given', () => {
+    expect(
+      resolveDeploymentConfigPath({ env: { HARMONY_DEPLOYMENT_CONFIG: '/env/path.json' } }),
+    ).toBe('/env/path.json');
+  });
+
+  it('defaults to ~/.harmony/deployment.json when neither is set', () => {
+    expect(resolveDeploymentConfigPath({ env: {} })).toMatch(/\.harmony[/\\]deployment\.json$/);
+  });
+});
+
+describe('flattenEnvSection', () => {
+  it('flattens a { KEY: value } object into KEY=value lines', () => {
+    expect(flattenEnvSection({ HARMONY_API_TOKEN: 'abc', GIT_USER_NAME: 'Harmony Worker' })).toBe(
+      'HARMONY_API_TOKEN=abc\nGIT_USER_NAME=Harmony Worker\n',
+    );
+  });
+
+  it('returns an empty string for an absent, empty, or non-object section', () => {
+    expect(flattenEnvSection(undefined)).toBe('');
+    expect(flattenEnvSection({})).toBe('');
+    expect(flattenEnvSection(null)).toBe('');
+  });
+
+  it('skips null/undefined values but keeps every other key', () => {
+    expect(flattenEnvSection({ A: 'x', B: undefined, C: null, D: 'y' })).toBe('A=x\nD=y\n');
+  });
+});
+
+describe('resolveBaseContent', () => {
+  it('builds base content from the deployment config env section when the config file exists', () => {
+    const io = fakeFs({
+      '/deployment.json': JSON.stringify({ env: { HARMONY_API_TOKEN: 'tok', GIT_USER_NAME: 'Bot' } }),
+    });
+    const content = resolveBaseContent({ base: '/should/not/be/read.env', configPath: '/deployment.json', ...io });
+    expect(content).toBe('HARMONY_API_TOKEN=tok\nGIT_USER_NAME=Bot\n');
+  });
+
+  it('falls back to reading --base <file> unchanged when no deployment config exists at the resolved path', () => {
+    const io = fakeFs({ '/legacy.env': 'HARMONY_API_TOKEN=legacy-tok\n' });
+    const content = resolveBaseContent({ base: '/legacy.env', configPath: '/nowhere/deployment.json', ...io });
+    expect(content).toBe('HARMONY_API_TOKEN=legacy-tok\n');
+  });
+
+  it('returns an empty string when neither --base nor a deployment config resolves', () => {
+    const io = fakeFs({});
+    expect(resolveBaseContent({ configPath: '/nowhere/deployment.json', ...io })).toBe('');
+  });
+
+  it('resolves the deployment config path via HARMONY_DEPLOYMENT_CONFIG when no --config is given', () => {
+    const io = fakeFs({ '/env-configured.json': JSON.stringify({ env: { GIT_TOKEN: 'stale' } }) });
+    const content = resolveBaseContent({
+      env: { HARMONY_DEPLOYMENT_CONFIG: '/env-configured.json' },
+      ...io,
+    });
+    expect(content).toBe('GIT_TOKEN=stale\n');
+  });
+
+  it('throws a clear error for a deployment config that exists but is malformed JSON', () => {
+    const io = fakeFs({ '/deployment.json': '{ not valid json' });
+    expect(() => resolveBaseContent({ configPath: '/deployment.json', ...io })).toThrow(
+      /not valid JSON/,
+    );
+  });
+
+  it('handles a deployment config with no "env" section as empty base content', () => {
+    const io = fakeFs({ '/deployment.json': JSON.stringify({ profiles: {} }) });
+    expect(resolveBaseContent({ configPath: '/deployment.json', ...io })).toBe('');
+  });
+});
+
+describe('resolveBaseContent + composeEnvFile integration (B-800 end-to-end shape)', () => {
+  it('a stale GIT_TOKEN in the deployment config env section is still stripped, same as --base', () => {
+    const io = fakeFs({
+      '/deployment.json': JSON.stringify({
+        env: { HARMONY_API_TOKEN: 'tok', GIT_TOKEN: 'ghp_stale_founder_pat' },
+      }),
+    });
+    const baseContent = resolveBaseContent({ configPath: '/deployment.json', ...io });
+    const composed = composeEnvFile({ baseContent, token: 'ghs_minted' });
+    expect(composed).not.toContain('ghp_stale_founder_pat');
+    expect(composed).toContain('HARMONY_API_TOKEN=tok');
+    expect(composed).toContain('GIT_TOKEN=ghs_minted');
   });
 });
