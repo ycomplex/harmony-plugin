@@ -15,6 +15,15 @@
 // Zero runtime dependencies by design: Node's built-in crypto signs the RS256 JWT and the global
 // fetch exchanges it. The container clones this repo and runs committed dist with no npm install,
 // so a new dependency here would be real friction.
+//
+// B-800 AC5 (documented per-deployment fact, not a code migration): HARMONY_APP_ID,
+// HARMONY_APP_INSTALLATION_ID and HARMONY_APP_PRIVATE_KEY_PATH below are the launcher-host's
+// GitHub App identity, conceptually launcher.github_app.{app_id,installation_id,private_key_path}
+// in ~/.harmony/deployment.json (src/config/deployment-config.ts) going forward — this script's
+// actual read path stays these three env vars, deliberately NOT importing the TS-built
+// deployment-config loader here: doing so would require a build step (or a hand-duplicated
+// parser) in a script whose whole design point is zero-dependency, no-build simplicity. Set them
+// on the launcher host from your deployment config's launcher.github_app section.
 
 import { createSign } from 'node:crypto';
 import { readFileSync, writeFileSync, rmSync, chmodSync } from 'node:fs';

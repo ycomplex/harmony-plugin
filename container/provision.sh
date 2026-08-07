@@ -35,15 +35,33 @@ fi
 # confirmation below resolves the target through the REAL KNOWN_REFS and
 # aborts on mismatch.
 HARMONY_TARGET="${HARMONY_TARGET:-prod}"
-case "$HARMONY_TARGET" in
-  prod)    SUPABASE_URL="https://eioxsunvhakmelhanmnn.supabase.co" ;;
-  staging) SUPABASE_URL="https://meqkdgncdzromunylyxf.supabase.co" ;;
-  custom)  SUPABASE_URL="${HARMONY_SUPABASE_URL:?HARMONY_TARGET=custom needs HARMONY_SUPABASE_URL — see plugin/container/env.example (copy it and fill it in — container/README.md Quick start)}" ;;
-  *)
-    echo "Unknown HARMONY_TARGET '$HARMONY_TARGET' (expected prod | staging | custom)" >&2
-    exit 1
-    ;;
-esac
+
+# B-800 AC2: a per-deployment config's launcher.supabase.url TAKES PRECEDENCE when present and
+# non-empty. Read directly via `node .../dist/bin/harmony.js` (not the $HOME/bin/harmony shim,
+# which is not wired yet at this point in the script, and not `harmony login`, which needs
+# HARMONY_API_TOKEN which is not validated yet either). The hardcoded case statement below is the
+# DOCUMENTED PER-DEPLOYMENT FACT fallback this AC accepts in place of a full migration — it MUST
+# keep working byte-for-byte with no ~/.harmony/deployment.json present (true for the live dogfood
+# daemon today), so this lookup is best-effort and never fails the script.
+DEPLOYMENT_CONFIG_PATH="${HARMONY_DEPLOYMENT_CONFIG:-$HOME/.harmony/deployment.json}"
+CONFIG_SUPABASE_URL=""
+if [ -f "$DEPLOYMENT_CONFIG_PATH" ]; then
+  CONFIG_SUPABASE_URL="$(node "$PLUGIN_DIR/dist/bin/harmony.js" config get launcher.supabase.url 2>/dev/null || true)"
+fi
+
+if [ -n "$CONFIG_SUPABASE_URL" ]; then
+  SUPABASE_URL="$CONFIG_SUPABASE_URL"
+else
+  case "$HARMONY_TARGET" in
+    prod)    SUPABASE_URL="https://eioxsunvhakmelhanmnn.supabase.co" ;;
+    staging) SUPABASE_URL="https://meqkdgncdzromunylyxf.supabase.co" ;;
+    custom)  SUPABASE_URL="${HARMONY_SUPABASE_URL:?HARMONY_TARGET=custom needs HARMONY_SUPABASE_URL — see plugin/container/env.example (copy it and fill it in — container/README.md Quick start)}" ;;
+    *)
+      echo "Unknown HARMONY_TARGET '$HARMONY_TARGET' (expected prod | staging | custom)" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 : "${HARMONY_API_TOKEN:?HARMONY_API_TOKEN is required (the board API token for the chosen target) — see plugin/container/env.example (copy it and fill it in — container/README.md Quick start)}"
 # The plugin's shared core carries a baked prod anon-key default; staging and

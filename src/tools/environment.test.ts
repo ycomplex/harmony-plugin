@@ -5,6 +5,15 @@ import { pathToFileURL } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { resolveEnvironment } from './environment.js';
 
+// B-800: writes a throwaway deployment config JSON file for the KNOWN_REFS-merge tests below.
+function makeDeploymentConfig(contents: unknown): string {
+  const dir = mkdtempSync(join(tmpdir(), 'b800-deployment-config-'));
+  tempDirs.push(dir);
+  const path = join(dir, 'deployment.json');
+  writeFileSync(path, JSON.stringify(contents));
+  return path;
+}
+
 // A module URL with no .claude-plugin/plugin.json anywhere above it, so the
 // version fallback bottoms out at null instead of finding this repo's manifest.
 const NOWHERE_URL = 'file:///nonexistent-b488/a/b/c/module.js';
@@ -81,5 +90,53 @@ describe('resolveEnvironment', () => {
   it('returns plugin_version null when no manifest is reachable', () => {
     const env = resolveEnvironment({}, NOWHERE_URL);
     expect(env.plugin_version).toBeNull();
+  });
+
+  // B-800: KNOWN_REFS is now merged with a deployment config's launcher.supabase_refs.
+  it('behaves exactly as before when no deployment config is present at HARMONY_DEPLOYMENT_CONFIG', () => {
+    const env = resolveEnvironment(
+      {
+        HARMONY_SUPABASE_URL: 'https://meqkdgncdzromunylyxf.supabase.co',
+        HARMONY_DEPLOYMENT_CONFIG: '/nonexistent-b800/deployment.json',
+      },
+      NOWHERE_URL,
+    );
+    expect(env.target).toBe('staging');
+  });
+
+  it('honors a deployment config ref, MERGED with (not replacing) the two baked-in defaults', () => {
+    const configPath = makeDeploymentConfig({
+      launcher: { supabase_refs: { somecustomref: 'staging' } },
+    });
+
+    // The new ref from the config resolves.
+    const customEnv = resolveEnvironment(
+      {
+        HARMONY_SUPABASE_URL: 'https://somecustomref.supabase.co',
+        HARMONY_DEPLOYMENT_CONFIG: configPath,
+      },
+      NOWHERE_URL,
+    );
+    expect(customEnv.target).toBe('staging');
+
+    // The two baked-in defaults still resolve — the config REF MAP MERGES, it does not replace.
+    const prodEnv = resolveEnvironment(
+      { HARMONY_SUPABASE_URL: 'https://eioxsunvhakmelhanmnn.supabase.co', HARMONY_DEPLOYMENT_CONFIG: configPath },
+      NOWHERE_URL,
+    );
+    expect(prodEnv.target).toBe('prod');
+  });
+
+  it('degrades to the baked-in defaults (never throws) when the deployment config is malformed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b800-deployment-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'deployment.json');
+    writeFileSync(configPath, '{ not valid json');
+
+    const env = resolveEnvironment(
+      { HARMONY_SUPABASE_URL: 'https://eioxsunvhakmelhanmnn.supabase.co', HARMONY_DEPLOYMENT_CONFIG: configPath },
+      NOWHERE_URL,
+    );
+    expect(env.target).toBe('prod');
   });
 });
