@@ -13,7 +13,17 @@ set -euo pipefail
 CONDUCTION_ID="${1:?usage: cloud-worker-reap.sh <conduction_id> <ticket>}"
 TICKET="${2:?usage: cloud-worker-reap.sh <conduction_id> <ticket>}"
 
-: "${CLOUDSDK_CORE_PROJECT:=harmony-conductor}"
+# B-800 AC4: profiles.cloud.gcloud_project in a per-deployment config, when present, is this
+# deployment's default GCP project — read via `harmony config get` (best-effort; a missing
+# HARMONY_PLUGIN_DIR or deployment config falls straight through to the "harmony-conductor"
+# literal below, UNCHANGED from before this ticket). An explicit CLOUDSDK_CORE_PROJECT in this
+# script's own environment always wins over both (the `:=` below only assigns when unset).
+_b800_default_cloudsdk_project="harmony-conductor"
+if [ -n "${HARMONY_PLUGIN_DIR:-}" ] && [ -f "$HARMONY_PLUGIN_DIR/dist/bin/harmony.js" ]; then
+  _b800_config_project="$(node "$HARMONY_PLUGIN_DIR/dist/bin/harmony.js" config get profiles.cloud.gcloud_project 2>/dev/null || true)"
+  [ -n "$_b800_config_project" ] && _b800_default_cloudsdk_project="$_b800_config_project"
+fi
+: "${CLOUDSDK_CORE_PROJECT:=$_b800_default_cloudsdk_project}"
 : "${CLOUDSDK_CORE_ACCOUNT:=harmony-daemon@harmony-conductor.iam.gserviceaccount.com}"
 : "${HARMONY_CLOUD_RUN_REGION:=us-central1}"
 : "${HARMONY_CLOUD_RUN_JOB:=harmony-build-worker}"

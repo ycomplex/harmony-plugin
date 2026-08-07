@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { loadDaemonConfig, renderTemplate } from './config.js';
+import { loadDaemonConfig, renderTemplate, selectNamedProfile } from './config.js';
+import type { DeploymentConfig } from '../config/deployment-config.js';
 
 const PROFILE_JSON = JSON.stringify({
   launch: "docker run --rm --name harmony-worker-{conduction_id} img worker '{ticket}'",
@@ -222,5 +223,101 @@ describe('renderTemplate', () => {
     expect(renderTemplate('run --env-file $HOME/.env {ticket}', { conduction_id: 'c', ticket: 'B-1' })).toBe(
       'run --env-file $HOME/.env B-1',
     );
+  });
+});
+
+// B-800: selecting a launch profile BY NAME from an already-loaded deployment config, and the
+// fallback-to-file-path precedence loadDaemonConfig applies around it.
+describe('selectNamedProfile', () => {
+  const deploymentConfig: DeploymentConfig = {
+    profiles: {
+      local: { launch: 'docker run local {conduction_id}', reap: 'docker rm -f local-{conduction_id}' },
+      cloud: {
+        launch: 'cloud-worker-launch.sh {conduction_id} {ticket}',
+        reap: 'cloud-worker-reap.sh {conduction_id} {ticket}',
+        maxConcurrentWorkers: 2,
+      },
+    },
+  };
+
+  it('returns the named profile when the config carries it', () => {
+    expect(selectNamedProfile(deploymentConfig, 'cloud')).toEqual(
+      deploymentConfig.profiles!.cloud,
+    );
+  });
+
+  it('returns null when no profileName is given', () => {
+    expect(selectNamedProfile(deploymentConfig, undefined)).toBeNull();
+  });
+
+  it('returns null when the deployment config is null (no file present)', () => {
+    expect(selectNamedProfile(null, 'cloud')).toBeNull();
+  });
+
+  it('returns null when the named profile is not in the config\'s "profiles" section', () => {
+    expect(selectNamedProfile(deploymentConfig, 'nonexistent')).toBeNull();
+  });
+
+  it('returns null when the config has no "profiles" section at all', () => {
+    expect(selectNamedProfile({ launcher: { plugin_dir: '/x' } }, 'cloud')).toBeNull();
+  });
+});
+
+describe('loadDaemonConfig — B-800 profileOverride precedence', () => {
+  it('uses profileOverride directly, never touching HARMONY_DAEMON_PROFILE or readFile', () => {
+    const explodingReadFile = () => {
+      throw new Error('readFile must not be called when profileOverride is given');
+    };
+    const cfg = loadDaemonConfig(
+      { HARMONY_DAEMON_PROFILE: '/should/not/be/read.json' },
+      explodingReadFile,
+      { profileOverride: { launch: 'named-launch {conduction_id}', reap: 'named-reap {conduction_id}' } },
+    );
+    expect(cfg.profile.launch).toBe('named-launch {conduction_id}');
+    expect(cfg.profile.reap).toBe('named-reap {conduction_id}');
+  });
+
+  it('wins over HARMONY_DAEMON_PROFILE even when the env var is ALSO set to a valid path', () => {
+    const cfg = loadDaemonConfig(envWith(), readProfile, {
+      profileOverride: { launch: 'override-launch', reap: 'override-reap' },
+    });
+    expect(cfg.profile.launch).toBe('override-launch');
+    expect(cfg.profile.reap).toBe('override-reap');
+  });
+
+  it('falls back to the unchanged HARMONY_DAEMON_PROFILE file-path route when no override is given', () => {
+    const cfg = loadDaemonConfig(envWith(), readProfile);
+    expect(cfg.profile.launch).toContain('harmony-worker-{conduction_id}');
+  });
+
+  it('falls back to the file-path route when opts is the empty default (no profileOverride key at all)', () => {
+    const cfg = loadDaemonConfig(envWith(), readProfile, {});
+    expect(cfg.profile.reap).toBe('docker rm -f harmony-worker-{conduction_id}');
+  });
+
+  it('still errors, with an adapted message naming BOTH routes, when neither resolves', () => {
+    expect(() => loadDaemonConfig({}, readProfile)).toThrow(/HARMONY_DAEMON_PROFILE/);
+    expect(() => loadDaemonConfig({}, readProfile)).toThrow(/--profile/);
+  });
+
+  it('carries the override\'s own maxConcurrentWorkers through the same env-var > profile > default precedence', () => {
+    const cfg = loadDaemonConfig(envWith(), readProfile, {
+      profileOverride: { launch: 'l', reap: 'r', maxConcurrentWorkers: 4 },
+    });
+    expect(cfg.maxConcurrentWorkers).toBe(4);
+
+    const cfgEnvWins = loadDaemonConfig(
+      envWith({ HARMONY_DAEMON_MAX_CONCURRENT_WORKERS: '9' }),
+      readProfile,
+      { profileOverride: { launch: 'l', reap: 'r', maxConcurrentWorkers: 4 } },
+    );
+    expect(cfgEnvWins.maxConcurrentWorkers).toBe(9);
+  });
+
+  it('carries the override\'s optional probe template through', () => {
+    const cfg = loadDaemonConfig(envWith(), readProfile, {
+      profileOverride: { launch: 'l', reap: 'r', probe: 'probe {conduction_id}' },
+    });
+    expect(cfg.profile.probe).toBe('probe {conduction_id}');
   });
 });

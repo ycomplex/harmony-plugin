@@ -1,6 +1,17 @@
 #!/usr/bin/env node
 // B-696: the conductor daemon entrypoint.
 //
+// Two ways to select the launch profile (B-800 — see src/daemon/config.ts for the full
+// precedence rule; deployment-config route wins whenever it fully resolves, else falls back to
+// the legacy route unchanged):
+//
+//     # (1) B-800, preferred: NAMED from a deployment config's `profiles` section. --config
+//     #     mirrors the `harmony config get` CLI's own --config flag; HARMONY_DEPLOYMENT_CONFIG
+//     #     works too (resolveDeploymentConfigPath's normal precedence), and --config omitted
+//     #     defaults to ~/.harmony/deployment.json.
+//     HARMONY_API_TOKEN=<token> node dist/bin/daemon.js --config <deployment.json> --profile <name>
+//
+//     # (2) legacy, unchanged: a standalone profile JSON file.
 //     HARMONY_DAEMON_PROFILE=<profile.json> HARMONY_API_TOKEN=<token> node dist/bin/daemon.js
 //
 // Watches every active conduction's ticket row and fires a fresh one-shot `harmony-conduct` worker
@@ -42,8 +53,9 @@ import {
   markCleanShutdown,
 } from '../tools/conduction-record.js';
 import { createHeartbeatKeeper } from '../daemon/heartbeat.js';
-import { loadDaemonConfig } from '../daemon/config.js';
+import { loadDaemonConfig, selectNamedProfile } from '../daemon/config.js';
 import { renderQuietReapOutcome } from '../daemon/quiet-reap.js';
+import { loadDeploymentConfig, resolveDeploymentConfigPath } from '../config/deployment-config.js';
 import {
   PersistentAuthFailure,
   PersistentReapFailure,
@@ -54,6 +66,20 @@ import {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** B-800: minimal argv parsing for the two flags this entrypoint adds — `--config <path>` (mirrors
+ *  the `harmony config get` CLI's own flag, src/cli/commands/config.ts) and `--profile <name>`.
+ *  Both optional; omitting `--profile` skips the deployment-config route entirely (falls straight
+ *  through to the legacy HARMONY_DAEMON_PROFILE route in src/daemon/config.ts). No external argv
+ *  parser — this entrypoint has exactly two flags and commander is not otherwise a daemon dep. */
+function parseDaemonArgs(argv: string[]): { config?: string; profile?: string } {
+  const args: { config?: string; profile?: string } = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--config') args.config = argv[++i];
+    else if (argv[i] === '--profile') args.profile = argv[++i];
+  }
+  return args;
 }
 
 /** B-761: bound the clean-shutdown marker write so a hung write can never block the deliberate
@@ -99,18 +125,43 @@ async function main(): Promise<void> {
   const token = process.env.HARMONY_API_TOKEN;
   if (!token) {
     process.stderr.write(
-      'usage: HARMONY_DAEMON_PROFILE=<profile.json> HARMONY_API_TOKEN=<token> node dist/bin/daemon.js\n' +
+      'usage: node dist/bin/daemon.js [--config <deployment-config path>] [--profile <name>] ' +
+        '(B-800, or set HARMONY_DAEMON_PROFILE=<profile.json>), plus HARMONY_API_TOKEN=<token>\n' +
         'HARMONY_API_TOKEN is not set\n',
     );
     process.exit(1);
   }
 
+  const daemonArgv = parseDaemonArgs(process.argv.slice(2));
+
   let config;
   try {
-    config = loadDaemonConfig(process.env, (p) => readFileSync(p, 'utf8'));
+    // B-800: try the deployment-config-by-name route FIRST — it wins whenever it fully resolves
+    // (config present AND --profile names a profile that exists in its "profiles" section). A
+    // deployment config that exists but is malformed JSON/schema throws here and is NOT caught
+    // below the fallback note — that's a real misconfiguration, not an absence, so it must fail
+    // loud (same convention as src/config/deployment-config.ts's own loader).
+    const deploymentConfig = loadDeploymentConfig({ configPath: daemonArgv.config, env: process.env });
+    const namedProfile = selectNamedProfile(deploymentConfig, daemonArgv.profile);
+    if (daemonArgv.profile && deploymentConfig && !namedProfile) {
+      // Short of a FULL resolution (config present + name given + name found), src/daemon/config.ts
+      // falls back to HARMONY_DAEMON_PROFILE unchanged — this note just makes that fallback
+      // legible instead of silent, since a typo'd --profile is the likeliest cause.
+      process.stderr.write(
+        `Note: profile "${daemonArgv.profile}" not found in the deployment config's "profiles" ` +
+          `section (${resolveDeploymentConfigPath({ configPath: daemonArgv.config, env: process.env })}) ` +
+          '— falling back to HARMONY_DAEMON_PROFILE.\n',
+      );
+    }
+    config = loadDaemonConfig(
+      process.env,
+      (p) => readFileSync(p, 'utf8'),
+      namedProfile ? { profileOverride: namedProfile } : {},
+    );
   } catch (err) {
     process.stderr.write(
-      'usage: HARMONY_DAEMON_PROFILE=<profile.json> HARMONY_API_TOKEN=<token> node dist/bin/daemon.js\n' +
+      'usage: node dist/bin/daemon.js [--config <deployment-config path>] [--profile <name>] ' +
+        '(B-800, or set HARMONY_DAEMON_PROFILE=<profile.json>), plus HARMONY_API_TOKEN=<token>\n' +
         `${err instanceof Error ? err.message : String(err)}\n`,
     );
     process.exit(1);

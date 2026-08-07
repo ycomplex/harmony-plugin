@@ -22,6 +22,7 @@ import { registerBulkCommands } from './commands/bulk.js';
 import { registerKnowledgeCommands } from './commands/knowledge.js';
 import { registerSubtaskCommands } from './commands/subtasks.js';
 import { registerConductCommand } from './commands/conduct.js';
+import { registerConfigCommands } from './commands/config.js';
 
 const program = new Command();
 
@@ -50,5 +51,6 @@ registerBulkCommands(program);
 registerKnowledgeCommands(program);
 registerSubtaskCommands(program);
 registerConductCommand(program);
+registerConfigCommands(program);
 
 program.parse();

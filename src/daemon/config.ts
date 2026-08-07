@@ -1,13 +1,33 @@
 // B-696: daemon configuration + the worker launch profile.
 //
 // The daemon NEVER bakes in a worker command (agent-portability guardrail — B-711 "config not
-// constants"): how a worker is launched and reaped is a pair of command TEMPLATES loaded from the
-// profile JSON named by HARMONY_DAEMON_PROFILE. The v1 dogfood profile
-// (container/daemon-profile.example.json) launches the B-694 build container; a future agent brand
-// swaps the profile file, not this code. Worker credentials (git, CLAUDE_CODE_OAUTH_TOKEN) live
-// ONLY in the profile's --env-file — the daemon's own env carries just HARMONY_API_TOKEN.
+// constants"): how a worker is launched and reaped is a pair of command TEMPLATES, resolved one of
+// two ways:
 //
-// Pure: env + readFile are parameters, so config loading is unit-testable with no fs/process.
+//   (1) B-800, preferred: NAMED from a deployment config's `profiles` section
+//       (src/config/deployment-config.ts, ~/.harmony/deployment.json by default) — selected by the
+//       entrypoint (src/bin/daemon.ts) via `--config <path>` / `--profile <name>` argv flags
+//       (mirrors the `harmony config get` CLI's `--config` convention), passed in here as
+//       `opts.profileOverride`.
+//   (2) legacy, unchanged: a STANDALONE profile JSON file named by HARMONY_DAEMON_PROFILE. The v1
+//       dogfood profile (container/daemon-profile.example.json) launches the B-694 build container;
+//       a future agent brand swaps the profile, not this code.
+//
+// Precedence (load-bearing — see src/bin/daemon.ts): (1) wins whenever it resolves (a deployment
+// config is present AND --profile names a profile that exists in its `profiles` section);
+// otherwise this module falls back to (2) exactly as it always has. Existing single-profile
+// file-path deployments need zero config changes — this is additive, not a replacement.
+//
+// Worker credentials (git, CLAUDE_CODE_OAUTH_TOKEN) live ONLY in the profile's --env-file — the
+// daemon's own env carries just HARMONY_API_TOKEN.
+//
+// Pure: env + readFile (+ the optional profileOverride) are parameters, so config loading is
+// unit-testable with no fs/process. Resolving a NAMED profile from a deployment config file is I/O
+// (src/config/deployment-config.ts's loadDeploymentConfig) and deliberately happens OUTSIDE this
+// module, in src/bin/daemon.ts, which passes the already-resolved profile in as profileOverride —
+// this module itself never touches the deployment config file or argv.
+
+import type { DeploymentConfig, LaunchProfileConfig } from '../config/deployment-config.js';
 
 export interface LaunchProfile {
   /** Command template that launches a one-shot worker. Placeholders: {conduction_id}, {ticket}. */
@@ -56,6 +76,26 @@ export interface DaemonConfig {
   logPath?: string;
 }
 
+/** B-800: resolve a launch profile BY NAME from an ALREADY-LOADED deployment config's
+ *  `profiles` section. Pure — takes the loaded config object (or null), never touches the
+ *  filesystem itself, so it's unit-testable with no fs/process; the entrypoint (src/bin/daemon.ts)
+ *  does the I/O (src/config/deployment-config.ts's loadDeploymentConfig) and passes the result in.
+ *
+ *  Returns null — meaning "the by-name route doesn't apply, fall back to HARMONY_DAEMON_PROFILE"
+ *  — in every one of these cases: no profileName given, no deployment config loaded (absent file),
+ *  the config has no `profiles` section, or `profileName` isn't a key in it. This is the load-
+ *  bearing compatibility rule from the B-800 ticket: only a FULLY resolved by-name selection
+ *  (config present AND name given AND found) wins; anything short of that degrades to the legacy
+ *  route rather than erroring, so an existing single-profile deployment is unaffected by a typo'd
+ *  or half-configured --profile flag it doesn't even need to pass. */
+export function selectNamedProfile(
+  deploymentConfig: DeploymentConfig | null,
+  profileName: string | undefined,
+): LaunchProfileConfig | null {
+  if (!profileName || !deploymentConfig) return null;
+  return deploymentConfig.profiles?.[profileName] ?? null;
+}
+
 /** B-694 empty-env-value shadow class: an env var set to '' must behave exactly like unset. */
 function envValue(env: Record<string, string | undefined>, key: string): string | undefined {
   const v = env[key];
@@ -88,45 +128,73 @@ function envNonNegativeInt(
   return n;
 }
 
+export interface LoadDaemonConfigOptions {
+  /** B-800: an already-resolved, already-validated profile — typically a deployment config's
+   *  `profiles.<name>` entry (src/config/deployment-config.ts's LaunchProfileSchema, which already
+   *  enforces the same shape this module validates below for the file-path route). When set, this
+   *  WINS over HARMONY_DAEMON_PROFILE entirely — the file-path route is not even consulted. The
+   *  caller (src/bin/daemon.ts) decides precedence; this module just does what it's told. */
+  profileOverride?: LaunchProfile;
+}
+
 export function loadDaemonConfig(
   env: Record<string, string | undefined>,
   readFile: (path: string) => string,
+  opts: LoadDaemonConfigOptions = {},
 ): DaemonConfig {
-  const profilePath = envValue(env, 'HARMONY_DAEMON_PROFILE');
-  if (!profilePath) {
-    throw new Error(
-      'HARMONY_DAEMON_PROFILE is required — the path to the launch-profile JSON ' +
-        '({ launch, reap } command templates). There is no baked-in worker command.',
-    );
+  let profile: Partial<LaunchProfile>;
+
+  if (opts.profileOverride) {
+    // B-800: selected by name from a deployment config's `profiles` section — already validated
+    // by DeploymentConfigSchema's LaunchProfileSchema (src/config/deployment-config.ts), so no
+    // re-validation here. The legacy HARMONY_DAEMON_PROFILE env var is deliberately NOT consulted
+    // in this branch, even if set — the caller already established precedence.
+    profile = opts.profileOverride;
+  } else {
+    // Legacy, unchanged: a standalone profile JSON file named by HARMONY_DAEMON_PROFILE.
+    const profilePath = envValue(env, 'HARMONY_DAEMON_PROFILE');
+    if (!profilePath) {
+      throw new Error(
+        'No launch profile resolved: select one BY NAME from a deployment config via ' +
+          '--config <path> --profile <name> (src/config/deployment-config.ts\'s "profiles" ' +
+          'section), or set HARMONY_DAEMON_PROFILE to a standalone launch-profile JSON path ' +
+          '({ launch, reap } command templates). There is no baked-in worker command.',
+      );
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFile(profilePath));
+    } catch (err) {
+      throw new Error(
+        `could not load the launch profile at ${profilePath}: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
+    }
+    profile = parsed as Partial<LaunchProfile>;
+    if (typeof profile.launch !== 'string' || profile.launch.length === 0) {
+      throw new Error(`launch profile ${profilePath} is missing the "launch" command template`);
+    }
+    if (typeof profile.reap !== 'string' || profile.reap.length === 0) {
+      throw new Error(`launch profile ${profilePath} is missing the "reap" command template`);
+    }
+    if (profile.probe !== undefined && (typeof profile.probe !== 'string' || profile.probe.length === 0)) {
+      throw new Error(`launch profile ${profilePath}'s "probe" template, when present, must be a non-empty string`);
+    }
+    if (
+      profile.maxConcurrentWorkers !== undefined &&
+      (!Number.isInteger(profile.maxConcurrentWorkers) || profile.maxConcurrentWorkers < 0)
+    ) {
+      throw new Error(
+        `launch profile ${profilePath}'s "maxConcurrentWorkers", when present, must be a non-negative integer`,
+      );
+    }
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFile(profilePath));
-  } catch (err) {
-    throw new Error(
-      `could not load the launch profile at ${profilePath}: ${err instanceof Error ? err.message : String(err)}`,
-      { cause: err },
-    );
-  }
-  const profile = parsed as Partial<LaunchProfile>;
-  if (typeof profile.launch !== 'string' || profile.launch.length === 0) {
-    throw new Error(`launch profile ${profilePath} is missing the "launch" command template`);
-  }
-  if (typeof profile.reap !== 'string' || profile.reap.length === 0) {
-    throw new Error(`launch profile ${profilePath} is missing the "reap" command template`);
-  }
-  if (profile.probe !== undefined && (typeof profile.probe !== 'string' || profile.probe.length === 0)) {
-    throw new Error(`launch profile ${profilePath}'s "probe" template, when present, must be a non-empty string`);
-  }
-  if (
-    profile.maxConcurrentWorkers !== undefined &&
-    (!Number.isInteger(profile.maxConcurrentWorkers) || profile.maxConcurrentWorkers < 0)
-  ) {
-    throw new Error(
-      `launch profile ${profilePath}'s "maxConcurrentWorkers", when present, must be a non-negative integer`,
-    );
-  }
+  // Both branches above guarantee launch/reap are non-empty strings by this point (validated
+  // directly for the file-path route; guaranteed by DeploymentConfigSchema for profileOverride) —
+  // this assertion just tells TS what the runtime checks already ensure.
+  const validatedProfile = profile as LaunchProfile;
 
   return {
     pollMs: envMs(env, 'HARMONY_DAEMON_POLL_MS', 25_000),
@@ -139,10 +207,15 @@ export function loadDaemonConfig(
     maxConcurrentWorkers: envNonNegativeInt(
       env,
       'HARMONY_DAEMON_MAX_CONCURRENT_WORKERS',
-      profile.maxConcurrentWorkers ?? 3,
+      validatedProfile.maxConcurrentWorkers ?? 3,
     ),
     readyAgeMs: envMs(env, 'HARMONY_DAEMON_READY_AGE_MS', 600_000),
-    profile: { launch: profile.launch, reap: profile.reap, probe: profile.probe, maxConcurrentWorkers: profile.maxConcurrentWorkers },
+    profile: {
+      launch: validatedProfile.launch,
+      reap: validatedProfile.reap,
+      probe: validatedProfile.probe,
+      maxConcurrentWorkers: validatedProfile.maxConcurrentWorkers,
+    },
     logPath: envValue(env, 'HARMONY_DAEMON_LOG'),
   };
 }

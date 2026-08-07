@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadDeploymentConfig } from '../config/deployment-config.js';
 
 // Which backend the plugin is talking to, surfaced via get_project so a session can
 // confirm its code + DB pairing (the staging-channel dogfood check — see B-488).
@@ -14,11 +15,25 @@ export interface EnvironmentInfo {
 // Must mirror src/supabase.ts exactly: env override, else the prod project.
 const DEFAULT_SUPABASE_URL = 'https://eioxsunvhakmelhanmnn.supabase.co';
 
-// The two Supabase projects this workspace deploys to; anything else is 'custom'.
+// The two Supabase projects this workspace deploys to; anything else is 'custom'. B-800: a
+// deployment config's launcher.supabase_refs is MERGED OVER these (never replaces them), so the
+// two real projects stay recognized with zero config present, and a deployment can add its own.
 const KNOWN_REFS: Record<string, 'prod' | 'staging'> = {
   eioxsunvhakmelhanmnn: 'prod',
   meqkdgncdzromunylyxf: 'staging', // staging.harmony.ad's deployed project
 };
+
+// B-800: non-throwing by construction — resolveEnvironment must never break get_project over a
+// missing/malformed deployment config, so any load failure degrades to "no extra refs" silently.
+function resolveKnownRefs(env: NodeJS.ProcessEnv): Record<string, 'prod' | 'staging'> {
+  try {
+    const deploymentConfig = loadDeploymentConfig({ env });
+    const configRefs = deploymentConfig?.launcher?.supabase_refs;
+    return configRefs ? { ...KNOWN_REFS, ...configRefs } : KNOWN_REFS;
+  } catch {
+    return KNOWN_REFS;
+  }
+}
 
 function readManifestVersion(manifestPath: string): string | null {
   try {
@@ -68,7 +83,7 @@ export function resolveEnvironment(
   return {
     supabase_url,
     supabase_project_ref,
-    target: KNOWN_REFS[supabase_project_ref] ?? 'custom',
+    target: resolveKnownRefs(env)[supabase_project_ref] ?? 'custom',
     plugin_version: resolvePluginVersion(env, moduleUrl),
   };
 }

@@ -15,9 +15,26 @@
 // Zero runtime dependencies by design: Node's built-in crypto signs the RS256 JWT and the global
 // fetch exchanges it. The container clones this repo and runs committed dist with no npm install,
 // so a new dependency here would be real friction.
+//
+// B-800 AC5 (documented per-deployment fact, not a code migration): HARMONY_APP_ID,
+// HARMONY_APP_INSTALLATION_ID and HARMONY_APP_PRIVATE_KEY_PATH below are the launcher-host's
+// GitHub App identity, conceptually launcher.github_app.{app_id,installation_id,private_key_path}
+// in ~/.harmony/deployment.json (src/config/deployment-config.ts) going forward — this script's
+// actual read path stays these three env vars, deliberately NOT importing the TS-built
+// deployment-config loader here: doing so would require a build step (or a hand-duplicated
+// parser) in a script whose whole design point is zero-dependency, no-build simplicity. Set them
+// on the launcher host from your deployment config's launcher.github_app section.
+//
+// B-800 item 2: `--base <file>`'s CONTENT, however, IS wired to the deployment config now — when
+// one exists at the resolved path, its `env` section (flattened to KEY=value lines) supplies the
+// base content composeEnvFile substitutes GIT_TOKEN into, taking precedence over `--base <file>`.
+// Still zero-dependency: a plain `JSON.parse(readFileSync(...))` here, never the compiled
+// src/config/deployment-config.js loader — same reasoning as the AC5 note above.
 
 import { createSign } from 'node:crypto';
-import { readFileSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const GITHUB_API = process.env.GITHUB_API_URL || 'https://api.github.com';
 
@@ -70,6 +87,76 @@ export function composeEnvFile({ baseContent, token }) {
     .replace(/\n+$/, '');
 
   return `${kept ? `${kept}\n` : ''}GIT_TOKEN=${token}\n`;
+}
+
+/**
+ * Resolve the deployment config file path: an explicit configPath > HARMONY_DEPLOYMENT_CONFIG >
+ * the single-deployment default ~/.harmony/deployment.json. Duplicates
+ * src/config/deployment-config.ts's resolveDeploymentConfigPath precedence exactly (NOT imported —
+ * see the header comment's zero-dependency constraint).
+ */
+export function resolveDeploymentConfigPath({ configPath, env = process.env } = {}) {
+  if (configPath) return configPath;
+  if (env.HARMONY_DEPLOYMENT_CONFIG) return env.HARMONY_DEPLOYMENT_CONFIG;
+  return join(homedir(), '.harmony', 'deployment.json');
+}
+
+/**
+ * Flatten a deployment config's `env` section ({ KEY: "value", ... }) into the `KEY=value\n` line
+ * shape composeEnvFile already expects as baseContent — the same shape a flat env file has.
+ * Skips null/undefined values (a key present but unset in the config). Returns '' for an absent or
+ * empty `env` section.
+ */
+export function flattenEnvSection(envSection) {
+  if (!envSection || typeof envSection !== 'object') return '';
+  const lines = Object.entries(envSection)
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([key, value]) => `${key}=${value}`);
+  return lines.length ? `${lines.join('\n')}\n` : '';
+}
+
+/**
+ * Resolve the base env-file CONTENT for composeEnvFile. B-800: when a deployment config file
+ * exists at the resolved path, its `env` section WINS over `--base <file>` — the deployment
+ * config is the new source of truth for the worker base env. Falls back to reading `--base <file>`
+ * UNCHANGED when no deployment config exists at the resolved path (most machines today —
+ * graceful degradation, same convention as src/config/deployment-config.ts's own loader). A
+ * deployment config that EXISTS but is malformed JSON throws — a typo in a file you meant to be
+ * read must never fail silently.
+ *
+ * `existsImpl`/`readImpl` are injectable so this is unit-testable without touching the real
+ * filesystem (mirrors src/config/deployment-config.test.ts's fakeFs style).
+ */
+export function resolveBaseContent({
+  base,
+  configPath,
+  env = process.env,
+  existsImpl = existsSync,
+  readImpl = (p) => readFileSync(p, 'utf8'),
+}) {
+  const resolvedConfigPath = resolveDeploymentConfigPath({ configPath, env });
+  if (existsImpl(resolvedConfigPath)) {
+    let raw;
+    try {
+      raw = readImpl(resolvedConfigPath);
+    } catch (err) {
+      throw new Error(`could not read deployment config at ${resolvedConfigPath}: ${err.message}`, {
+        cause: err,
+      });
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      throw new Error(
+        `deployment config at ${resolvedConfigPath} is not valid JSON: ${err.message}`,
+        { cause: err },
+      );
+    }
+    return flattenEnvSection(parsed.env);
+  }
+  // No deployment config at the resolved path — fall back to --base <file>, unchanged behavior.
+  return base ? readImpl(base) : '';
 }
 
 /**
@@ -127,21 +214,23 @@ function readPrivateKey(env) {
 }
 
 function parseArgs(argv) {
-  const args = { base: undefined, out: undefined };
+  const args = { base: undefined, out: undefined, config: undefined };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--base') args.base = argv[++i];
     else if (argv[i] === '--out') args.out = argv[++i];
+    else if (argv[i] === '--config') args.config = argv[++i];
   }
   if (!args.out) {
     throw new Error(
-      'Usage: mint-installation-token.mjs --out <per-run env-file> [--base <static env-file>]',
+      'Usage: mint-installation-token.mjs --out <per-run env-file> [--base <static env-file>] ' +
+        '[--config <deployment-config path>]',
     );
   }
   return args;
 }
 
 export async function main(argv = process.argv.slice(2), env = process.env) {
-  const { base, out } = parseArgs(argv);
+  const { base, out, config } = parseArgs(argv);
 
   const appId = env.HARMONY_APP_ID;
   const installationId = env.HARMONY_APP_INSTALLATION_ID;
@@ -153,7 +242,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const jwt = buildJwt({ appId, privateKey: readPrivateKey(env) });
   const token = await mintInstallationToken({ jwt, installationId });
 
-  const baseContent = base ? readFileSync(base, 'utf8') : '';
+  // B-800: the deployment config's `env` section wins over --base when present; see
+  // resolveBaseContent's own doc comment for the full precedence + malformed-JSON behavior.
+  const baseContent = resolveBaseContent({ base, configPath: config, env });
   writeEnvFile(out, composeEnvFile({ baseContent, token }));
 
   // Print the PATH, never the token — this line lands in daemon logs.
