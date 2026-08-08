@@ -327,6 +327,10 @@ export const ACK_PASS_THROUGH: Record<string, string> = {
     'Already id-lists only: { added: [label ids], removed: [label ids] } — no record echo to strip.',
   flag_release_approval_pending:
     'Already a compact confirmation of the flag triple it just wrote ({task_id, awaiting_human_input, awaiting_human_reason, awaiting_human_ref}). The ref echoes the caller\'s pr_url (and, since B-745, review_decision when the caller passed it) deliberately: it IS the pause\'s identity, and reading it back is how the caller confirms WHICH PR — and its current GitHub review state — the human was queued against.',
+  consume_pending_acceptance_event:
+    'B-797: already a compact server-computed summary ({status, event_id?, reason?, applied?, skipped_already_done?, workflow_state?}) — the only caller arg is the task_id identifier, so there is no caller-sent body to strip.',
+  consume_acceptance_event:
+    'B-797: already a compact server-computed ack ({event_id, task_id, status, workflow_state, idempotent}) — the only caller arg is the event_id identifier, so there is no caller-sent body to strip.',
 };
 
 /**

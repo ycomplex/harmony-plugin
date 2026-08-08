@@ -268,8 +268,13 @@ Show the rendered `content`. On the human's command:
 
 - **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })`
   → promotes this decision
-  Asserted→Accepted; if it carried `pending_activity: "designing"`, advances Decomposed→Designed. Report
-  whether the ticket is now Designed or still needs other sub-tracks.
+  Asserted→Accepted. **B-797 (product track only — the response's `pending_acceptance_event_id` is null
+  for the technical/ux-ui sub-tracks, which stay synchronous):** if non-null, the advance (if
+  `pending_activity: "designing"` was carried — the last required sub-track) is DEFERRED to this event,
+  not applied yet. Since you already performed this track's AC add/update/delete writes above (step 2b) —
+  there is nothing left to APPLY, only the deferred advance to COMMIT. Call
+  `mcp__harmony__consume_acceptance_event({ event_id: <that id> })` right away, in this same turn. Then
+  report whether the ticket is now Designed or still needs other sub-tracks.
   **Decision-only fast-forward (B-681):** if the ticket carries the `decision-only` label AND this was the
   LAST required sub-track (the brief carried the completion line), run the trailing mechanical completion
   the accept just authorized:

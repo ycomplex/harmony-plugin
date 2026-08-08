@@ -354,8 +354,12 @@ Show the rendered `content` verbatim. On the human's command:
   re-ticket anything not in the block. Then
   `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })` → promotes
   the specification
-  Asserted→Accepted, advances Proposed→Clarified, and (when an exchange ran) promotes the coupled
+  Asserted→Accepted, and (when an exchange ran) promotes the coupled
   human-grounded claims — force-quit claims stay Asserted, quarantined (the DB disposal skips them).
+  **B-797 — finalize the deferred advance NOW, same session.** The response carries
+  `pending_acceptance_event_id`: since you just filed the ACs (and any de-scope) yourself above, there is
+  nothing left to APPLY — only the deferred Proposed→Clarified advance to COMMIT. Call
+  `mcp__harmony__consume_acceptance_event({ event_id: <that id> })` right away, in this same turn.
   **Decision-only fast-forward (B-681):** if the ticket carries the `decision-only` label (the brief
   carried the completion line), run the trailing mechanical completion the accept just authorized:
   ```

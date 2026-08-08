@@ -62,8 +62,28 @@ mcp__harmony__compose_brief({
 })
 ```
 
-On **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })`
-advances Designed→Planned. The accept IS the "go" to build.
+On **accept** → **first materialize the plan's own steps as the ticket's checklist (B-797 — this is what
+closes specimen 6, B-800: the accepted plan's steps must be READABLE at build time, not just narrated in
+the brief), then resolve:**
+
+```
+mcp__harmony__manage_checklist_items({ task_id, add: [{ title: "<plan step 1>" }, { title: "<plan step 2>" }, ...] })
+```
+
+One item per concrete step of the plan you wrote above — this is the SAME list O3's build step will read
+as its authoritative work list, so keep it as granular as the plan itself, not a single vague summary
+item. Idempotent guard: skip items whose title already exists on the ticket's checklist (a re-run after a
+crash mid-accept must not duplicate).
+
+```
+mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })
+```
+
+advances Designed→Planned. **B-797 — finalize the deferred advance NOW, same session.** The response
+carries `pending_acceptance_event_id`: since you just materialized the checklist yourself above, there is
+nothing left to APPLY — only the deferred advance to COMMIT. Call
+`mcp__harmony__consume_acceptance_event({ event_id: <that id> })` right away, in this same turn. The
+accept IS the "go" to build.
 
 > **Provenance (B-734):** `human-in-session` is the human deciding *here* — a conductor-synthesized accept
 > carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
@@ -111,8 +131,25 @@ substitute for checking first.
 
 Then, with the floor clear: create the isolated worktree (invoke `superpowers:using-git-worktrees`) and
 save `.harmony-task.json`
-exactly as in the manual flow. Implement, write tests, self-validate against acceptance criteria
-(`mcp__harmony__manage_acceptance_criteria`, `mcp__harmony__manage_test_cases`).
+exactly as in the manual flow.
+
+**Read the plan-accept-materialized checklist as the AUTHORITATIVE work list (B-797, closes specimen 6 —
+B-800's build silently dropped reshape-added plan steps because nothing materialized them):**
+
+```
+const steps = mcp__harmony__list_checklist_items({ task_id })
+```
+
+Build against `steps` — do NOT re-derive the work list from design knowledge alone; a re-derivation from
+prose is exactly how B-800 lost the reshape-added steps (they existed in the accepted plan's brief, not
+in design knowledge, and nothing else carried them forward). Design knowledge still grounds HOW to
+implement each step, never WHAT the step list is. An empty `steps` on a ticket that reached `Planned` is
+a signal worth surfacing (the O2 plan-accept step above should have populated it) — not silently
+substituted with a guess.
+
+Implement, write tests, self-validate against acceptance criteria
+(`mcp__harmony__manage_acceptance_criteria`, `mcp__harmony__manage_test_cases`), and check off each
+checklist step as it lands (`mcp__harmony__manage_checklist_items({ task_id, update: [{ id, completed: true }] })`).
 
 **Build delegation is CONDITIONAL on the declared build agent (B-719).** The implementation runs in a
 build subagent (context-thinning; worktree per B-628) — WHICH subagent depends on what the session has:

@@ -24,6 +24,23 @@ drift hazard this file removes).
 
 Terminal states (`Verified`, `Parked`, `Cancelled`) have no gate — they end the lifecycle.
 
+**B-797 — accept is now a CONSUMED EVENT for the four agent-owned-payload gates, not a synchronous write.**
+For `clarification-draft`, `decomposition-proposal`, `plan-draft`, and `design-decision-draft` **on the
+product track only** (discriminated by `decision_ref->>'type' = 'product-design'` at the DB, never by the
+reason string — the technical/ux-ui sub-tracks stay synchronous), `resolve_brief`'s accept no longer
+applies the state advance immediately: it snapshots the brief's payload into a `pending_acceptance_events`
+row and DEFERS the advance to `consume_acceptance_event`. Every OTHER gate (release, verify, deny/park,
+promote, milestone moves, human AC ticks, comments, manual mode) is completely unchanged — direct/
+synchronous writes, no event. Two consume paths close the loop:
+- **Same session** (the common case): the owning skill does its own materialization exactly as before
+  (clarify files ACs, decompose mints children, design writes its AC refinements, start-work materializes
+  the plan checklist), then calls `consume_acceptance_event({ event_id })` directly using the id
+  `resolve_brief` returned — see each skill's accept step.
+- **Cross session** (a web accept with no session running — the specimen class this ticket exists to
+  close): `harmony-conduct`'s leg-start-consume step (§1c) calls `consume_pending_acceptance_event`
+  BEFORE any gate routing/floor runs. It feature-detects the substrate (never by plugin version) and
+  degrades silently to today's behavior when absent.
+
 **Pure vs side-effecting (the inline-vs-delegate fact).** `resolve_brief` does exactly three things on
 accept — promote the referenced decision, advance state via `pending_activity`, clear the flag. For the
 **pure** gate (`plan-draft`) that is the whole accept, so a
