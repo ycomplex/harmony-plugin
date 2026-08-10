@@ -381,7 +381,12 @@ Show the rendered `content` verbatim. On the human's command:
   session running defers the AC filing to the design gate's self-heal and the de-scope execution to
   the DECOMPOSE gate's self-heal — the next gate to read the clarification (the documented v1
   asymmetry, same shape as decompose's children); a decision-only ticket's web accept likewise leaves
-  the trailing fast-forward to the next running session (re-run the conductor to apply it).
+  the trailing fast-forward to the next running session (re-run the conductor to apply it). **When that
+  design-gate self-heal (`harmony-design-decide/SKILL.md` §2b) can't locate this clarification's content
+  through its normal lookup (no Accepted `specification` decision / `brief_resolved` event to key on),
+  it does NOT ask the human to re-state the proposed ACs from scratch — it presents the
+  `consume_pending_acceptance_event` result's echoed `items` (this brief's own `doc.payload`, B-810) for
+  confirm instead (B-816); see that section's fallback for the exact branch.**
 - **defer** → **deferral is knowledge** (knowledge-discipline.md §"Deferral is knowledge"). First author the
   deferral, then park:
   ```
