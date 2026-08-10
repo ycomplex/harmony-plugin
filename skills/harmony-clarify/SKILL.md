@@ -254,7 +254,14 @@ auto-dedupe, or auto-subsume.
 Author the brief per `skills/harmony-shared/brief-authoring.md` §Clarify — the question, must-haves,
 and engagement it owes the human, plus the legibility contract. Consult it; do not restate it.
 
-Build the BLUF `BriefDoc` and file it — this sets `awaiting_human_input` and lints the doc:
+Build the BLUF `BriefDoc` and file it — this sets `awaiting_human_input` and lints the doc.
+
+**`doc.payload` (B-810).** Alongside the rendered `doc`, also author the SAME proposed happy-path AC
+set (step 3.2) as structured `acceptance_criterion` write items — this is what lets
+`consume_pending_acceptance_event` file them automatically on a cross-session pickup (a web accept
+with no session running), instead of falling back to the design gate's self-heal. One item per
+proposed AC, `ref` via `slugRef('ac', <AC text>)`, then `dedupeRefs(...)` over the whole list —
+`src/tools/payload-refs.ts`'s scheme, the one every gate reuses (never reinvented per site):
 
 ```
 mcp__harmony__compose_brief({
@@ -272,6 +279,10 @@ mcp__harmony__compose_brief({
     items: [
       { kind: "decision", text: "Scope of a saved filter", recommendation: "Per-user, project-scoped" },
       { kind: "content-input", text: "Confirm whether sort/grouping is part of the saved state" }
+    ],
+    // dedupeRefs(proposedACs.map(ac => ({ write_kind: "acceptance_criterion", ref: slugRef("ac", ac), content: ac })))
+    payload: [
+      { write_kind: "acceptance_criterion", ref: "ac-saved-filter-persists-per-user", content: "A saved filter created by a user persists and is visible only to that user" }
     ]
   }
 })
@@ -279,6 +290,8 @@ mcp__harmony__compose_brief({
 
 If `compose_brief` throws a lint error (naked fork, mislabelled derived constraint, or a load-bearing
 gap without research), fix the `doc` and recompose — what's linted is exactly what's rendered.
+`payload` is never linted or rendered — a compose-time fix to `items`/`context` never requires
+touching `payload` unless the proposed AC set itself changed.
 
 **Decision-only completion line (B-681).** If the ticket carries the **`decision-only` label** (a
 capture-only ticket — e.g. an inception proposition-root — whose deliverable IS this clarification),

@@ -174,6 +174,8 @@ Then, either way:
   design brief that the human accepts.
 - The product track's AC writes (add/update/delete via `manage_acceptance_criteria`) land at ITS
   brief's ACCEPT, symmetric with clarify — never at compose.
+- **Product track only — keep the ADD/UPDATE/DELETE lists you just decided; step 4's `doc.payload`
+  carries them so a cross-session accept can apply them automatically (B-810).**
 
 ### 3. Draft the typed decision (Asserted)
 
@@ -231,6 +233,36 @@ mcp__harmony__compose_brief({
     items: [{ kind: "decision", text: "Where saved-filter state lives", recommendation: "settings JSONB" }]
   }
 })
+```
+
+**`doc.payload` — PRODUCT track only (B-810).** Carry step 2b's ADD/UPDATE/DELETE lists in as
+structured items, `ref` via `slugRef(...)` + `dedupeRefs(...)` over the whole list
+(`src/tools/payload-refs.ts`'s scheme, the one every gate reuses):
+- Each **ADD** → a recognized `acceptance_criterion` item: `{ write_kind: "acceptance_criterion", ref:
+  slugRef("ac", content), content }`.
+- Each **UPDATE** / **DELETE** → a **forward-compat, NOT-yet-applied** kind — `acceptance_criterion_update`
+  `{ ref: slugRef("ac-update", from_ac_id), from_ac_id, content }` / `acceptance_criterion_delete`
+  `{ ref: slugRef("ac-delete", from_ac_id), from_ac_id }` — keyed off the AC's OWN stable id
+  (`from_ac_id`), never off `content`, since the new wording can change across an iterate while the
+  identity of which AC is being touched does not; a content-keyed ref would silently mint a second
+  logical write on a re-word instead of re-deriving the same one. Neither RPC exists yet, so including EITHER
+  kind deliberately makes the WHOLE payload classify `'unrecognized'` (`classifyPayload` requires
+  every item's `write_kind` to be recognized) — auto-consume is skipped and the accept falls back to
+  this track's own `manage_acceptance_criteria` call, exactly as before this payload existed. An
+  ADD-only sub-track (the common case) is fully structured and applies automatically; the moment any
+  update/delete is present, correctness — never a silent partial apply — takes priority over
+  automation. Technical and UX/UI sub-tracks author no AC writes at all, so their briefs carry no
+  `payload` (unchanged).
+
+```
+// dedupeRefs([
+//   ...adds.map(a => ({ write_kind: "acceptance_criterion", ref: slugRef("ac", a.content), content: a.content })),
+//   ...updates.map(u => ({ write_kind: "acceptance_criterion_update", ref: slugRef("ac-update", u.ac_id), from_ac_id: u.ac_id, content: u.content })),
+//   ...deletes.map(d => ({ write_kind: "acceptance_criterion_delete", ref: slugRef("ac-delete", d.ac_id), from_ac_id: d.ac_id })),
+// ])
+payload: [
+  { write_kind: "acceptance_criterion", ref: "ac-empty-filter-list-shows-cta", content: "With zero saved filters, the list view shows a create-one call to action" }
+]
 ```
 
 **Decision-only completion line (B-681).** If the ticket carries the **`decision-only` label** (a decision

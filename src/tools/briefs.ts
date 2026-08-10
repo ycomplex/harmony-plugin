@@ -4,6 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+import type { AcceptanceEventPayloadItem } from './acceptance-events.js';
 
 export interface BriefItem {
   /** §3.2 sort: a decision (always recommended), a content-input (only the human can supply it),
@@ -31,6 +32,14 @@ export interface BriefDoc {
   research?: string[];
   load_bearing_gap?: boolean;
   tail?: string;
+  /** B-810 — the promised writes an ACCEPT of this brief authorizes, snapshotted verbatim into
+   *  the deferred `pending_acceptance_events` row (acceptance-events.ts). NEVER rendered and NEVER
+   *  linted (purely a data channel to `consume_pending_acceptance_event`'s `classifyPayload` /
+   *  `applyAcceptanceEventPayload`) — omitting it, or authoring items whose `write_kind` isn't one
+   *  `applyAcceptanceEventPayload` recognizes, is always safe: an absent/empty payload classifies
+   *  'empty' (0 writes, auto-consumed), and an unrecognized shape classifies 'unrecognized' (routes
+   *  to the gate's own self-heal/materialization instead of auto-consuming) — never a hollow advance. */
+  payload?: AcceptanceEventPayloadItem[];
 }
 
 export interface BriefLintResult {
@@ -605,6 +614,38 @@ export const composeBriefTool = {
           research: { type: 'array', items: { type: 'string' }, description: 'Research prompts — required + surfaced up front when load_bearing_gap, never buried' },
           load_bearing_gap: { type: 'boolean', description: 'true when a load-bearing knowledge gap blocks a substantive decision (forces research-first)' },
           tail: { type: 'string', description: 'Optional custom command tail line; defaults to the standard one' },
+          payload: {
+            type: 'array',
+            description:
+              "B-810 — the promised writes an ACCEPT of this brief authorizes, applied automatically by " +
+              "consume_pending_acceptance_event on a cross-session pickup (B-797's structured shape). Never " +
+              "rendered, never linted — purely a data channel. Each item: { write_kind, ref, ...write_kind-" +
+              "specific fields }. Recognized write_kind values (the ONLY ones applyAcceptanceEventPayload " +
+              "executes): 'acceptance_criterion' { content } — adds one AC; 'child_ticket' { title, " +
+              "description? } — mints one child; 'checklist_item' { title } — adds one checklist item; " +
+              "'ac_transfer' { content, target_child_ref, from_ac_id? } — files an AC on a child named by " +
+              "an earlier child_ticket item's own ref, in the SAME payload. `ref` MUST be a stable, author-" +
+              "chosen id (see src/tools/payload-refs.ts's slugRef/dedupeRefs — the canonical scheme every " +
+              "gate reuses) so a retry re-derives the SAME ref for the SAME logical write (idempotent by " +
+              "construction). Omit entirely, or pass []: a brief with nothing to promise auto-classifies " +
+              "'empty' (0 writes, still auto-consumed). A forward-compat write_kind NOT in the recognized " +
+              "set (e.g. an AC update/delete no RPC exists for yet) makes the WHOLE payload classify " +
+              "'unrecognized' — auto-consume is skipped and the gate's own self-heal/materialization runs " +
+              "instead, exactly as before this payload existed; never a silent drop.",
+            items: {
+              type: 'object',
+              properties: {
+                write_kind: { type: 'string', description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | a forward-compat kind not yet applied automatically" },
+                ref: { type: 'string', description: 'Stable, author-chosen id for this logical write — see src/tools/payload-refs.ts (slugRef/dedupeRefs)' },
+                content: { type: 'string', description: "Required for 'acceptance_criterion' and 'ac_transfer'" },
+                title: { type: 'string', description: "Required for 'child_ticket' and 'checklist_item'" },
+                description: { type: ['string', 'null'], description: "Optional, 'child_ticket' only" },
+                target_child_ref: { type: 'string', description: "Required for 'ac_transfer' — must match an earlier child_ticket item's own ref in this SAME payload" },
+                from_ac_id: { type: ['string', 'null'], description: "Optional for 'ac_transfer' — the source AC id being transferred" },
+              },
+              required: ['write_kind', 'ref'],
+            },
+          },
         },
         required: ['decide', 'items'],
       },

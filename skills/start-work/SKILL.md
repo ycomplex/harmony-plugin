@@ -58,9 +58,28 @@ human, plus the legibility contract. Consult it; do not restate it. File it as a
 ```
 mcp__harmony__compose_brief({
   task_id, reason: "plan-draft", pending_activity: "planning",
-  doc: { decide: "Approve this execution plan?", items: [{ kind: "decision", text: "<plan summary>", recommendation: "proceed" }] }
+  doc: {
+    decide: "Approve this execution plan?",
+    items: [{ kind: "decision", text: "<plan summary>", recommendation: "proceed" }],
+    // dedupeRefs(planSteps.map(title => ({ write_kind: "checklist_item", ref: slugRef("step", title), title })))
+    payload: [
+      { write_kind: "checklist_item", ref: "step-add-saved-filters-migration", title: "Add saved_filters table + RLS migration" },
+      { write_kind: "checklist_item", ref: "step-add-manage-saved-filters-tool", title: "Add manage_saved_filters MCP tool" }
+    ]
+  }
 })
 ```
+
+**`doc.payload` (B-810) — this gate has NO existing self-heal fallback, so it must be correct
+standalone.** One `checklist_item` item per concrete plan step, `ref` via `slugRef('step', <step
+title>)` deduped with `dedupeRefs(...)` (`src/tools/payload-refs.ts`'s scheme, the one every gate
+reuses) — the SAME titles the `manage_checklist_items` call below materializes, so a cross-session
+accept (a web accept with no session running) produces the identical checklist a same-session accept
+would have. Unlike clarify/decompose/design, a plan brief has no other gate downstream that can
+self-heal a missed materialization — `payload-unrecognized` would otherwise leave the ticket stuck
+Designed with no readable work list, which is exactly the B-800 failure this closes. Keep the payload
+and the `manage_checklist_items` call's item list in lockstep (same steps, same titles); if the plan
+changes, recompose both together.
 
 On **accept** → **first materialize the plan's own steps as the ticket's checklist (B-797 — this is what
 closes specimen 6, B-800: the accepted plan's steps must be READABLE at build time, not just narrated in

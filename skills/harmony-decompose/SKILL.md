@@ -62,6 +62,12 @@ mcp__harmony__compose_brief({
       { kind: "decision", text: "Child 1 — schema migration", recommendation: "create" },
       { kind: "decision", text: "Child 2 — MCP tools", recommendation: "create" },
       { kind: "decision", text: "Child 3 — web surface", recommendation: "create" }
+    ],
+    // dedupeRefs(genuinelyNewChildren.map(c => ({ write_kind: "child_ticket", ref: slugRef("child", c.title), title: c.title, description: c.description ?? null })))
+    payload: [
+      { write_kind: "child_ticket", ref: "child-schema-migration", title: "Schema migration", description: "Add the saved_filters table + RLS" },
+      { write_kind: "child_ticket", ref: "child-mcp-tools", title: "MCP tools", description: "manage_saved_filters CRUD" },
+      { write_kind: "child_ticket", ref: "child-web-surface", title: "Web surface", description: "Saved-filter UI in the board header" }
     ]
   }
 })
@@ -72,6 +78,18 @@ e.g. `{ kind: "decision", text: "B-551 — schema migration (existing)", recomme
 never `"create"`. Genuinely net-new children the decomposition introduces are separate items
 recommended `"create"`; a removal/restructure of an existing child is its own explicit decision item,
 never silent.
+
+**`doc.payload` (B-810).** One `child_ticket` item per **genuinely-new** child only — never the
+confirmed-existing ones (a `child_ticket` write MINTS a child; re-minting an already-existing one
+would duplicate it). `ref` via `slugRef('child', <child title>)`, deduped across the payload with
+`dedupeRefs(...)` — `src/tools/payload-refs.ts`'s scheme, the one every gate reuses. This is what lets
+`consume_pending_acceptance_event` mint the new children automatically on a cross-session pickup
+(a web accept with no session running), instead of leaving it to the next running session's manual
+`manage_subtasks` call. **"No decomposition needed" and an all-existing confirmed set both compose an
+EMPTY `payload: []`** — there is nothing to mint, and an empty payload auto-classifies 'empty' (0
+writes, still auto-consumed). `ac_transfer` items stay empty for now — decompose does not yet author
+AC transfers to children; that remains a future extension of this same shape, not something this
+gate authors today.
 
 For "no decomposition needed", file a single decision item recommending "no split", and (optionally)
 record a short `specification` decision documenting *why* — then `reference_knowledge` it. When you do
