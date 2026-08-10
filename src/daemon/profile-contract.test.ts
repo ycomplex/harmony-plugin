@@ -568,52 +568,52 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
     expect(fnBody).not.toContain('--update-env-vars-file=');
   });
 
-  it("conditionally forwards HARMONY_ACK_PLUGIN_AHEAD_OF_PROD, now sourced from the minted env-file rather than the wrapper's own invoking environment (B-726 followup: cloud ack channel base-flag fix)", () => {
+  it("conditionally forwards HARMONY_PLUGIN_POSTURE, sourced from the minted env-file rather than the wrapper's own invoking environment (B-726 followup mechanism, re-keyed onto the single posture var by B-803)", () => {
     // `update --env-vars-file` REPLACES the job's entire literal env set (documented at length
-    // around this function), so the ack flag has no other channel to reach the cloud container's
-    // provision.sh ref/target fidelity check (the guard B-726 itself added). It must be written
-    // ONLY when the wrapper's own environment actually carries it — never unconditionally, so a
-    // cloud launch with no ack set still fails closed exactly as provision.sh intends. The
-    // conditional-forward logic itself is unchanged by the B-726 followup fix (only the SOURCE of
-    // the HARMONY_ACK_PLUGIN_AHEAD_OF_PROD shell variable changed, see the acquisition-line tests
-    // below and the executed test further down).
+    // around this function), so the posture var has no other channel to reach the cloud
+    // container's provision.sh ref/target fidelity check (the guard B-726 itself added, now
+    // re-keyed by B-803 onto HARMONY_PLUGIN_POSTURE). It must be written ONLY when the wrapper's
+    // own environment actually carries it — never unconditionally, so a cloud launch with no
+    // posture set still fails closed exactly as provision.sh intends (defaults to "main",
+    // unacknowledged).
     const fnAt = launchScript.indexOf('write_exec_env_file() {');
     const fnBody = launchScript.slice(fnAt, launchScript.indexOf('\n}', fnAt));
-    expect(fnBody).toContain('HARMONY_ACK_PLUGIN_AHEAD_OF_PROD');
-    expect(fnBody).toMatch(/if \[ -n "\$\{HARMONY_ACK_PLUGIN_AHEAD_OF_PROD:-\}" \]; then/);
-    const guardMatch = /if \[ -n "\$\{HARMONY_ACK_PLUGIN_AHEAD_OF_PROD:-\}" \]; then([\s\S]*?)\n\s*fi/.exec(
+    expect(fnBody).toContain('HARMONY_PLUGIN_POSTURE');
+    expect(fnBody).toMatch(/if \[ -n "\$\{HARMONY_PLUGIN_POSTURE:-\}" \]; then/);
+    const guardMatch = /if \[ -n "\$\{HARMONY_PLUGIN_POSTURE:-\}" \]; then([\s\S]*?)\n\s*fi/.exec(
       fnBody,
     );
     expect(guardMatch).not.toBeNull();
     expect(guardMatch![1]).toMatch(
-      /printf 'HARMONY_ACK_PLUGIN_AHEAD_OF_PROD: "%s"\\n' "\$HARMONY_ACK_PLUGIN_AHEAD_OF_PROD"/,
+      /printf 'HARMONY_PLUGIN_POSTURE: "%s"\\n' "\$HARMONY_PLUGIN_POSTURE"/,
     );
   });
 
-  it('acquires HARMONY_ACK_PLUGIN_AHEAD_OF_PROD from the SAME minted $ENV_FILE as GIT_TOKEN, via grep + cut, with no non-empty check (unlike GIT_TOKEN — an unset ack must still fail closed downstream)', () => {
+  it('acquires HARMONY_PLUGIN_POSTURE from the SAME minted $ENV_FILE as GIT_TOKEN, via grep + cut, with no non-empty check (unlike GIT_TOKEN — an unset posture must still fail closed downstream)', () => {
     const gitTokenAt = launchScript.indexOf('GIT_TOKEN="$(grep -m1');
     expect(gitTokenAt).toBeGreaterThanOrEqual(0);
-    const ackAt = launchScript.indexOf('HARMONY_ACK_PLUGIN_AHEAD_OF_PROD="$(grep -m1');
-    expect(ackAt).toBeGreaterThanOrEqual(0);
-    // The ack acquisition must come from the launch script (step 1), strictly AFTER the GIT_TOKEN
-    // acquisition + its non-empty check, and strictly BEFORE write_exec_env_file() is defined —
-    // i.e. it is a step-1 local shell variable, not something write_exec_env_file() itself derives.
+    const postureAt = launchScript.indexOf('HARMONY_PLUGIN_POSTURE="$(grep -m1');
+    expect(postureAt).toBeGreaterThanOrEqual(0);
+    // The posture acquisition must come from the launch script (step 1), strictly AFTER the
+    // GIT_TOKEN acquisition + its non-empty check, and strictly BEFORE write_exec_env_file() is
+    // defined — i.e. it is a step-1 local shell variable, not something write_exec_env_file()
+    // itself derives.
     const fnAt = launchScript.indexOf('write_exec_env_file() {');
-    expect(ackAt).toBeGreaterThan(gitTokenAt);
-    expect(ackAt).toBeLessThan(fnAt);
+    expect(postureAt).toBeGreaterThan(gitTokenAt);
+    expect(postureAt).toBeLessThan(fnAt);
 
-    const ackLineEnd = launchScript.indexOf('\n', ackAt);
-    const ackLine = launchScript.slice(ackAt, ackLineEnd);
-    expect(ackLine).toContain("grep -m1 '^HARMONY_ACK_PLUGIN_AHEAD_OF_PROD=' \"$ENV_FILE\"");
-    expect(ackLine).toContain('cut -d= -f2-');
+    const postureLineEnd = launchScript.indexOf('\n', postureAt);
+    const postureLine = launchScript.slice(postureAt, postureLineEnd);
+    expect(postureLine).toContain("grep -m1 '^HARMONY_PLUGIN_POSTURE=' \"$ENV_FILE\"");
+    expect(postureLine).toContain('cut -d= -f2-');
     // Deliberately no `-z`/non-empty guard on this line (contrast with GIT_TOKEN's immediately
     // preceding `if [ -z "$GIT_TOKEN" ]; then ... exit 1; fi`).
-    expect(ackLine).not.toMatch(/-z "\$HARMONY_ACK_PLUGIN_AHEAD_OF_PROD"/);
+    expect(postureLine).not.toMatch(/-z "\$HARMONY_PLUGIN_POSTURE"/);
   });
 
-  describe('EXECUTED write_exec_env_file() behavior (B-726 followup — prose-pinned contract tests alone are no longer trusted for this wrapper)', () => {
+  describe('EXECUTED write_exec_env_file() behavior (B-726 followup mechanism, B-803 posture var — prose-pinned contract tests alone are not trusted for this wrapper)', () => {
     // Three consecutive cloud-path defects in this wrapper (the env-file subset gap, the
-    // describe-result field-shift, and now this missing --base) each passed prose-pinned contract
+    // describe-result field-shift, and a missing --base) each passed prose-pinned contract
     // tests (regex assertions against the script's TEXT) and were only caught live. This block
     // actually EXECUTES the real acquisition lines + write_exec_env_file() body, extracted
     // VERBATIM from the live script text (never hand-retyped), so drift in the script's real
@@ -638,7 +638,7 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
     }
 
     function runWriteExecEnvFile(fixtureEnvContent: string): string {
-      const dir = mkdtempSync(join(tmpdir(), 'b726-write-exec-env-'));
+      const dir = mkdtempSync(join(tmpdir(), 'b803-write-exec-env-'));
       const envFile = join(dir, 'run.env');
       const outFile = join(dir, 'exec-env-vars.yaml');
       const scriptFile = join(dir, 'harness.sh');
@@ -646,9 +646,9 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
       writeFileSync(envFile, fixtureEnvContent);
 
       const gitTokenAcquisition = extractLine(launchScript, 'GIT_TOKEN="$(grep -m1');
-      const ackAcquisition = extractLine(
+      const postureAcquisition = extractLine(
         launchScript,
-        'HARMONY_ACK_PLUGIN_AHEAD_OF_PROD="$(grep -m1',
+        'HARMONY_PLUGIN_POSTURE="$(grep -m1',
       );
       const fnBody = extractFunctionBody(launchScript);
 
@@ -656,10 +656,10 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
         '#!/usr/bin/env bash',
         'set -euo pipefail',
         'CONDUCTION_ID="cond-test-1"',
-        'TICKET="B-726"',
+        'TICKET="B-803"',
         `ENV_FILE="${envFile}"`,
         gitTokenAcquisition,
-        ackAcquisition,
+        postureAcquisition,
         fnBody,
         `write_exec_env_file "${outFile}"`,
         '',
@@ -671,22 +671,22 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
       return readFileSync(outFile, 'utf8');
     }
 
-    it('produces HARMONY_ACK_PLUGIN_AHEAD_OF_PROD: "1" in the output YAML when the fixture minted env-file carries the ack flag', () => {
+    it('produces HARMONY_PLUGIN_POSTURE: "ack:main" in the output YAML when the fixture minted env-file carries the posture', () => {
       const output = runWriteExecEnvFile(
-        ['GIT_TOKEN=ghs_dummytoken', 'HARMONY_ACK_PLUGIN_AHEAD_OF_PROD=1', ''].join('\n'),
+        ['GIT_TOKEN=ghs_dummytoken', 'HARMONY_PLUGIN_POSTURE=ack:main', ''].join('\n'),
       );
       expect(output).toContain('CONDUCTION_ID: "cond-test-1"');
-      expect(output).toContain('TICKET: "B-726"');
+      expect(output).toContain('TICKET: "B-803"');
       expect(output).toContain('GIT_TOKEN: "ghs_dummytoken"');
-      expect(output).toContain('HARMONY_ACK_PLUGIN_AHEAD_OF_PROD: "1"');
+      expect(output).toContain('HARMONY_PLUGIN_POSTURE: "ack:main"');
     });
 
-    it('omits the HARMONY_ACK_PLUGIN_AHEAD_OF_PROD line entirely when the fixture minted env-file does not carry it', () => {
+    it('omits the HARMONY_PLUGIN_POSTURE line entirely when the fixture minted env-file does not carry it', () => {
       const output = runWriteExecEnvFile(['GIT_TOKEN=ghs_dummytoken', ''].join('\n'));
       expect(output).toContain('CONDUCTION_ID: "cond-test-1"');
-      expect(output).toContain('TICKET: "B-726"');
+      expect(output).toContain('TICKET: "B-803"');
       expect(output).toContain('GIT_TOKEN: "ghs_dummytoken"');
-      expect(output).not.toContain('HARMONY_ACK_PLUGIN_AHEAD_OF_PROD');
+      expect(output).not.toContain('HARMONY_PLUGIN_POSTURE');
     });
   });
 
@@ -935,8 +935,9 @@ describe('entrypoint.sh: nested workspace-mirror clone layout (B-726 (a))', () =
     expect(script).toMatch(/clone\s+"\$PLUGIN_REPO"\s+"\$PLUGIN_REF"\s+\/workspace\/workspace\/plugin/);
   });
 
-  it("exports PLUGIN_REF so the exec'd provision.sh inherits it", () => {
-    expect(script).toMatch(/^export PLUGIN_REF=/m);
+  it('derives PLUGIN_REF from HARMONY_PLUGIN_POSTURE (B-803), stripping the ack: prefix, and exports it so the exec\'d provision.sh inherits it', () => {
+    expect(script).toMatch(/^export PLUGIN_REF="\$\{HARMONY_PLUGIN_POSTURE:-main\}"$/m);
+    expect(script).toMatch(/^PLUGIN_REF="\$\{PLUGIN_REF#ack:\}"$/m);
   });
 
   it('hands off to provision.sh at its new nested location', () => {
@@ -961,27 +962,44 @@ describe('provision.sh: PLUGIN_DIR/WORKDIR follow the nested layout (B-726 (a))'
   });
 });
 
-// B-726 (d): ref/target fidelity — a headless worker must not run a plugin ref ahead of a `prod`
-// board target unless the founder has explicitly ack'd that posture.
+// B-726 (d) / B-803: ref/target fidelity — a headless worker must not run a plugin ref ahead of a
+// `prod` board target unless the founder has explicitly ack'd that posture, now expressed as ONE
+// var (HARMONY_PLUGIN_POSTURE: prod | ack:<ref> | bare <ref>) instead of the old PLUGIN_REF +
+// HARMONY_ACK_PLUGIN_AHEAD_OF_PROD pair.
 
-describe('provision.sh: ref/target fidelity fail-closed check (B-726 (d))', () => {
+describe('provision.sh: HARMONY_PLUGIN_POSTURE parsing + ref/target fidelity fail-closed check (B-726 (d), re-keyed onto ONE var by B-803)', () => {
   const script = readFileSync(provisionPath, 'utf8');
+
+  it('parses HARMONY_PLUGIN_POSTURE into {ref, acked} ONCE, via a case statement on the ack: prefix', () => {
+    expect(script).toContain('PLUGIN_POSTURE="${HARMONY_PLUGIN_POSTURE:-main}"');
+    expect(script).toMatch(/case "\$PLUGIN_POSTURE" in/);
+    expect(script).toMatch(/ack:\*\)/);
+    expect(script).toMatch(/PLUGIN_REF="\$\{PLUGIN_POSTURE#ack:\}"/);
+    expect(script).toMatch(/AHEAD_OF_PROD_ACKED=1/);
+    expect(script).toMatch(/AHEAD_OF_PROD_ACKED=0/);
+  });
+
+  it('the old two-var pair no longer has a live USAGE (env read) — only prose may still mention the name for historical context', () => {
+    expect(script).not.toMatch(/\$\{HARMONY_ACK_PLUGIN_AHEAD_OF_PROD:?-?\}/); // no live ${...} read anywhere
+    expect(script).not.toMatch(/PLUGIN_REF="\$\{PLUGIN_REF:-main\}"/); // the old bare-env-read form
+  });
 
   it('fails closed on prod target + non-prod PLUGIN_REF, scoped to headless mode only', () => {
     const shellAt = script.indexOf('shell)');
     const headlessAt = script.indexOf('headless)');
     expect(shellAt).toBeGreaterThan(0);
     expect(headlessAt).toBeGreaterThan(shellAt);
-    const guardAt = script.indexOf('HARMONY_ACK_PLUGIN_AHEAD_OF_PROD', headlessAt);
+    const guardAt = script.indexOf('AHEAD_OF_PROD_ACKED', headlessAt);
     expect(guardAt).toBeGreaterThan(headlessAt);
-    // The guard must not already appear inside the shell branch.
+    // The headless-scoped fail-closed guard must not already appear inside the shell branch (the
+    // posture PARSING above is shared/unconditional — it's the ENFORCEMENT that is headless-only).
     const shellBranch = script.slice(shellAt, headlessAt);
-    expect(shellBranch).not.toContain('HARMONY_ACK_PLUGIN_AHEAD_OF_PROD');
+    expect(shellBranch).not.toMatch(/if \[ "\$ACTUAL_TARGET" = "prod" \] && \[ "\$PLUGIN_REF" != "prod" \]/);
   });
 
   it('the fail-closed branch actually exits non-zero', () => {
     const guardMatch =
-      /if \[ "\$ACTUAL_TARGET" = "prod" \] && \[ "\$PLUGIN_REF" != "prod" \] && \[ "\$\{HARMONY_ACK_PLUGIN_AHEAD_OF_PROD:-\}" != "1" \]; then([\s\S]*?)\n {4}fi/.exec(
+      /if \[ "\$ACTUAL_TARGET" = "prod" \] && \[ "\$PLUGIN_REF" != "prod" \] && \[ "\$AHEAD_OF_PROD_ACKED" != "1" \]; then([\s\S]*?)\n {4}fi/.exec(
         script,
       );
     expect(guardMatch).not.toBeNull();
@@ -991,5 +1009,64 @@ describe('provision.sh: ref/target fidelity fail-closed check (B-726 (d))', () =
   it('echoes the ack unconditionally in the environment-confirm banner when active', () => {
     expect(script).toMatch(/echo\s+"Environment confirmed:[^"]*\$AHEAD_OF_PROD_ACK"/);
     expect(script).toContain('plugin_ref=$PLUGIN_REF');
+  });
+
+  it('the banner-active condition and the fail-closed guard key on the SAME derived AHEAD_OF_PROD_ACKED, not two separate env reads', () => {
+    const bannerGuard =
+      /if \[ "\$ACTUAL_TARGET" = "prod" \] && \[ "\$PLUGIN_REF" != "prod" \] && \[ "\$AHEAD_OF_PROD_ACKED" = "1" \]; then/;
+    expect(script).toMatch(bannerGuard);
+  });
+});
+
+describe('provision.sh: EXECUTED HARMONY_PLUGIN_POSTURE parsing (B-803 — prose-pinned regex alone is not trusted for parsing logic)', () => {
+  const script = readFileSync(provisionPath, 'utf8');
+
+  /** Extract the real parsing block (assignment through the closing `esac`), verbatim. */
+  function extractParsingBlock(): string {
+    const at = script.indexOf('PLUGIN_POSTURE="${HARMONY_PLUGIN_POSTURE:-main}"');
+    expect(at).toBeGreaterThanOrEqual(0);
+    const end = script.indexOf('esac', at);
+    expect(end).toBeGreaterThan(at);
+    return script.slice(at, end + 'esac'.length);
+  }
+
+  function runParse(postureEnv: string | undefined): { ref: string; acked: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'b803-posture-parse-'));
+    const scriptFile = join(dir, 'harness.sh');
+    const resultFile = join(dir, 'result');
+    const block = extractParsingBlock();
+    const harness = [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      block,
+      `printf '%s %s' "$PLUGIN_REF" "$AHEAD_OF_PROD_ACKED" > "${resultFile}"`,
+      '',
+    ].join('\n');
+    writeFileSync(scriptFile, harness, { mode: 0o700 });
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    if (postureEnv === undefined) {
+      delete env.HARMONY_PLUGIN_POSTURE;
+    } else {
+      env.HARMONY_PLUGIN_POSTURE = postureEnv;
+    }
+    execFileSync('bash', [scriptFile], { env });
+    const [ref, acked] = readFileSync(resultFile, 'utf8').split(' ');
+    return { ref, acked };
+  }
+
+  it('"prod" resolves to ref=prod, unacknowledged', () => {
+    expect(runParse('prod')).toEqual({ ref: 'prod', acked: '0' });
+  });
+
+  it('"ack:main" resolves to ref=main, acknowledged', () => {
+    expect(runParse('ack:main')).toEqual({ ref: 'main', acked: '1' });
+  });
+
+  it('a bare "main" (no ack: prefix) resolves to ref=main, UNacknowledged', () => {
+    expect(runParse('main')).toEqual({ ref: 'main', acked: '0' });
+  });
+
+  it('unset HARMONY_PLUGIN_POSTURE defaults to ref=main, unacknowledged (the daemon\'s historical default posture)', () => {
+    expect(runParse(undefined)).toEqual({ ref: 'main', acked: '0' });
   });
 });

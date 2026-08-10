@@ -121,16 +121,33 @@ if [ "$ACTUAL_TARGET" != "$HARMONY_TARGET" ]; then
   exit 1
 fi
 
-# --- Ref/target fidelity (B-726 (d)) — the B-383 invariant: plugin `prod`
-# must never run against a board a `main`-ref plugin may not be schema-
-# compatible with. B-383 is enforced by the marketplace pinning source.ref:
-# "prod"; this container clones PLUGIN_REF directly and never reads that pin,
-# so it needs its own check. Computed here (banner echo, always shown);
-# ENFORCED only in headless mode below — shell/dogfood stays exempt
-# unconditionally.
-PLUGIN_REF="${PLUGIN_REF:-main}"
+# --- Ref/target fidelity (B-726 (d), re-keyed onto ONE var by B-803) — the B-383 invariant:
+# plugin `prod` must never run against a board a `main`-ref plugin may not be schema-compatible
+# with. B-383 is enforced by the marketplace pinning source.ref: "prod"; this container clones the
+# ref directly and never reads that pin, so it needs its own check. Computed here (banner echo,
+# always shown); ENFORCED only in headless mode below — shell/dogfood stays exempt unconditionally.
+#
+# B-803: ONE posture var, HARMONY_PLUGIN_POSTURE, replaces the old PLUGIN_REF +
+# HARMONY_ACK_PLUGIN_AHEAD_OF_PROD pair (which could be set inconsistently, and the ack half was
+# unreachable on the cloud profile — Cloud Run's --env-vars-file REPLACES the job env, and
+# write_exec_env_file never forwarded it). Parsed ONCE, here, into {ref, acked}:
+#   prod        -> ref=prod  (the safe default posture)
+#   ack:<ref>   -> ref=<ref>, acked (the ahead-of-prod risk is explicitly accepted)
+#   <ref>       -> ref=<ref>, NOT acked (a bare ref with no "ack:" prefix)
+#   unset       -> defaults to "main", NOT acked (matches the daemon's historical default posture)
+PLUGIN_POSTURE="${HARMONY_PLUGIN_POSTURE:-main}"
+case "$PLUGIN_POSTURE" in
+  ack:*)
+    PLUGIN_REF="${PLUGIN_POSTURE#ack:}"
+    AHEAD_OF_PROD_ACKED=1
+    ;;
+  *)
+    PLUGIN_REF="$PLUGIN_POSTURE"
+    AHEAD_OF_PROD_ACKED=0
+    ;;
+esac
 AHEAD_OF_PROD_ACK=""
-if [ "$ACTUAL_TARGET" = "prod" ] && [ "$PLUGIN_REF" != "prod" ] && [ "${HARMONY_ACK_PLUGIN_AHEAD_OF_PROD:-}" = "1" ]; then
+if [ "$ACTUAL_TARGET" = "prod" ] && [ "$PLUGIN_REF" != "prod" ] && [ "$AHEAD_OF_PROD_ACKED" = "1" ]; then
   AHEAD_OF_PROD_ACK=" (ACK'd ahead-of-prod override active)"
 fi
 echo "Environment confirmed: target=$ACTUAL_TARGET plugin_ref=$PLUGIN_REF plugin_version=$PLUGIN_VERSION workdir=$WORKDIR$AHEAD_OF_PROD_ACK"
@@ -155,16 +172,15 @@ case "$MODE" in
     shift || true
     PROMPT="${1:?headless mode needs a prompt argument}"
 
-    # B-726 (d): fail closed, headless-mode only, if this worker would run a
-    # plugin ref ahead of the prod board it just confirmed against — unless
-    # the founder has explicitly ack'd that posture. HARMONY_ACK_PLUGIN_AHEAD_OF_PROD
-    # must ride the BASE container env (~/.harmony-container.env) so the mint
-    # script folds it into every per-leg env file — on the cloud profile,
-    # per-leg --env-vars-file REPLACES the job's literal env, so a flag wired
-    # anywhere else never reaches this check on cloud.
-    if [ "$ACTUAL_TARGET" = "prod" ] && [ "$PLUGIN_REF" != "prod" ] && [ "${HARMONY_ACK_PLUGIN_AHEAD_OF_PROD:-}" != "1" ]; then
-      echo "Refusing to start: PLUGIN_REF=$PLUGIN_REF is ahead of the prod board this worker just confirmed against (target=$ACTUAL_TARGET) — the B-383 invariant." >&2
-      echo "Set HARMONY_ACK_PLUGIN_AHEAD_OF_PROD=1 in ~/.harmony-container.env to explicitly accept this dev-heavy posture (echoed in the banner above), or pin PLUGIN_REF=prod." >&2
+    # B-726 (d) / B-803: fail closed, headless-mode only, if this worker would run a plugin ref
+    # ahead of the prod board it just confirmed against — unless the founder has explicitly ack'd
+    # that posture via HARMONY_PLUGIN_POSTURE=ack:<ref>. HARMONY_PLUGIN_POSTURE must ride the BASE
+    # container env (~/.harmony-container.env) so the mint script folds it into every per-leg env
+    # file — on the cloud profile, per-leg --env-vars-file REPLACES the job's literal env, so a
+    # flag wired anywhere else never reaches this check on cloud.
+    if [ "$ACTUAL_TARGET" = "prod" ] && [ "$PLUGIN_REF" != "prod" ] && [ "$AHEAD_OF_PROD_ACKED" != "1" ]; then
+      echo "Refusing to start: HARMONY_PLUGIN_POSTURE=$PLUGIN_POSTURE resolves to plugin_ref=$PLUGIN_REF, ahead of the prod board this worker just confirmed against (target=$ACTUAL_TARGET) — the B-383 invariant." >&2
+      echo "Set HARMONY_PLUGIN_POSTURE=ack:$PLUGIN_REF in ~/.harmony-container.env to explicitly accept this dev-heavy posture (echoed in the banner above), or pin HARMONY_PLUGIN_POSTURE=prod." >&2
       exit 1
     fi
 

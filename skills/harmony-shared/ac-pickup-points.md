@@ -88,6 +88,6 @@ forward from the exemption set you already thought of will miss exactly the case
 `(has_criteria, is_exempt, exempt_reason)`. The substrate guard calls it directly; `get_build_evidence_status`
 reads it for `has_acceptance_criteria`; the web's verify-brief pre-check reads it too. The plugin's read
 degrades to a local computation on SQLSTATE **42883 only** (the function is absent because the environment
-predates the migration — which the daemon hits by default, running `PLUGIN_REF=main` against
-`HARMONY_TARGET=prod`). Every other error propagates: a floor that opens when it malfunctions is not a
+predates the migration — which the daemon hits by default, running `HARMONY_PLUGIN_POSTURE`
+(defaulting to `main`) against `HARMONY_TARGET=prod`). Every other error propagates: a floor that opens when it malfunctions is not a
 floor.

@@ -248,8 +248,8 @@ export async function getBuildEvidenceStatus(
  * FAIL-CLOSED ERROR HANDLING, and the distinction matters. Exactly ONE condition may degrade to the
  * caller's locally-computed value: SQLSTATE **42883** (`undefined_function`), which means this
  * environment predates the B-747 migration. That degrade is required rather than optional — the
- * Conductor Daemon runs plugin `main` against the PROD board by default (`PLUGIN_REF=main`,
- * `HARMONY_TARGET=prod` in container/entrypoint.sh + provision.sh), bypassing the marketplace pin that
+ * Conductor Daemon runs plugin `main` against the PROD board by default (`HARMONY_PLUGIN_POSTURE`
+ * defaulting to `main`, `HARMONY_TARGET=prod` in container/entrypoint.sh + provision.sh), bypassing the marketplace pin that
  * normally enforces B-383, so this code legitimately runs against a database that lacks the function
  * during the merge-to-promote window.
  *
