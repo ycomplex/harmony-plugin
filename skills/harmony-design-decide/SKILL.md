@@ -233,6 +233,30 @@ mcp__harmony__compose_brief({
 })
 ```
 
+**PRODUCT track only (B-810) — also author `doc.payload` for step 2b's ADD/SHARPEN/drop edits.** The
+technical and UX/UI sub-tracks author no `doc.payload` at all (they carry no AC edits — unchanged by
+B-810). For the product track, mirror step 2b's edits exactly:
+
+- An **ADD** (a genuinely new design-dependent AC) → a recognized `acceptance_criterion` item —
+  `{ write_kind: "acceptance_criterion", ref: slugRef('ac', content), content }`.
+- A **SHARPEN (update)** of an existing AC → the literal, deliberately-UNRECOGNIZED `write_kind:
+  "acceptance_criterion_update"` — `{ write_kind: "acceptance_criterion_update", ref: slugRef('ac',
+  content), content, from_ac_id: "<the AC's own id being sharpened>" }`. Deliberately absent from
+  `KNOWN_WRITE_KINDS` (acceptance-events.ts) — never "fix" this by adding it there; that file is out of
+  scope.
+- A **drop** of an existing AC (never silent — step 2b's own rule) → the literal, deliberately-
+  UNRECOGNIZED `write_kind: "acceptance_criterion_delete"` — `{ write_kind: "acceptance_criterion_delete",
+  ref: slugRef('ac', content), content, from_ac_id: "<the AC's own id being dropped>" }`.
+
+Because `classifyPayload` (acceptance-events.ts) requires EVERY item to carry a recognized `write_kind`
+before it will call this payload `'structured'`, a SINGLE update/delete item downgrades the WHOLE payload
+to `'unrecognized'` — which is exactly the intended fallback: the B-797 cross-session consumer refuses to
+auto-apply an unrecognized payload and instead routes to this track's OWN accept step (step 5 below,
+step 2b's inline add/update/delete), which already performs the real writes. An **add-only** product-design
+brief (the common case: only new ACs, nothing sharpened or dropped) is therefore fully recognized and
+auto-applies with zero agent judgment on a web accept with no session running. `ref`s in both cases come
+from `slugRef`/`dedupeRefs` (`payload-refs.ts`) — never reinvented.
+
 **Decision-only completion line (B-681).** If the ticket carries the **`decision-only` label** (a decision
 ticket whose deliverable IS this design decision — e.g. an inception S2 decision ticket), the **last
 required sub-track's** brief is its **deliverable gate**: that brief MUST carry an explicit completion line

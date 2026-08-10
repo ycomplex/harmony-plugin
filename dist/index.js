@@ -36894,7 +36894,24 @@ var composeBriefTool = {
           },
           research: { type: "array", items: { type: "string" }, description: "Research prompts \u2014 required + surfaced up front when load_bearing_gap, never buried" },
           load_bearing_gap: { type: "boolean", description: "true when a load-bearing knowledge gap blocks a substantive decision (forces research-first)" },
-          tail: { type: "string", description: "Optional custom command tail line; defaults to the standard one" }
+          tail: { type: "string", description: "Optional custom command tail line; defaults to the standard one" },
+          payload: {
+            type: "array",
+            description: "B-810 \u2014 the promised structured writes this brief's ACCEPT will materialize (AcceptanceEventPayloadItem[], acceptance-events.ts): one item per acceptance_criterion / child_ticket / checklist_item / ac_transfer write, mirroring exactly what the gate's own same-session accept-time materialization performs. NEVER rendered \u2014 a side-channel consumed only by the B-797 cross-session safety net (a web accept with no session running). Every item's `ref` MUST be derived via `slugRef` + deduped via `dedupeRefs` (payload-refs.ts) \u2014 a content-derived slug, never a positional index, stable across an in-place iterate recompose. Omit or pass `[]` when this gate has no promised writes (e.g. decompose's 'no split').",
+            items: {
+              type: "object",
+              properties: {
+                write_kind: { type: "string", description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer'" },
+                ref: { type: "string", description: "Stable, content-derived, within-payload-unique ref \u2014 from slugRef/dedupeRefs (payload-refs.ts)" },
+                content: { type: "string", description: "Required for acceptance_criterion and ac_transfer \u2014 the full text, verbatim" },
+                title: { type: "string", description: "Required for child_ticket and checklist_item" },
+                description: { type: ["string", "null"], description: "Optional, child_ticket only" },
+                target_child_ref: { type: "string", description: "ac_transfer only \u2014 the destination child_ticket item's own `ref` from this SAME payload" },
+                from_ac_id: { type: ["string", "null"], description: "ac_transfer only \u2014 the parent AC's own id being removed; omit only for the rare copy-not-move case" }
+              },
+              required: ["write_kind", "ref"]
+            }
+          }
         },
         required: ["decide", "items"]
       },

@@ -4,6 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+import type { AcceptanceEventPayloadItem } from './acceptance-events.js';
 
 export interface BriefItem {
   /** §3.2 sort: a decision (always recommended), a content-input (only the human can supply it),
@@ -31,6 +32,16 @@ export interface BriefDoc {
   research?: string[];
   load_bearing_gap?: boolean;
   tail?: string;
+  /** B-810 — the promised structured writes this brief's ACCEPT will materialize, snapshotted verbatim
+   *  into a `pending_acceptance_events` row (B-797) when accepted with no session running, then applied
+   *  mechanically by `applyAcceptanceEventPayload` (acceptance-events.ts). NEVER rendered — purely a
+   *  side-channel for the cross-session safety net; the rendered `doc` (decide/why/items/...) is what the
+   *  human reads. Every item's `ref` MUST come from `slugRef` + `dedupeRefs` (payload-refs.ts) — a
+   *  content-derived slug, never a positional index, so an unchanged item reproduces the identical ref
+   *  across an in-place `iterate` recompose. Omitted or `[]` ⇒ nothing to auto-apply (e.g. decompose's
+   *  "no split", or a gate not yet wired to author this shape) — `classifyPayload` in acceptance-events.ts
+   *  treats an empty array as a legitimate zero-write accept, never a hollow-advance signal. */
+  payload?: AcceptanceEventPayloadItem[];
 }
 
 export interface BriefLintResult {
@@ -605,6 +616,24 @@ export const composeBriefTool = {
           research: { type: 'array', items: { type: 'string' }, description: 'Research prompts — required + surfaced up front when load_bearing_gap, never buried' },
           load_bearing_gap: { type: 'boolean', description: 'true when a load-bearing knowledge gap blocks a substantive decision (forces research-first)' },
           tail: { type: 'string', description: 'Optional custom command tail line; defaults to the standard one' },
+          payload: {
+            type: 'array',
+            description:
+              "B-810 — the promised structured writes this brief's ACCEPT will materialize (AcceptanceEventPayloadItem[], acceptance-events.ts): one item per acceptance_criterion / child_ticket / checklist_item / ac_transfer write, mirroring exactly what the gate's own same-session accept-time materialization performs. NEVER rendered — a side-channel consumed only by the B-797 cross-session safety net (a web accept with no session running). Every item's `ref` MUST be derived via `slugRef` + deduped via `dedupeRefs` (payload-refs.ts) — a content-derived slug, never a positional index, stable across an in-place iterate recompose. Omit or pass `[]` when this gate has no promised writes (e.g. decompose's 'no split').",
+            items: {
+              type: 'object',
+              properties: {
+                write_kind: { type: 'string', description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer'" },
+                ref: { type: 'string', description: 'Stable, content-derived, within-payload-unique ref — from slugRef/dedupeRefs (payload-refs.ts)' },
+                content: { type: 'string', description: 'Required for acceptance_criterion and ac_transfer — the full text, verbatim' },
+                title: { type: 'string', description: 'Required for child_ticket and checklist_item' },
+                description: { type: ['string', 'null'], description: 'Optional, child_ticket only' },
+                target_child_ref: { type: 'string', description: "ac_transfer only — the destination child_ticket item's own `ref` from this SAME payload" },
+                from_ac_id: { type: ['string', 'null'], description: "ac_transfer only — the parent AC's own id being removed; omit only for the rare copy-not-move case" },
+              },
+              required: ['write_kind', 'ref'],
+            },
+          },
         },
         required: ['decide', 'items'],
       },
