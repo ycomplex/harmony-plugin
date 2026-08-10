@@ -55,7 +55,13 @@ import {
 import { createHeartbeatKeeper } from '../daemon/heartbeat.js';
 import { loadDaemonConfig, selectNamedProfile } from '../daemon/config.js';
 import { renderQuietReapOutcome } from '../daemon/quiet-reap.js';
-import { loadDeploymentConfig, resolveDeploymentConfigPath } from '../config/deployment-config.js';
+import { runBootPreflight, type PreflightProfile } from '../daemon/preflight.js';
+import {
+  loadDeploymentConfig,
+  resolveDeploymentConfigPath,
+  type DeploymentConfig,
+  type LaunchProfileConfig,
+} from '../config/deployment-config.js';
 import {
   PersistentAuthFailure,
   PersistentReapFailure,
@@ -135,14 +141,19 @@ async function main(): Promise<void> {
   const daemonArgv = parseDaemonArgs(process.argv.slice(2));
 
   let config;
+  // B-800: hoisted out of the try block below so the boot preflight (which needs the SAME already-
+  // loaded deployment config + resolved named profile) can read them without a second load — no new
+  // I/O surface. Both stay null on the legacy HARMONY_DAEMON_PROFILE route.
+  let deploymentConfig: DeploymentConfig | null = null;
+  let namedProfile: LaunchProfileConfig | null = null;
   try {
     // B-800: try the deployment-config-by-name route FIRST — it wins whenever it fully resolves
     // (config present AND --profile names a profile that exists in its "profiles" section). A
     // deployment config that exists but is malformed JSON/schema throws here and is NOT caught
     // below the fallback note — that's a real misconfiguration, not an absence, so it must fail
     // loud (same convention as src/config/deployment-config.ts's own loader).
-    const deploymentConfig = loadDeploymentConfig({ configPath: daemonArgv.config, env: process.env });
-    const namedProfile = selectNamedProfile(deploymentConfig, daemonArgv.profile);
+    deploymentConfig = loadDeploymentConfig({ configPath: daemonArgv.config, env: process.env });
+    namedProfile = selectNamedProfile(deploymentConfig, daemonArgv.profile);
     if (daemonArgv.profile && deploymentConfig && !namedProfile) {
       // Short of a FULL resolution (config present + name given + name found), src/daemon/config.ts
       // falls back to HARMONY_DAEMON_PROFILE unchanged — this note just makes that fallback
@@ -179,18 +190,6 @@ async function main(): Promise<void> {
     }
   };
 
-  // Capture auth + project ONCE — the daemon is pinned for its whole lifetime.
-  const auth = new HarmonyAuth(token);
-  const client = await createAuthenticatedClient(auth);
-  const projectId = auth.getProjectId();
-  // B-723: the project KEY, read once here alongside the id — the daemon's log names tickets by
-  // their visual id (e.g. B-723), and that prefix is per-deployment CONFIG, never a baked constant.
-  // Deliberately its OWN read: get_task's view:'meta' projection is a pinned 20-key shape and the
-  // key is a PROJECT field, not a task one.
-  const projectKey = (await getProject(client, projectId)).key as string;
-
-  const leaseHolder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
-
   /** Run a rendered launch/reap/probe command; consume ONLY the exit code. Worker output is
    *  discarded to the log (never parsed — the agent-portability guardrail), UNLESS `opts.quiet` is
    *  set (B-761) — used ONLY for the reap-before-adopt call site in scheduler.ts's
@@ -198,7 +197,12 @@ async function main(): Promise<void> {
    *  error: raw Docker stderr there reads as scary when it is actually expected. Quiet mode never
    *  streams the raw stdout/stderr lines (still drains them, so a chatty command can't backpressure
    *  the pipe) and instead logs exactly ONE calm line, keyed ONLY on the exit code — see
-   *  renderQuietReapOutcome. */
+   *  renderQuietReapOutcome.
+   *
+   *  B-801: defined HERE (moved up from just above `deps`) so the boot preflight below — which
+   *  MUST run before HarmonyAuth/createAuthenticatedClient — can reuse this SAME instance for its
+   *  `command -v <tool>` resolution rather than standing up a second exec path; SchedulerDeps below
+   *  still gets the identical closure. */
   const runCommand = (cmd: string, opts?: { quiet?: boolean }): Promise<{ exitCode: number | null }> =>
     new Promise((resolve) => {
       const child = exec(cmd);
@@ -218,6 +222,42 @@ async function main(): Promise<void> {
         resolve({ exitCode: code });
       });
     });
+
+  // B-801: validate the whole deployment surface — tools on PATH, the launcher-host env contract,
+  // and an audit of absent optional profile capabilities — BEFORE any conduction can run. Runs
+  // right after loadDaemonConfig resolves and before HarmonyAuth/createAuthenticatedClient/
+  // runScheduler, exactly per the accepted design. `gcloud_project` is folded in from the resolved
+  // named profile (when the B-800 named route was used) since src/daemon/config.ts's DaemonConfig
+  // deliberately doesn't carry it — see src/daemon/preflight.ts's PreflightProfile doc comment.
+  const preflightProfileName = daemonArgv.profile ?? (process.env.HARMONY_DAEMON_PROFILE || 'unnamed');
+  const preflightProfile: PreflightProfile = {
+    ...config.profile,
+    gcloud_project: namedProfile?.gcloud_project,
+  };
+  try {
+    await runBootPreflight(config, preflightProfile, {
+      runCommand,
+      env: process.env,
+      deploymentConfig,
+      profileName: preflightProfileName,
+      log,
+    });
+  } catch (err) {
+    log(`boot preflight failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+
+  // Capture auth + project ONCE — the daemon is pinned for its whole lifetime.
+  const auth = new HarmonyAuth(token);
+  const client = await createAuthenticatedClient(auth);
+  const projectId = auth.getProjectId();
+  // B-723: the project KEY, read once here alongside the id — the daemon's log names tickets by
+  // their visual id (e.g. B-723), and that prefix is per-deployment CONFIG, never a baked constant.
+  // Deliberately its OWN read: get_task's view:'meta' projection is a pinned 20-key shape and the
+  // key is a PROJECT field, not a task one.
+  const projectKey = (await getProject(client, projectId)).key as string;
+
+  const leaseHolder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 
   const deps: SchedulerDeps = {
     now: Date.now,

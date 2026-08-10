@@ -54,6 +54,21 @@ const DeploymentEnvSchema = z
   .partial();
 
 // --- profiles: keyed launch profiles (mirrors src/daemon/config.ts's LaunchProfile) ------------
+
+// B-801: declarative, OPTIONAL map of binaries each template invokes — one array per template,
+// naming the tools src/daemon/preflight.ts's boot preflight resolves via `command -v` before ANY
+// conduction runs. Declarative, NOT shell-parsed: launch/reap/probe are arbitrary `&&`-chained shell
+// one-liners, so inferring "every invoked binary" from the string is undecidable in general — the
+// profile author already knows what their own template runs (the same "config not constants"
+// convention this daemon already applies to launch/reap/probe themselves, B-711).
+const RequiredToolsSchema = z
+  .object({
+    launch: z.array(z.string().min(1)).optional(),
+    reap: z.array(z.string().min(1)).optional(),
+    probe: z.array(z.string().min(1)).optional(),
+  })
+  .partial();
+
 const LaunchProfileSchema = z.object({
   /** Command template that launches a one-shot worker. Placeholders: {conduction_id}, {ticket}. */
   launch: z.string().min(1),
@@ -66,6 +81,18 @@ const LaunchProfileSchema = z.object({
   /** B-800: replaces the CLOUDSDK_CORE_PROJECT hardcoded default baked into cloud-worker-*.sh —
    *  the cloud profile's GCP project, read by those scripts via `harmony config get`. */
   gcloud_project: z.string().optional(),
+  /** B-801: see RequiredToolsSchema above — src/daemon/preflight.ts's hard tool-resolution check. */
+  required_tools: RequiredToolsSchema.optional(),
+  /** B-801: true when this profile mints a worker credential via mint-installation-token.mjs before
+   *  launch (container/README.md "The credential envelopes") — gates src/daemon/preflight.ts's hard
+   *  env-contract check for HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/
+   *  HARMONY_APP_PRIVATE_KEY_PATH/HARMONY_PLUGIN_DIR. */
+  requires_app_mint: z.boolean().optional(),
+  /** B-801: bumped whenever a NEW optional profile capability ships, so a stale profile file (never
+   *  regenerated after an upgrade) gets flagged by the boot preflight's soft audit instead of just
+   *  silently lacking the new capability. Defaults to 1 (this ticket's baseline) when absent — see
+   *  src/daemon/preflight.ts's CURRENT_SCHEMA_VERSION. */
+  schema_version: z.number().int().positive().optional(),
 });
 
 // --- launcher: the launcher-host env contract ----------------------------------------------------
@@ -102,6 +129,7 @@ export const DeploymentConfigSchema = z.object({
 
 export type DeploymentEnv = z.infer<typeof DeploymentEnvSchema>;
 export type LaunchProfileConfig = z.infer<typeof LaunchProfileSchema>;
+export type RequiredToolsConfig = z.infer<typeof RequiredToolsSchema>;
 export type LauncherConfig = z.infer<typeof LauncherSchema>;
 export type DeploymentConfig = z.infer<typeof DeploymentConfigSchema>;
 

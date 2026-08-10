@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { loadDaemonConfig, renderTemplate, selectNamedProfile } from './config.js';
+import { loadDeploymentConfig } from '../config/deployment-config.js';
 import type { DeploymentConfig } from '../config/deployment-config.js';
 
 const PROFILE_JSON = JSON.stringify({
@@ -319,5 +320,99 @@ describe('loadDaemonConfig — B-800 profileOverride precedence', () => {
       profileOverride: { launch: 'l', reap: 'r', probe: 'probe {conduction_id}' },
     });
     expect(cfg.profile.probe).toBe('probe {conduction_id}');
+  });
+});
+
+// B-801 items 1/2/9: required_tools / requires_app_mint / schema_version, mirrored in BOTH schema
+// surfaces (src/config/deployment-config.ts's LaunchProfileSchema and this module's own legacy
+// file-path validation), kept in lockstep. This is the schema-parity guard against prose drift.
+describe('B-801: required_tools / requires_app_mint / schema_version — schema parity across BOTH surfaces', () => {
+  const NEW_FIELDS = {
+    required_tools: { launch: ['node', 'docker'], reap: ['docker'], probe: ['docker'] },
+    requires_app_mint: true,
+    schema_version: 1,
+  };
+
+  it('the legacy file-path route (src/daemon/config.ts) accepts and carries all three fields through', () => {
+    const profileWithNewFields = JSON.stringify({
+      launch: 'launch {conduction_id}',
+      reap: 'reap {conduction_id}',
+      ...NEW_FIELDS,
+    });
+    const readWithNewFields = (p: string) => {
+      if (p !== '/etc/harmony/profile.json') throw new Error(`unexpected path ${p}`);
+      return profileWithNewFields;
+    };
+    const cfg = loadDaemonConfig(envWith(), readWithNewFields);
+    expect(cfg.profile.required_tools).toEqual(NEW_FIELDS.required_tools);
+    expect(cfg.profile.requires_app_mint).toBe(true);
+    expect(cfg.profile.schema_version).toBe(1);
+  });
+
+  it('the B-800 named-profile route (src/config/deployment-config.ts) accepts and carries all three fields through', () => {
+    const io = {
+      existsSync: (p: string) => p === '/deployment.json',
+      readFileSync: (p: string) => {
+        if (p !== '/deployment.json') throw new Error(`unexpected path ${p}`);
+        return JSON.stringify({
+          profiles: {
+            cloud: { launch: 'launch {conduction_id}', reap: 'reap {conduction_id}', ...NEW_FIELDS },
+          },
+        });
+      },
+    };
+    const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
+    expect(loaded?.profiles?.cloud.required_tools).toEqual(NEW_FIELDS.required_tools);
+    expect(loaded?.profiles?.cloud.requires_app_mint).toBe(true);
+    expect(loaded?.profiles?.cloud.schema_version).toBe(1);
+  });
+
+  it('the legacy route rejects a malformed required_tools (not an object of string arrays)', () => {
+    const badProfile = JSON.stringify({
+      launch: 'launch {conduction_id}',
+      reap: 'reap {conduction_id}',
+      required_tools: { launch: 'docker' }, // should be an array, not a bare string
+    });
+    expect(() => loadDaemonConfig(envWith(), () => badProfile)).toThrow(/required_tools/);
+  });
+
+  it('the legacy route rejects a non-boolean requires_app_mint and a non-positive-integer schema_version', () => {
+    expect(() =>
+      loadDaemonConfig(
+        envWith(),
+        () =>
+          JSON.stringify({
+            launch: 'l {conduction_id}',
+            reap: 'r {conduction_id}',
+            requires_app_mint: 'yes',
+          }),
+      ),
+    ).toThrow(/requires_app_mint/);
+    expect(() =>
+      loadDaemonConfig(
+        envWith(),
+        () =>
+          JSON.stringify({ launch: 'l {conduction_id}', reap: 'r {conduction_id}', schema_version: 0 }),
+      ),
+    ).toThrow(/schema_version/);
+  });
+
+  it('the B-800 named-profile route rejects a malformed required_tools/requires_app_mint/schema_version too', () => {
+    const io = {
+      existsSync: (p: string) => p === '/deployment.json',
+      readFileSync: (p: string) =>
+        JSON.stringify({
+          profiles: {
+            cloud: {
+              launch: 'launch {conduction_id}',
+              reap: 'reap {conduction_id}',
+              requires_app_mint: 'yes',
+            },
+          },
+        }),
+    };
+    expect(() => loadDeploymentConfig({ configPath: '/deployment.json', ...io })).toThrow(
+      /failed validation/,
+    );
   });
 });

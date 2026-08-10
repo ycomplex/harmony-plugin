@@ -28024,6 +28024,11 @@ var DeploymentEnvSchema = external_exports.object({
   ANTHROPIC_API_KEY: external_exports.string().optional(),
   CLAUDE_HEADLESS_FLAGS: external_exports.string().optional()
 }).partial();
+var RequiredToolsSchema = external_exports.object({
+  launch: external_exports.array(external_exports.string().min(1)).optional(),
+  reap: external_exports.array(external_exports.string().min(1)).optional(),
+  probe: external_exports.array(external_exports.string().min(1)).optional()
+}).partial();
 var LaunchProfileSchema = external_exports.object({
   /** Command template that launches a one-shot worker. Placeholders: {conduction_id}, {ticket}. */
   launch: external_exports.string().min(1),
@@ -28035,7 +28040,19 @@ var LaunchProfileSchema = external_exports.object({
   maxConcurrentWorkers: external_exports.number().int().nonnegative().optional(),
   /** B-800: replaces the CLOUDSDK_CORE_PROJECT hardcoded default baked into cloud-worker-*.sh —
    *  the cloud profile's GCP project, read by those scripts via `harmony config get`. */
-  gcloud_project: external_exports.string().optional()
+  gcloud_project: external_exports.string().optional(),
+  /** B-801: see RequiredToolsSchema above — src/daemon/preflight.ts's hard tool-resolution check. */
+  required_tools: RequiredToolsSchema.optional(),
+  /** B-801: true when this profile mints a worker credential via mint-installation-token.mjs before
+   *  launch (container/README.md "The credential envelopes") — gates src/daemon/preflight.ts's hard
+   *  env-contract check for HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/
+   *  HARMONY_APP_PRIVATE_KEY_PATH/HARMONY_PLUGIN_DIR. */
+  requires_app_mint: external_exports.boolean().optional(),
+  /** B-801: bumped whenever a NEW optional profile capability ships, so a stale profile file (never
+   *  regenerated after an upgrade) gets flagged by the boot preflight's soft audit instead of just
+   *  silently lacking the new capability. Defaults to 1 (this ticket's baseline) when absent — see
+   *  src/daemon/preflight.ts's CURRENT_SCHEMA_VERSION. */
+  schema_version: external_exports.number().int().positive().optional()
 });
 var GithubAppSchema = external_exports.object({
   app_id: external_exports.string(),
