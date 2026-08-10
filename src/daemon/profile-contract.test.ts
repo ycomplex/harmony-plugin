@@ -935,13 +935,234 @@ describe('entrypoint.sh: nested workspace-mirror clone layout (B-726 (a))', () =
     expect(script).toMatch(/clone\s+"\$PLUGIN_REPO"\s+"\$PLUGIN_REF"\s+\/workspace\/workspace\/plugin/);
   });
 
-  it('derives PLUGIN_REF from HARMONY_PLUGIN_POSTURE (B-803), stripping the ack: prefix, and exports it so the exec\'d provision.sh inherits it', () => {
-    expect(script).toMatch(/^export PLUGIN_REF="\$\{HARMONY_PLUGIN_POSTURE:-main\}"$/m);
-    expect(script).toMatch(/^PLUGIN_REF="\$\{PLUGIN_REF#ack:\}"$/m);
+  it('derives PLUGIN_REF from HARMONY_PLUGIN_POSTURE (B-803/B-814), stripping the ack: prefix via the shared plugin_ref_from_posture() helper, and exports it so the exec\'d provision.sh inherits it', () => {
+    // B-814: this used to be two flat top-level lines; it is now the shared plugin_ref_from_posture()
+    // helper (also used by the repos[] branch's is_plugin entry, see below) called from the fallback.
+    expect(script).toMatch(/^plugin_ref_from_posture\(\) \{$/m);
+    expect(script).toMatch(/local posture="\$\{HARMONY_PLUGIN_POSTURE:-main\}"/);
+    expect(script).toMatch(/printf '%s' "\$\{posture#ack:\}"/);
+    expect(script).toMatch(/^export PLUGIN_REF="\$\(plugin_ref_from_posture\)"$/m);
   });
 
   it('hands off to provision.sh at its new nested location', () => {
     expect(script).toContain('exec /workspace/workspace/plugin/container/provision.sh "$@"');
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+// B-814: a deployment declares its own `repos` list — entrypoint.sh iterates HARMONY_REPOS_JSON
+// (base64-encoded JSON, see scripts/mint-installation-token.mjs / container/cloud-worker-launch.sh
+// for why base64) instead of the fixed three-slot WEB_REPO/PLUGIN_REPO/WORKSPACE_REPO clone, when
+// that var is set and non-empty. Absent it, AC3 requires byte-for-byte unchanged fallback behavior.
+//
+// These tests EXECUTE entrypoint.sh for real (bash + jq + base64, all present in the CI image and
+// this dev environment) with a fake `git` on PATH that logs every invocation instead of touching the
+// network, and with the two `exec .../provision.sh` hand-off lines replaced by an observable
+// `echo EXEC_TARGET=...` marker — so the harness never actually execs a real provision.sh (which,
+// for the fallback branch's hardcoded absolute /workspace/workspace path, could otherwise
+// accidentally touch this very checkout depending on where it happens to be cloned).
+
+/** entrypoint.sh with both `exec .../provision.sh "$@"` hand-offs replaced by an observable marker,
+ *  and (for the AC3 fallback test only) the hardcoded `/workspace/workspace` prefix substituted for
+ *  an isolated tmpdir so the harness never touches this checkout's own real directory tree. */
+function buildRunnableEntrypoint(script: string, workspaceRoot?: string): string {
+  let out = workspaceRoot ? script.split('/workspace/workspace').join(workspaceRoot) : script;
+  out = out.replace(
+    'exec "$PLUGIN_DIR/container/provision.sh" "$@"',
+    'echo "EXEC_TARGET=$PLUGIN_DIR/container/provision.sh $*"',
+  );
+  const fallbackTarget = `exec ${workspaceRoot ?? '/workspace/workspace'}/plugin/container/provision.sh "$@"`;
+  expect(out).toContain(fallbackTarget); // fails loudly if the literal line ever drifts
+  out = out.replace(fallbackTarget, 'echo "EXEC_TARGET=FALLBACK $*"');
+  return out;
+}
+
+interface EntrypointResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  gitCalls: string[];
+}
+
+function runEntrypoint(
+  env: NodeJS.ProcessEnv,
+  opts: { args?: string[]; workspaceRoot?: string } = {},
+): EntrypointResult {
+  const script = readFileSync(entrypointPath, 'utf8');
+  const runnable = buildRunnableEntrypoint(script, opts.workspaceRoot);
+
+  const dir = mkdtempSync(join(tmpdir(), 'b814-entrypoint-'));
+  const scriptFile = join(dir, 'entrypoint-test.sh');
+  writeFileSync(scriptFile, runnable, { mode: 0o700 });
+
+  const binDir = join(dir, 'bin');
+  mkdirSync(binDir);
+  const gitCallLog = join(dir, 'git-calls.log');
+  writeFileSync(gitCallLog, '');
+  writeFileSync(
+    join(binDir, 'git'),
+    [
+      '#!/bin/sh',
+      'echo "$*" >> "$GIT_CALL_LOG"',
+      'if [ "$1" = "clone" ]; then',
+      '  shift; shift; ref="$1"; shift; url="$1"; shift; dst="$1"',
+      '  mkdir -p "$dst/.git"',
+      'fi',
+      '',
+    ].join('\n'),
+    { mode: 0o700 },
+  );
+
+  let stdout: string;
+  let stderr = '';
+  let exitCode = 0;
+  try {
+    stdout = execFileSync('bash', [scriptFile, ...(opts.args ?? ['shell'])], {
+      env: { ...process.env, ...env, PATH: `${binDir}:${process.env.PATH}`, GIT_CALL_LOG: gitCallLog },
+      encoding: 'utf8',
+    });
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string; status?: number | null };
+    stdout = e.stdout ?? '';
+    stderr = e.stderr ?? '';
+    exitCode = e.status ?? 1;
+  }
+  const gitCalls = readFileSync(gitCallLog, 'utf8').split('\n').filter(Boolean);
+  return { stdout, stderr, exitCode, gitCalls };
+}
+
+function b64(value: unknown): string {
+  return Buffer.from(JSON.stringify(value), 'utf8').toString('base64');
+}
+
+describe('entrypoint.sh: repos[] clone iteration (B-814)', () => {
+  it('AC1: a SINGLE-entry repos list with is_plugin:true clones it and hands off to ITS OWN path — no source edit needed (e.g. Team Health)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b814-ac1-'));
+    const pluginPath = join(dir, 'team-health');
+    const repos = [{ url: 'https://github.com/example/team-health.git', path: pluginPath, is_plugin: true }];
+
+    const result = runEntrypoint({
+      GIT_TOKEN: 'dummy',
+      HARMONY_PLUGIN_POSTURE: 'main',
+      HARMONY_REPOS_JSON: b64(repos),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.gitCalls).toEqual([
+      `clone --branch main https://github.com/example/team-health.git ${pluginPath}`,
+    ]);
+    expect(result.stdout).toContain(`EXEC_TARGET=${pluginPath}/container/provision.sh shell`);
+  });
+
+  it('clones the meta_repo_role entry FIRST, then every other entry at its own configured ref — EXCEPT the is_plugin entry, where HARMONY_PLUGIN_POSTURE always wins over that entry\'s own ref', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b814-meta-'));
+    const workspacePath = join(dir, 'workspace');
+    const webPath = join(dir, 'workspace', 'web');
+    const pluginPath = join(dir, 'workspace', 'plugin');
+    const repos = [
+      { url: 'https://github.com/ycomplex/harmony-workspace.git', path: workspacePath, meta_repo_role: true },
+      { url: 'https://github.com/ycomplex/harmony-web.git', path: webPath, ref: 'web-feature-branch' },
+      { url: 'https://github.com/ycomplex/harmony-plugin.git', path: pluginPath, is_plugin: true, ref: 'should-be-ignored' },
+    ];
+
+    const result = runEntrypoint({
+      GIT_TOKEN: 'dummy',
+      HARMONY_PLUGIN_POSTURE: 'ack:my-feature-branch',
+      HARMONY_REPOS_JSON: b64(repos),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.gitCalls).toEqual([
+      `clone --branch main https://github.com/ycomplex/harmony-workspace.git ${workspacePath}`,
+      `clone --branch web-feature-branch https://github.com/ycomplex/harmony-web.git ${webPath}`,
+      `clone --branch my-feature-branch https://github.com/ycomplex/harmony-plugin.git ${pluginPath}`,
+    ]);
+    expect(result.stdout).toContain(`EXEC_TARGET=${pluginPath}/container/provision.sh shell`);
+  });
+
+  it('aborts with a clear message when HARMONY_REPOS_JSON decodes to an empty array', () => {
+    const result = runEntrypoint({ GIT_TOKEN: 'dummy', HARMONY_REPOS_JSON: b64([]) });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toMatch(/did not decode to a non-empty JSON array/);
+    expect(result.gitCalls).toEqual([]);
+  });
+
+  it('aborts with a clear message when HARMONY_REPOS_JSON is not valid base64/JSON', () => {
+    const result = runEntrypoint({ GIT_TOKEN: 'dummy', HARMONY_REPOS_JSON: 'not-valid-base64-or-json!!!' });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toMatch(/did not decode to a non-empty JSON array/);
+  });
+
+  it('aborts with a clear message when no entry sets is_plugin:true — provisioning is plugin code, there is no plugin-less route', () => {
+    const repos = [{ url: 'https://github.com/x/y.git', path: '/tmp/does-not-matter' }];
+    const result = runEntrypoint({ GIT_TOKEN: 'dummy', HARMONY_REPOS_JSON: b64(repos) });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toMatch(/no repos\[\] entry has is_plugin:true/);
+    expect(result.gitCalls).toEqual([]);
+  });
+
+  it('a non-plugin entry with no ref defaults to "main", same as the fallback WEB_REF/WORKSPACE_REF default', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b814-default-ref-'));
+    const siblingPath = join(dir, 'sibling');
+    const pluginPath = join(dir, 'plugin');
+    const repos = [
+      { url: 'https://github.com/x/sibling.git', path: siblingPath },
+      { url: 'https://github.com/x/plugin.git', path: pluginPath, is_plugin: true },
+    ];
+
+    const result = runEntrypoint({
+      GIT_TOKEN: 'dummy',
+      HARMONY_PLUGIN_POSTURE: 'prod',
+      HARMONY_REPOS_JSON: b64(repos),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.gitCalls).toEqual([
+      `clone --branch main https://github.com/x/sibling.git ${siblingPath}`,
+      `clone --branch prod https://github.com/x/plugin.git ${pluginPath}`,
+    ]);
+  });
+});
+
+describe('entrypoint.sh: AC3 — HARMONY_REPOS_JSON absent/empty falls back byte-for-byte to the three-slot clone', () => {
+  it('clones WORKSPACE_REPO, then WEB_REPO, then PLUGIN_REPO at the same relative layout as before B-814, with no HARMONY_REPOS_JSON set at all', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b814-ac3-'));
+
+    const result = runEntrypoint(
+      { GIT_TOKEN: 'dummy', HARMONY_PLUGIN_POSTURE: 'ack:my-branch' },
+      { workspaceRoot: dir },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.gitCalls).toEqual([
+      `clone --branch main https://github.com/ycomplex/harmony-workspace.git ${dir}`,
+      `clone --branch main https://github.com/ycomplex/harmony-web.git ${dir}/web`,
+      `clone --branch my-branch https://github.com/ycomplex/harmony-plugin.git ${dir}/plugin`,
+    ]);
+    expect(result.stdout).toContain('EXEC_TARGET=FALLBACK shell');
+  });
+
+  it('respects WEB_REPO/PLUGIN_REPO/WORKSPACE_REPO/WEB_REF/WORKSPACE_REF overrides exactly as before, when set', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b814-ac3-override-'));
+
+    const result = runEntrypoint(
+      {
+        GIT_TOKEN: 'dummy',
+        WEB_REPO: 'https://github.com/acme/web-fork.git',
+        WEB_REF: 'v2',
+        WORKSPACE_REPO: 'https://github.com/acme/workspace-fork.git',
+        WORKSPACE_REF: 'v3',
+        HARMONY_PLUGIN_POSTURE: 'prod',
+      },
+      { workspaceRoot: dir },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.gitCalls).toEqual([
+      `clone --branch v3 https://github.com/acme/workspace-fork.git ${dir}`,
+      `clone --branch v2 https://github.com/acme/web-fork.git ${dir}/web`,
+      `clone --branch prod https://github.com/ycomplex/harmony-plugin.git ${dir}/plugin`,
+    ]);
   });
 });
 

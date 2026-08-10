@@ -10,15 +10,16 @@
 
 ## What this consolidates
 
-Today a live deployment's config is spread across up to three places:
+Today a live deployment's config is spread across up to four places:
 
 | Old mechanism | New home |
 |---|---|
 | A flat env file (`~/.harmony-container.env`, `container/env.example`) — the worker container's base env, and (since B-732) `mint-installation-token.mjs --base <file>`'s input | the `env` section |
 | A standalone launch-profile JSON (`~/harmony-daemon-profile.json`, a copy of `container/daemon-profile.example.json` or `daemon-profile.cloud.example.json`), named by `HARMONY_DAEMON_PROFILE` | the `profiles` section, keyed by a name you choose |
 | The launcher-host facts scattered across env vars (`HARMONY_APP_ID`/`HARMONY_APP_INSTALLATION_ID`/`HARMONY_APP_PRIVATE_KEY_PATH`, `HARMONY_PLUGIN_DIR`) and the hardcoded `KNOWN_REFS` map (`src/tools/environment.ts`) | the `launcher` section |
+| The fixed three-slot clone assumption baked into `container/entrypoint.sh` (`WEB_REPO`/`PLUGIN_REPO`/`WORKSPACE_REPO` env vars) — a team with a different topology (one repo, N repos, no meta-repo wrapper) can't express it | the `repos` section (B-814) — an ordered, arbitrary list; ABSENT `repos` falls back byte-for-byte to the old three-slot behavior, so this section is opt-in |
 
-All three land in **one JSON file per deployment** — see `src/config/deployment-config.ts`'s header
+All four land in **one JSON file per deployment** — see `src/config/deployment-config.ts`'s header
 comment for the authoritative shape (zod is the single source of truth). One machine can run **N**
 daemon deployments bound to **N** boards, each with its own file — the file's PATH is the instance
 parameter, not a fixed location. That's exactly what the two worked examples below exercise.
@@ -43,7 +44,7 @@ Not every consumer offers a `--config` flag — some only support the env var / 
 | Daemon boot (`node dist/bin/daemon.js`) | yes, this ticket's item 1 | yes |
 | `mint-installation-token.mjs` | yes, this ticket's item 2 | yes |
 | `container/provision.sh` (`launcher.supabase.url` lookup) | no | yes |
-| `container/cloud-worker-*.sh` (`profiles.cloud.gcloud_project` lookup) | no | yes |
+| `container/cloud-worker-launch.sh` (`profiles.cloud.gcloud_project` AND `repos`, B-814, lookups) | no | yes |
 | `src/tools/environment.ts` (`launcher.supabase_refs` merge, inside the running MCP/CLI process) | no | yes |
 
 **Practical consequence:** for the DEFAULT deployment (path `~/.harmony/deployment.json`), you don't
@@ -126,7 +127,27 @@ anywhere.
    Skip `launcher.supabase` entirely for a prod-target deployment — it's only needed for a
    staging/custom-target deployment (see `commands/harmony-setup.md`'s non-prod-target note).
 
-5. **Assemble `~/.harmony/deployment.json`** — the three sections above as one object:
+5. **Fold in the `repos` section (B-814, OPTIONAL)** — an ordered list replacing the fixed
+   `WEB_REPO`/`PLUGIN_REPO`/`WORKSPACE_REPO` three-slot clone. Skip this step entirely to keep
+   today's env-var-driven behavior unchanged (feature-detected: absent `repos` falls back
+   byte-for-byte). This is the explicit list-form of the SAME default three-slot topology
+   `container/entrypoint.sh` clones today, for a team that wants it spelled out rather than implicit:
+   ```json
+   "repos": [
+     { "url": "https://github.com/ycomplex/harmony-workspace.git", "path": "/workspace/workspace", "meta_repo_role": true },
+     { "url": "https://github.com/ycomplex/harmony-web.git", "path": "/workspace/workspace/web" },
+     { "url": "https://github.com/ycomplex/harmony-plugin.git", "path": "/workspace/workspace/plugin", "is_plugin": true }
+   ]
+   ```
+   `meta_repo_role` marks the one entry that's the nesting parent (cloned first; every other entry
+   whose `path` falls inside it clones nested — mirrors the `workspace` → `web`/`plugin` layout
+   above). `is_plugin` marks the one entry `container/entrypoint.sh` hands provisioning off to; its
+   clone `ref` always comes from `HARMONY_PLUGIN_POSTURE` (never from this entry's own `ref`, if it
+   even sets one) — see example (b) below for the N=1 case this section exists for in the first
+   place (a team with no meta-repo wrapper at all).
+
+6. **Assemble `~/.harmony/deployment.json`** — the sections above as one object (`repos` omitted
+   here since example (a) doesn't need it — see step 5):
    ```json
    {
      "env": { "HARMONY_TARGET": "prod", "HARMONY_API_TOKEN": "harmony_abc123", "GIT_USER_NAME": "Harmony Worker", "GIT_USER_EMAIL": "worker@ycomplex.com", "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-..." },
@@ -135,7 +156,7 @@ anywhere.
    }
    ```
 
-6. **Verify it parses and reads back correctly:**
+7. **Verify it parses and reads back correctly:**
    ```bash
    node /absolute/path/to/harmony-plugin/dist/bin/harmony.js config get profiles.local.launch
    node /absolute/path/to/harmony-plugin/dist/bin/harmony.js config get launcher.github_app.app_id
@@ -143,7 +164,7 @@ anywhere.
    A schema violation (typo'd key, missing required `launch`/`reap`) throws a clear error naming the
    file and the problem — fix it before moving on.
 
-7. **Switch the daemon boot to the named-profile route** (optional but recommended — see the
+8. **Switch the daemon boot to the named-profile route** (optional but recommended — see the
    precedence recap above; the old route keeps working indefinitely if you skip this):
    - Directly: `HARMONY_API_TOKEN=<token> node dist/bin/daemon.js --profile local` (no `--config`
      needed — the default path resolves automatically).
@@ -156,7 +177,7 @@ anywhere.
      launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.ycomplex.harmony-daemon.plist
      ```
 
-8. **Leave `~/.harmony-container.env` in place** — the container/mint-script route still reads it
+9. **Leave `~/.harmony-container.env` in place** — the container/mint-script route still reads it
    as `--base`'s fallback, but now that `~/.harmony/deployment.json` exists at the default path, its
    `env` section wins automatically (no launch-template edit needed; `resolveBaseContent` checks the
    deployment config FIRST, regardless of whether `--base` was also passed). You may delete the old
@@ -182,19 +203,31 @@ Same machine, a second daemon bound to a different board ("Team Health"'s own pr
    identity is fine if the App is installed on the same repos; give Team Health's daemon its own
    `HARMONY_API_TOKEN` (its board), and its own profile name (`team-health` here, deliberately
    different from `local` above so both deployments' profile names never collide if anyone ever
-   merges the two files):
+   merges the two files). **This is also the worked example for a `repos` section (B-814) with a
+   SINGLE entry** — Team Health has no meta-repo wrapper and no separate web app, just one repo that
+   carries the plugin. `is_plugin: true` is the only field that matters here: no `meta_repo_role`
+   entry exists at all, so this one entry simply clones as its own top-level checkout, and
+   `container/entrypoint.sh` hands provisioning straight off to it — no source-code edit needed to
+   express this topology, unlike the fixed three-slot assumption `repos` replaces:
    ```json
    {
      "env": { "HARMONY_TARGET": "prod", "HARMONY_API_TOKEN": "harmony_teamhealth_xyz789", "GIT_USER_NAME": "Harmony Worker", "GIT_USER_EMAIL": "worker@ycomplex.com", "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-..." },
      "profiles": { "team-health": { "launch": "...", "reap": "...", "probe": "...", "maxConcurrentWorkers": 2 } },
-     "launcher": { "plugin_dir": "/absolute/path/to/harmony-plugin", "github_app": { "app_id": "123456", "installation_id": "78901234", "private_key_path": "/absolute/path/to/harmony-daemon.private-key.pem" } }
+     "launcher": { "plugin_dir": "/absolute/path/to/harmony-plugin", "github_app": { "app_id": "123456", "installation_id": "78901234", "private_key_path": "/absolute/path/to/harmony-daemon.private-key.pem" } },
+     "repos": [
+       { "url": "https://github.com/ycomplex/team-health.git", "path": "/workspace/workspace/plugin", "is_plugin": true }
+     ]
    }
    ```
+   (The `path` above matches `container/provision.sh`'s own still-hardcoded `PLUGIN_DIR` — that
+   internal hardcode is unchanged by B-814, so a single-repo deployment's `is_plugin` entry must
+   currently target this exact path for provisioning to find it.)
 
 3. **Verify with an EXPLICIT `--config`** (this path is non-default, so every flag-aware consumer
    needs it spelled out):
    ```bash
    node /absolute/path/to/harmony-plugin/dist/bin/harmony.js config get profiles.team-health.launch --config ~/.harmony-team-health/deployment.json
+   node /absolute/path/to/harmony-plugin/dist/bin/harmony.js config get repos --config ~/.harmony-team-health/deployment.json
    ```
 
 4. **Boot Team Health's daemon with BOTH flags:**

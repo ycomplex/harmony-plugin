@@ -22435,6 +22435,24 @@ var LaunchProfileSchema = external_exports.object({
    *  src/daemon/preflight.ts's CURRENT_SCHEMA_VERSION. */
   schema_version: external_exports.number().int().positive().optional()
 });
+var RepoEntrySchema = external_exports.object({
+  /** Clone URL. */
+  url: external_exports.string().min(1),
+  /** Clone ref. IGNORED for the is_plugin entry (see header comment) — HARMONY_PLUGIN_POSTURE wins
+   *  there. Optional for every other entry; falls back to the container's existing "main" default. */
+  ref: external_exports.string().optional(),
+  /** In-container clone destination, e.g. "/workspace/workspace/plugin". */
+  path: external_exports.string().min(1),
+  /** Marks this entry as the meta-repo/nesting parent. At most one entry may set this. */
+  meta_repo_role: external_exports.boolean().optional(),
+  /** Marks this entry as the one carrying the plugin. At most one entry may set this. */
+  is_plugin: external_exports.boolean().optional()
+});
+var ReposSchema = external_exports.array(RepoEntrySchema).refine((repos) => repos.filter((r) => r.meta_repo_role).length <= 1, {
+  message: "at most one repos[] entry may set meta_repo_role"
+}).refine((repos) => repos.filter((r) => r.is_plugin).length <= 1, {
+  message: "at most one repos[] entry may set is_plugin"
+});
 var GithubAppSchema = external_exports.object({
   app_id: external_exports.string(),
   installation_id: external_exports.string(),
@@ -22456,7 +22474,9 @@ var LauncherSchema = external_exports.object({
 var DeploymentConfigSchema = external_exports.object({
   env: DeploymentEnvSchema.optional(),
   profiles: external_exports.record(LaunchProfileSchema).optional(),
-  launcher: LauncherSchema.optional()
+  launcher: LauncherSchema.optional(),
+  /** B-814: the ordered repo set — see the RepoEntrySchema/ReposSchema header comment above. */
+  repos: ReposSchema.optional()
 });
 function resolveDeploymentConfigPath(opts) {
   const env = opts?.env ?? process.env;

@@ -52,6 +52,19 @@ if [ -n "${HARMONY_PLUGIN_DIR:-}" ] && [ -f "$HARMONY_PLUGIN_DIR/dist/bin/harmon
   [ -n "$_b800_config_project" ] && _b800_default_cloudsdk_project="$_b800_config_project"
 fi
 : "${CLOUDSDK_CORE_PROJECT:=$_b800_default_cloudsdk_project}"
+
+# B-814: this deployment's ordered repo-set list, when configured — read the SAME way as
+# profiles.cloud.gcloud_project just above (best-effort; a missing HARMONY_PLUGIN_DIR or deployment
+# config just leaves this empty, and write_exec_env_file() below skips the var entirely, which is
+# entrypoint.sh's feature-detect signal to fall back to the three-slot WEB_REPO/PLUGIN_REPO/
+# WORKSPACE_REPO behavior — AC3, unchanged). `config get repos` already returns valid JSON
+# (src/cli/commands/config.ts JSON.stringifys non-string values) — base64-encode it before it rides
+# the exec-env-vars YAML file below, so embedded double quotes never have to survive naive
+# printf-quoting (see write_exec_env_file()'s own comment at the HARMONY_REPOS_JSON line).
+_b814_repos_json=""
+if [ -n "${HARMONY_PLUGIN_DIR:-}" ] && [ -f "$HARMONY_PLUGIN_DIR/dist/bin/harmony.js" ]; then
+  _b814_repos_json="$(node "$HARMONY_PLUGIN_DIR/dist/bin/harmony.js" config get repos 2>/dev/null || true)"
+fi
 : "${CLOUDSDK_CORE_ACCOUNT:=harmony-daemon@harmony-conductor.iam.gserviceaccount.com}"
 : "${HARMONY_CLOUD_RUN_REGION:=us-central1}"
 : "${HARMONY_CLOUD_RUN_JOB:=harmony-build-worker}"
@@ -184,6 +197,18 @@ write_exec_env_file() {
       # this is deliberately conditional, never unconditional.
       if [ -n "${HARMONY_PLUGIN_POSTURE:-}" ]; then
         printf 'HARMONY_PLUGIN_POSTURE: "%s"\n' "$HARMONY_PLUGIN_POSTURE"
+      fi
+      # B-814: this deployment's ordered repos[] list, forwarded ONLY when the host's deployment
+      # config actually declares one (the same conditional-forward convention as
+      # HARMONY_PLUGIN_POSTURE above — most deployments still have no `repos` section, and must fall
+      # straight through to entrypoint.sh's unchanged three-slot behavior, AC3). Base64-encoded (see
+      # the _b814_repos_json comment above and serializeReposSection() in
+      # scripts/mint-installation-token.mjs) so the value's alphabet (A-Za-z0-9+/=) is always safe to
+      # embed inside this quoted YAML line — the raw JSON `config get repos` returns would carry
+      # embedded double quotes that a naive printf 'X: "%s"\n' "$json" here would NOT escape.
+      if [ -n "${_b814_repos_json:-}" ]; then
+        _b814_repos_json_b64="$(printf '%s' "$_b814_repos_json" | base64 | tr -d '\n')"
+        printf 'HARMONY_REPOS_JSON: "%s"\n' "$_b814_repos_json_b64"
       fi
     } > "$file"
   )

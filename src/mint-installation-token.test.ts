@@ -17,6 +17,7 @@ import {
   mintInstallationToken,
   resolveDeploymentConfigPath,
   flattenEnvSection,
+  serializeReposSection,
   resolveBaseContent,
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore -- plain .mjs helper module, deliberately dependency-free and untyped
@@ -215,6 +216,37 @@ describe('flattenEnvSection', () => {
   });
 });
 
+// B-814: the repos[] list rides the SAME base-content channel as the env section, as one
+// HARMONY_REPOS_JSON=<base64> line — base64, not raw JSON, because this same value also has to
+// survive container/cloud-worker-launch.sh's YAML embedding on the cloud path (see
+// serializeReposSection's own doc comment in the .mjs file).
+describe('serializeReposSection', () => {
+  it('encodes a repos array as a single HARMONY_REPOS_JSON=<base64 of the JSON> line', () => {
+    const repos = [{ url: 'https://github.com/x/y.git', path: '/workspace/y', is_plugin: true }];
+    const line = serializeReposSection(repos);
+    expect(line.startsWith('HARMONY_REPOS_JSON=')).toBe(true);
+    expect(line.endsWith('\n')).toBe(true);
+    const encoded = line.slice('HARMONY_REPOS_JSON='.length, -1);
+    expect(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))).toEqual(repos);
+  });
+
+  it('round-trips a multi-entry repos list (meta-repo + plugin entry) through the base64 encoding', () => {
+    const repos = [
+      { url: 'https://github.com/ycomplex/harmony-workspace.git', path: '/workspace/workspace', meta_repo_role: true },
+      { url: 'https://github.com/ycomplex/harmony-plugin.git', path: '/workspace/workspace/plugin', is_plugin: true, ref: 'should-be-ignored-by-entrypoint' },
+    ];
+    const encoded = serializeReposSection(repos).replace('HARMONY_REPOS_JSON=', '').trimEnd();
+    expect(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))).toEqual(repos);
+  });
+
+  it('returns an empty string for an absent, empty, or non-array repos section', () => {
+    expect(serializeReposSection(undefined)).toBe('');
+    expect(serializeReposSection([])).toBe('');
+    expect(serializeReposSection({})).toBe('');
+    expect(serializeReposSection(null)).toBe('');
+  });
+});
+
 describe('resolveBaseContent', () => {
   it('builds base content from the deployment config env section when the config file exists', () => {
     const io = fakeFs({
@@ -255,6 +287,31 @@ describe('resolveBaseContent', () => {
     const io = fakeFs({ '/deployment.json': JSON.stringify({ profiles: {} }) });
     expect(resolveBaseContent({ configPath: '/deployment.json', ...io })).toBe('');
   });
+
+  // B-814: repos[] merges in ALONGSIDE the env section flattening — same base-content channel,
+  // not a separate one — so container/entrypoint.sh reaches it via the SAME env-file every other
+  // deployment-config value already rides through on the local profile.
+  it('merges a repos[] section in as a HARMONY_REPOS_JSON line, alongside the flattened env section', () => {
+    const repos = [{ url: 'https://github.com/x/y.git', path: '/workspace/y', is_plugin: true }];
+    const io = fakeFs({
+      '/deployment.json': JSON.stringify({ env: { HARMONY_API_TOKEN: 'tok' }, repos }),
+    });
+    const content = resolveBaseContent({ configPath: '/deployment.json', ...io });
+    expect(content).toContain('HARMONY_API_TOKEN=tok\n');
+    const reposLine = content.split('\n').find((l) => l.startsWith('HARMONY_REPOS_JSON='));
+    expect(reposLine).toBeDefined();
+    const encoded = (reposLine as string).slice('HARMONY_REPOS_JSON='.length);
+    expect(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))).toEqual(repos);
+  });
+
+  it('omits HARMONY_REPOS_JSON entirely when the deployment config has no repos section (AC3 — additive only)', () => {
+    const io = fakeFs({
+      '/deployment.json': JSON.stringify({ env: { HARMONY_API_TOKEN: 'tok' } }),
+    });
+    const content = resolveBaseContent({ configPath: '/deployment.json', ...io });
+    expect(content).toBe('HARMONY_API_TOKEN=tok\n');
+    expect(content).not.toContain('HARMONY_REPOS_JSON');
+  });
 });
 
 describe('resolveBaseContent + composeEnvFile integration (B-800 end-to-end shape)', () => {
@@ -269,5 +326,29 @@ describe('resolveBaseContent + composeEnvFile integration (B-800 end-to-end shap
     expect(composed).not.toContain('ghp_stale_founder_pat');
     expect(composed).toContain('HARMONY_API_TOKEN=tok');
     expect(composed).toContain('GIT_TOKEN=ghs_minted');
+  });
+
+  // B-814: confirms the whole chain actually round-trips end to end (this exact surface had a
+  // prior reachability bug, B-803/B-726 — a var can be flattened here but never actually reach the
+  // container if some later stage silently drops it) — GIT_TOKEN stripping must not disturb it.
+  it('a repos[] section survives resolveBaseContent + composeEnvFile intact, alongside a stripped stale GIT_TOKEN', () => {
+    const repos = [
+      { url: 'https://github.com/ycomplex/harmony-workspace.git', path: '/workspace/workspace', meta_repo_role: true },
+      { url: 'https://github.com/ycomplex/harmony-plugin.git', path: '/workspace/workspace/plugin', is_plugin: true },
+    ];
+    const io = fakeFs({
+      '/deployment.json': JSON.stringify({
+        env: { HARMONY_API_TOKEN: 'tok', GIT_TOKEN: 'ghp_stale_founder_pat' },
+        repos,
+      }),
+    });
+    const baseContent = resolveBaseContent({ configPath: '/deployment.json', ...io });
+    const composed = composeEnvFile({ baseContent, token: 'ghs_minted' });
+    expect(composed).not.toContain('ghp_stale_founder_pat');
+    expect(composed).toContain('GIT_TOKEN=ghs_minted');
+    const reposLine = composed.split('\n').find((l) => l.startsWith('HARMONY_REPOS_JSON='));
+    expect(reposLine).toBeDefined();
+    const encoded = (reposLine as string).slice('HARMONY_REPOS_JSON='.length);
+    expect(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))).toEqual(repos);
   });
 });
