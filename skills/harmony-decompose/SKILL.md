@@ -31,6 +31,17 @@ proposed hierarchy — confirm/adjust the existing children; never draft a fresh
 (B-646: manual pre-decomposition is common — children get filed during triage — and an unguided run
 would duplicate them, e.g. B-550's 4 → 8).
 
+**Self-heal fallback when this check finds NO children (B-816).** When this gate is entered as the
+OWNING GATE's materialization for a `payload-unrecognized` `decomposition-proposal` event
+(`harmony-conduct` §1c), `list_subtasks` returning zero non-archived children means there is nothing
+pre-filed to confirm — but the accepted brief's snapshot is NOT lost: `consume_pending_acceptance_event`
+echoed it verbatim on the result's `items` field. Render those `child_ticket` items (title/description
+per item) as a **confirm-then-create ask** — never an open "what were the children?" re-dictation
+question. On the human's confirm, mint them via the SAME §4 accept-step-1 `manage_subtasks add_new` +
+promote-to-Proposed sequence, then commit the deferred advance
+(`mcp__harmony__consume_acceptance_event({ event_id })`). Any `ac_transfer` items in the same `items`
+array apply per §4 step 3, unchanged.
+
 Query `engineering` (how this codebase structures multi-surface work) and `product` (feature
 boundaries). Apply the manageability rule: split until each child is a clean, independently-shippable
 unit; stop when further splitting adds coordination cost without clarity. **Complexity/structure

@@ -142,6 +142,21 @@ while filing is still outstanding. Both are rejected as the trigger here.
    (`harmony-clarify/SKILL.md` §5) — captured once, as plain text, in the marker comment; it needs
    no further round-trip through `get_brief` to stay usable, which is what makes the two sites
    interlock under one key instead of writing two non-interlocking records.
+
+   **Fallback when this lookup finds nothing (B-816) — `clarification` or `resolved` comes back
+   `undefined`, so there is no id to key the filing-pass marker on.** When THIS self-heal is reached
+   via `harmony-conduct` §1c's `payload-unrecognized` route for `clarification-draft`, that caller
+   already holds `consume_pending_acceptance_event`'s echoed `items` (the `acceptance_criterion`
+   entries clarify's own `compose_brief` authored at `doc.payload`, B-810) — present THOSE items for
+   confirm (never re-derive, never re-read the brief) and file them via `manage_acceptance_criteria`
+   on the human's confirm, same as step 2's "not found" branch below, keyed on the ticket id (there is
+   no `clarificationBriefId` to scope the marker to in this branch — key the marker on the ticket
+   instead: `AC-FILING-PASS task_id=<task_id> filed=<N>`). When this self-heal is instead reached
+   generically (every sub-track invocation, independent of any B-797 event — no `items` available),
+   this is `ac-pickup-points.md` route 5: a ticket clarified before criteria-at-clarify existed
+   (pre-B-648) genuinely has no proposed set anywhere to echo — the only legitimate open question is
+   an elicitation round asking the human to state the happy-path criteria from scratch, since nothing
+   was ever captured to confirm.
 2. **Check for an existing filing-pass record scoped to that id:**
    ```
    mcp__harmony__list_comments({ task_id })
@@ -256,6 +271,18 @@ step 2b's inline add/update/delete), which already performs the real writes. An 
 brief (the common case: only new ACs, nothing sharpened or dropped) is therefore fully recognized and
 auto-applies with zero agent judgment on a web accept with no session running. `ref`s in both cases come
 from `slugRef`/`dedupeRefs` (`payload-refs.ts`) — never reinvented.
+
+**The fallback when step 5's accept step runs in a FRESH session (B-816) — never re-derive the
+ADD/SHARPEN/DROP set from scratch.** The routing above assumes step 5 runs with step 2b's just-drafted
+edits still in context (the same-session accept path) — but when `harmony-conduct` §1c routes here for a
+`payload-unrecognized` `design-decision-draft` event picked up in a LATER session, that context is gone.
+Do NOT re-derive the edits by re-reading the design decision and guessing what changed, and do NOT ask
+the human to restate which ACs were added/sharpened/dropped — the accepted brief's snapshot already
+carries the exact write_kind-tagged set verbatim on `consume_pending_acceptance_event`'s `items` field
+(B-816). Present those items for confirm (each `acceptance_criterion` as an add, each
+`acceptance_criterion_update` as a sharpen with its `from_ac_id`, each `acceptance_criterion_delete` as
+a drop with its `from_ac_id`), then on confirm execute them via the SAME `manage_acceptance_criteria`
+calls step 5 always makes.
 
 **Decision-only completion line (B-681).** If the ticket carries the **`decision-only` label** (a decision
 ticket whose deliverable IS this design decision — e.g. an inception S2 decision ticket), the **last

@@ -274,16 +274,26 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
      structured shape `consume_pending_acceptance_event` applies (a not-yet-migrated `compose_brief` call
      site — see the ticket for which reasons still owe this wiring). **NEVER treat this as "nothing to
      do"** — that commits a hollow advance under a new name, the exact defect this ticket exists to close.
-     Instead, route to the OWNING GATE SKILL's own materialization for `reason`:
-     - `clarification-draft` → `/harmony-plugin:harmony-design-decide`'s B-744 self-heal (§2b) already
-       re-files the clarify-authored happy-path ACs from the Accepted specification decision.
+     The result's own `items` field (B-816) is the VERBATIM snapshot of what the human already
+     accepted — carry it into whichever route below runs next; that route's materialization renders
+     THESE items (title/content per item) as a **confirm-or-adjust ask**, never re-reads the event via
+     `get_task` / `get_pending_acceptance_event`, and never falls back to an open "what did you accept?"
+     re-dictation question. Only residue genuinely absent from `items` is a legitimate open question.
+     Route to the OWNING GATE SKILL's own materialization for `reason`:
+     - `clarification-draft` → `/harmony-plugin:harmony-design-decide`'s B-744 self-heal (§2b) re-files
+       the clarify-authored happy-path ACs from the Accepted specification decision when it can locate
+       it; when it can't (§2b's own fallback), it presents `items` for confirm instead.
      - `decomposition-proposal` → `/harmony-plugin:harmony-decompose`'s own B-646 existing-child detection
-       (`list_subtasks`) confirms/creates the hierarchy idempotently.
+       (`list_subtasks`) confirms/creates the hierarchy idempotently when children are already pre-filed;
+       when none are found, it presents the echoed `child_ticket` items from `items` as a
+       confirm-then-create ask (§4's existing-child check).
      - `design-decision-draft` (product track) → the product track's own accept step performs its AC
-       add/update/delete inline when it runs.
-     - `plan-draft` → no self-heal exists yet (this is exactly specimen 6, B-800 — closed structurally by
-       step 9's build-gate routing below, not by a self-heal here); surface the gap to the human rather
-       than guessing a work list.
+       add/update/delete inline when it runs; its own fallback (§2b) presents `items` for confirm when it
+       can't.
+     - `plan-draft` → `start-work` SKILL.md O3's plan-draft surface-the-gap route (B-816) — no mechanical
+       self-heal exists (this is exactly specimen 6, B-800, closed structurally by step 9's build-gate
+       routing below, not by a self-heal here), but the human-facing question is now seeded from the
+       echoed `checklist_item` entries in `items` rather than an open re-dictation ask.
      Once the owning gate's materialization is confirmed done, call
      `mcp__harmony__consume_acceptance_event({ event_id: <from the payload-unrecognized result> })`
      directly to commit the deferred advance, then go back to step 1.

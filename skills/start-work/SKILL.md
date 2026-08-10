@@ -158,6 +158,25 @@ implement each step, never WHAT the step list is. An empty `steps` on a ticket t
 a signal worth surfacing (the O2 plan-accept step above should have populated it) — not silently
 substituted with a guess.
 
+**Surface-the-gap route (B-816) — seed the ask from the echoed plan, never an open re-dictation.** This
+is the one `payload-unrecognized` reason with no self-heal (`harmony-conduct` §1c: "no self-heal exists
+yet ... surface the gap to the human"), because when start-work runs standalone (no conductor loop
+wrapping it) nothing else ever calls `consume_pending_acceptance_event` for this ticket. Before asking
+the human anything, call it here:
+```
+mcp__harmony__consume_pending_acceptance_event({ task_id })
+```
+- **`consumed`** → the checklist just materialized (a plan accepted in the browser with no session
+  watching) — re-read `list_checklist_items` and build against that; no question needed.
+- **`payload-unrecognized`** → the result's `items` field (B-816) is the plan's own snapshotted
+  `checklist_item` entries, verbatim — present THOSE as a confirm-then-materialize ask ("here is the
+  plan you accepted — confirm this is still the work list, or adjust it"), never an open "what was the
+  plan?" question. On confirm, materialize via `manage_checklist_items` exactly as O2's accept step
+  does, then `mcp__harmony__consume_acceptance_event({ event_id })` to commit the deferred advance.
+- **`none` / `substrate-absent`** → genuinely nothing to echo (a pre-B-810 ticket, or the checklist was
+  legitimately never populated) — only THEN fall back to an open question, and only for what the
+  snapshot doesn't carry.
+
 Implement, write tests, self-validate against acceptance criteria
 (`mcp__harmony__manage_acceptance_criteria`, `mcp__harmony__manage_test_cases`), and check off each
 checklist step as it lands (`mcp__harmony__manage_checklist_items({ task_id, update: [{ id, completed: true }] })`).

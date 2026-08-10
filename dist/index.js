@@ -40940,6 +40940,8 @@ async function getPendingAcceptanceEvent(client, projectId, taskId) {
 }
 var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer"]);
 function rawItemsOf(payload) {
+  const withNestedPayload = payload;
+  if (Array.isArray(withNestedPayload?.payload)) return withNestedPayload.payload;
   if (Array.isArray(payload)) return payload;
   const withItems = payload;
   return Array.isArray(withItems?.items) ? withItems.items : [];
@@ -41032,7 +41034,7 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId) {
   if (!event) return { status: "none" };
   if (event.status === "consumed") return { status: "none" };
   if (classifyPayload(event.payload) === "unrecognized") {
-    return { status: "payload-unrecognized", event_id: event.id, reason: event.reason };
+    return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
   }
   const applyResult = await applyAcceptanceEventPayload(client, event);
   const consumeResult = await consumeAcceptanceEvent(client, event.id);
@@ -41046,7 +41048,7 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId) {
 }
 var consumePendingAcceptanceEventTool = {
   name: "consume_pending_acceptance_event",
-  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state. { status: "payload-unrecognized", event_id, reason } = the event exists but its snapshotted payload is not (yet) in the structured shape this tool applies \u2014 route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
+  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state. { status: "payload-unrecognized", event_id, reason, items } = the event exists but its snapshotted payload is not (yet) in the structured shape this tool applies. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
   inputSchema: {
     type: "object",
     properties: {

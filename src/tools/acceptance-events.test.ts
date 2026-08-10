@@ -330,7 +330,76 @@ describe('consumePendingAcceptanceEvent — the unrecognized-payload safety valv
       },
     });
     const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
-    expect(result).toEqual({ status: 'payload-unrecognized', event_id: 'event-1', reason: 'clarification-draft' });
+    expect(result).toEqual({
+      status: 'payload-unrecognized', event_id: 'event-1', reason: 'clarification-draft', items: briefDocItems,
+    });
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+});
+describe('rawItemsOf / classifyPayload — B-816 doc-nested snapshot (B-803 plan-event shape)', () => {
+  // resolve_brief snapshots a brief's whole `doc` VERBATIM into pending_acceptance_events.payload. B-810's
+  // compose_brief call sites author the structured array at `doc.payload` — so the LIVE snapshot shape is
+  // `event.payload.payload` (an array), never `event.payload` itself as an array and never
+  // `event.payload.items`. This fixture is that real shape (start-work SKILL.md O2's plan-draft
+  // compose_brief call), not a synthetic bare array.
+  const docNestedPlanPayload = (payloadItems: AcceptanceEventPayloadItem[]) => ({
+    decide: 'Approve this execution plan?',
+    items: [{ kind: 'decision', text: '<plan summary>', recommendation: 'proceed' }],
+    payload: payloadItems,
+  });
+
+  const tenChecklistItems = Array.from({ length: 10 }, (_, i) => checklistItem(`step-${i + 1}`));
+
+  it('a 10-item doc-nested checklist_item snapshot classifies "structured" (never "unrecognized")', () => {
+    expect(classifyPayload(docNestedPlanPayload(tenChecklistItems))).toBe('structured');
+  });
+
+  it('applies every write via the RPCs and commits the deferred advance through the full consume orchestrator', async () => {
+    const event: PendingAcceptanceEvent = {
+      id: 'event-1', task_id: 'task-1', brief_id: 'brief-1', reason: 'plan-draft',
+      payload: docNestedPlanPayload(tenChecklistItems), pending_activity: 'planning', status: 'pending',
+    };
+    const client = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+      },
+      rpcResponses: {
+        consume_checklist_item_write: tenChecklistItems.map((item, i) => ({ data: { applied: true, result_id: `item-${i + 1}` } })),
+        consume_acceptance_event: [{ data: { event_id: 'event-1', task_id: 'task-1', status: 'consumed', workflow_state: 'Planned', idempotent: false } }],
+      },
+    });
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
+    expect(result.status).toBe('consumed');
+    expect(result.applied).toBe(10);
+    expect(result.workflow_state).toBe('Planned');
+    expect(client.rpc).toHaveBeenCalledWith('consume_acceptance_event', { _event_id: 'event-1' });
+    expect(client.rpc).toHaveBeenCalledTimes(11); // 10 checklist writes + the final commit
+  });
+
+  it('a single deliberately-unrecognized item (B-810\'s acceptance_criterion_update) downgrades the WHOLE doc-nested payload to "payload-unrecognized" and echoes it verbatim on `items`; the event stays pending and consume_acceptance_event is never called', async () => {
+    const mixedPayload = [
+      ...tenChecklistItems.slice(0, 9),
+      { write_kind: 'acceptance_criterion_update', ref: 'ac-sharpen-1', content: 'Sharpened AC text', from_ac_id: 'ac-existing-1' } as unknown as AcceptanceEventPayloadItem,
+    ];
+    const doc = docNestedPlanPayload(mixedPayload);
+    expect(classifyPayload(doc)).toBe('unrecognized');
+
+    const event: PendingAcceptanceEvent = {
+      id: 'event-1', task_id: 'task-1', brief_id: 'brief-1', reason: 'plan-draft',
+      payload: doc, pending_activity: 'planning', status: 'pending',
+    };
+    const client = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+      },
+    });
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
+    expect(result).toEqual({
+      status: 'payload-unrecognized', event_id: 'event-1', reason: 'plan-draft', items: mixedPayload,
+    });
+    expect(client.rpc).not.toHaveBeenCalledWith('consume_acceptance_event', expect.anything());
     expect(client.rpc).not.toHaveBeenCalled();
   });
 });

@@ -103,7 +103,15 @@ export async function getPendingAcceptanceEvent(
 
 const KNOWN_WRITE_KINDS = new Set(['acceptance_criterion', 'child_ticket', 'checklist_item', 'ac_transfer']);
 
+/** B-816 — the live snapshot shape from `resolve_brief` (which snapshots a brief's whole `doc` VERBATIM)
+ *  is `event.payload.payload` (an array): B-810's `compose_brief` call sites author the structured
+ *  payload array at `doc.payload`, so the doc-nested `{ decide, items, payload: [...] }` shape carries it
+ *  one level deeper than a bare array or `.items`. Check `payload.payload` FIRST — it is the shape every
+ *  current `compose_brief` call site actually produces — falling back to the bare-array/`.items` shapes
+ *  for any other caller that still uses them. */
 function rawItemsOf(payload: PendingAcceptanceEvent['payload']): unknown[] {
+  const withNestedPayload = payload as { payload?: unknown };
+  if (Array.isArray(withNestedPayload?.payload)) return withNestedPayload.payload;
   if (Array.isArray(payload)) return payload;
   const withItems = payload as { items?: unknown[] };
   return Array.isArray(withItems?.items) ? withItems.items : [];
@@ -246,6 +254,11 @@ export interface ConsumePendingAcceptanceResult {
   applied?: number;
   skipped_already_done?: number;
   workflow_state?: string | null;
+  /** B-816 — ONLY set on the `payload-unrecognized` branch: the verbatim `rawItemsOf(event.payload)`
+   *  snapshot the human already accepted. The owning gate's materialization renders THESE items
+   *  (title/content per item) as a confirm-or-adjust ask — never a re-read via `get_task` /
+   *  `get_pending_acceptance_event`, and never an open "what did you accept?" re-dictation question. */
+  items?: unknown[];
 }
 
 /**
@@ -280,7 +293,7 @@ export async function consumePendingAcceptanceEvent(
   // route to the gate's existing materialization mechanism and then call consumeAcceptanceEvent directly
   // once it has confirmed the work is done.
   if (classifyPayload(event.payload) === 'unrecognized') {
-    return { status: 'payload-unrecognized', event_id: event.id, reason: event.reason };
+    return { status: 'payload-unrecognized', event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
   }
 
   const applyResult = await applyAcceptanceEventPayload(client, event);
@@ -306,13 +319,18 @@ export const consumePendingAcceptanceEventTool = {
     'preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write ' +
     'landed (idempotently — a retry after a partial failure only applies what is still missing) and the ' +
     'deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state. ' +
-    '{ status: "payload-unrecognized", event_id, reason } = the event exists but its snapshotted payload ' +
-    'is not (yet) in the structured shape this tool applies — route to the OWNING GATE SKILL\'s existing ' +
-    'materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 ' +
-    'existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` ' +
-    'directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" — ' +
-    'that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized ' +
-    'payload write fails — the event stays visibly pending; do not catch-and-continue.',
+    '{ status: "payload-unrecognized", event_id, reason, items } = the event exists but its snapshotted ' +
+    'payload is not (yet) in the structured shape this tool applies. `items` (B-816) is the VERBATIM ' +
+    'snapshotted raw items the human already accepted — the owning gate\'s materialization MUST render ' +
+    'these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / ' +
+    '`get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation ' +
+    'question; only residue genuinely absent from `items` is a legitimate open question. Route to the ' +
+    'OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ' +
+    'ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call ' +
+    '`consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat ' +
+    '"payload-unrecognized" as "nothing to do" — that would commit a hollow advance under a new name. ' +
+    'Throws (does NOT swallow) if a recognized payload write fails — the event stays visibly pending; ' +
+    'do not catch-and-continue.',
   inputSchema: {
     type: 'object' as const,
     properties: {
