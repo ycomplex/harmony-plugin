@@ -22411,6 +22411,11 @@ var DeploymentEnvSchema = external_exports.object({
   ANTHROPIC_API_KEY: external_exports.string().optional(),
   CLAUDE_HEADLESS_FLAGS: external_exports.string().optional()
 }).partial();
+var RequiredToolsSchema = external_exports.object({
+  launch: external_exports.array(external_exports.string().min(1)).optional(),
+  reap: external_exports.array(external_exports.string().min(1)).optional(),
+  probe: external_exports.array(external_exports.string().min(1)).optional()
+}).partial();
 var LaunchProfileSchema = external_exports.object({
   /** Command template that launches a one-shot worker. Placeholders: {conduction_id}, {ticket}. */
   launch: external_exports.string().min(1),
@@ -22422,7 +22427,19 @@ var LaunchProfileSchema = external_exports.object({
   maxConcurrentWorkers: external_exports.number().int().nonnegative().optional(),
   /** B-800: replaces the CLOUDSDK_CORE_PROJECT hardcoded default baked into cloud-worker-*.sh —
    *  the cloud profile's GCP project, read by those scripts via `harmony config get`. */
-  gcloud_project: external_exports.string().optional()
+  gcloud_project: external_exports.string().optional(),
+  /** B-801: see RequiredToolsSchema above — src/daemon/preflight.ts's hard tool-resolution check. */
+  required_tools: RequiredToolsSchema.optional(),
+  /** B-801: true when this profile mints a worker credential via mint-installation-token.mjs before
+   *  launch (container/README.md "The credential envelopes") — gates src/daemon/preflight.ts's hard
+   *  env-contract check for HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/
+   *  HARMONY_APP_PRIVATE_KEY_PATH/HARMONY_PLUGIN_DIR. */
+  requires_app_mint: external_exports.boolean().optional(),
+  /** B-801: bumped whenever a NEW optional profile capability ships, so a stale profile file (never
+   *  regenerated after an upgrade) gets flagged by the boot preflight's soft audit instead of just
+   *  silently lacking the new capability. Defaults to 1 (this ticket's baseline) when absent — see
+   *  src/daemon/preflight.ts's CURRENT_SCHEMA_VERSION. */
+  schema_version: external_exports.number().int().positive().optional()
 });
 var GithubAppSchema = external_exports.object({
   app_id: external_exports.string(),
@@ -23210,6 +23227,33 @@ function loadDaemonConfig(env, readFile, opts = {}) {
         `launch profile ${profilePath}'s "maxConcurrentWorkers", when present, must be a non-negative integer`
       );
     }
+    if (profile.required_tools !== void 0) {
+      const rt = profile.required_tools;
+      if (typeof rt !== "object" || rt === null || Array.isArray(rt)) {
+        throw new Error(
+          `launch profile ${profilePath}'s "required_tools", when present, must be an object of { launch?, reap?, probe? } string arrays`
+        );
+      }
+      for (const key of ["launch", "reap", "probe"]) {
+        const tools = rt[key];
+        if (tools === void 0) continue;
+        if (!Array.isArray(tools) || tools.some((t) => typeof t !== "string" || t.length === 0)) {
+          throw new Error(
+            `launch profile ${profilePath}'s "required_tools.${key}", when present, must be an array of non-empty tool names`
+          );
+        }
+      }
+    }
+    if (profile.requires_app_mint !== void 0 && typeof profile.requires_app_mint !== "boolean") {
+      throw new Error(
+        `launch profile ${profilePath}'s "requires_app_mint", when present, must be a boolean`
+      );
+    }
+    if (profile.schema_version !== void 0 && (!Number.isInteger(profile.schema_version) || profile.schema_version < 1)) {
+      throw new Error(
+        `launch profile ${profilePath}'s "schema_version", when present, must be a positive integer`
+      );
+    }
   }
   const validatedProfile = profile;
   return {
@@ -23230,7 +23274,13 @@ function loadDaemonConfig(env, readFile, opts = {}) {
       launch: validatedProfile.launch,
       reap: validatedProfile.reap,
       probe: validatedProfile.probe,
-      maxConcurrentWorkers: validatedProfile.maxConcurrentWorkers
+      maxConcurrentWorkers: validatedProfile.maxConcurrentWorkers,
+      // B-801: carried through so src/daemon/preflight.ts's boot preflight (called with this
+      // DaemonConfig's own `profile`) sees them on BOTH the named-profile and legacy file-path
+      // routes.
+      required_tools: validatedProfile.required_tools,
+      requires_app_mint: validatedProfile.requires_app_mint,
+      schema_version: validatedProfile.schema_version
     },
     logPath: envValue(env, "HARMONY_DAEMON_LOG")
   };
@@ -23250,6 +23300,96 @@ function renderQuietReapOutcome(exitCode) {
   if (exitCode === 0) return "reaped a live worker";
   if (exitCode === 3) return "reap: worker already gone \u2014 ok";
   return `reap: unexpected exit code ${exitCode === null ? "null" : exitCode} \u2014 investigate`;
+}
+
+// src/daemon/preflight.ts
+var LAUNCHD_PATH_HINT = "Note: launchd inherits a minimal PATH \u2014 add the SDK's bin dir to the plist's EnvironmentVariables PATH key.";
+var CURRENT_SCHEMA_VERSION = 1;
+var CAPABILITIES_BY_VERSION = {
+  1: ["required_tools", "requires_app_mint"]
+};
+function capabilitiesAddedSince(schemaVersion) {
+  const added = [];
+  for (let v = schemaVersion + 1; v <= CURRENT_SCHEMA_VERSION; v++) {
+    added.push(...CAPABILITIES_BY_VERSION[v] ?? []);
+  }
+  return added;
+}
+function resolvedEnv(env, key) {
+  const v = env[key];
+  return v == null || v === "" ? void 0 : v;
+}
+var APP_MINT_VARS = [
+  "HARMONY_APP_ID",
+  "HARMONY_APP_INSTALLATION_ID",
+  "HARMONY_APP_PRIVATE_KEY_PATH",
+  "HARMONY_PLUGIN_DIR"
+];
+function resolveLauncherVar(varName, env, deploymentConfig) {
+  const fromEnv = resolvedEnv(env, varName);
+  if (fromEnv !== void 0) return fromEnv;
+  const launcher = deploymentConfig?.launcher;
+  switch (varName) {
+    case "HARMONY_APP_ID":
+      return launcher?.github_app?.app_id || void 0;
+    case "HARMONY_APP_INSTALLATION_ID":
+      return launcher?.github_app?.installation_id || void 0;
+    case "HARMONY_APP_PRIVATE_KEY_PATH":
+      return launcher?.github_app?.private_key_path || void 0;
+    case "HARMONY_PLUGIN_DIR":
+      return launcher?.plugin_dir || void 0;
+  }
+}
+var TEMPLATE_KEYS = ["launch", "reap", "probe"];
+async function runBootPreflight(config, profile, opts) {
+  void config;
+  for (const templateKey of TEMPLATE_KEYS) {
+    const tools = profile.required_tools?.[templateKey] ?? [];
+    for (const tool of tools) {
+      const result = await opts.runCommand(`command -v ${tool}`, { quiet: true });
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `Missing required tool "${tool}" (invoked by profile "${opts.profileName}"'s "${templateKey}" template) \u2014 not found on PATH.
+${LAUNCHD_PATH_HINT}`
+        );
+      }
+    }
+  }
+  if (profile.requires_app_mint) {
+    for (const varName of APP_MINT_VARS) {
+      const value = resolveLauncherVar(varName, opts.env, opts.deploymentConfig);
+      if (value === void 0) {
+        throw new Error(
+          `Missing required launcher-host config "${varName}" \u2014 see container/README.md \xA7 The credential envelopes.`
+        );
+      }
+    }
+  }
+  if (!profile.probe) {
+    opts.log(
+      `Note: profile "${opts.profileName}" has no "probe" template \u2014 mid-leg re-attach disabled; takeovers will reap-and-refire running workers.`
+    );
+  }
+  if (!profile.required_tools) {
+    opts.log(
+      `Note: profile "${opts.profileName}" has no "required_tools" \u2014 tool-on-PATH preflight skipped for this profile; a missing binary will fail mid-conduction instead of at boot.`
+    );
+  }
+  const namesGcloud = TEMPLATE_KEYS.some(
+    (k) => (profile.required_tools?.[k] ?? []).includes("gcloud")
+  );
+  if (!profile.gcloud_project && namesGcloud) {
+    opts.log(
+      `Note: profile "${opts.profileName}" has no "gcloud_project" \u2014 cloud-worker-*.sh falls back to its own CLOUDSDK_CORE_PROJECT default.`
+    );
+  }
+  const schemaVersion = profile.schema_version ?? CURRENT_SCHEMA_VERSION;
+  if (schemaVersion < CURRENT_SCHEMA_VERSION) {
+    const added = capabilitiesAddedSince(schemaVersion);
+    opts.log(
+      `Note: profile "${opts.profileName}"'s schema_version (${schemaVersion}) is behind the current schema version (${CURRENT_SCHEMA_VERSION}) \u2014 capabilities added since: ${added.join(", ")}.`
+    );
+  }
 }
 
 // src/conductor/ball-axis.ts
@@ -23803,9 +23943,11 @@ async function main() {
   }
   const daemonArgv = parseDaemonArgs(process.argv.slice(2));
   let config;
+  let deploymentConfig = null;
+  let namedProfile = null;
   try {
-    const deploymentConfig = loadDeploymentConfig({ configPath: daemonArgv.config, env: process.env });
-    const namedProfile = selectNamedProfile(deploymentConfig, daemonArgv.profile);
+    deploymentConfig = loadDeploymentConfig({ configPath: daemonArgv.config, env: process.env });
+    namedProfile = selectNamedProfile(deploymentConfig, daemonArgv.profile);
     if (daemonArgv.profile && deploymentConfig && !namedProfile) {
       process.stderr.write(
         `Note: profile "${daemonArgv.profile}" not found in the deployment config's "profiles" section (${resolveDeploymentConfigPath({ configPath: daemonArgv.config, env: process.env })}) \u2014 falling back to HARMONY_DAEMON_PROFILE.
@@ -23836,11 +23978,6 @@ ${err instanceof Error ? err.message : String(err)}
       }
     }
   };
-  const auth = new HarmonyAuth(token);
-  const client = await createAuthenticatedClient(auth);
-  const projectId = auth.getProjectId();
-  const projectKey = (await getProject(client, projectId)).key;
-  const leaseHolder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
   const runCommand = (cmd, opts) => new Promise((resolve) => {
     const child = exec(cmd);
     if (opts?.quiet) {
@@ -23861,6 +23998,28 @@ ${err instanceof Error ? err.message : String(err)}
       resolve({ exitCode: code });
     });
   });
+  const preflightProfileName = daemonArgv.profile ?? (process.env.HARMONY_DAEMON_PROFILE || "unnamed");
+  const preflightProfile = {
+    ...config.profile,
+    gcloud_project: namedProfile?.gcloud_project
+  };
+  try {
+    await runBootPreflight(config, preflightProfile, {
+      runCommand,
+      env: process.env,
+      deploymentConfig,
+      profileName: preflightProfileName,
+      log
+    });
+  } catch (err) {
+    log(`boot preflight failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+  const auth = new HarmonyAuth(token);
+  const client = await createAuthenticatedClient(auth);
+  const projectId = auth.getProjectId();
+  const projectKey = (await getProject(client, projectId)).key;
+  const leaseHolder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
   const deps = {
     now: Date.now,
     sleep,

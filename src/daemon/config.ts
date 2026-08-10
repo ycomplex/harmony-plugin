@@ -29,6 +29,15 @@
 
 import type { DeploymentConfig, LaunchProfileConfig } from '../config/deployment-config.js';
 
+/** B-801: declarative, OPTIONAL map of binaries each template invokes — mirrors
+ *  src/config/deployment-config.ts's RequiredToolsSchema; kept in lockstep (see
+ *  src/config/deployment-config.test.ts / src/daemon/config.test.ts's schema-parity test). */
+export interface RequiredTools {
+  launch?: string[];
+  reap?: string[];
+  probe?: string[];
+}
+
 export interface LaunchProfile {
   /** Command template that launches a one-shot worker. Placeholders: {conduction_id}, {ticket}. */
   launch: string;
@@ -46,6 +55,16 @@ export interface LaunchProfile {
    *  HARMONY_DAEMON_MAX_CONCURRENT_WORKERS regardless of profile; falls back to 3 when neither the
    *  env var nor the profile sets it. */
   maxConcurrentWorkers?: number;
+  /** B-801: see RequiredTools above — src/daemon/preflight.ts's hard tool-resolution check. */
+  required_tools?: RequiredTools;
+  /** B-801: true when this profile mints a worker credential via mint-installation-token.mjs before
+   *  launch — gates src/daemon/preflight.ts's hard env-contract check. Mirrors
+   *  src/config/deployment-config.ts's LaunchProfileSchema field of the same name. */
+  requires_app_mint?: boolean;
+  /** B-801: bumped whenever a NEW optional profile capability ships. Defaults to 1 when absent — see
+   *  src/daemon/preflight.ts's CURRENT_SCHEMA_VERSION. Mirrors
+   *  src/config/deployment-config.ts's LaunchProfileSchema field of the same name. */
+  schema_version?: number;
 }
 
 export interface DaemonConfig {
@@ -189,6 +208,40 @@ export function loadDaemonConfig(
         `launch profile ${profilePath}'s "maxConcurrentWorkers", when present, must be a non-negative integer`,
       );
     }
+    // B-801: mirrors src/config/deployment-config.ts's LaunchProfileSchema validation for the same
+    // three optional fields — kept in lockstep (schema-parity test in config.test.ts).
+    if (profile.required_tools !== undefined) {
+      const rt = profile.required_tools;
+      if (typeof rt !== 'object' || rt === null || Array.isArray(rt)) {
+        throw new Error(
+          `launch profile ${profilePath}'s "required_tools", when present, must be an object of ` +
+            '{ launch?, reap?, probe? } string arrays',
+        );
+      }
+      for (const key of ['launch', 'reap', 'probe'] as const) {
+        const tools = (rt as Record<string, unknown>)[key];
+        if (tools === undefined) continue;
+        if (!Array.isArray(tools) || tools.some((t) => typeof t !== 'string' || t.length === 0)) {
+          throw new Error(
+            `launch profile ${profilePath}'s "required_tools.${key}", when present, must be an ` +
+              'array of non-empty tool names',
+          );
+        }
+      }
+    }
+    if (profile.requires_app_mint !== undefined && typeof profile.requires_app_mint !== 'boolean') {
+      throw new Error(
+        `launch profile ${profilePath}'s "requires_app_mint", when present, must be a boolean`,
+      );
+    }
+    if (
+      profile.schema_version !== undefined &&
+      (!Number.isInteger(profile.schema_version) || profile.schema_version < 1)
+    ) {
+      throw new Error(
+        `launch profile ${profilePath}'s "schema_version", when present, must be a positive integer`,
+      );
+    }
   }
 
   // Both branches above guarantee launch/reap are non-empty strings by this point (validated
@@ -215,6 +268,12 @@ export function loadDaemonConfig(
       reap: validatedProfile.reap,
       probe: validatedProfile.probe,
       maxConcurrentWorkers: validatedProfile.maxConcurrentWorkers,
+      // B-801: carried through so src/daemon/preflight.ts's boot preflight (called with this
+      // DaemonConfig's own `profile`) sees them on BOTH the named-profile and legacy file-path
+      // routes.
+      required_tools: validatedProfile.required_tools,
+      requires_app_mint: validatedProfile.requires_app_mint,
+      schema_version: validatedProfile.schema_version,
     },
     logPath: envValue(env, 'HARMONY_DAEMON_LOG'),
   };

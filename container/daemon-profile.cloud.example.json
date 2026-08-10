@@ -2,5 +2,19 @@
   "launch": "bash \"$HARMONY_PLUGIN_DIR/container/cloud-worker-launch.sh\" {conduction_id} {ticket}",
   "reap": "bash \"$HARMONY_PLUGIN_DIR/container/cloud-worker-reap.sh\" {conduction_id} {ticket}",
   "probe": "bash \"$HARMONY_PLUGIN_DIR/container/cloud-worker-probe.sh\" {conduction_id} {ticket}",
-  "maxConcurrentWorkers": 2
+  "maxConcurrentWorkers": 2,
+  "required_tools": {
+    "launch": [
+      "node",
+      "gcloud"
+    ],
+    "reap": [
+      "gcloud"
+    ],
+    "probe": [
+      "gcloud"
+    ]
+  },
+  "requires_app_mint": true,
+  "schema_version": 1
 }
