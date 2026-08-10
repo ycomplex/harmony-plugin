@@ -19,6 +19,16 @@ unenumerated route is the normal state of affairs. If you find another, add it.
 | 5 | **A ticket clarified before criteria-at-clarify existed** (pre-B-648) | There is no proposed set to file. The gate must derive from the Accepted clarification, or refuse. | The refusal path — an elicitation round asking the human |
 | 6 | **The build and verify gates themselves** — the last places an empty set can be caught | Not a leak so much as the backstop: whatever slipped through 1–5 arrives here. | The **floors**: `start-work` O3 and `finish-work` O3 pre-check `has_acceptance_criteria`; `tasks_workflow_guard` refuses `Planned→Built` and `Deployed→Verified` |
 
+**B-797 update.** Routes 1 and 3 above are the exact specimen class B-797 closes structurally: `resolve_brief`
+now defers the state advance itself for `clarification-draft` (and `decomposition-proposal` / `plan-draft` /
+`design-decision-draft` on the product track) until a `consume_acceptance_event` commits it, so a web accept
+with no session running leaves the ticket VISIBLY pending (`pending_acceptance_event_id` set) rather than
+silently advancing with the criteria still unfiled. `harmony-conduct` §1c (the B-797 leg-start-consume) is
+the generalized successor to §1b for these four reasons — see `gate-routing.md`'s B-797 section. §1b (this
+file's route-3 fix) stays as-is for now: it is the self-heal RECOVERY when the snapshotted payload is not
+(yet) in the structured shape §1c applies (a not-yet-migrated `compose_brief` call site) — see §1c's
+`payload-unrecognized` branch.
+
 ## The shape these share
 
 Every route is the same asymmetry: **a mechanical accept defers real work to an agent-side step, and that

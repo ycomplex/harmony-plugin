@@ -114,7 +114,11 @@ Show the rendered `content`. On the human's command:
      transition guard rejects it):
      `mcp__harmony__advance_workflow({ task_id: <child>, activity: "proposing" })`.
   3. `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })` →
-     advances the parent Clarified→Decomposed. (For "no decomposition needed", skip 1–2 and just accept.)
+     records the decision. (For "no decomposition needed", skip 1–2 and just accept.)
+  4. **B-797 — finalize the deferred advance NOW, same session.** The response carries
+     `pending_acceptance_event_id`: since you just minted/confirmed the children yourself above, there is
+     nothing left to APPLY — only the deferred Clarified→Decomposed advance to COMMIT. Call
+     `mcp__harmony__consume_acceptance_event({ event_id: <that id> })` right away, in this same turn.
 
   The existing-children branch also makes accept idempotent for free: a re-run after a crash
   mid-accept (children created, resolve not yet run) sees them as existing and confirms instead of

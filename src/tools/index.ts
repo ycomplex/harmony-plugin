@@ -76,6 +76,10 @@ import {
   createConductionTool, createConduction as createConductionEntry,
 } from './create-conduction.js';
 import { projectAck } from './ack-projection.js';
+import {
+  consumePendingAcceptanceEventTool, consumePendingAcceptanceEventToolHandler,
+  consumeAcceptanceEventTool, consumeAcceptanceEventToolHandler,
+} from './acceptance-events.js';
 
 // B-692 Phase 2: the conduction record's shared-core accessors + canonical status axis. Deliberately
 // NOT registered as an MCP tool and NOT wired into src/cli/commands/ — the future conductor daemon
@@ -126,6 +130,8 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listTicketKnowledgeTool,
     getBuildEvidenceStatusTool,
     createConductionTool,
+    consumePendingAcceptanceEventTool,
+    consumeAcceptanceEventTool,
   ];
 
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
@@ -328,6 +334,12 @@ export async function handleToolCall(
         break;
       case 'consume_accept_remark':
         result = await consumeAcceptRemark(client, projectId, args as any);
+        break;
+      case 'consume_pending_acceptance_event':
+        result = await consumePendingAcceptanceEventToolHandler(client, projectId, args as any);
+        break;
+      case 'consume_acceptance_event':
+        result = await consumeAcceptanceEventToolHandler(client, args as any);
         break;
       case 'flag_release_approval_pending':
         result = await flagReleaseApprovalPending(client, projectId, args as any);

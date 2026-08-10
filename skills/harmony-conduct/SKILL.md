@@ -251,6 +251,46 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    floor applies. If the clarification carries no proposed set at all, there is nothing to file and the
    build/verify floor is what catches the ticket.)*
 
+1c. **On EVERY leg pickup (not just the first), consume any outstanding B-797 acceptance event BEFORE
+   gate routing/floors run.** For the four agent-owned-payload reasons (`clarification-draft`,
+   `decomposition-proposal`, `plan-draft`, `design-decision-draft` on the PRODUCT track only), a web
+   accept no longer advances `workflow_state` immediately — it snapshots the brief's payload into a
+   `pending_acceptance_events` row and defers the advance to `consume_acceptance_event`. Nothing else in
+   this loop ever executes that deferred advance, so this check is not belt-and-braces — it is what makes
+   the ball actually move:
+
+   ```
+   mcp__harmony__consume_pending_acceptance_event({ task_id })
+   ```
+
+   Branch on `status`:
+   - **`substrate-absent`** → this DB predates the B-797 migration (or the plugin is running ahead of a
+     not-yet-promoted schema, B-383). Do nothing — proceed exactly as before this ticket existed.
+   - **`none`** → no outstanding event. Proceed to step 2.
+   - **`consumed`** → every promised write landed (idempotently) and the deferred advance committed —
+     `workflow_state` reflects the new value. Go back to **step 1** (re-read) so the rest of the loop sees
+     the post-advance state.
+   - **`payload-unrecognized`** → the event exists but its snapshotted payload is not (yet) in the
+     structured shape `consume_pending_acceptance_event` applies (a not-yet-migrated `compose_brief` call
+     site — see the ticket for which reasons still owe this wiring). **NEVER treat this as "nothing to
+     do"** — that commits a hollow advance under a new name, the exact defect this ticket exists to close.
+     Instead, route to the OWNING GATE SKILL's own materialization for `reason`:
+     - `clarification-draft` → `/harmony-plugin:harmony-design-decide`'s B-744 self-heal (§2b) already
+       re-files the clarify-authored happy-path ACs from the Accepted specification decision.
+     - `decomposition-proposal` → `/harmony-plugin:harmony-decompose`'s own B-646 existing-child detection
+       (`list_subtasks`) confirms/creates the hierarchy idempotently.
+     - `design-decision-draft` (product track) → the product track's own accept step performs its AC
+       add/update/delete inline when it runs.
+     - `plan-draft` → no self-heal exists yet (this is exactly specimen 6, B-800 — closed structurally by
+       step 9's build-gate routing below, not by a self-heal here); surface the gap to the human rather
+       than guessing a work list.
+     Once the owning gate's materialization is confirmed done, call
+     `mcp__harmony__consume_acceptance_event({ event_id: <from the payload-unrecognized result> })`
+     directly to commit the deferred advance, then go back to step 1.
+
+   *(Mirrors 1b's shape exactly — a plumbing consume, not a gate: it commits writes a human already
+   authorized by accepting. It composes no new brief and needs no pause of its own.)*
+
 2. **If the ticket is already awaiting a human decision → handle per mode.** First check the reason:
 
    **`awaiting_human_reason === 'elicitation-round'` → NOT a brief, NOT a gate decision — ALWAYS wait

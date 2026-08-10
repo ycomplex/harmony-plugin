@@ -40889,6 +40889,173 @@ function projectAck(toolName, result, args) {
   return projection ? projection(result, args) : result;
 }
 
+// src/tools/acceptance-events.ts
+function isMissingRelationOrFunction(err) {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42P01" || code === "42883" || code === "PGRST202" || code === "PGRST205") return true;
+  const msg = err.message ?? "";
+  return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
+}
+async function probeAcceptanceEventSubstrate(client) {
+  const { error: error2 } = await client.from("pending_acceptance_events").select("id").limit(0);
+  if (!error2) return "present";
+  if (isMissingRelationOrFunction(error2)) return "absent";
+  throw new Error(`acceptance-event substrate probe failed (not a schema-absence error \u2014 do not degrade): ${error2.message}`);
+}
+async function getPendingAcceptanceEvent(client, projectId, taskId) {
+  const resolvedId = await resolveTaskId(client, projectId, taskId);
+  const { data: task, error: taskErr } = await client.from("tasks").select("pending_acceptance_event_id").eq("id", resolvedId).maybeSingle();
+  if (taskErr) {
+    if (isMissingRelationOrFunction(taskErr)) return null;
+    throw new Error(taskErr.message);
+  }
+  const eventId = task?.pending_acceptance_event_id;
+  if (!eventId) return null;
+  const { data: event, error: eventErr } = await client.from("pending_acceptance_events").select("id, task_id, brief_id, reason, payload, pending_activity, status").eq("id", eventId).maybeSingle();
+  if (eventErr) {
+    if (isMissingRelationOrFunction(eventErr)) return null;
+    throw new Error(eventErr.message);
+  }
+  return event ?? null;
+}
+var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer"]);
+function rawItemsOf(payload) {
+  if (Array.isArray(payload)) return payload;
+  const withItems = payload;
+  return Array.isArray(withItems?.items) ? withItems.items : [];
+}
+function itemsOf(payload) {
+  return rawItemsOf(payload);
+}
+function classifyPayload(payload) {
+  const raw = rawItemsOf(payload);
+  if (raw.length === 0) return "empty";
+  const allStructured = raw.every(
+    (i) => typeof i === "object" && i !== null && KNOWN_WRITE_KINDS.has(i.write_kind)
+  );
+  return allStructured ? "structured" : "unrecognized";
+}
+async function applyAcceptanceEventPayload(client, event) {
+  const items = itemsOf(event.payload);
+  const order = [
+    "child_ticket",
+    "checklist_item",
+    "acceptance_criterion",
+    "ac_transfer"
+  ];
+  const ordered = order.flatMap((kind) => items.filter((i) => i.write_kind === kind));
+  let applied = 0;
+  let skipped = 0;
+  const byKind = {};
+  for (const item of ordered) {
+    if (!item.ref) throw new Error(`payload item of write_kind '${item.write_kind}' is missing its stable 'ref' \u2014 cannot derive an idempotent external_ref`);
+    let result = null;
+    if (item.write_kind === "acceptance_criterion") {
+      if (!item.content) throw new Error(`acceptance_criterion item '${item.ref}' is missing content`);
+      const { data, error: error2 } = await client.rpc("consume_ac_add_write", {
+        _event_id: event.id,
+        _external_ref: item.ref,
+        _content: item.content
+      });
+      if (error2) throw new Error(error2.message);
+      result = data;
+    } else if (item.write_kind === "child_ticket") {
+      if (!item.title) throw new Error(`child_ticket item '${item.ref}' is missing title`);
+      const { data, error: error2 } = await client.rpc("consume_child_mint_write", {
+        _event_id: event.id,
+        _external_ref: item.ref,
+        _title: item.title,
+        _description: item.description ?? null
+      });
+      if (error2) throw new Error(error2.message);
+      result = data;
+    } else if (item.write_kind === "checklist_item") {
+      if (!item.title) throw new Error(`checklist_item item '${item.ref}' is missing title`);
+      const { data, error: error2 } = await client.rpc("consume_checklist_item_write", {
+        _event_id: event.id,
+        _external_ref: item.ref,
+        _title: item.title
+      });
+      if (error2) throw new Error(error2.message);
+      result = data;
+    } else if (item.write_kind === "ac_transfer") {
+      if (!item.content) throw new Error(`ac_transfer item '${item.ref}' is missing content`);
+      if (!item.target_child_ref) throw new Error(`ac_transfer item '${item.ref}' is missing target_child_ref`);
+      const { data, error: error2 } = await client.rpc("consume_ac_transfer_write", {
+        _event_id: event.id,
+        _external_ref: item.ref,
+        _content: item.content,
+        _target_child_external_ref: item.target_child_ref,
+        _from_ac_id: item.from_ac_id ?? null
+      });
+      if (error2) throw new Error(error2.message);
+      result = data;
+    }
+    if (result?.applied) {
+      applied += 1;
+      byKind[item.write_kind] = (byKind[item.write_kind] ?? 0) + 1;
+    } else {
+      skipped += 1;
+    }
+  }
+  return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind };
+}
+async function consumeAcceptanceEvent(client, eventId) {
+  const { data, error: error2 } = await client.rpc("consume_acceptance_event", { _event_id: eventId });
+  if (error2) throw new Error(error2.message);
+  return data;
+}
+async function consumePendingAcceptanceEvent(client, projectId, taskId) {
+  const probe = await probeAcceptanceEventSubstrate(client);
+  if (probe === "absent") return { status: "substrate-absent" };
+  const event = await getPendingAcceptanceEvent(client, projectId, taskId);
+  if (!event) return { status: "none" };
+  if (event.status === "consumed") return { status: "none" };
+  if (classifyPayload(event.payload) === "unrecognized") {
+    return { status: "payload-unrecognized", event_id: event.id, reason: event.reason };
+  }
+  const applyResult = await applyAcceptanceEventPayload(client, event);
+  const consumeResult = await consumeAcceptanceEvent(client, event.id);
+  return {
+    status: "consumed",
+    event_id: event.id,
+    applied: applyResult.applied,
+    skipped_already_done: applyResult.skipped_already_done,
+    workflow_state: consumeResult.workflow_state
+  };
+}
+var consumePendingAcceptanceEventTool = {
+  name: "consume_pending_acceptance_event",
+  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state. { status: "payload-unrecognized", event_id, reason } = the event exists but its snapshotted payload is not (yet) in the structured shape this tool applies \u2014 route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)" }
+    },
+    required: ["task_id"]
+  }
+};
+async function consumePendingAcceptanceEventToolHandler(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  return consumePendingAcceptanceEvent(client, projectId, args.task_id);
+}
+var consumeAcceptanceEventTool = {
+  name: "consume_acceptance_event",
+  description: "B-797 \u2014 the FINAL commit for a pending acceptance event: marks it consumed, clears tasks.pending_acceptance_event_id, and applies the brief's originally-deferred workflow-state advance (if any), atomically. Call this DIRECTLY (skipping consume_pending_acceptance_event's payload-apply step) in the SAME-SESSION accept path: the owning gate skill just finished its OWN materialization (e.g. clarify's manage_acceptance_criteria call, decompose's manage_subtasks call) as it always did before B-797, so there is nothing left to apply \u2014 only the deferred advance to commit. `resolve_brief`'s response carries `pending_acceptance_event_id`; when non-null, call this with it right after resolving. Idempotent \u2014 a second call on an already-consumed event is a safe no-op.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      event_id: { type: "string", description: "The pending acceptance event's id (from resolve_brief's pending_acceptance_event_id, or get task/get_pending_acceptance_event)." }
+    },
+    required: ["event_id"]
+  }
+};
+async function consumeAcceptanceEventToolHandler(client, args) {
+  if (!args.event_id) throw new Error("event_id is required");
+  return consumeAcceptanceEvent(client, args.event_id);
+}
+
 // src/tools/index.ts
 function registerTools(disabledFeatures) {
   const tools = [
@@ -40936,7 +41103,9 @@ function registerTools(disabledFeatures) {
     referenceKnowledgeTool,
     listTicketKnowledgeTool,
     getBuildEvidenceStatusTool,
-    createConductionTool
+    createConductionTool,
+    consumePendingAcceptanceEventTool,
+    consumeAcceptanceEventTool
   ];
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
   if (!disabledFeatures?.labels) tools.push(listLabelsTool, createLabelTool, manageTaskLabelsTool);
@@ -41126,6 +41295,12 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "consume_accept_remark":
         result = await consumeAcceptRemark(client, projectId, args);
+        break;
+      case "consume_pending_acceptance_event":
+        result = await consumePendingAcceptanceEventToolHandler(client, projectId, args);
+        break;
+      case "consume_acceptance_event":
+        result = await consumeAcceptanceEventToolHandler(client, args);
         break;
       case "flag_release_approval_pending":
         result = await flagReleaseApprovalPending(client, projectId, args);
