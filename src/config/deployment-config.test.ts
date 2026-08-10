@@ -93,6 +93,30 @@ describe('loadDeploymentConfig', () => {
     });
     expect(loaded).toEqual({ launcher: { plugin_dir: '/x' } });
   });
+
+  // B-803: the single posture knob replaces the old PLUGIN_REF + HARMONY_ACK_PLUGIN_AHEAD_OF_PROD
+  // pair in env.* — accept the new var, confirm the old pair is no longer part of the schema.
+  it('accepts HARMONY_PLUGIN_POSTURE in env.* (any of the three encodings — the schema itself is just a string)', () => {
+    const config = { env: { HARMONY_TARGET: 'prod' as const, HARMONY_PLUGIN_POSTURE: 'ack:main' } };
+    const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
+    const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
+    expect(loaded).toEqual(config);
+  });
+
+  it('the old PLUGIN_REF / HARMONY_ACK_PLUGIN_AHEAD_OF_PROD pair is no longer part of the schema — silently stripped, not rejected', () => {
+    const config = {
+      env: {
+        HARMONY_TARGET: 'prod',
+        PLUGIN_REF: 'main',
+        HARMONY_ACK_PLUGIN_AHEAD_OF_PROD: '1',
+      },
+    };
+    const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
+    const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
+    // Unknown keys are stripped by zod's default object behavior — neither key survives parsing,
+    // confirming the schema no longer declares them (a passthrough schema would have kept them).
+    expect(loaded).toEqual({ env: { HARMONY_TARGET: 'prod' } });
+  });
 });
 
 describe('resolveConfigPath', () => {

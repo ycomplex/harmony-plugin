@@ -10,7 +10,11 @@ WEB_REPO="${WEB_REPO:-https://github.com/ycomplex/harmony-web.git}"
 PLUGIN_REPO="${PLUGIN_REPO:-https://github.com/ycomplex/harmony-plugin.git}"
 WORKSPACE_REPO="${WORKSPACE_REPO:-https://github.com/ycomplex/harmony-workspace.git}"
 WEB_REF="${WEB_REF:-main}"
-export PLUGIN_REF="${PLUGIN_REF:-main}"
+# B-803: PLUGIN_REF (used only for the clone below) derives from the single posture knob
+# HARMONY_PLUGIN_POSTURE (prod | ack:<ref> | bare <ref>) — default "main" when unset, stripping
+# the "ack:" prefix (that prefix matters only to provision.sh's fail-closed guard, downstream).
+export PLUGIN_REF="${HARMONY_PLUGIN_POSTURE:-main}"
+PLUGIN_REF="${PLUGIN_REF#ack:}"
 WORKSPACE_REF="${WORKSPACE_REF:-main}"
 
 # Token-authenticated clones without the token landing in .git/config or argv:

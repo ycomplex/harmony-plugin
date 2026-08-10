@@ -40,10 +40,12 @@ const DeploymentEnvSchema = z
     GIT_USER_EMAIL: z.string().optional(),
     // Ref pins.
     WEB_REF: z.string().optional(),
-    PLUGIN_REF: z.string().optional(),
     WORKSPACE_REF: z.string().optional(),
-    // B-726 (d) ack flag — see provision.sh.
-    HARMONY_ACK_PLUGIN_AHEAD_OF_PROD: z.string().optional(),
+    // B-803: the single posture knob — collapses the old PLUGIN_REF + HARMONY_ACK_PLUGIN_AHEAD_OF_PROD
+    // pair (which could be set inconsistently, and the ack half was unreachable on the cloud
+    // profile). Encodes which plugin ref to run AND whether running it ahead of prod is
+    // acknowledged: "prod" | "ack:<ref>" | a bare "<ref>" (unacknowledged) — see provision.sh.
+    HARMONY_PLUGIN_POSTURE: z.string().optional(),
     // Agent layer.
     CLAUDE_CODE_OAUTH_TOKEN: z.string().optional(),
     ANTHROPIC_API_KEY: z.string().optional(),
