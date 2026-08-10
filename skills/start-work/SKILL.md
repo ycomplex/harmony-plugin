@@ -53,12 +53,23 @@ Query `engineering` knowledge (`mcp__harmony__query_knowledge({ domain: ["engine
 ticket's accepted design decisions (`query_knowledge({ status: "Accepted" })`). Write the execution plan
 (invoke `superpowers:writing-plans` for anything non-trivial). Author the brief per
 `skills/harmony-shared/brief-authoring.md` §Plan — the question, must-haves, and engagement it owes the
-human, plus the legibility contract. Consult it; do not restate it. File it as a plan brief:
+human, plus the legibility contract. Consult it; do not restate it. File it as a plan brief — **also
+author `doc.payload` (B-810)**: one `checklist_item` per concrete plan step, at the SAME granularity as
+the checklist the accept step below materializes via `manage_checklist_items` (never one vague summary
+item), `ref: slugRef('step', title)` (`payload-refs.ts`), deduped via `dedupeRefs`:
 
 ```
 mcp__harmony__compose_brief({
   task_id, reason: "plan-draft", pending_activity: "planning",
-  doc: { decide: "Approve this execution plan?", items: [{ kind: "decision", text: "<plan summary>", recommendation: "proceed" }] }
+  doc: {
+    decide: "Approve this execution plan?",
+    items: [{ kind: "decision", text: "<plan summary>", recommendation: "proceed" }],
+    // one item per concrete plan step — same list the accept step below writes via manage_checklist_items
+    payload: [
+      { write_kind: "checklist_item", ref: "step-write-the-migration", title: "Write the migration" },
+      { write_kind: "checklist_item", ref: "step-add-the-mcp-tool", title: "Add the MCP tool" }
+    ]
+  }
 })
 ```
 

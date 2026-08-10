@@ -45,10 +45,30 @@ The result is either:
 - confirmation of the existing child set (plus any genuinely net-new children the decomposition
   introduces).
 
+**AC reassignment (B-810).** While proposing children, check whether any of the PARENT's existing
+acceptance criteria (`mcp__harmony__list_acceptance_criteria({ task_id })`) is actually scoped to ONE
+specific child rather than the parent as a whole — e.g. an AC about the web surface once the web surface
+becomes its own child. When that's the case, propose moving that AC onto its destination child as an
+explicit, named part of the decomposition (never silently — the human sees and accepts the move like any
+other decision item). The common case mints children with **no** AC reassignment; only propose a move
+when an existing AC genuinely belongs on a specific new child.
+
 ### 3. Compose the proposal brief
 
 Author the brief per `skills/harmony-shared/brief-authoring.md` §Decompose — the question, must-haves,
 and engagement it owes the human, plus the legibility contract. Consult it; do not restate it.
+
+**Also author `doc.payload` (B-810)** — one `child_ticket` item per GENUINELY NEW child (confirmed-
+existing children get no item), `ref: slugRef('child', title)`, plus one `ac_transfer` item per AC the
+proposal actually moves (see §2 above), authored in the SAME payload as the `child_ticket` items it
+targets. Ordering inside the array does not matter — `applyAcceptanceEventPayload` (acceptance-events.ts)
+applies every `child_ticket` before any `ac_transfer`, regardless of authored order. Per `ac_transfer`
+item: `ref: slugRef('actransfer', <the AC's own content>)` (never the child's title); `content` = the AC's
+full text, copied verbatim — never reworded; `target_child_ref` = that destination child's own
+`child_ticket` item `ref` from this SAME payload; `from_ac_id` = the parent AC's own id being removed
+(omit only for the rare copy-not-move case). Mint-then-mirror: `ref`s from `slugRef`/`dedupeRefs`
+(`payload-refs.ts`) — never reinvented. The common case (no AC reassignment) still authors `ac_transfer:
+[]`, never omits the key. "No decomposition needed" authors `payload: []`.
 
 ```
 mcp__harmony__compose_brief({
@@ -62,6 +82,16 @@ mcp__harmony__compose_brief({
       { kind: "decision", text: "Child 1 — schema migration", recommendation: "create" },
       { kind: "decision", text: "Child 2 — MCP tools", recommendation: "create" },
       { kind: "decision", text: "Child 3 — web surface", recommendation: "create" }
+    ],
+    // dedupeRefs([...children, ...transfers]) — children minted first is a documentation convenience
+    // only; applyAcceptanceEventPayload re-orders by write_kind regardless of authored order.
+    payload: [
+      { write_kind: "child_ticket", ref: "child-schema-migration", title: "Child 1 — schema migration", description: "..." },
+      { write_kind: "child_ticket", ref: "child-mcp-tools", title: "Child 2 — MCP tools", description: "..." },
+      { write_kind: "child_ticket", ref: "child-web-surface", title: "Child 3 — web surface", description: "..." }
+      // e.g. moving an existing web-scoped AC onto Child 3:
+      // { write_kind: "ac_transfer", ref: "actransfer-the-web-surface-renders-x", content: "The web surface renders X",
+      //   target_child_ref: "child-web-surface", from_ac_id: "<parent AC's own id>" }
     ]
   }
 })
@@ -101,7 +131,7 @@ Show the rendered `content`. On the human's command:
 > accept carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
 > §Resolution provenance).
 
-- **accept** → first create the children, then advance:
+- **accept** → first create the children, then move any proposed ACs, then advance:
   1. For confirmed-EXISTING children, skip `manage_subtasks add_new` entirely — they are already the
      hierarchy. Call `mcp__harmony__manage_subtasks({ task_id, add_new: [{ title: "...", description: "..." }, ...] })`
      ONLY for genuinely net-new children. Never `add_new` a fresh set that duplicates existing
@@ -113,12 +143,22 @@ Show the rendered `content`. On the human's command:
      call `capturing` first (the child is already Captured, so `capturing` has no valid edge and the
      transition guard rejects it):
      `mcp__harmony__advance_workflow({ task_id: <child>, activity: "proposing" })`.
-  3. `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })` →
-     records the decision. (For "no decomposition needed", skip 1–2 and just accept.)
-  4. **B-797 — finalize the deferred advance NOW, same session.** The response carries
-     `pending_acceptance_event_id`: since you just minted/confirmed the children yourself above, there is
-     nothing left to APPLY — only the deferred Clarified→Decomposed advance to COMMIT. Call
-     `mcp__harmony__consume_acceptance_event({ event_id: <that id> })` right away, in this same turn.
+  3. **AC transfer (B-810) — for each `ac_transfer` item the brief's `doc.payload` carries** (§3 §2),
+     move that AC onto its destination child: add the SAME content verbatim onto the child, then delete
+     it from the parent —
+     `mcp__harmony__manage_acceptance_criteria({ task_id: <child>, add: [{ content: "<AC content>" }] })`
+     then
+     `mcp__harmony__manage_acceptance_criteria({ task_id, delete: ["<from_ac_id>"] })`
+     — in that order (add before delete), so a crash between the two calls leaves the content on BOTH
+     tickets rather than losing it. Never reword the content in transit. Skip an item whose target
+     child already carries that exact content (idempotent re-run after a crash mid-accept).
+  4. `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })` →
+     records the decision. (For "no decomposition needed", skip 1–3 and just accept.)
+  5. **B-797 — finalize the deferred advance NOW, same session.** The response carries
+     `pending_acceptance_event_id`: since you just minted/confirmed the children (and moved any ACs)
+     yourself above, there is nothing left to APPLY — only the deferred Clarified→Decomposed advance to
+     COMMIT. Call `mcp__harmony__consume_acceptance_event({ event_id: <that id> })` right away, in this
+     same turn.
 
   The existing-children branch also makes accept idempotent for free: a re-run after a crash
   mid-accept (children created, resolve not yet run) sees them as existing and confirms instead of

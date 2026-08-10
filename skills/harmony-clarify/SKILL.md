@@ -254,7 +254,12 @@ auto-dedupe, or auto-subsume.
 Author the brief per `skills/harmony-shared/brief-authoring.md` §Clarify — the question, must-haves,
 and engagement it owes the human, plus the legibility contract. Consult it; do not restate it.
 
-Build the BLUF `BriefDoc` and file it — this sets `awaiting_human_input` and lints the doc:
+Build the BLUF `BriefDoc` and file it — this sets `awaiting_human_input` and lints the doc. **Also
+author `doc.payload` (B-810)** — one `acceptance_criterion` item per proposed happy-path AC from step 3's
+same derived set (never re-derived independently), so a WEB accept with no session running can auto-file
+them via the B-797 safety net instead of stalling on the design-gate self-heal. `ref: slugRef('ac',
+content)` (import from `payload-refs.ts` — never reinvent the scheme), deduped via `dedupeRefs` before the
+call:
 
 ```
 mcp__harmony__compose_brief({
@@ -272,6 +277,11 @@ mcp__harmony__compose_brief({
     items: [
       { kind: "decision", text: "Scope of a saved filter", recommendation: "Per-user, project-scoped" },
       { kind: "content-input", text: "Confirm whether sort/grouping is part of the saved state" }
+    ],
+    // one item per proposed happy-path AC (step 3's derived set) — dedupeRefs(acs.map(ac =>
+    // ({ write_kind: "acceptance_criterion", ref: slugRef("ac", ac), content: ac })))
+    payload: [
+      { write_kind: "acceptance_criterion", ref: "ac-a-saved-filter-persists-per-user", content: "A saved filter persists per-user across sessions" }
     ]
   }
 })
