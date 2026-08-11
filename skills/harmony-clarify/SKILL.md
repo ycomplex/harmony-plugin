@@ -74,7 +74,7 @@ mcp__harmony__find_related_tickets({ task_id })   // top ~5; pass limit to widen
   disposition and stop for the human's call. (In a conducted run this is a pause — a strong dedup hit
   pauses even under `--unattended`, the B-619 precedent.)
 - Otherwise **keep the result**: candidates feed step 2's residual assessment (a real overlap is
-  legitimate elicitation material — "this overlaps B-123 — how is your intent different?"), and the
+  legitimate elicitation material — "this overlaps <ticket> — how is your intent different?"), and the
   full card renders with the draft brief at step 3c. The disposition surface is unchanged.
 
 ### 2. KB-inference attempt — infer first, interrogate only the residual (rule 1)
@@ -234,7 +234,7 @@ re-fetch) as a **SINGLE relevance-ranked list** — the candidates arrive in rel
 across the intent + lexical routes), and **that order is authoritative**. Do NOT group, section, or
 reorder. One row per candidate, each row showing:
 
-- **id** (visual id, e.g. `B-123`) + **title**
+- **id** (visual id, e.g. `<ticket>`) + **title**
 - **state** (`workflow_state`) and **milestone** — or the literal **"unmilestoned"** when `milestone_id` is null
 - a **one-line relatedness reason** (why it overlaps — paraphrase the shared intent; note which routes surfaced it, `intent` and/or `lexical`)
 - a **recommended disposition**: `fold` (this ticket should be absorbed into that umbrella), `dedupe` (that ticket is the same ask — absorb this one into it), or `ignore` (related but distinct)
@@ -253,6 +253,7 @@ auto-dedupe, or auto-subsume.
 
 Author the brief per `skills/harmony-shared/brief-authoring.md` §Clarify — the question, must-haves,
 and engagement it owes the human, plus the legibility contract. Consult it; do not restate it.
+Ticket ids named in the brief's prose — and in the related-tickets card at step 3c — follow `skills/harmony-shared/brief-authoring.md` §Ticket identity, never an assumed `B-`.
 
 Build the BLUF `BriefDoc` and file it — this sets `awaiting_human_input` and lints the doc. **Also
 author `doc.payload` (B-810)** — one `acceptance_criterion` item per proposed happy-path AC from step 3's

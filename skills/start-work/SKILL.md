@@ -399,7 +399,9 @@ digraph start_work {
 
 ### 1. Identify the task
 
-**If the user provided a Harmony task ID** (e.g., `B-123`):
+Ticket ids named anywhere below — the ready line, status lines, `.harmony-task.json` — follow `skills/harmony-shared/brief-authoring.md` §Ticket identity, never an assumed `B-`.
+
+**If the user provided a Harmony task ID** (e.g., `<ticket>`):
 - Fetch the task using `mcp__harmony__get_task` to understand what needs to be done.
 
 **If the user described what they want but didn't give a task ID:**
@@ -433,7 +435,7 @@ After the worktree is created:
 {
   "task_id": "uuid-here",
   "task_number": 123,
-  "visual_id": "B-123",
+  "visual_id": "<ticket>",
   "title": "Task title from Harmony",
   "branch": "feat/branch-name"
 }
@@ -470,7 +472,7 @@ After the worktree is ready, assess the task and recommend one of three routes. 
 Present the recommendation concisely:
 
 ```
-Ready to work on B-123: "Add bulk export to CSV"
+Ready to work on <ticket>: "Add bulk export to CSV"
 
 I'd recommend **Plan** — the task is clear but touches the list view,
 a new utility, and a download trigger.
