@@ -1047,7 +1047,7 @@ describe('entrypoint.sh: repos[] clone iteration (B-814)', () => {
       HARMONY_REPOS_JSON: b64(repos),
     });
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, `DIAG stdout=${result.stdout} stderr=${result.stderr}`).toBe(0);
     expect(result.gitCalls).toEqual([
       `clone --branch main https://github.com/example/team-health.git ${pluginPath}`,
     ]);
@@ -1071,7 +1071,7 @@ describe('entrypoint.sh: repos[] clone iteration (B-814)', () => {
       HARMONY_REPOS_JSON: b64(repos),
     });
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, `DIAG stdout=${result.stdout} stderr=${result.stderr}`).toBe(0);
     expect(result.gitCalls).toEqual([
       `clone --branch main https://github.com/ycomplex/harmony-workspace.git ${workspacePath}`,
       `clone --branch web-feature-branch https://github.com/ycomplex/harmony-web.git ${webPath}`,
@@ -1116,7 +1116,7 @@ describe('entrypoint.sh: repos[] clone iteration (B-814)', () => {
       HARMONY_REPOS_JSON: b64(repos),
     });
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, `DIAG stdout=${result.stdout} stderr=${result.stderr}`).toBe(0);
     expect(result.gitCalls).toEqual([
       `clone --branch main https://github.com/x/sibling.git ${siblingPath}`,
       `clone --branch prod https://github.com/x/plugin.git ${pluginPath}`,
@@ -1133,7 +1133,7 @@ describe('entrypoint.sh: AC3 — HARMONY_REPOS_JSON absent/empty falls back byte
       { workspaceRoot: dir },
     );
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, `DIAG stdout=${result.stdout} stderr=${result.stderr}`).toBe(0);
     expect(result.gitCalls).toEqual([
       `clone --branch main https://github.com/ycomplex/harmony-workspace.git ${dir}`,
       `clone --branch main https://github.com/ycomplex/harmony-web.git ${dir}/web`,
@@ -1157,7 +1157,7 @@ describe('entrypoint.sh: AC3 — HARMONY_REPOS_JSON absent/empty falls back byte
       { workspaceRoot: dir },
     );
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, `DIAG stdout=${result.stdout} stderr=${result.stderr}`).toBe(0);
     expect(result.gitCalls).toEqual([
       `clone --branch v3 https://github.com/acme/workspace-fork.git ${dir}`,
       `clone --branch v2 https://github.com/acme/web-fork.git ${dir}/web`,
