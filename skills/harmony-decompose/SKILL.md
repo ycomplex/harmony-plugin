@@ -68,6 +68,7 @@ when an existing AC genuinely belongs on a specific new child.
 
 Author the brief per `skills/harmony-shared/brief-authoring.md` §Decompose — the question, must-haves,
 and engagement it owes the human, plus the legibility contract. Consult it; do not restate it.
+Ticket ids named in the brief's prose follow `skills/harmony-shared/brief-authoring.md` §Ticket identity — never assume the letter `B`.
 
 **Also author `doc.payload` (B-810)** — one `child_ticket` item per GENUINELY NEW child (confirmed-
 existing children get no item), `ref: slugRef('child', title)`, plus one `ac_transfer` item per AC the
@@ -87,7 +88,7 @@ mcp__harmony__compose_brief({
   reason: "decomposition-proposal",
   pending_activity: "decomposing",
   doc: {
-    decide: "Decompose B-240 into N children, or keep as one ticket?",
+    decide: "Decompose <ticket> into N children, or keep as one ticket?",
     recommend: { text: "Three children: schema, MCP surface, web UI" },
     items: [
       { kind: "decision", text: "Child 1 — schema migration", recommendation: "create" },
@@ -109,7 +110,7 @@ mcp__harmony__compose_brief({
 ```
 
 On an already-decomposed ticket (B-646), the items enumerate each EXISTING child — visual id + title,
-e.g. `{ kind: "decision", text: "B-551 — schema migration (existing)", recommendation: "confirm" }` —
+e.g. `{ kind: "decision", text: "<ticket> — schema migration (existing)", recommendation: "confirm" }` —
 never `"create"`. Genuinely net-new children the decomposition introduces are separate items
 recommended `"create"`; a removal/restructure of an existing child is its own explicit decision item,
 never silent.

@@ -269,6 +269,7 @@ native re-run at the target gate) finds the rationale without anyone reconstruct
 
 Author the brief per `skills/harmony-shared/brief-authoring.md` §Auxiliary briefs — it inherits the
 shared core and the legibility contract. Consult it; do not restate it.
+Ticket ids named in the brief's prose follow `skills/harmony-shared/brief-authoring.md` §Ticket identity — never assume the letter `B`.
 
 ```
 mcp__harmony__compose_brief({
@@ -278,7 +279,7 @@ mcp__harmony__compose_brief({
                                             // ("revising-clarifying" for decompose, "revising-decomposing" for design)
   decision_ref: { type: "specification", id: decision.id },   // the rationale record (B-763)
   doc: {
-    decide: "Back B-123 up to re-clarify against the broadened scope (the design gate revealed the spec was too narrow)?",
+    decide: "Back <ticket> up to re-clarify against the broadened scope (the design gate revealed the spec was too narrow)?",
     recommend: { text: "Revert to Proposed and re-run clarify natively against the real scope", confidence: "high" },
     why: [
       "The design-gate discussion grew the scope from X to X+Y",
@@ -367,7 +368,7 @@ Show the rendered `content` verbatim. On the human's command:
      `Clarified` for decompose, `Decomposed` for design, or `Planned` for build), the brief is cleared, ONLY the
      listed decisions were superseded, and it is **ready for `harmony-conduct` to re-run the target gate NATIVELY**
      — the revised decision is authored fresh through that gate's own surface (`/harmony-plugin:harmony-conduct
-     B-123` picks up at the INPUT state and re-runs the target gate, then the gates forward of it). This skill
+     <ticket>` picks up at the INPUT state and re-runs the target gate, then the gates forward of it). This skill
      does NOT author the revised decision and does NOT re-run the gate itself. **For a build target**, there is
      no "revised decision" to author natively (a build-target revert reopens the code change, not a discovery
      decision) — it is instead **ready for `/harmony-plugin:start-work` to rebuild**.

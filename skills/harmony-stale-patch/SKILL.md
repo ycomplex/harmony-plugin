@@ -90,7 +90,7 @@ here, never amend knowledge itself.
 ### 4. Compose the stale-patch-review brief
 
 File the patch as a brief. Author it per `skills/harmony-shared/brief-authoring.md` §Auxiliary briefs —
-it inherits the shared core and the legibility contract. Consult it; do not restate it. Setting
+it inherits the shared core and the legibility contract. Consult it; do not restate it. Ticket ids named in the brief's prose follow `skills/harmony-shared/brief-authoring.md` §Ticket identity — never assume the letter `B`. Setting
 `pending_activity` to a `revising-*` activity **iff the patch reverts
 state** (accept backflows the ticket through P3's existing `resolve_brief` path); otherwise `null`
 (knowledge-only reconciliation — accept just clears Stale, no state change):
@@ -102,7 +102,7 @@ mcp__harmony__compose_brief({
   pending_activity: <a "revising-*" activity IF the patch reverts state, else null>,
   decision_ref: { type: "<successor type>", id: stale_ref.superseded_by },   // successor present only — OMIT when superseded_by is null
   doc: {
-    decide: "Reconcile B-288 against the superseding 'harmony-web CI/CD' decision?",
+    decide: "Reconcile <ticket> against the superseding 'harmony-web CI/CD' decision?",
     recommend: { text: "Re-open at Designed and redo the deploy-step technical-design", confidence: "low" },
     why: ["The CI/CD decision this ticket built on was superseded", "The new flow changes the deploy step"],
     items: [

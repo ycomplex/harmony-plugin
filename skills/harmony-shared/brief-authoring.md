@@ -8,6 +8,21 @@ contract cannot drift.
 Vocabulary: states run Proposed → Clarified → Decomposed → Designed → Planned → Built →
 Deployed → Verified; gate names stay clarify / decompose / design / plan / release / verify.
 
+## Ticket identity — never assume the letter B
+
+When a brief's prose names the ticket it's about, use that ticket's own visual id
+verbatim — the string this run was invoked with, or
+`${get_project().key}-${task.task_number}` if reconstructing. Third-party deployments
+key their tickets on a project-specific letter (e.g. `TH-10`, not `B-10`) — never assume
+the letter `B`.
+
+This applies to every rendered worked example, template, or status line a gate skill
+teaches, not just the live `compose_brief`/`record_decision` call: an agent
+pattern-matching a literal `B-123`-style worked example keeps the literal letter `B`
+even when the real ticket is `TH-10`. Gate skills teach the pattern with a generic
+`<ticket>` placeholder for exactly this reason — never another concrete-looking numbered
+example.
+
 ## Shared core (every brief)
 
 Every brief, at every gate:

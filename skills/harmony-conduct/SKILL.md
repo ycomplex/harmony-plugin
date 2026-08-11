@@ -31,7 +31,7 @@ control choice for no safety gain. Neither weakens the controlled default or the
 
 ## The contract this skill obeys (founder-locked — do not relitigate)
 
-1. **The default route NEVER changes itself.** A bare `harmony-conduct B-123` (no flag) is **controlled**:
+1. **The default route NEVER changes itself.** A bare `harmony-conduct <ticket>` (no flag) is **controlled**:
    it surfaces every gate's brief and **PAUSES**. The system never decides on its own to delegate a gate.
    Delegation only happens when the **human passes an explicit flag** for *this run*. There is no "this
    looks minor, I'll just run it" — auto-advance is the human's conscious per-run choice, never the
@@ -80,7 +80,7 @@ control choice for no safety gain. Neither weakens the controlled default or the
 The conductor holds **no lifecycle state in the session**. The loop's entire memory is the ticket row
 (`workflow_state`, `workflow_activity`, `awaiting_human_input`, `awaiting_human_reason`,
 `awaiting_human_ref`, the `stale` flag, and the active brief). Re-running `/harmony-plugin:harmony-conduct
-B-123` reconstitutes everything from `get_task` and resumes from the ticket's current state — whether the
+<ticket>` reconstitutes everything from `get_task` and resumes from the ticket's current state — whether the
 previous session was closed, the human answered in the web UI, or the ticket advanced by some other path.
 This works for the same reason `resolve_brief` is idempotent: each loop iteration is a pure function of
 the ticket row, so it is **idempotent and stateless between pauses**. No new schema, no session file.
@@ -156,7 +156,7 @@ Apply the dial **ceiling** to the parsed per-run `mode`:
 - **`agent_trust.level === 'cautious'`** (the kill-switch — `autoAdvances == []`): the dial forbids ALL
   delegation — **including `--escalate`**. **Override the per-run mode to `controlled`** and **ANNOUNCE** it
   plainly, e.g.: *"This workspace's Agent-Trust dial is set to **cautious**, which forbids delegation — I'm
-  ignoring `--escalate` and running B-123 fully controlled (pausing at every gate). Raise the dial to
+  ignoring `--escalate` and running <ticket> fully controlled (pausing at every gate). Raise the dial to
   balanced or autonomous in workspace settings to allow per-run delegation."* Never silently drop the flag.
   (`--escalate` is delegation-with-an-escape-hatch, not a softened controlled run, so the cautious
   kill-switch vetoes it exactly as it vetoes `--unattended`.)
@@ -167,22 +167,22 @@ Apply the dial **ceiling** to the parsed per-run `mode`:
   moot here. The risk-class floor (§3a) is computed under *all* permitted modes and at every level — it
   PAUSES in `--escalate` and is carried to the release brief in `--unattended`/`--pause-at`, B-516.)
 
-A ticket id is **required** — `/harmony-plugin:harmony-conduct B-123 [--pause-at <gate> | --unattended | --escalate] [--one-shot]`.
+A ticket id is **required** — `/harmony-plugin:harmony-conduct <ticket> [--pause-at <gate> | --unattended | --escalate] [--one-shot]`.
 (Conducting picks a *specific* ticket to its terminal state; that is different from
 `/harmony-plugin:harmony-next`, which pulls whatever is top of the queue.) If no ticket was named, ask for
 one and stop.
 
 `mcp__harmony__get_task({ task_id })`. Note the starting `workflow_state` and report the **effective mode**
 (after the dial ceiling), e.g.:
-- controlled: *"Conducting B-123 from <state>. I'll pause at every gate for your decision."*
-- partial: *"Conducting B-123 from <state> — auto-advancing through every gate before **<pauseAt>**, then
+- controlled: *"Conducting <ticket> from <state>. I'll pause at every gate for your decision."*
+- partial: *"Conducting <ticket> from <state> — auto-advancing through every gate before **<pauseAt>**, then
   pausing at **<pauseAt>** and every gate after for your decision. (Auto-advanced gates still record their
   decision as Accepted.)"*
-- unattended: *"Conducting B-123 from <state> unattended — auto-advancing every forward gate, then pausing
+- unattended: *"Conducting <ticket> from <state> unattended — auto-advancing every forward gate, then pausing
   at **release** (merge + deploy) and **verify** for your decision, which always require a human. If a
   forward gate touches a risk class (auth / data-migration / irreversible/destructive / shared-core) I won't
   stop mid-run — I'll carry it onto the release brief so you see it at the release gate."*
-- escalate: *"Conducting B-123 from <state> with `--escalate` — auto-advancing forward gates, but pausing
+- escalate: *"Conducting <ticket> from <state> with `--escalate` — auto-advancing forward gates, but pausing
   on any gate I judge genuinely worth your opinion, on any gate that trips the risk-class floor (auth /
   data-migration / irreversible-destructive / shared-core), and always at **release** and **verify**.
   (Auto-advanced gates still record their decision as Accepted.)"*
@@ -640,8 +640,11 @@ Derive each item's status purely from `workflow_state` — map the state to the 
 
 Render it inline as a simple Markdown checklist, marking each item with its derived status, e.g.:
 
+Name the ticket by its own visual id, never an assumed `B-` — see `skills/harmony-shared/brief-authoring.md` §Ticket identity. That applies to every status line and
+checklist header below, not just this render.
+
 ```
-Progress for B-123 (state: Decomposed):
+Progress for <ticket> (state: Decomposed):
 - [x] clarify        (completed)
 - [x] decompose      (completed)
 - [ ] design         (in_progress)  ← current gate
@@ -744,7 +747,7 @@ Then **STOP and tell the human the ball is in their court.** State plainly: whic
 one-line decision (`doc.decide`), and how to answer. For a hard-floor gate reached under a delegation flag,
 say so explicitly —
 
-> *"B-123 is at the **release** gate (merge + deploy). This always requires a human even under
+> *"<ticket> is at the **release** gate (merge + deploy). This always requires a human even under
 > `--unattended` — it's a one-way, irreversible decision. Awaiting your decision: <doc.decide>. Accept /
 > defer / give feedback in the web UI, or here."*
 
@@ -752,7 +755,7 @@ For a gate the **risk-class floor** tripped **in `--escalate`** (§3a), say so e
 class(es)** that tripped it (from `risk_classes`) — in `--escalate` this is non-discretionary and
 dial-independent, so the human knows it was not the conductor's discretion —
 
-> *"B-123 is at the **design** gate. Running `--escalate`, its subject touches **auth** (risk-class floor),
+> *"<ticket> is at the **design** gate. Running `--escalate`, its subject touches **auth** (risk-class floor),
 > so I'm surfacing it for you — in `--escalate`, risk-class hits always require a human regardless of dial or
 > judgment. Awaiting your decision: <doc.decide>. Accept / defer / give feedback."*
 
@@ -761,13 +764,13 @@ records the class for the release-brief signal below.)
 
 For a gate the **`--escalate` judgment** flagged as worth your opinion, say which signal fired —
 
-> *"B-123 is at the **design** gate. Running `--escalate`, I judged this one worth your eyes: the
+> *"<ticket> is at the **design** gate. Running `--escalate`, I judged this one worth your eyes: the
 > recommendation is low-confidence and the two alternatives are near-ties. Awaiting your decision:
 > <doc.decide>. Accept / defer / give feedback. I'll keep watching — resolve here in the terminal or from the browser (Accept / Reshape / Deny) and I'll continue automatically."*
 
 For an ordinary controlled gate —
 
-> *"B-123 is at the **<gate>** gate, awaiting your decision: <doc.decide>. Accept / defer / give feedback
+> *"<ticket> is at the **<gate>** gate, awaiting your decision: <doc.decide>. Accept / defer / give feedback
 > in the web UI, or here. I'll keep watching — resolve here in the terminal or from the browser (Accept /
 > Reshape / Deny) and I'll continue automatically."*
 
@@ -828,7 +831,7 @@ TaskDetailPanel on any device), continuing the instant it lands. **This is not o
 for your decision — resolve it here in the terminal or from the browser (Accept / Reshape / Deny) and I'll
 continue automatically."* The watch is **bounded (~90 min, idle backoff)** and ends on **any** of three
 co-equal exits: a browser resolution, an in-session/terminal answer, or the ~90-min timeout. On timeout the
-loop is paused with **graceful degradation**: a later `/harmony-plugin:harmony-conduct B-123` resumes from the
+loop is paused with **graceful degradation**: a later `/harmony-plugin:harmony-conduct <ticket>` resumes from the
 ticket row (re-pass the flag to resume a partial/unattended/escalate run; absent a flag the resumed run is
 controlled) — this is the **no-session degradation**: a browser resolution submitted while no session is
 running simply **persists on the ticket row** and the next run applies it. Go to **§4c (Auto-pickup)**.
@@ -1165,7 +1168,7 @@ invariant; that is the daemon's dirty-exit classifier's domain.)
 
 The loop **ends** (does not pause for resume) when, after re-reading the ticket at step 2:
 
-- `workflow_state === 'Verified'` → done. Report: *"B-123 is Verified — conducted from <start state> to
+- `workflow_state === 'Verified'` → done. Report: *"<ticket> is Verified — conducted from <start state> to
   Verified."* (Even an unattended run reaches Verified only after the human resolved release + verify.)
 - `workflow_state === 'Parked'` or `'Cancelled'` → the human deferred/cancelled at a gate. Report where it
   parked and why, and stop. (A deferral authored its own `deferral` knowledge entry via the gate skill —

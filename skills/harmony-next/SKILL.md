@@ -8,7 +8,7 @@ disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Ba
 # Harmony Next
 
 Pull the top of the queue and act on it (agent-model §5: *pick up the highest-priority next thing and
-start the appropriate activity*). One ticket can be named explicitly (`/harmony-plugin:harmony-next B-301`)
+start the appropriate activity*). One ticket can be named explicitly (`/harmony-plugin:harmony-next <ticket>`)
 or left blank to take the highest-priority awaiting item.
 
 ## Flow
@@ -26,10 +26,11 @@ If the resolved item's `workflow_state === 'Captured'` (a freshly-created, **un-
 the post-B-474 inbox state), **do NOT auto-advance `proposing` and do NOT run clarify.** `proposing`
 (Captured→Proposed) is a documented **human triage move** ("is this worth pursuing?"), and `harmony-next`
 pulls *un-triaged* items off the queue — so the promote decision is **the human's**, not something this
-skill makes for them. Surface it and pause:
+skill makes for them. Surface it and pause (name the ticket by its own visual id, never an assumed
+`B-` — `skills/harmony-shared/brief-authoring.md` §Ticket identity):
 
-> *"B-123 is **Captured** (un-triaged). Promote it to Proposed — is this worth pursuing? If yes, say so (or
-> `/harmony-plugin:harmony-next B-123` again after proposing) and I'll advance it and start clarifying. If
+> *"<ticket> is **Captured** (un-triaged). Promote it to Proposed — is this worth pursuing? If yes, say so (or
+> `/harmony-plugin:harmony-next <ticket>` again after proposing) and I'll advance it and start clarifying. If
 > not, defer/cancel it."*
 
 Then **STOP** — the ball is in the human's court for the triage call. (This is the deliberate **opposite**

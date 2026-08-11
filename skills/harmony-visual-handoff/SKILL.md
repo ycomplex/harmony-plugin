@@ -83,13 +83,13 @@ ride downstream as if decided (D3 — never just restate the legend). Worked exa
 ```
 const decision = mcp__harmony__record_decision({
   type: "ux-ui-design",
-  title: "B-412: UX/UI — onboarding setup-depth = fixed/standard instrument",
+  title: "<ticket>: UX/UI — onboarding setup-depth = fixed/standard instrument",
   content:
     "Manager first-run onboarding uses a single fixed setup step ('runs every 2 weeks across these 4 "
     + "categories') with a deliberately high-friction 'request a custom setup' path — keeps teams comparable. "
     + "Provenance — real: the 4 instrument categories (configured instrument) + the >=3 anonymity threshold "
     + "(a product rule); invented (NOT decided): none; illustrative: the sample scores. "
-    + "Surface: /tmp/harmony-visual/B-412-onboarding-setup.html.",
+    + "Surface: /tmp/harmony-visual/<ticket>-onboarding-setup.html.",
   madr: {
     context: "Manager first-run; cross-team comparability is the driver.",
     decision_drivers: ["Comparable measures across teams/org", "Low first-run friction"],
@@ -106,7 +106,7 @@ mcp__harmony__reference_knowledge({ task_id, decision_id: decision.id })
 ```
 
 Then compose the brief. Author it per `skills/harmony-shared/brief-authoring.md` §Design — the question,
-must-haves, and engagement it owes the human, plus the legibility contract. Consult it; do not restate it.
+must-haves, and engagement it owes the human, plus the legibility contract. Consult it; do not restate it. Ticket ids named in the brief's prose follow `skills/harmony-shared/brief-authoring.md` §Ticket identity — never assume the letter `B`.
 Set `pending_activity: "designing"` **only if this is the last required sub-track**
 (derive exactly as `harmony-design-decide` does — `mcp__harmony__list_ticket_knowledge({ task_id })`, the
 Accepted `*-design` types vs the required set); otherwise `null`.
