@@ -6,16 +6,6 @@
 set -euo pipefail
 
 : "${GIT_TOKEN:?GIT_TOKEN is required (a GitHub token able to clone/push ycomplex repos) — see plugin/container/env.example (copy it and fill it in — container/README.md Quick start)}"
-WEB_REPO="${WEB_REPO:-https://github.com/ycomplex/harmony-web.git}"
-PLUGIN_REPO="${PLUGIN_REPO:-https://github.com/ycomplex/harmony-plugin.git}"
-WORKSPACE_REPO="${WORKSPACE_REPO:-https://github.com/ycomplex/harmony-workspace.git}"
-WEB_REF="${WEB_REF:-main}"
-# B-803: PLUGIN_REF (used only for the clone below) derives from the single posture knob
-# HARMONY_PLUGIN_POSTURE (prod | ack:<ref> | bare <ref>) — default "main" when unset, stripping
-# the "ack:" prefix (that prefix matters only to provision.sh's fail-closed guard, downstream).
-export PLUGIN_REF="${HARMONY_PLUGIN_POSTURE:-main}"
-PLUGIN_REF="${PLUGIN_REF#ack:}"
-WORKSPACE_REF="${WORKSPACE_REF:-main}"
 
 # Token-authenticated clones without the token landing in .git/config or argv:
 # an askpass helper reads it from the env.
@@ -38,6 +28,86 @@ clone() { # $1 = url, $2 = ref, $3 = dir
     git clone --branch "$2" "$1" "$3"
   fi
 }
+
+# B-803 / B-814: HARMONY_PLUGIN_POSTURE (prod | ack:<ref> | bare <ref>) ALWAYS supplies/overrides
+# the clone ref for the repo entry that carries the plugin — for a `repos[]` entry this means
+# `repos[].ref` is NEVER read for the entry with `is_plugin: true`; in the fallback three-slot shape
+# below it means PLUGIN_REF is derived from the posture, never from a separate knob. (PLUGIN_REF and
+# HARMONY_ACK_PLUGIN_AHEAD_OF_PROD do not exist in code any more — B-803 collapsed both into this one
+# var — so neither is an alternative source here.) Defaults to "main" when unset, stripping the
+# "ack:" prefix (that prefix matters only to provision.sh's fail-closed guard, downstream).
+plugin_ref_from_posture() {
+  local posture="${HARMONY_PLUGIN_POSTURE:-main}"
+  printf '%s' "${posture#ack:}"
+}
+
+if [ -n "${HARMONY_REPOS_JSON:-}" ]; then
+  # B-814: this deployment declares its own arbitrary, ordered repo set — a `repos` section in
+  # deployment.json, transported here as base64-encoded JSON (see scripts/mint-installation-token.mjs's
+  # serializeReposSection() and container/cloud-worker-launch.sh's write_exec_env_file() for why
+  # base64: it's the one encoding that survives BOTH the local env-file channel and the cloud path's
+  # YAML exec-env-vars-file embedding unescaped). Iterate it instead of the fixed three-slot clone
+  # below — this whole branch is a no-op (falls to the `else`) when the var is absent/empty, so every
+  # existing deployment with no `repos` section behaves byte-for-byte as it did before this ticket
+  # (AC3).
+  repos_json="$(printf '%s' "$HARMONY_REPOS_JSON" | base64 -d 2>/dev/null || true)"
+  if [ -z "$repos_json" ] || ! printf '%s' "$repos_json" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+    echo "entrypoint: HARMONY_REPOS_JSON is set but did not decode to a non-empty JSON array — aborting" >&2
+    exit 1
+  fi
+
+  # Provisioning is plugin code — there is no plugin-less route, so exactly one entry must carry
+  # is_plugin:true (the schema, src/config/deployment-config.ts, already enforces AT MOST one; this
+  # is the runtime enforcement of AT LEAST one).
+  PLUGIN_DIR="$(printf '%s' "$repos_json" | jq -r '[.[] | select(.is_plugin == true)][0].path // empty')"
+  if [ -z "$PLUGIN_DIR" ]; then
+    echo "entrypoint: no repos[] entry has is_plugin:true — provisioning is plugin code, there is no plugin-less route" >&2
+    exit 1
+  fi
+
+  # B-726 (a/a1) preserved: when one entry declares meta_repo_role, clone it FIRST — every other
+  # entry then clones nested inside it (when its own path falls inside the meta entry's path) or as
+  # a sibling, mirroring the interactive layout so CLAUDE.md ancestry still loads by ordinary file
+  # ancestry. When no entry declares the role, every entry just clones at its own configured path,
+  # in list order.
+  META_PATH="$(printf '%s' "$repos_json" | jq -r '[.[] | select(.meta_repo_role == true)][0].path // empty')"
+  if [ -n "$META_PATH" ]; then
+    META_URL="$(printf '%s' "$repos_json" | jq -r '[.[] | select(.meta_repo_role == true)][0].url')"
+    META_REF="$(printf '%s' "$repos_json" | jq -r '[.[] | select(.meta_repo_role == true)][0].ref // "main"')"
+    clone "$META_URL" "$META_REF" "$META_PATH"
+  fi
+
+  # NOTE: split on ASCII 0x01, not a tab (@tsv) — bash's `read` treats tab as "IFS whitespace" and
+  # SQUEEZES consecutive delimiters together regardless of what IFS is set to, silently dropping the
+  # empty `ref` field (and shifting every field after it) for any non-plugin entry that omits `ref`.
+  # 0x01 has no such special-casing, so an empty field reads back as empty, not absorbed.
+  while IFS=$'\x01' read -r url ref path is_plugin_flag meta_flag; do
+    # The meta entry, if any, was already cloned above.
+    [ "$meta_flag" = "true" ] && continue
+    if [ "$is_plugin_flag" = "true" ]; then
+      # B-803/B-814 ref precedence (see plugin_ref_from_posture's own comment above): the posture
+      # knob wins for the is_plugin entry — this entry's own `ref` (already read into $ref below,
+      # from the deployment config) is deliberately discarded here, never consulted.
+      ref="$(plugin_ref_from_posture)"
+    elif [ -z "$ref" ]; then
+      ref="main"
+    fi
+    clone "$url" "$ref" "$path"
+  done < <(printf '%s' "$repos_json" | jq -r '.[] | [(.url|tostring), ((.ref // "")|tostring), (.path|tostring), ((.is_plugin // false)|tostring), ((.meta_repo_role // false)|tostring)] | join("\u0001")')
+
+  exec "$PLUGIN_DIR/container/provision.sh" "$@"
+fi
+
+# --- Fallback: HARMONY_REPOS_JSON absent/empty (AC3) -------------------------------------------
+# No `repos` section anywhere in this deployment's config — behave BYTE-FOR-BYTE as this script did
+# before B-814: the fixed three-slot WEB_REPO/PLUGIN_REPO/WORKSPACE_REPO clone.
+WEB_REPO="${WEB_REPO:-https://github.com/ycomplex/harmony-web.git}"
+PLUGIN_REPO="${PLUGIN_REPO:-https://github.com/ycomplex/harmony-plugin.git}"
+WORKSPACE_REPO="${WORKSPACE_REPO:-https://github.com/ycomplex/harmony-workspace.git}"
+WEB_REF="${WEB_REF:-main}"
+export PLUGIN_REF="$(plugin_ref_from_posture)"
+WORKSPACE_REF="${WORKSPACE_REF:-main}"
+
 # B-726 (a/a1): clone the meta-repo FIRST, then web+plugin INSIDE it — mirrors
 # the interactive layout so all three CLAUDE.md levels load by ordinary file
 # ancestry (workspace/CLAUDE.md, web/CLAUDE.md, plugin/CLAUDE.md). web/ and

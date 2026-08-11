@@ -95,6 +95,46 @@ const LaunchProfileSchema = z.object({
   schema_version: z.number().int().positive().optional(),
 });
 
+// --- repos: the ordered repo set a deployment declares (B-814) -----------------------------------
+// Replaces the old fixed three-slot assumption (WEB_REPO/PLUGIN_REPO/WORKSPACE_REPO baked into
+// container/entrypoint.sh) with an arbitrary, ordered list — a team with one repo (no meta-repo
+// wrapper), or N repos, can express its own topology instead of being forced into the
+// web+plugin+workspace shape. Absent `repos` (feature-detect), every consumer falls back UNCHANGED
+// to today's three-slot env-var behavior — zero behavior change for every existing deployment.
+//
+// `meta_repo_role` marks the (at most one) entry that is the meta-repo/nesting parent — when
+// present, that entry is cloned first and every other entry whose `path` falls inside it is cloned
+// nested (preserving the CLAUDE.md-ancestry behavior: workspace first, children cloned inside).
+// When no entry declares this role, every entry clones as a sibling.
+//
+// `is_plugin` marks the (at most one) entry that carries the plugin — provisioning is plugin code,
+// so container/entrypoint.sh hands off to THAT entry's `container/provision.sh`. For that entry,
+// `ref` is NOT read from `repos[].ref`: HARMONY_PLUGIN_POSTURE always supplies/overrides its clone
+// ref (the existing posture knob, B-803) — `repos[].ref` governs only non-plugin entries, so it
+// never becomes a second, competing ref-selection knob for the plugin repo.
+const RepoEntrySchema = z.object({
+  /** Clone URL. */
+  url: z.string().min(1),
+  /** Clone ref. IGNORED for the is_plugin entry (see header comment) — HARMONY_PLUGIN_POSTURE wins
+   *  there. Optional for every other entry; falls back to the container's existing "main" default. */
+  ref: z.string().optional(),
+  /** In-container clone destination, e.g. "/workspace/workspace/plugin". */
+  path: z.string().min(1),
+  /** Marks this entry as the meta-repo/nesting parent. At most one entry may set this. */
+  meta_repo_role: z.boolean().optional(),
+  /** Marks this entry as the one carrying the plugin. At most one entry may set this. */
+  is_plugin: z.boolean().optional(),
+});
+
+const ReposSchema = z
+  .array(RepoEntrySchema)
+  .refine((repos) => repos.filter((r) => r.meta_repo_role).length <= 1, {
+    message: 'at most one repos[] entry may set meta_repo_role',
+  })
+  .refine((repos) => repos.filter((r) => r.is_plugin).length <= 1, {
+    message: 'at most one repos[] entry may set is_plugin',
+  });
+
 // --- launcher: the launcher-host env contract ----------------------------------------------------
 const GithubAppSchema = z
   .object({
@@ -125,12 +165,15 @@ export const DeploymentConfigSchema = z.object({
   env: DeploymentEnvSchema.optional(),
   profiles: z.record(LaunchProfileSchema).optional(),
   launcher: LauncherSchema.optional(),
+  /** B-814: the ordered repo set — see the RepoEntrySchema/ReposSchema header comment above. */
+  repos: ReposSchema.optional(),
 });
 
 export type DeploymentEnv = z.infer<typeof DeploymentEnvSchema>;
 export type LaunchProfileConfig = z.infer<typeof LaunchProfileSchema>;
 export type RequiredToolsConfig = z.infer<typeof RequiredToolsSchema>;
 export type LauncherConfig = z.infer<typeof LauncherSchema>;
+export type RepoEntry = z.infer<typeof RepoEntrySchema>;
 export type DeploymentConfig = z.infer<typeof DeploymentConfigSchema>;
 
 /** Resolve the config file path: explicit param > HARMONY_DEPLOYMENT_CONFIG > the single-deployment

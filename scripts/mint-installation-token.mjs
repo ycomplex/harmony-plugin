@@ -116,6 +116,28 @@ export function flattenEnvSection(envSection) {
 }
 
 /**
+ * Serialize a deployment config's `repos` section (B-814: the ordered repo-set list, see
+ * src/config/deployment-config.ts's RepoEntrySchema) into a single `HARMONY_REPOS_JSON=<value>\n`
+ * line, in the same KEY=value shape flattenEnvSection produces — merged alongside it so
+ * container/entrypoint.sh reaches the SAME channel every other deployment-config value does,
+ * rather than a separate ad hoc one (the constraint this ticket was accepted under).
+ *
+ * The value is base64-encoded JSON, not raw JSON: this one var also has to survive
+ * container/cloud-worker-launch.sh's write_exec_env_file(), which embeds it in a `KEY: "value"`
+ * YAML line — raw JSON's embedded double quotes would break that naive printf-quoting. Base64's
+ * alphabet (A-Za-z0-9+/=) is safe to embed unescaped in either shape, so entrypoint.sh decodes the
+ * SAME way regardless of which path (local or cloud) produced it.
+ *
+ * Returns '' for an absent, empty, or non-array `repos` section — same absent-section-is-a-no-op
+ * convention as flattenEnvSection.
+ */
+export function serializeReposSection(reposSection) {
+  if (!Array.isArray(reposSection) || reposSection.length === 0) return '';
+  const encoded = Buffer.from(JSON.stringify(reposSection), 'utf8').toString('base64');
+  return `HARMONY_REPOS_JSON=${encoded}\n`;
+}
+
+/**
  * Resolve the base env-file CONTENT for composeEnvFile. B-800: when a deployment config file
  * exists at the resolved path, its `env` section WINS over `--base <file>` — the deployment
  * config is the new source of truth for the worker base env. Falls back to reading `--base <file>`
@@ -153,7 +175,7 @@ export function resolveBaseContent({
         { cause: err },
       );
     }
-    return flattenEnvSection(parsed.env);
+    return `${flattenEnvSection(parsed.env)}${serializeReposSection(parsed.repos)}`;
   }
   // No deployment config at the resolved path — fall back to --base <file>, unchanged behavior.
   return base ? readImpl(base) : '';

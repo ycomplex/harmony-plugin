@@ -117,6 +117,95 @@ describe('loadDeploymentConfig', () => {
     // confirming the schema no longer declares them (a passthrough schema would have kept them).
     expect(loaded).toEqual({ env: { HARMONY_TARGET: 'prod' } });
   });
+
+  // B-814: the ordered repo-set list — replaces the fixed WEB_REPO/PLUGIN_REPO/WORKSPACE_REPO
+  // three-slot assumption baked into container/entrypoint.sh. See src/config/deployment-config.ts's
+  // RepoEntrySchema/ReposSchema header comment for the full shape and ref-precedence contract.
+  describe('repos (B-814)', () => {
+    it('parses a valid repos list with a meta-repo entry, a plain sibling, and the plugin entry', () => {
+      const config = {
+        repos: [
+          { url: 'https://github.com/ycomplex/harmony-workspace.git', path: '/workspace/workspace', meta_repo_role: true },
+          { url: 'https://github.com/ycomplex/harmony-web.git', path: '/workspace/workspace/web', ref: 'main' },
+          { url: 'https://github.com/ycomplex/harmony-plugin.git', path: '/workspace/workspace/plugin', is_plugin: true },
+        ],
+      };
+      const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
+      const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
+      expect(loaded).toEqual(config);
+    });
+
+    it('accepts an N=1 single-repo list where that one entry is both the whole topology and is_plugin (AC1 — e.g. Team Health)', () => {
+      const config = {
+        repos: [{ url: 'https://github.com/ycomplex/team-health.git', path: '/workspace/workspace/plugin', is_plugin: true }],
+      };
+      const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
+      const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
+      expect(loaded).toEqual(config);
+    });
+
+    it('requires url and path on every entry, but ref/meta_repo_role/is_plugin all stay optional', () => {
+      const config = { repos: [{ url: 'https://github.com/x/y.git', path: '/workspace/y' }] };
+      const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
+      expect(loadDeploymentConfig({ configPath: '/deployment.json', ...io })).toEqual(config);
+    });
+
+    it('rejects a repos entry missing url or path', () => {
+      const io = fakeFs({
+        '/deployment.json': JSON.stringify({ repos: [{ path: '/workspace/y' }] }),
+      });
+      expect(() => loadDeploymentConfig({ configPath: '/deployment.json', ...io })).toThrow(
+        /failed validation/,
+      );
+    });
+
+    it('rejects more than one entry setting meta_repo_role', () => {
+      const config = {
+        repos: [
+          { url: 'https://github.com/x/a.git', path: '/workspace/a', meta_repo_role: true },
+          { url: 'https://github.com/x/b.git', path: '/workspace/b', meta_repo_role: true },
+        ],
+      };
+      const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
+      expect(() => loadDeploymentConfig({ configPath: '/deployment.json', ...io })).toThrow(
+        /at most one repos\[\] entry may set meta_repo_role/,
+      );
+    });
+
+    it('rejects more than one entry setting is_plugin', () => {
+      const config = {
+        repos: [
+          { url: 'https://github.com/x/a.git', path: '/workspace/a', is_plugin: true },
+          { url: 'https://github.com/x/b.git', path: '/workspace/b', is_plugin: true },
+        ],
+      };
+      const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
+      expect(() => loadDeploymentConfig({ configPath: '/deployment.json', ...io })).toThrow(
+        /at most one repos\[\] entry may set is_plugin/,
+      );
+    });
+
+    it('allows repos with NEITHER a meta_repo_role NOR an is_plugin entry set (every entry a plain sibling)', () => {
+      const config = {
+        repos: [
+          { url: 'https://github.com/x/a.git', path: '/workspace/a' },
+          { url: 'https://github.com/x/b.git', path: '/workspace/b' },
+        ],
+      };
+      const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
+      expect(loadDeploymentConfig({ configPath: '/deployment.json', ...io })).toEqual(config);
+    });
+
+    // AC3: a deployment.json with no repos section at all must load exactly as it did before this
+    // ticket — the section is purely additive.
+    it('a config with no repos section at all loads unchanged (AC3 — repos is purely additive)', () => {
+      const config = { env: { HARMONY_TARGET: 'prod' as const } };
+      const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
+      const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
+      expect(loaded).toEqual(config);
+      expect(loaded && 'repos' in loaded).toBe(false);
+    });
+  });
 });
 
 describe('resolveConfigPath', () => {

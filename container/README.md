@@ -214,9 +214,12 @@ minted `GIT_TOKEN` does):
 | `HARMONY_APP_PRIVATE_KEY_PATH` | Path to the App private key PEM (preferred over the inline `HARMONY_APP_PRIVATE_KEY`, which needs newline escaping). |
 | `HARMONY_PLUGIN_DIR` | Checkout the launch template runs the mint script from. |
 
-**The App must be installed on every repo the container clones** — `harmony-web`,
-`harmony-plugin` **and** `harmony-workspace`. Its installation is repo-selected,
-so a repo left out fails at the clone step, not at push time.
+**The App must be installed on every repo the container clones.** Today's default (no `repos`
+section in the deployment config) is the fixed three-slot set — `harmony-web`, `harmony-plugin`
+**and** `harmony-workspace`. B-814: a deployment with its own `repos` list (any topology — one repo,
+N repos, no meta-repo wrapper — see `container/migrate-to-deployment-config.md`) must install the
+App on every entry in ITS OWN list instead. Its installation is repo-selected, so a repo left out
+fails at the clone step, not at push time.
 
 **Consequence at the release gate:** a bot-authored PR cannot be merged until you
 approve it on GitHub. `finish-work` asserts bot authorship inside a worker run and
@@ -257,6 +260,19 @@ multiple daemon deployments this way, each with its own deployment-config file b
 board — see **`container/migrate-to-deployment-config.md`** for the human, once, migration
 procedure (two worked examples: the default single-deployment case, and a second differently-named
 deployment at a non-default path).
+
+**B-814: a deployment config's `repos` section replaces the fixed three-slot
+`WEB_REPO`/`PLUGIN_REPO`/`WORKSPACE_REPO` clone with an arbitrary, ordered list** — a team with one
+repo, N repos, or no meta-repo wrapper can express its own topology instead of being forced into the
+web+plugin+workspace shape (`src/config/deployment-config.ts`'s `repos` schema). It reaches the
+container the same way every other deployment-config value does: `scripts/mint-installation-token.mjs`
+folds it into the minted env-file as `HARMONY_REPOS_JSON` (local profile), and
+`container/cloud-worker-launch.sh`'s `write_exec_env_file()` whitelists the same var for the cloud
+profile — both base64-encode the JSON so it survives either transport unescaped.
+`container/entrypoint.sh` decodes and iterates it instead of the three fixed slots when set and
+non-empty; **absent `repos`, every deployment falls back BYTE-FOR-BYTE to today's three-slot
+behavior** — zero change for every existing deployment. See
+**`container/migrate-to-deployment-config.md`** for a worked `repos` example.
 
 **B-717 optional profile fields** (alongside `launch`/`reap` in the profile JSON):
 
