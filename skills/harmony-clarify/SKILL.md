@@ -86,6 +86,25 @@ rules) plus `customer` where relevant:
 mcp__harmony__query_knowledge({ domain: ["product", "customer"], search: "<the ticket's subject>" })
 ```
 
+Also pull the ticket's own comment stream — a founder-authored comment placed on the ticket (an
+explicit fold instruction, a correction, a "this belongs in this ticket's remit" note) is a
+first-class scope input the census must not miss:
+
+```
+mcp__harmony__list_comments({ task_id })
+```
+
+**Filter out skill-authored bookkeeping markers, then treat every remaining comment as scope
+input.** The marker filter is a single, named exclusion list — today it holds exactly one entry,
+lines matching `AC-FILING-PASS brief_id=... filed=N` (this same skill's own idempotency marker,
+filed at step 5). A future skill-authored bookkeeping-marker convention is added to this SAME list
+at the point it's introduced — never a new ad-hoc filter. Every non-marker comment feeds the SAME
+residual-assessment mining targets below as the ticket body and Accepted KB, with the same
+inferable / inference-needing-validation / unknown classification and load-bearing/low-stakes
+staking: a comment carrying scope-relevant content becomes load-bearing residual exactly like any
+other unknown, and can trigger the exchange (step 2b) through the same trigger-config mechanism as
+any other load-bearing unknown — this is not a new trigger type.
+
 Also pull similar past tickets/decisions (`query_knowledge` by `type: 'specification'`). **Inference
 grounds on Accepted knowledge only** (the tool's default). An Asserted entry never silently steers
 inference — it may enter the dialogue only as an explicit validation candidate ("I hold an unratified
@@ -93,7 +112,8 @@ claim that X — confirm?"), which is precisely its ratification route.
 
 Then form the **residual assessment** over the mining targets (rule 2 — beliefs and intent, not
 slots): the ticket's **drivers** (motivations), the **behaviour** to be performed, any
-**solution-shape** already in the human's head, and the **scope boundaries** (in/out). Classify each
+**solution-shape** already in the human's head, and the **scope boundaries** (in/out) — mined from
+the ticket body, Accepted KB, and the ticket's own non-marker comments alike. Classify each
 as *inferable* (ticket + Accepted KB settle it) / *inference-needing-validation* / *unknown*, and by
 stakes: *low* / *load-bearing*.
 
@@ -260,7 +280,17 @@ author `doc.payload` (B-810)** — one `acceptance_criterion` item per proposed 
 same derived set (never re-derived independently), so a WEB accept with no session running can auto-file
 them via the B-797 safety net instead of stalling on the design-gate self-heal. `ref: slugRef('ac',
 content)` (import from `payload-refs.ts` — never reinvent the scheme), deduped via `dedupeRefs` before the
-call:
+call.
+
+**"Ticket comments considered" context block (B-821).** When step 2's `list_comments` call found any
+non-marker comments, `doc.context` carries a block headed exactly **"Ticket comments considered:"** —
+one line per comment, rendered the same way step 3c renders the related-tickets disposition list (one
+row per candidate, each with an explicit disposition): `→ reflected: <how it fed the drafted spec>` or
+`→ excluded: <one-line reason it was judged out of scope>`. Silence is never acceptable — every comment
+gets a line, even a load-bearing one already surfaced via the exchange's "What I learned from you"
+block above. When the ticket has zero comments, the `list_comments` call still ran unconditionally
+(step 2) but this block is simply omitted — no "no comments" placeholder — the same convention as the
+de-scope block (step 3), which appears only when it applies:
 
 ```
 mcp__harmony__compose_brief({
@@ -273,7 +303,8 @@ mcp__harmony__compose_brief({
     recommend: { text: "Per-user, project-scoped — matches existing filter UX", confidence: "medium" },
     why: ["Existing filters are per-user", "No product entry on filter sharing yet"],
     context: [
-      "What I learned from you: (You said) saved filters exist to speed up triage, not reporting; (You confirmed) per-user scope"
+      "What I learned from you: (You said) saved filters exist to speed up triage, not reporting; (You confirmed) per-user scope",
+      "Ticket comments considered:\n→ reflected: founder comment confirming per-user scope fed the recommendation directly\n→ excluded: an earlier comment about export formatting — unrelated to this ticket's saved-filter scope"
     ],
     items: [
       { kind: "decision", text: "Scope of a saved filter", recommendation: "Per-user, project-scoped" },
