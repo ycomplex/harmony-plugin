@@ -969,11 +969,18 @@ function buildRunnableEntrypoint(script: string, workspaceRoot?: string): string
   let out = workspaceRoot ? script.split('/workspace/workspace').join(workspaceRoot) : script;
   out = out.replace(
     'exec "$PLUGIN_DIR/container/provision.sh" "$@"',
-    'echo "EXEC_TARGET=$PLUGIN_DIR/container/provision.sh $*"',
+    // `; exit 0` is load-bearing (B-814 CI fix): unlike a real `exec`, this echo does NOT terminate
+    // the process, so without an explicit exit the script would fall through past the enclosing `fi`
+    // into the fallback three-slot clone below — which clones into the HARDCODED /workspace/workspace
+    // path for these tests (no workspaceRoot substitution). That silently no-ops wherever a real
+    // /workspace/workspace checkout already exists (e.g. this dev container) but fails hard on a
+    // runner where it doesn't (mkdir -p under an unwritable /workspace — the CI-only failure this
+    // comment fixes).
+    'echo "EXEC_TARGET=$PLUGIN_DIR/container/provision.sh $*"; exit 0',
   );
   const fallbackTarget = `exec ${workspaceRoot ?? '/workspace/workspace'}/plugin/container/provision.sh "$@"`;
   expect(out).toContain(fallbackTarget); // fails loudly if the literal line ever drifts
-  out = out.replace(fallbackTarget, 'echo "EXEC_TARGET=FALLBACK $*"');
+  out = out.replace(fallbackTarget, 'echo "EXEC_TARGET=FALLBACK $*"; exit 0');
   return out;
 }
 
