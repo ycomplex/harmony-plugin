@@ -203,25 +203,30 @@ Same machine, a second daemon bound to a different board ("Team Health"'s own pr
    identity is fine if the App is installed on the same repos; give Team Health's daemon its own
    `HARMONY_API_TOKEN` (its board), and its own profile name (`team-health` here, deliberately
    different from `local` above so both deployments' profile names never collide if anyone ever
-   merges the two files). **This is also the worked example for a `repos` section (B-814) with a
-   SINGLE entry** — Team Health has no meta-repo wrapper and no separate web app, just one repo that
-   carries the plugin. `is_plugin: true` is the only field that matters here: no `meta_repo_role`
-   entry exists at all, so this one entry simply clones as its own top-level checkout, and
-   `container/entrypoint.sh` hands provisioning straight off to it — no source-code edit needed to
-   express this topology, unlike the fixed three-slot assumption `repos` replaces:
+   merges the two files). **This is also the worked example for a `repos` section (B-814):** Team
+   Health has no separate web app, but there is **no plugin-less route** — `container/entrypoint.sh`
+   always hands provisioning off to whichever entry carries `is_plugin: true`, and only
+   `harmony-plugin` itself has a `container/provision.sh` to hand off to. So even a minimal
+   deployment's `repos` list is **N=2**: the product repo as the `meta_repo_role` entry, plus
+   `harmony-plugin` cloned nested inside it as the `is_plugin` entry — mirroring example (a)'s
+   `workspace` → `web`/`plugin` layout, just without the `web` sibling:
    ```json
    {
      "env": { "HARMONY_TARGET": "prod", "HARMONY_API_TOKEN": "harmony_teamhealth_xyz789", "GIT_USER_NAME": "Harmony Worker", "GIT_USER_EMAIL": "worker@ycomplex.com", "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-..." },
      "profiles": { "team-health": { "launch": "...", "reap": "...", "probe": "...", "maxConcurrentWorkers": 2 } },
      "launcher": { "plugin_dir": "/absolute/path/to/harmony-plugin", "github_app": { "app_id": "123456", "installation_id": "78901234", "private_key_path": "/absolute/path/to/harmony-daemon.private-key.pem" } },
      "repos": [
-       { "url": "https://github.com/ycomplex/team-health.git", "path": "/workspace/workspace/plugin", "is_plugin": true }
+       { "url": "https://github.com/ycomplex/team-health.git", "path": "/workspace/workspace", "meta_repo_role": true },
+       { "url": "https://github.com/ycomplex/harmony-plugin.git", "path": "/workspace/workspace/plugin", "is_plugin": true }
      ]
    }
    ```
-   (The `path` above matches `container/provision.sh`'s own still-hardcoded `PLUGIN_DIR` — that
-   internal hardcode is unchanged by B-814, so a single-repo deployment's `is_plugin` entry must
-   currently target this exact path for provisioning to find it.)
+   (The plugin entry's `path` above matches `container/provision.sh`'s own still-hardcoded
+   `PLUGIN_DIR` — that internal hardcode is unchanged by B-814, so the `is_plugin` entry must
+   currently target this exact path for provisioning to find it. Marking the PRODUCT repo itself
+   `is_plugin` at that path — as an earlier draft of this doc suggested — hands provisioning to a
+   repo with no `provision.sh` and hard-fails at the container entrypoint, while the actual plugin is
+   never cloned; there is no shape that avoids cloning `harmony-plugin`.)
 
 3. **Verify with an EXPLICIT `--config`** (this path is non-default, so every flag-aware consumer
    needs it spelled out):
