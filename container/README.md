@@ -420,10 +420,24 @@ constants): `HARMONY_CLOUD_RUN_REGION`, `HARMONY_CLOUD_RUN_JOB`,
 
 **Cross-build note (do this or executions 404/CrashLoop):** the daemon host is
 very likely Apple Silicon (arm64 — launchd/colima), but Cloud Run job
-executions are **linux/amd64-only**. Publish the worker image with
-`docker buildx build --platform linux/amd64 ... --push` to the
-`harmony-workers` Artifact Registry repo — never a plain host-native
-`docker build`, which would produce an arm64 image Cloud Run can't run.
+executions are **linux/amd64-only**. Publishing with a local
+`docker buildx build --platform linux/amd64 ... --push` does not work on this
+machine class (no local docker / cross-build issues) — instead, publish the
+worker image with Cloud Build, which builds natively as amd64 with no local
+docker needed:
+
+```
+gcloud builds submit --tag us-central1-docker.pkg.dev/<project>/harmony-workers/harmony-build-env container/
+```
+
+Two operational gotchas, both settled facts:
+
+1. Run it as the human owner account — `unset CLOUDSDK_CORE_ACCOUNT` first (the
+   daemon's scoped service-account identity can't run this).
+2. A `gcloud builds submit` issued within about a minute of enabling the
+   `cloudbuild.googleapis.com` API fails `PERMISSION_DENIED` while the Cloud
+   Build service agent is still provisioning — the fix is to retry, not to
+   debug it as a real permissions problem.
 
 **Credentials:** the daemon host needs its own least-privilege GCP identity to
 call `execute` / `executions cancel` / `executions list` — `roles/run.developer`
@@ -454,13 +468,18 @@ lands, cloud-launched workers have **no transcript capture**.
   inline form can be combined with the file-based form for the two non-secret scalars (CONDUCTION_ID,
   TICKET) is unresolved — needs a live check that both flags can be passed together in one `execute`
   call.
+- The FILE-based env-vars mechanism is settled, not deferred: `gcloud run jobs execute` has **no**
+  file-based env-vars flag at all — the previously-assumed `--update-env-vars-file` does not exist.
+  The shipped mechanism is `gcloud run jobs update --env-vars-file=<file>`, which pushes env vars onto
+  the **job definition** itself, issued before `execute` reads that same job definition to launch the
+  run. See `write_exec_env_file()` and the `gcloud run jobs update ... --env-vars-file=` call site in
+  `cloud-worker-launch.sh` (comments there are marked "CONFIRMED (2026-08-03, live
+  `gcloud run jobs execute --help` check)"), and the corresponding test in
+  `src/daemon/profile-contract.test.ts` ("passes GIT_TOKEN via the `update --env-vars-file` call, never
+  via a nonexistent `execute --update-env-vars-file` flag").
 
 **Still deferred / not live-verified:**
 
-- The exact `gcloud run jobs execute` flag/format for the FILE-based env-vars input
-  (`--update-env-vars-file` here) is still a best guess, isolated in `write_exec_env_file()` in
-  `cloud-worker-launch.sh` so it's a one-line fix if the real flag name differs — verify against
-  `gcloud run jobs execute --help` on the real project.
 - A reaped/cancelled execution is indistinguishable from a failed one by exit code, and this must
   remain so — the daemon's own in-process `timedOut` flag (`src/daemon/scheduler.ts`) owns
   worker-timeout classification, per `classify.ts`'s never-key-on-the-code rule.
