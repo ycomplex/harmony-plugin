@@ -38,6 +38,52 @@ jobs:
       - name: Verify dist matches source
         run: npm run verify:dist
 
+      # B-778: mechanical, fail-closed gate — every PR must bump plugin.json's version
+      # (CLAUDE.md's Versioning section), because that field is the only signal Claude
+      # Code uses to detect plugin updates. No path-based exemption: unconditional.
+      # No "base" to diff against on a plain push, so this only runs for pull_request.
+      - name: Require plugin.json version bump
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          BASE_VERSION=$(git show "$BASE_SHA:.claude-plugin/plugin.json" | node -e '
+            let data = "";
+            process.stdin.on("data", (c) => (data += c));
+            process.stdin.on("end", () => {
+              console.log(JSON.parse(data).version);
+            });
+          ')
+          HEAD_VERSION=$(node -e 'console.log(require("./.claude-plugin/plugin.json").version)')
+          echo "Base version: $BASE_VERSION"
+          echo "Head version: $HEAD_VERSION"
+          node -e '
+            function parse(v) {
+              const m = String(v).trim().match(/^(\d+)\.(\d+)\.(\d+)/);
+              if (!m) throw new Error(`Cannot parse semver: ${v}`);
+              return [Number(m[1]), Number(m[2]), Number(m[3])];
+            }
+            function cmp(a, b) {
+              for (let i = 0; i < 3; i++) {
+                if (a[i] !== b[i]) return a[i] - b[i];
+              }
+              return 0;
+            }
+            const base = process.argv[1];
+            const head = process.argv[2];
+            if (cmp(parse(head), parse(base)) <= 0) {
+              console.error(
+                `plugin.json version was not bumped: base=${base} head=${head}. ` +
+                "Every PR must bump the \"version\" field in .claude-plugin/plugin.json " +
+                "to a strictly greater semver — see .claude-plugin/plugin.json and " +
+                "the Versioning section in CLAUDE.md."
+              );
+              process.exit(1);
+            }
+            console.log(`OK: version bumped ${base} -> ${head}`);
+          ' "$BASE_VERSION" "$HEAD_VERSION"
+
   # B-694: the build container's agent-portability guardrail, checked on every
   # run — the base target must stay agent-neutral (no claude in it). Light
   # image only; the heavy substrate (DinD/local Supabase) is B-708.
