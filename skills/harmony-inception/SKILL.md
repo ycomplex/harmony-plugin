@@ -127,9 +127,17 @@ The clarify accept promotes the proposition to **Accepted knowledge anchored to 
 and the ticket completes **by the named mechanism (B-681): the accept advances Proposed→Clarified, then —
 when the proposition-root carries the `decision-only` label — the clarify skill's trailing
 `advance_workflow('fast-forwarding')` completes it Clarified→Verified** (the brief carries the completion
-line; the captured proposition stays `realization='agreed'`; never Parked, never left non-terminal). Who
-stamps the `decision-only` label is B-688's scope — until stamping is enabled there, complete the
-proposition-root the same way by hand (label it, then accept). **Only then** — the node-lifecycle rule
+line; the captured proposition stays `realization='agreed'`; never Parked, never left non-terminal).
+**Stamping is now enabled (B-688):** who stamps the `decision-only` label is no longer unowned — it is one
+of three ratified producers (inception's, clarify-proposed, and manual — see
+`skills/harmony-shared/gate-routing.md` §The decision-only fast-forward). Inception's own mechanism here is
+**unchanged**: this proposition-root is capture-only by construction (S1's whole job is capturing the
+founding proposition, nothing to plan/build/deploy from it), so **label it by hand right after step 2a's
+`create_task`, before running clarify** — exactly as before this ticket. What changes is that the stamp is
+now GOVERNED: it runs through the label editor's `can_mark_decision_only` pre-check (step 1 of this
+ticket's web half) like any manual label-add, and since a just-minted proposition-root is always
+pre-Planned with no build PR, the guard always allows it at this point in the flow. **Only
+then** — the node-lifecycle rule
 (below) — seed the founding entity
 nodes from the just-Accepted proposition claims:
 

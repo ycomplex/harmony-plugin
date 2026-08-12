@@ -619,17 +619,18 @@ export const composeBriefTool = {
           payload: {
             type: 'array',
             description:
-              "B-810 — the promised structured writes this brief's ACCEPT will materialize (AcceptanceEventPayloadItem[], acceptance-events.ts): one item per acceptance_criterion / child_ticket / checklist_item / ac_transfer write, mirroring exactly what the gate's own same-session accept-time materialization performs. NEVER rendered — a side-channel consumed only by the B-797 cross-session safety net (a web accept with no session running). Every item's `ref` MUST be derived via `slugRef` + deduped via `dedupeRefs` (payload-refs.ts) — a content-derived slug, never a positional index, stable across an in-place iterate recompose. Omit or pass `[]` when this gate has no promised writes (e.g. decompose's 'no split').",
+              "B-810 — the promised structured writes this brief's ACCEPT will materialize (AcceptanceEventPayloadItem[], acceptance-events.ts): one item per acceptance_criterion / child_ticket / checklist_item / ac_transfer / label_add write, mirroring exactly what the gate's own same-session accept-time materialization performs. NEVER rendered — a side-channel consumed only by the B-797 cross-session safety net (a web accept with no session running). Every item's `ref` MUST be derived via `slugRef` + deduped via `dedupeRefs` (payload-refs.ts) — a content-derived slug, never a positional index, stable across an in-place iterate recompose. Omit or pass `[]` when this gate has no promised writes (e.g. decompose's 'no split').",
             items: {
               type: 'object',
               properties: {
-                write_kind: { type: 'string', description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer'" },
+                write_kind: { type: 'string', description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add'" },
                 ref: { type: 'string', description: 'Stable, content-derived, within-payload-unique ref — from slugRef/dedupeRefs (payload-refs.ts)' },
                 content: { type: 'string', description: 'Required for acceptance_criterion and ac_transfer — the full text, verbatim' },
                 title: { type: 'string', description: 'Required for child_ticket and checklist_item' },
                 description: { type: ['string', 'null'], description: 'Optional, child_ticket only' },
                 target_child_ref: { type: 'string', description: "ac_transfer only — the destination child_ticket item's own `ref` from this SAME payload" },
                 from_ac_id: { type: ['string', 'null'], description: "ac_transfer only — the parent AC's own id being removed; omit only for the rare copy-not-move case" },
+                label_name: { type: 'string', description: "label_add only (B-688) — the label to add; defaults to 'decision-only' when omitted (the only real-world caller today)" },
               },
               required: ['write_kind', 'ref'],
             },

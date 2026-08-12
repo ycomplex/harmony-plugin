@@ -118,8 +118,13 @@ empty or stalling:
   decomposes normally; only the gates PAST the deliverable are skipped.
 - **Realization stays `agreed`.** The fast-forward never touches realization; the produced decision reads
   agreed-not-built until its build work flips it live (B-677).
-- **Marker consumed, not governed.** Who/what stamps `decision-only` (and its guardrails) is B-688's
-  scope; this table only keys on the label's presence.
+- **Marker consumed, not governed — but now RATIFIED (B-688).** Three producers may stamp `decision-only`:
+  **inception's own S1/S2 stamping** (direct, at mint time), **clarify-proposed** (a `label_add` payload
+  item clarify authors when it judges a ticket capture-only, applied on the human's brief accept — see
+  `skills/harmony-clarify/SKILL.md` step 4/5), and **manual** (the label editor). Every producer is gated
+  by the SAME DB authority, `can_mark_decision_only`: `terminal` (Verified/Cancelled/Parked) hard-blocks;
+  `build-shape` (Planned-or-later, or a linked build PR) redirects to revise-scope. This table still only
+  keys on the label's presence, regardless of which producer stamped it.
 
 Both consumers inherit this branch from here: `harmony-conduct` at the deliverable gate of its forward
 walk, `harmony-next` when resolving the deliverable gate's brief.

@@ -11,23 +11,75 @@
 // point here MUST distinguish "the relation/RPC does not exist" (schema not migrated — degrade to
 // today's synchronous behavior, silently) from any OTHER error (network blip, permission issue, etc. —
 // never silently swallowed; must propagate so the caller retries or surfaces it loudly).
+//
+// The SAME hazard recurs one level down (B-688): PROBE 3 only covers the top-level
+// `pending_acceptance_events` table. An individual write_kind's own RPC (e.g. `consume_label_add_write`)
+// can lag behind the rest of this module's substrate on the exact same B-383 window — see
+// `applyAcceptanceEventPayload`'s `substrate_absent_for` handling below, which degrades that narrower case
+// the same way: safely, never an opaque throw, never a call to `consume_acceptance_event`.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+
+/**
+ * B-688 — the CONTRACT this module's `label_add` dispatch depends on from harmony-web's decision-only
+ * stamping guard (`can_mark_decision_only` + `consume_label_add_write`, mirrors the B-747
+ * `CRITERIA_FLOOR_CONTRACT` pattern in `evidence-status.ts`).
+ *
+ * Unlike `CRITERIA_FLOOR_CONTRACT`, this module has no live wrapper-with-fallback function reading
+ * `can_mark_decision_only` directly today — the guard is enforced entirely SERVER-SIDE, inside
+ * `consume_label_add_write` (called BEFORE its ledger insert). So this const pins the SHAPE of both RPCs
+ * (names + args + the guard's two return columns + its two `block_reason` values) as a naming contract a
+ * hand-edit can't silently drift, not as a live-divergence-detecting wrapper.
+ *
+ * `decision-only-label-contract.test.ts` asserts every field by name, plus that the `label_add` dispatch
+ * (`applyAcceptanceEventPayload`) actually calls `consume_label_add_write` with these exact args. The
+ * counterpart lives in harmony-web: `supabase/tests/b688_decision_only_guard.test.sql` exercises both RPCs
+ * directly against a live DB. The two are kept in step by hand (separate repos) — same honest residual as
+ * the B-747 pairing.
+ */
+export const DECISION_ONLY_LABEL_CONTRACT = {
+  /** can_mark_decision_only — the SOLE authority for whether a ticket may be marked decision-only now.
+   *  SECURITY INVOKER; consumed by consume_label_add_write before its ledger insert. */
+  guard: {
+    rpc: 'can_mark_decision_only',
+    arg: '_task_id',
+    allowedColumn: 'allowed',
+    blockReasonColumn: 'block_reason',
+    /** 'terminal' = Verified/Cancelled/Parked (hard block). 'build-shape' = Planned-or-later, or a
+     *  linked build PR (redirect to revise-scope). Checked in that order — terminal wins. */
+    blockReasons: ['terminal', 'build-shape'] as const,
+  },
+  /** consume_label_add_write — the B-797-style ledgered write RPC for write_kind='label_add'. Guard-
+   *  blocked calls RAISE EXCEPTION ... USING ERRCODE = 'check_violation' (message contains the literal
+   *  text 'decision-only guard blocked: <block_reason>') and leave NO ledger row. */
+  write: {
+    rpc: 'consume_label_add_write',
+    eventIdArg: '_event_id',
+    externalRefArg: '_external_ref',
+    labelNameArg: '_label_name',
+  },
+} as const;
 
 /** One promised write, as authored into a brief's `doc.payload` at compose time. `ref` is the AUTHOR-
  *  CHOSEN stable identifier for this logical write (e.g. "ac-1", "child-2") — reused verbatim as the
  *  ledger's `external_ref`, so a retry naturally re-derives the SAME ref for the SAME logical write. An
  *  `ac_transfer` item's `target_child_ref` must match a `child_ticket` item's own `ref` earlier in the
- *  SAME payload — children are applied before transfers (see `applyPayload` below). */
+ *  SAME payload — children are applied before transfers (see `applyPayload` below).
+ *
+ *  `label_add` (B-688) — the decision-only stamping guard's ledgered write. `label_name` defaults to
+ *  `'decision-only'` at the dispatch site (the only real-world caller today) when omitted — never
+ *  hardcode a payload author to a different label via this field's absence; an author who means some
+ *  other label must set it explicitly. */
 export interface AcceptanceEventPayloadItem {
-  write_kind: 'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer';
+  write_kind: 'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add';
   ref: string;
   content?: string;
   title?: string;
   description?: string | null;
   target_child_ref?: string;
   from_ac_id?: string | null;
+  label_name?: string;
 }
 
 export interface PendingAcceptanceEvent {
@@ -101,7 +153,7 @@ export async function getPendingAcceptanceEvent(
   return (event as PendingAcceptanceEvent | null) ?? null;
 }
 
-const KNOWN_WRITE_KINDS = new Set(['acceptance_criterion', 'child_ticket', 'checklist_item', 'ac_transfer']);
+const KNOWN_WRITE_KINDS = new Set(['acceptance_criterion', 'child_ticket', 'checklist_item', 'ac_transfer', 'label_add']);
 
 /** B-816 — the live snapshot shape from `resolve_brief` (which snapshots a brief's whole `doc` VERBATIM)
  *  is `event.payload.payload` (an array): B-810's `compose_brief` call sites author the structured
@@ -153,6 +205,23 @@ export interface ApplyPayloadResult {
   applied: number;
   skipped_already_done: number;
   by_write_kind: Record<string, number>;
+  /** B-688/B-383 — set ONLY when a per-write-kind RPC itself does not exist yet on this DB (the plugin's
+   *  `main` can reach prod before harmony-web's migration is promoted). Every write attempted BEFORE this
+   *  write_kind was reached already landed (or was already-landed/skipped) via its own idempotent ledger
+   *  — safe to leave as-is. The caller MUST treat this exactly like an 'unrecognized' payload shape: never
+   *  call `consumeAcceptanceEvent`, leave the event visibly pending, let a later retry (once the migration
+   *  lands) pick up where this left off. */
+  substrate_absent_for?: AcceptanceEventPayloadItem['write_kind'];
+}
+
+/** Internal-only signal (never escapes this module) distinguishing "the RPC for this write_kind does not
+ *  exist on this DB yet" (B-383 schema-drift window) from every other RPC error. Thrown at the dispatch
+ *  site, caught immediately below — turned into `ApplyPayloadResult.substrate_absent_for`, never an
+ *  opaque throw. */
+class WriteKindSubstrateAbsentError extends Error {
+  constructor(public readonly writeKind: AcceptanceEventPayloadItem['write_kind']) {
+    super(`substrate absent for write_kind '${writeKind}' (RPC not found — B-383 pre-migration window)`);
+  }
 }
 
 /** Execute every promised write for one event's payload, via the per-write-kind SECURITY DEFINER RPCs.
@@ -164,15 +233,17 @@ export interface ApplyPayloadResult {
  *  exactly the writes still missing — never a duplicate.
  *
  *  Does NOT call consume_acceptance_event — that is the caller's job, and only after this returns
- *  without throwing. A thrown error here must leave the event 'pending' (AC(c)): never call consume on a
- *  partially-applied payload. */
+ *  without throwing AND without `substrate_absent_for` set. A thrown error here must leave the event
+ *  'pending' (AC(c)): never call consume on a partially-applied payload. Same invariant applies to the
+ *  `substrate_absent_for` degrade path (B-688/B-383) — it returns rather than throws (so it is not
+ *  mistaken for a real failure needing loud escalation), but the caller must still never consume on it. */
 export async function applyAcceptanceEventPayload(
   client: SupabaseClient,
   event: PendingAcceptanceEvent,
 ): Promise<ApplyPayloadResult> {
   const items = itemsOf(event.payload);
   const order: AcceptanceEventPayloadItem['write_kind'][] = [
-    'child_ticket', 'checklist_item', 'acceptance_criterion', 'ac_transfer',
+    'child_ticket', 'checklist_item', 'acceptance_criterion', 'ac_transfer', 'label_add',
   ];
   const ordered = order.flatMap((kind) => items.filter((i) => i.write_kind === kind));
 
@@ -180,48 +251,70 @@ export async function applyAcceptanceEventPayload(
   let skipped = 0;
   const byKind: Record<string, number> = {};
 
-  for (const item of ordered) {
-    if (!item.ref) throw new Error(`payload item of write_kind '${item.write_kind}' is missing its stable 'ref' — cannot derive an idempotent external_ref`);
+  try {
+    for (const item of ordered) {
+      if (!item.ref) throw new Error(`payload item of write_kind '${item.write_kind}' is missing its stable 'ref' — cannot derive an idempotent external_ref`);
 
-    let result: { applied?: boolean } | null = null;
-    if (item.write_kind === 'acceptance_criterion') {
-      if (!item.content) throw new Error(`acceptance_criterion item '${item.ref}' is missing content`);
-      const { data, error } = await client.rpc('consume_ac_add_write', {
-        _event_id: event.id, _external_ref: item.ref, _content: item.content,
-      });
-      if (error) throw new Error(error.message);
-      result = data as { applied?: boolean };
-    } else if (item.write_kind === 'child_ticket') {
-      if (!item.title) throw new Error(`child_ticket item '${item.ref}' is missing title`);
-      const { data, error } = await client.rpc('consume_child_mint_write', {
-        _event_id: event.id, _external_ref: item.ref, _title: item.title, _description: item.description ?? null,
-      });
-      if (error) throw new Error(error.message);
-      result = data as { applied?: boolean };
-    } else if (item.write_kind === 'checklist_item') {
-      if (!item.title) throw new Error(`checklist_item item '${item.ref}' is missing title`);
-      const { data, error } = await client.rpc('consume_checklist_item_write', {
-        _event_id: event.id, _external_ref: item.ref, _title: item.title,
-      });
-      if (error) throw new Error(error.message);
-      result = data as { applied?: boolean };
-    } else if (item.write_kind === 'ac_transfer') {
-      if (!item.content) throw new Error(`ac_transfer item '${item.ref}' is missing content`);
-      if (!item.target_child_ref) throw new Error(`ac_transfer item '${item.ref}' is missing target_child_ref`);
-      const { data, error } = await client.rpc('consume_ac_transfer_write', {
-        _event_id: event.id, _external_ref: item.ref, _content: item.content,
-        _target_child_external_ref: item.target_child_ref, _from_ac_id: item.from_ac_id ?? null,
-      });
-      if (error) throw new Error(error.message);
-      result = data as { applied?: boolean };
-    }
+      let result: { applied?: boolean } | null = null;
+      if (item.write_kind === 'acceptance_criterion') {
+        if (!item.content) throw new Error(`acceptance_criterion item '${item.ref}' is missing content`);
+        const { data, error } = await client.rpc('consume_ac_add_write', {
+          _event_id: event.id, _external_ref: item.ref, _content: item.content,
+        });
+        if (error) throw new Error(error.message);
+        result = data as { applied?: boolean };
+      } else if (item.write_kind === 'child_ticket') {
+        if (!item.title) throw new Error(`child_ticket item '${item.ref}' is missing title`);
+        const { data, error } = await client.rpc('consume_child_mint_write', {
+          _event_id: event.id, _external_ref: item.ref, _title: item.title, _description: item.description ?? null,
+        });
+        if (error) throw new Error(error.message);
+        result = data as { applied?: boolean };
+      } else if (item.write_kind === 'checklist_item') {
+        if (!item.title) throw new Error(`checklist_item item '${item.ref}' is missing title`);
+        const { data, error } = await client.rpc('consume_checklist_item_write', {
+          _event_id: event.id, _external_ref: item.ref, _title: item.title,
+        });
+        if (error) throw new Error(error.message);
+        result = data as { applied?: boolean };
+      } else if (item.write_kind === 'ac_transfer') {
+        if (!item.content) throw new Error(`ac_transfer item '${item.ref}' is missing content`);
+        if (!item.target_child_ref) throw new Error(`ac_transfer item '${item.ref}' is missing target_child_ref`);
+        const { data, error } = await client.rpc('consume_ac_transfer_write', {
+          _event_id: event.id, _external_ref: item.ref, _content: item.content,
+          _target_child_external_ref: item.target_child_ref, _from_ac_id: item.from_ac_id ?? null,
+        });
+        if (error) throw new Error(error.message);
+        result = data as { applied?: boolean };
+      } else if (item.write_kind === 'label_add') {
+        if (item.label_name === '') throw new Error(`label_add item '${item.ref}' has an empty label_name`);
+        const labelName = item.label_name ?? 'decision-only';
+        const { data, error } = await client.rpc('consume_label_add_write', {
+          _event_id: event.id, _external_ref: item.ref, _label_name: labelName,
+        });
+        if (error) {
+          // B-383 hazard: consume_label_add_write itself may not exist yet on this DB — degrade SAFELY
+          // (never an opaque throw) rather than treating it like a real write failure. A guard-blocked
+          // call (RAISE EXCEPTION ... USING ERRCODE = 'check_violation') is NOT this class — it is a real
+          // error and must propagate untouched (never swallowed).
+          if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError('label_add');
+          throw new Error(error.message);
+        }
+        result = data as { applied?: boolean };
+      }
 
-    if (result?.applied) {
-      applied += 1;
-      byKind[item.write_kind] = (byKind[item.write_kind] ?? 0) + 1;
-    } else {
-      skipped += 1;
+      if (result?.applied) {
+        applied += 1;
+        byKind[item.write_kind] = (byKind[item.write_kind] ?? 0) + 1;
+      } else {
+        skipped += 1;
+      }
     }
+  } catch (err) {
+    if (err instanceof WriteKindSubstrateAbsentError) {
+      return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind, substrate_absent_for: err.writeKind };
+    }
+    throw err;
   }
 
   return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind };
@@ -253,6 +346,11 @@ export interface ConsumePendingAcceptanceResult {
   reason?: string;
   applied?: number;
   skipped_already_done?: number;
+  /** B-688 — the newly-applied count broken down by write_kind (e.g. `{ acceptance_criterion: 2,
+   *  label_add: 1 }`). Only set on the `consumed` branch; lets a caller (e.g. harmony-clarify's accept
+   *  path) recover "how many ACs did THIS call file" without re-deriving it from `applied`, which mixes
+   *  every write_kind together. */
+  by_write_kind?: Record<string, number>;
   workflow_state?: string | null;
   /** B-816 — ONLY set on the `payload-unrecognized` branch: the verbatim `rawItemsOf(event.payload)`
    *  snapshot the human already accepted. The owning gate's materialization renders THESE items
@@ -297,6 +395,15 @@ export async function consumePendingAcceptanceEvent(
   }
 
   const applyResult = await applyAcceptanceEventPayload(client, event);
+
+  // B-688/B-383 — a write-kind's RPC substrate isn't deployed yet on this DB. Degrade EXACTLY like the
+  // unrecognized-payload safety valve above: never call consume_acceptance_event, leave the event
+  // visibly pending, hand back the same status/shape every existing caller already knows how to route
+  // (harmony-clarify's self-heal fallback, the conductor's §1c routing) — no new status string.
+  if (applyResult.substrate_absent_for) {
+    return { status: 'payload-unrecognized', event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
+  }
+
   const consumeResult = await consumeAcceptanceEvent(client, event.id);
 
   return {
@@ -304,6 +411,7 @@ export async function consumePendingAcceptanceEvent(
     event_id: event.id,
     applied: applyResult.applied,
     skipped_already_done: applyResult.skipped_already_done,
+    by_write_kind: applyResult.by_write_kind,
     workflow_state: consumeResult.workflow_state,
   };
 }
@@ -312,15 +420,19 @@ export const consumePendingAcceptanceEventTool = {
   name: 'consume_pending_acceptance_event',
   description:
     'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, ' +
-    'decompose children + AC transfers, plan-step checklist, design AC refinements) BEFORE any gate ' +
-    'routing/floor check runs. Call this FIRST, on every leg pickup — mirrors the B-747 leg-start check. ' +
-    'Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs ' +
-    'returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly ' +
-    'preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write ' +
-    'landed (idempotently — a retry after a partial failure only applies what is still missing) and the ' +
-    'deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state. ' +
-    '{ status: "payload-unrecognized", event_id, reason, items } = the event exists but its snapshotted ' +
-    'payload is not (yet) in the structured shape this tool applies. `items` (B-816) is the VERBATIM ' +
+    'decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only ' +
+    'label proposals) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup — ' +
+    'mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an ' +
+    'older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing ' +
+    '(today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. ' +
+    '{ status: "consumed" } = every promised write landed (idempotently — a retry after a partial failure ' +
+    'only applies what is still missing) and the deferred workflow-state advance committed; ' +
+    '`workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind ' +
+    '(e.g. how many NEW acceptance_criterion writes this call itself filed). ' +
+    '{ status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload ' +
+    'is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s ' +
+    'own RPC is not yet deployed on this DB (a pre-migration window) — both degrade to the SAME status/ ' +
+    'shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM ' +
     'snapshotted raw items the human already accepted — the owning gate\'s materialization MUST render ' +
     'these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / ' +
     '`get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation ' +
