@@ -1298,3 +1298,17 @@ describe('provision.sh: EXECUTED HARMONY_PLUGIN_POSTURE parsing (B-803 — prose
     expect(runParse(undefined)).toEqual({ ref: 'main', acked: '0' });
   });
 });
+
+describe('provision.sh headless branch: background-wait ceiling lifted (B-825)', () => {
+  it('exports CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 inside the headless) branch, before the exec claude line', () => {
+    const script = readFileSync(provisionPath, 'utf8');
+    const caseBlock = /^\s*headless\)\s*$([\s\S]*?)^\s*;;\s*$/m.exec(script);
+    expect(caseBlock).not.toBeNull();
+    const block = caseBlock![1];
+    const exportIdx = block.indexOf('export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0');
+    const execIdx = block.search(/^\s*exec claude /m);
+    expect(execIdx).toBeGreaterThan(-1); // the guard's anchor must still exist
+    expect(exportIdx).toBeGreaterThan(-1); // the ceiling lift must be present
+    expect(exportIdx).toBeLessThan(execIdx); // and must precede the exec so the env reaches claude
+  });
+});

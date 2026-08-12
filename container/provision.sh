@@ -201,6 +201,12 @@ case "$MODE" in
       echo "or ANTHROPIC_API_KEY (fallback; per-token API billing) — see plugin/container/env.example (copy it and fill it in — container/README.md Quick start)." >&2
       exit 1
     fi
+    # B-825: never let the headless runtime's 600s background-task ceiling kill a
+    # still-running delegated build (B-688's build died exactly this way — twice).
+    # Build subagents are foreground by rule (start-work O3); this export is the
+    # safety net for anything that still slips into the background. The daemon's
+    # 90-minute worker deadline (B-739) remains the outer bound on the leg.
+    export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0
     cd "$WORKDIR"
     # The flags are deliberately word-split.
     # shellcheck disable=SC2086

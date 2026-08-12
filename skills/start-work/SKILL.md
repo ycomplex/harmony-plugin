@@ -195,6 +195,17 @@ build subagent (context-thinning; worktree per B-628) — WHICH subagent depends
 - **Absent, no marker** (every human machine) → today's behavior, unchanged: the ordinary ad-hoc build
   subagent. The bypass agent never lands on a human machine (B-719 design: container-only).
 
+**Spawn the build subagent FOREGROUND — `run_in_background: false` — ALWAYS (B-825).** This applies to
+BOTH branches above: the `harmony-build` named delegation and the ordinary ad-hoc subagent. The harness
+backgrounds subagents by default, and in a headless one-shot leg that default plus wait-for-notification
+is fatal: the runtime's 600-second background-task ceiling kills the still-running build while the leg
+exits clean (B-688's build died exactly this way, twice, and the daemon parked the conduction as
+no-progress). Foreground is correct in every session type — the next O3 actions (evidence landing, PR
+verification) depend on the build result, so backgrounding buys nothing. As a safety net,
+`container/provision.sh` exports `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` in its headless branch so
+anything that still slips into the background is never killed mid-run; the daemon's 90-minute worker
+deadline (B-739) remains the outer bound.
+
 **Parse `harmony-build`'s final report for a `WORKER-QUESTION:` marker (B-733) — before treating it as
 a completed or failed build.** `harmony-build` has no MCP tool access, so it cannot file an elicitation
 round itself; when it hits a genuine judgment-call question or a capability denial mid-build it stops
