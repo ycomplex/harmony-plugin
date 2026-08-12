@@ -36936,17 +36936,18 @@ var composeBriefTool = {
           tail: { type: "string", description: "Optional custom command tail line; defaults to the standard one" },
           payload: {
             type: "array",
-            description: "B-810 \u2014 the promised structured writes this brief's ACCEPT will materialize (AcceptanceEventPayloadItem[], acceptance-events.ts): one item per acceptance_criterion / child_ticket / checklist_item / ac_transfer write, mirroring exactly what the gate's own same-session accept-time materialization performs. NEVER rendered \u2014 a side-channel consumed only by the B-797 cross-session safety net (a web accept with no session running). Every item's `ref` MUST be derived via `slugRef` + deduped via `dedupeRefs` (payload-refs.ts) \u2014 a content-derived slug, never a positional index, stable across an in-place iterate recompose. Omit or pass `[]` when this gate has no promised writes (e.g. decompose's 'no split').",
+            description: "B-810 \u2014 the promised structured writes this brief's ACCEPT will materialize (AcceptanceEventPayloadItem[], acceptance-events.ts): one item per acceptance_criterion / child_ticket / checklist_item / ac_transfer / label_add write, mirroring exactly what the gate's own same-session accept-time materialization performs. NEVER rendered \u2014 a side-channel consumed only by the B-797 cross-session safety net (a web accept with no session running). Every item's `ref` MUST be derived via `slugRef` + deduped via `dedupeRefs` (payload-refs.ts) \u2014 a content-derived slug, never a positional index, stable across an in-place iterate recompose. Omit or pass `[]` when this gate has no promised writes (e.g. decompose's 'no split').",
             items: {
               type: "object",
               properties: {
-                write_kind: { type: "string", description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer'" },
+                write_kind: { type: "string", description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add'" },
                 ref: { type: "string", description: "Stable, content-derived, within-payload-unique ref \u2014 from slugRef/dedupeRefs (payload-refs.ts)" },
                 content: { type: "string", description: "Required for acceptance_criterion and ac_transfer \u2014 the full text, verbatim" },
                 title: { type: "string", description: "Required for child_ticket and checklist_item" },
                 description: { type: ["string", "null"], description: "Optional, child_ticket only" },
                 target_child_ref: { type: "string", description: "ac_transfer only \u2014 the destination child_ticket item's own `ref` from this SAME payload" },
-                from_ac_id: { type: ["string", "null"], description: "ac_transfer only \u2014 the parent AC's own id being removed; omit only for the rare copy-not-move case" }
+                from_ac_id: { type: ["string", "null"], description: "ac_transfer only \u2014 the parent AC's own id being removed; omit only for the rare copy-not-move case" },
+                label_name: { type: "string", description: "label_add only (B-688) \u2014 the label to add; defaults to 'decision-only' when omitted (the only real-world caller today)" }
               },
               required: ["write_kind", "ref"]
             }
@@ -40975,7 +40976,7 @@ async function getPendingAcceptanceEvent(client, projectId, taskId) {
   }
   return event ?? null;
 }
-var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer"]);
+var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add"]);
 function rawItemsOf(payload) {
   const withNestedPayload = payload;
   if (Array.isArray(withNestedPayload?.payload)) return withNestedPayload.payload;
@@ -40994,68 +40995,96 @@ function classifyPayload(payload) {
   );
   return allStructured ? "structured" : "unrecognized";
 }
+var WriteKindSubstrateAbsentError = class extends Error {
+  constructor(writeKind) {
+    super(`substrate absent for write_kind '${writeKind}' (RPC not found \u2014 B-383 pre-migration window)`);
+    this.writeKind = writeKind;
+  }
+  writeKind;
+};
 async function applyAcceptanceEventPayload(client, event) {
   const items = itemsOf(event.payload);
   const order = [
     "child_ticket",
     "checklist_item",
     "acceptance_criterion",
-    "ac_transfer"
+    "ac_transfer",
+    "label_add"
   ];
   const ordered = order.flatMap((kind) => items.filter((i) => i.write_kind === kind));
   let applied = 0;
   let skipped = 0;
   const byKind = {};
-  for (const item of ordered) {
-    if (!item.ref) throw new Error(`payload item of write_kind '${item.write_kind}' is missing its stable 'ref' \u2014 cannot derive an idempotent external_ref`);
-    let result = null;
-    if (item.write_kind === "acceptance_criterion") {
-      if (!item.content) throw new Error(`acceptance_criterion item '${item.ref}' is missing content`);
-      const { data, error: error2 } = await client.rpc("consume_ac_add_write", {
-        _event_id: event.id,
-        _external_ref: item.ref,
-        _content: item.content
-      });
-      if (error2) throw new Error(error2.message);
-      result = data;
-    } else if (item.write_kind === "child_ticket") {
-      if (!item.title) throw new Error(`child_ticket item '${item.ref}' is missing title`);
-      const { data, error: error2 } = await client.rpc("consume_child_mint_write", {
-        _event_id: event.id,
-        _external_ref: item.ref,
-        _title: item.title,
-        _description: item.description ?? null
-      });
-      if (error2) throw new Error(error2.message);
-      result = data;
-    } else if (item.write_kind === "checklist_item") {
-      if (!item.title) throw new Error(`checklist_item item '${item.ref}' is missing title`);
-      const { data, error: error2 } = await client.rpc("consume_checklist_item_write", {
-        _event_id: event.id,
-        _external_ref: item.ref,
-        _title: item.title
-      });
-      if (error2) throw new Error(error2.message);
-      result = data;
-    } else if (item.write_kind === "ac_transfer") {
-      if (!item.content) throw new Error(`ac_transfer item '${item.ref}' is missing content`);
-      if (!item.target_child_ref) throw new Error(`ac_transfer item '${item.ref}' is missing target_child_ref`);
-      const { data, error: error2 } = await client.rpc("consume_ac_transfer_write", {
-        _event_id: event.id,
-        _external_ref: item.ref,
-        _content: item.content,
-        _target_child_external_ref: item.target_child_ref,
-        _from_ac_id: item.from_ac_id ?? null
-      });
-      if (error2) throw new Error(error2.message);
-      result = data;
+  try {
+    for (const item of ordered) {
+      if (!item.ref) throw new Error(`payload item of write_kind '${item.write_kind}' is missing its stable 'ref' \u2014 cannot derive an idempotent external_ref`);
+      let result = null;
+      if (item.write_kind === "acceptance_criterion") {
+        if (!item.content) throw new Error(`acceptance_criterion item '${item.ref}' is missing content`);
+        const { data, error: error2 } = await client.rpc("consume_ac_add_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _content: item.content
+        });
+        if (error2) throw new Error(error2.message);
+        result = data;
+      } else if (item.write_kind === "child_ticket") {
+        if (!item.title) throw new Error(`child_ticket item '${item.ref}' is missing title`);
+        const { data, error: error2 } = await client.rpc("consume_child_mint_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _title: item.title,
+          _description: item.description ?? null
+        });
+        if (error2) throw new Error(error2.message);
+        result = data;
+      } else if (item.write_kind === "checklist_item") {
+        if (!item.title) throw new Error(`checklist_item item '${item.ref}' is missing title`);
+        const { data, error: error2 } = await client.rpc("consume_checklist_item_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _title: item.title
+        });
+        if (error2) throw new Error(error2.message);
+        result = data;
+      } else if (item.write_kind === "ac_transfer") {
+        if (!item.content) throw new Error(`ac_transfer item '${item.ref}' is missing content`);
+        if (!item.target_child_ref) throw new Error(`ac_transfer item '${item.ref}' is missing target_child_ref`);
+        const { data, error: error2 } = await client.rpc("consume_ac_transfer_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _content: item.content,
+          _target_child_external_ref: item.target_child_ref,
+          _from_ac_id: item.from_ac_id ?? null
+        });
+        if (error2) throw new Error(error2.message);
+        result = data;
+      } else if (item.write_kind === "label_add") {
+        if (item.label_name === "") throw new Error(`label_add item '${item.ref}' has an empty label_name`);
+        const labelName = item.label_name ?? "decision-only";
+        const { data, error: error2 } = await client.rpc("consume_label_add_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _label_name: labelName
+        });
+        if (error2) {
+          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("label_add");
+          throw new Error(error2.message);
+        }
+        result = data;
+      }
+      if (result?.applied) {
+        applied += 1;
+        byKind[item.write_kind] = (byKind[item.write_kind] ?? 0) + 1;
+      } else {
+        skipped += 1;
+      }
     }
-    if (result?.applied) {
-      applied += 1;
-      byKind[item.write_kind] = (byKind[item.write_kind] ?? 0) + 1;
-    } else {
-      skipped += 1;
+  } catch (err) {
+    if (err instanceof WriteKindSubstrateAbsentError) {
+      return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind, substrate_absent_for: err.writeKind };
     }
+    throw err;
   }
   return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind };
 }
@@ -41074,18 +41103,22 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId) {
     return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
   }
   const applyResult = await applyAcceptanceEventPayload(client, event);
+  if (applyResult.substrate_absent_for) {
+    return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
+  }
   const consumeResult = await consumeAcceptanceEvent(client, event.id);
   return {
     status: "consumed",
     event_id: event.id,
     applied: applyResult.applied,
     skipped_already_done: applyResult.skipped_already_done,
+    by_write_kind: applyResult.by_write_kind,
     workflow_state: consumeResult.workflow_state
   };
 }
 var consumePendingAcceptanceEventTool = {
   name: "consume_pending_acceptance_event",
-  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state. { status: "payload-unrecognized", event_id, reason, items } = the event exists but its snapshotted payload is not (yet) in the structured shape this tool applies. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
+  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
   inputSchema: {
     type: "object",
     properties: {

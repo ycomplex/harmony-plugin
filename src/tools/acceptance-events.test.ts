@@ -120,6 +120,9 @@ const checklistItem = (ref: string, over: Partial<AcceptanceEventPayloadItem> = 
 const transferItem = (ref: string, targetRef: string, over: Partial<AcceptanceEventPayloadItem> = {}): AcceptanceEventPayloadItem => ({
   write_kind: 'ac_transfer', ref, content: `Transferred AC ${ref}`, target_child_ref: targetRef, ...over,
 });
+const labelAddItem = (ref: string, over: Partial<AcceptanceEventPayloadItem> = {}): AcceptanceEventPayloadItem => ({
+  write_kind: 'label_add', ref, label_name: 'decision-only', ...over,
+});
 
 function makeEvent(items: AcceptanceEventPayloadItem[]): PendingAcceptanceEvent {
   return {
@@ -209,6 +212,98 @@ describe('applyAcceptanceEventPayload', () => {
     const client = makeClient();
     const event = makeEvent([{ write_kind: 'acceptance_criterion', content: 'no ref', ref: '' } as AcceptanceEventPayloadItem]);
     await expect(applyAcceptanceEventPayload(client, event)).rejects.toThrow(/missing its stable 'ref'/);
+  });
+
+  // B-688 — label_add dispatch: calls consume_label_add_write with the right args, mirroring the
+  // child_ticket dispatch test above.
+  it('dispatches a label_add item to consume_label_add_write with the right args', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_label_add_write: [{ data: { applied: true, result_id: 'label-1' } }],
+      },
+    });
+    const event = makeEvent([labelAddItem('label-decision-only')]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.applied).toBe(1);
+    expect(result.by_write_kind).toEqual({ label_add: 1 });
+    expect(client.rpc).toHaveBeenCalledWith('consume_label_add_write', {
+      _event_id: 'event-1', _external_ref: 'label-decision-only', _label_name: 'decision-only',
+    });
+  });
+
+  it('defaults label_name to "decision-only" when the item omits it', async () => {
+    const client = makeClient({
+      rpcResponses: { consume_label_add_write: [{ data: { applied: true, result_id: 'label-1' } }] },
+    });
+    const event = makeEvent([{ write_kind: 'label_add', ref: 'label-decision-only' }]);
+    await applyAcceptanceEventPayload(client, event);
+    expect(client.rpc).toHaveBeenCalledWith('consume_label_add_write', {
+      _event_id: 'event-1', _external_ref: 'label-decision-only', _label_name: 'decision-only',
+    });
+  });
+
+  // Idempotent re-apply: applied:false on retry (mirrors TEST #10's shape for a single item).
+  it('a retry where the label_add already landed reports applied:false — counted as skipped, not duplicated', async () => {
+    const client = makeClient({
+      rpcResponses: { consume_label_add_write: [{ data: { applied: false } }] },
+    });
+    const event = makeEvent([labelAddItem('label-decision-only')]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.applied).toBe(0);
+    expect(result.skipped_already_done).toBe(1);
+  });
+
+  // Guard-blocked: consume_label_add_write raises RAISE EXCEPTION ... USING ERRCODE = 'check_violation'
+  // (the guard, can_mark_decision_only, blocked it BEFORE the ledger insert) — this must propagate as a
+  // thrown error, NEVER be swallowed or misread as the B-383 missing-substrate case.
+  it('propagates a guard-blocked (check_violation) label_add error — never swallowed', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_label_add_write: [{ data: null, error: { code: '23514', message: 'decision-only guard blocked: build-shape (task abc-123)' } }],
+      },
+    });
+    const event = makeEvent([labelAddItem('label-decision-only')]);
+    await expect(applyAcceptanceEventPayload(client, event)).rejects.toThrow(/decision-only guard blocked: build-shape/);
+  });
+
+  // The B-383 hazard: consume_label_add_write itself doesn't exist yet on this DB (pre-migration window).
+  // Must degrade SAFELY — returns rather than throws, and reports which write_kind hit the absent
+  // substrate, rather than surfacing an opaque/unhandled error.
+  it('B-383 — a missing consume_label_add_write RPC (42883) degrades to substrate_absent_for, never throws', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_label_add_write: [{ data: null, error: { code: '42883', message: 'function consume_label_add_write(uuid, text, text) does not exist' } }],
+      },
+    });
+    const event = makeEvent([labelAddItem('label-decision-only')]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.substrate_absent_for).toBe('label_add');
+    expect(result.applied).toBe(0);
+  });
+
+  it('B-383 — a missing consume_label_add_write RPC via PGRST202 also degrades to substrate_absent_for', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_label_add_write: [{ data: null, error: { code: 'PGRST202', message: "Could not find the function public.consume_label_add_write in the schema cache" } }],
+      },
+    });
+    const event = makeEvent([labelAddItem('label-decision-only')]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.substrate_absent_for).toBe('label_add');
+  });
+
+  it('B-383 — writes that landed BEFORE the missing label_add RPC are preserved in the result (not lost)', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_ac_add_write: [{ data: { applied: true } }],
+        consume_label_add_write: [{ data: null, error: { code: '42883', message: 'function does not exist' } }],
+      },
+    });
+    const event = makeEvent([acItem('ac-1'), labelAddItem('label-decision-only')]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.substrate_absent_for).toBe('label_add');
+    expect(result.applied).toBe(1);
+    expect(result.by_write_kind).toEqual({ acceptance_criterion: 1 });
   });
 });
 
@@ -308,6 +403,12 @@ describe('classifyPayload — the safety valve against a hollow advance under a 
     expect(classifyPayload({ items: [childItem('child-1'), acItem('ac-1')] })).toBe('structured');
   });
 
+  // B-688 — label_add is a KNOWN write_kind: a payload mixing it with acceptance_criterion items (the
+  // clarify-proposed decision-only shape) classifies "structured", never "unrecognized".
+  it('classifies a mix of acceptance_criterion + label_add items as "structured" (B-688)', () => {
+    expect(classifyPayload({ items: [acItem('ac-1'), labelAddItem('label-decision-only')] })).toBe('structured');
+  });
+
   it('classifies today\'s generic BLUF `doc.items` shape ({kind, text, recommendation}) as "unrecognized" — NEVER silently empty', () => {
     const briefDocItems = [{ kind: 'decision', text: 'Pick sidebar placement', recommendation: 'Sub-section' }];
     expect(classifyPayload({ items: briefDocItems })).toBe('unrecognized');
@@ -334,6 +435,54 @@ describe('consumePendingAcceptanceEvent — the unrecognized-payload safety valv
       status: 'payload-unrecognized', event_id: 'event-1', reason: 'clarification-draft', items: briefDocItems,
     });
     expect(client.rpc).not.toHaveBeenCalled();
+  });
+});
+
+describe('consumePendingAcceptanceEvent — the B-688/B-383 missing-write-kind-substrate degrade', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('degrades the WHOLE flow to payload-unrecognized when consume_label_add_write does not exist yet — never throws, never consumes', async () => {
+    const items = [acItem('ac-1'), labelAddItem('label-decision-only')];
+    const event: PendingAcceptanceEvent = {
+      id: 'event-1', task_id: 'task-1', brief_id: 'brief-1', reason: 'clarification-draft',
+      payload: { items }, pending_activity: 'clarifying', status: 'pending',
+    };
+    const client = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+      },
+      rpcResponses: {
+        consume_ac_add_write: [{ data: { applied: true } }],
+        consume_label_add_write: [{ data: null, error: { code: '42883', message: 'function consume_label_add_write(uuid, text, text) does not exist' } }],
+      },
+    });
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
+    expect(result).toEqual({
+      status: 'payload-unrecognized', event_id: 'event-1', reason: 'clarification-draft', items,
+    });
+    // The AC write DID land (its own ledgered RPC ran and succeeded) — only the deferred advance is
+    // withheld. consume_acceptance_event must NEVER be called in this branch.
+    expect(client.rpc).toHaveBeenCalledWith('consume_ac_add_write', expect.anything());
+    expect(client.rpc).not.toHaveBeenCalledWith('consume_acceptance_event', expect.anything());
+  });
+
+  it('a guard-blocked label_add (check_violation) is NOT this degrade path — it propagates as a real error', async () => {
+    const event: PendingAcceptanceEvent = {
+      id: 'event-1', task_id: 'task-1', brief_id: 'brief-1', reason: 'clarification-draft',
+      payload: { items: [labelAddItem('label-decision-only')] }, pending_activity: 'clarifying', status: 'pending',
+    };
+    const client = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+      },
+      rpcResponses: {
+        consume_label_add_write: [{ data: null, error: { code: '23514', message: 'decision-only guard blocked: terminal (task abc-123)' } }],
+      },
+    });
+    await expect(consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1')).rejects.toThrow(/decision-only guard blocked: terminal/);
+    expect(client.rpc).not.toHaveBeenCalledWith('consume_acceptance_event', expect.anything());
   });
 });
 describe('rawItemsOf / classifyPayload — B-816 doc-nested snapshot (B-803 plan-event shape)', () => {
