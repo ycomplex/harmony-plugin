@@ -56,7 +56,14 @@ ticket's accepted design decisions (`query_knowledge({ status: "Accepted" })`). 
 human, plus the legibility contract. Consult it; do not restate it. File it as a plan brief — **also
 author `doc.payload` (B-810)**: one `checklist_item` per concrete plan step, at the SAME granularity as
 the checklist the accept step below materializes via `manage_checklist_items` (never one vague summary
-item), `ref: slugRef('step', title)` (`payload-refs.ts`), deduped via `dedupeRefs`:
+item), `ref: slugRef('step', title)` (`payload-refs.ts`), deduped via `dedupeRefs`.
+
+**Mandated release-prep lookup (B-778):** when the plan targets a repo, read that repo's own
+`CLAUDE.md` for a `Versioning` / `Release` (or equivalently-named) section documenting release-prep
+conventions. If one exists and specifies concrete steps, fold them into the plan as checklist items —
+same `payload` / `manage_checklist_items` list this section builds, granularity matching the plan's own
+steps — without a human needing to remark it in. This mandates the lookup only; the content is each
+repo's own CLAUDE.md, never hardcoded here.
 
 ```
 mcp__harmony__compose_brief({
