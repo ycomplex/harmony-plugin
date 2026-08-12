@@ -439,6 +439,12 @@ outstanding.** This is exactly the move `--one-shot` already forbids at every ot
 continue automatically" is false the instant the turn ends, in a worker run or an interactive session
 alike — there is no run context where backgrounding this wait is safe.
 
+This IS this gate's own instance of the shared **clean-exit contract**
+(`skills/harmony-shared/clean-exit-contract.md`) — the release path was its founding specimen: advancing
+before the deploy is confirmed is exactly the "real work landed, no state-advancing write should happen
+yet" gap the shared doctrine generalizes from. The mechanics below are release-specific (this gate's own
+markers and repo artefacts); the doc is the one place the general rule lives.
+
 1. **Resolve the post-merge workflow run** for the merge commit — `gh run list --branch main --commit
    <merge_sha> --limit 1 --json databaseId,status,conclusion,workflowName` (or equivalent).
 2. **Block on it in-foreground with a bounded poll** — `gh run watch <run-id> --exit-status`, capped at

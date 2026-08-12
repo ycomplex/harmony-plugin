@@ -458,6 +458,20 @@ After the worktree is created:
 mcp__harmony__add_comment(task_id, "Started work on branch `feat/branch-name`")
 ```
 
+3. **Record the structured pre-PR work-branch reference** (B-792) — the comment above is free text and
+   unparseable; this is the machine-readable record of "a leg is working on THIS branch" before a PR
+   exists. Mirrors `build_pr`'s own structured-field pattern (§3 build step, `field_values.build_pr`) —
+   once `build_pr` lands the field is superseded (the daemon's repo-progress probe prefers
+   `build_pr.branch`) but is left in place, matching `build_pr`'s own no-delete convention:
+
+```
+mcp__harmony__update_task({ task_id, field_values: { work_branch: { branch: "feat/branch-name", started_at: "<ISO timestamp of worktree/branch creation>" } } })
+```
+
+   `update_task` merges `field_values` — other keys are preserved. This is what closes the "known work
+   branch" gap for the daemon's clean-exit contract (`skills/harmony-shared/clean-exit-contract.md`): a
+   leg that pushes commits before ever opening a PR is otherwise invisible to the repo-progress probe.
+
 ### 4. Recommend execution route
 
 After the worktree is ready, assess the task and recommend one of three routes. Use these signals (not a scoring system — just a judgment call):

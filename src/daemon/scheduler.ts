@@ -133,6 +133,7 @@
 
 import { captureBaseline, detectWake, type WatchBaseline } from './watch.js';
 import { classifyWorkerExit, exitClass, type ClassifyArgs } from './classify.js';
+import { exchangeWentInactive } from '../conductor/ball-axis.js';
 import { renderTemplate, type DaemonConfig } from './config.js';
 import type { HeartbeatKeeper } from './heartbeat.js';
 import type {
@@ -182,6 +183,14 @@ export interface SchedulerDeps {
    *  (src/bin/daemon.ts) for the quiet rendering itself; this module only decides WHERE to ask
    *  for it. */
   runCommand(cmd: string, opts?: { quiet?: boolean }): Promise<{ exitCode: number | null }>;
+  /** B-792: a LIVE `git ls-remote <ref>` head-SHA probe — narrow, structured-output read, distinct
+   *  from `runCommand`'s exit-code-only discipline (this reads one CLI's stdout, never the LLM
+   *  worker's — the agent-portability guardrail is unaffected). Returns null when the ref cannot be
+   *  resolved (not found, no repo configured, any error) — NEVER throws; this is best-effort
+   *  repo-progress detection and must never crash the daemon. The real implementation
+   *  (src/bin/daemon.ts) tries every configured repo in `deploymentConfig.repos` and returns the
+   *  first non-empty SHA found. */
+  probeRef(ref: string): Promise<string | null>;
   log(line: string): void;
   leaseHolder: string;
   config: DaemonConfig;
@@ -364,6 +373,36 @@ function resolveVisualId(task: DaemonTask | null, projectKey: string, fallback: 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-792: the repo-progress probe — a LIVE head-SHA read of the leg's known work branch, bracketing
+// fire and settle, independent of whatever `field_values` says (the B-758 rebase-push blind spot:
+// a rebase-push moves the PR head without re-recording `build_pr.head_sha`).
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Resolve the leg's known work-branch ref from a ticket's `field_values` — `build_pr.branch` when
+ *  present (a PR exists), else `work_branch.branch` (start-work's pre-PR record, item 2). Returns
+ *  null when neither is a non-empty string — the probe is skipped entirely in that case. */
+function resolveWorkRef(task: DaemonTask): string | null {
+  const fv = task.field_values as Record<string, unknown> | null | undefined;
+  const buildPr = fv?.['build_pr'] as { branch?: unknown } | null | undefined;
+  if (typeof buildPr?.branch === 'string' && buildPr.branch.length > 0) return buildPr.branch;
+  const workBranch = fv?.['work_branch'] as { branch?: unknown } | null | undefined;
+  if (typeof workBranch?.branch === 'string' && workBranch.branch.length > 0) return workBranch.branch;
+  return null;
+}
+
+/** Probe a ref, NEVER throwing — a probe failure degrades to null (treated as "no signal", never as
+ *  progress) exactly like `deps.probeRef` itself is documented to. Defensive on top of that contract
+ *  so a deps implementation that does throw can't take down a pass. */
+async function safeProbeRef(deps: SchedulerDeps, ref: string): Promise<string | null> {
+  try {
+    const sha = await deps.probeRef(ref);
+    return typeof sha === 'string' && sha.length > 0 ? sha : null;
+  } catch {
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // B-717: fire-and-track state — ready/running maps + the priority-aging queue-discipline math.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -404,6 +443,12 @@ export interface TrackedLaunch {
    *  settlement is discovered by re-probing each pass (see handleConduction) rather than a local
    *  `runCommand(launch)` promise settling. Cosmetic beyond that: classification is identical. */
   reconciled: boolean;
+  /** B-792: the leg's known work-branch head SHA, probed ONCE at fire time (see fireLaunch /
+   *  resolveWorkRef) — null when no `build_pr.branch`/`work_branch.branch` was resolvable, or the
+   *  probe found nothing. Compared against a fresh settle-time probe of the SAME ref resolution
+   *  (settleTrackedLaunch) to compute `repoProgressed` — a LIVE repo-progress signal, independent of
+   *  whatever `field_values` says (the B-758 rebase-push blind spot). */
+  preFireHeadSha: string | null;
 }
 
 export interface SchedulerRuntime {
@@ -789,6 +834,10 @@ async function handleWonTakeover(
         exitCode: null,
         cancelDeadline: () => {},
         reconciled: true,
+        // B-792: no real fire happened on THIS daemon for a reconciled re-attach — there is no
+        // genuine fire-time probe to anchor against, so repoProgressed reads false at this launch's
+        // eventual settlement (conservative: never a false positive from an un-anchored comparison).
+        preFireHeadSha: null,
       });
       return false;
     }
@@ -855,9 +904,33 @@ async function settleTrackedLaunch(
   const after = await deps.getTaskMeta(row.task_id);
   const nonArchivedChildCount =
     after.workflow_state === 'Decomposed' ? await deps.countNonArchivedChildren(row.task_id) : 0;
+
+  // B-792: widen `progressed` to see BOARD-progress beyond the two original fields — an in-place
+  // brief iterate (active_brief_iteration bump), a newly-recorded/referenced knowledge decision
+  // (knowledge_reference_count bump), or a marker present at launch being CONSUMED by settle time
+  // (pending_resolution cleared, or the active exchange going non-active — exchangeWentInactive is
+  // the SAME B-691 predicate the watch itself uses for "went inactive", reused here rather than
+  // reimplemented). None of these touch workflow_state/awaiting_human_input, so the pre-B-792
+  // formula alone would misclassify a leg that did real board work as a no-op spin.
+  const pendingResolutionConsumed =
+    (tracked.current.pending_resolution ?? null) !== null && (after.pending_resolution ?? null) === null;
   const progressed =
     (after.workflow_state ?? null) !== (tracked.current.workflow_state ?? null) ||
-    (after.awaiting_human_input ?? null) !== (tracked.current.awaiting_human_input ?? null);
+    (after.awaiting_human_input ?? null) !== (tracked.current.awaiting_human_input ?? null) ||
+    (after.active_brief_iteration ?? null) !== (tracked.current.active_brief_iteration ?? null) ||
+    (after.knowledge_reference_count ?? 0) !== (tracked.current.knowledge_reference_count ?? 0) ||
+    pendingResolutionConsumed ||
+    exchangeWentInactive(tracked.current, after);
+
+  // B-792: repo-progress — a LIVE head-SHA probe of the SAME ref resolution, off the POST-EXIT read
+  // (`after.field_values`), bracketing the fire-time probe (tracked.preFireHeadSha). A probe
+  // failure/absence on EITHER side reads as "no signal", never as progress — this is exactly the
+  // B-758 specimen's blind spot: a rebase-push moves the PR head without re-recording
+  // `build_pr.head_sha`, so `progressed` alone (a board-field read) cannot see it.
+  const settleRef = resolveWorkRef(after);
+  const settleHeadSha = settleRef ? await safeProbeRef(deps, settleRef) : null;
+  const repoProgressed =
+    tracked.preFireHeadSha !== null && settleHeadSha !== null && tracked.preFireHeadSha !== settleHeadSha;
 
   const classifyArgs: ClassifyArgs = {
     row: after,
@@ -865,6 +938,7 @@ async function settleTrackedLaunch(
     exitCode: tracked.exitCode,
     progressed,
     timedOut: tracked.timedOut,
+    repoProgressed,
   };
   const outcome = classifyWorkerExit(classifyArgs);
   const cls = exitClass(outcome, classifyArgs);
@@ -1018,6 +1092,12 @@ async function fireLaunch(
 
   deps.log(`${label(row, current, deps.projectKey)}: launching worker`);
 
+  // B-792: probe the leg's known work branch ONCE at fire time — skip entirely (preFireHeadSha:
+  // null) when neither build_pr.branch nor work_branch.branch is resolvable yet (e.g. a brand-new
+  // ticket's very first leg, before start-work has recorded either).
+  const fireRef = resolveWorkRef(current);
+  const preFireHeadSha = fireRef ? await safeProbeRef(deps, fireRef) : null;
+
   const tracked: TrackedLaunch = {
     current,
     retryCount,
@@ -1026,6 +1106,7 @@ async function fireLaunch(
     exitCode: null,
     cancelDeadline: () => {},
     reconciled: false,
+    preFireHeadSha,
   };
   runtime.running.set(row.id, tracked);
 

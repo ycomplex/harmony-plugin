@@ -1164,6 +1164,17 @@ elicitation round. No other voluntary stop exists — writing a question to stdo
 one of the three. (Involuntary termination — a SIGKILL/OOM'd worker — is out of scope for this
 invariant; that is the daemon's dirty-exit classifier's domain.)
 
+This is the interactive-session instance of the shared **clean-exit contract**
+(`skills/harmony-shared/clean-exit-contract.md`) — read it for the full doctrine and its daemon-side
+mechanical enforcement. Concretely, it ALSO requires: before ending the turn, leave at least a progress
+comment when real repo work landed (a commit, a branch push, a PR update) but no state-advancing write
+was yet possible — the state-advanced/park/elicitation-round trichotomy above covers the BOARD half of
+the invariant; this covers the REPO half, which the trichotomy alone cannot see (a leg can advance
+nothing on the board while still having pushed real, findable work). A ticket that silently carries
+finished work with no comment trail is indistinguishable from one where nothing happened — the daemon's
+`repo-active-board-silent` park reason (B-792) is what catches this mechanically for a daemon-driven
+leg; an interactive session has no such backstop and must self-enforce it here.
+
 ### 5. Terminal conditions — when the loop ends (not pauses)
 
 The loop **ends** (does not pause for resume) when, after re-reading the ticket at step 2:

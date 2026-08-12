@@ -97,6 +97,10 @@ interface HarnessOpts {
   /** B-717: default probe exit code (0 = found/still running, non-zero = not found) for any
    *  conduction id not given an explicit override via `h.setProbe`. */
   probeDefaultExitCode?: number;
+  /** B-792: default return for `deps.probeRef` when no per-ref override was set via
+   *  `h.setProbeRefSha` — mirrors probeDefaultExitCode's shape. Defaults to null (no repo
+   *  configured / ref not found), matching the real implementation's feature-detect fallback. */
+  probeRefDefault?: string | null;
 }
 
 // A stateful fake world: conduction rows mutate through updateConduction/takeoverConduction/
@@ -128,6 +132,9 @@ function makeHarness(opts: HarnessOpts) {
   const pendingLaunches = new Map<string, (result: { exitCode: number | null }) => void>();
   const probeExitCodes = new Map<string, number>();
   const launchExitCodesQueue = opts.launchExitCodes ? [...opts.launchExitCodes] : undefined;
+  // B-792: per-ref SHA overrides for deps.probeRef + every call recorded in order (ref, result).
+  const probeRefShas = new Map<string, string | null>();
+  const probeRefCalls: Array<{ ref: string; result: string | null }> = [];
 
   const cfg = opts.config ?? config;
   const condId = (cmd: string): string => cmd.split(' ')[1] ?? '';
@@ -245,6 +252,15 @@ function makeHarness(opts: HarnessOpts) {
       }
       return { exitCode: 0 };
     }),
+    // B-792: a LIVE head-SHA probe of a ref — per-ref override via setProbeRefSha, else
+    // probeRefDefault (defaults to null, matching the real "no repo configured" fallback). Every
+    // call is recorded in order so a test can assert it fired at fire AND settle with the expected
+    // resolved ref.
+    probeRef: vi.fn(async (ref: string) => {
+      const result = probeRefShas.has(ref) ? (probeRefShas.get(ref) ?? null) : (opts.probeRefDefault ?? null);
+      probeRefCalls.push({ ref, result });
+      return result;
+    }),
   };
 
   const keeper = createHeartbeatKeeper({
@@ -294,6 +310,10 @@ function makeHarness(opts: HarnessOpts) {
     ready: () => [...runtime.ready.keys()],
     running: () => [...runtime.running.keys()],
     setProbe: (conductionId: string, exitCode: number) => probeExitCodes.set(conductionId, exitCode),
+    // B-792: pre-arm what deps.probeRef(ref) resolves to for a specific ref, plus a read-only view
+    // of every call made (in order) — see the deps.probeRef fake above.
+    setProbeRefSha: (ref: string, sha: string | null) => probeRefShas.set(ref, sha),
+    probeRefCalls: () => [...probeRefCalls],
     /** Fire every live heartbeat interval once. */
     fireHeartbeats: async () => {
       for (const timer of intervals) if (!timer.dead) timer.fn();
@@ -854,6 +874,208 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
     await h.pass(); // settle → 'wait' (worker exits 0 clean by default, nothing progressed though)
     h.hooks.onLaunch = undefined;
     expect(returnLines()).toHaveLength(1); // still exactly once, total
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-792: the clean-exit contract — the repo-progress probe (bracketing fire and settle) and the
+// widened board-progress `progressed` formula (active_brief_iteration / knowledge_reference_count /
+// a consumed marker), plus the distinguishable 'repo-active-board-silent' park reason that follows
+// when repo work landed but the board stayed silent.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('B-792: the repo-progress probe (deps.probeRef, bracketing fire and settle)', () => {
+  it('resolves build_pr.branch over work_branch.branch when both are present, probes it at fire, stores preFireHeadSha, and probes the SAME ref again at settle', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: {
+        'task-1': pausedTask({
+          field_values: {
+            build_pr: { branch: 'feat/pr-branch', head_sha: 'stale-recorded-sha' },
+            work_branch: { branch: 'feat/wip-branch' },
+          },
+        }),
+      },
+    });
+    h.setProbeRefSha('feat/pr-branch', 'sha-A');
+    await h.pass(); // baseline
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false; // wake
+    await h.pass(); // fire
+    expect(h.probeRefCalls()).toEqual([{ ref: 'feat/pr-branch', result: 'sha-A' }]);
+    expect(h.runtime.running.get('cond-1')?.preFireHeadSha).toBe('sha-A');
+
+    // The worker pushes a commit mid-leg — the branch head moves — with no board write at all
+    // (field_values.build_pr.head_sha is untouched — the exact B-758 rebase-push blind spot).
+    h.setProbeRefSha('feat/pr-branch', 'sha-B');
+    await h.pass(); // settle → classify
+
+    expect(h.probeRefCalls()).toEqual([
+      { ref: 'feat/pr-branch', result: 'sha-A' },
+      { ref: 'feat/pr-branch', result: 'sha-B' },
+    ]);
+    // repoProgressed=true, progressed=false (nothing else moved) ⇒ the DISTINGUISHABLE park reason.
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('repo-active-board-silent');
+  });
+
+  it('an UNCHANGED SHA at settle ⇒ repoProgressed=false — still the plain no-progress park', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ field_values: { work_branch: { branch: 'feat/foo' } } }) },
+    });
+    h.setProbeRefSha('feat/foo', 'sha-same');
+    await h.pass();
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass(); // fire
+    await h.pass(); // settle — the branch never moved
+
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress');
+  });
+
+  it('no build_pr/work_branch on the ticket ⇒ probeRef is never called, preFireHeadSha is null, repoProgressed=false', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    await h.pass();
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass(); // fire
+    expect(h.runtime.running.get('cond-1')?.preFireHeadSha).toBeNull();
+    expect(h.probeRefCalls()).toEqual([]);
+
+    await h.pass(); // settle
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress'); // never repo-active-board-silent
+    expect(h.probeRefCalls()).toEqual([]); // still never called — nothing to probe at settle either
+  });
+
+  it('a probe that finds NOTHING (null) at settle ⇒ repoProgressed=false, never treated as progress', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ field_values: { work_branch: { branch: 'feat/foo' } } }) },
+    });
+    h.setProbeRefSha('feat/foo', 'sha-A'); // found at fire
+    await h.pass();
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass(); // fire — preFireHeadSha = 'sha-A'
+
+    h.setProbeRefSha('feat/foo', null); // the settle-time probe finds nothing (e.g. a transient error)
+    await h.pass(); // settle
+
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress');
+  });
+
+  it('repoProgressed never overrides genuine board progress — a workflow_state advance still classifies on its own terms, not as a park at all', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ field_values: { work_branch: { branch: 'feat/foo' } } }) },
+    });
+    h.setProbeRefSha('feat/foo', 'sha-A');
+    await h.pass();
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    h.hooks.onLaunch = () => {
+      (h.tasks['task-1'] as DaemonTask).workflow_state = 'Verified'; // genuine board progress too
+    };
+    await h.pass(); // fire
+    h.setProbeRefSha('feat/foo', 'sha-B'); // the branch ALSO moved
+    await h.pass(); // settle
+
+    expect(h.getConduction('cond-1').status).toBe('completed'); // terminal wins outright — not a park
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('terminal');
+  });
+});
+
+describe('B-792: the widened `progressed` formula — a board signal alone is enough, never misread as no-progress', () => {
+  it('active_brief_iteration bumped alone (no workflow_state/awaiting_human_input delta) ⇒ progressed=true, stays active', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ active_brief_iteration: 1 }) },
+    });
+    await h.pass();
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    h.hooks.onLaunch = () => {
+      (h.tasks['task-1'] as DaemonTask).active_brief_iteration = 2; // an in-place brief iterate
+    };
+    await h.pass(); // fire
+    await h.pass(); // settle
+
+    expect(h.getConduction('cond-1').status).toBe('active'); // never parked as no-progress
+    expect(h.deps.updateConductionIfHeld).not.toHaveBeenCalledWith(
+      'cond-1',
+      ME,
+      expect.objectContaining({ status: 'parked' }),
+    );
+  });
+
+  it('knowledge_reference_count bumped alone ⇒ progressed=true, stays active', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ knowledge_reference_count: 0 }) },
+    });
+    await h.pass();
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    h.hooks.onLaunch = () => {
+      (h.tasks['task-1'] as DaemonTask).knowledge_reference_count = 1; // recorded + referenced knowledge
+    };
+    await h.pass(); // fire
+    await h.pass(); // settle
+
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.deps.updateConductionIfHeld).not.toHaveBeenCalledWith(
+      'cond-1',
+      ME,
+      expect.objectContaining({ status: 'parked' }),
+    );
+  });
+
+  it('a pending_resolution marker present at fire, CONSUMED by settle (nulled, no flag flip) ⇒ progressed=true, stays active', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ pending_resolution: { command: 'iterate', detail: 'narrow scope' } }) },
+    });
+    await h.pass();
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    h.hooks.onLaunch = () => {
+      (h.tasks['task-1'] as DaemonTask).pending_resolution = null; // consumed
+    };
+    await h.pass(); // fire
+    await h.pass(); // settle
+
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.deps.updateConductionIfHeld).not.toHaveBeenCalledWith(
+      'cond-1',
+      ME,
+      expect.objectContaining({ status: 'parked' }),
+    );
+  });
+
+  it('an active exchange marker present at fire, gone by settle (exchangeWentInactive, no flag flip) ⇒ progressed=true, stays active', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ active_exchange: { exchange_id: 'ex-1', status: 'active' } }) },
+    });
+    await h.pass(); // baseline: awaiting + active exchange
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false; // wake
+    h.hooks.onLaunch = () => {
+      (h.tasks['task-1'] as DaemonTask).active_exchange = null; // consumed, no flag flip
+    };
+    await h.pass(); // fire
+    await h.pass(); // settle
+
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.deps.updateConductionIfHeld).not.toHaveBeenCalledWith(
+      'cond-1',
+      ME,
+      expect.objectContaining({ status: 'parked' }),
+    );
   });
 });
 

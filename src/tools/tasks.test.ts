@@ -692,7 +692,7 @@ describe('getTask', () => {
     }),
   });
 
-  it("B-684: view:'meta' returns EXACTLY the 20-key loop-control projection", async () => {
+  it("B-684/B-792: view:'meta' returns EXACTLY the 22-key loop-control projection", async () => {
     const client = makeFullClient({ title: 'T', description: 'A long payload description.' });
     const result = await getTask(client, 'proj-1', { task_id: 'B-1', view: 'meta' });
 
@@ -702,6 +702,7 @@ describe('getTask', () => {
       'stale', 'stale_ref', 'parent_task_id', 'archived', 'subsumed_by_task_id',
       'conductor_excluded_at',
       'pending_resolution', 'active_exchange', 'pending_remark', 'risk_classes',
+      'active_brief_iteration', 'knowledge_reference_count',
       'updated_at', 'content_updated_at', 'last_activity_at',
     ];
     expect(Object.keys(result).sort()).toEqual([...expectedKeys].sort());
@@ -736,6 +737,77 @@ describe('getTask', () => {
     expect((result as any).attachments).toHaveLength(1);
     expect((result as any).labels).toEqual([{ id: 'l1', name: 'backend', color: '#fff' }]);
     expect((result as any).checklist_items).toHaveLength(1);
+  });
+
+  // B-792: two board-progress signals get_task surfaces so the daemon's exit classifier can see
+  // progress that never touched workflow_state/awaiting_human_input — an in-place brief iterate, or
+  // a knowledge decision recorded/referenced this leg.
+  const makeBoardProgressClient = (opts: { iteration?: number | null; knowledgeCount?: number }): any => ({
+    from: vi.fn((table: string) => {
+      if (table === 'tasks') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: vi.fn().mockResolvedValue({
+                  data: { id: 'resolved-uuid', title: 'T', task_labels: [], checklist_items: [] },
+                  error: null,
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === 'briefs') {
+        return {
+          select: vi.fn((cols: string) => {
+            if (cols === 'iteration') {
+              // fetchActiveBriefIteration: .select('iteration').eq('task_id').eq('status').maybeSingle()
+              return {
+                eq: () => ({
+                  eq: () => ({
+                    maybeSingle: vi.fn().mockResolvedValue({
+                      data: opts.iteration != null ? { iteration: opts.iteration } : null,
+                      error: null,
+                    }),
+                  }),
+                }),
+              };
+            }
+            // pending_resolution / risk-class content reads
+            return { eq: () => ({ eq: () => ({ maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }) }) }) };
+          }),
+        };
+      }
+      if (table === 'ticket_references_knowledge') {
+        // fetchKnowledgeReferenceCount: .select('task_id', {count:'exact', head:true}).eq('task_id')
+        const eqSpy = vi.fn().mockResolvedValue({ count: opts.knowledgeCount ?? 0, error: null });
+        return { select: vi.fn(() => ({ eq: eqSpy })) };
+      }
+      if (table === 'attachments') {
+        return { select: () => ({ eq: () => ({ eq: () => ({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }) }) }) };
+      }
+      return { select: () => ({ eq: () => ({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }) }) };
+    }),
+  });
+
+  it('B-792: get_task surfaces active_brief_iteration + knowledge_reference_count in BOTH full and meta', async () => {
+    const full = await getTask(makeBoardProgressClient({ iteration: 3, knowledgeCount: 2 }), 'proj-1', { task_id: 'B-1' });
+    expect((full as any).active_brief_iteration).toBe(3);
+    expect((full as any).knowledge_reference_count).toBe(2);
+
+    const meta = await getTask(makeBoardProgressClient({ iteration: 3, knowledgeCount: 2 }), 'proj-1', {
+      task_id: 'B-1',
+      view: 'meta',
+    });
+    expect((meta as any).active_brief_iteration).toBe(3);
+    expect((meta as any).knowledge_reference_count).toBe(2);
+  });
+
+  it('B-792: active_brief_iteration is null (no active brief) and knowledge_reference_count is 0 (no references) — get_task does not regress', async () => {
+    const result = await getTask(makeBoardProgressClient({}), 'proj-1', { task_id: 'B-1' });
+    expect((result as any).active_brief_iteration).toBeNull();
+    expect((result as any).knowledge_reference_count).toBe(0);
   });
 
   // B-503: get_task projects `pending_remark` — the task's most recent UNCONSUMED accept-with-remark.

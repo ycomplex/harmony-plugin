@@ -14,7 +14,15 @@
 //      (terminal-only stale constraint, B-507/B-575 class)
 //   5. timedOut=true (B-739 — THIS daemon's deadline) ⇒ park     / 'worker-timeout'
 //   6. non-zero (or unknown) exitCode                  ⇒ park     / 'dirty-exit'
-//   7. exitCode=0, flag false, progressed=false        ⇒ park     / 'no-progress'
+//   7. exitCode=0, flag false, progressed=false,
+//      repoProgressed=false                            ⇒ park     / 'no-progress'
+//   7b. exitCode=0, flag false, progressed=false,
+//      repoProgressed=true                              ⇒ park     / 'repo-active-board-silent'
+//      (B-792: real repo work landed — a commit/push/PR head moved — but no state-advancing board
+//      write happened. Distinguishable from 'no-progress' so a human triaging parked conductions
+//      can tell "genuinely stuck" apart from "finished real work, just didn't write the board" — see
+//      skills/harmony-shared/clean-exit-contract.md, the doctrine this branch enforces mechanically.
+//      Distinguishability only: this does NOT auto-requeue or retry.)
 //
 // Park is IMMEDIATE at classification time (Accepted design d153970b) — this module always
 // returns 'park' for reasons 4-7 above, never a retry. B-713 layers a bounded retry ON TOP of a
@@ -52,6 +60,13 @@ export interface ClassifyArgs {
    *  so does a worker reaped by a peer's takeover. The exit code cannot say who decided; the flag
    *  says this daemon did. */
   timedOut: boolean;
+  /** B-792: did the repo move between fire and settle — a LIVE `git ls-remote` head-SHA probe of
+   *  the leg's known work branch (`build_pr.branch`, else `work_branch.branch`), bracketing fire and
+   *  settle, NOT a board-field read. True only when both probes succeeded and the SHA differs — a
+   *  probe failure/absence never sets this true (see scheduler.ts's settleTrackedLaunch). This is
+   *  exactly the B-758 specimen's blind spot: a rebase-push updates the PR head without re-recording
+   *  `build_pr.head_sha`, so the board alone cannot see the movement. */
+  repoProgressed: boolean;
 }
 
 export function classifyWorkerExit(args: ClassifyArgs): ExitOutcome {
@@ -87,8 +102,16 @@ export function classifyWorkerExit(args: ClassifyArgs): ExitOutcome {
   // 6. Dirty exit — non-zero or unknown code with nothing above explaining it.
   if (exitCode !== 0) return { action: 'park', reason: 'dirty-exit' };
 
-  // 6. Clean exit that moved nothing and paused nothing — the worker spun; park for a human.
-  if (!progressed) return { action: 'park', reason: 'no-progress' };
+  // 7. Clean exit that moved nothing and paused nothing on the BOARD — but the repo may still have
+  //    moved (a commit/push/PR head advanced with no state-advancing write yet possible). Distinguish
+  //    the two park reasons so a human triaging parked conductions can tell "finished real work,
+  //    just didn't write the board" apart from "genuinely stuck" — see clean-exit-contract.md.
+  //    Distinguishability only: neither reason auto-requeues or retries.
+  if (!progressed) {
+    return args.repoProgressed
+      ? { action: 'park', reason: 'repo-active-board-silent' }
+      : { action: 'park', reason: 'no-progress' };
+  }
 
   // Fallthrough: clean, progressed, ball still agent-side — keep the conduction active; the next
   // pass's wake detection fires a fresh worker.

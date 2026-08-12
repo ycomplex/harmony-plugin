@@ -22941,6 +22941,25 @@ function detectRiskClasses(input) {
 }
 
 // src/tools/tasks.ts
+async function fetchActiveBriefIteration(client, taskId) {
+  try {
+    const { data, error } = await client.from("briefs").select("iteration").eq("task_id", taskId).eq("status", "active").maybeSingle();
+    if (error || !data) return null;
+    const iteration = data.iteration;
+    return typeof iteration === "number" ? iteration : null;
+  } catch {
+    return null;
+  }
+}
+async function fetchKnowledgeReferenceCount(client, taskId) {
+  try {
+    const { count, error } = await client.from("ticket_references_knowledge").select("task_id", { count: "exact", head: true }).eq("task_id", taskId);
+    if (error) return 0;
+    return count ?? 0;
+  } catch {
+    return 0;
+  }
+}
 async function getTask(client, projectId, args) {
   const meta = args.view === "meta";
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
@@ -22948,7 +22967,16 @@ async function getTask(client, projectId, args) {
   if (error) throw error;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
-  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange, pending_remark] = await Promise.all([
+  const [
+    acceptanceCriteriaRes,
+    testCasesRes,
+    attachments,
+    pending_resolution,
+    active_exchange,
+    pending_remark,
+    active_brief_iteration,
+    knowledge_reference_count
+  ] = await Promise.all([
     meta ? Promise.resolve({ data: null }) : client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
     meta ? Promise.resolve({ data: null }) : client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
     meta ? Promise.resolve([]) : (async () => {
@@ -22961,7 +22989,11 @@ async function getTask(client, projectId, args) {
     })(),
     fetchPendingResolution(client, resolvedId),
     fetchActiveExchange(client, resolvedId),
-    fetchPendingRemark(client, resolvedId)
+    fetchPendingRemark(client, resolvedId),
+    // B-792: board-progress signals — run in BOTH views (meta and full), like the poll markers
+    // above, since the daemon polls via view:'meta' and this is exactly what it needs to see.
+    fetchActiveBriefIteration(client, resolvedId),
+    fetchKnowledgeReferenceCount(client, resolvedId)
   ]);
   const acceptanceCriteria = acceptanceCriteriaRes.data;
   const testCases = testCasesRes.data;
@@ -22999,13 +23031,28 @@ async function getTask(client, projectId, args) {
       active_exchange,
       pending_remark,
       risk_classes,
+      active_brief_iteration,
+      knowledge_reference_count,
       updated_at: t.updated_at,
       content_updated_at: t.content_updated_at,
       last_activity_at: t.last_activity_at
     };
   }
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, pending_remark, risk_classes };
+  return {
+    ...rest,
+    labels,
+    checklist_items: checklistItems,
+    acceptance_criteria: acceptanceCriteria ?? [],
+    test_cases: testCases ?? [],
+    attachments,
+    pending_resolution,
+    active_exchange,
+    pending_remark,
+    risk_classes,
+    active_brief_iteration,
+    knowledge_reference_count
+  };
 }
 
 // src/conductor/ball-axis.ts
