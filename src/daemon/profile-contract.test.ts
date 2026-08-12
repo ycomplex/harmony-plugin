@@ -5,7 +5,15 @@
 // rejects as an unknown mode. Both files are read from disk so either side drifting breaks CI.
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync } from 'node:fs';
+import {
+  readFileSync,
+  writeFileSync,
+  mkdtempSync,
+  mkdirSync,
+  lstatSync,
+  readlinkSync,
+  existsSync,
+} from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -657,6 +665,11 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
         'set -euo pipefail',
         'CONDUCTION_ID="cond-test-1"',
         'TICKET="B-803"',
+        // B-788: write_exec_env_file() now unconditionally reads this knob (declared outside the
+        // function, in the config-knobs section) — the harness must set it, same as it already
+        // does for CONDUCTION_ID/TICKET, or the extracted function body hits `set -u`'s unbound
+        // variable error.
+        'HARMONY_TRANSCRIPT_GCS_MOUNT_ROOT="/mnt/harmony-transcripts-test"',
         `ENV_FILE="${envFile}"`,
         gitTokenAcquisition,
         postureAcquisition,
@@ -679,6 +692,8 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
       expect(output).toContain('TICKET: "B-803"');
       expect(output).toContain('GIT_TOKEN: "ghs_dummytoken"');
       expect(output).toContain('HARMONY_PLUGIN_POSTURE: "ack:main"');
+      // B-788: always forwarded, regardless of posture.
+      expect(output).toContain('HARMONY_TRANSCRIPT_MOUNT_ROOT: "/mnt/harmony-transcripts-test"');
     });
 
     it('omits the HARMONY_PLUGIN_POSTURE line entirely when the fixture minted env-file does not carry it', () => {
@@ -687,6 +702,8 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
       expect(output).toContain('TICKET: "B-803"');
       expect(output).toContain('GIT_TOKEN: "ghs_dummytoken"');
       expect(output).not.toContain('HARMONY_PLUGIN_POSTURE');
+      // B-788: forwarded regardless of whether HARMONY_PLUGIN_POSTURE is present.
+      expect(output).toContain('HARMONY_TRANSCRIPT_MOUNT_ROOT: "/mnt/harmony-transcripts-test"');
     });
   });
 
@@ -1310,5 +1327,151 @@ describe('provision.sh headless branch: background-wait ceiling lifted (B-825)',
     expect(execIdx).toBeGreaterThan(-1); // the guard's anchor must still exist
     expect(exportIdx).toBeGreaterThan(-1); // the ceiling lift must be present
     expect(exportIdx).toBeLessThan(execIdx); // and must precede the exec so the env reaches claude
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+// B-788: cloud worker transcript persistence — the accepted-design fallback (per-execution GCS
+// mount-sub-path overriding may not be feasible on Cloud Run, so a HOST step mounts a GCS bucket
+// ONCE, statically, at a fixed root, and entrypoint.sh's own fallback block symlinks the
+// per-conduction subtree onto the fixed absolute paths this codebase already reads/writes). The
+// entrypoint.sh block is EXECUTED here (not merely prose-pinned), matching this file's own
+// convention for exit-code/behavior-shaped logic (see write_exec_env_file()/release_lock() above).
+
+describe('cloud-worker-launch.sh: B-788 transcript-mount-root knob + unconditional forward', () => {
+  const script = readFileSync(cloudLaunchScriptPath, 'utf8');
+
+  it('declares HARMONY_TRANSCRIPT_GCS_MOUNT_ROOT with a := overridable default', () => {
+    expect(script).toMatch(/HARMONY_TRANSCRIPT_GCS_MOUNT_ROOT:=\/mnt\/harmony-transcripts/);
+  });
+
+  it("write_exec_env_file() UNCONDITIONALLY forwards it as HARMONY_TRANSCRIPT_MOUNT_ROOT (unlike HARMONY_PLUGIN_POSTURE/HARMONY_REPOS_JSON, which forward only when set)", () => {
+    const fnAt = script.indexOf('write_exec_env_file() {');
+    expect(fnAt).toBeGreaterThanOrEqual(0);
+    const fnBody = script.slice(fnAt, script.indexOf('\n}', fnAt));
+
+    // Unconditional: the printf sits at the block's BASE indentation (6 spaces), the same level as
+    // the unconditional CONDUCTION_ID/TICKET/GIT_TOKEN lines above it — NOT nested one level deeper
+    // (8 spaces) the way the conditionally-forwarded HARMONY_PLUGIN_POSTURE/HARMONY_REPOS_JSON
+    // printfs are, inside their own `if [ -n ... ]; then` guards.
+    const forwardLine =
+      /^ {6}printf 'HARMONY_TRANSCRIPT_MOUNT_ROOT: "%s"\\n' "\$HARMONY_TRANSCRIPT_GCS_MOUNT_ROOT"$/m;
+    expect(fnBody).toMatch(forwardLine);
+
+    // Guard the guard: confirm the CONDITIONAL forwards really are indented one level deeper, so
+    // this indentation-based distinction is actually meaningful in this script.
+    expect(fnBody).toMatch(/^ {8}printf 'HARMONY_PLUGIN_POSTURE: "%s"\\n' "\$HARMONY_PLUGIN_POSTURE"$/m);
+    expect(fnBody).toMatch(/^ {8}printf 'HARMONY_REPOS_JSON: "%s"\\n' "\$_b814_repos_json_b64"$/m);
+  });
+
+  it('cross-references entrypoint.sh (the consumer) and the fixed path scheme at both the knob declaration and the forward site', () => {
+    const knobAt = script.indexOf('HARMONY_TRANSCRIPT_GCS_MOUNT_ROOT:=');
+    const knobComment = script.slice(Math.max(0, knobAt - 900), knobAt);
+    expect(knobComment).toContain('B-788');
+    expect(knobComment).toMatch(/entrypoint\.sh/);
+
+    const fnAt = script.indexOf('write_exec_env_file() {');
+    const fnBody = script.slice(fnAt, script.indexOf('\n}', fnAt));
+    const forwardAt = fnBody.indexOf('HARMONY_TRANSCRIPT_MOUNT_ROOT: "%s"');
+    const forwardComment = fnBody.slice(Math.max(0, forwardAt - 600), forwardAt);
+    expect(forwardComment).toContain('B-788');
+    expect(forwardComment).toMatch(/HARMONY_TRANSCRIPT_GCS_MOUNT_ROOT/);
+  });
+});
+
+describe('entrypoint.sh: B-788 EXECUTED transcript-mount symlink fallback', () => {
+  const entrypointScript = readFileSync(entrypointPath, 'utf8');
+
+  /** Extract the `if [ -n "${HARMONY_TRANSCRIPT_MOUNT_ROOT:-}" ]; then ... fi` block verbatim. */
+  function extractTranscriptBlock(): string {
+    const at = entrypointScript.indexOf('if [ -n "${HARMONY_TRANSCRIPT_MOUNT_ROOT:-}" ]; then');
+    expect(at).toBeGreaterThanOrEqual(0);
+    const end = entrypointScript.indexOf('\nfi', at);
+    expect(end).toBeGreaterThan(at);
+    return entrypointScript.slice(at, end + '\nfi'.length);
+  }
+
+  function runTranscriptBlock(env: NodeJS.ProcessEnv): { status: number | null; stderr: string; home: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'b788-entrypoint-transcript-'));
+    const homeDir = join(dir, 'home');
+    mkdirSync(homeDir);
+    // Mirror the Dockerfile: pre-create the two mount targets as real, worker-owned directories.
+    mkdirSync(join(homeDir, '.claude', 'projects'), { recursive: true });
+    mkdirSync(join(homeDir, '.claude', 'logs'), { recursive: true });
+
+    const block = extractTranscriptBlock();
+    const scriptFile = join(dir, 'harness.sh');
+    writeFileSync(
+      scriptFile,
+      ['#!/usr/bin/env bash', 'set -euo pipefail', block, ''].join('\n'),
+      { mode: 0o700 },
+    );
+
+    try {
+      execFileSync('bash', [scriptFile], { env: { ...env, HOME: homeDir, PATH: process.env.PATH } });
+      return { status: 0, stderr: '', home: homeDir };
+    } catch (err) {
+      const e = err as { status: number | null; stderr?: Buffer | string };
+      return { status: e.status, stderr: (e.stderr ?? '').toString(), home: homeDir };
+    }
+  }
+
+  it('when HARMONY_TRANSCRIPT_MOUNT_ROOT/CONDUCTION_ID/TICKET are all set, symlinks $HOME/.claude/{projects,logs} onto <root>/<ticket>/<conduction_id>/{projects,logs}, and those targets exist', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b788-mount-root-'));
+    const mountRoot = join(dir, 'gcs-mount');
+
+    const result = runTranscriptBlock({
+      HARMONY_TRANSCRIPT_MOUNT_ROOT: mountRoot,
+      CONDUCTION_ID: 'cond-b788-1',
+      TICKET: 'B-788',
+    });
+    expect(result.status).toBe(0);
+
+    const projectsLink = join(result.home, '.claude', 'projects');
+    const logsLink = join(result.home, '.claude', 'logs');
+    const expectedProjectsTarget = join(mountRoot, 'B-788', 'cond-b788-1', 'projects');
+    const expectedLogsTarget = join(mountRoot, 'B-788', 'cond-b788-1', 'logs');
+
+    expect(lstatSync(projectsLink).isSymbolicLink()).toBe(true);
+    expect(lstatSync(logsLink).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(projectsLink)).toBe(expectedProjectsTarget);
+    expect(readlinkSync(logsLink)).toBe(expectedLogsTarget);
+    expect(existsSync(expectedProjectsTarget)).toBe(true);
+    expect(existsSync(expectedLogsTarget)).toBe(true);
+    expect(lstatSync(expectedProjectsTarget).isDirectory()).toBe(true);
+    expect(lstatSync(expectedLogsTarget).isDirectory()).toBe(true);
+  });
+
+  it('fails loud when HARMONY_TRANSCRIPT_MOUNT_ROOT is set but CONDUCTION_ID is missing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b788-missing-conduction-'));
+    const result = runTranscriptBlock({
+      HARMONY_TRANSCRIPT_MOUNT_ROOT: join(dir, 'gcs-mount'),
+      TICKET: 'B-788',
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/CONDUCTION_ID is not/);
+  });
+
+  it('fails loud when HARMONY_TRANSCRIPT_MOUNT_ROOT is set but TICKET is missing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b788-missing-ticket-'));
+    const result = runTranscriptBlock({
+      HARMONY_TRANSCRIPT_MOUNT_ROOT: join(dir, 'gcs-mount'),
+      CONDUCTION_ID: 'cond-b788-2',
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/TICKET is not/);
+  });
+
+  it('is a complete no-op when HARMONY_TRANSCRIPT_MOUNT_ROOT is unset — pins the local-docker/human-machine unchanged guarantee', () => {
+    const result = runTranscriptBlock({ CONDUCTION_ID: 'cond-b788-3', TICKET: 'B-788' });
+    expect(result.status).toBe(0);
+
+    const projectsPath = join(result.home, '.claude', 'projects');
+    const logsPath = join(result.home, '.claude', 'logs');
+    // Still the ORIGINAL real, pre-created directories — never removed, never replaced by a symlink.
+    expect(lstatSync(projectsPath).isSymbolicLink()).toBe(false);
+    expect(lstatSync(logsPath).isSymbolicLink()).toBe(false);
+    expect(lstatSync(projectsPath).isDirectory()).toBe(true);
+    expect(lstatSync(logsPath).isDirectory()).toBe(true);
   });
 });

@@ -21,6 +21,38 @@ chmod 700 "$GIT_ASKPASS_HELPER"
 export GIT_ASKPASS="$GIT_ASKPASS_HELPER"
 export GIT_TERMINAL_PROMPT=0
 
+# B-788: cloud worker transcript persistence — fallback path per the accepted design's "open item
+# 1" contingency (per-execution GCS mount-sub-path overriding may not be feasible on Cloud Run). A
+# HOST step (not this file) mounts a GCS bucket ONCE, statically, at a fixed root via Cloud Run's
+# native gcsfuse volume mount, and sets HARMONY_TRANSCRIPT_MOUNT_ROOT in the job definition to that
+# root (see container/cloud-worker-launch.sh's HARMONY_TRANSCRIPT_GCS_MOUNT_ROOT knob, which
+# forwards it under this name). This block then mirrors B-724's local docker bind-mount scheme in
+# software: it symlinks the per-conduction subtree of that fixed mount onto the fixed absolute
+# paths the rest of this codebase already reads/writes ($HOME/.claude/projects,
+# $HOME/.claude/logs), so the worker's Claude session transcript survives past this ephemeral
+# container's exit exactly like the local bind-mount does. HARMONY_TRANSCRIPT_MOUNT_ROOT is unset
+# on every local-docker profile and every human machine ⇒ this whole block is a complete no-op —
+# it is cloud-profile-only.
+if [ -n "${HARMONY_TRANSCRIPT_MOUNT_ROOT:-}" ]; then
+  : "${CONDUCTION_ID:?HARMONY_TRANSCRIPT_MOUNT_ROOT is set but CONDUCTION_ID is not — both are required together (cloud-worker-launch.sh already forwards CONDUCTION_ID via its exec-env-vars file)}"
+  : "${TICKET:?HARMONY_TRANSCRIPT_MOUNT_ROOT is set but TICKET is not — both are required together (cloud-worker-launch.sh already forwards TICKET via its exec-env-vars file)}"
+
+  # $TICKET is already the ticket's visual id (e.g. "B-788") here — same convention RUN_DIR uses
+  # elsewhere (this file's fallback clone section below, and cloud-worker-launch.sh) — never
+  # re-derive or reformat it.
+  TRANSCRIPT_SUBTREE="$HARMONY_TRANSCRIPT_MOUNT_ROOT/$TICKET/$CONDUCTION_ID"
+  mkdir -p "$TRANSCRIPT_SUBTREE/projects" "$TRANSCRIPT_SUBTREE/logs"
+
+  # The image (Dockerfile) pre-creates $HOME/.claude/projects and $HOME/.claude/logs as real,
+  # worker-owned directories (B-724 mount-parent ownership fix) — remove them before symlinking so
+  # the symlink can take their place. mkdir -p $HOME/.claude first in case that ordering ever
+  # changes.
+  mkdir -p "$HOME/.claude"
+  rm -rf "$HOME/.claude/projects" "$HOME/.claude/logs"
+  ln -s "$TRANSCRIPT_SUBTREE/projects" "$HOME/.claude/projects"
+  ln -s "$TRANSCRIPT_SUBTREE/logs" "$HOME/.claude/logs"
+fi
+
 # Fresh clone per start is the accepted v1 tradeoff (see the B-694 design
 # entry); idempotent when a persistent volume already carries the clones.
 clone() { # $1 = url, $2 = ref, $3 = dir

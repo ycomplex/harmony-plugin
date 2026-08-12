@@ -443,11 +443,40 @@ Two operational gotchas, both settled facts:
 call `execute` / `executions cancel` / `executions list` — `roles/run.developer`
 scoped to this one job (already granted to `harmony-daemon@...`, above).
 
-**Known gap, carried forward, not this ticket's job to fix:** transcript
-persistence (B-724, directly above) is a local bind-mount — there is no
-equivalent host filesystem to mount into a remote Cloud Run job execution. A
-GCS-based replacement is explicitly out of scope for this leg; until something
-lands, cloud-launched workers have **no transcript capture**.
+### Cloud transcript persistence (B-788)
+
+Transcript persistence (B-724, above) is a local bind-mount — there is no
+equivalent host filesystem to mount into a remote Cloud Run job execution.
+B-788 lands the CODE-SIDE fallback for a cloud equivalent; the mechanism is
+**NOT YET LIVE** — the pieces below are landed and exercisable only after the
+still-open HOST-side steps (next paragraph) actually run.
+
+**Mechanism:** the accepted design's preferred option — per-execution GCS
+mount-sub-path overriding — may not be feasible on Cloud Run (an open,
+HOST-side validation item), so the accepted fallback mounts a GCS bucket
+**once, statically**, at a fixed root via Cloud Run's native gcsfuse volume
+mount, set in the job definition. `container/cloud-worker-launch.sh`'s
+`HARMONY_TRANSCRIPT_GCS_MOUNT_ROOT` knob (default `/mnt/harmony-transcripts`)
+names that root and forwards it into each execution's env file as
+`HARMONY_TRANSCRIPT_MOUNT_ROOT`; `container/entrypoint.sh` reads it, when set,
+and `mkdir -p`s + symlinks the per-conduction subtree onto the fixed absolute
+paths the rest of this codebase already reads/writes
+(`/home/worker/.claude/projects`, `/home/worker/.claude/logs`) — mirroring the
+local docker bind-mount scheme (B-724) exactly, just swapping the mount
+source. Unset (every local-docker profile, every human machine) ⇒ the
+entrypoint block is a complete no-op.
+
+**Path scheme:** `<bucket>/<ticket-visual-id>/<conduction-id>/{projects,logs}`
+inside the mounted root — e.g.
+`/mnt/harmony-transcripts/B-788/<conduction-id>/projects`.
+
+**Still open (HOST-side, tracked on B-788's own checklist, not this leg's
+job):** creating the GCS bucket, wiring the Cloud Run job definition's volume
+mount at `HARMONY_TRANSCRIPT_GCS_MOUNT_ROOT`, and live validation (tail/append
+during a real run, a smoke build, and confirming transcript lineage survives a
+container exit). Until those land, cloud-launched workers still have **no
+working transcript capture** — this section documents the code-side fallback
+only.
 
 **Confirmed via live observation (2026-08-03):**
 

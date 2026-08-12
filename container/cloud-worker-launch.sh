@@ -68,6 +68,17 @@ fi
 : "${CLOUDSDK_CORE_ACCOUNT:=harmony-daemon@harmony-conductor.iam.gserviceaccount.com}"
 : "${HARMONY_CLOUD_RUN_REGION:=us-central1}"
 : "${HARMONY_CLOUD_RUN_JOB:=harmony-build-worker}"
+
+# B-788: the fixed root a HOST step statically mounts a GCS bucket at (Cloud Run native gcsfuse
+# volume mount, on the job definition) — the fallback transcript-persistence mechanism, since
+# per-execution mount-sub-path overriding is not available on Cloud Run. write_exec_env_file()
+# below forwards this into the per-execution env file as HARMONY_TRANSCRIPT_MOUNT_ROOT (no _GCS_ —
+# deliberately different names: this knob names the MECHANISM, the consumed var doesn't), which
+# entrypoint.sh reads to symlink the per-conduction subtree
+# ($HARMONY_TRANSCRIPT_MOUNT_ROOT/<ticket-visual-id>/<conduction-id>/{projects,logs}) onto the
+# fixed $HOME/.claude/{projects,logs} paths. The HOST checklist item that creates the bucket + wires
+# the job's volume mount must use this SAME path as the mount destination.
+: "${HARMONY_TRANSCRIPT_GCS_MOUNT_ROOT:=/mnt/harmony-transcripts}"
 export CLOUDSDK_CORE_PROJECT CLOUDSDK_CORE_ACCOUNT
 
 # B-717 item 6 / plan-gate correction 3: the lock directory is SHARED across every concurrent
@@ -185,6 +196,13 @@ write_exec_env_file() {
       printf 'CONDUCTION_ID: "%s"\n' "$CONDUCTION_ID"
       printf 'TICKET: "%s"\n' "$TICKET"
       printf 'GIT_TOKEN: "%s"\n' "$GIT_TOKEN"
+      # B-788: unconditional (unlike HARMONY_PLUGIN_POSTURE/HARMONY_REPOS_JSON below) — transcript
+      # persistence is always-on for cloud, not an opt-in deployment feature. Forwards this
+      # wrapper's HARMONY_TRANSCRIPT_GCS_MOUNT_ROOT knob (declared in the config-knobs section
+      # above) into the per-execution env file under the name entrypoint.sh actually reads
+      # (HARMONY_TRANSCRIPT_MOUNT_ROOT — see that file's own B-788 comment for the fixed
+      # <bucket>/<ticket-visual-id>/<conduction-id>/{projects,logs} path scheme it symlinks onto).
+      printf 'HARMONY_TRANSCRIPT_MOUNT_ROOT: "%s"\n' "$HARMONY_TRANSCRIPT_GCS_MOUNT_ROOT"
       # B-726 followup / B-803: `update --env-vars-file` REPLACES the job's entire literal env-var
       # set (see the block comment above this function), so HARMONY_PLUGIN_POSTURE (the single
       # posture knob B-803 collapsed HARMONY_ACK_PLUGIN_AHEAD_OF_PROD + PLUGIN_REF into) has no
