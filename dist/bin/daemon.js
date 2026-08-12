@@ -22947,6 +22947,25 @@ function detectRiskClasses(input) {
 }
 
 // src/tools/tasks.ts
+async function fetchActiveBriefIteration(client, taskId) {
+  try {
+    const { data, error } = await client.from("briefs").select("iteration").eq("task_id", taskId).eq("status", "active").maybeSingle();
+    if (error || !data) return null;
+    const iteration = data.iteration;
+    return typeof iteration === "number" ? iteration : null;
+  } catch {
+    return null;
+  }
+}
+async function fetchKnowledgeReferenceCount(client, taskId) {
+  try {
+    const { count, error } = await client.from("ticket_references_knowledge").select("task_id", { count: "exact", head: true }).eq("task_id", taskId);
+    if (error) return 0;
+    return count ?? 0;
+  } catch {
+    return 0;
+  }
+}
 async function getTask(client, projectId, args) {
   const meta = args.view === "meta";
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
@@ -22954,7 +22973,16 @@ async function getTask(client, projectId, args) {
   if (error) throw error;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
-  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange, pending_remark] = await Promise.all([
+  const [
+    acceptanceCriteriaRes,
+    testCasesRes,
+    attachments,
+    pending_resolution,
+    active_exchange,
+    pending_remark,
+    active_brief_iteration,
+    knowledge_reference_count
+  ] = await Promise.all([
     meta ? Promise.resolve({ data: null }) : client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
     meta ? Promise.resolve({ data: null }) : client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
     meta ? Promise.resolve([]) : (async () => {
@@ -22967,7 +22995,11 @@ async function getTask(client, projectId, args) {
     })(),
     fetchPendingResolution(client, resolvedId),
     fetchActiveExchange(client, resolvedId),
-    fetchPendingRemark(client, resolvedId)
+    fetchPendingRemark(client, resolvedId),
+    // B-792: board-progress signals — run in BOTH views (meta and full), like the poll markers
+    // above, since the daemon polls via view:'meta' and this is exactly what it needs to see.
+    fetchActiveBriefIteration(client, resolvedId),
+    fetchKnowledgeReferenceCount(client, resolvedId)
   ]);
   const acceptanceCriteria = acceptanceCriteriaRes.data;
   const testCases = testCasesRes.data;
@@ -23005,13 +23037,28 @@ async function getTask(client, projectId, args) {
       active_exchange,
       pending_remark,
       risk_classes,
+      active_brief_iteration,
+      knowledge_reference_count,
       updated_at: t.updated_at,
       content_updated_at: t.content_updated_at,
       last_activity_at: t.last_activity_at
     };
   }
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, pending_remark, risk_classes };
+  return {
+    ...rest,
+    labels,
+    checklist_items: checklistItems,
+    acceptance_criteria: acceptanceCriteria ?? [],
+    test_cases: testCases ?? [],
+    attachments,
+    pending_resolution,
+    active_exchange,
+    pending_remark,
+    risk_classes,
+    active_brief_iteration,
+    knowledge_reference_count
+  };
 }
 
 // src/tools/decomposition.ts
@@ -23464,7 +23511,9 @@ function classifyWorkerExit(args) {
   if (row.stale === true) return { action: "park", reason: "stale" };
   if (args.timedOut) return { action: "park", reason: "worker-timeout" };
   if (exitCode !== 0) return { action: "park", reason: "dirty-exit" };
-  if (!progressed) return { action: "park", reason: "no-progress" };
+  if (!progressed) {
+    return args.repoProgressed ? { action: "park", reason: "repo-active-board-silent" } : { action: "park", reason: "no-progress" };
+  }
   return { action: "wait" };
 }
 function exitClass(outcome, args) {
@@ -23561,6 +23610,22 @@ function label(row, task, projectKey) {
 function resolveVisualId(task, projectKey, fallback) {
   const number = task?.task_number;
   return typeof number === "number" ? `${projectKey}-${number}` : fallback;
+}
+function resolveWorkRef(task) {
+  const fv = task.field_values;
+  const buildPr = fv?.["build_pr"];
+  if (typeof buildPr?.branch === "string" && buildPr.branch.length > 0) return buildPr.branch;
+  const workBranch = fv?.["work_branch"];
+  if (typeof workBranch?.branch === "string" && workBranch.branch.length > 0) return workBranch.branch;
+  return null;
+}
+async function safeProbeRef(deps, ref) {
+  try {
+    const sha = await deps.probeRef(ref);
+    return typeof sha === "string" && sha.length > 0 ? sha : null;
+  } catch {
+    return null;
+  }
 }
 function createSchedulerRuntime() {
   return { ready: /* @__PURE__ */ new Map(), running: /* @__PURE__ */ new Map(), fatal: null };
@@ -23744,7 +23809,11 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
         exitCode: null,
         cancelDeadline: () => {
         },
-        reconciled: true
+        reconciled: true,
+        // B-792: no real fire happened on THIS daemon for a reconciled re-attach — there is no
+        // genuine fire-time probe to anchor against, so repoProgressed reads false at this launch's
+        // eventual settlement (conservative: never a false positive from an un-anchored comparison).
+        preFireHeadSha: null
       });
       return false;
     }
@@ -23775,13 +23844,18 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
   if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: null })) return;
   const after = await deps.getTaskMeta(row.task_id);
   const nonArchivedChildCount = after.workflow_state === "Decomposed" ? await deps.countNonArchivedChildren(row.task_id) : 0;
-  const progressed = (after.workflow_state ?? null) !== (tracked.current.workflow_state ?? null) || (after.awaiting_human_input ?? null) !== (tracked.current.awaiting_human_input ?? null);
+  const pendingResolutionConsumed = (tracked.current.pending_resolution ?? null) !== null && (after.pending_resolution ?? null) === null;
+  const progressed = (after.workflow_state ?? null) !== (tracked.current.workflow_state ?? null) || (after.awaiting_human_input ?? null) !== (tracked.current.awaiting_human_input ?? null) || (after.active_brief_iteration ?? null) !== (tracked.current.active_brief_iteration ?? null) || (after.knowledge_reference_count ?? 0) !== (tracked.current.knowledge_reference_count ?? 0) || pendingResolutionConsumed || exchangeWentInactive(tracked.current, after);
+  const settleRef = resolveWorkRef(after);
+  const settleHeadSha = settleRef ? await safeProbeRef(deps, settleRef) : null;
+  const repoProgressed = tracked.preFireHeadSha !== null && settleHeadSha !== null && tracked.preFireHeadSha !== settleHeadSha;
   const classifyArgs = {
     row: after,
     nonArchivedChildCount,
     exitCode: tracked.exitCode,
     progressed,
-    timedOut: tracked.timedOut
+    timedOut: tracked.timedOut,
+    repoProgressed
   };
   const outcome = classifyWorkerExit(classifyArgs);
   const cls = exitClass(outcome, classifyArgs);
@@ -23874,6 +23948,8 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
   }
   runtime.ready.delete(row.id);
   deps.log(`${label(row, current, deps.projectKey)}: launching worker`);
+  const fireRef = resolveWorkRef(current);
+  const preFireHeadSha = fireRef ? await safeProbeRef(deps, fireRef) : null;
   const tracked = {
     current,
     retryCount,
@@ -23882,7 +23958,8 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
     exitCode: null,
     cancelDeadline: () => {
     },
-    reconciled: false
+    reconciled: false,
+    preFireHeadSha
   };
   runtime.running.set(row.id, tracked);
   const launch = deps.runCommand(renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey))).then((result) => {
@@ -24035,6 +24112,28 @@ ${err instanceof Error ? err.message : String(err)}
       resolve({ exitCode: code });
     });
   });
+  const probeOneRepo = (url, ref) => new Promise((resolve) => {
+    exec(`git ls-remote ${JSON.stringify(url)} ${JSON.stringify(ref)}`, (err, stdout) => {
+      if (err) {
+        resolve(null);
+        return;
+      }
+      const sha = stdout.trim().split(/\s+/)[0];
+      resolve(sha && sha.length > 0 ? sha : null);
+    });
+  });
+  const probeRef = async (ref) => {
+    const repos = deploymentConfig?.repos;
+    if (!repos || repos.length === 0) return null;
+    for (const repo of repos) {
+      try {
+        const sha = await probeOneRepo(repo.url, ref);
+        if (sha) return sha;
+      } catch {
+      }
+    }
+    return null;
+  };
   const preflightProfileName = daemonArgv.profile ?? (process.env.HARMONY_DAEMON_PROFILE || "unnamed");
   const preflightProfile = {
     ...config.profile,
@@ -24086,6 +24185,7 @@ ${err instanceof Error ? err.message : String(err)}
     // B-717 item 3: the multi-daemon steal CAS.
     stealConduction: (args) => stealConduction(client, args),
     runCommand,
+    probeRef,
     log,
     leaseHolder,
     config,

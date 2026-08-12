@@ -37637,6 +37637,25 @@ function detectRiskClasses(input) {
 }
 
 // src/tools/tasks.ts
+async function fetchActiveBriefIteration(client, taskId) {
+  try {
+    const { data, error: error2 } = await client.from("briefs").select("iteration").eq("task_id", taskId).eq("status", "active").maybeSingle();
+    if (error2 || !data) return null;
+    const iteration = data.iteration;
+    return typeof iteration === "number" ? iteration : null;
+  } catch {
+    return null;
+  }
+}
+async function fetchKnowledgeReferenceCount(client, taskId) {
+  try {
+    const { count, error: error2 } = await client.from("ticket_references_knowledge").select("task_id", { count: "exact", head: true }).eq("task_id", taskId);
+    if (error2) return 0;
+    return count ?? 0;
+  } catch {
+    return 0;
+  }
+}
 var listTasksTool = {
   name: "list_tasks",
   description: "List tasks in the project with optional filters. Each row carries the real workflow_state + lifecycle fields (awaiting_human_input, awaiting_human_reason, stale) alongside the legacy status, plus milestone_id/cycle_id (B-686). Rows are LEAN by default \u2014 description is omitted (a list navigates; read bodies via get_task or pass view:'full'). Filter by workflow_state (opinionated-mode projects only \u2014 string or array, e.g. the non-terminal set; errors on a manual-mode project), milestone_id, cycle_id, or the legacy status.",
@@ -37719,7 +37738,7 @@ async function listTasks(client, projectId, args) {
 }
 var getTaskTool = {
   name: "get_task",
-  description: "Get full details of a specific task. Returns `pending_resolution` \u2014 the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Returns `pending_remark` (B-503) \u2014 the task's most recent UNCONSUMED accept-with-remark as {brief_id, reason, detail}, or null: a browser accept that carried a remark BOTH advanced state AND left this marker; the conductor applies the remark then calls consume_accept_remark. Returns `active_exchange` (B-645) \u2014 the task's active elicitation exchange as {exchange_id, status, round, answers_submitted_at, force_quit_requested_at}, or null when none; a non-null answers_submitted_at/force_quit_requested_at is an unconsumed web\u2192agent marker the watch classifies as 'answers-landed' (read the answers via get_elicitation; filing the next round or concluding consumes it). Also returns `risk_classes` \u2014 a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run \u2014 the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate). Pass `view:'meta'` (B-684) for a lean loop-control projection on repeated re-reads.",
+  description: "Get full details of a specific task. Returns `pending_resolution` \u2014 the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Returns `pending_remark` (B-503) \u2014 the task's most recent UNCONSUMED accept-with-remark as {brief_id, reason, detail}, or null: a browser accept that carried a remark BOTH advanced state AND left this marker; the conductor applies the remark then calls consume_accept_remark. Returns `active_exchange` (B-645) \u2014 the task's active elicitation exchange as {exchange_id, status, round, answers_submitted_at, force_quit_requested_at}, or null when none; a non-null answers_submitted_at/force_quit_requested_at is an unconsumed web\u2192agent marker the watch classifies as 'answers-landed' (read the answers via get_elicitation; filing the next round or concluding consumes it). Also returns `risk_classes` \u2014 a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run \u2014 the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate). Returns `active_brief_iteration` (B-792) \u2014 the active brief's `iteration`, or null when none, and `knowledge_reference_count` (B-792) \u2014 the count of knowledge decisions this task references: two board-progress signals the daemon's exit classifier reads so an in-place brief iterate or a recorded/referenced knowledge decision, with no state-advancing write, is not misclassified as a no-op spin. Pass `view:'meta'` (B-684) for a lean loop-control projection on repeated re-reads.",
   inputSchema: {
     type: "object",
     properties: {
@@ -37732,7 +37751,7 @@ var getTaskTool = {
       view: {
         type: "string",
         enum: ["full", "meta"],
-        description: "Payload shape. Absent \u21D2 'full' (today's full payload). 'meta' (B-684) = lean loop-control projection for repeated re-reads (conduct loop step-1 re-reads / post-mutation confirms): keeps `risk_classes` + the poll markers (`pending_resolution`, `active_exchange`, `pending_remark`, `awaiting_human_*`); omits description, acceptance criteria, test cases, attachments, labels, checklist."
+        description: "Payload shape. Absent \u21D2 'full' (today's full payload). 'meta' (B-684) = lean loop-control projection for repeated re-reads (conduct loop step-1 re-reads / post-mutation confirms): keeps `risk_classes` + the poll markers (`pending_resolution`, `active_exchange`, `pending_remark`, `awaiting_human_*`) + the B-792 board-progress signals (`active_brief_iteration`, `knowledge_reference_count`); omits description, acceptance criteria, test cases, attachments, labels, checklist."
       }
     },
     required: ["task_id"]
@@ -37745,7 +37764,16 @@ async function getTask(client, projectId, args) {
   if (error2) throw error2;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
-  const [acceptanceCriteriaRes, testCasesRes, attachments, pending_resolution, active_exchange, pending_remark] = await Promise.all([
+  const [
+    acceptanceCriteriaRes,
+    testCasesRes,
+    attachments,
+    pending_resolution,
+    active_exchange,
+    pending_remark,
+    active_brief_iteration,
+    knowledge_reference_count
+  ] = await Promise.all([
     meta ? Promise.resolve({ data: null }) : client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
     meta ? Promise.resolve({ data: null }) : client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
     meta ? Promise.resolve([]) : (async () => {
@@ -37758,7 +37786,11 @@ async function getTask(client, projectId, args) {
     })(),
     fetchPendingResolution(client, resolvedId),
     fetchActiveExchange(client, resolvedId),
-    fetchPendingRemark(client, resolvedId)
+    fetchPendingRemark(client, resolvedId),
+    // B-792: board-progress signals — run in BOTH views (meta and full), like the poll markers
+    // above, since the daemon polls via view:'meta' and this is exactly what it needs to see.
+    fetchActiveBriefIteration(client, resolvedId),
+    fetchKnowledgeReferenceCount(client, resolvedId)
   ]);
   const acceptanceCriteria = acceptanceCriteriaRes.data;
   const testCases = testCasesRes.data;
@@ -37796,13 +37828,28 @@ async function getTask(client, projectId, args) {
       active_exchange,
       pending_remark,
       risk_classes,
+      active_brief_iteration,
+      knowledge_reference_count,
       updated_at: t.updated_at,
       content_updated_at: t.content_updated_at,
       last_activity_at: t.last_activity_at
     };
   }
   const { task_labels, checklist_items: _checklistItems, ...rest } = data;
-  return { ...rest, labels, checklist_items: checklistItems, acceptance_criteria: acceptanceCriteria ?? [], test_cases: testCases ?? [], attachments, pending_resolution, active_exchange, pending_remark, risk_classes };
+  return {
+    ...rest,
+    labels,
+    checklist_items: checklistItems,
+    acceptance_criteria: acceptanceCriteria ?? [],
+    test_cases: testCases ?? [],
+    attachments,
+    pending_resolution,
+    active_exchange,
+    pending_remark,
+    risk_classes,
+    active_brief_iteration,
+    knowledge_reference_count
+  };
 }
 var createTaskTool = {
   name: "create_task",

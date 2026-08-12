@@ -14,6 +14,7 @@ function args(overrides: Partial<ClassifyArgs> = {}): ClassifyArgs {
     exitCode: 0,
     progressed: true,
     timedOut: false,
+    repoProgressed: false,
     ...overrides,
   };
 }
@@ -88,11 +89,34 @@ describe('classifyWorkerExit — the B-693 worker exit contract, in order', () =
     expect(classifyWorkerExit(a)).toEqual({ action: 'park', reason: 'dirty-exit' });
   });
 
-  it("6. exitCode=0, flag still false, progressed=false ⇒ park / 'no-progress'", () => {
-    const a = args({ progressed: false });
+  it("6. exitCode=0, flag still false, progressed=false, repoProgressed=false ⇒ park / 'no-progress'", () => {
+    const a = args({ progressed: false, repoProgressed: false });
     const outcome = classifyWorkerExit(a);
     expect(outcome).toEqual({ action: 'park', reason: 'no-progress' });
     expect(exitClass(outcome, a)).toBe('no-progress');
+  });
+
+  // B-792: the clean-exit contract's distinguishable park reason — repo work landed (a commit/
+  // push/PR head moved) but no state-advancing board write happened yet.
+  it("6b. B-792: exitCode=0, flag false, progressed=false, repoProgressed=true ⇒ park / 'repo-active-board-silent' (NOT 'no-progress')", () => {
+    const a = args({ progressed: false, repoProgressed: true });
+    const outcome = classifyWorkerExit(a);
+    expect(outcome).toEqual({ action: 'park', reason: 'repo-active-board-silent' });
+    expect(exitClass(outcome, a)).toBe('repo-active-board-silent');
+  });
+
+  it('B-792: repoProgressed is irrelevant once progressed=true — still a plain wait, never a park', () => {
+    const a = args({ progressed: true, repoProgressed: true });
+    expect(classifyWorkerExit(a)).toEqual({ action: 'wait' });
+  });
+
+  it('B-792: repoProgressed alone does not change branch ORDER — a terminal state still completes (branch 2 precedes branch 7)', () => {
+    const a = args({
+      row: { workflow_state: 'Verified', awaiting_human_input: false, stale: false },
+      progressed: false,
+      repoProgressed: true,
+    });
+    expect(classifyWorkerExit(a)).toEqual({ action: 'complete' });
   });
 
   it('order is the contract: a paused worker on a STALE ticket waits (branch 1 precedes branch 4)', () => {
@@ -111,6 +135,21 @@ describe('classifyWorkerExit — the B-693 worker exit contract, in order', () =
   it('fallthrough: a clean, progressed exit with the ball still agent-side ⇒ wait (the next pass re-fires)', () => {
     const a = args();
     expect(classifyWorkerExit(a)).toEqual({ action: 'wait' });
+  });
+
+  // B-792: the WIDENED `progressed` formula (active_brief_iteration / knowledge_reference_count /
+  // a consumed marker) is computed by the SCHEDULER (settleTrackedLaunch, scheduler.test.ts owns
+  // that coverage) — classify.ts only ever sees the already-computed boolean. These pin classify.ts's
+  // OWN half of the contract: once the scheduler has decided `progressed: true` off any ONE of those
+  // board signals alone, classify.ts must resolve 'wait', never a park — regardless of repoProgressed.
+  it.each([
+    ['active_brief_iteration changed alone', false],
+    ['knowledge_reference_count changed alone', false],
+    ['a consumed marker (pending_resolution/active_exchange) alone', true],
+  ])('B-792: %s ⇒ progressed=true reaches classify.ts as a plain wait, never a park', (_label, repoProgressed) => {
+    const a = args({ progressed: true, repoProgressed });
+    const outcome = classifyWorkerExit(a);
+    expect(outcome).toEqual({ action: 'wait' });
   });
 
   // B-745 AC2b: the release-approval pause (B-732) has TWO clearing paths now — a founder GitHub

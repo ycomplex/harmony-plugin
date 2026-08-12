@@ -223,6 +223,43 @@ async function main(): Promise<void> {
       });
     });
 
+  // B-792: probe a ref (branch name) across every configured repo's remote — a NEW exec (captures
+  // stdout, unlike runCommand above which discards it), because this reads one CLI's structured
+  // ref/SHA output, never the LLM worker's stdout — the agent-portability guardrail runCommand
+  // exists to enforce is unaffected. Feature-detects on `deploymentConfig.repos` (absent/empty ⇒
+  // this daemon process has no single checked-out repo with an "origin" remote to probe — return
+  // null, consistent with every other `repos`-optional consumer in this file). Tries each configured
+  // repo's `url` in order and returns the FIRST non-empty SHA found (a `git ls-remote` miss returns
+  // empty stdout, not an error — that reads as "not in this repo, try the next", not a failure).
+  // NEVER throws: any spawn/exec error for any one repo is swallowed and the loop moves on, because
+  // this is best-effort repo-progress detection that must never crash the daemon.
+  const probeOneRepo = (url: string, ref: string): Promise<string | null> =>
+    new Promise((resolve) => {
+      // Quoted defensively even though url/ref come from trusted deployment config, not user input.
+      exec(`git ls-remote ${JSON.stringify(url)} ${JSON.stringify(ref)}`, (err, stdout) => {
+        if (err) {
+          resolve(null);
+          return;
+        }
+        const sha = stdout.trim().split(/\s+/)[0];
+        resolve(sha && sha.length > 0 ? sha : null);
+      });
+    });
+
+  const probeRef = async (ref: string): Promise<string | null> => {
+    const repos = deploymentConfig?.repos;
+    if (!repos || repos.length === 0) return null;
+    for (const repo of repos) {
+      try {
+        const sha = await probeOneRepo(repo.url, ref);
+        if (sha) return sha;
+      } catch {
+        // best-effort — try the next repo.
+      }
+    }
+    return null;
+  };
+
   // B-801: validate the whole deployment surface — tools on PATH, the launcher-host env contract,
   // and an audit of absent optional profile capabilities — BEFORE any conduction can run. Runs
   // right after loadDaemonConfig resolves and before HarmonyAuth/createAuthenticatedClient/
@@ -292,6 +329,7 @@ async function main(): Promise<void> {
     // B-717 item 3: the multi-daemon steal CAS.
     stealConduction: (args) => stealConduction(client, args),
     runCommand,
+    probeRef,
     log,
     leaseHolder,
     config,

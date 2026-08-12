@@ -28,6 +28,19 @@ export interface Taskish {
   awaiting_human_input?: boolean | null;
   active_exchange?: ActiveExchangeish | null;
   pending_remark?: PendingRemarkish | null;
+  /** B-792: raw `tasks.field_values` — additive, most Taskish consumers never read it. The daemon's
+   *  repo-progress probe (scheduler.ts) resolves the leg's known work branch from here
+   *  (`build_pr.branch`, else `work_branch.branch`). */
+  field_values?: Record<string, unknown> | null;
+  /** B-792: the active brief's `iteration` (get_task meta/full — briefs.iteration where
+   *  status='active'), or null when no active brief. A board-progress signal: an in-place brief
+   *  iterate (e.g. an in-flight elicitation round) bumps this with no `workflow_state`/
+   *  `awaiting_human_input` delta, which the daemon's `progressed` computation would otherwise miss. */
+  active_brief_iteration?: number | null;
+  /** B-792: count of `ticket_references_knowledge` rows for the task (get_task meta/full). A
+   *  board-progress signal: a knowledge decision the leg recorded and referenced this run, even
+   *  with no state-advancing write. */
+  knowledge_reference_count?: number | null;
 }
 
 /** The browser-submitted reshape/discuss marker (`briefs.pending_resolution`). */
