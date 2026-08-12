@@ -23543,8 +23543,8 @@ function isAuthShapedError(err) {
   const message = err instanceof Error ? err.message : String(err);
   return /\b401\b|jwt expired|invalid (jwt|token)|token .*expired/i.test(message);
 }
-function templateVars(row) {
-  return { conduction_id: row.id, ticket: row.task_id };
+function templateVars(row, task, projectKey) {
+  return { conduction_id: row.id, ticket: resolveVisualId(task, projectKey, row.task_id) };
 }
 var TITLE_MAX = 48;
 function truncateTitle(title, max = TITLE_MAX) {
@@ -23557,6 +23557,10 @@ function label(row, task, projectKey) {
     return `conduction ${row.id}`;
   }
   return `${projectKey}-${number} "${truncateTitle(title)}" (conduction ${row.id})`;
+}
+function resolveVisualId(task, projectKey, fallback) {
+  const number = task?.task_number;
+  return typeof number === "number" ? `${projectKey}-${number}` : fallback;
 }
 function createSchedulerRuntime() {
   return { ready: /* @__PURE__ */ new Map(), running: /* @__PURE__ */ new Map(), fatal: null };
@@ -23625,7 +23629,7 @@ async function handleHeldConduction(deps, state, keeper, excluded, runtime, row)
   if (tracked) {
     if (tracked.reconciled && !tracked.settled) {
       const probed = await deps.runCommand(
-        renderTemplate(deps.config.profile.probe, templateVars(row))
+        renderTemplate(deps.config.profile.probe, templateVars(row, tracked.current, deps.projectKey))
       );
       if (probed.exitCode !== 0) {
         tracked.settled = true;
@@ -23710,8 +23714,13 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
     return true;
   }
   if (won.leg_started_at !== null && deps.config.profile.probe) {
+    let probeTask = null;
+    try {
+      probeTask = await deps.getTaskMeta(row.task_id);
+    } catch {
+    }
     const probed = await deps.runCommand(
-      renderTemplate(deps.config.profile.probe, templateVars(row))
+      renderTemplate(deps.config.profile.probe, templateVars(row, probeTask, deps.projectKey))
     );
     if (probed.exitCode === 0) {
       let current;
@@ -23743,7 +23752,15 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
       `${label(row, null, deps.projectKey)}: reconciliation probe found no live worker \u2014 reaping defensively and clearing the stale leg`
     );
   }
-  await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)), { quiet: true });
+  let reapTask = null;
+  try {
+    reapTask = await deps.getTaskMeta(row.task_id);
+  } catch {
+  }
+  await deps.runCommand(
+    renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey)),
+    { quiet: true }
+  );
   if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: null })) return false;
   if (row.clean_shutdown_at !== null) {
     deps.log(`conduction ${row.id}: adopted cleanly-released lease from ${row.lease_holder}`);
@@ -23782,7 +23799,7 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
     deps.log(
       `${label(row, after, deps.projectKey)}: dirty exit \u2014 retrying (attempt ${retryCount}/${deps.config.retryCap}) after reap + ${backoffMs}ms backoff`
     );
-    await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+    await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey)));
     runtime.ready.set(row.id, {
       since: deps.now(),
       priority: row.task_priority ?? null,
@@ -23868,7 +23885,7 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
     reconciled: false
   };
   runtime.running.set(row.id, tracked);
-  const launch = deps.runCommand(renderTemplate(deps.config.profile.launch, templateVars(row))).then((result) => {
+  const launch = deps.runCommand(renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey))).then((result) => {
     tracked.settled = true;
     tracked.exitCode = result.exitCode;
   });
@@ -23879,7 +23896,7 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
     );
     void (async () => {
       for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
-        void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+        void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, current, deps.projectKey)));
         await new Promise((resolveGrace) => {
           deps.startTimeout(REAP_GRACE_MS, resolveGrace);
         });

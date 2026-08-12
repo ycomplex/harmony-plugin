@@ -1937,3 +1937,106 @@ describe('B-723: the per-leg log lines name the TICKET, alongside the full condu
     expect(h.logs.some((l) => l.includes('launching worker'))).toBe(true);
   });
 });
+
+describe('B-827: {ticket} template substitution carries the visual id, never the row UUID', () => {
+  // B-723 fixed the daemon's LOG LINES to name tickets; this ticket finishes the job at the
+  // substitution itself — everything a conduction touches (the worker prompt, host-side RUN_DIR
+  // paths, and the persisted transcript path) is templated from {ticket}, so a UUID leaking into
+  // {ticket} leaks into all three. Pin the rendered COMMAND (not the log line) at every template
+  // call site.
+  const TICKET_PROFILE: DaemonConfig = {
+    ...config,
+    profile: {
+      launch: 'launch {conduction_id} {ticket}',
+      reap: 'reap {conduction_id} {ticket}',
+      probe: 'probe {conduction_id} {ticket}',
+    },
+  };
+  const ROW_UUID = '88fdc62d-aaaa-bbbb-cccc-000000000001'; // opaque row id — must never render
+  const identified = (over: Partial<DaemonTask> = {}): DaemonTask =>
+    pausedTask({ task_number: 1, title: 'Substitute the visual id', ...over });
+
+  it('the launch command renders {ticket} as the visual id, never the raw row task_id', async () => {
+    const h = makeHarness({
+      config: TICKET_PROFILE,
+      conductions: [conduction({ task_id: ROW_UUID })],
+      tasks: { [ROW_UUID]: identified() },
+    });
+    await h.pass(); // baseline (still awaiting) — no wake
+    (h.tasks[ROW_UUID] as DaemonTask).awaiting_human_input = false; // the human resolved
+    await h.pass(); // wake → queued → fired this same pass
+
+    expect(h.launches()).toEqual(['launch cond-1 B-1']);
+    expect(h.launches()[0]).not.toContain(ROW_UUID);
+  });
+
+  it('a dirty-exit retry reap renders {ticket} as the visual id too', async () => {
+    const h = makeHarness({
+      config: { ...TICKET_PROFILE, retryCap: 1 },
+      conductions: [conduction({ task_id: ROW_UUID })],
+      tasks: { [ROW_UUID]: identified() },
+      launchExitCode: 1, // dirty exit — no progress, no awaiting-flag flip
+    });
+    await h.pass(); // baseline
+    (h.tasks[ROW_UUID] as DaemonTask).awaiting_human_input = false;
+    await h.pass(); // wake → fire
+    await h.pass(); // settle dirty exit → reap + queue retry
+
+    expect(h.reaps()).toEqual(['reap cond-1 B-1']);
+    expect(h.reaps()[0]).not.toContain(ROW_UUID);
+  });
+
+  it('the restart-reconciliation probe (a newly-won takeover) renders {ticket} as the visual id', async () => {
+    const h = makeHarness({
+      config: TICKET_PROFILE,
+      conductions: [
+        conduction({
+          task_id: ROW_UUID,
+          lease_holder: 'dead-host:9:zzzz9999',
+          last_heartbeat_at: iso(T0 - 600_000),
+          leg_started_at: iso(T0 - 300_000), // a leg was in flight when the lease went stale
+        }),
+      ],
+      tasks: { [ROW_UUID]: identified({ awaiting_human_input: false }) },
+      probeDefaultExitCode: 0,
+    });
+
+    await h.pass(); // takeover win → restart-reconciliation probe
+
+    expect(h.probes()).toEqual(['probe cond-1 B-1']);
+    expect(h.probes()[0]).not.toContain(ROW_UUID);
+  });
+
+  it('the REAP-THEN-FIRE fallback on a newly-won takeover renders {ticket} as the visual id', async () => {
+    const h = makeHarness({
+      config: TICKET_PROFILE,
+      conductions: [
+        conduction({
+          task_id: ROW_UUID,
+          lease_holder: 'dead-host:9:zzzz9999',
+          last_heartbeat_at: iso(T0 - 600_000),
+          leg_started_at: iso(T0 - 300_000),
+        }),
+      ],
+      tasks: { [ROW_UUID]: identified({ awaiting_human_input: false }) },
+      probeDefaultExitCode: 1, // never found — falls back to reap-then-clear
+    });
+
+    await h.pass();
+
+    expect(h.reaps()).toEqual(['reap cond-1 B-1']);
+    expect(h.reaps()[0]).not.toContain(ROW_UUID);
+  });
+
+  it('degrades to the raw row task_id when the task carries no visual identity (never blocks the launch)', async () => {
+    const h = makeHarness({
+      config: TICKET_PROFILE,
+      conductions: [conduction({ task_id: ROW_UUID })],
+      tasks: { [ROW_UUID]: pausedTask({ awaiting_human_input: false }) }, // no task_number/title
+    });
+    await h.pass();
+    await h.pass();
+
+    expect(h.launches()).toEqual([`launch cond-1 ${ROW_UUID}`]);
+  });
+});

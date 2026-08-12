@@ -102,6 +102,34 @@
 // Errors in one conduction's handling (including a fire attempt) are logged and that row skipped —
 // never the pass — with the sole exception of PersistentReapFailure (above) and a fatal already
 // parked on SchedulerRuntime.fatal from a previous pass's detached escalation.
+//
+// B-827: {ticket} template substitution now carries the ticket's VISUAL id (project key +
+// task_number — resolveVisualId, the same composition label()'s B-723 log lines already use), not
+// the row UUID, so the worker prompt, host-side RUN_DIR paths, and the B-788 persisted transcript
+// path all name the ticket. MIGRATION WRINKLE, examined (not assumed away): a conduction already
+// mid-leg when this ships was launched with the OLD (UUID) {ticket} value, so its host-side RUN_DIR
+// (`~/.harmony-conductions/<uuid>/<conduction-id>/`) was built from that old value. After a daemon
+// restart post-fix, the restart-reconciliation probe and the REAP-THEN-FIRE fallback
+// (handleWonTakeover, below) render {ticket} FRESH from a best-effort getTaskMeta read — which now
+// resolves the NEW (visual-id) value for that same task, a RUN_DIR path that was never created at
+// launch time. This does NOT strand the conduction: every reap/probe wrapper this daemon ships
+// (container/docker-worker-reap.sh, container/cloud-worker-reap.sh, container/cloud-worker-probe.sh,
+// and the docker profile's inline `docker ps --filter name=harmony-worker-{conduction_id}` probe)
+// targets the worker by CONDUCTION_ID (a Docker container name / a Cloud Run execution's
+// conduction-id label) — never by TICKET or RUN_DIR — confirmed by reading every wrapper script,
+// not assumed. {ticket}/RUN_DIR there is used ONLY to locate the per-run minted-secret env-file for
+// cleanup (`rm -f "$RUN_DIR/run.env"`), so an old-UUID-launched conduction reaped/probed post-
+// restart still has its live worker found and killed correctly by conduction-id; the sole
+// consequence of the RUN_DIR mismatch is that ONE already-in-flight leg's env-file (a short-lived
+// minted GIT_TOKEN) is not cleaned up by that reap call — a bounded, self-resolving disk-cleanliness
+// gap (the container's own filesystem is ephemeral for Cloud Run; for local Docker it is an orphan
+// file an operator can sweep), never a stranded conduction. A brand-new conduction launched AFTER
+// this fix ships has a consistent visual-id RUN_DIR from launch through to its own reap/probe, by
+// construction (same resolveVisualId call, same task, same result every time — project key and
+// task_number never change over a task's lifetime). No read-fallback-to-old-path-shape or drain-
+// before-flip was needed as a result; see profile-contract.test.ts's existing 'reap resolves the
+// execution by that SAME conduction-id label' / docker-name-by-conduction-id assertions for the
+// executed proof this reasoning rests on.
 
 import { captureBaseline, detectWake, type WatchBaseline } from './watch.js';
 import { classifyWorkerExit, exitClass, type ClassifyArgs } from './classify.js';
@@ -290,10 +318,18 @@ export function isAuthShapedError(err: unknown): boolean {
   return /\b401\b|jwt expired|invalid (jwt|token)|token .*expired/i.test(message);
 }
 
-function templateVars(row: ConductionRecord): { conduction_id: string; ticket: string } {
-  // {ticket} carries the task UUID — resolveTaskId fast-paths UUIDs in every consumer, with no
-  // project-key lookup and no cross-project ambiguity.
-  return { conduction_id: row.id, ticket: row.task_id };
+function templateVars(
+  row: ConductionRecord,
+  task: DaemonTask | null,
+  projectKey: string,
+): { conduction_id: string; ticket: string } {
+  // B-827: {ticket} now carries the ticket's VISUAL id (project key + task_number), never the row
+  // UUID — everything downstream (the worker prompt, host-side RUN_DIR paths, and, since B-788, the
+  // persisted cloud transcript path) must name the ticket the same way B-723's log lines already
+  // do. resolveVisualId degrades to the raw task_id when `task` is unavailable (a best-effort
+  // metadata read failed, or a reconciled re-attach has no snapshot yet) — a template substitution
+  // must never be able to block a launch/reap/probe.
+  return { conduction_id: row.id, ticket: resolveVisualId(task, projectKey, row.task_id) };
 }
 
 /** B-723: how much of a ticket title a log line carries — enough to recognize the ticket, short
@@ -317,6 +353,14 @@ function label(row: ConductionRecord, task: DaemonTask | null, projectKey: strin
     return `conduction ${row.id}`;
   }
   return `${projectKey}-${number} "${truncateTitle(title)}" (conduction ${row.id})`;
+}
+
+/** B-827: resolve a ticket's visual id (project key + task_number) — the same composition label()
+ *  builds above, reused for {ticket} template substitution itself (see templateVars). Degrades to
+ *  `fallback` (the row's raw task_id) when the task/task_number is unavailable. */
+function resolveVisualId(task: DaemonTask | null, projectKey: string, fallback: string): string {
+  const number = task?.task_number;
+  return typeof number === 'number' ? `${projectKey}-${number}` : fallback;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -526,7 +570,7 @@ async function handleHeldConduction(
       // B-717 restart reconciliation: this daemon did not fire this launch itself, so there is no
       // local runCommand(launch) promise to settle — re-probe the SAME tracking surface each pass.
       const probed = await deps.runCommand(
-        renderTemplate(deps.config.profile.probe as string, templateVars(row)),
+        renderTemplate(deps.config.profile.probe as string, templateVars(row, tracked.current, deps.projectKey)),
       );
       if (probed.exitCode !== 0) {
         tracked.settled = true;
@@ -703,8 +747,17 @@ async function handleWonTakeover(
   // launch a SECOND one alongside it — RE-ATTACH, never re-fire. Runs ONCE, right here, on the
   // newly-won lease (never every pass).
   if (won.leg_started_at !== null && deps.config.profile.probe) {
+    // B-827: best-effort pre-probe snapshot so the rendered probe command's {ticket} names the
+    // ticket's visual id, not the row UUID — a metadata read failure must not block the probe
+    // itself (templateVars falls back to the raw task_id when the task is unavailable).
+    let probeTask: DaemonTask | null = null;
+    try {
+      probeTask = await deps.getTaskMeta(row.task_id);
+    } catch {
+      // best-effort — see above.
+    }
     const probed = await deps.runCommand(
-      renderTemplate(deps.config.profile.probe, templateVars(row)),
+      renderTemplate(deps.config.profile.probe, templateVars(row, probeTask, deps.projectKey)),
     );
     if (probed.exitCode === 0) {
       let current: DaemonTask;
@@ -750,7 +803,18 @@ async function handleWonTakeover(
   // this is the ROUTINE case — the dead holder usually left NOTHING to reap, so quiet=true here
   // (and ONLY here — the dirty-exit retry reap and the deadline-escalation reap stay verbose,
   // since those ARE genuinely operationally interesting).
-  await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)), { quiet: true });
+  // B-827: best-effort pre-reap snapshot — same degrade rationale as the reconciliation probe
+  // fetch above (a metadata read failure must not block this reap).
+  let reapTask: DaemonTask | null = null;
+  try {
+    reapTask = await deps.getTaskMeta(row.task_id);
+  } catch {
+    // best-effort — see above.
+  }
+  await deps.runCommand(
+    renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey)),
+    { quiet: true },
+  );
   // B-742/B-717 point 4 (corrected): this clear is reached ONLY for a row with NO tracked in-flight
   // worker on THIS daemon — `running` cannot already hold this id (we just won the takeover, and
   // `running` only ever holds rows this daemon currently holds the lease for), and reconciliation
@@ -827,7 +891,7 @@ async function settleTrackedLaunch(
       `${label(row, after, deps.projectKey)}: dirty exit — retrying ` +
         `(attempt ${retryCount}/${deps.config.retryCap}) after reap + ${backoffMs}ms backoff`,
     );
-    await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+    await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey)));
     // B-717: no synchronous deps.sleep here — a blocked pass is exactly what fire-and-track
     // removes. Queue the retry as a ready candidate gated by `notBefore` so every OTHER row keeps
     // getting served while this one backs off.
@@ -968,7 +1032,7 @@ async function fireLaunch(
   // Rejects ONLY when the reap cannot free us; otherwise `launch` always settles first — mirrors
   // the old inline Promise.race exactly, just no longer awaited by the pass itself.
   const launch = deps
-    .runCommand(renderTemplate(deps.config.profile.launch, templateVars(row)))
+    .runCommand(renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey)))
     .then((result) => {
       tracked.settled = true;
       tracked.exitCode = result.exitCode;
@@ -994,7 +1058,7 @@ async function fireLaunch(
       for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
         // NEVER await the reap: a wedged container runtime can hang the reap command itself, and
         // the call we make to unblock ourselves must not be able to block us.
-        void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row)));
+        void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, current, deps.projectKey)));
         await new Promise<void>((resolveGrace) => {
           deps.startTimeout(REAP_GRACE_MS, resolveGrace);
         });
