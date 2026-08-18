@@ -1,0 +1,46 @@
+# B-820: publishes the harmony-build-env worker image on every push to main
+# that touches container/** (provisioned as a GCP-side Cloud Build trigger —
+# see container/README.md). Builds container/Dockerfile's default (last)
+# stage, same as the manual `gcloud builds submit --tag ... container/` this
+# replaces, and tags the result both :latest and :<plugin-version> so a bad
+# publish can be rolled back to the previous version tag.
+
+substitutions:
+  _IMAGE: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-build-env
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args: ['build', '-t', '${_IMAGE}:latest', 'container/']
+
+  - id: read-version
+    name: node:22-bookworm-slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        node -e "console.log(require('./.claude-plugin/plugin.json').version)" > /workspace/plugin_version.txt
+        echo "Publishing version $(cat /workspace/plugin_version.txt)"
+
+  - id: tag-version
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        docker tag "${_IMAGE}:latest" "${_IMAGE}:$(cat /workspace/plugin_version.txt)"
+
+  - id: push-latest
+    name: gcr.io/cloud-builders/docker
+    args: ['push', '${_IMAGE}:latest']
+
+  - id: push-version
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        docker push "${_IMAGE}:$(cat /workspace/plugin_version.txt)"
