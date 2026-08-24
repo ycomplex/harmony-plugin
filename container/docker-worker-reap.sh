@@ -29,6 +29,9 @@ OUTPUT="$(docker rm -f "harmony-worker-$CONDUCTION_ID" 2>&1)"
 DOCKER_EXIT=$?
 
 rm -f "$ENV_FILE"
+# B-846: the mint step's sibling run-config.json (mode-0600, no secret content) rides the same
+# RUN_DIR lifetime as run.env -- clean it up the same way, on the same trigger.
+rm -f "$RUN_DIR/run-config.json"
 
 if [ "$DOCKER_EXIT" -eq 0 ]; then
   exit 0
