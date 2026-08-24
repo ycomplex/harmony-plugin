@@ -4,7 +4,13 @@
 // starts writing a real top-level key through it.
 
 import { describe, it, expect } from 'vitest';
-import { EMPTY_RUN_CONFIG, RunConfigSchema, getConductionId, getRunConfig } from './run-config.js';
+import {
+  EMPTY_RUN_CONFIG,
+  RunConfigSchema,
+  getConductionId,
+  getRunConfig,
+  isSessionResumeEnabled,
+} from './run-config.js';
 
 describe('RunConfigSchema', () => {
   it('accepts an empty object', () => {
@@ -22,6 +28,52 @@ describe('RunConfigSchema', () => {
     expect(() => RunConfigSchema.parse('nope')).toThrow();
     expect(() => RunConfigSchema.parse(42)).toThrow();
     expect(() => RunConfigSchema.parse(null)).toThrow();
+  });
+});
+
+describe('RunConfigSchema session_resume (B-718)', () => {
+  it('accepts { session_resume: { enabled: true } }', () => {
+    expect(RunConfigSchema.parse({ session_resume: { enabled: true } })).toEqual({
+      session_resume: { enabled: true },
+    });
+  });
+
+  it('accepts { session_resume: { enabled: false } }', () => {
+    expect(RunConfigSchema.parse({ session_resume: { enabled: false } })).toEqual({
+      session_resume: { enabled: false },
+    });
+  });
+
+  it('rejects a session_resume object missing the required enabled boolean', () => {
+    expect(() => RunConfigSchema.parse({ session_resume: {} })).toThrow();
+  });
+
+  it('rejects a non-boolean enabled value', () => {
+    expect(() => RunConfigSchema.parse({ session_resume: { enabled: 'yes' } })).toThrow();
+  });
+
+  it('still passes through unrelated unknown keys alongside session_resume', () => {
+    expect(
+      RunConfigSchema.parse({ session_resume: { enabled: true }, steering_note: 'be terse' }),
+    ).toEqual({ session_resume: { enabled: true }, steering_note: 'be terse' });
+  });
+});
+
+describe('isSessionResumeEnabled', () => {
+  it('defaults to false on the empty run_config ({})', () => {
+    expect(isSessionResumeEnabled(EMPTY_RUN_CONFIG)).toBe(false);
+  });
+
+  it('is false when session_resume is present but enabled is false', () => {
+    expect(isSessionResumeEnabled({ session_resume: { enabled: false } })).toBe(false);
+  });
+
+  it('is true only when session_resume.enabled is explicitly true', () => {
+    expect(isSessionResumeEnabled({ session_resume: { enabled: true } })).toBe(true);
+  });
+
+  it('is false when session_resume is absent but other unrelated keys are present', () => {
+    expect(isSessionResumeEnabled({ steering_note: 'be terse' })).toBe(false);
   });
 });
 

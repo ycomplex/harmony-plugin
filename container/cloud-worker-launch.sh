@@ -29,11 +29,17 @@
 # more waiting for the execution to start — plus raising `LOCK_WAIT_TIMEOUT_S`'s default from 60 to
 # 300 as belt-and-braces for any residual slow creation.
 #
-# Usage: cloud-worker-launch.sh <conduction_id> <ticket>
+# Usage: cloud-worker-launch.sh <conduction_id> <ticket> [run_config_json]
 set -euo pipefail
 
-CONDUCTION_ID="${1:?usage: cloud-worker-launch.sh <conduction_id> <ticket>}"
-TICKET="${2:?usage: cloud-worker-launch.sh <conduction_id> <ticket>}"
+CONDUCTION_ID="${1:?usage: cloud-worker-launch.sh <conduction_id> <ticket> [run_config_json]}"
+TICKET="${2:?usage: cloud-worker-launch.sh <conduction_id> <ticket> [run_config_json]}"
+# B-718: the conduction row's run_config seam value (src/daemon/scheduler.ts's templateVars ->
+# {run_config_json}), JSON.stringify'd by the daemon and forwarded here as a THIRD positional arg —
+# replacing the hardcoded '{}' the mint invocation below used before this ticket. Optional/absent
+# (a manual invocation, or an older daemon build that doesn't render this template arg) falls back
+# to '{}' byte-for-byte, same as today.
+RUN_CONFIG_JSON="${3:-{}}"
 
 : "${HARMONY_PLUGIN_DIR:?HARMONY_PLUGIN_DIR is required (checkout the mint script runs from, same knob the docker profile uses)}"
 
@@ -153,7 +159,7 @@ EXEC_ENV_FILE="$RUN_DIR/exec-env-vars.yaml"  # per-EXECUTE-call file, deleted ri
 #    matching the local docker profile's launch template exactly (see
 #    container/daemon-profile.example.json's `launch` field) — that static file is where the ack
 #    flag actually lives on this host, same as the docker profile.
-node "$HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs" --base "$HOME/.harmony-container.env" --out "$ENV_FILE" --conduction-id "$CONDUCTION_ID" --run-config '{}'
+node "$HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs" --base "$HOME/.harmony-container.env" --out "$ENV_FILE" --conduction-id "$CONDUCTION_ID" --run-config "$RUN_CONFIG_JSON"
 
 GIT_TOKEN="$(grep -m1 '^GIT_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
 if [ -z "$GIT_TOKEN" ]; then

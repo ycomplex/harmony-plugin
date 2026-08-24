@@ -51,6 +51,61 @@ if [ -n "${HARMONY_TRANSCRIPT_MOUNT_ROOT:-}" ]; then
   rm -rf "$HOME/.claude/projects" "$HOME/.claude/logs"
   ln -s "$TRANSCRIPT_SUBTREE/projects" "$HOME/.claude/projects"
   ln -s "$TRANSCRIPT_SUBTREE/logs" "$HOME/.claude/logs"
+
+  # B-718: cross-conduction resume discovery (cloud profile). The gcsfuse mount above is already
+  # live and spans EVERY conduction of every ticket, so this is the one place the cloud path can
+  # see a SIBLING conduction's session — a park + re-conduct gives the new conduction a fresh, empty
+  # $TRANSCRIPT_SUBTREE, so the prior conduction's persisted session lives one directory level up,
+  # under a different $CONDUCTION_ID. Same-conduction (multi-leg) resume is unrelated to this block
+  # and needs no wiring here at all: it's already free (every leg mounts the SAME $TRANSCRIPT_SUBTREE
+  # above), discovered by container/provision.sh right before it execs claude.
+  #
+  # Best-effort throughout, matching AC5's resume-is-best-effort property: `--resume` is a courtesy,
+  # never a requirement, so every check below degrades to "inject nothing" (the existing cold-start
+  # path) rather than failing this script. Gated on run_config.session_resume.enabled — read from
+  # whichever of the two B-846 delivery vars the launch profile actually populated (HARMONY_RUN_CONFIG_PATH
+  # is a local-docker-profile-only form; the cloud profile always uses the inline
+  # HARMONY_RUN_CONFIG_JSON form, but both are checked here for robustness — see
+  # src/config/run-config.ts's own precedence).
+  RUN_CONFIG_JSON=""
+  if [ -n "${HARMONY_RUN_CONFIG_PATH:-}" ] && [ -f "$HARMONY_RUN_CONFIG_PATH" ]; then
+    RUN_CONFIG_JSON="$(cat "$HARMONY_RUN_CONFIG_PATH" 2>/dev/null || true)"
+  elif [ -n "${HARMONY_RUN_CONFIG_JSON:-}" ]; then
+    RUN_CONFIG_JSON="$(printf '%s' "$HARMONY_RUN_CONFIG_JSON" | base64 -d 2>/dev/null || true)"
+  fi
+  SESSION_RESUME_ENABLED="false"
+  if [ -n "$RUN_CONFIG_JSON" ]; then
+    SESSION_RESUME_ENABLED="$(printf '%s' "$RUN_CONFIG_JSON" | jq -r '.session_resume.enabled // false' 2>/dev/null || echo false)"
+  fi
+
+  if [ "$SESSION_RESUME_ENABLED" = "true" ]; then
+    CURRENT_HAS_SESSION=0
+    for existing in "$TRANSCRIPT_SUBTREE"/projects/*/*.jsonl; do
+      [ -f "$existing" ] && CURRENT_HAS_SESSION=1 && break
+    done
+    if [ "$CURRENT_HAS_SESSION" = "0" ] && [ -d "$HARMONY_TRANSCRIPT_MOUNT_ROOT/$TICKET" ]; then
+      SIBLING_SESSION_PATH=""
+      SIBLING_NEWEST_MTIME=0
+      for sibling_dir in "$HARMONY_TRANSCRIPT_MOUNT_ROOT/$TICKET"/*/; do
+        [ -d "$sibling_dir" ] || continue
+        sibling_id="$(basename "$sibling_dir")"
+        [ "$sibling_id" = "$CONDUCTION_ID" ] && continue
+        for jsonl in "${sibling_dir}projects"/*/*.jsonl; do
+          [ -f "$jsonl" ] || continue
+          mtime="$(stat -c '%Y' "$jsonl" 2>/dev/null || echo 0)"
+          if [ "$mtime" -gt "$SIBLING_NEWEST_MTIME" ]; then
+            SIBLING_NEWEST_MTIME="$mtime"
+            SIBLING_SESSION_PATH="$jsonl"
+          fi
+        done
+      done
+      if [ -n "$SIBLING_SESSION_PATH" ]; then
+        SIBLING_SESSION_ID="$(basename "$SIBLING_SESSION_PATH" .jsonl)"
+        export CLAUDE_HEADLESS_FLAGS="${CLAUDE_HEADLESS_FLAGS:-} --resume $SIBLING_SESSION_ID"
+        echo "entrypoint: B-718 cross-conduction resume — found a prior $TICKET session ($SIBLING_SESSION_ID) from another conduction, injecting --resume" >&2
+      fi
+    fi
+  fi
 fi
 
 # Fresh clone per start is the accepted v1 tradeoff (see the B-694 design

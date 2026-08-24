@@ -279,18 +279,27 @@ export function loadDaemonConfig(
   };
 }
 
-/** Substitute {conduction_id} / {ticket} into a profile template. An unknown {placeholder} throws
- *  LOUDLY — a template typo must never reach the shell as a literal brace token. Plain shell
- *  syntax ($HOME etc.) passes through untouched. */
+/** Substitute {conduction_id} / {ticket} / {run_config_json} into a profile template. An unknown
+ *  {placeholder} throws LOUDLY — a template typo must never reach the shell as a literal brace
+ *  token. Plain shell syntax ($HOME etc.) passes through untouched.
+ *
+ *  B-718: {run_config_json} carries the conduction row's `run_config` payload (JSON.stringify'd —
+ *  see src/daemon/scheduler.ts's templateVars) so a per-conduction `run_config.session_resume`
+ *  value reaches the worker via the launch template's `--run-config` argument, replacing the
+ *  hardcoded `'{}'` every launch profile used before this ticket. Optional in `vars`: a caller
+ *  that never renders a template referencing {run_config_json} (e.g. the reap/probe templates)
+ *  need not supply it. */
 export function renderTemplate(
   tpl: string,
-  vars: { conduction_id: string; ticket: string },
+  vars: { conduction_id: string; ticket: string; run_config_json?: string },
 ): string {
   return tpl.replace(/\{([A-Za-z0-9_]+)\}/g, (_match, name: string) => {
     if (name === 'conduction_id') return vars.conduction_id;
     if (name === 'ticket') return vars.ticket;
+    if (name === 'run_config_json' && vars.run_config_json !== undefined) return vars.run_config_json;
     throw new Error(
-      `unknown placeholder {${name}} in launch-profile template — supported: {conduction_id}, {ticket}`,
+      `unknown placeholder {${name}} in launch-profile template — supported: {conduction_id}, ` +
+        `{ticket}, {run_config_json}`,
     );
   });
 }

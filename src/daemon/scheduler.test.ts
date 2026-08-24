@@ -400,6 +400,34 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
     expect(h.ready()).toEqual([]);
   });
 
+  it('B-718: the launch template\'s {run_config_json} placeholder is rendered from the CONDUCTION ROW\'S OWN run_config, JSON.stringify\'d', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ run_config: { session_resume: { enabled: true } } })],
+      tasks: { 'task-1': pausedTask() },
+      config: {
+        ...config,
+        profile: { ...config.profile, launch: "launch {conduction_id} {ticket} --run-config '{run_config_json}'" },
+      },
+    });
+    await wakeAndFire(h);
+    expect(h.launches()).toEqual([
+      'launch cond-1 task-1 --run-config \'{"session_resume":{"enabled":true}}\'',
+    ]);
+  });
+
+  it('B-718: a conduction row with NO run_config renders {run_config_json} as the empty object, matching the pre-B-718 hardcoded default', async () => {
+    const h = makeHarness({
+      conductions: [conduction()], // run_config left undefined, same as every pre-B-718 row
+      tasks: { 'task-1': pausedTask() },
+      config: {
+        ...config,
+        profile: { ...config.profile, launch: "launch {conduction_id} --run-config '{run_config_json}'" },
+      },
+    });
+    await wakeAndFire(h);
+    expect(h.launches()).toEqual(["launch cond-1 --run-config '{}'"]);
+  });
+
   it('a clean-pause exit is classified and the baseline stored ONLY once the launch settles, on a LATER pass', async () => {
     const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
     await wakeAndFire(h);

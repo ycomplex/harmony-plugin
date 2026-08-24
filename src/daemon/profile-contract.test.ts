@@ -13,6 +13,7 @@ import {
   lstatSync,
   readlinkSync,
   existsSync,
+  utimesSync,
 } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -46,6 +47,344 @@ function provisionModes(script: string): string[] {
   }
   return modes;
 }
+
+// B-718: same-conduction resume discovery + best-effort --resume-with-cold-fallback (AC5) — the
+// block EXECUTED here is extracted VERBATIM from provision.sh's real headless branch, never
+// hand-retyped, matching this file's own "prose-pinned tests alone are not trusted" discipline
+// (see the cloud-worker-launch.sh EXECUTED describe block's header comment for the same rationale).
+describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fallback', () => {
+  const provisionScriptForResume = readFileSync(provisionPath, 'utf8');
+
+  /** Extract the B-718 block verbatim: from its own header comment through the closing
+   *  `exit "$RESUME_EXIT"` line, EXCLUDING the case-arm's own trailing `;;` (the harness supplies
+   *  its own script framing instead of a `case` statement). */
+  function extractResumeBlock(): string {
+    const startMarker =
+      '# --- B-718: same-conduction resume discovery + best-effort --resume wiring (AC5). -----------';
+    const endMarker = 'exit "$RESUME_EXIT"';
+    const start = provisionScriptForResume.indexOf(startMarker);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const endAt = provisionScriptForResume.indexOf(endMarker, start);
+    expect(endAt).toBeGreaterThan(start);
+    return provisionScriptForResume.slice(start, endAt + endMarker.length);
+  }
+
+  function runResumeBlock(
+    env: NodeJS.ProcessEnv,
+    opts: { fakeClaudeDir?: string; homeDir?: string } = {},
+  ): { status: number | null; stdout: string; stderr: string; homeDir: string } {
+    const scriptDir = mkdtempSync(join(tmpdir(), 'b718-provision-resume-'));
+    let homeDir = opts.homeDir;
+    if (!homeDir) {
+      homeDir = join(scriptDir, 'home');
+      mkdirSync(homeDir, { recursive: true });
+    }
+
+    const block = extractResumeBlock();
+    const scriptFile = join(scriptDir, 'harness.sh');
+    writeFileSync(
+      scriptFile,
+      ['#!/usr/bin/env bash', 'set -euo pipefail', 'PLUGIN_DIR="/fake/plugin"', 'PROMPT="do the leg"', block, ''].join(
+        '\n',
+      ),
+      { mode: 0o700 },
+    );
+
+    const pathPrefix = opts.fakeClaudeDir ? `${opts.fakeClaudeDir}:` : '';
+    try {
+      const stdout = execFileSync('bash', [scriptFile], {
+        env: { ...env, HOME: homeDir, PATH: `${pathPrefix}${process.env.PATH}` },
+      });
+      return { status: 0, stdout: stdout.toString(), stderr: '', homeDir };
+    } catch (err) {
+      const e = err as { status: number | null; stdout?: Buffer | string; stderr?: Buffer | string };
+      return {
+        status: e.status,
+        stdout: (e.stdout ?? '').toString(),
+        stderr: (e.stderr ?? '').toString(),
+        homeDir,
+      };
+    }
+  }
+
+  function writeSession(homeDir: string, sessionId: string, mtimeOffsetMs = 0): void {
+    const slugDir = join(homeDir, '.claude', 'projects', '-workspace-workspace');
+    mkdirSync(slugDir, { recursive: true });
+    const file = join(slugDir, `${sessionId}.jsonl`);
+    writeFileSync(file, '{}\n');
+    if (mtimeOffsetMs !== 0) {
+      const t = new Date(Date.now() + mtimeOffsetMs);
+      utimesSync(file, t, t);
+    }
+  }
+
+  function enabledRunConfigEnv(): NodeJS.ProcessEnv {
+    return {
+      HARMONY_RUN_CONFIG_JSON: Buffer.from(JSON.stringify({ session_resume: { enabled: true } })).toString(
+        'base64',
+      ),
+    };
+  }
+
+  it('B-718 de-risk smoke test (LIVE, real claude CLI — step 1 of the ticket work list): a session id the CLI does not recognize fails FAST on stderr with "No conversation found with session ID", and the block correctly detects it and attempts the cold fallback', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b718-provision-resume-live-'));
+    const homeDir = join(dir, 'home');
+    mkdirSync(homeDir, { recursive: true });
+    // A syntactically-real but locally-unknown session id — the REAL claude CLI (resolved from
+    // the real PATH, no stub) will not find it in its own local session index, live-reproducing
+    // the exact failure signature this block's grep keys on (confirmed via a direct standalone
+    // `claude --resume <bad-id>` invocation during this ticket's build — see the build report).
+    writeSession(homeDir, '00000000-0000-0000-0000-000000000000');
+
+    const block = extractResumeBlock();
+    const scriptFile = join(dir, 'harness.sh');
+    writeFileSync(
+      scriptFile,
+      [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        'PLUGIN_DIR="/fake/plugin"',
+        'PROMPT="say hi"',
+        block,
+        '',
+      ].join('\n'),
+      { mode: 0o700 },
+    );
+
+    let result: { status: number | null; stdout: string; stderr: string };
+    try {
+      const stdout = execFileSync('bash', [scriptFile], {
+        env: { ...enabledRunConfigEnv(), HOME: homeDir, PATH: process.env.PATH },
+        timeout: 60_000,
+      });
+      result = { status: 0, stdout: stdout.toString(), stderr: '' };
+    } catch (err) {
+      const e = err as { status: number | null; stdout?: Buffer | string; stderr?: Buffer | string };
+      result = { status: e.status, stdout: (e.stdout ?? '').toString(), stderr: (e.stderr ?? '').toString() };
+    }
+
+    const combined = result.stdout + result.stderr;
+    expect(combined).toContain('B-718: attempting to resume prior session 00000000-0000-0000-0000-000000000000');
+    expect(combined).toContain('No conversation found with session ID');
+    expect(combined).toContain(
+      'B-718: --resume 00000000-0000-0000-0000-000000000000 failed to attach (corrupt/rejected/stale session) — falling back to a COLD start.',
+    );
+    // The block DID transition to a cold attempt (a second, --resume-less claude invocation) —
+    // this sandbox's real claude CLI has no usable auth for an actual model turn, so the cold
+    // attempt itself fails too ("Not logged in"), but critically NOT with the resume-failure
+    // signature again — proving the fallback truly dropped --resume rather than retrying it.
+    const secondFailureIsResumeShaped =
+      combined.indexOf('No conversation found with session ID') !==
+      combined.lastIndexOf('No conversation found with session ID');
+    expect(secondFailureIsResumeShaped).toBe(false);
+  }, 60_000);
+
+  it('discovers the NEWEST session by mtime when multiple prior legs left session files', () => {
+    const claudeStub = mkdtempSync(join(tmpdir(), 'b718-fake-claude-'));
+    writeFileSync(
+      join(claudeStub, 'claude'),
+      [
+        '#!/usr/bin/env bash',
+        'if printf \'%s\\n\' "$@" | grep -q -- --resume; then',
+        '  RESUME_ARG="$(printf \'%s\\n\' "$@" | grep -A1 -- --resume | tail -1)"',
+        '  echo "RESUMED_WITH=$RESUME_ARG"',
+        '  exit 0',
+        'fi',
+        'echo COLD_STARTED',
+        'exit 0',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+
+    const dir = mkdtempSync(join(tmpdir(), 'b718-home-'));
+    writeSession(dir, 'sess-older', -60_000);
+    writeSession(dir, 'sess-newer', 0);
+    const result = runResumeBlock(enabledRunConfigEnv(), { fakeClaudeDir: claudeStub, homeDir: dir });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('RESUMED_WITH=sess-newer');
+  });
+
+  it('falls back to a cold start and exits 0 on a "No conversation found" resume failure, with the fallback logged', () => {
+    const claudeStub = mkdtempSync(join(tmpdir(), 'b718-fake-claude-'));
+    writeFileSync(
+      join(claudeStub, 'claude'),
+      [
+        '#!/usr/bin/env bash',
+        'if printf \'%s\\n\' "$@" | grep -q -- --resume; then',
+        '  echo "No conversation found with session ID: fake-id" >&2',
+        '  exit 1',
+        'fi',
+        'echo COLD_STARTED',
+        'exit 0',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const dir = mkdtempSync(join(tmpdir(), 'b718-home-'));
+    writeSession(dir, 'fake-id');
+
+    const block = extractResumeBlock();
+    const scriptFile = join(dir, 'harness.sh');
+    writeFileSync(
+      scriptFile,
+      ['#!/usr/bin/env bash', 'set -euo pipefail', 'PLUGIN_DIR="/fake/plugin"', 'PROMPT="do it"', block, ''].join(
+        '\n',
+      ),
+      { mode: 0o700 },
+    );
+    const stdout = execFileSync('bash', [scriptFile], {
+      env: { ...enabledRunConfigEnv(), HOME: dir, PATH: `${claudeStub}:${process.env.PATH}` },
+    }).toString();
+
+    expect(stdout).toContain('COLD_STARTED');
+    expect(stdout).not.toContain('RESUMED_WITH');
+  });
+
+  it('does NOT fall back — and does NOT retry — on a resume that attached fine but whose REAL WORK then failed for an unrelated reason', () => {
+    const claudeStub = mkdtempSync(join(tmpdir(), 'b718-fake-claude-'));
+    writeFileSync(
+      join(claudeStub, 'claude'),
+      [
+        '#!/usr/bin/env bash',
+        'if printf \'%s\\n\' "$@" | grep -q -- --resume; then',
+        '  echo "some unrelated real build failure" >&2',
+        '  exit 7',
+        'fi',
+        'echo COLD_STARTED',
+        'exit 0',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const dir = mkdtempSync(join(tmpdir(), 'b718-home-'));
+    writeSession(dir, 'fake-id');
+
+    const block = extractResumeBlock();
+    const scriptFile = join(dir, 'harness.sh');
+    writeFileSync(
+      scriptFile,
+      ['#!/usr/bin/env bash', 'set -euo pipefail', 'PLUGIN_DIR="/fake/plugin"', 'PROMPT="do it"', block, ''].join(
+        '\n',
+      ),
+      { mode: 0o700 },
+    );
+    let status: number | null = 0;
+    let stdout: string;
+    let stderr = '';
+    try {
+      stdout = execFileSync('bash', [scriptFile], {
+        env: { ...enabledRunConfigEnv(), HOME: dir, PATH: `${claudeStub}:${process.env.PATH}` },
+      }).toString();
+    } catch (err) {
+      const e = err as { status: number | null; stdout?: Buffer | string; stderr?: Buffer | string };
+      status = e.status;
+      stdout = (e.stdout ?? '').toString();
+      stderr = (e.stderr ?? '').toString();
+    }
+
+    expect(status).toBe(7); // the ORIGINAL exit code, not silently swallowed or retried
+    expect(stdout).not.toContain('COLD_STARTED'); // never fell back — this was NOT a resume failure
+    expect(stderr).toContain('some unrelated real build failure');
+  });
+
+  it('succeeds straight through with no fallback when the resume attaches AND the work succeeds', () => {
+    const claudeStub = mkdtempSync(join(tmpdir(), 'b718-fake-claude-'));
+    writeFileSync(
+      join(claudeStub, 'claude'),
+      [
+        '#!/usr/bin/env bash',
+        'if printf \'%s\\n\' "$@" | grep -q -- --resume; then',
+        '  echo "RESUME_SUCCEEDED"',
+        '  exit 0',
+        'fi',
+        'echo COLD_STARTED',
+        'exit 0',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const dir = mkdtempSync(join(tmpdir(), 'b718-home-'));
+    writeSession(dir, 'fake-id');
+    const rerun = runResumeBlock(enabledRunConfigEnv(), { fakeClaudeDir: claudeStub, homeDir: dir });
+    expect(rerun.status).toBe(0);
+    expect(rerun.stdout).toContain('RESUME_SUCCEEDED');
+    expect(rerun.stdout).not.toContain('COLD_STARTED');
+  });
+
+  it('never attempts --resume, straight to cold start, when session_resume is disabled (default)', () => {
+    const claudeStub = mkdtempSync(join(tmpdir(), 'b718-fake-claude-'));
+    writeFileSync(
+      join(claudeStub, 'claude'),
+      [
+        '#!/usr/bin/env bash',
+        'if printf \'%s\\n\' "$@" | grep -q -- --resume; then',
+        '  echo "RESUMED_UNEXPECTEDLY"',
+        '  exit 0',
+        'fi',
+        'echo COLD_STARTED',
+        'exit 0',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const dir = mkdtempSync(join(tmpdir(), 'b718-home-'));
+    writeSession(dir, 'fake-id');
+
+    const block = extractResumeBlock();
+    const scriptFile = join(dir, 'harness.sh');
+    writeFileSync(
+      scriptFile,
+      ['#!/usr/bin/env bash', 'set -euo pipefail', 'PLUGIN_DIR="/fake/plugin"', 'PROMPT="do it"', block, ''].join(
+        '\n',
+      ),
+      { mode: 0o700 },
+    );
+    const stdout = execFileSync('bash', [scriptFile], {
+      env: { HOME: dir, PATH: `${claudeStub}:${process.env.PATH}` }, // no run-config at all
+    }).toString();
+
+    expect(stdout).toContain('COLD_STARTED');
+    expect(stdout).not.toContain('RESUMED_UNEXPECTEDLY');
+  });
+
+  it('never attempts --resume when the current conduction has no prior session at all', () => {
+    const claudeStub = mkdtempSync(join(tmpdir(), 'b718-fake-claude-'));
+    writeFileSync(
+      join(claudeStub, 'claude'),
+      [
+        '#!/usr/bin/env bash',
+        'if printf \'%s\\n\' "$@" | grep -q -- --resume; then',
+        '  echo "RESUMED_UNEXPECTEDLY"',
+        '  exit 0',
+        'fi',
+        'echo COLD_STARTED',
+        'exit 0',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const result = runResumeBlock(enabledRunConfigEnv(), { fakeClaudeDir: claudeStub });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('COLD_STARTED');
+    expect(result.stdout).not.toContain('RESUMED_UNEXPECTEDLY');
+  });
+
+  it('passes CLAUDE_HEADLESS_FLAGS through unchanged on the cold path (no session to resume)', () => {
+    const claudeStub = mkdtempSync(join(tmpdir(), 'b718-fake-claude-'));
+    writeFileSync(
+      join(claudeStub, 'claude'),
+      ['#!/usr/bin/env bash', 'echo "ARGS=$*"', 'exit 0', ''].join('\n'),
+      { mode: 0o755 },
+    );
+    const result = runResumeBlock(
+      { ...enabledRunConfigEnv(), CLAUDE_HEADLESS_FLAGS: '--some-extra-flag' },
+      { fakeClaudeDir: claudeStub },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('--some-extra-flag');
+  });
+});
 
 describe('daemon-profile.example.json ↔ provision.sh mode contract', () => {
   it('the launch template passes a REAL provision.sh mode as the first arg after the image name', () => {
@@ -151,8 +490,44 @@ describe('daemon-profile.example.json run-config bind-mount contract (B-846)', (
     expect(dockerRunAt).toBeGreaterThan(0);
     const preamble = profile.launch.slice(0, dockerRunAt);
     expect(preamble).toContain('--conduction-id {conduction_id}');
-    expect(preamble).toContain("--run-config '{}'");
+    // B-718: the mint invocation's --run-config value is now the {run_config_json} placeholder
+    // (rendered per-conduction from the row's own run_config — see src/daemon/config.ts's
+    // renderTemplate / src/daemon/scheduler.ts's templateVars), replacing the B-846 hardcoded '{}'.
+    expect(preamble).toContain("--run-config '{run_config_json}'");
     expect(preamble).toContain('--run-config-path /home/worker/.claude/run-config.json');
+  });
+});
+
+// B-718: same-conduction resume is free (both profiles already mount/symlink the SAME
+// {ticket}/{conduction_id}/projects dir for every leg — see container/provision.sh). Cross-
+// conduction (after a park + re-conduct) needs a HOST-side pre-launch discovery step for the local
+// docker profile specifically, since `docker run` only ever bind-mounts THIS conduction's own
+// directories — see scripts/resume-discovery.mjs's own header for the full rationale.
+describe('daemon-profile.example.json resume-discovery wiring (B-718)', () => {
+  const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as { launch: string };
+
+  it('runs resume-discovery.mjs AFTER the mint step and BEFORE docker run', () => {
+    const mintAt = profile.launch.indexOf('mint-installation-token.mjs');
+    const discoveryAt = profile.launch.indexOf('resume-discovery.mjs');
+    const dockerRunAt = profile.launch.indexOf('docker run');
+    expect(mintAt).toBeGreaterThan(0);
+    expect(discoveryAt).toBeGreaterThan(mintAt);
+    expect(dockerRunAt).toBeGreaterThan(discoveryAt);
+  });
+
+  it('passes the conduction-scoped run-config file and the SAME run.env the mint step + docker run both use', () => {
+    const discoveryAt = profile.launch.indexOf('resume-discovery.mjs');
+    const dockerRunAt = profile.launch.indexOf('docker run');
+    const invocation = profile.launch.slice(discoveryAt, dockerRunAt);
+    expect(invocation).toContain('--conductions-root $HOME/.harmony-conductions');
+    expect(invocation).toContain('--ticket {ticket}');
+    expect(invocation).toContain('--conduction-id {conduction_id}');
+    expect(invocation).toContain(
+      '--run-config-file $HOME/.harmony-conductions/{ticket}/{conduction_id}/run-config.json',
+    );
+    expect(invocation).toContain(
+      '--env-file $HOME/.harmony-conductions/{ticket}/{conduction_id}/run.env',
+    );
   });
 });
 
@@ -561,14 +936,20 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
     expect(launchScript).toContain('$HOME/.harmony-conductions/$TICKET/$CONDUCTION_ID');
   });
 
-  it('B-846: passes --conduction-id "$CONDUCTION_ID" --run-config \'{}\' on the SAME mint invocation, with NO --run-config-path (inline delivery, not the mounted-file form the docker profile uses)', () => {
+  it('B-846/B-718: passes --conduction-id "$CONDUCTION_ID" --run-config "$RUN_CONFIG_JSON" on the SAME mint invocation, with NO --run-config-path (inline delivery, not the mounted-file form the docker profile uses)', () => {
     const mintAt = launchScript.indexOf('mint-installation-token.mjs" --base');
     expect(mintAt).toBeGreaterThanOrEqual(0);
     const mintLineEnd = launchScript.indexOf('\n', mintAt);
     const mintInvocation = launchScript.slice(mintAt, mintLineEnd);
     expect(mintInvocation).toContain('--conduction-id "$CONDUCTION_ID"');
-    expect(mintInvocation).toContain("--run-config '{}'");
+    // B-718: RUN_CONFIG_JSON now carries the caller's third positional arg (default '{}' —
+    // see the byte-for-byte-fallback test below), replacing the B-846 hardcoded '{}'.
+    expect(mintInvocation).toContain('--run-config "$RUN_CONFIG_JSON"');
     expect(mintInvocation).not.toContain('--run-config-path');
+  });
+
+  it("B-718: RUN_CONFIG_JSON defaults to '{}' byte-for-byte when the wrapper is invoked with no third positional arg", () => {
+    expect(launchScript).toContain('RUN_CONFIG_JSON="${3:-{}}"');
   });
 
   it('reap deletes the SAME per-run minted env-file the launch wrapper wrote', () => {
@@ -1577,5 +1958,135 @@ describe('entrypoint.sh: B-788 EXECUTED transcript-mount symlink fallback', () =
     expect(lstatSync(logsPath).isSymbolicLink()).toBe(false);
     expect(lstatSync(projectsPath).isDirectory()).toBe(true);
     expect(lstatSync(logsPath).isDirectory()).toBe(true);
+  });
+});
+
+describe('entrypoint.sh: B-718 cross-conduction resume discovery (cloud profile)', () => {
+  const entrypointScript = readFileSync(entrypointPath, 'utf8');
+
+  /** Same block extraction as the B-788 describe block above — the resume-discovery logic this
+   *  ticket adds lives INSIDE the same `if [ -n "${HARMONY_TRANSCRIPT_MOUNT_ROOT:-}" ]; then ... fi`
+   *  block, so the SAME extraction + harness proves it runs for real, not just in prose. */
+  function extractTranscriptBlock(): string {
+    const at = entrypointScript.indexOf('if [ -n "${HARMONY_TRANSCRIPT_MOUNT_ROOT:-}" ]; then');
+    expect(at).toBeGreaterThanOrEqual(0);
+    const end = entrypointScript.indexOf('\nfi', at);
+    expect(end).toBeGreaterThan(at);
+    return entrypointScript.slice(at, end + '\nfi'.length);
+  }
+
+  function runTranscriptBlock(
+    env: NodeJS.ProcessEnv,
+    mountRoot: string,
+  ): { status: number | null; stderr: string; home: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'b718-entrypoint-resume-'));
+    const homeDir = join(dir, 'home');
+    mkdirSync(homeDir);
+    mkdirSync(join(homeDir, '.claude', 'projects'), { recursive: true });
+    mkdirSync(join(homeDir, '.claude', 'logs'), { recursive: true });
+
+    const block = extractTranscriptBlock();
+    const scriptFile = join(dir, 'harness.sh');
+    writeFileSync(
+      scriptFile,
+      [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        block,
+        'echo "CLAUDE_HEADLESS_FLAGS=[${CLAUDE_HEADLESS_FLAGS:-}]"',
+        '',
+      ].join('\n'),
+      { mode: 0o700 },
+    );
+
+    try {
+      const stdout = execFileSync('bash', [scriptFile], {
+        env: { ...env, HOME: homeDir, PATH: process.env.PATH, HARMONY_TRANSCRIPT_MOUNT_ROOT: mountRoot },
+      });
+      return { status: 0, stderr: stdout.toString(), home: homeDir };
+    } catch (err) {
+      const e = err as { status: number | null; stderr?: Buffer | string };
+      return { status: e.status, stderr: (e.stderr ?? '').toString(), home: homeDir };
+    }
+  }
+
+  it('injects --resume with the newest SIBLING conduction session id when session_resume is enabled and this conduction has no session yet', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b718-mount-root-'));
+    const oldSlug = join(dir, 'B-718', 'cond-old', 'projects', '-workspace-workspace');
+    mkdirSync(oldSlug, { recursive: true });
+    writeFileSync(join(oldSlug, 'sess-old.jsonl'), '{}\n');
+
+    const runConfig = Buffer.from(JSON.stringify({ session_resume: { enabled: true } })).toString(
+      'base64',
+    );
+    const result = runTranscriptBlock(
+      { CONDUCTION_ID: 'cond-new', TICKET: 'B-718', HARMONY_RUN_CONFIG_JSON: runConfig },
+      dir,
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('CLAUDE_HEADLESS_FLAGS=[ --resume sess-old]');
+  });
+
+  it('does NOT inject --resume when session_resume is disabled (default)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b718-mount-root-'));
+    const oldSlug = join(dir, 'B-718', 'cond-old', 'projects', '-workspace-workspace');
+    mkdirSync(oldSlug, { recursive: true });
+    writeFileSync(join(oldSlug, 'sess-old.jsonl'), '{}\n');
+
+    const runConfig = Buffer.from(JSON.stringify({ session_resume: { enabled: false } })).toString(
+      'base64',
+    );
+    const result = runTranscriptBlock(
+      { CONDUCTION_ID: 'cond-new', TICKET: 'B-718', HARMONY_RUN_CONFIG_JSON: runConfig },
+      dir,
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('CLAUDE_HEADLESS_FLAGS=[]');
+  });
+
+  it('does NOT inject --resume when no HARMONY_RUN_CONFIG_JSON/PATH is set at all (byte-for-byte unchanged default)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b718-mount-root-'));
+    mkdirSync(join(dir, 'B-718', 'cond-old', 'projects', '-workspace-workspace'), { recursive: true });
+    writeFileSync(
+      join(dir, 'B-718', 'cond-old', 'projects', '-workspace-workspace', 'sess-old.jsonl'),
+      '{}\n',
+    );
+    const result = runTranscriptBlock({ CONDUCTION_ID: 'cond-new', TICKET: 'B-718' }, dir);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('CLAUDE_HEADLESS_FLAGS=[]');
+  });
+
+  it('skips cross-conduction injection when the CURRENT conduction already has a session (same-conduction leg 2+ — left to provision.sh)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b718-mount-root-'));
+    mkdirSync(join(dir, 'B-718', 'cond-old', 'projects', '-workspace-workspace'), { recursive: true });
+    writeFileSync(
+      join(dir, 'B-718', 'cond-old', 'projects', '-workspace-workspace', 'sess-old.jsonl'),
+      '{}\n',
+    );
+    mkdirSync(join(dir, 'B-718', 'cond-new', 'projects', '-workspace-workspace'), { recursive: true });
+    writeFileSync(
+      join(dir, 'B-718', 'cond-new', 'projects', '-workspace-workspace', 'sess-mine.jsonl'),
+      '{}\n',
+    );
+
+    const runConfig = Buffer.from(JSON.stringify({ session_resume: { enabled: true } })).toString(
+      'base64',
+    );
+    const result = runTranscriptBlock(
+      { CONDUCTION_ID: 'cond-new', TICKET: 'B-718', HARMONY_RUN_CONFIG_JSON: runConfig },
+      dir,
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('CLAUDE_HEADLESS_FLAGS=[]');
+  });
+
+  it('never fails the script on a malformed HARMONY_RUN_CONFIG_JSON — best-effort degrade to no injection', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b718-mount-root-'));
+    const result = runTranscriptBlock(
+      { CONDUCTION_ID: 'cond-new', TICKET: 'B-718', HARMONY_RUN_CONFIG_JSON: 'not-valid-base64-json!!' },
+      dir,
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('CLAUDE_HEADLESS_FLAGS=[]');
   });
 });
