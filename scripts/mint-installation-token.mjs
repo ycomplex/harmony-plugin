@@ -34,7 +34,7 @@
 import { createSign } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 
 const GITHUB_API = process.env.GITHUB_API_URL || 'https://api.github.com';
 
@@ -192,6 +192,48 @@ export function writeEnvFile(path, content) {
   chmodSync(path, 0o600); // belt-and-braces against a permissive umask
 }
 
+/**
+ * B-846: the run-config plumbing seam's launcher-side half.
+ *
+ * These four small pure functions compose the lines/paths mint-installation-token.mjs's `main()`
+ * appends to the SAME per-run env-file GIT_TOKEN already rides — never a new file/channel, except
+ * for the run-config JSON payload itself when a container-side mount path is also given (see
+ * runConfigFilePathFor below), which reuses writeEnvFile's mode-0600 write, same as the env-file
+ * itself. See src/config/run-config.ts for the worker-side accessor these lines feed.
+ */
+
+/** 'HARMONY_CONDUCTION_ID=<id>\n', or '' when no conduction id was given — always appended when
+ *  present, independent of whether --run-config was also given. */
+export function composeConductionIdLine(conductionId) {
+  return conductionId ? `HARMONY_CONDUCTION_ID=${conductionId}\n` : '';
+}
+
+/** 'HARMONY_RUN_CONFIG_JSON=<base64 of the JSON>\n', or '' when no run-config JSON was given.
+ *  Base64, not raw JSON — the same reason serializeReposSection base64-encodes HARMONY_REPOS_JSON:
+ *  this line also has to survive container/cloud-worker-launch.sh's YAML embedding on the cloud
+ *  path, where raw JSON's embedded double quotes would break naive printf-quoting. Used for the
+ *  INLINE delivery form (cloud profile: no --run-config-path given). */
+export function composeRunConfigInlineLine(runConfigJson) {
+  if (!runConfigJson) return '';
+  const encoded = Buffer.from(runConfigJson, 'utf8').toString('base64');
+  return `HARMONY_RUN_CONFIG_JSON=${encoded}\n`;
+}
+
+/** 'HARMONY_RUN_CONFIG_PATH=<container-side path>\n', or '' when no run-config path was given.
+ *  Used for the MOUNTED-FILE delivery form (local docker profile) — the path itself is the only
+ *  thing that rides the env-file; the JSON content rides the mounted file at that path, never
+ *  interpolated into the launch command or argv. */
+export function composeRunConfigPathLine(runConfigPath) {
+  return runConfigPath ? `HARMONY_RUN_CONFIG_PATH=${runConfigPath}\n` : '';
+}
+
+/** The run-config file's host-side path: a sibling `run-config.json` next to --out's own file, in
+ *  the same (already per-conduction-namespaced) directory — so it shares --out's directory-exists
+ *  guarantee without this script needing its own mkdir. */
+export function runConfigFilePathFor(outPath) {
+  return join(dirname(outPath), 'run-config.json');
+}
+
 /** Exchange the App JWT for a ~1h installation token. */
 export async function mintInstallationToken({ jwt, installationId, fetchImpl = fetch }) {
   const response = await fetchImpl(
@@ -236,23 +278,34 @@ function readPrivateKey(env) {
 }
 
 function parseArgs(argv) {
-  const args = { base: undefined, out: undefined, config: undefined };
+  const args = {
+    base: undefined,
+    out: undefined,
+    config: undefined,
+    conductionId: undefined,
+    runConfig: undefined,
+    runConfigPath: undefined,
+  };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--base') args.base = argv[++i];
     else if (argv[i] === '--out') args.out = argv[++i];
     else if (argv[i] === '--config') args.config = argv[++i];
+    else if (argv[i] === '--conduction-id') args.conductionId = argv[++i];
+    else if (argv[i] === '--run-config') args.runConfig = argv[++i];
+    else if (argv[i] === '--run-config-path') args.runConfigPath = argv[++i];
   }
   if (!args.out) {
     throw new Error(
       'Usage: mint-installation-token.mjs --out <per-run env-file> [--base <static env-file>] ' +
-        '[--config <deployment-config path>]',
+        '[--config <deployment-config path>] [--conduction-id <uuid>] ' +
+        "[--run-config <json-string>] [--run-config-path <container-side path>]",
     );
   }
   return args;
 }
 
 export async function main(argv = process.argv.slice(2), env = process.env) {
-  const { base, out, config } = parseArgs(argv);
+  const { base, out, config, conductionId, runConfig, runConfigPath } = parseArgs(argv);
 
   const appId = env.HARMONY_APP_ID;
   const installationId = env.HARMONY_APP_INSTALLATION_ID;
@@ -267,7 +320,23 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // B-800: the deployment config's `env` section wins over --base when present; see
   // resolveBaseContent's own doc comment for the full precedence + malformed-JSON behavior.
   const baseContent = resolveBaseContent({ base, configPath: config, env });
-  writeEnvFile(out, composeEnvFile({ baseContent, token }));
+  let envFileContent = composeEnvFile({ baseContent, token });
+
+  // B-846: run-config seam. --run-config omitted entirely -> neither line below is appended,
+  // preserving today's behavior byte-for-byte for any caller that doesn't pass it. Given
+  // --run-config, --run-config-path selects the delivery form: WITH a path, the JSON content is
+  // written to its own mode-0600 sibling file (never argv/shell-interpolated) and only the PATH
+  // rides the env-file; WITHOUT one, the JSON content itself rides the env-file inline (base64).
+  if (runConfig && runConfigPath) {
+    const runConfigFilePath = runConfigFilePathFor(out);
+    writeEnvFile(runConfigFilePath, runConfig);
+    envFileContent += composeRunConfigPathLine(runConfigPath);
+  } else if (runConfig) {
+    envFileContent += composeRunConfigInlineLine(runConfig);
+  }
+  envFileContent += composeConductionIdLine(conductionId);
+
+  writeEnvFile(out, envFileContent);
 
   // Print the PATH, never the token — this line lands in daemon logs.
   process.stdout.write(`${out}\n`);

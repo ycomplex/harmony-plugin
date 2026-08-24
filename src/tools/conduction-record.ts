@@ -122,6 +122,9 @@ export interface ConductionRecord {
   task_priority?: string | null;
 }
 
+// B-846 deliberately left run_config out of CONDUCTION_COLS — the first dependent needing a
+// non-default value must add it, and only after ./promote-prod.sh has confirmed the migration is
+// live on prod.
 const CONDUCTION_COLS =
   'id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, ' +
   'clean_shutdown_at, ' +

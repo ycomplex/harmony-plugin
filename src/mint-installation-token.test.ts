@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { generateKeyPairSync, createVerify } from 'node:crypto';
-import { mkdtempSync, statSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, statSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -19,6 +19,11 @@ import {
   flattenEnvSection,
   serializeReposSection,
   resolveBaseContent,
+  composeConductionIdLine,
+  composeRunConfigInlineLine,
+  composeRunConfigPathLine,
+  runConfigFilePathFor,
+  main,
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore -- plain .mjs helper module, deliberately dependency-free and untyped
 } from '../scripts/mint-installation-token.mjs';
@@ -350,5 +355,162 @@ describe('resolveBaseContent + composeEnvFile integration (B-800 end-to-end shap
     expect(reposLine).toBeDefined();
     const encoded = (reposLine as string).slice('HARMONY_REPOS_JSON='.length);
     expect(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))).toEqual(repos);
+  });
+});
+
+
+// B-846: the run-config plumbing seam's launcher-side compose functions + the file-write path for
+// the mounted-file delivery form. See src/config/run-config.test.ts for the worker-side accessor
+// coverage.
+describe('composeConductionIdLine', () => {
+  it("composes 'HARMONY_CONDUCTION_ID=<id>\\n' when a conduction id is given", () => {
+    expect(composeConductionIdLine('cond-123')).toBe('HARMONY_CONDUCTION_ID=cond-123\n');
+  });
+
+  it('returns an empty string when no conduction id was given, so nothing is appended', () => {
+    expect(composeConductionIdLine(undefined)).toBe('');
+    expect(composeConductionIdLine('')).toBe('');
+  });
+});
+
+describe('composeRunConfigInlineLine', () => {
+  it('base64-encodes the given JSON string into a single HARMONY_RUN_CONFIG_JSON=<b64> line', () => {
+    const line = composeRunConfigInlineLine('{"steering_note":"be terse"}');
+    expect(line.startsWith('HARMONY_RUN_CONFIG_JSON=')).toBe(true);
+    expect(line.endsWith('\n')).toBe(true);
+    const encoded = line.slice('HARMONY_RUN_CONFIG_JSON='.length, -1);
+    expect(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))).toEqual({
+      steering_note: 'be terse',
+    });
+  });
+
+  it('returns an empty string when no run-config JSON was given', () => {
+    expect(composeRunConfigInlineLine(undefined)).toBe('');
+    expect(composeRunConfigInlineLine('')).toBe('');
+  });
+});
+
+describe('composeRunConfigPathLine', () => {
+  it("composes 'HARMONY_RUN_CONFIG_PATH=<path>\\n' when a path is given", () => {
+    expect(composeRunConfigPathLine('/home/worker/.claude/run-config.json')).toBe(
+      'HARMONY_RUN_CONFIG_PATH=/home/worker/.claude/run-config.json\n',
+    );
+  });
+
+  it('returns an empty string when no path was given', () => {
+    expect(composeRunConfigPathLine(undefined)).toBe('');
+    expect(composeRunConfigPathLine('')).toBe('');
+  });
+});
+
+describe('runConfigFilePathFor', () => {
+  it("resolves to a sibling 'run-config.json' next to --out's own file, same directory", () => {
+    expect(
+      runConfigFilePathFor('/home/user/.harmony-conductions/B-846/cond-1/run.env'),
+    ).toBe('/home/user/.harmony-conductions/B-846/cond-1/run-config.json');
+  });
+});
+
+describe('main(): B-846 run-config seam wiring (file + inline delivery, byte-for-byte omission when unset)', () => {
+  function fakeEnv() {
+    return {
+      HARMONY_APP_ID: '1',
+      HARMONY_APP_INSTALLATION_ID: '2',
+      HARMONY_APP_PRIVATE_KEY: privateKey.export({ type: 'pkcs1', format: 'pem' }).toString(),
+    };
+  }
+
+  function fakeFetchImpl() {
+    return async () =>
+      ({ ok: true, json: async () => ({ token: 'ghs_minted' }) }) as unknown as Response;
+  }
+
+  it('omits both HARMONY_RUN_CONFIG_PATH and HARMONY_RUN_CONFIG_JSON, and writes no run-config file, when --run-config is not given at all', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b846-mint-main-'));
+    const out = join(dir, 'run.env');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fakeFetchImpl();
+    try {
+      await main(['--out', out], fakeEnv());
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    const written = readFileSync(out, 'utf8');
+    expect(written).not.toContain('HARMONY_RUN_CONFIG_PATH');
+    expect(written).not.toContain('HARMONY_RUN_CONFIG_JSON');
+    expect(written).not.toContain('HARMONY_CONDUCTION_ID');
+    expect(existsSync(runConfigFilePathFor(out))).toBe(false);
+  });
+
+  it('writes a mode-0600 run-config.json sibling file and appends HARMONY_RUN_CONFIG_PATH when both --run-config and --run-config-path are given', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b846-mint-main-'));
+    const out = join(dir, 'run.env');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fakeFetchImpl();
+    try {
+      await main(
+        [
+          '--out',
+          out,
+          '--conduction-id',
+          'cond-846',
+          '--run-config',
+          '{}',
+          '--run-config-path',
+          '/home/worker/.claude/run-config.json',
+        ],
+        fakeEnv(),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    const written = readFileSync(out, 'utf8');
+    expect(written).toContain('HARMONY_RUN_CONFIG_PATH=/home/worker/.claude/run-config.json');
+    expect(written).not.toContain('HARMONY_RUN_CONFIG_JSON=');
+    expect(written).toContain('HARMONY_CONDUCTION_ID=cond-846');
+
+    const runConfigPath = runConfigFilePathFor(out);
+    expect(existsSync(runConfigPath)).toBe(true);
+    expect(readFileSync(runConfigPath, 'utf8')).toBe('{}');
+    expect(statSync(runConfigPath).mode & 0o777).toBe(0o600);
+  });
+
+  it('appends HARMONY_RUN_CONFIG_JSON inline (base64) and writes no run-config file when --run-config is given without --run-config-path', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b846-mint-main-'));
+    const out = join(dir, 'run.env');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fakeFetchImpl();
+    try {
+      await main(['--out', out, '--conduction-id', 'cond-846b', '--run-config', '{}'], fakeEnv());
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    const written = readFileSync(out, 'utf8');
+    expect(written).not.toContain('HARMONY_RUN_CONFIG_PATH');
+    const line = written.split('\n').find((l) => l.startsWith('HARMONY_RUN_CONFIG_JSON='));
+    expect(line).toBeDefined();
+    const encoded = (line as string).slice('HARMONY_RUN_CONFIG_JSON='.length);
+    expect(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))).toEqual({});
+    expect(written).toContain('HARMONY_CONDUCTION_ID=cond-846b');
+    expect(existsSync(runConfigFilePathFor(out))).toBe(false);
+  });
+
+  it('--run-config-path given WITHOUT --run-config is a no-op for both the file write and the path line (only meaningful together)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b846-mint-main-'));
+    const out = join(dir, 'run.env');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fakeFetchImpl();
+    try {
+      await main(
+        ['--out', out, '--run-config-path', '/home/worker/.claude/run-config.json'],
+        fakeEnv(),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    const written = readFileSync(out, 'utf8');
+    expect(written).not.toContain('HARMONY_RUN_CONFIG_PATH');
+    expect(written).not.toContain('HARMONY_RUN_CONFIG_JSON');
+    expect(existsSync(runConfigFilePathFor(out))).toBe(false);
   });
 });
