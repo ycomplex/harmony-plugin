@@ -44,3 +44,6 @@ steps:
       - |
         set -euo pipefail
         docker push "${_IMAGE}:$(cat /workspace/plugin_version.txt)"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
