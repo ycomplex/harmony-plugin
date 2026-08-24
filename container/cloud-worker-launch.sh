@@ -153,7 +153,7 @@ EXEC_ENV_FILE="$RUN_DIR/exec-env-vars.yaml"  # per-EXECUTE-call file, deleted ri
 #    matching the local docker profile's launch template exactly (see
 #    container/daemon-profile.example.json's `launch` field) — that static file is where the ack
 #    flag actually lives on this host, same as the docker profile.
-node "$HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs" --base "$HOME/.harmony-container.env" --out "$ENV_FILE"
+node "$HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs" --base "$HOME/.harmony-container.env" --out "$ENV_FILE" --conduction-id "$CONDUCTION_ID" --run-config '{}'
 
 GIT_TOKEN="$(grep -m1 '^GIT_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
 if [ -z "$GIT_TOKEN" ]; then
@@ -167,6 +167,14 @@ fi
 # still fail closed downstream in provision.sh's ref/target fidelity guard, so this is allowed to
 # come through empty.
 HARMONY_PLUGIN_POSTURE="$(grep -m1 '^HARMONY_PLUGIN_POSTURE=' "$ENV_FILE" | cut -d= -f2- || true)"
+
+# B-846: run-config seam — HARMONY_RUN_CONFIG_JSON is written into the SAME minted $ENV_FILE as
+# GIT_TOKEN/HARMONY_PLUGIN_POSTURE above (this profile's mint invocation passes --run-config with no
+# --run-config-path, so mint-installation-token.mjs takes the inline-delivery branch — see
+# composeRunConfigInlineLine there). Read the same grep+cut way, no non-empty check (mirrors
+# HARMONY_PLUGIN_POSTURE's own convention): an absent value just means write_exec_env_file() below
+# skips forwarding it, the same fail-soft shape.
+HARMONY_RUN_CONFIG_JSON="$(grep -m1 '^HARMONY_RUN_CONFIG_JSON=' "$ENV_FILE" | cut -d= -f2- || true)"
 
 # 2. Compose the per-execution env-vars FILE. A small, isolated function on purpose — see the
 #    CONFIRMED note inside it (round 3: the flag/format question this note originally raised is now
@@ -227,6 +235,25 @@ write_exec_env_file() {
       if [ -n "${_b814_repos_json:-}" ]; then
         _b814_repos_json_b64="$(printf '%s' "$_b814_repos_json" | base64 | tr -d '\n')"
         printf 'HARMONY_REPOS_JSON: "%s"\n' "$_b814_repos_json_b64"
+      fi
+      # B-846: run-config seam — forwarded ONLY when the mint script actually wrote one (see the
+      # HARMONY_RUN_CONFIG_JSON acquisition above; same conditional-forward convention as
+      # HARMONY_PLUGIN_POSTURE/HARMONY_REPOS_JSON). Already base64-encoded by
+      # composeRunConfigInlineLine() in mint-installation-token.mjs, so — same reasoning as
+      # HARMONY_REPOS_JSON above — this value's alphabet is always safe to embed inside this quoted
+      # YAML line unescaped.
+      if [ -n "${HARMONY_RUN_CONFIG_JSON:-}" ]; then
+        printf 'HARMONY_RUN_CONFIG_JSON: "%s"\n' "$HARMONY_RUN_CONFIG_JSON"
+      fi
+      # B-846: HARMONY_CONDUCTION_ID — the plain (not HARMONY_-prefixed) conduction id every
+      # run-config-aware worker reads via src/config/run-config.ts's getConductionId(). An
+      # ADDITIONAL var, deliberately NOT a replacement for the CONDUCTION_ID line above
+      # (entrypoint.sh's own pre-existing, differently-purposed transcript-mount var, B-788) — reused
+      # directly from this wrapper's own $CONDUCTION_ID positional arg (the exact value
+      # mint-installation-token.mjs was given via --conduction-id), so no extra read from $ENV_FILE
+      # is needed here.
+      if [ -n "${CONDUCTION_ID:-}" ]; then
+        printf 'HARMONY_CONDUCTION_ID: "%s"\n' "$CONDUCTION_ID"
       fi
     } > "$file"
   )

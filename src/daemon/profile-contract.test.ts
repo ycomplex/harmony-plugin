@@ -85,6 +85,13 @@ function volumeMappings(launch: string): Array<{ host: string; container: string
 describe('daemon-profile.example.json transcript-mount contract (B-724)', () => {
   const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as { launch: string };
   const mounts = volumeMappings(profile.launch);
+  // B-846: the run-config.json mount is a FILE, written by mint-installation-token.mjs itself
+  // (never mkdir'd — you cannot `mkdir -p` a file path). Its parent dir needs no dedicated
+  // mkdir either: it is the SAME {ticket}/{conduction_id} directory the existing mkdir -p already
+  // creates as a side effect of creating the sibling projects/ and logs/ subdirs. So this describe
+  // block's directory-shaped assertions below deliberately exclude it — see the dedicated
+  // run-config bind-mount describe block further down for its own contract.
+  const directoryMounts = mounts.filter((m) => !m.container.endsWith('run-config.json'));
 
   it('bind-mounts both Claude session-log locations (projects + logs)', () => {
     const targets = mounts.map((m) => m.container);
@@ -99,14 +106,53 @@ describe('daemon-profile.example.json transcript-mount contract (B-724)', () => 
     }
   });
 
-  it('pre-creates every mounted host dir (mkdir -p …) BEFORE docker run', () => {
+  it('pre-creates every mounted DIRECTORY host dir (mkdir -p …) BEFORE docker run', () => {
     const dockerRunAt = profile.launch.indexOf('docker run');
     expect(dockerRunAt).toBeGreaterThan(0);
     const preamble = profile.launch.slice(0, dockerRunAt);
     expect(preamble).toMatch(/^mkdir -p /);
-    for (const m of mounts) {
+    for (const m of directoryMounts) {
       expect(preamble).toContain(m.host);
     }
+  });
+});
+
+// B-846: run-config seam — the local-docker profile mounts a real host FILE (mode-0600, written by
+// mint-installation-token.mjs, never argv/shell-interpolated) into the container read-only.
+
+describe('daemon-profile.example.json run-config bind-mount contract (B-846)', () => {
+  const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as { launch: string };
+  const mounts = volumeMappings(profile.launch);
+  const runConfigMount = mounts.find((m) => m.container.startsWith('/home/worker/.claude/run-config.json'));
+
+  it('bind-mounts run-config.json into the container read-only', () => {
+    expect(runConfigMount).toBeDefined();
+    // volumeMappings() splits the `-v host:container` word on ':' and destructures only the first
+    // two segments — the trailing `:ro` mode flag is a THIRD segment, so assert it directly off the
+    // raw launch string instead.
+    expect(profile.launch).toContain(
+      `-v ${runConfigMount!.host}:/home/worker/.claude/run-config.json:ro`,
+    );
+  });
+
+  it('namespaces the run-config mount host-side by {ticket} AND {conduction_id}, same as the transcript mounts', () => {
+    expect(runConfigMount!.host).toContain('{ticket}');
+    expect(runConfigMount!.host).toContain('{conduction_id}');
+  });
+
+  it("the mount source is EXACTLY runConfigFilePathFor(--out) — a sibling 'run-config.json' next to the minted run.env, in the SAME per-conduction directory the existing mkdir -p already creates", () => {
+    expect(runConfigMount!.host).toBe(
+      '$HOME/.harmony-conductions/{ticket}/{conduction_id}/run-config.json',
+    );
+  });
+
+  it('passes --conduction-id, --run-config, and --run-config-path to the mint invocation, BEFORE docker run', () => {
+    const dockerRunAt = profile.launch.indexOf('docker run');
+    expect(dockerRunAt).toBeGreaterThan(0);
+    const preamble = profile.launch.slice(0, dockerRunAt);
+    expect(preamble).toContain('--conduction-id {conduction_id}');
+    expect(preamble).toContain("--run-config '{}'");
+    expect(preamble).toContain('--run-config-path /home/worker/.claude/run-config.json');
   });
 });
 
@@ -122,16 +168,35 @@ describe('daemon-profile.example.json ↔ Dockerfile mount-parent ownership cont
   const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as { launch: string };
   const dockerfile = readFileSync(dockerfilePath, 'utf8');
   const mounts = volumeMappings(profile.launch);
+  // B-846: run-config.json is a FILE mounted directly under /home/worker/.claude, which the
+  // Dockerfile already `mkdir -p`s and `chown -R worker:worker`s as a whole (see the test right
+  // below) — the B-724 mount-parent-ownership problem this describe block guards against is about a
+  // mount's PARENT directory being created root-owned, not about the mount TARGET itself needing its
+  // own pre-created dir entry. A file bind-mounted straight into an already-owned, already-existing
+  // directory needs no Dockerfile change, so this assertion is scoped to the DIRECTORY mount targets
+  // only — the run-config.json file mount has its own dedicated contract test further below.
+  const directoryMountTargets = mounts
+    .map((m) => m.container)
+    .filter((c) => c !== '/home/worker/.claude/run-config.json');
 
-  it('the Dockerfile pre-creates every container-side mount target of the launch template', () => {
-    expect(mounts.length).toBeGreaterThan(0); // guard the guard — no mounts means the parse drifted
-    for (const m of mounts) {
-      expect(dockerfile).toContain(m.container);
+  it('the Dockerfile pre-creates every container-side DIRECTORY mount target of the launch template', () => {
+    expect(directoryMountTargets.length).toBeGreaterThan(0); // guard the guard — parse drift check
+    for (const target of directoryMountTargets) {
+      expect(dockerfile).toContain(target);
     }
   });
 
   it('the Dockerfile pre-creates the declared-agent install dir and chowns ~/.claude to worker', () => {
     expect(dockerfile).toContain('/home/worker/.claude/agents');
+    expect(dockerfile).toMatch(/chown -R worker:worker \/home\/worker\/\.claude/);
+  });
+
+  it('B-846: the run-config.json FILE mount target needs no dedicated Dockerfile entry — its parent (/home/worker/.claude) is already pre-created + chowned worker-owned above', () => {
+    const runConfigTarget = mounts.map((m) => m.container).find((c) => c === '/home/worker/.claude/run-config.json');
+    expect(runConfigTarget).toBeDefined();
+    expect(dockerfile).not.toContain(runConfigTarget as string);
+    // The property that actually matters: the mount's PARENT dir is pre-created + worker-owned.
+    expect(dockerfile).toMatch(/mkdir -p .*\/home\/worker\/\.claude/);
     expect(dockerfile).toMatch(/chown -R worker:worker \/home\/worker\/\.claude/);
   });
 });
@@ -496,6 +561,16 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
     expect(launchScript).toContain('$HOME/.harmony-conductions/$TICKET/$CONDUCTION_ID');
   });
 
+  it('B-846: passes --conduction-id "$CONDUCTION_ID" --run-config \'{}\' on the SAME mint invocation, with NO --run-config-path (inline delivery, not the mounted-file form the docker profile uses)', () => {
+    const mintAt = launchScript.indexOf('mint-installation-token.mjs" --base');
+    expect(mintAt).toBeGreaterThanOrEqual(0);
+    const mintLineEnd = launchScript.indexOf('\n', mintAt);
+    const mintInvocation = launchScript.slice(mintAt, mintLineEnd);
+    expect(mintInvocation).toContain('--conduction-id "$CONDUCTION_ID"');
+    expect(mintInvocation).toContain("--run-config '{}'");
+    expect(mintInvocation).not.toContain('--run-config-path');
+  });
+
   it('reap deletes the SAME per-run minted env-file the launch wrapper wrote', () => {
     expect(reapScript).toContain('rm -f "$ENV_FILE"');
     expect(reapScript).toContain('$HOME/.harmony-conductions/$TICKET/$CONDUCTION_ID');
@@ -658,6 +733,12 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
         launchScript,
         'HARMONY_PLUGIN_POSTURE="$(grep -m1',
       );
+      // B-846: run-config seam acquisition line — same extraction discipline as GIT_TOKEN/posture
+      // above, so drift in the real acquisition line breaks this EXECUTED test too.
+      const runConfigAcquisition = extractLine(
+        launchScript,
+        'HARMONY_RUN_CONFIG_JSON="$(grep -m1',
+      );
       const fnBody = extractFunctionBody(launchScript);
 
       const harness = [
@@ -673,6 +754,7 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
         `ENV_FILE="${envFile}"`,
         gitTokenAcquisition,
         postureAcquisition,
+        runConfigAcquisition,
         fnBody,
         `write_exec_env_file "${outFile}"`,
         '',
@@ -704,6 +786,28 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
       expect(output).not.toContain('HARMONY_PLUGIN_POSTURE');
       // B-788: forwarded regardless of whether HARMONY_PLUGIN_POSTURE is present.
       expect(output).toContain('HARMONY_TRANSCRIPT_MOUNT_ROOT: "/mnt/harmony-transcripts-test"');
+    });
+
+    // B-846: run-config seam — EXECUTED (not just prose-pinned), matching this describe block's own
+    // stated rationale for the adjacent HARMONY_PLUGIN_POSTURE coverage above.
+    it('produces HARMONY_RUN_CONFIG_JSON in the output YAML, verbatim, when the fixture minted env-file carries it', () => {
+      const output = runWriteExecEnvFile(
+        ['GIT_TOKEN=ghs_dummytoken', 'HARMONY_RUN_CONFIG_JSON=e30=', ''].join('\n'),
+      );
+      expect(output).toContain('HARMONY_RUN_CONFIG_JSON: "e30="');
+    });
+
+    it('omits the HARMONY_RUN_CONFIG_JSON line entirely when the fixture minted env-file does not carry it', () => {
+      const output = runWriteExecEnvFile(['GIT_TOKEN=ghs_dummytoken', ''].join('\n'));
+      expect(output).not.toContain('HARMONY_RUN_CONFIG_JSON');
+    });
+
+    it('ALWAYS forwards HARMONY_CONDUCTION_ID from the wrapper\'s own $CONDUCTION_ID (never from the minted env-file — no acquisition line needed for it)', () => {
+      const output = runWriteExecEnvFile(['GIT_TOKEN=ghs_dummytoken', ''].join('\n'));
+      expect(output).toContain('HARMONY_CONDUCTION_ID: "cond-test-1"');
+      // The pre-existing, differently-purposed CONDUCTION_ID line (no HARMONY_ prefix) must remain
+      // untouched alongside the new one.
+      expect(output).toContain('CONDUCTION_ID: "cond-test-1"');
     });
   });
 
