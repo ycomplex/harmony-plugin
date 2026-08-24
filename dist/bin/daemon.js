@@ -23089,7 +23089,7 @@ var CONDUCTION_STATUSES = [
   ...CONDUCTION_HUMAN_OWNED_STATUSES,
   ...CONDUCTION_TERMINAL_STATUSES
 ];
-var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at";
+var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
 var CONDUCTION_PATCHABLE_FIELDS = [
   "status",
   "lease_holder",
@@ -23356,8 +23356,9 @@ function renderTemplate(tpl, vars) {
   return tpl.replace(/\{([A-Za-z0-9_]+)\}/g, (_match, name) => {
     if (name === "conduction_id") return vars.conduction_id;
     if (name === "ticket") return vars.ticket;
+    if (name === "run_config_json" && vars.run_config_json !== void 0) return vars.run_config_json;
     throw new Error(
-      `unknown placeholder {${name}} in launch-profile template \u2014 supported: {conduction_id}, {ticket}`
+      `unknown placeholder {${name}} in launch-profile template \u2014 supported: {conduction_id}, {ticket}, {run_config_json}`
     );
   });
 }
@@ -23592,8 +23593,23 @@ function isAuthShapedError(err) {
   const message = err instanceof Error ? err.message : String(err);
   return /\b401\b|jwt expired|invalid (jwt|token)|token .*expired/i.test(message);
 }
+function runConfigJsonFor(row) {
+  const json = JSON.stringify(row.run_config ?? {});
+  if (json.includes("'")) {
+    throw new Error(
+      `conduction ${row.id}: run_config JSON contains a single quote, which is not safe to embed in the single-quoted shell template literal every launch profile uses for {run_config_json} \u2014 v1 run_config values must be boolean/object only, no free-text strings`
+    );
+  }
+  return json;
+}
 function templateVars(row, task, projectKey) {
-  return { conduction_id: row.id, ticket: resolveVisualId(task, projectKey, row.task_id) };
+  return {
+    conduction_id: row.id,
+    ticket: resolveVisualId(task, projectKey, row.task_id),
+    // B-718: always computed (harmless when the active template's reap/probe strings don't
+    // reference {run_config_json} — renderTemplate only substitutes placeholders actually present).
+    run_config_json: runConfigJsonFor(row)
+  };
 }
 var TITLE_MAX = 48;
 function truncateTitle(title, max = TITLE_MAX) {

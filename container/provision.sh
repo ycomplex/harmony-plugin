@@ -208,9 +208,87 @@ case "$MODE" in
     # 90-minute worker deadline (B-739) remains the outer bound on the leg.
     export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0
     cd "$WORKDIR"
+
+    # --- B-718: same-conduction resume discovery + best-effort --resume wiring (AC5). -----------
+    # Both launch profiles already mount/symlink the SAME {ticket}/{conduction_id}/projects
+    # directory for every leg of ONE conduction (container/daemon-profile.example.json's `launch`
+    # template; container/entrypoint.sh's cloud-profile symlink block), so a prior leg's session
+    # file already physically sits at $HOME/.claude/projects before this leg's claude invocation
+    # ever starts — nothing to mount, just discover the id already there. Cross-conduction (after a
+    # park + re-conduct) is handled UPSTREAM of this script: container/entrypoint.sh (cloud profile)
+    # and scripts/resume-discovery.mjs (local docker profile, host-side) may have already injected
+    # `--resume <id>` into CLAUDE_HEADLESS_FLAGS by the time this script runs — this block only ever
+    # ADDS a resume flag when $HOME/.claude/projects (the SAME-conduction tier) itself already has a
+    # session, which by construction (see both upstream scripts' own "current conduction already has
+    # a session" skip check) never collides with an upstream cross-conduction injection.
+    #
+    # Gated on run_config.session_resume.enabled (v1: a plain on/off boolean, no reshape-count
+    # heuristic) — read from whichever B-846 delivery form this launch actually used. Best-effort
+    # throughout: any failure below (a malformed run-config, an unreadable projects dir) degrades to
+    # "no resume id found", never blocks the leg.
+    RUN_CONFIG_JSON=""
+    if [ -n "${HARMONY_RUN_CONFIG_PATH:-}" ] && [ -f "$HARMONY_RUN_CONFIG_PATH" ]; then
+      RUN_CONFIG_JSON="$(cat "$HARMONY_RUN_CONFIG_PATH" 2>/dev/null || true)"
+    elif [ -n "${HARMONY_RUN_CONFIG_JSON:-}" ]; then
+      RUN_CONFIG_JSON="$(printf '%s' "$HARMONY_RUN_CONFIG_JSON" | base64 -d 2>/dev/null || true)"
+    fi
+    SESSION_RESUME_ENABLED="false"
+    if [ -n "$RUN_CONFIG_JSON" ]; then
+      SESSION_RESUME_ENABLED="$(printf '%s' "$RUN_CONFIG_JSON" | jq -r '.session_resume.enabled // false' 2>/dev/null || echo false)"
+    fi
+
+    RESUME_SESSION_ID=""
+    if [ "$SESSION_RESUME_ENABLED" = "true" ]; then
+      NEWEST_MTIME=0
+      for f in "$HOME/.claude/projects"/*/*.jsonl; do
+        [ -f "$f" ] || continue
+        mtime="$(stat -c '%Y' "$f" 2>/dev/null || echo 0)"
+        if [ "$mtime" -gt "$NEWEST_MTIME" ]; then
+          NEWEST_MTIME="$mtime"
+          RESUME_SESSION_ID="$(basename "$f" .jsonl)"
+        fi
+      done
+    fi
+
     # The flags are deliberately word-split.
-    # shellcheck disable=SC2086
-    exec claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" ${CLAUDE_HEADLESS_FLAGS:-}
+    # shellcheck disable=SC2206
+    EXTRA_HEADLESS_FLAGS=(${CLAUDE_HEADLESS_FLAGS:-})
+
+    if [ -z "$RESUME_SESSION_ID" ]; then
+      # No prior session to resume (disabled, first leg ever, or nothing resumable) — the existing
+      # cold-start path, byte-for-byte unchanged from before this ticket. CLAUDE_HEADLESS_FLAGS may
+      # still carry a CROSS-conduction --resume an upstream script injected — that is passed through
+      # untouched here, exactly as it always has been.
+      exec claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" "${EXTRA_HEADLESS_FLAGS[@]}"
+    fi
+
+    # B-718 AC5: --resume is BEST-EFFORT. A resumed invocation that fails to even ATTACH (corrupt/
+    # truncated session file, a session id the CLI rejects, a stale id left over from an old
+    # conduction, the CLI binary itself being unavailable, a permission error reading the session
+    # file, ...) must fall back to a COLD start — never fail the leg — and log that the fallback
+    # happened, so the degradation is visible to an operator rather than silently absorbed. The gate
+    # is a bare nonzero exit code, deliberately NOT keyed to any specific stderr signature: discovery
+    # here is deterministic, so a session that fails with an error string this gate doesn't recognize
+    # would otherwise re-fail identically on every re-conduct, bricking the ticket with a park reason
+    # that never mentions sessions. Only stderr is captured to a file here (stdout keeps streaming
+    # live to the daemon's log exactly as before); the captured stderr is dumped verbatim right after
+    # the attempt concludes either way, so nothing is lost — only its live interleaving with stdout
+    # during the (expected-brief) resume-attach window. Dumping it verbatim is what keeps an
+    # unfamiliar failure visible even though the fallback no longer requires recognizing it.
+    echo "B-718: attempting to resume prior session $RESUME_SESSION_ID (run_config.session_resume.enabled=true)." >&2
+    RESUME_STDERR_FILE="$(mktemp)"
+    set +e
+    claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" --resume "$RESUME_SESSION_ID" "${EXTRA_HEADLESS_FLAGS[@]}" 2>"$RESUME_STDERR_FILE"
+    RESUME_EXIT=$?
+    set -e
+    cat "$RESUME_STDERR_FILE" >&2
+    if [ "$RESUME_EXIT" -ne 0 ]; then
+      echo "B-718: --resume $RESUME_SESSION_ID failed to attach (exit $RESUME_EXIT; see stderr above) — falling back to a COLD start. Resume was attempted and degraded gracefully; this is expected to be rare — investigate the persisted transcript mount if it recurs." >&2
+      rm -f "$RESUME_STDERR_FILE"
+      exec claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" "${EXTRA_HEADLESS_FLAGS[@]}"
+    fi
+    rm -f "$RESUME_STDERR_FILE"
+    exit "$RESUME_EXIT"
     ;;
   *)
     echo "Unknown mode '$MODE' (expected: shell | headless <prompt>)" >&2

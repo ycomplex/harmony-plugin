@@ -19,6 +19,7 @@
 // rows, surfacing as the null "lost the race" return. No advisory locks, no separate lease table.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import type { RunConfig } from '../config/run-config.js';
 
 // ---------------------------------------------------------------------------
 // The canonical status axis.
@@ -120,17 +121,24 @@ export interface ConductionRecord {
    *  the plain CONDUCTION_COLS with no join, so this is `undefined` on their returned rows — a
    *  narrower, additive read, not a schema change to the row's identity. */
   task_priority?: string | null;
+  /** B-718: the per-conduction run_config seam value (src/config/run-config.ts's RunConfigSchema),
+   *  selected by every plain-CONDUCTION_COLS accessor (create/get/update/takeover/steal/list) as of
+   *  this ticket — the first dependent needing a non-default value end-to-end (session_resume). A
+   *  row created before this column existed reads back the DB column's own default ('{}'::jsonb),
+   *  never null/undefined from Postgres — the optional marker here is TypeScript-side caution only
+   *  (a hand-built test fixture omitting it), not a real "sometimes absent" runtime case. */
+  run_config?: RunConfig | null;
 }
 
-// B-846 deliberately left run_config out of CONDUCTION_COLS — the first dependent needing a
-// non-default value must add it, and only after ./promote-prod.sh has confirmed the migration is
-// live on prod.
+// B-846 deliberately left run_config out of CONDUCTION_COLS, pending confirmation the migration
+// (harmony-web's `conductions.run_config` column) was live on prod. B-718 is that first dependent:
+// confirmed live (origin/prod HEAD carries the B-846 migration commit) and adds it below.
 const CONDUCTION_COLS =
   'id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, ' +
   'clean_shutdown_at, ' +
   'retry_count, ' +
   'worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, ' +
-  'started_at, created_by, created_at, updated_at';
+  'started_at, created_by, created_at, updated_at, run_config';
 
 // ---------------------------------------------------------------------------
 // createConduction — the atomic lease-acquisition primitive.

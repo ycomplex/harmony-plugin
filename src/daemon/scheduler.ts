@@ -327,18 +327,43 @@ export function isAuthShapedError(err: unknown): boolean {
   return /\b401\b|jwt expired|invalid (jwt|token)|token .*expired/i.test(message);
 }
 
+/** B-718: JSON.stringify the conduction row's run_config for embedding in a SINGLE-QUOTED shell
+ *  template literal (see container/daemon-profile.example.json / .cloud.example.json — both wrap
+ *  {run_config_json} in literal `'...'` quotes at the template call site, matching the hardcoded
+ *  `'{}'` they replace). v1's RunConfigSchema is boolean/object-only (session_resume.enabled), so
+ *  its JSON.stringify output can never contain a raw single quote in practice — this guard throws
+ *  LOUDLY rather than silently mis-quoting the shell command if that ever stops being true (e.g. a
+ *  future run_config key carrying a free-text string with an apostrophe). */
+function runConfigJsonFor(row: ConductionRecord): string {
+  const json = JSON.stringify(row.run_config ?? {});
+  if (json.includes("'")) {
+    throw new Error(
+      `conduction ${row.id}: run_config JSON contains a single quote, which is not safe to embed ` +
+        'in the single-quoted shell template literal every launch profile uses for ' +
+        '{run_config_json} — v1 run_config values must be boolean/object only, no free-text strings',
+    );
+  }
+  return json;
+}
+
 function templateVars(
   row: ConductionRecord,
   task: DaemonTask | null,
   projectKey: string,
-): { conduction_id: string; ticket: string } {
+): { conduction_id: string; ticket: string; run_config_json: string } {
   // B-827: {ticket} now carries the ticket's VISUAL id (project key + task_number), never the row
   // UUID — everything downstream (the worker prompt, host-side RUN_DIR paths, and, since B-788, the
   // persisted cloud transcript path) must name the ticket the same way B-723's log lines already
   // do. resolveVisualId degrades to the raw task_id when `task` is unavailable (a best-effort
   // metadata read failed, or a reconciled re-attach has no snapshot yet) — a template substitution
   // must never be able to block a launch/reap/probe.
-  return { conduction_id: row.id, ticket: resolveVisualId(task, projectKey, row.task_id) };
+  return {
+    conduction_id: row.id,
+    ticket: resolveVisualId(task, projectKey, row.task_id),
+    // B-718: always computed (harmless when the active template's reap/probe strings don't
+    // reference {run_config_json} — renderTemplate only substitutes placeholders actually present).
+    run_config_json: runConfigJsonFor(row),
+  };
 }
 
 /** B-723: how much of a ticket title a log line carries — enough to recognize the ticket, short

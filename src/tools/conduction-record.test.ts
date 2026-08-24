@@ -211,6 +211,20 @@ describe('getConduction', () => {
     const client = makeClient([{ data: null, error: { message: 'boom' } }]);
     await expect(getConduction(client, 'cond-1')).rejects.toThrow('boom');
   });
+
+  it("B-718: selects run_config (CONDUCTION_COLS now includes it — the first dependent needing a non-default value)", async () => {
+    const client = makeClient([{ data: conductionRow }]);
+    await getConduction(client, 'cond-1');
+    const selectedCols = client.select.mock.calls[0][0] as string;
+    expect(selectedCols).toContain('run_config');
+  });
+
+  it('B-718: round-trips a non-default run_config value on the returned row', async () => {
+    const rowWithRunConfig = { ...conductionRow, run_config: { session_resume: { enabled: true } } };
+    const client = makeClient([{ data: rowWithRunConfig }]);
+    const result = await getConduction(client, 'cond-1');
+    expect(result?.run_config).toEqual({ session_resume: { enabled: true } });
+  });
 });
 
 describe('getActiveConduction', () => {

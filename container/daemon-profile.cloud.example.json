@@ -1,5 +1,5 @@
 {
-  "launch": "bash \"$HARMONY_PLUGIN_DIR/container/cloud-worker-launch.sh\" {conduction_id} {ticket}",
+  "launch": "bash \"$HARMONY_PLUGIN_DIR/container/cloud-worker-launch.sh\" {conduction_id} {ticket} '{run_config_json}'",
   "reap": "bash \"$HARMONY_PLUGIN_DIR/container/cloud-worker-reap.sh\" {conduction_id} {ticket}",
   "probe": "bash \"$HARMONY_PLUGIN_DIR/container/cloud-worker-probe.sh\" {conduction_id} {ticket}",
   "maxConcurrentWorkers": 2,

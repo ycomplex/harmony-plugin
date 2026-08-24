@@ -225,6 +225,22 @@ describe('renderTemplate', () => {
       'run --env-file $HOME/.env B-1',
     );
   });
+
+  it('B-718: substitutes {run_config_json} when supplied', () => {
+    expect(
+      renderTemplate("--run-config '{run_config_json}'", {
+        conduction_id: 'c',
+        ticket: 'B-718',
+        run_config_json: '{"session_resume":{"enabled":true}}',
+      }),
+    ).toBe('--run-config \'{"session_resume":{"enabled":true}}\'');
+  });
+
+  it('B-718: throws on {run_config_json} when the caller did not supply it (same unknown-placeholder discipline)', () => {
+    expect(() =>
+      renderTemplate('run {run_config_json}', { conduction_id: 'c', ticket: 't' }),
+    ).toThrow(/run_config_json/);
+  });
 });
 
 // B-800: selecting a launch profile BY NAME from an already-loaded deployment config, and the
