@@ -126,7 +126,23 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
     };
   }
 
-  it('B-718 de-risk smoke test (LIVE, real claude CLI — step 1 of the ticket work list): a session id the CLI does not recognize fails FAST on stderr with "No conversation found with session ID", and the block correctly detects it and attempts the cold fallback', () => {
+  /** This smoke test's whole point is de-risking against the REAL claude CLI's actual rejection
+   *  signature (see the test body) — it must not run against a stub. CI has no `claude` binary at
+   *  all, so `claude --resume <id>` there fails with "claude: command not found", a shell-launch
+   *  failure with no bearing on AC5 (a resume ATTACH failure). Skip where there is no real CLI to
+   *  observe; this stays a live/container-only de-risk check, matching checklist item 1 (still
+   *  unchecked — it's understood to require a genuine live run, not CI). */
+  function hasRealClaudeCli(): boolean {
+    try {
+      execFileSync('bash', ['-lc', 'command -v claude'], { stdio: 'pipe' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const CLAUDE_CLI_AVAILABLE = hasRealClaudeCli();
+
+  it.skipIf(!CLAUDE_CLI_AVAILABLE)('B-718 de-risk smoke test (LIVE, real claude CLI — step 1 of the ticket work list): a session id the CLI does not recognize fails FAST on stderr with "No conversation found with session ID", and the block correctly detects it and attempts the cold fallback', () => {
     const dir = mkdtempSync(join(tmpdir(), 'b718-provision-resume-live-'));
     const homeDir = join(dir, 'home');
     mkdirSync(homeDir, { recursive: true });
