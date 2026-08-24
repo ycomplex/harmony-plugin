@@ -2,7 +2,8 @@
 name: finish-work
 description: Use when the user wants to finish, complete, wrap up, land, or merge their current work. Triggers on phrases like "finish", "done", "wrap up", "land this", "merge", "ship it", or "we're done". In manual-mode projects this is the exit point for development work — it handles the full merge-and-cleanup sequence, exactly as before. In opinionated-mode projects, /harmony-conduct is the entry point that drives the whole lifecycle; this skill implements the release (merge + deploy) and verify gates the conductor delegates to, and your explicit invocation ("finish work" / "land it" / "merge it") is how the release gate is crossed.
 allowed-tools: mcp__harmony__* Read Grep Glob Bash Bash(gh *)
-disallowed-tools: mcp__harmony__record_decision mcp__harmony__supersede_decision mcp__harmony__update_knowledge_entry
+disallowed-tools: mcp__harmony__supersede_decision
+<!-- record_decision + update_knowledge_entry are permitted (B-836): O2's convention-entry writer needs both; supersede_decision stays disallowed because a convention-entry amend is always an in-place update_knowledge_entry, never a supersede, mirroring record_decision's own tool description (prefer update_knowledge_entry + a dated banner for in-part repairs). -->
 ---
 
 # Finish Work
@@ -489,6 +490,65 @@ explicitly** — never phrase an inferred deploy the same as a confirmed one:
 ```
 mcp__harmony__add_comment({ task_id, content: "Deployed via PR #<number> — squash-merged to main; deploy confirmation inferred from merge landing, CI read unavailable (see B-765)." })
 ```
+
+**Author procedural convention entries per changed surface (B-836).** This runs only here, at O2, after
+the deploy above has already succeeded — a ticket that never reaches release (parked/cancelled mid-build)
+never reaches this step, so it automatically gets no entry; that's not a special case, it's this step
+simply never firing. Reuse this run's changed paths from the B-516 risk signal above (`git diff
+--name-only origin/main...HEAD` over the PR / the B-722 `build_pr` record) — do not recompute them.
+
+1. **Qualifying-path filter.** A path qualifies if it touches `container/`, `scripts/`, `commands/`, or a
+   config schema file. If NONE of the changed paths qualify, write NOTHING — no entry, no comment. This is
+   a deliberate no-op, not a floor violation.
+2. **Per-path, not per-ticket.** For EACH qualifying path individually (not the combined set), do a
+   separate lookup + write below. A ticket touching N qualifying paths writes N entries (or amends N
+   existing ones) — never one combined entry for the whole ticket.
+3. **Per-path lookup — the identity key.** For each qualifying path `<path>`, look up whether an Accepted
+   convention entry already carries the exact single-path tag `surface:<path>`:
+   ```
+   mcp__harmony__query_knowledge({ type: "convention", tags: ["surface:<path>"], status: "Accepted" })
+   ```
+   The surface key is always ONE single path per tag, never the combined set of paths a multi-path write
+   touches. Worked example: ticket A touches `{x}` — no match found, so A writes a fresh `surface:x`
+   entry. Ticket B touches `{x, y}` — B's write for `x` looks up and amends the SAME `surface:x` entry A
+   created; B's write for `y` finds no match and creates a fresh `surface:y` entry. A later ticket C
+   touches only `{y}` — C's write amends B's `surface:y` entry, leaving `surface:x` untouched.
+4. **Fresh entry (no match found):**
+   ```
+   mcp__harmony__record_decision({
+     type: "convention",
+     title: "<short descriptive title mentioning the path>",
+     content: "<Decision · Why · How-to-apply · Scope — must contain: (1) the literal invocation(s) that
+       changed, (2) any new/renamed config field with its type + default + required-or-optional, (3) the
+       failure string a misconfiguration on this surface now produces>",
+     tags: ["surface:<path>"],
+     domain: ["engineering", "operations"],
+     status: "Accepted",
+     realization: "live",
+     source_task_id: task_id,
+     source_activity: "finish-work",
+   })
+   ```
+   Pass `status: "Accepted"` explicitly — this is a system-authored record of what just shipped, not a
+   proposal awaiting human promotion (the tool's own default of "Asserted" is for gate-authored
+   *decisions*, not for a mechanical record of already-live, already-reviewed-via-merge procedure).
+5. **Amend (match found):**
+   ```
+   mcp__harmony__update_knowledge_entry({
+     entry_id: <found id>,
+     content: "<prepend a newest-first dated section — today's date, this ticket's id, and what changed —
+       onto the EXISTING content; never replace or drop the entry's prior history>",
+     realization: "live",
+   })
+   ```
+   Never call `supersede_decision` here — an amend is always an in-place `update_knowledge_entry`,
+   matching the disallowed-tools note in this skill's frontmatter (B-836): a convention-entry amend
+   is categorically an in-place edit, not a retirement.
+6. **Coupling.** After either the fresh-entry write or the amend, link the ticket to the entry it
+   authored/amended:
+   ```
+   mcp__harmony__reference_knowledge({ task_id, decision_id: <the entry's id> })
+   ```
 
 **DRAIN the "Follow-ups rollup" buffer at the release gate + surface the audit (B-585, B-641).** If
 out-of-scope items surfaced during this run (adjacent bugs, refactors, review nits) that weren't fix-first'd
