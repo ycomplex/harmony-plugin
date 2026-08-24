@@ -183,7 +183,7 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
     expect(combined).toContain('B-718: attempting to resume prior session 00000000-0000-0000-0000-000000000000');
     expect(combined).toContain('No conversation found with session ID');
     expect(combined).toContain(
-      'B-718: --resume 00000000-0000-0000-0000-000000000000 failed to attach (corrupt/rejected/stale session) — falling back to a COLD start.',
+      'B-718: --resume 00000000-0000-0000-0000-000000000000 failed to attach (exit 1; see stderr above) — falling back to a COLD start.',
     );
     // The block DID transition to a cold attempt (a second, --resume-less claude invocation) —
     // this sandbox's real claude CLI has no usable auth for an actual model turn, so the cold
@@ -194,6 +194,49 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
       combined.lastIndexOf('No conversation found with session ID');
     expect(secondFailureIsResumeShaped).toBe(false);
   }, 60_000);
+
+  it('falls back to a cold start on a resume failure with an UNRECOGNIZED error signature (B-718 AC5 broadened — the gate is a bare nonzero exit code, not a specific stderr string)', () => {
+    const claudeStub = mkdtempSync(join(tmpdir(), 'b718-fake-claude-'));
+    writeFileSync(
+      join(claudeStub, 'claude'),
+      [
+        '#!/usr/bin/env bash',
+        'if printf \'%s\n\' "$@" | grep -q -- --resume; then',
+        '  echo "some never-before-seen CLI error we do not recognize" >&2',
+        '  exit 3',
+        'fi',
+        'echo COLD_STARTED',
+        'exit 0',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const dir = mkdtempSync(join(tmpdir(), 'b718-home-'));
+    writeSession(dir, 'fake-id');
+
+    const block = extractResumeBlock();
+    const scriptFile = join(dir, 'harness.sh');
+    writeFileSync(
+      scriptFile,
+      [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        'exec 2>&1', // merge stderr into stdout so a successful (exit 0) cold fallback still lets the test observe the logged fallback line
+        'PLUGIN_DIR="/fake/plugin"',
+        'PROMPT="do it"',
+        block,
+        '',
+      ].join('\n'),
+      { mode: 0o700 },
+    );
+    const combined = execFileSync('bash', [scriptFile], {
+      env: { ...enabledRunConfigEnv(), HOME: dir, PATH: `${claudeStub}:${process.env.PATH}` },
+    }).toString();
+
+    expect(combined).toContain('COLD_STARTED');
+    expect(combined).toContain('some never-before-seen CLI error we do not recognize'); // dumped verbatim
+    expect(combined).toContain('failed to attach (exit 3; see stderr above) — falling back to a COLD start.');
+  });
 
   it('discovers the NEWEST session by mtime when multiple prior legs left session files', () => {
     const claudeStub = mkdtempSync(join(tmpdir(), 'b718-fake-claude-'));
@@ -257,7 +300,7 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
     expect(stdout).not.toContain('RESUMED_WITH');
   });
 
-  it('does NOT fall back — and does NOT retry — on a resume that attached fine but whose REAL WORK then failed for an unrelated reason', () => {
+  it('ALSO falls back on a resume that attached fine but whose REAL WORK then failed for an unrelated reason — the exit-code gate cannot distinguish attach failure from work failure by design (B-718 AC5, broadened per release reshape #2: never fail the leg beats preserving that distinction)', () => {
     const claudeStub = mkdtempSync(join(tmpdir(), 'b718-fake-claude-'));
     writeFileSync(
       join(claudeStub, 'claude'),
@@ -280,28 +323,33 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
     const scriptFile = join(dir, 'harness.sh');
     writeFileSync(
       scriptFile,
-      ['#!/usr/bin/env bash', 'set -euo pipefail', 'PLUGIN_DIR="/fake/plugin"', 'PROMPT="do it"', block, ''].join(
-        '\n',
-      ),
+      [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        'exec 2>&1', // merge stderr into stdout so a successful (exit 0) cold fallback still lets the test observe the logged fallback line
+        'PLUGIN_DIR="/fake/plugin"',
+        'PROMPT="do it"',
+        block,
+        '',
+      ].join('\n'),
       { mode: 0o700 },
     );
     let status: number | null = 0;
     let stdout: string;
-    let stderr = '';
     try {
       stdout = execFileSync('bash', [scriptFile], {
         env: { ...enabledRunConfigEnv(), HOME: dir, PATH: `${claudeStub}:${process.env.PATH}` },
       }).toString();
     } catch (err) {
-      const e = err as { status: number | null; stdout?: Buffer | string; stderr?: Buffer | string };
+      const e = err as { status: number | null; stdout?: Buffer | string };
       status = e.status;
       stdout = (e.stdout ?? '').toString();
-      stderr = (e.stderr ?? '').toString();
     }
 
-    expect(status).toBe(7); // the ORIGINAL exit code, not silently swallowed or retried
-    expect(stdout).not.toContain('COLD_STARTED'); // never fell back — this was NOT a resume failure
-    expect(stderr).toContain('some unrelated real build failure');
+    expect(status).toBe(0); // the COLD attempt's exit code — the leg is never failed on a resume-side error
+    expect(stdout).toContain('COLD_STARTED'); // falls back even though this wasn't an attach failure
+    expect(stdout).toContain('some unrelated real build failure'); // dumped verbatim, never hidden
+    expect(stdout).toContain('failed to attach (exit 7; see stderr above) — falling back to a COLD start.');
   });
 
   it('succeeds straight through with no fallback when the resume attaches AND the work succeeds', () => {

@@ -264,14 +264,17 @@ case "$MODE" in
 
     # B-718 AC5: --resume is BEST-EFFORT. A resumed invocation that fails to even ATTACH (corrupt/
     # truncated session file, a session id the CLI rejects, a stale id left over from an old
-    # conduction) must fall back to a COLD start — never fail the leg — and log that the fallback
-    # happened, so the degradation is visible to an operator rather than silently absorbed. Live-
-    # verified failure signature (container/provision.sh's own B-718 de-risk smoke test): the CLI
-    # exits fast (a local session-index lookup, no model call) with a NONZERO exit code and
-    # "No conversation found with session ID" on STDERR — never stdout. Only stderr is captured to a
-    # file here (stdout keeps streaming live to the daemon's log exactly as before); the captured
-    # stderr is dumped verbatim right after the attempt concludes either way, so nothing is lost —
-    # only its live interleaving with stdout during the (expected-brief) resume-attach window.
+    # conduction, the CLI binary itself being unavailable, a permission error reading the session
+    # file, ...) must fall back to a COLD start — never fail the leg — and log that the fallback
+    # happened, so the degradation is visible to an operator rather than silently absorbed. The gate
+    # is a bare nonzero exit code, deliberately NOT keyed to any specific stderr signature: discovery
+    # here is deterministic, so a session that fails with an error string this gate doesn't recognize
+    # would otherwise re-fail identically on every re-conduct, bricking the ticket with a park reason
+    # that never mentions sessions. Only stderr is captured to a file here (stdout keeps streaming
+    # live to the daemon's log exactly as before); the captured stderr is dumped verbatim right after
+    # the attempt concludes either way, so nothing is lost — only its live interleaving with stdout
+    # during the (expected-brief) resume-attach window. Dumping it verbatim is what keeps an
+    # unfamiliar failure visible even though the fallback no longer requires recognizing it.
     echo "B-718: attempting to resume prior session $RESUME_SESSION_ID (run_config.session_resume.enabled=true)." >&2
     RESUME_STDERR_FILE="$(mktemp)"
     set +e
@@ -279,8 +282,8 @@ case "$MODE" in
     RESUME_EXIT=$?
     set -e
     cat "$RESUME_STDERR_FILE" >&2
-    if [ "$RESUME_EXIT" -ne 0 ] && grep -q "No conversation found with session ID" "$RESUME_STDERR_FILE"; then
-      echo "B-718: --resume $RESUME_SESSION_ID failed to attach (corrupt/rejected/stale session) — falling back to a COLD start. Resume was attempted and degraded gracefully; this is expected to be rare — investigate the persisted transcript mount if it recurs." >&2
+    if [ "$RESUME_EXIT" -ne 0 ]; then
+      echo "B-718: --resume $RESUME_SESSION_ID failed to attach (exit $RESUME_EXIT; see stderr above) — falling back to a COLD start. Resume was attempted and degraded gracefully; this is expected to be rare — investigate the persisted transcript mount if it recurs." >&2
       rm -f "$RESUME_STDERR_FILE"
       exec claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" "${EXTRA_HEADLESS_FLAGS[@]}"
     fi
