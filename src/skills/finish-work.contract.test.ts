@@ -40,8 +40,10 @@ describe('finish-work skill contract (evolved)', () => {
     expect(skill.body).toContain('release-decision-pending');
     expect(skill.body).toContain('verification-ack-pending');
   });
-  it('carries the release role profile', () => {
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/record_decision/);
+  it('permits record_decision + update_knowledge_entry for O2\'s convention-entry writer, but still disallows supersede_decision (B-836)', () => {
+    expect(skill.frontmatter['disallowed-tools']).not.toMatch(/record_decision/);
+    expect(skill.frontmatter['disallowed-tools']).not.toMatch(/update_knowledge_entry/);
+    expect(skill.frontmatter['disallowed-tools']).toMatch(/supersede_decision/);
   });
 
   // B-471: the PR-less umbrella verify path (a decomposed parent whose work shipped in its children).
@@ -425,4 +427,57 @@ describe('finish-work skill contract (evolved)', () => {
     // It cross-references the capability-denial doctrine rather than restating it.
     expect(o1.toLowerCase()).toMatch(/capability-denial doctrine/);
   });
+
+  // B-836: O2 writes a per-surface convention knowledge entry for each qualifying changed path.
+  it('B-836: O2 authors a per-changed-surface convention entry, keyed on surface:<path>, never per-ticket', () => {
+    const o2 = o2Section2(skill.body);
+    expect(o2).toContain('B-836');
+    // Per-path, not per-ticket keying: surface:<path> is the tag/key.
+    expect(o2).toContain('surface:<path>');
+    expect(o2.toLowerCase()).toMatch(/per-path, not per-ticket/);
+
+    // Fresh-entry path: record_decision, status Accepted, realization live.
+    const tools = referencedHarmonyTools(o2);
+    expect(tools).toContain('record_decision');
+    const recordIdx = o2.indexOf('mcp__harmony__record_decision(');
+    expect(recordIdx).toBeGreaterThan(-1);
+    const recordBlockEnd = o2.indexOf('```', recordIdx);
+    const recordBlock = o2.slice(recordIdx, recordBlockEnd);
+    expect(recordBlock).toContain('"Accepted"');
+    expect(recordBlock).toContain('"live"');
+
+    // Amend path: update_knowledge_entry, realization live, newest-first prepend, never overwrite.
+    expect(tools).toContain('update_knowledge_entry');
+    const updateIdx = o2.indexOf('mcp__harmony__update_knowledge_entry(');
+    expect(updateIdx).toBeGreaterThan(-1);
+    const updateBlockEnd = o2.indexOf('```', updateIdx);
+    const updateBlock = o2.slice(updateIdx, updateBlockEnd);
+    expect(updateBlock).toContain('"live"');
+    expect(o2.toLowerCase()).toMatch(/newest-first/);
+    expect(o2.toLowerCase()).toMatch(/never replace or drop the entry's prior history/);
+
+    // Coupling: reference_knowledge links the ticket to the entry it authored/amended.
+    expect(tools).toContain('reference_knowledge');
+    expect(o2).toMatch(/mcp__harmony__reference_knowledge\(\{\s*task_id,\s*decision_id:/);
+
+    // Qualifying-path filter names all four surfaces.
+    expect(o2).toContain('container/');
+    expect(o2).toContain('scripts/');
+    expect(o2).toContain('commands/');
+    expect(o2.toLowerCase()).toMatch(/config schema/);
+
+    // Skip-when-nothing-qualifies: no entry, no comment.
+    expect(o2.toLowerCase()).toMatch(/write nothing.{0,20}no entry, no comment/);
+
+    // supersede_decision is explicitly never called here.
+    expect(o2.toLowerCase()).toMatch(/never call `supersede_decision`/);
+
+    // AC6 overlapping-path worked example (ticket A / B / C sharing a surface).
+    expect(o2.toLowerCase()).toMatch(/ticket a touches `\{x\}`/);
+    expect(o2.toLowerCase()).toMatch(/ticket b touches `\{x, y\}`/);
+    expect(o2.toLowerCase()).toMatch(/b's write for `x` looks up and amends the same\s+`surface:x` entry a\s+created/);
+    expect(o2.toLowerCase()).toMatch(/ticket c\s+touches only `\{y\}`/);
+    expect(o2.toLowerCase()).toMatch(/leaving `surface:x` untouched/);
+  });
+
 });
