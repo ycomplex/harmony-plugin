@@ -52,6 +52,19 @@ if [ -n "${HARMONY_TRANSCRIPT_MOUNT_ROOT:-}" ]; then
   ln -s "$TRANSCRIPT_SUBTREE/projects" "$HOME/.claude/projects"
   ln -s "$TRANSCRIPT_SUBTREE/logs" "$HOME/.claude/logs"
 
+  # B-718 reopen, item 4 (diagnosis, not a fix — non-fatal, no runtime evidence to validate a code
+  # change against): once these symlinks are live, everything this script itself does above targets
+  # a normal tmpfs/overlay path ($HOME/.claude/*), never the gcsfuse mount directly — but anything
+  # the `claude` CLI does on its OWN under $HOME/.claude/projects/... (including its own internal
+  # project-directory housekeeping/pruning when starting with `--resume`, downstream in
+  # provision.sh) transparently follows this symlink onto the gcsfuse-backed
+  # $TRANSCRIPT_SUBTREE/projects path. Two non-fatal `fuse: Op ... *fuseops.RmDirOp] -> Error:
+  # "directory not empty"` errors observed ~9s after the first successful `--resume` are most
+  # likely explained by that CLI-internal housekeeping racing gcsfuse's object-storage-backed rmdir
+  # semantics (e.g. eventual-consistency directory-emptiness checks, or a concurrent rename/write
+  # racing a directory-delete) — a real filesystem wouldn't surface this. A future reader with
+  # runtime logs/gcsfuse source access can confirm or refute this hypothesis.
+
   # B-718: cross-conduction resume discovery (cloud profile). The gcsfuse mount above is already
   # live and spans EVERY conduction of every ticket, so this is the one place the cloud path can
   # see a SIBLING conduction's session — a park + re-conduct gives the new conduction a fresh, empty
@@ -75,7 +88,17 @@ if [ -n "${HARMONY_TRANSCRIPT_MOUNT_ROOT:-}" ]; then
   fi
   SESSION_RESUME_ENABLED="false"
   if [ -n "$RUN_CONFIG_JSON" ]; then
-    SESSION_RESUME_ENABLED="$(printf '%s' "$RUN_CONFIG_JSON" | jq -r '.session_resume.enabled // false' 2>/dev/null || echo false)"
+    # Same fix as container/provision.sh's sibling block: capture jq's stdout/stderr (2>&1) and its
+    # real exit status via `&& ... || ...` (a bare `VAR="$(cmd)"` assignment trips this script's
+    # `set -e` on a nonzero exit, which `&&`/`||` testing avoids) so a genuine parse failure is
+    # logged loudly instead of being silently indistinguishable from a legitimate `enabled: false`.
+    # The value still safely degrades to "false" either way — this only fixes the missing signal.
+    JQ_RESULT="$(printf '%s' "$RUN_CONFIG_JSON" | jq -r '.session_resume.enabled // false' 2>&1)" && JQ_EXIT=0 || JQ_EXIT=$?
+    if [ "$JQ_EXIT" -eq 0 ]; then
+      SESSION_RESUME_ENABLED="$JQ_RESULT"
+    else
+      echo "entrypoint.sh: WARNING — failed to parse run_config JSON for session_resume.enabled (jq: $JQ_RESULT); defaulting to disabled" >&2
+    fi
   fi
 
   if [ "$SESSION_RESUME_ENABLED" = "true" ]; then

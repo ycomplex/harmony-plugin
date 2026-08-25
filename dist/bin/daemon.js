@@ -24037,6 +24037,11 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
     preFireHeadSha
   };
   runtime.running.set(row.id, tracked);
+  if (Object.keys(row.run_config ?? {}).length > 0 && !deps.config.profile.launch.includes("{run_config_json}")) {
+    deps.log(
+      `${label(row, current, deps.projectKey)}: \u26A0 run_config will NOT reach the worker: the active launch template has no {run_config_json} placeholder (conduction ${row.id})`
+    );
+  }
   const launch = deps.runCommand(renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey))).then((result) => {
     tracked.settled = true;
     tracked.exitCode = result.exitCode;

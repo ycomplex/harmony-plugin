@@ -1136,6 +1136,28 @@ async function fireLaunch(
   };
   runtime.running.set(row.id, tracked);
 
+  // B-718 reopen: warn loudly (never block) when this conduction carries a non-empty run_config
+  // but the ACTIVE launch template has no {run_config_json} placeholder to receive it — this is
+  // exactly how B-718 shipped as a silent no-op on the one live deployment profile whose
+  // hand-maintained launch template (~/.harmony/deployment.json, outside both repos) predates this
+  // ticket and was never updated to reference the new placeholder. renderTemplate only substitutes
+  // a placeholder that is actually PRESENT in the template string — an absent placeholder silently
+  // drops the value, with no error and no log, BY DESIGN (the reap/probe templates legitimately
+  // never reference it, per templateVars's own comment above) — this guard turns that legitimate
+  // silence into a loud, clearly-flagged signal for the one case where the value was meant to be
+  // delivered and silently wasn't. Matches this file's best-effort-degrade-never-fail-the-leg
+  // posture for run_config delivery (see AC5 / the --resume best-effort language elsewhere in this
+  // file): WARN only, the launch still fires either way.
+  if (
+    Object.keys(row.run_config ?? {}).length > 0 &&
+    !deps.config.profile.launch.includes('{run_config_json}')
+  ) {
+    deps.log(
+      `${label(row, current, deps.projectKey)}: ⚠ run_config will NOT reach the worker: the ` +
+        `active launch template has no {run_config_json} placeholder (conduction ${row.id})`,
+    );
+  }
+
   // Rejects ONLY when the reap cannot free us; otherwise `launch` always settles first — mirrors
   // the old inline Promise.race exactly, just no longer awaited by the pass itself.
   const launch = deps

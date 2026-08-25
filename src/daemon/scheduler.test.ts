@@ -428,6 +428,48 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
     expect(h.launches()).toEqual(["launch cond-1 --run-config '{}'"]);
   });
 
+  it('B-718 reopen: warns loudly (but still fires the launch) when the conduction has a non-empty run_config and the ACTIVE launch template has no {run_config_json} placeholder', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ run_config: { session_resume: { enabled: true } } })],
+      tasks: { 'task-1': pausedTask() },
+      // Deliberately no {run_config_json} in this template — the shape that shipped B-718 as a
+      // silent no-op on the one live deployment profile.
+      config: { ...config, profile: { ...config.profile, launch: 'launch {conduction_id} {ticket}' } },
+    });
+    await wakeAndFire(h);
+    // The launch still fires — this is a WARN, never a block.
+    expect(h.launches()).toEqual(['launch cond-1 task-1']);
+    const warning = h.logs.find(
+      (line) => line.includes('run_config') && /will NOT reach the worker/i.test(line),
+    );
+    expect(warning).toBeDefined();
+    expect(warning).toContain('cond-1');
+  });
+
+  it('B-718 reopen: does NOT warn when run_config is empty/absent, even with a template lacking {run_config_json}', async () => {
+    const h = makeHarness({
+      conductions: [conduction()], // run_config left undefined
+      tasks: { 'task-1': pausedTask() },
+      config: { ...config, profile: { ...config.profile, launch: 'launch {conduction_id} {ticket}' } },
+    });
+    await wakeAndFire(h);
+    expect(h.launches()).toEqual(['launch cond-1 task-1']);
+    expect(h.logs.some((line) => /will NOT reach the worker/i.test(line))).toBe(false);
+  });
+
+  it('B-718 reopen: does NOT warn when the template DOES carry {run_config_json}, even with a non-empty run_config', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ run_config: { session_resume: { enabled: true } } })],
+      tasks: { 'task-1': pausedTask() },
+      config: {
+        ...config,
+        profile: { ...config.profile, launch: "launch {conduction_id} {ticket} --run-config '{run_config_json}'" },
+      },
+    });
+    await wakeAndFire(h);
+    expect(h.logs.some((line) => /will NOT reach the worker/i.test(line))).toBe(false);
+  });
+
   it('a clean-pause exit is classified and the baseline stored ONLY once the launch settles, on a LATER pass', async () => {
     const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
     await wakeAndFire(h);
