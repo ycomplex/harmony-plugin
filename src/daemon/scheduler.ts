@@ -136,6 +136,7 @@ import { classifyWorkerExit, exitClass, type ClassifyArgs } from './classify.js'
 import { exchangeWentInactive } from '../conductor/ball-axis.js';
 import { renderTemplate, type DaemonConfig } from './config.js';
 import type { HeartbeatKeeper } from './heartbeat.js';
+import { formatDaemonError } from './error-format.js';
 import type {
   ConductionPatch,
   ConductionRecord,
@@ -1204,7 +1205,7 @@ export async function runScheduler(deps: SchedulerDeps, keeper: HeartbeatKeeper)
       // B-739: a daemon that cannot free itself from a worker it ruled overrun must DIE, not log
       // and loop. Re-throw before the transient handling below can swallow it.
       if (err instanceof PersistentReapFailure) throw err;
-      deps.log(`scheduler pass failed: ${err instanceof Error ? err.message : String(err)}`);
+      deps.log(`scheduler pass failed: ${formatDaemonError(err)}`);
       authFailingPass = isAuthShapedError(err);
     }
     consecutiveAuthFailingPasses = authFailingPass ? consecutiveAuthFailingPasses + 1 : 0;

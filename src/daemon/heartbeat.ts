@@ -32,6 +32,7 @@
 // keeper is fake-clock unit-testable with no real setInterval.
 
 import type { ConductionPatch, ConductionRecord } from '../tools/conduction-record.js';
+import { formatDaemonError } from './error-format.js';
 
 export interface HeartbeatDeps {
   now(): number;
@@ -82,9 +83,7 @@ export function createHeartbeatKeeper(deps: HeartbeatDeps): HeartbeatKeeper {
     } catch (err) {
       // A THROW means nothing is known (invariant 3). Do NOT stop and do NOT infer lease loss.
       deps.log(
-        `conduction ${id}: heartbeat write failed, retrying next tick (${
-          err instanceof Error ? err.message : String(err)
-        })`,
+        `conduction ${id}: heartbeat write failed, retrying next tick (${formatDaemonError(err)})`,
       );
     }
   };

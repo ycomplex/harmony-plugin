@@ -10066,6 +10066,18 @@ import { randomUUID } from "node:crypto";
 // src/auth.ts
 var SUPABASE_URL = process.env.HARMONY_SUPABASE_URL ?? "https://eioxsunvhakmelhanmnn.supabase.co";
 var SUPABASE_ANON_KEY = process.env.HARMONY_SUPABASE_ANON_KEY ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
+var TokenExchangeError = class extends Error {
+  endpoint;
+  status;
+  body;
+  constructor(endpoint, status, body) {
+    super(`Token exchange failed (${status})`);
+    this.name = "TokenExchangeError";
+    this.endpoint = endpoint;
+    this.status = status;
+    this.body = body;
+  }
+};
 var HarmonyAuth = class {
   apiToken;
   accessToken = null;
@@ -10091,7 +10103,8 @@ var HarmonyAuth = class {
     return this.userId;
   }
   async exchange() {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/auth-token`, {
+    const endpoint = "/functions/v1/auth-token";
+    const res = await fetch(`${SUPABASE_URL}${endpoint}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -10101,7 +10114,7 @@ var HarmonyAuth = class {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      throw new Error(body.error ?? `Token exchange failed (${res.status})`);
+      throw new TokenExchangeError(endpoint, res.status, body);
     }
     const data = await res.json();
     this.accessToken = data.access_token;
@@ -23185,6 +23198,52 @@ async function updateConductionIfHeld(client, id, expectedLeaseHolder, patch) {
   return data ?? null;
 }
 
+// src/daemon/error-format.ts
+function isHttpShapedError(err) {
+  return typeof err === "object" && err !== null && "status" in err && typeof err.status === "number" && "body" in err;
+}
+function safeStringify(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+function describeCause(cause, depth = 0) {
+  if (depth > 5) return safeStringify(cause);
+  if (cause instanceof Error) {
+    if ("cause" in cause && cause.cause !== void 0) {
+      return `${cause.name}: ${cause.message} <- ${describeCause(cause.cause, depth + 1)}`;
+    }
+    return `${cause.name}: ${cause.message}`;
+  }
+  if (typeof cause === "object" && cause !== null) {
+    const code = "code" in cause ? cause.code : void 0;
+    const errno = "errno" in cause ? cause.errno : void 0;
+    const parts = [];
+    if (code !== void 0) parts.push(`code=${String(code)}`);
+    if (errno !== void 0) parts.push(`errno=${String(errno)}`);
+    if (parts.length > 0) return parts.join(" ");
+    return safeStringify(cause);
+  }
+  return String(cause);
+}
+function formatDaemonError(err, opts) {
+  if (isHttpShapedError(err)) {
+    const endpoint = err.endpoint ?? opts?.endpoint ?? "(unknown endpoint)";
+    return `HTTP ${err.status} from ${endpoint}: ${safeStringify(err.body)}`;
+  }
+  if (err instanceof Error) {
+    if ("cause" in err && err.cause !== void 0) {
+      const endpointPrefix2 = opts?.endpoint ? `[${opts.endpoint}] ` : "";
+      return `${endpointPrefix2}${err.name}: ${err.message} (cause: ${describeCause(err.cause)})`;
+    }
+    const endpointPrefix = opts?.endpoint ? `[${opts.endpoint}] ` : "";
+    return `${endpointPrefix}${err.name}: ${err.message}`;
+  }
+  return safeStringify(err);
+}
+
 // src/daemon/heartbeat.ts
 function createHeartbeatKeeper(deps) {
   const timers = /* @__PURE__ */ new Map();
@@ -23205,7 +23264,7 @@ function createHeartbeatKeeper(deps) {
       }
     } catch (err) {
       deps.log(
-        `conduction ${id}: heartbeat write failed, retrying next tick (${err instanceof Error ? err.message : String(err)})`
+        `conduction ${id}: heartbeat write failed, retrying next tick (${formatDaemonError(err)})`
       );
     }
   };
@@ -24015,7 +24074,7 @@ async function runScheduler(deps, keeper) {
       authFailingPass = summary.attempted > 0 && summary.authShapedFailures === summary.attempted;
     } catch (err) {
       if (err instanceof PersistentReapFailure) throw err;
-      deps.log(`scheduler pass failed: ${err instanceof Error ? err.message : String(err)}`);
+      deps.log(`scheduler pass failed: ${formatDaemonError(err)}`);
       authFailingPass = isAuthShapedError(err);
     }
     consecutiveAuthFailingPasses = authFailingPass ? consecutiveAuthFailingPasses + 1 : 0;
@@ -24245,7 +24304,9 @@ ${err instanceof Error ? err.message : String(err)}
   }
 }
 main().catch((err) => {
-  process.stderr.write(`daemon failed: ${err instanceof Error ? err.message : String(err)}
-`);
+  process.stderr.write(
+    `daemon failed: ${formatDaemonError(err, { endpoint: "/functions/v1/auth-token" })}
+`
+  );
   process.exit(1);
 });
