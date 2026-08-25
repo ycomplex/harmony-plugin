@@ -448,6 +448,124 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('--some-extra-flag');
   });
+
+  describe('EXECUTED SESSION_RESUME_ENABLED jq parse-failure signal (B-718 reopen fix, item 3)', () => {
+    function malformedRunConfigEnv(): NodeJS.ProcessEnv {
+      return { HARMONY_RUN_CONFIG_JSON: Buffer.from('not valid json').toString('base64') };
+    }
+
+    function runConfigEnv(payload: Record<string, unknown>): NodeJS.ProcessEnv {
+      return { HARMONY_RUN_CONFIG_JSON: Buffer.from(JSON.stringify(payload)).toString('base64') };
+    }
+
+    /** Same as runResumeBlock, but merges stderr into stdout (`exec 2>&1`) so a WARNING logged on
+     *  an otherwise-successful (exit 0) run is still observable — runResumeBlock only captures
+     *  stderr on the execFileSync error path, which a clean cold-start exit never takes. */
+    function runResumeBlockCombined(env: NodeJS.ProcessEnv, fakeClaudeDir: string, homeDir: string): string {
+      const block = extractResumeBlock();
+      const scriptDir = mkdtempSync(join(tmpdir(), 'b718-provision-resume-combined-'));
+      const scriptFile = join(scriptDir, 'harness.sh');
+      writeFileSync(
+        scriptFile,
+        [
+          '#!/usr/bin/env bash',
+          'set -euo pipefail',
+          'exec 2>&1',
+          'PLUGIN_DIR="/fake/plugin"',
+          'PROMPT="do it"',
+          block,
+          '',
+        ].join('\n'),
+        { mode: 0o700 },
+      );
+      return execFileSync('bash', [scriptFile], {
+        env: { ...env, HOME: homeDir, PATH: `${fakeClaudeDir}:${process.env.PATH}` },
+      }).toString();
+    }
+
+    it('malformed run_config JSON logs a WARNING to stderr and defaults SESSION_RESUME_ENABLED to disabled (cold start, best-effort — never blocks the script)', () => {
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b718-fake-claude-'));
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        [
+          '#!/usr/bin/env bash',
+          'if printf \'%s\n\' "$@" | grep -q -- --resume; then',
+          '  echo "RESUMED_UNEXPECTEDLY"',
+          '  exit 0',
+          'fi',
+          'echo COLD_STARTED',
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      const dir = mkdtempSync(join(tmpdir(), 'b718-home-'));
+      writeSession(dir, 'fake-id'); // a session DOES exist — proves the parse failure, not a missing session, drove the cold start
+      const combined = runResumeBlockCombined(malformedRunConfigEnv(), claudeStub, dir);
+      expect(combined).toContain('provision.sh: WARNING');
+      expect(combined).toContain('session_resume.enabled');
+      expect(combined).toContain('COLD_STARTED');
+      expect(combined).not.toContain('RESUMED_UNEXPECTEDLY');
+    });
+
+    it('valid {"session_resume":{"enabled":true}} still resolves to resume being attempted, with NO warning logged', () => {
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b718-fake-claude-'));
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        [
+          '#!/usr/bin/env bash',
+          'if printf \'%s\n\' "$@" | grep -q -- --resume; then',
+          '  echo "RESUME_SUCCEEDED"',
+          '  exit 0',
+          'fi',
+          'echo COLD_STARTED',
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      const dir = mkdtempSync(join(tmpdir(), 'b718-home-'));
+      writeSession(dir, 'fake-id');
+      const combined = runResumeBlockCombined(runConfigEnv({ session_resume: { enabled: true } }), claudeStub, dir);
+      expect(combined).toContain('RESUME_SUCCEEDED');
+      expect(combined).not.toContain('WARNING');
+    });
+
+    it('valid JSON with session_resume.enabled absent/false resolves to disabled (cold start), with NO warning logged', () => {
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b718-fake-claude-'));
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        [
+          '#!/usr/bin/env bash',
+          'if printf \'%s\n\' "$@" | grep -q -- --resume; then',
+          '  echo "RESUMED_UNEXPECTEDLY"',
+          '  exit 0',
+          'fi',
+          'echo COLD_STARTED',
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      const dir = mkdtempSync(join(tmpdir(), 'b718-home-'));
+      writeSession(dir, 'fake-id');
+      // Absent case: {} carries no session_resume key at all.
+      const absent = runResumeBlockCombined(runConfigEnv({}), claudeStub, dir);
+      expect(absent).toContain('COLD_STARTED');
+      expect(absent).not.toContain('RESUMED_UNEXPECTEDLY');
+      expect(absent).not.toContain('WARNING');
+
+      // Explicit-false case.
+      const explicitFalse = runResumeBlockCombined(
+        runConfigEnv({ session_resume: { enabled: false } }),
+        claudeStub,
+        dir,
+      );
+      expect(explicitFalse).toContain('COLD_STARTED');
+      expect(explicitFalse).not.toContain('RESUMED_UNEXPECTEDLY');
+      expect(explicitFalse).not.toContain('WARNING');
+    });
+  });
 });
 
 describe('daemon-profile.example.json ↔ provision.sh mode contract', () => {
@@ -1012,8 +1130,49 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
     expect(mintInvocation).not.toContain('--run-config-path');
   });
 
-  it("B-718: RUN_CONFIG_JSON defaults to '{}' byte-for-byte when the wrapper is invoked with no third positional arg", () => {
-    expect(launchScript).toContain('RUN_CONFIG_JSON="${3:-{}}"');
+  // B-718 reopen fix: `RUN_CONFIG_JSON="${3:-{}}"` looked right but is a real bash quoting bug —
+  // `${3:-...}` terminates at the FIRST `}`, so bash actually parses this as `${3:-{}` (default
+  // value `{`) followed by a stray literal `}` appended to whatever `$3` holds. A prose/regex pin
+  // against that exact source text would have PASSED against the bug forever — this block EXECUTES
+  // the real acquisition lines instead (same discipline as the write_exec_env_file()/release_lock()
+  // EXECUTED blocks elsewhere in this file), so a quoting regression breaks the test, not just its
+  // prose.
+  describe('EXECUTED RUN_CONFIG_JSON default/passthrough resolution (B-718 reopen fix — bash quoting bug)', () => {
+    /** Extract the two-line DEFAULT_RUN_CONFIG/RUN_CONFIG_JSON acquisition, verbatim from the live
+     *  script text, and run it in a tiny harness with the given positional args. Returns exactly
+     *  what bash resolves RUN_CONFIG_JSON to. */
+    function runRunConfigResolution(thirdArg: string | undefined): string {
+      const at = launchScript.indexOf("DEFAULT_RUN_CONFIG='{}'");
+      expect(at).toBeGreaterThanOrEqual(0);
+      const end = launchScript.indexOf('\n', launchScript.indexOf('RUN_CONFIG_JSON=', at));
+      expect(end).toBeGreaterThan(at);
+      const acquisition = launchScript.slice(at, end);
+
+      const dir = mkdtempSync(join(tmpdir(), 'b718-run-config-json-'));
+      const scriptFile = join(dir, 'harness.sh');
+      const resultFile = join(dir, 'result');
+      const harness = [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        acquisition,
+        `printf '%s' "$RUN_CONFIG_JSON" > "${resultFile}"`,
+        '',
+      ].join('\n');
+      writeFileSync(scriptFile, harness, { mode: 0o700 });
+
+      const args = thirdArg === undefined ? [] : ['ignored-1', 'ignored-2', thirdArg];
+      execFileSync('bash', [scriptFile, ...args]);
+      return readFileSync(resultFile, 'utf8');
+    }
+
+    it("resolves to the literal two-character string '{}' when invoked with no third positional arg", () => {
+      expect(runRunConfigResolution(undefined)).toBe('{}');
+    });
+
+    it('resolves to exactly the given third arg, with no stray trailing brace, when one is supplied', () => {
+      const arg = '{"session_resume":{"enabled":true}}';
+      expect(runRunConfigResolution(arg)).toBe(arg);
+    });
   });
 
   it('reap deletes the SAME per-run minted env-file the launch wrapper wrote', () => {

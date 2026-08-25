@@ -234,7 +234,18 @@ case "$MODE" in
     fi
     SESSION_RESUME_ENABLED="false"
     if [ -n "$RUN_CONFIG_JSON" ]; then
-      SESSION_RESUME_ENABLED="$(printf '%s' "$RUN_CONFIG_JSON" | jq -r '.session_resume.enabled // false' 2>/dev/null || echo false)"
+      # Capture jq's stdout/stderr (2>&1) and its real exit status without letting a jq parse
+      # failure trip this script's `set -e` (a bare `VAR="$(cmd)"` assignment DOES trip set -e on
+      # a nonzero exit — testing it via `&& ... || ...` is what keeps this best-effort). A parse
+      # failure is logged loudly to stderr (matching this script's existing >&2 convention) instead
+      # of being silently indistinguishable from a legitimate `enabled: false` — the value still
+      # safely degrades to "false" either way; this only fixes the missing signal.
+      JQ_RESULT="$(printf '%s' "$RUN_CONFIG_JSON" | jq -r '.session_resume.enabled // false' 2>&1)" && JQ_EXIT=0 || JQ_EXIT=$?
+      if [ "$JQ_EXIT" -eq 0 ]; then
+        SESSION_RESUME_ENABLED="$JQ_RESULT"
+      else
+        echo "provision.sh: WARNING — failed to parse run_config JSON for session_resume.enabled (jq: $JQ_RESULT); defaulting to disabled" >&2
+      fi
     fi
 
     RESUME_SESSION_ID=""

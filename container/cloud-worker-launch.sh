@@ -39,7 +39,8 @@ TICKET="${2:?usage: cloud-worker-launch.sh <conduction_id> <ticket> [run_config_
 # replacing the hardcoded '{}' the mint invocation below used before this ticket. Optional/absent
 # (a manual invocation, or an older daemon build that doesn't render this template arg) falls back
 # to '{}' byte-for-byte, same as today.
-RUN_CONFIG_JSON="${3:-{}}"
+DEFAULT_RUN_CONFIG='{}'
+RUN_CONFIG_JSON="${3:-$DEFAULT_RUN_CONFIG}"
 
 : "${HARMONY_PLUGIN_DIR:?HARMONY_PLUGIN_DIR is required (checkout the mint script runs from, same knob the docker profile uses)}"
 
