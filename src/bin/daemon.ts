@@ -53,6 +53,7 @@ import {
   markCleanShutdown,
 } from '../tools/conduction-record.js';
 import { createHeartbeatKeeper } from '../daemon/heartbeat.js';
+import { formatDaemonError } from '../daemon/error-format.js';
 import { loadDaemonConfig, selectNamedProfile } from '../daemon/config.js';
 import { renderQuietReapOutcome } from '../daemon/quiet-reap.js';
 import { runBootPreflight, type PreflightProfile } from '../daemon/preflight.js';
@@ -392,6 +393,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(`daemon failed: ${err instanceof Error ? err.message : String(err)}\n`);
+  process.stderr.write(
+    `daemon failed: ${formatDaemonError(err, { endpoint: '/functions/v1/auth-token' })}\n`,
+  );
   process.exit(1);
 });

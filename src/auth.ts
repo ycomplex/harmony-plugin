@@ -7,6 +7,22 @@ interface TokenExchangeResult {
   project_id: string;
 }
 
+/** Structured token-exchange failure — carries the endpoint, HTTP status, and full response body
+ *  so a caller (see src/daemon/error-format.ts) can render more than a flattened message string. */
+export class TokenExchangeError extends Error {
+  readonly endpoint: string;
+  readonly status: number;
+  readonly body: unknown;
+
+  constructor(endpoint: string, status: number, body: unknown) {
+    super(`Token exchange failed (${status})`);
+    this.name = 'TokenExchangeError';
+    this.endpoint = endpoint;
+    this.status = status;
+    this.body = body;
+  }
+}
+
 export class HarmonyAuth {
   private apiToken: string;
   private accessToken: string | null = null;
@@ -37,7 +53,8 @@ export class HarmonyAuth {
   }
 
   private async exchange(): Promise<void> {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/auth-token`, {
+    const endpoint = '/functions/v1/auth-token';
+    const res = await fetch(`${SUPABASE_URL}${endpoint}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -48,7 +65,7 @@ export class HarmonyAuth {
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      throw new Error(body.error ?? `Token exchange failed (${res.status})`);
+      throw new TokenExchangeError(endpoint, res.status, body);
     }
 
     const data: TokenExchangeResult = await res.json();
