@@ -27939,6 +27939,18 @@ var StdioServerTransport = class {
 // src/auth.ts
 var SUPABASE_URL = process.env.HARMONY_SUPABASE_URL ?? "https://eioxsunvhakmelhanmnn.supabase.co";
 var SUPABASE_ANON_KEY = process.env.HARMONY_SUPABASE_ANON_KEY ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
+var TokenExchangeError = class extends Error {
+  endpoint;
+  status;
+  body;
+  constructor(endpoint, status, body) {
+    super(`Token exchange failed (${status})`);
+    this.name = "TokenExchangeError";
+    this.endpoint = endpoint;
+    this.status = status;
+    this.body = body;
+  }
+};
 var HarmonyAuth = class {
   apiToken;
   accessToken = null;
@@ -27964,7 +27976,8 @@ var HarmonyAuth = class {
     return this.userId;
   }
   async exchange() {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/auth-token`, {
+    const endpoint = "/functions/v1/auth-token";
+    const res = await fetch(`${SUPABASE_URL}${endpoint}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -27974,7 +27987,7 @@ var HarmonyAuth = class {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      throw new Error(body.error ?? `Token exchange failed (${res.status})`);
+      throw new TokenExchangeError(endpoint, res.status, body);
     }
     const data = await res.json();
     this.accessToken = data.access_token;
