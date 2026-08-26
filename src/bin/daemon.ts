@@ -116,9 +116,7 @@ async function markCleanShutdownBounded(
       logFn(`clean shutdown: marker stamped on ${outcome.count} held row${outcome.count === 1 ? '' : 's'}`);
     }
   } catch (err) {
-    logFn(
-      `clean-shutdown marker write failed (${err instanceof Error ? err.message : String(err)}) — exiting anyway`,
-    );
+    logFn(`clean-shutdown marker write failed (${formatDaemonError(err)}) — exiting anyway`);
   } finally {
     if (timer) clearTimeout(timer);
   }

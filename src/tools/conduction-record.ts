@@ -348,7 +348,7 @@ export async function updateConduction(
     .eq('id', id)
     .select(CONDUCTION_COLS)
     .single();
-  if (error) throw new Error(error.message);
+  if (error) throw error;
   return data as unknown as ConductionRecord;
 }
 
@@ -369,7 +369,7 @@ export async function listConductions(
   let query = client.from('conductions').select(`${CONDUCTION_COLS}, tasks(priority)`);
   if (args.status) query = query.eq('status', args.status);
   const { data, error } = await query.order('started_at', { ascending: true });
-  if (error) throw new Error(error.message);
+  if (error) throw error;
   const rows = (data as unknown as Array<Record<string, unknown>>) ?? [];
   return rows.map((row) => {
     const { tasks, ...rest } = row as { tasks?: { priority?: string | null } | null };
@@ -429,7 +429,7 @@ export async function takeoverConduction(
     )
     .select(CONDUCTION_COLS)
     .maybeSingle();
-  if (error) throw new Error(error.message);
+  if (error) throw error;
   return (data as unknown as ConductionRecord) ?? null;
 }
 
@@ -477,7 +477,7 @@ export async function stealConduction(
     .is('leg_started_at', null)
     .select(CONDUCTION_COLS)
     .maybeSingle();
-  if (error) throw new Error(error.message);
+  if (error) throw error;
   return (data as unknown as ConductionRecord) ?? null;
 }
 
@@ -507,7 +507,7 @@ export async function markCleanShutdown(client: SupabaseClient, leaseHolder: str
     .update({ clean_shutdown_at: new Date().toISOString() }, { count: 'exact' })
     .eq('lease_holder', leaseHolder)
     .eq('status', 'active');
-  if (error) throw new Error(error.message);
+  if (error) throw error;
   return count ?? 0;
 }
 
@@ -545,6 +545,6 @@ export async function updateConductionIfHeld(
     .eq('lease_holder', expectedLeaseHolder)
     .select(CONDUCTION_COLS)
     .maybeSingle();
-  if (error) throw new Error(error.message);
+  if (error) throw error;
   return (data as unknown as ConductionRecord) ?? null;
 }
