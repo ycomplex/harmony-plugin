@@ -10,9 +10,37 @@ import { formatDaemonError } from './error-format.js';
 import { TokenExchangeError } from '../auth.js';
 
 describe('formatDaemonError', () => {
-  it('a raw fetch() network failure: renders the .cause chain, not bare "TypeError: fetch failed"', () => {
-    // Mirrors a real captured line:
-    //   conduction c1: heartbeat write failed, retrying next tick (TypeError: fetch failed)
+  it('a raw fetch() network failure AS THE SUPABASE CLIENT ACTUALLY SURFACES IT: a plain rejection ' +
+    'object (not a TypeError, no .cause) whose .message is "TypeError: fetch failed" and whose ' +
+    '.details carries the real cause chain — renders the details content, not bare ' +
+    '"TypeError: fetch failed"', () => {
+    // B-844 verify-gate rejection: the conduction-record.ts throw sites used to do
+    // `throw new Error(error.message)`, discarding everything but the message string BEFORE
+    // formatDaemonError ever saw the value. Now that those sites `throw error` directly, this is
+    // the real shape formatDaemonError receives for a daemon DB call that fails at the network
+    // level — confirmed via dist/index.js: the Supabase client (via @supabase/postgrest-js) catches
+    // the underlying fetch() rejection and returns { error: { message, details, hint, code } }, a
+    // PLAIN OBJECT, not an Error instance and with no `.cause` property. The real cause chain
+    // (ECONNRESET/errno/etc) lives in `.details` as a formatted string.
+    const rejection = {
+      message: 'TypeError: fetch failed',
+      details: 'TypeError: fetch failed <- Error: connect ECONNRESET <- errno=-104 code=ECONNRESET',
+      hint: '',
+      code: '',
+    };
+
+    const out = formatDaemonError(rejection);
+
+    // Negative: not the bare old rendering — the whole point of this regression test.
+    expect(out).not.toBe('TypeError: fetch failed');
+    // Positive: the real cause content (from .details) survives into the rendered output.
+    expect(out).toContain('ECONNRESET');
+    expect(out).toContain(rejection.details);
+  });
+
+  it('a synthetic TypeError with a .cause chain (an isolated unit test of the cause-walking rule ' +
+    'itself, NOT a claim about the Supabase-rejection shape above): renders the .cause chain, not ' +
+    'bare "TypeError: fetch failed"', () => {
     const cause = { code: 'ECONNRESET', errno: -104 };
     const err = new TypeError('fetch failed');
     (err as { cause?: unknown }).cause = cause;

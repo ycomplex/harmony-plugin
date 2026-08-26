@@ -1350,6 +1350,21 @@ describe('isAuthShapedError', () => {
     expect(isAuthShapedError(new Error('read blew up'))).toBe(false);
     expect(isAuthShapedError(new Error('HTTP 4011'))).toBe(false); // \b401\b — not a substring hit
   });
+
+  it('B-844: matches a plain-object PostgREST error shape (not instanceof Error) — the shape ' +
+    'src/tools/conduction-record.ts now throws on a Supabase failure since 7ff203c', () => {
+    // Real PostgREST/Supabase auth failure: a plain object, never an Error instance. Coercing the
+    // whole object through String() (the old bug) produces "[object Object]", which can never
+    // match the auth-shape regex — this asserts the fix reads .message off the object instead.
+    const pgrstExpiredJwt = {
+      message: 'JWT expired',
+      details: null,
+      hint: null,
+      code: 'PGRST301',
+    };
+    expect(pgrstExpiredJwt instanceof Error).toBe(false);
+    expect(isAuthShapedError(pgrstExpiredJwt)).toBe(true);
+  });
 });
 
 // B-696 backstop: the accessToken callback (src/supabase.ts) is the FIX for the JWT zombie; this
