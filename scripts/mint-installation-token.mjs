@@ -195,11 +195,14 @@ export function writeEnvFile(path, content) {
 /**
  * B-846: the run-config plumbing seam's launcher-side half.
  *
- * These four small pure functions compose the lines/paths mint-installation-token.mjs's `main()`
+ * These small pure functions compose the lines/paths mint-installation-token.mjs's `main()`
  * appends to the SAME per-run env-file GIT_TOKEN already rides — never a new file/channel, except
  * for the run-config JSON payload itself when a container-side mount path is also given (see
  * runConfigFilePathFor below), which reuses writeEnvFile's mode-0600 write, same as the env-file
  * itself. See src/config/run-config.ts for the worker-side accessor these lines feed.
+ *
+ * B-743: normalizeRunConfigJson (below) is the shared base64-vs-raw detector both delivery forms
+ * route through, so this file never assumes which shape `--run-config` arrived in.
  */
 
 /** 'HARMONY_CONDUCTION_ID=<id>\n', or '' when no conduction id was given — always appended when
@@ -208,20 +211,64 @@ export function composeConductionIdLine(conductionId) {
   return conductionId ? `HARMONY_CONDUCTION_ID=${conductionId}\n` : '';
 }
 
+/**
+ * B-743: normalize a run-config JSON payload that may arrive as EITHER raw JSON text or
+ * base64-encoded JSON text, into raw JSON text. Before this ticket, `--run-config`'s value was
+ * always raw JSON (src/daemon/scheduler.ts's runConfigJsonFor JSON.stringify'd it and nothing
+ * else touched the wire between there and here). B-743 moves that encoding UPSTREAM into
+ * scheduler.ts itself (the fix for the single-quote-in-note throw this ticket removes), so the
+ * daemon-driven path now hands this script ALREADY-base64 input — but a manual invocation, an
+ * older test, or container/cloud-worker-launch.sh's own DEFAULT_RUN_CONFIG='{}' fallback can still
+ * hand it raw JSON. Both compose functions below normalize through this ONE detector rather than
+ * assuming either shape, so neither can double-encode (base64-of-base64) or write undecoded
+ * base64 into the mounted-file delivery form (whose reader, src/config/run-config.ts's
+ * getRunConfig, JSON.parses the file directly with NO base64 step).
+ *
+ * Detection: valid JSON as-is wins (raw) — tried first because raw is byte-identical to itself,
+ * the safer default. Only when that fails is the input tried as base64; the DECODED text must
+ * itself be valid JSON before it's trusted, so a plain non-JSON, non-base64 string still throws
+ * loudly rather than silently degrading. Throws when neither reading produces valid JSON — a
+ * malformed run-config payload must fail the mint script, not launch a worker with silently
+ * dropped operator input.
+ */
+export function normalizeRunConfigJson(input) {
+  try {
+    JSON.parse(input);
+    return input;
+  } catch {
+    // Not raw JSON — fall through to the base64 attempt below.
+  }
+  let decoded;
+  try {
+    decoded = Buffer.from(input, 'base64').toString('utf8');
+    JSON.parse(decoded);
+  } catch {
+    throw new Error(
+      `--run-config value is neither valid JSON nor base64-encoded JSON: ${input}`,
+    );
+  }
+  return decoded;
+}
+
 /** 'HARMONY_RUN_CONFIG_JSON=<base64 of the JSON>\n', or '' when no run-config JSON was given.
  *  Base64, not raw JSON — the same reason serializeReposSection base64-encodes HARMONY_REPOS_JSON:
  *  this line also has to survive container/cloud-worker-launch.sh's YAML embedding on the cloud
  *  path, where raw JSON's embedded double quotes would break naive printf-quoting. Used for the
- *  INLINE delivery form (cloud profile: no --run-config-path given). */
+ *  INLINE delivery form (cloud profile: no --run-config-path given). B-743: normalizes through
+ *  normalizeRunConfigJson first, so an ALREADY-base64 input (the daemon-driven path, post
+ *  scheduler.ts's upstream encode) is decoded back to raw JSON and re-encoded ONCE — never
+ *  double-encoded — while a still-raw input (older/manual callers) is encoded exactly as before. */
 export function composeRunConfigInlineLine(runConfigJson) {
   if (!runConfigJson) return '';
-  const encoded = Buffer.from(runConfigJson, 'utf8').toString('base64');
+  const raw = normalizeRunConfigJson(runConfigJson);
+  const encoded = Buffer.from(raw, 'utf8').toString('base64');
   return `HARMONY_RUN_CONFIG_JSON=${encoded}\n`;
 }
 
 /** 'HARMONY_RUN_CONFIG_PATH=<container-side path>\n', or '' when no run-config path was given.
  *  Used for the MOUNTED-FILE delivery form (local docker profile) — the path itself is the only
- *  thing that rides the env-file; the JSON content rides the mounted file at that path, never
+ *  thing that rides the env-file; the JSON content rides the mounted file at that path (written by
+ *  main() below, via normalizeRunConfigJson — see that function's own B-743 comment), never
  *  interpolated into the launch command or argv. */
 export function composeRunConfigPathLine(runConfigPath) {
   return runConfigPath ? `HARMONY_RUN_CONFIG_PATH=${runConfigPath}\n` : '';
@@ -327,9 +374,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // --run-config, --run-config-path selects the delivery form: WITH a path, the JSON content is
   // written to its own mode-0600 sibling file (never argv/shell-interpolated) and only the PATH
   // rides the env-file; WITHOUT one, the JSON content itself rides the env-file inline (base64).
+  // B-743: the file write normalizes through normalizeRunConfigJson first — the mounted-file
+  // reader (src/config/run-config.ts's getRunConfig, path form) JSON.parses the file directly with
+  // NO base64 step, so this file must always hold RAW JSON regardless of whether --run-config
+  // arrived raw (older/manual callers) or already-base64 (the daemon-driven path, post
+  // scheduler.ts's upstream encode).
   if (runConfig && runConfigPath) {
     const runConfigFilePath = runConfigFilePathFor(out);
-    writeEnvFile(runConfigFilePath, runConfig);
+    writeEnvFile(runConfigFilePath, normalizeRunConfigJson(runConfig));
     envFileContent += composeRunConfigPathLine(runConfigPath);
   } else if (runConfig) {
     envFileContent += composeRunConfigInlineLine(runConfig);

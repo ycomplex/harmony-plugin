@@ -149,7 +149,13 @@ before the floor); just be aware the floor already enforces the pause there.
 **1b. Resolve mode + the dial ceiling.** Call `mcp__harmony__get_project`. If `mode !== 'opinionated'`,
 stop — the conductor drives the opinionated-mode lifecycle (manual-mode projects use the normal board, not
 clarify→decompose→design→…). `get_project` now also returns `agent_trust` (the owning workspace's dial,
-resolved): `agent_trust.level` ∈ `{cautious, balanced, autonomous}` (empty `{}` dial ⇒ `balanced`).
+resolved): `agent_trust.level` ∈ `{cautious, balanced, autonomous}` (empty `{}` dial ⇒ `balanced`). **B-743:**
+`get_project` also returns an `environment` block carrying `conduction_id` and `operator_note` — this run's
+`HARMONY_CONDUCTION_ID` and `run_config.note` (already base64-decoded/parsed server-side; see
+src/tools/environment.ts's `resolveEnvironment`), both `null` outside a conduction. This skill's own
+`allowed-tools` carries no `Bash`, so an env var can only reach it through an MCP tool boundary like this
+one — never a direct shell read. Hold onto both values (they cannot change mid-leg) for *step 4a* below;
+this ONE call at the top of the run is the only environment read the whole loop needs.
 
 Apply the dial **ceiling** to the parsed per-run `mode`:
 
@@ -351,6 +357,54 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    conductor makes regardless of mode; it advances no *human* decision — contrast `harmony-next`, which
    **surfaces** proposing as a human triage decision because it pulls un-triaged queue items, see
    harmony-next's routing.)
+
+4a. **Deliver the run's operator note as a scoped ticket comment (B-743), once per (conduction_id,
+   workflow_state) pair.** Runs on EVERY iteration (idempotent — a matching delivery marker makes a repeat
+   hit of this step for the same pair a no-op) and AFTER step 4's Captured→Proposed auto-advance, so a note
+   attached to a freshly-`Captured` ticket posts at `Proposed`, never at `Captured` itself — step 4 loops
+   back to step 1 before this step is ever reached, so by the time it runs `workflow_state` already reflects
+   the post-advance value. Advances no state, composes no brief, needs no pause — plumbing, like 1b/1c.
+
+   Use `environment.conduction_id` / `environment.operator_note` from step 1b's `get_project` call (no new
+   call needed — neither value can change mid-leg).
+
+   - **Nothing to deliver:** `conduction_id` is `null` (a manual/no-conduction invocation has nothing to
+     scope a marker to) OR `operator_note` is `null`/empty → skip, proceed to step 5.
+   - **Something to deliver:** `mcp__harmony__list_comments({ task_id })` and search for the EXACT marker
+     line (never fuzzy-match the rendered note prose — same discipline as the `AC-FILING-PASS` marker in
+     the loop's step 1b, the leg-start consume, above):
+
+     ```
+     OPERATOR-NOTE-DELIVERED conduction_id=<conduction_id> workflow_state=<current workflow_state>
+     ```
+
+     - **Marker found** → already delivered for this exact (conduction_id, workflow_state) pair. Skip,
+       proceed to step 5.
+     - **No marker found** → `mcp__harmony__add_comment({ task_id, body })`, ONE comment carrying both the
+       human-facing note and the marker (no separate write — "note posted" and "marker exists" are the SAME
+       fact, never two facts that can desync):
+
+       ```
+       Operator note for conduction <conduction_id> (posted at workflow_state=<current workflow_state>):
+
+       <operator_note, verbatim>
+
+       OPERATOR-NOTE-DELIVERED conduction_id=<conduction_id> workflow_state=<current workflow_state>
+       ```
+
+   **Redelivery is safe by construction, never by luck.** A leg that exits before this step ever runs
+   (crashes, or pauses at an earlier step) leaves NO marker — the next leg's pass through step 4a finds none
+   and delivers exactly once. A leg that reaches this step, posts the comment, then dies before step 5/6
+   never re-delivers on a later leg either, because the marker was written in that SAME `add_comment` call.
+
+   **The two-part scope check, generalized — read by ANY gate skill that treats a ticket comment as a LIVE
+   instruction, not just this delivery.** A comment scoped to one (conduction_id, workflow_state) pair is
+   live ONLY when BOTH halves match the run currently reading it: the comment's conduction id equals THIS
+   run's `environment.conduction_id`, AND the ticket's CURRENT `workflow_state` still equals the state named
+   in the comment. Checking only one half is unsafe — conduction id alone would misread a note posted at an
+   EARLIER `workflow_state` in the same multi-leg run as still-current guidance after the ticket has moved
+   on; `workflow_state` alone would misread a PRIOR run's (or a re-conducted ticket's) note left at the same
+   state as this run's own instruction. Both halves must hold before a comment is live.
 
 5. **If `workflow_state === 'Decomposed'`, branch split-umbrella vs no-split BEFORE routing to design.**
    `mcp__harmony__list_subtasks({ task_id })` (direct children). **≥1 non-archived child ⇒ split umbrella;

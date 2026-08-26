@@ -36366,6 +36366,36 @@ function loadDeploymentConfig(opts = {}) {
   return result.data;
 }
 
+// src/config/run-config.ts
+import { readFileSync as nodeReadFileSync } from "node:fs";
+var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
+var NoteSchema = external_exports.string().optional();
+var RunConfigSchema = external_exports.object({ session_resume: SessionResumeSchema, note: NoteSchema }).passthrough();
+var EMPTY_RUN_CONFIG = {};
+function getOperatorNote(runConfig) {
+  return runConfig.note ? runConfig.note : void 0;
+}
+function envValue(env, key) {
+  const v = env[key];
+  return v == null || v === "" ? void 0 : v;
+}
+function getConductionId(env = process.env) {
+  return envValue(env, "HARMONY_CONDUCTION_ID");
+}
+function getRunConfig(env = process.env, deps = {}) {
+  const readFile = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
+  const path2 = envValue(env, "HARMONY_RUN_CONFIG_PATH");
+  if (path2) {
+    return RunConfigSchema.parse(JSON.parse(readFile(path2)));
+  }
+  const inline = envValue(env, "HARMONY_RUN_CONFIG_JSON");
+  if (inline) {
+    const decoded = Buffer.from(inline, "base64").toString("utf8");
+    return RunConfigSchema.parse(JSON.parse(decoded));
+  }
+  return EMPTY_RUN_CONFIG;
+}
+
 // src/tools/environment.ts
 var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
 var KNOWN_REFS = {
@@ -36414,11 +36444,19 @@ function resolveEnvironment(env = process.env, moduleUrl = import.meta.url) {
     supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
   } catch {
   }
+  let operator_note;
+  try {
+    operator_note = getOperatorNote(getRunConfig(env)) ?? null;
+  } catch {
+    operator_note = null;
+  }
   return {
     supabase_url,
     supabase_project_ref,
     target: resolveKnownRefs(env)[supabase_project_ref] ?? "custom",
-    plugin_version: resolvePluginVersion(env, moduleUrl)
+    plugin_version: resolvePluginVersion(env, moduleUrl),
+    conduction_id: getConductionId(env) ?? null,
+    operator_note
   };
 }
 
@@ -40318,138 +40356,6 @@ var flagReleaseApprovalPendingTool = {
   }
 };
 
-// src/tools/conduction-record.ts
-var CONDUCTION_LIVE_STATUSES = ["active"];
-var CONDUCTION_HUMAN_OWNED_STATUSES = ["parked"];
-var CONDUCTION_TERMINAL_STATUSES = ["completed", "cancelled"];
-var CONDUCTION_STATUSES = [
-  ...CONDUCTION_LIVE_STATUSES,
-  ...CONDUCTION_HUMAN_OWNED_STATUSES,
-  ...CONDUCTION_TERMINAL_STATUSES
-];
-var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, reap_requested_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
-var ActiveConductionExistsError = class extends Error {
-  code = "active-conduction-exists";
-  task_id;
-  constructor(taskId, cause) {
-    super(
-      `an active conduction already exists for task ${taskId} \u2014 the atomic insert IS the lease-acquisition primitive, so losing it means another holder owns the run` + (cause ? ` (${cause})` : "")
-    );
-    this.name = "ActiveConductionExistsError";
-    this.task_id = taskId;
-  }
-};
-var isUniqueViolation = (error2) => error2.code === "23505" || /duplicate key value violates unique constraint/i.test(error2.message ?? "");
-async function createConduction(client, args) {
-  if (!args.task_id) throw new Error("task_id is required");
-  const row = {
-    task_id: args.task_id,
-    status: "active",
-    mode: args.mode ?? "controlled",
-    lease_holder: args.lease_holder ?? null,
-    worker_kind: args.worker_kind ?? null,
-    worker_ref: args.worker_ref ?? null,
-    created_by: args.created_by ?? null
-  };
-  if (args.lease_holder) row.lease_acquired_at = (/* @__PURE__ */ new Date()).toISOString();
-  const { data, error: error2 } = await client.from("conductions").insert(row).select(CONDUCTION_COLS).single();
-  if (error2) {
-    if (isUniqueViolation(error2)) throw new ActiveConductionExistsError(args.task_id, error2.message);
-    throw new Error(error2.message);
-  }
-  return data;
-}
-var ConductorExcludedError = class extends Error {
-  code = "conductor-excluded";
-  task_id;
-  constructor(taskId) {
-    super(
-      `This ticket is taken away from the conductor (task ${taskId}, conductor_excluded_at is set) \u2014 Return it first (the "Return to conductor" action) before handing it off.`
-    );
-    this.name = "ConductorExcludedError";
-    this.task_id = taskId;
-  }
-};
-async function assertNotExcluded(client, taskId) {
-  if (!taskId) throw new Error("task_id is required");
-  const { data, error: error2 } = await client.from("tasks").select("conductor_excluded_at").eq("id", taskId).single();
-  if (error2) throw new Error(error2.message);
-  if (data?.conductor_excluded_at) throw new ConductorExcludedError(taskId);
-}
-async function getConduction(client, id) {
-  if (!id) throw new Error("id is required");
-  const { data, error: error2 } = await client.from("conductions").select(CONDUCTION_COLS).eq("id", id).maybeSingle();
-  if (error2) throw new Error(error2.message);
-  return data ?? null;
-}
-var CONDUCTION_PATCHABLE_FIELDS = [
-  "status",
-  "lease_holder",
-  "lease_acquired_at",
-  "last_heartbeat_at",
-  "leg_started_at",
-  "clean_shutdown_at",
-  "reap_requested_at",
-  "retry_count",
-  "worker_kind",
-  "worker_ref",
-  "last_worker_exit_code",
-  "last_worker_exit_class",
-  "current_pr_ref"
-];
-function assertPatchable(patch) {
-  const keys = Object.keys(patch ?? {});
-  if (keys.length === 0) {
-    throw new Error(`patch must contain at least one of: ${CONDUCTION_PATCHABLE_FIELDS.join(", ")}`);
-  }
-  const rejected = keys.filter(
-    (k) => !CONDUCTION_PATCHABLE_FIELDS.includes(k)
-  );
-  if (rejected.length > 0) {
-    throw new Error(
-      `non-patchable field(s): ${rejected.join(", ")} \u2014 a conduction patch may only touch: ` + CONDUCTION_PATCHABLE_FIELDS.join(", ")
-    );
-  }
-  if ("status" in patch && !CONDUCTION_STATUSES.includes(patch.status)) {
-    throw new Error(`status must be one of: ${CONDUCTION_STATUSES.join(", ")}`);
-  }
-}
-async function updateConduction(client, id, patch) {
-  if (!id) throw new Error("id is required");
-  assertPatchable(patch);
-  const { data, error: error2 } = await client.from("conductions").update(patch).eq("id", id).select(CONDUCTION_COLS).single();
-  if (error2) throw error2;
-  return data;
-}
-
-// src/tools/request-conduction-reap.ts
-async function requestConductionReap(client, args) {
-  if (!args.conduction_id) throw new Error("conduction_id is required");
-  const existing = await getConduction(client, args.conduction_id);
-  if (!existing) throw new Error(`Not found: no conduction with id ${args.conduction_id}`);
-  const conduction = await updateConduction(client, args.conduction_id, {
-    reap_requested_at: (/* @__PURE__ */ new Date()).toISOString()
-  });
-  return {
-    conduction,
-    message: `Reap requested for conduction ${conduction.id}. The conductor daemon will notice on its next pass (only while a launch is genuinely tracked and unsettled) and escalate the SAME reap sequence its own per-launch deadline uses \u2014 this call never kills the worker directly.`
-  };
-}
-var requestConductionReapTool = {
-  name: "request_conduction_reap",
-  description: "B-740: request an early reap of a hung active conduction's currently-running leg \u2014 CLI/agent parity with the web Conductors view's \"Reap now\" button. Sets `conductions.reap_requested_at` to now(); this tool NEVER performs the kill itself \u2014 the conductor daemon remains the sole process that reaps a worker, and only notices/acts on this flag while it is actively tracking an in-flight launch for the conduction (a request against an already-settled/parked/completed conduction is harmless but inert). The eventual park is recorded as `last_worker_exit_class: 'operator-reap'`.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      conduction_id: {
-        type: "string",
-        description: "The conduction record id (UUID) whose current leg should be reaped early."
-      }
-    },
-    required: ["conduction_id"]
-  }
-};
-
 // src/tools/workflow.ts
 var UNIVERSAL = {
   parking: "Parked",
@@ -40809,14 +40715,79 @@ async function readCriteriaPresence(client, taskId, localPresence) {
   return presence;
 }
 
+// src/tools/conduction-record.ts
+var CONDUCTION_LIVE_STATUSES = ["active"];
+var CONDUCTION_HUMAN_OWNED_STATUSES = ["parked"];
+var CONDUCTION_TERMINAL_STATUSES = ["completed", "cancelled"];
+var CONDUCTION_STATUSES = [
+  ...CONDUCTION_LIVE_STATUSES,
+  ...CONDUCTION_HUMAN_OWNED_STATUSES,
+  ...CONDUCTION_TERMINAL_STATUSES
+];
+var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
+var ActiveConductionExistsError = class extends Error {
+  code = "active-conduction-exists";
+  task_id;
+  constructor(taskId, cause) {
+    super(
+      `an active conduction already exists for task ${taskId} \u2014 the atomic insert IS the lease-acquisition primitive, so losing it means another holder owns the run` + (cause ? ` (${cause})` : "")
+    );
+    this.name = "ActiveConductionExistsError";
+    this.task_id = taskId;
+  }
+};
+var isUniqueViolation = (error2) => error2.code === "23505" || /duplicate key value violates unique constraint/i.test(error2.message ?? "");
+async function createConduction(client, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const row = {
+    task_id: args.task_id,
+    status: "active",
+    mode: args.mode ?? "controlled",
+    lease_holder: args.lease_holder ?? null,
+    worker_kind: args.worker_kind ?? null,
+    worker_ref: args.worker_ref ?? null,
+    created_by: args.created_by ?? null
+  };
+  if (args.lease_holder) row.lease_acquired_at = (/* @__PURE__ */ new Date()).toISOString();
+  if (args.run_config !== void 0) row.run_config = args.run_config;
+  const { data, error: error2 } = await client.from("conductions").insert(row).select(CONDUCTION_COLS).single();
+  if (error2) {
+    if (isUniqueViolation(error2)) throw new ActiveConductionExistsError(args.task_id, error2.message);
+    throw new Error(error2.message);
+  }
+  return data;
+}
+var ConductorExcludedError = class extends Error {
+  code = "conductor-excluded";
+  task_id;
+  constructor(taskId) {
+    super(
+      `This ticket is taken away from the conductor (task ${taskId}, conductor_excluded_at is set) \u2014 Return it first (the "Return to conductor" action) before handing it off.`
+    );
+    this.name = "ConductorExcludedError";
+    this.task_id = taskId;
+  }
+};
+async function assertNotExcluded(client, taskId) {
+  if (!taskId) throw new Error("task_id is required");
+  const { data, error: error2 } = await client.from("tasks").select("conductor_excluded_at").eq("id", taskId).single();
+  if (error2) throw new Error(error2.message);
+  if (data?.conductor_excluded_at) throw new ConductorExcludedError(taskId);
+}
+
 // src/tools/create-conduction.ts
 var HANDOFF_CONTRACT_NOTE = "the duplicate-guard can only detect an active conduction record \u2014 it can't see an in-progress terminal session, so make sure any in-session work on this ticket has stopped before handing it off.";
 async function createConduction2(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
+  const runConfig = args.run_config !== void 0 ? RunConfigSchema.parse(args.run_config) : void 0;
   const taskId = await resolveTaskId(client, projectId, args.task_id);
   try {
     await assertNotExcluded(client, taskId);
-    const conduction = await createConduction(client, { task_id: taskId, mode: "controlled" });
+    const conduction = await createConduction(client, {
+      task_id: taskId,
+      mode: "controlled",
+      ...runConfig !== void 0 ? { run_config: runConfig } : {}
+    });
     return {
       conduction,
       message: `Conduction ${conduction.id} created for ${args.task_id} (${conduction.status}, mode: ${conduction.mode}). The conductor daemon will pick it up on its next pass. Note: ${HANDOFF_CONTRACT_NOTE}`
@@ -40846,6 +40817,10 @@ var createConductionTool = {
       task_id: {
         type: "string",
         description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)."
+      },
+      run_config: {
+        type: "object",
+        description: 'B-743: optional per-run operator choices for this conduction (e.g. { "note": "..." } \u2014 a free-text steering note delivered to the worker and posted back as a scoped ticket comment at each new gate). Omit entirely for the default run behavior.'
       }
     },
     required: ["task_id"]
@@ -41070,14 +41045,6 @@ var ackProjections = {
     if (!isRecord(result)) return result;
     return {
       conduction: pick2(result.conduction, ["id", "task_id", "status", "mode", "created_at"]),
-      message: result.message
-    };
-  },
-  // ——— early-reap lever (B-740) ———
-  request_conduction_reap: (result) => {
-    if (!isRecord(result)) return result;
-    return {
-      conduction: pick2(result.conduction, ["id", "task_id", "status", "reap_requested_at"]),
       message: result.message
     };
   }
@@ -41336,7 +41303,6 @@ function registerTools(disabledFeatures) {
     listTicketKnowledgeTool,
     getBuildEvidenceStatusTool,
     createConductionTool,
-    requestConductionReapTool,
     consumePendingAcceptanceEventTool,
     consumeAcceptanceEventTool
   ];
@@ -41564,9 +41530,6 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "create_conduction":
         result = await createConduction2(client, projectId, args);
-        break;
-      case "request_conduction_reap":
-        result = await requestConductionReap(client, args);
         break;
       case "download_attachment":
         result = await downloadAttachment(client, args);

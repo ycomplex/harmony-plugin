@@ -22,6 +22,7 @@ import {
   composeConductionIdLine,
   composeRunConfigInlineLine,
   composeRunConfigPathLine,
+  normalizeRunConfigJson,
   runConfigFilePathFor,
   main,
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -373,8 +374,33 @@ describe('composeConductionIdLine', () => {
   });
 });
 
+describe('normalizeRunConfigJson (B-743)', () => {
+  it('returns raw JSON input unchanged', () => {
+    expect(normalizeRunConfigJson('{"steering_note":"be terse"}')).toBe(
+      '{"steering_note":"be terse"}',
+    );
+  });
+
+  it('base64-decodes a base64-encoded-JSON input back to raw JSON text', () => {
+    const raw = '{"note":"be terse"}';
+    const encoded = Buffer.from(raw, 'utf8').toString('base64');
+    expect(normalizeRunConfigJson(encoded)).toBe(raw);
+  });
+
+  it('round-trips an apostrophe-bearing note through both raw and base64 input forms', () => {
+    const raw = JSON.stringify({ note: "don't touch the migration file" });
+    expect(normalizeRunConfigJson(raw)).toBe(raw);
+    const encoded = Buffer.from(raw, 'utf8').toString('base64');
+    expect(normalizeRunConfigJson(encoded)).toBe(raw);
+  });
+
+  it('throws when the input is neither valid JSON nor base64-encoded JSON', () => {
+    expect(() => normalizeRunConfigJson('not json, not base64 either !!!')).toThrow();
+  });
+});
+
 describe('composeRunConfigInlineLine', () => {
-  it('base64-encodes the given JSON string into a single HARMONY_RUN_CONFIG_JSON=<b64> line', () => {
+  it('base64-encodes the given RAW JSON string into a single HARMONY_RUN_CONFIG_JSON=<b64> line', () => {
     const line = composeRunConfigInlineLine('{"steering_note":"be terse"}');
     expect(line.startsWith('HARMONY_RUN_CONFIG_JSON=')).toBe(true);
     expect(line.endsWith('\n')).toBe(true);
@@ -387,6 +413,27 @@ describe('composeRunConfigInlineLine', () => {
   it('returns an empty string when no run-config JSON was given', () => {
     expect(composeRunConfigInlineLine(undefined)).toBe('');
     expect(composeRunConfigInlineLine('')).toBe('');
+  });
+
+  it('B-743: round-trips an apostrophe-bearing note WITHOUT double-encoding when given ALREADY-base64 input (the daemon-driven path, post scheduler.ts\'s upstream encode)', () => {
+    const raw = JSON.stringify({ note: "can't stop, won't stop" });
+    const alreadyEncoded = Buffer.from(raw, 'utf8').toString('base64');
+    const line = composeRunConfigInlineLine(alreadyEncoded);
+    const encoded = line.slice('HARMONY_RUN_CONFIG_JSON='.length, -1);
+    // Single-encoded, not double-encoded: decoding ONCE yields the raw JSON directly.
+    expect(Buffer.from(encoded, 'base64').toString('utf8')).toBe(raw);
+    expect(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))).toEqual({
+      note: "can't stop, won't stop",
+    });
+  });
+
+  it('B-743: round-trips an apostrophe-bearing note when given RAW (unencoded) input (a manual/older caller)', () => {
+    const raw = JSON.stringify({ note: "can't stop, won't stop" });
+    const line = composeRunConfigInlineLine(raw);
+    const encoded = line.slice('HARMONY_RUN_CONFIG_JSON='.length, -1);
+    expect(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))).toEqual({
+      note: "can't stop, won't stop",
+    });
   });
 });
 
@@ -473,6 +520,38 @@ describe('main(): B-846 run-config seam wiring (file + inline delivery, byte-for
     expect(existsSync(runConfigPath)).toBe(true);
     expect(readFileSync(runConfigPath, 'utf8')).toBe('{}');
     expect(statSync(runConfigPath).mode & 0o777).toBe(0o600);
+  });
+
+  it('B-743: writes RAW (decoded) JSON to the run-config.json sibling file when --run-config arrives ALREADY-base64 (the daemon-driven path) — the mounted-file reader (src/config/run-config.ts) never base64-decodes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b846-mint-main-'));
+    const out = join(dir, 'run.env');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fakeFetchImpl();
+    const raw = JSON.stringify({ note: "don't touch the migration file" });
+    const alreadyEncoded = Buffer.from(raw, 'utf8').toString('base64');
+    try {
+      await main(
+        [
+          '--out',
+          out,
+          '--conduction-id',
+          'cond-743',
+          '--run-config',
+          alreadyEncoded,
+          '--run-config-path',
+          '/home/worker/.claude/run-config.json',
+        ],
+        fakeEnv(),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    const runConfigPath = runConfigFilePathFor(out);
+    // The sibling file holds RAW JSON, never base64 — JSON.parse succeeds directly, no decode step.
+    expect(readFileSync(runConfigPath, 'utf8')).toBe(raw);
+    expect(JSON.parse(readFileSync(runConfigPath, 'utf8'))).toEqual({
+      note: "don't touch the migration file",
+    });
   });
 
   it('appends HARMONY_RUN_CONFIG_JSON inline (base64) and writes no run-config file when --run-config is given without --run-config-path', async () => {

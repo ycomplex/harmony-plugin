@@ -92,6 +92,33 @@ describe('createConduction', () => {
     expect(result).toEqual(conductionRow);
   });
 
+  it('B-743: includes run_config in the insert row when given', async () => {
+    const client = makeClient([
+      { data: { ...conductionRow, run_config: { note: "don't touch the migration file" } } },
+    ]);
+    await createConduction(client, {
+      task_id: 'task-1',
+      run_config: { note: "don't touch the migration file" },
+    });
+    expect(client.insert).toHaveBeenCalledWith({
+      task_id: 'task-1',
+      status: 'active',
+      mode: 'controlled',
+      lease_holder: null,
+      worker_kind: null,
+      worker_ref: null,
+      created_by: null,
+      run_config: { note: "don't touch the migration file" },
+    });
+  });
+
+  it('B-743: omits run_config from the insert row entirely when not given — the DB column default applies, never an explicit null', async () => {
+    const client = makeClient([{ data: conductionRow }]);
+    await createConduction(client, { task_id: 'task-1' });
+    const insertedRow = client.insert.mock.calls[0][0];
+    expect('run_config' in insertedRow).toBe(false);
+  });
+
   it('passes explicit fields through and stamps lease_acquired_at with the named lease_holder', async () => {
     const client = makeClient([{ data: { ...conductionRow, lease_holder: 'daemon-a' } }]);
     await createConduction(client, {

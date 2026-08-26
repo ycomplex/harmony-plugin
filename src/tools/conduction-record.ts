@@ -185,6 +185,12 @@ export interface CreateConductionArgs {
   worker_kind?: string;
   worker_ref?: string;
   created_by?: string;
+  /** B-743: the per-run operator choices seam (src/config/run-config.ts's RunConfigSchema — e.g.
+   *  `{ note: '...' }`). Omitted entirely -> the DB column's own default (`'{}'::jsonb`) applies,
+   *  same as every pre-B-743 create. Not validated against RunConfigSchema here — createConduction
+   *  is a thin insert primitive; validating belongs to whichever caller composes this value from
+   *  untrusted input (the create_conduction MCP tool, the web UI). */
+  run_config?: RunConfig;
 }
 
 /** Insert a new 'active' conduction — the ATOMIC lease-acquisition primitive (see module header).
@@ -208,6 +214,10 @@ export async function createConduction(
     created_by: args.created_by ?? null,
   };
   if (args.lease_holder) row.lease_acquired_at = new Date().toISOString();
+  // B-743: omitted entirely (not even `run_config: null`) when the caller doesn't pass one, so the
+  // DB column's own `'{}'::jsonb` default applies — never sends an explicit null that would
+  // override it.
+  if (args.run_config !== undefined) row.run_config = args.run_config;
 
   const { data, error } = await client
     .from('conductions')

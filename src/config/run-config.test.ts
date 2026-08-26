@@ -8,6 +8,7 @@ import {
   EMPTY_RUN_CONFIG,
   RunConfigSchema,
   getConductionId,
+  getOperatorNote,
   getRunConfig,
   isSessionResumeEnabled,
 } from './run-config.js';
@@ -74,6 +75,48 @@ describe('isSessionResumeEnabled', () => {
 
   it('is false when session_resume is absent but other unrelated keys are present', () => {
     expect(isSessionResumeEnabled({ steering_note: 'be terse' })).toBe(false);
+  });
+});
+
+describe('RunConfigSchema note (B-743)', () => {
+  it('accepts a run_config carrying a free-text note', () => {
+    expect(RunConfigSchema.parse({ note: 'be terse, and skip the design gate write-up' })).toEqual({
+      note: 'be terse, and skip the design gate write-up',
+    });
+  });
+
+  it('accepts a note containing a single quote — the exact shape v1 used to forbid', () => {
+    expect(RunConfigSchema.parse({ note: "don't touch the migration file" })).toEqual({
+      note: "don't touch the migration file",
+    });
+  });
+
+  it('still passes through unrelated unknown keys alongside note', () => {
+    expect(
+      RunConfigSchema.parse({ note: 'be terse', session_resume: { enabled: true } }),
+    ).toEqual({ note: 'be terse', session_resume: { enabled: true } });
+  });
+
+  it('rejects a non-string note', () => {
+    expect(() => RunConfigSchema.parse({ note: 42 })).toThrow();
+  });
+});
+
+describe('getOperatorNote', () => {
+  it('returns undefined on the empty run_config ({})', () => {
+    expect(getOperatorNote(EMPTY_RUN_CONFIG)).toBeUndefined();
+  });
+
+  it('returns undefined when note is an empty string', () => {
+    expect(getOperatorNote({ note: '' })).toBeUndefined();
+  });
+
+  it('returns the note text when present', () => {
+    expect(getOperatorNote({ note: "can't stop, won't stop" })).toBe("can't stop, won't stop");
+  });
+
+  it('returns undefined when note is absent but other unrelated keys are present', () => {
+    expect(getOperatorNote({ session_resume: { enabled: true } })).toBeUndefined();
   });
 });
 

@@ -70,6 +70,41 @@ describe('createConduction (create_conduction MCP tool handler)', () => {
     expect(result.message).toContain('cond-9');
   });
 
+  it('B-743: passes run_config through to the insert, validated, when given', async () => {
+    await createConduction(client, 'proj-1', {
+      task_id: 'B-758',
+      run_config: { note: "don't touch the migration file" },
+    });
+
+    expect(mocks.insertConduction).toHaveBeenCalledWith(client, {
+      task_id: 'uuid-1',
+      mode: 'controlled',
+      run_config: { note: "don't touch the migration file" },
+    });
+  });
+
+  it('B-743: omits run_config from the insert entirely when not given — byte-for-byte unchanged for every pre-B-743 caller', async () => {
+    await createConduction(client, 'proj-1', { task_id: 'B-758' });
+
+    expect(mocks.insertConduction).toHaveBeenCalledWith(client, {
+      task_id: 'uuid-1',
+      mode: 'controlled',
+    });
+    const call = mocks.insertConduction.mock.calls[0][1];
+    expect('run_config' in call).toBe(false);
+  });
+
+  it('B-743: rejects a malformed run_config before ever resolving/creating', async () => {
+    await expect(
+      createConduction(client, 'proj-1', {
+        task_id: 'B-758',
+        // @ts-expect-error -- deliberately malformed for the test
+        run_config: { session_resume: { enabled: 'yes' } },
+      }),
+    ).rejects.toThrow();
+    expect(mocks.insertConduction).not.toHaveBeenCalled();
+  });
+
   it('rejects a missing task_id before any resolution', async () => {
     await expect(createConduction(client, 'proj-1', { task_id: '' })).rejects.toThrow(
       /task_id is required/,

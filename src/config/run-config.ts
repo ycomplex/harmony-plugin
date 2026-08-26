@@ -31,10 +31,21 @@ import { z } from 'zod';
  *  is no code-level default-true fallback anywhere in this ticket's implementation. */
 const SessionResumeSchema = z.object({ enabled: z.boolean() }).optional();
 
+/** B-743: the free-text operator note — a per-run steering instruction the human types into the
+ *  Conduct dialog's "Run options" surface (web-side; the plugin-side half this ticket ships).
+ *  Unblocked by the SAME ticket that moves {run_config_json}'s base64 encoding upstream into
+ *  scheduler.ts (see runConfigJsonFor's own header) — v1's boolean/object-only restriction existed
+ *  ONLY to keep a raw single quote from ever reaching the single-quoted shell template literal, and
+ *  that restriction is now obsolete: the shell only ever sees base64. Optional, plain string —
+ *  `''`/absent both read as "no note" via getOperatorNote below. */
+const NoteSchema = z.string().optional();
+
 /** No other axis keys yet — each dependent ticket adds ONE top-level key here.
  *  `.passthrough()` so an accessor build that predates a newer key never throws on it — forward
  *  compatible by construction, same as this ticket's own additive-only design intent. */
-export const RunConfigSchema = z.object({ session_resume: SessionResumeSchema }).passthrough();
+export const RunConfigSchema = z
+  .object({ session_resume: SessionResumeSchema, note: NoteSchema })
+  .passthrough();
 export type RunConfig = z.infer<typeof RunConfigSchema>;
 export const EMPTY_RUN_CONFIG: RunConfig = {};
 
@@ -45,6 +56,15 @@ export const EMPTY_RUN_CONFIG: RunConfig = {};
  *  (see getRunConfig), so by the time a RunConfig value reaches this accessor it is trusted. */
 export function isSessionResumeEnabled(runConfig: RunConfig): boolean {
   return runConfig.session_resume?.enabled === true;
+}
+
+/** B-743: the operator note for this run_config payload, or `undefined` when none was set — an
+ *  absent `note` key and an empty-string `note` both read as "no note" (mirrors
+ *  isSessionResumeEnabled's own absence-is-the-off-state convention). Never throws — a malformed
+ *  `note` shape would already have been rejected by RunConfigSchema.parse at read time (see
+ *  getRunConfig). */
+export function getOperatorNote(runConfig: RunConfig): string | undefined {
+  return runConfig.note ? runConfig.note : undefined;
 }
 
 /** B-694 empty-env-value shadow class, matching src/daemon/config.ts's own envValue convention: a

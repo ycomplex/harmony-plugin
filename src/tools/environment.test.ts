@@ -127,6 +127,44 @@ describe('resolveEnvironment', () => {
     expect(prodEnv.target).toBe('prod');
   });
 
+  it('B-743: conduction_id is null outside a conduction (no HARMONY_CONDUCTION_ID set)', () => {
+    const env = resolveEnvironment({}, NOWHERE_URL);
+    expect(env.conduction_id).toBeNull();
+  });
+
+  it('B-743: conduction_id reflects HARMONY_CONDUCTION_ID when set', () => {
+    const env = resolveEnvironment({ HARMONY_CONDUCTION_ID: 'cond-743' }, NOWHERE_URL);
+    expect(env.conduction_id).toBe('cond-743');
+  });
+
+  it('B-743: operator_note is null when no run_config delivery var is set', () => {
+    const env = resolveEnvironment({}, NOWHERE_URL);
+    expect(env.operator_note).toBeNull();
+  });
+
+  it("B-743: operator_note reads the base64-decoded HARMONY_RUN_CONFIG_JSON's note key", () => {
+    const inline = Buffer.from(
+      JSON.stringify({ note: "don't touch the migration file" }),
+      'utf8',
+    ).toString('base64');
+    const env = resolveEnvironment({ HARMONY_RUN_CONFIG_JSON: inline }, NOWHERE_URL);
+    expect(env.operator_note).toBe("don't touch the migration file");
+  });
+
+  it('B-743: operator_note is null when run_config has no note key', () => {
+    const inline = Buffer.from(JSON.stringify({ session_resume: { enabled: true } }), 'utf8').toString(
+      'base64',
+    );
+    const env = resolveEnvironment({ HARMONY_RUN_CONFIG_JSON: inline }, NOWHERE_URL);
+    expect(env.operator_note).toBeNull();
+  });
+
+  it('B-743: operator_note degrades to null (never throws) on a malformed HARMONY_RUN_CONFIG_JSON — get_project must never break', () => {
+    const env = resolveEnvironment({ HARMONY_RUN_CONFIG_JSON: 'not-valid-base64-json!!' }, NOWHERE_URL);
+    expect(env.operator_note).toBeNull();
+    expect(env.conduction_id).toBeNull(); // sanity: the rest of the block still resolves
+  });
+
   it('degrades to the baked-in defaults (never throws) when the deployment config is malformed', () => {
     const dir = mkdtempSync(join(tmpdir(), 'b800-deployment-config-'));
     tempDirs.push(dir);

@@ -22536,6 +22536,36 @@ function loadDeploymentConfig(opts = {}) {
   return result.data;
 }
 
+// src/config/run-config.ts
+import { readFileSync as nodeReadFileSync } from "node:fs";
+var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
+var NoteSchema = external_exports.string().optional();
+var RunConfigSchema = external_exports.object({ session_resume: SessionResumeSchema, note: NoteSchema }).passthrough();
+var EMPTY_RUN_CONFIG = {};
+function getOperatorNote(runConfig) {
+  return runConfig.note ? runConfig.note : void 0;
+}
+function envValue(env, key) {
+  const v = env[key];
+  return v == null || v === "" ? void 0 : v;
+}
+function getConductionId(env = process.env) {
+  return envValue(env, "HARMONY_CONDUCTION_ID");
+}
+function getRunConfig(env = process.env, deps = {}) {
+  const readFile = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
+  const path = envValue(env, "HARMONY_RUN_CONFIG_PATH");
+  if (path) {
+    return RunConfigSchema.parse(JSON.parse(readFile(path)));
+  }
+  const inline = envValue(env, "HARMONY_RUN_CONFIG_JSON");
+  if (inline) {
+    const decoded = Buffer.from(inline, "base64").toString("utf8");
+    return RunConfigSchema.parse(JSON.parse(decoded));
+  }
+  return EMPTY_RUN_CONFIG;
+}
+
 // src/tools/environment.ts
 var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
 var KNOWN_REFS = {
@@ -22584,11 +22614,19 @@ function resolveEnvironment(env = process.env, moduleUrl = import.meta.url) {
     supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
   } catch {
   }
+  let operator_note;
+  try {
+    operator_note = getOperatorNote(getRunConfig(env)) ?? null;
+  } catch {
+    operator_note = null;
+  }
   return {
     supabase_url,
     supabase_project_ref,
     target: resolveKnownRefs(env)[supabase_project_ref] ?? "custom",
-    plugin_version: resolvePluginVersion(env, moduleUrl)
+    plugin_version: resolvePluginVersion(env, moduleUrl),
+    conduction_id: getConductionId(env) ?? null,
+    operator_note
   };
 }
 
@@ -23297,12 +23335,12 @@ function selectNamedProfile(deploymentConfig, profileName) {
   if (!profileName || !deploymentConfig) return null;
   return deploymentConfig.profiles?.[profileName] ?? null;
 }
-function envValue(env, key) {
+function envValue2(env, key) {
   const v = env[key];
   return v == null || v === "" ? void 0 : v;
 }
 function envMs(env, key, fallback) {
-  const raw = envValue(env, key);
+  const raw = envValue2(env, key);
   if (raw === void 0) return fallback;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) {
@@ -23311,7 +23349,7 @@ function envMs(env, key, fallback) {
   return n;
 }
 function envNonNegativeInt(env, key, fallback) {
-  const raw = envValue(env, key);
+  const raw = envValue2(env, key);
   if (raw === void 0) return fallback;
   const n = Number(raw);
   if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
@@ -23324,7 +23362,7 @@ function loadDaemonConfig(env, readFile, opts = {}) {
   if (opts.profileOverride) {
     profile = opts.profileOverride;
   } else {
-    const profilePath = envValue(env, "HARMONY_DAEMON_PROFILE");
+    const profilePath = envValue2(env, "HARMONY_DAEMON_PROFILE");
     if (!profilePath) {
       throw new Error(
         `No launch profile resolved: select one BY NAME from a deployment config via --config <path> --profile <name> (src/config/deployment-config.ts's "profiles" section), or set HARMONY_DAEMON_PROFILE to a standalone launch-profile JSON path ({ launch, reap } command templates). There is no baked-in worker command.`
@@ -23409,7 +23447,7 @@ function loadDaemonConfig(env, readFile, opts = {}) {
       requires_app_mint: validatedProfile.requires_app_mint,
       schema_version: validatedProfile.schema_version
     },
-    logPath: envValue(env, "HARMONY_DAEMON_LOG")
+    logPath: envValue2(env, "HARMONY_DAEMON_LOG")
   };
 }
 function renderTemplate(tpl, vars) {
@@ -23660,12 +23698,7 @@ function isAuthShapedError(err) {
 }
 function runConfigJsonFor(row) {
   const json = JSON.stringify(row.run_config ?? {});
-  if (json.includes("'")) {
-    throw new Error(
-      `conduction ${row.id}: run_config JSON contains a single quote, which is not safe to embed in the single-quoted shell template literal every launch profile uses for {run_config_json} \u2014 v1 run_config values must be boolean/object only, no free-text strings`
-    );
-  }
-  return json;
+  return Buffer.from(json, "utf8").toString("base64");
 }
 function templateVars(row, task, projectKey) {
   return {

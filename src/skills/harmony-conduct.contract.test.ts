@@ -457,4 +457,45 @@ describe('harmony-conduct skill contract', () => {
     const tools = referencedHarmonyTools(body);
     expect(tools).toContain('list_activity');
   });
+
+  it('B-743: delivers the operator note as a scoped comment AFTER the Captured->Proposed auto-advance (step 4) and BEFORE the next forward gate drafts its brief (step 6)', () => {
+    const body = skill.body;
+    const step4Idx = body.indexOf("4. **If `workflow_state === 'Captured'`");
+    const step4aIdx = body.indexOf('4a. **Deliver the run\'s operator note');
+    const step5Idx = body.indexOf("5. **If `workflow_state === 'Decomposed'`");
+    const step6Idx = body.indexOf('6. **Otherwise, determine the next forward activity');
+    expect(step4Idx).toBeGreaterThan(-1);
+    expect(step4aIdx).toBeGreaterThan(step4Idx);
+    expect(step5Idx).toBeGreaterThan(step4aIdx);
+    expect(step6Idx).toBeGreaterThan(step5Idx);
+    // Explicitly documents that delivery happens POST-auto-advance: a Captured ticket's note posts
+    // at Proposed, never at Captured itself.
+    expect(body).toMatch(/never at `Captured` itself/);
+  });
+
+  it('B-743: operator note delivery is scoped to (conduction_id, workflow_state), sourced from get_project\'s environment block — never a direct Bash env read (this skill carries no Bash in allowed-tools)', () => {
+    const body = skill.body;
+    expect(body).toMatch(/environment\.conduction_id/);
+    expect(body).toMatch(/environment\.operator_note/);
+    expect(body).toMatch(/OPERATOR-NOTE-DELIVERED conduction_id=.*workflow_state=/);
+    expect(skill.frontmatter['allowed-tools']).not.toMatch(/\bBash\b/);
+    const tools = referencedHarmonyTools(body);
+    expect(tools).toContain('list_comments');
+    expect(tools).toContain('add_comment');
+    expect(tools).toContain('get_project');
+  });
+
+  it('B-743: documents the two-part live-instruction scope check (conduction_id AND workflow_state, both required) generalized for any gate skill reading comments', () => {
+    const body = skill.body;
+    expect(body).toMatch(/two-part scope check/);
+    expect(body).toMatch(/BOTH halves/);
+    expect(body).toMatch(/stale note|misread/);
+  });
+
+  it('B-743: redelivery is safe by construction — a leg that dies before the marker exists leaves no marker, and the next leg delivers exactly once', () => {
+    const body = skill.body;
+    expect(body).toMatch(/[Rr]edelivery is safe by construction/);
+    expect(body).toMatch(/leaves NO marker/);
+    expect(body).toMatch(/exactly once/);
+  });
 });
