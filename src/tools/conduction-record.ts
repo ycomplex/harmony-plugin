@@ -105,6 +105,15 @@ export interface ConductionRecord {
    *  takeoverConduction's CAS treats a non-null value as immediately adoptable and clears it back
    *  to null on the same write that reassigns lease_holder — single-use. */
   clean_shutdown_at: string | null;
+  /** B-740: stamped by the web's "Reap now" button (Conductors view) or the request_conduction_reap
+   *  MCP tool — NEITHER of which ever performs the kill itself. It is a flag the daemon's own
+   *  scheduler pass notices (handleHeldConduction, on the SAME fresh row it already re-reads every
+   *  pass for a tracked in-flight launch) and acts on by invoking the SAME reap-escalation machinery
+   *  the per-launch deadline uses (see scheduler.ts's beginReapEscalation). Cleared implicitly by the
+   *  eventual park write's classification, never re-cleared explicitly by this column's own writers —
+   *  a stale leftover value on an already-settled/non-tracked row is inert (the daemon only ever acts
+   *  on it while a launch is genuinely tracked and unsettled). */
+  reap_requested_at: string | null;
   retry_count: number;
   worker_kind: string | null;
   worker_ref: string | null;
@@ -136,6 +145,7 @@ export interface ConductionRecord {
 const CONDUCTION_COLS =
   'id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, ' +
   'clean_shutdown_at, ' +
+  'reap_requested_at, ' +
   'retry_count, ' +
   'worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, ' +
   'started_at, created_by, created_at, updated_at, run_config';
@@ -297,6 +307,7 @@ export const CONDUCTION_PATCHABLE_FIELDS = [
   'last_heartbeat_at',
   'leg_started_at',
   'clean_shutdown_at',
+  'reap_requested_at',
   'retry_count',
   'worker_kind',
   'worker_ref',

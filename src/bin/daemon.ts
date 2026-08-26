@@ -55,7 +55,7 @@ import {
 import { createHeartbeatKeeper } from '../daemon/heartbeat.js';
 import { formatDaemonError } from '../daemon/error-format.js';
 import { loadDaemonConfig, selectNamedProfile } from '../daemon/config.js';
-import { renderQuietReapOutcome } from '../daemon/quiet-reap.js';
+import { quietLogLine } from '../daemon/quiet-reap.js';
 import { runBootPreflight, type PreflightProfile } from '../daemon/preflight.js';
 import {
   loadDeploymentConfig,
@@ -191,18 +191,28 @@ async function main(): Promise<void> {
 
   /** Run a rendered launch/reap/probe command; consume ONLY the exit code. Worker output is
    *  discarded to the log (never parsed — the agent-portability guardrail), UNLESS `opts.quiet` is
-   *  set (B-761) — used ONLY for the reap-before-adopt call site in scheduler.ts's
-   *  handleWonTakeover, where a nonzero exit is the ROUTINE "container already gone" case, not an
-   *  error: raw Docker stderr there reads as scary when it is actually expected. Quiet mode never
-   *  streams the raw stdout/stderr lines (still drains them, so a chatty command can't backpressure
-   *  the pipe) and instead logs exactly ONE calm line, keyed ONLY on the exit code — see
-   *  renderQuietReapOutcome.
+   *  set (B-761) — quiet mode never streams the raw stdout/stderr lines (still drains them, so a
+   *  chatty command can't backpressure the pipe).
+   *
+   *  B-740 REOPEN FIX: `opts.quiet` ALONE renders NOTHING on close — src/daemon/preflight.ts's boot
+   *  tool-check (`command -v <tool>`) passes exactly `{ quiet: true }` on EVERY boot, and a passing
+   *  check must never look like a reap outcome (the exact bug this reopen fixes: the old two-way
+   *  quiet flag unconditionally called renderQuietReapOutcome, so every tool found on PATH logged
+   *  "reaped a live worker" on every boot). A caller now OPTS IN to a rendered line by ALSO supplying
+   *  `opts.quietRender` — today, ONLY the reap-before-adopt call site in scheduler.ts's
+   *  handleWonTakeover (`quietRender: renderQuietReapOutcome`), where a nonzero exit is the ROUTINE
+   *  "container already gone" case, not an error: raw Docker stderr there reads as scary when it is
+   *  actually expected. See quiet-reap.ts's `quietLogLine` (the decision extracted below) for the
+   *  regression-tested contract.
    *
    *  B-801: defined HERE (moved up from just above `deps`) so the boot preflight below — which
    *  MUST run before HarmonyAuth/createAuthenticatedClient — can reuse this SAME instance for its
    *  `command -v <tool>` resolution rather than standing up a second exec path; SchedulerDeps below
    *  still gets the identical closure. */
-  const runCommand = (cmd: string, opts?: { quiet?: boolean }): Promise<{ exitCode: number | null }> =>
+  const runCommand = (
+    cmd: string,
+    opts?: { quiet?: boolean; quietRender?: (code: number | null) => string },
+  ): Promise<{ exitCode: number | null }> =>
     new Promise((resolve) => {
       const child = exec(cmd);
       if (opts?.quiet) {
@@ -217,7 +227,8 @@ async function main(): Promise<void> {
         resolve({ exitCode: null });
       });
       child.on('close', (code) => {
-        if (opts?.quiet) log(renderQuietReapOutcome(code));
+        const line = quietLogLine(code, opts);
+        if (line !== null) log(line);
         resolve({ exitCode: code });
       });
     });

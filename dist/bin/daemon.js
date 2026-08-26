@@ -23102,7 +23102,7 @@ var CONDUCTION_STATUSES = [
   ...CONDUCTION_HUMAN_OWNED_STATUSES,
   ...CONDUCTION_TERMINAL_STATUSES
 ];
-var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
+var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, reap_requested_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
 var CONDUCTION_PATCHABLE_FIELDS = [
   "status",
   "lease_holder",
@@ -23110,6 +23110,7 @@ var CONDUCTION_PATCHABLE_FIELDS = [
   "last_heartbeat_at",
   "leg_started_at",
   "clean_shutdown_at",
+  "reap_requested_at",
   "retry_count",
   "worker_kind",
   "worker_ref",
@@ -23428,6 +23429,10 @@ function renderQuietReapOutcome(exitCode) {
   if (exitCode === 3) return "reap: worker already gone \u2014 ok";
   return `reap: unexpected exit code ${exitCode === null ? "null" : exitCode} \u2014 investigate`;
 }
+function quietLogLine(exitCode, opts) {
+  if (!opts?.quiet || !opts.quietRender) return null;
+  return opts.quietRender(exitCode);
+}
 
 // src/daemon/preflight.ts
 var LAUNCHD_PATH_HINT = "Note: launchd inherits a minimal PATH \u2014 add the SDK's bin dir to the plist's EnvironmentVariables PATH key.";
@@ -23570,6 +23575,7 @@ function classifyWorkerExit(args) {
   }
   if (row.stale === true) return { action: "park", reason: "stale" };
   if (args.timedOut) return { action: "park", reason: "worker-timeout" };
+  if (args.operatorReaped) return { action: "park", reason: "operator-reap" };
   if (exitCode !== 0) return { action: "park", reason: "dirty-exit" };
   if (!progressed) {
     return args.repoProgressed ? { action: "park", reason: "repo-active-board-silent" } : { action: "park", reason: "no-progress" };
@@ -23776,7 +23782,17 @@ async function handleHeldConduction(deps, state, keeper, excluded, runtime, row)
         tracked.exitCode = null;
       }
     }
-    if (!tracked.settled) return;
+    if (!tracked.settled) {
+      if (!tracked.reaping && row.reap_requested_at) {
+        tracked.reaping = true;
+        tracked.cancelDeadline();
+        deps.log(
+          `${label(row, tracked.current, deps.projectKey)}: operator requested an early reap \u2014 escalating`
+        );
+        beginReapEscalation(deps, runtime, row, tracked.current, tracked, "operatorReaped");
+      }
+      return;
+    }
     await settleTrackedLaunch(deps, state, keeper, runtime, row, tracked);
     return;
   }
@@ -23792,6 +23808,17 @@ async function handleHeldConduction(deps, state, keeper, excluded, runtime, row)
   const wake = detectWake(baseline, current);
   if (wake === null) {
     state.set(row.id, captureBaseline(current));
+    return;
+  }
+  if (current.archived === true) {
+    deps.log(`${label(row, current, deps.projectKey)}: ticket archived \u2014 declining fire, parking`);
+    state.delete(row.id);
+    keeper.stop(row.id);
+    await writeIfHeld(deps, state, keeper, row, {
+      status: "parked",
+      last_worker_exit_code: null,
+      last_worker_exit_class: "ticket-archived"
+    });
     return;
   }
   if (current.conductor_excluded_at) {
@@ -23885,6 +23912,8 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
         cancelDeadline: () => {
         },
         reconciled: true,
+        operatorReaped: false,
+        reaping: false,
         // B-792: no real fire happened on THIS daemon for a reconciled re-attach — there is no
         // genuine fire-time probe to anchor against, so repoProgressed reads false at this launch's
         // eventual settlement (conservative: never a false positive from an un-anchored comparison).
@@ -23903,7 +23932,7 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
   }
   await deps.runCommand(
     renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey)),
-    { quiet: true }
+    { quiet: true, quietRender: renderQuietReapOutcome }
   );
   if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: null })) return false;
   if (row.clean_shutdown_at !== null) {
@@ -23930,6 +23959,7 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
     exitCode: tracked.exitCode,
     progressed,
     timedOut: tracked.timedOut,
+    operatorReaped: tracked.operatorReaped,
     repoProgressed
   };
   const outcome = classifyWorkerExit(classifyArgs);
@@ -24015,6 +24045,22 @@ async function fireStealCandidates(deps, state, keeper, runtime, candidates) {
   }
   return authShapedFailures;
 }
+function beginReapEscalation(deps, runtime, row, current, tracked, flag) {
+  tracked[flag] = true;
+  void (async () => {
+    for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
+      void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, current, deps.projectKey)));
+      await new Promise((resolveGrace) => {
+        deps.startTimeout(REAP_GRACE_MS, resolveGrace);
+      });
+      if (tracked.settled) return;
+      deps.log(
+        `${label(row, current, deps.projectKey)}: reap ${attempt}/${REAP_ATTEMPT_LIMIT} did not free the launch`
+      );
+    }
+    runtime.fatal = new PersistentReapFailure(row.id);
+  })();
+}
 async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, retryCount) {
   const current = preReadCurrent ?? await deps.getTaskMeta(row.task_id);
   if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: iso(deps.now()) })) {
@@ -24034,6 +24080,8 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
     cancelDeadline: () => {
     },
     reconciled: false,
+    operatorReaped: false,
+    reaping: false,
     preFireHeadSha
   };
   runtime.running.set(row.id, tracked);
@@ -24047,23 +24095,10 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
     tracked.exitCode = result.exitCode;
   });
   const cancelDeadline = deps.startTimeout(deps.config.workerTimeoutMs, () => {
-    tracked.timedOut = true;
     deps.log(
       `${label(row, current, deps.projectKey)}: worker exceeded ${deps.config.workerTimeoutMs}ms \u2014 reaping`
     );
-    void (async () => {
-      for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
-        void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, current, deps.projectKey)));
-        await new Promise((resolveGrace) => {
-          deps.startTimeout(REAP_GRACE_MS, resolveGrace);
-        });
-        if (tracked.settled) return;
-        deps.log(
-          `${label(row, current, deps.projectKey)}: reap ${attempt}/${REAP_ATTEMPT_LIMIT} did not free the launch`
-        );
-      }
-      runtime.fatal = new PersistentReapFailure(row.id);
-    })();
+    beginReapEscalation(deps, runtime, row, current, tracked, "timedOut");
   });
   tracked.cancelDeadline = cancelDeadline;
   void launch.finally(cancelDeadline);
@@ -24186,7 +24221,8 @@ ${err instanceof Error ? err.message : String(err)}
       resolve({ exitCode: null });
     });
     child.on("close", (code) => {
-      if (opts?.quiet) log(renderQuietReapOutcome(code));
+      const line = quietLogLine(code, opts);
+      if (line !== null) log(line);
       resolve({ exitCode: code });
     });
   });

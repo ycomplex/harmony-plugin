@@ -308,6 +308,19 @@ export const ackProjections: Record<string, AckProjection> = {
       message: result.message,
     };
   },
+
+  // ——— early-reap lever (B-740) ———
+  request_conduction_reap: (result) => {
+    if (!isRecord(result)) return result;
+    // Mirrors create_conduction's shape/rationale directly above: the only caller arg is the
+    // conduction_id identifier, so there is no caller-sent body to strip — this shrinks the full
+    // conduction row (lease/heartbeat/worker fields, none of it caller-sent) to the identity + the
+    // ONE field this call actually changed, plus the server-authored confirmation message.
+    return {
+      conduction: pick(result.conduction, ['id', 'task_id', 'status', 'reap_requested_at']),
+      message: result.message,
+    };
+  },
 };
 
 /**

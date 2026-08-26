@@ -133,6 +133,7 @@
 
 import { captureBaseline, detectWake, type WatchBaseline } from './watch.js';
 import { classifyWorkerExit, exitClass, type ClassifyArgs } from './classify.js';
+import { renderQuietReapOutcome } from './quiet-reap.js';
 import { exchangeWentInactive } from '../conductor/ball-axis.js';
 import { renderTemplate, type DaemonConfig } from './config.js';
 import type { HeartbeatKeeper } from './heartbeat.js';
@@ -153,6 +154,12 @@ export type DaemonTask = Taskish & {
   task_number?: number | null;
   title?: string | null;
   conductor_excluded_at?: string | null;
+  /** B-740: is the TICKET this row conducts itself archived? A genuinely NEW read — confirmed by
+   *  reading classify.ts/daemon.ts, `archived` was previously read ONLY to count non-archived
+   *  CHILDREN for split-umbrella classification (countNonArchivedChildren), never the ticket's own
+   *  flag. Gates ONLY a new fire (see handleHeldConduction's wake-detection block) — an already-
+   *  tracked in-flight conduction is unaffected. */
+  archived?: boolean | null;
 };
 
 export interface SchedulerDeps {
@@ -178,12 +185,20 @@ export interface SchedulerDeps {
   /** B-739: start a one-shot timer; returns a cancel function. Same dependency-injection rule. */
   startTimeout(ms: number, fn: () => void): () => void;
   /** Run a rendered launch/reap/probe command to completion; the daemon consumes ONLY the exit
-   *  code (never stdout — the agent-portability guardrail). `opts.quiet` (B-761) is set ONLY at
-   *  the reap-before-adopt call site in `handleWonTakeover`: the routine "container already gone"
-   *  case there must render calmly rather than as raw Docker stderr — see the real implementation
-   *  (src/bin/daemon.ts) for the quiet rendering itself; this module only decides WHERE to ask
-   *  for it. */
-  runCommand(cmd: string, opts?: { quiet?: boolean }): Promise<{ exitCode: number | null }>;
+   *  code (never stdout — the agent-portability guardrail). `opts.quiet` suppresses raw stdout/
+   *  stderr; `opts.quietRender` (B-740, generalized from the old quiet-only shape) is an OPTIONAL
+   *  renderer this module supplies to get exactly ONE calm log line instead of silence — `quiet`
+   *  ALONE (no `quietRender`) means "suppress noise, log nothing", which is what src/daemon/
+   *  preflight.ts's boot tool-check relies on (a passing `command -v <tool>` must never look like a
+   *  reap). The ONE call site here that supplies its own renderer is the reap-before-adopt call in
+   *  `handleWonTakeover` (`quietRender: renderQuietReapOutcome`) — the routine "container already
+   *  gone" case there must render calmly rather than as raw Docker stderr. See the real
+   *  implementation (src/bin/daemon.ts) / quiet-reap.ts's `quietLogLine` for how quiet/quietRender
+   *  are actually applied; this module only decides WHERE to ask for it. */
+  runCommand(
+    cmd: string,
+    opts?: { quiet?: boolean; quietRender?: (code: number | null) => string },
+  ): Promise<{ exitCode: number | null }>;
   /** B-792: a LIVE `git ls-remote <ref>` head-SHA probe — narrow, structured-output read, distinct
    *  from `runCommand`'s exit-code-only discipline (this reads one CLI's stdout, never the LLM
    *  worker's — the agent-portability guardrail is unaffected). Returns null when the ref cannot be
@@ -481,6 +496,15 @@ export interface TrackedLaunch {
    *  settlement is discovered by re-probing each pass (see handleConduction) rather than a local
    *  `runCommand(launch)` promise settling. Cosmetic beyond that: classification is identical. */
   reconciled: boolean;
+  /** B-740: did an OPERATOR (the web "Reap now" button, or the request_conduction_reap MCP tool)
+   *  request an early reap of THIS launch, that this daemon's own reap-escalation actually freed?
+   *  Threaded into ClassifyArgs.operatorReaped exactly as `timedOut` is threaded today. */
+  operatorReaped: boolean;
+  /** B-740: has the early-reap escalation for THIS launch already been started? Guards
+   *  handleHeldConduction's tracked-row `reap_requested_at` check so it fires EXACTLY ONCE per
+   *  launch — a fresh row read every pass would otherwise re-trigger `beginReapEscalation` on every
+   *  subsequent pass until the launch settles. */
+  reaping: boolean;
   /** B-792: the leg's known work-branch head SHA, probed ONCE at fire time (see fireLaunch /
    *  resolveWorkRef) — null when no `build_pr.branch`/`work_branch.branch` was resolvable, or the
    *  probe found nothing. Compared against a fresh settle-time probe of the SAME ref resolution
@@ -662,7 +686,22 @@ async function handleHeldConduction(
         // ambiguous-completion branch already uses.
       }
     }
-    if (!tracked.settled) return; // do nothing this pass — the HeartbeatKeeper ticks independently.
+    // B-740: an operator (the web "Reap now" button, or request_conduction_reap) requested an
+    // early reap — `row` is ALREADY a fresh per-pass read (see this module's header), so this needs
+    // no extra fetch. `tracked.reaping` guards against re-triggering on every subsequent pass while
+    // the escalation runs, and the natural per-launch deadline timer is cancelled/no-op'd since this
+    // escalation supersedes it.
+    if (!tracked.settled) {
+      if (!tracked.reaping && row.reap_requested_at) {
+        tracked.reaping = true;
+        tracked.cancelDeadline();
+        deps.log(
+          `${label(row, tracked.current, deps.projectKey)}: operator requested an early reap — escalating`,
+        );
+        beginReapEscalation(deps, runtime, row, tracked.current, tracked, 'operatorReaped');
+      }
+      return; // do nothing further this pass — the HeartbeatKeeper ticks independently.
+    }
     await settleTrackedLaunch(deps, state, keeper, runtime, row, tracked);
     return;
   }
@@ -687,6 +726,29 @@ async function handleHeldConduction(
     // B-691: ROLL the baseline on a no-wake pass — see watch.ts's own header for the defect class
     // this prevents.
     state.set(row.id, captureBaseline(current));
+    return;
+  }
+
+  // B-740: the TICKET itself has been archived — decline to fire a NEW leg. A pre-fire DECLINE,
+  // never a worker exit: this bypasses classifyWorkerExit entirely, going straight through the SAME
+  // writeIfHeld park path settleTrackedLaunch uses. Gated the SAME way as the conductor_excluded_at
+  // check just below — a new fire only: an already-tracked in-flight conduction for this row never
+  // reaches this branch at all (the tracked-launch check at the top of handleHeldConduction returns
+  // long before this point), so the early-reap lever (an operator-requested reap of a hung leg)
+  // stays available on an active conduction regardless of the ticket's archived status. Transition-
+  // only logging: the park write below moves this row OUT of the 'active' set the very next
+  // listConductions read, so this line can fire at most once per archived ticket by construction —
+  // unlike conductor_excluded_at (whose row STAYS active and can re-wake many times), no separate
+  // log-once memory is needed here.
+  if (current.archived === true) {
+    deps.log(`${label(row, current, deps.projectKey)}: ticket archived — declining fire, parking`);
+    state.delete(row.id);
+    keeper.stop(row.id);
+    await writeIfHeld(deps, state, keeper, row, {
+      status: 'parked',
+      last_worker_exit_code: null,
+      last_worker_exit_class: 'ticket-archived',
+    });
     return;
   }
 
@@ -872,6 +934,8 @@ async function handleWonTakeover(
         exitCode: null,
         cancelDeadline: () => {},
         reconciled: true,
+        operatorReaped: false,
+        reaping: false,
         // B-792: no real fire happened on THIS daemon for a reconciled re-attach — there is no
         // genuine fire-time probe to anchor against, so repoProgressed reads false at this launch's
         // eventual settlement (conservative: never a false positive from an un-anchored comparison).
@@ -900,7 +964,7 @@ async function handleWonTakeover(
   }
   await deps.runCommand(
     renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey)),
-    { quiet: true },
+    { quiet: true, quietRender: renderQuietReapOutcome },
   );
   // B-742/B-717 point 4 (corrected): this clear is reached ONLY for a row with NO tracked in-flight
   // worker on THIS daemon — `running` cannot already hold this id (we just won the takeover, and
@@ -976,6 +1040,7 @@ async function settleTrackedLaunch(
     exitCode: tracked.exitCode,
     progressed,
     timedOut: tracked.timedOut,
+    operatorReaped: tracked.operatorReaped,
     repoProgressed,
   };
   const outcome = classifyWorkerExit(classifyArgs);
@@ -1106,6 +1171,60 @@ async function fireStealCandidates(
   return authShapedFailures;
 }
 
+/** B-740: which TrackedLaunch flag `beginReapEscalation` flips before it starts — 'timedOut' for
+ *  the existing per-launch deadline path (unchanged behavior), 'operatorReaped' for the new early-
+ *  reap-request path (handleHeldConduction). classify.ts reads whichever flag ended up true. */
+type ReapEscalationFlag = 'timedOut' | 'operatorReaped';
+
+/** B-739/B-740: the SHARED reap-escalation body — fire the reap template up to REAP_ATTEMPT_LIMIT
+ *  times, REAP_GRACE_MS apart, until `tracked.settled` flips true; escalate to a process-killing
+ *  PersistentReapFailure (via the shared fatal slot — see its class doc) if the launch is still not
+ *  free after every attempt. Originally lived inline in the per-launch deadline's timeout callback
+ *  only; B-740 extracts it so the SAME body also drives the operator-requested early-reap path
+ *  (handleHeldConduction's tracked-row `reap_requested_at` check) — the two call sites differ ONLY
+ *  in which TrackedLaunch flag they flip (`flag`) and in what triggered them (a caller-supplied log
+ *  line, logged by each call site BEFORE calling this). */
+function beginReapEscalation(
+  deps: SchedulerDeps,
+  runtime: SchedulerRuntime,
+  row: ConductionRecord,
+  current: DaemonTask,
+  tracked: TrackedLaunch,
+  flag: ReapEscalationFlag,
+): void {
+  tracked[flag] = true;
+  void (async () => {
+    // B-761 reopen fix — CONFIRMED (verified against this exact code, not assumed): this loop
+    // does NOT pass `{ quiet: true }` (stays verbose, unlike handleWonTakeover's reap-before-
+    // adopt call site) and does NOT consume the reap command's exit code AT ALL — the call below
+    // is fired-and-forgotten (`void`), its settled Promise's result never assigned anywhere.
+    // Attempt counting / escalation below is driven ENTIRELY by `tracked.settled` (set only by
+    // the LAUNCH promise settling, in fireLaunch — never by a reconciled/re-attached launch's own
+    // probe-driven settlement path either, which sets `tracked.settled` directly). The reap
+    // scripts' exit-code semantics (miss=3 / kill=0 / other=genuine-error, see
+    // container/cloud-worker-reap.sh and container/docker-worker-reap.sh) is therefore
+    // automatically safe here BY CONSTRUCTION — see scheduler.test.ts's "the deadline-escalation
+    // attempt counter is driven purely by tracked.settled" test for a direct EXECUTED proof.
+    for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
+      // NEVER await the reap: a wedged container runtime can hang the reap command itself, and
+      // the call we make to unblock ourselves must not be able to block us.
+      void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, current, deps.projectKey)));
+      await new Promise<void>((resolveGrace) => {
+        deps.startTimeout(REAP_GRACE_MS, resolveGrace);
+      });
+      if (tracked.settled) return;
+      deps.log(
+        `${label(row, current, deps.projectKey)}: reap ${attempt}/${REAP_ATTEMPT_LIMIT} ` +
+          `did not free the launch`,
+      );
+    }
+    // B-717: this used to `reject(new PersistentReapFailure(...))` into a Promise.race a pass
+    // awaited — nothing awaits a tracked launch's lifetime under fire-and-track anymore, so it
+    // must escape via the shared fatal slot instead. See SchedulerRuntime.fatal.
+    runtime.fatal = new PersistentReapFailure(row.id);
+  })();
+}
+
 /** Fire ONE launch: read a fresh pre-fire ticket snapshot (unless one was already read — the
  *  steal-win path already established eligibility this same pass, per the module header), stamp
  *  leg_started_at, kick off runCommand WITHOUT awaiting it, and track it in `running`. Arms this
@@ -1144,6 +1263,8 @@ async function fireLaunch(
     exitCode: null,
     cancelDeadline: () => {},
     reconciled: false,
+    operatorReaped: false,
+    reaping: false,
     preFireHeadSha,
   };
   runtime.running.set(row.id, tracked);
@@ -1180,40 +1301,11 @@ async function fireLaunch(
     });
 
   const cancelDeadline = deps.startTimeout(deps.config.workerTimeoutMs, () => {
-    tracked.timedOut = true;
     deps.log(
       `${label(row, current, deps.projectKey)}: worker exceeded ` +
         `${deps.config.workerTimeoutMs}ms — reaping`,
     );
-    void (async () => {
-      // B-761 reopen fix — CONFIRMED (verified against this exact code, not assumed): this loop
-      // does NOT pass `{ quiet: true }` (stays verbose, unlike handleWonTakeover's reap-before-
-      // adopt call site) and does NOT consume the reap command's exit code AT ALL — the call below
-      // is fired-and-forgotten (`void`), its settled Promise's result never assigned anywhere.
-      // Attempt counting / escalation below is driven ENTIRELY by `tracked.settled` (set only by
-      // the LAUNCH promise settling, a few lines up). The reap scripts' exit-code semantics change
-      // (miss=3 / kill=0 / other=genuine-error, see container/cloud-worker-reap.sh and
-      // container/docker-worker-reap.sh) is therefore automatically safe here BY CONSTRUCTION —
-      // see scheduler.test.ts's "the deadline-escalation attempt counter is driven purely by
-      // tracked.settled" test for a direct EXECUTED proof.
-      for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
-        // NEVER await the reap: a wedged container runtime can hang the reap command itself, and
-        // the call we make to unblock ourselves must not be able to block us.
-        void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, current, deps.projectKey)));
-        await new Promise<void>((resolveGrace) => {
-          deps.startTimeout(REAP_GRACE_MS, resolveGrace);
-        });
-        if (tracked.settled) return;
-        deps.log(
-          `${label(row, current, deps.projectKey)}: reap ${attempt}/${REAP_ATTEMPT_LIMIT} ` +
-            `did not free the launch`,
-        );
-      }
-      // B-717: this used to `reject(new PersistentReapFailure(...))` into a Promise.race a pass
-      // awaited — nothing awaits a tracked launch's lifetime under fire-and-track anymore, so it
-      // must escape via the shared fatal slot instead. See SchedulerRuntime.fatal.
-      runtime.fatal = new PersistentReapFailure(row.id);
-    })();
+    beginReapEscalation(deps, runtime, row, current, tracked, 'timedOut');
   });
   tracked.cancelDeadline = cancelDeadline;
   void launch.finally(cancelDeadline);
