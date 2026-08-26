@@ -23138,14 +23138,14 @@ async function updateConduction(client, id, patch) {
   if (!id) throw new Error("id is required");
   assertPatchable(patch);
   const { data, error } = await client.from("conductions").update(patch).eq("id", id).select(CONDUCTION_COLS).single();
-  if (error) throw new Error(error.message);
+  if (error) throw error;
   return data;
 }
 async function listConductions(client, args) {
   let query = client.from("conductions").select(`${CONDUCTION_COLS}, tasks(priority)`);
   if (args.status) query = query.eq("status", args.status);
   const { data, error } = await query.order("started_at", { ascending: true });
-  if (error) throw new Error(error.message);
+  if (error) throw error;
   const rows = data ?? [];
   return rows.map((row) => {
     const { tasks, ...rest } = row;
@@ -23167,7 +23167,7 @@ async function takeoverConduction(client, args) {
   const { data, error } = await query.or(
     `last_heartbeat_at.is.null,last_heartbeat_at.lt.${args.stale_before},clean_shutdown_at.not.is.null`
   ).select(CONDUCTION_COLS).maybeSingle();
-  if (error) throw new Error(error.message);
+  if (error) throw error;
   return data ?? null;
 }
 async function stealConduction(client, args) {
@@ -23180,13 +23180,13 @@ async function stealConduction(client, args) {
     lease_acquired_at: stamp,
     last_heartbeat_at: stamp
   }).eq("id", args.id).eq("status", "active").eq("lease_holder", args.observed_lease_holder).is("leg_started_at", null).select(CONDUCTION_COLS).maybeSingle();
-  if (error) throw new Error(error.message);
+  if (error) throw error;
   return data ?? null;
 }
 async function markCleanShutdown(client, leaseHolder) {
   if (!leaseHolder) throw new Error("leaseHolder is required");
   const { error, count } = await client.from("conductions").update({ clean_shutdown_at: (/* @__PURE__ */ new Date()).toISOString() }, { count: "exact" }).eq("lease_holder", leaseHolder).eq("status", "active");
-  if (error) throw new Error(error.message);
+  if (error) throw error;
   return count ?? 0;
 }
 async function updateConductionIfHeld(client, id, expectedLeaseHolder, patch) {
@@ -23194,7 +23194,7 @@ async function updateConductionIfHeld(client, id, expectedLeaseHolder, patch) {
   if (!expectedLeaseHolder) throw new Error("expectedLeaseHolder is required");
   assertPatchable(patch);
   const { data, error } = await client.from("conductions").update(patch).eq("id", id).eq("lease_holder", expectedLeaseHolder).select(CONDUCTION_COLS).maybeSingle();
-  if (error) throw new Error(error.message);
+  if (error) throw error;
   return data ?? null;
 }
 
@@ -24119,9 +24119,7 @@ async function markCleanShutdownBounded(client, holder, logFn, timeoutMs) {
       logFn(`clean shutdown: marker stamped on ${outcome.count} held row${outcome.count === 1 ? "" : "s"}`);
     }
   } catch (err) {
-    logFn(
-      `clean-shutdown marker write failed (${err instanceof Error ? err.message : String(err)}) \u2014 exiting anyway`
-    );
+    logFn(`clean-shutdown marker write failed (${formatDaemonError(err)}) \u2014 exiting anyway`);
   } finally {
     if (timer) clearTimeout(timer);
   }
