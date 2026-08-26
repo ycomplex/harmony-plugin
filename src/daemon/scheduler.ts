@@ -322,9 +322,21 @@ export class PersistentReapFailure extends Error {
   }
 }
 
-/** Auth-shaped error detection (exported for tests): 401s, expired/invalid JWTs and tokens. */
+/** Auth-shaped error detection (exported for tests): 401s, expired/invalid JWTs and tokens.
+ *  B-844: a Supabase/PostgREST failure thrown as a plain object (not `instanceof Error`) still
+ *  carries a string `.message` — coercing the whole object through `String()` instead produces
+ *  the useless "[object Object]", which can never match the auth-shape regex below and would
+ *  silently defeat the PersistentAuthFailure circuit breaker. Read `.message` off that shape too. */
 export function isAuthShapedError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
+  const message =
+    err instanceof Error
+      ? err.message
+      : typeof err === 'object' &&
+          err !== null &&
+          'message' in err &&
+          typeof (err as { message: unknown }).message === 'string'
+        ? (err as { message: string }).message
+        : String(err);
   return /\b401\b|jwt expired|invalid (jwt|token)|token .*expired/i.test(message);
 }
 
@@ -564,7 +576,7 @@ export async function runSchedulerPass(
       // must never park anything — parking is a classification, not an error handler).
       if (isAuthShapedError(err)) authShapedFailures += 1;
       deps.log(
-        `conduction ${row.id}: pass error — row skipped (${err instanceof Error ? err.message : String(err)})`,
+        `conduction ${row.id}: pass error — row skipped (${formatDaemonError(err)})`,
       );
     }
   }
@@ -1049,7 +1061,7 @@ async function fireReadyCandidates(
       // it — the same per-row error isolation the main loop applies, just for the fire phase.
       if (isAuthShapedError(err)) authShapedFailures += 1;
       deps.log(
-        `conduction ${id}: fire error — row skipped (${err instanceof Error ? err.message : String(err)})`,
+        `conduction ${id}: fire error — row skipped (${formatDaemonError(err)})`,
       );
     }
   }
@@ -1087,7 +1099,7 @@ async function fireStealCandidates(
     } catch (err) {
       if (isAuthShapedError(err)) authShapedFailures += 1;
       deps.log(
-        `conduction ${row.id}: steal error — row skipped (${err instanceof Error ? err.message : String(err)})`,
+        `conduction ${row.id}: steal error — row skipped (${formatDaemonError(err)})`,
       );
     }
   }
