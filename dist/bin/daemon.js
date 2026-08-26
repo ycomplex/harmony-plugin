@@ -23649,7 +23649,7 @@ var PersistentReapFailure = class extends Error {
   }
 };
 function isAuthShapedError(err) {
-  const message = err instanceof Error ? err.message : String(err);
+  const message = err instanceof Error ? err.message : typeof err === "object" && err !== null && "message" in err && typeof err.message === "string" ? err.message : String(err);
   return /\b401\b|jwt expired|invalid (jwt|token)|token .*expired/i.test(message);
 }
 function runConfigJsonFor(row) {
@@ -23739,7 +23739,7 @@ async function runSchedulerPass(deps, state, keeper, runtime) {
       if (err instanceof PersistentReapFailure) throw err;
       if (isAuthShapedError(err)) authShapedFailures += 1;
       deps.log(
-        `conduction ${row.id}: pass error \u2014 row skipped (${err instanceof Error ? err.message : String(err)})`
+        `conduction ${row.id}: pass error \u2014 row skipped (${formatDaemonError(err)})`
       );
     }
   }
@@ -23985,7 +23985,7 @@ async function fireReadyCandidates(deps, state, keeper, runtime, byId) {
     } catch (err) {
       if (isAuthShapedError(err)) authShapedFailures += 1;
       deps.log(
-        `conduction ${id}: fire error \u2014 row skipped (${err instanceof Error ? err.message : String(err)})`
+        `conduction ${id}: fire error \u2014 row skipped (${formatDaemonError(err)})`
       );
     }
   }
@@ -24009,7 +24009,7 @@ async function fireStealCandidates(deps, state, keeper, runtime, candidates) {
     } catch (err) {
       if (isAuthShapedError(err)) authShapedFailures += 1;
       deps.log(
-        `conduction ${row.id}: steal error \u2014 row skipped (${err instanceof Error ? err.message : String(err)})`
+        `conduction ${row.id}: steal error \u2014 row skipped (${formatDaemonError(err)})`
       );
     }
   }
