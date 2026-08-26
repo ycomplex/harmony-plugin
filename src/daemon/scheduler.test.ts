@@ -400,7 +400,7 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
     expect(h.ready()).toEqual([]);
   });
 
-  it('B-718: the launch template\'s {run_config_json} placeholder is rendered from the CONDUCTION ROW\'S OWN run_config, JSON.stringify\'d', async () => {
+  it('B-743: the launch template\'s {run_config_json} placeholder is rendered from the CONDUCTION ROW\'S OWN run_config, base64-encoded JSON.stringify\'d', async () => {
     const h = makeHarness({
       conductions: [conduction({ run_config: { session_resume: { enabled: true } } })],
       tasks: { 'task-1': pausedTask() },
@@ -410,12 +410,13 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
       },
     });
     await wakeAndFire(h);
-    expect(h.launches()).toEqual([
-      'launch cond-1 task-1 --run-config \'{"session_resume":{"enabled":true}}\'',
-    ]);
+    const encoded = Buffer.from(JSON.stringify({ session_resume: { enabled: true } }), 'utf8').toString(
+      'base64',
+    );
+    expect(h.launches()).toEqual([`launch cond-1 task-1 --run-config '${encoded}'`]);
   });
 
-  it('B-718: a conduction row with NO run_config renders {run_config_json} as the empty object, matching the pre-B-718 hardcoded default', async () => {
+  it('B-718: a conduction row with NO run_config renders {run_config_json} as the base64 of the empty object, matching the pre-B-718 hardcoded default', async () => {
     const h = makeHarness({
       conductions: [conduction()], // run_config left undefined, same as every pre-B-718 row
       tasks: { 'task-1': pausedTask() },
@@ -425,7 +426,27 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
       },
     });
     await wakeAndFire(h);
-    expect(h.launches()).toEqual(["launch cond-1 --run-config '{}'"]);
+    const encoded = Buffer.from('{}', 'utf8').toString('base64');
+    expect(h.launches()).toEqual([`launch cond-1 --run-config '${encoded}'`]);
+  });
+
+  it('B-743: a run_config.note containing a single quote round-trips through {run_config_json} WITHOUT throwing — the blocker this ticket removes', async () => {
+    const noteWithApostrophe = "don't touch the migration file, it's already reviewed";
+    const h = makeHarness({
+      conductions: [conduction({ run_config: { note: noteWithApostrophe } })],
+      tasks: { 'task-1': pausedTask() },
+      config: {
+        ...config,
+        profile: { ...config.profile, launch: "launch {conduction_id} {ticket} --run-config '{run_config_json}'" },
+      },
+    });
+    await wakeAndFire(h);
+    const encoded = Buffer.from(JSON.stringify({ note: noteWithApostrophe }), 'utf8').toString('base64');
+    // The shell-facing launch command never carries a raw single quote from the note — only the
+    // base64 alphabet, safe unescaped inside the template's own single-quoted literal.
+    expect(h.launches()).toEqual([`launch cond-1 task-1 --run-config '${encoded}'`]);
+    const decoded = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+    expect(decoded).toEqual({ note: noteWithApostrophe });
   });
 
   it('B-718 reopen: warns loudly (but still fires the launch) when the conduction has a non-empty run_config and the ACTIVE launch template has no {run_config_json} placeholder', async () => {

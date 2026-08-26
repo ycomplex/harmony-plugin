@@ -36366,6 +36366,36 @@ function loadDeploymentConfig(opts = {}) {
   return result.data;
 }
 
+// src/config/run-config.ts
+import { readFileSync as nodeReadFileSync } from "node:fs";
+var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
+var NoteSchema = external_exports.string().optional();
+var RunConfigSchema = external_exports.object({ session_resume: SessionResumeSchema, note: NoteSchema }).passthrough();
+var EMPTY_RUN_CONFIG = {};
+function getOperatorNote(runConfig) {
+  return runConfig.note ? runConfig.note : void 0;
+}
+function envValue(env, key) {
+  const v = env[key];
+  return v == null || v === "" ? void 0 : v;
+}
+function getConductionId(env = process.env) {
+  return envValue(env, "HARMONY_CONDUCTION_ID");
+}
+function getRunConfig(env = process.env, deps = {}) {
+  const readFile = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
+  const path2 = envValue(env, "HARMONY_RUN_CONFIG_PATH");
+  if (path2) {
+    return RunConfigSchema.parse(JSON.parse(readFile(path2)));
+  }
+  const inline = envValue(env, "HARMONY_RUN_CONFIG_JSON");
+  if (inline) {
+    const decoded = Buffer.from(inline, "base64").toString("utf8");
+    return RunConfigSchema.parse(JSON.parse(decoded));
+  }
+  return EMPTY_RUN_CONFIG;
+}
+
 // src/tools/environment.ts
 var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
 var KNOWN_REFS = {
@@ -36414,11 +36444,19 @@ function resolveEnvironment(env = process.env, moduleUrl = import.meta.url) {
     supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
   } catch {
   }
+  let operator_note;
+  try {
+    operator_note = getOperatorNote(getRunConfig(env)) ?? null;
+  } catch {
+    operator_note = null;
+  }
   return {
     supabase_url,
     supabase_project_ref,
     target: resolveKnownRefs(env)[supabase_project_ref] ?? "custom",
-    plugin_version: resolvePluginVersion(env, moduleUrl)
+    plugin_version: resolvePluginVersion(env, moduleUrl),
+    conduction_id: getConductionId(env) ?? null,
+    operator_note
   };
 }
 
@@ -40352,6 +40390,7 @@ async function createConduction(client, args) {
     created_by: args.created_by ?? null
   };
   if (args.lease_holder) row.lease_acquired_at = (/* @__PURE__ */ new Date()).toISOString();
+  if (args.run_config !== void 0) row.run_config = args.run_config;
   const { data, error: error2 } = await client.from("conductions").insert(row).select(CONDUCTION_COLS).single();
   if (error2) {
     if (isUniqueViolation(error2)) throw new ActiveConductionExistsError(args.task_id, error2.message);
@@ -40813,10 +40852,15 @@ async function readCriteriaPresence(client, taskId, localPresence) {
 var HANDOFF_CONTRACT_NOTE = "the duplicate-guard can only detect an active conduction record \u2014 it can't see an in-progress terminal session, so make sure any in-session work on this ticket has stopped before handing it off.";
 async function createConduction2(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
+  const runConfig = args.run_config !== void 0 ? RunConfigSchema.parse(args.run_config) : void 0;
   const taskId = await resolveTaskId(client, projectId, args.task_id);
   try {
     await assertNotExcluded(client, taskId);
-    const conduction = await createConduction(client, { task_id: taskId, mode: "controlled" });
+    const conduction = await createConduction(client, {
+      task_id: taskId,
+      mode: "controlled",
+      ...runConfig !== void 0 ? { run_config: runConfig } : {}
+    });
     return {
       conduction,
       message: `Conduction ${conduction.id} created for ${args.task_id} (${conduction.status}, mode: ${conduction.mode}). The conductor daemon will pick it up on its next pass. Note: ${HANDOFF_CONTRACT_NOTE}`
@@ -40846,6 +40890,10 @@ var createConductionTool = {
       task_id: {
         type: "string",
         description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)."
+      },
+      run_config: {
+        type: "object",
+        description: 'B-743: optional per-run operator choices for this conduction (e.g. { "note": "..." } \u2014 a free-text steering note delivered to the worker and posted back as a scoped ticket comment at each new gate). Omit entirely for the default run behavior.'
       }
     },
     required: ["task_id"]

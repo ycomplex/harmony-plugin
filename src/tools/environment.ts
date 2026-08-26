@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadDeploymentConfig } from '../config/deployment-config.js';
+import { getConductionId, getOperatorNote, getRunConfig } from '../config/run-config.js';
 
 // Which backend the plugin is talking to, surfaced via get_project so a session can
 // confirm its code + DB pairing (the staging-channel dogfood check — see B-488).
@@ -10,6 +11,17 @@ export interface EnvironmentInfo {
   supabase_project_ref: string;
   target: 'prod' | 'staging' | 'custom';
   plugin_version: string | null;
+  /** B-743: this session's conduction id (HARMONY_CONDUCTION_ID), when running as a conducted
+   *  worker leg — `null` outside a conduction (an interactive human session, or an MCP server the
+   *  daemon never launched). Read via src/config/run-config.ts's getConductionId — the SAME
+   *  accessor the worker-side run_config plumbing already uses, never a re-parsed duplicate. */
+  conduction_id: string | null;
+  /** B-743: this leg's `run_config.note` (the operator's free-text steering instruction posted
+   *  from the Conduct dialog's "Run options" surface), when present — `null` when absent OR when
+   *  the run_config payload can't be read/decoded/parsed. Best-effort by construction (matches
+   *  this file's non-throwing-by-design posture below): a malformed run_config must never break
+   *  get_project, the ONE call every conductor run makes before anything else. */
+  operator_note: string | null;
 }
 
 // Must mirror src/supabase.ts exactly: env override, else the prod project.
@@ -80,10 +92,23 @@ export function resolveEnvironment(
     // Malformed URL — leave the ref empty and fall through to 'custom'.
   }
 
+  // B-743: best-effort — getRunConfig throws on a malformed HARMONY_RUN_CONFIG_PATH/JSON payload
+  // (by design, for its own direct worker-side callers), but THIS accessor must degrade instead:
+  // get_project is the first call every conductor run makes, and it must never break over a
+  // corrupt run_config the run can't do anything about anyway.
+  let operator_note: string | null;
+  try {
+    operator_note = getOperatorNote(getRunConfig(env)) ?? null;
+  } catch {
+    operator_note = null;
+  }
+
   return {
     supabase_url,
     supabase_project_ref,
     target: resolveKnownRefs(env)[supabase_project_ref] ?? 'custom',
     plugin_version: resolvePluginVersion(env, moduleUrl),
+    conduction_id: getConductionId(env) ?? null,
+    operator_note,
   };
 }

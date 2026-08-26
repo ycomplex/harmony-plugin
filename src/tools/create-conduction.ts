@@ -21,9 +21,15 @@ import {
   ConductorExcludedError,
   type ConductionRecord,
 } from './conduction-record.js';
+import { RunConfigSchema, type RunConfig } from '../config/run-config.js';
 
 export interface CreateConductionArgs {
   task_id: string;
+  /** B-743: the per-run operator choices seam (e.g. `{ note: '...' }`) — an optional structured
+   *  object validated against RunConfigSchema before it ever reaches the insert (see
+   *  createConduction below). Omitted entirely -> the DB column's own default applies, unchanged
+   *  from every pre-B-743 handoff. */
+  run_config?: RunConfig;
 }
 
 export interface CreateConductionResult {
@@ -45,11 +51,19 @@ export async function createConduction(
   args: CreateConductionArgs,
 ): Promise<CreateConductionResult> {
   if (!args.task_id) throw new Error('task_id is required');
+  // B-743: validate run_config BEFORE the task-id resolution round-trip — a malformed payload is a
+  // caller bug that should fail fast, not after an otherwise-wasted network call.
+  const runConfig =
+    args.run_config !== undefined ? RunConfigSchema.parse(args.run_config) : undefined;
   const taskId = await resolveTaskId(client, projectId, args.task_id);
 
   try {
     await assertNotExcluded(client, taskId);
-    const conduction = await insertConduction(client, { task_id: taskId, mode: 'controlled' });
+    const conduction = await insertConduction(client, {
+      task_id: taskId,
+      mode: 'controlled',
+      ...(runConfig !== undefined ? { run_config: runConfig } : {}),
+    });
     return {
       conduction,
       message:
@@ -85,6 +99,13 @@ export const createConductionTool = {
       task_id: {
         type: 'string',
         description: 'Task identifier — UUID, task number (e.g., 43), or visual ID (e.g., B-43).',
+      },
+      run_config: {
+        type: 'object',
+        description:
+          "B-743: optional per-run operator choices for this conduction (e.g. { \"note\": \"...\" } — " +
+          'a free-text steering note delivered to the worker and posted back as a scoped ticket ' +
+          'comment at each new gate). Omit entirely for the default run behavior.',
       },
     },
     required: ['task_id'],

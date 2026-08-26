@@ -35,10 +35,14 @@ set -euo pipefail
 CONDUCTION_ID="${1:?usage: cloud-worker-launch.sh <conduction_id> <ticket> [run_config_json]}"
 TICKET="${2:?usage: cloud-worker-launch.sh <conduction_id> <ticket> [run_config_json]}"
 # B-718: the conduction row's run_config seam value (src/daemon/scheduler.ts's templateVars ->
-# {run_config_json}), JSON.stringify'd by the daemon and forwarded here as a THIRD positional arg —
-# replacing the hardcoded '{}' the mint invocation below used before this ticket. Optional/absent
-# (a manual invocation, or an older daemon build that doesn't render this template arg) falls back
-# to '{}' byte-for-byte, same as today.
+# {run_config_json}), forwarded here as a THIRD positional arg — replacing the hardcoded '{}' the
+# mint invocation below used before this ticket. B-743: the daemon-driven value is now
+# base64-encoded (scheduler.ts's runConfigJsonFor encodes UPSTREAM of this shell boundary, so a
+# free-text run_config.note can never break this script's own single-quoted call site); this
+# DEFAULT_RUN_CONFIG fallback stays raw JSON — the mint script's own --run-config handling
+# (scripts/mint-installation-token.mjs's normalizeRunConfigJson) accepts either shape. Optional/
+# absent (a manual invocation, or an older daemon build that doesn't render this template arg)
+# falls back to '{}' byte-for-byte, same as today.
 DEFAULT_RUN_CONFIG='{}'
 RUN_CONFIG_JSON="${3:-$DEFAULT_RUN_CONFIG}"
 

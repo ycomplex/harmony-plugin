@@ -28158,6 +28158,36 @@ function resolveConfigPath(config, dotPath) {
   return cur;
 }
 
+// src/config/run-config.ts
+import { readFileSync as nodeReadFileSync } from "node:fs";
+var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
+var NoteSchema = external_exports.string().optional();
+var RunConfigSchema = external_exports.object({ session_resume: SessionResumeSchema, note: NoteSchema }).passthrough();
+var EMPTY_RUN_CONFIG = {};
+function getOperatorNote(runConfig) {
+  return runConfig.note ? runConfig.note : void 0;
+}
+function envValue(env2, key) {
+  const v = env2[key];
+  return v == null || v === "" ? void 0 : v;
+}
+function getConductionId(env2 = process.env) {
+  return envValue(env2, "HARMONY_CONDUCTION_ID");
+}
+function getRunConfig(env2 = process.env, deps = {}) {
+  const readFile = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
+  const path2 = envValue(env2, "HARMONY_RUN_CONFIG_PATH");
+  if (path2) {
+    return RunConfigSchema.parse(JSON.parse(readFile(path2)));
+  }
+  const inline = envValue(env2, "HARMONY_RUN_CONFIG_JSON");
+  if (inline) {
+    const decoded = Buffer.from(inline, "base64").toString("utf8");
+    return RunConfigSchema.parse(JSON.parse(decoded));
+  }
+  return EMPTY_RUN_CONFIG;
+}
+
 // src/tools/environment.ts
 var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
 var KNOWN_REFS = {
@@ -28206,11 +28236,19 @@ function resolveEnvironment(env2 = process.env, moduleUrl = import.meta.url) {
     supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
   } catch {
   }
+  let operator_note;
+  try {
+    operator_note = getOperatorNote(getRunConfig(env2)) ?? null;
+  } catch {
+    operator_note = null;
+  }
   return {
     supabase_url,
     supabase_project_ref,
     target: resolveKnownRefs(env2)[supabase_project_ref] ?? "custom",
-    plugin_version: resolvePluginVersion(env2, moduleUrl)
+    plugin_version: resolvePluginVersion(env2, moduleUrl),
+    conduction_id: getConductionId(env2) ?? null,
+    operator_note
   };
 }
 
@@ -30962,6 +31000,7 @@ async function createConduction(client, args) {
     created_by: args.created_by ?? null
   };
   if (args.lease_holder) row.lease_acquired_at = (/* @__PURE__ */ new Date()).toISOString();
+  if (args.run_config !== void 0) row.run_config = args.run_config;
   const { data, error } = await client.from("conductions").insert(row).select(CONDUCTION_COLS).single();
   if (error) {
     if (isUniqueViolation(error)) throw new ActiveConductionExistsError(args.task_id, error.message);

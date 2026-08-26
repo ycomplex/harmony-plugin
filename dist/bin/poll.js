@@ -22530,6 +22530,36 @@ function loadDeploymentConfig(opts = {}) {
   return result.data;
 }
 
+// src/config/run-config.ts
+import { readFileSync as nodeReadFileSync } from "node:fs";
+var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
+var NoteSchema = external_exports.string().optional();
+var RunConfigSchema = external_exports.object({ session_resume: SessionResumeSchema, note: NoteSchema }).passthrough();
+var EMPTY_RUN_CONFIG = {};
+function getOperatorNote(runConfig) {
+  return runConfig.note ? runConfig.note : void 0;
+}
+function envValue(env, key) {
+  const v = env[key];
+  return v == null || v === "" ? void 0 : v;
+}
+function getConductionId(env = process.env) {
+  return envValue(env, "HARMONY_CONDUCTION_ID");
+}
+function getRunConfig(env = process.env, deps = {}) {
+  const readFile = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
+  const path = envValue(env, "HARMONY_RUN_CONFIG_PATH");
+  if (path) {
+    return RunConfigSchema.parse(JSON.parse(readFile(path)));
+  }
+  const inline = envValue(env, "HARMONY_RUN_CONFIG_JSON");
+  if (inline) {
+    const decoded = Buffer.from(inline, "base64").toString("utf8");
+    return RunConfigSchema.parse(JSON.parse(decoded));
+  }
+  return EMPTY_RUN_CONFIG;
+}
+
 // src/tools/environment.ts
 var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
 var KNOWN_REFS = {
@@ -22578,11 +22608,19 @@ function resolveEnvironment(env = process.env, moduleUrl = import.meta.url) {
     supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
   } catch {
   }
+  let operator_note;
+  try {
+    operator_note = getOperatorNote(getRunConfig(env)) ?? null;
+  } catch {
+    operator_note = null;
+  }
   return {
     supabase_url,
     supabase_project_ref,
     target: resolveKnownRefs(env)[supabase_project_ref] ?? "custom",
-    plugin_version: resolvePluginVersion(env, moduleUrl)
+    plugin_version: resolvePluginVersion(env, moduleUrl),
+    conduction_id: getConductionId(env) ?? null,
+    operator_note
   };
 }
 

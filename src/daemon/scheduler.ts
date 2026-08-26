@@ -355,23 +355,25 @@ export function isAuthShapedError(err: unknown): boolean {
   return /\b401\b|jwt expired|invalid (jwt|token)|token .*expired/i.test(message);
 }
 
-/** B-718: JSON.stringify the conduction row's run_config for embedding in a SINGLE-QUOTED shell
+/** B-743: base64-encode the conduction row's run_config for embedding in a SINGLE-QUOTED shell
  *  template literal (see container/daemon-profile.example.json / .cloud.example.json — both wrap
  *  {run_config_json} in literal `'...'` quotes at the template call site, matching the hardcoded
- *  `'{}'` they replace). v1's RunConfigSchema is boolean/object-only (session_resume.enabled), so
- *  its JSON.stringify output can never contain a raw single quote in practice — this guard throws
- *  LOUDLY rather than silently mis-quoting the shell command if that ever stops being true (e.g. a
- *  future run_config key carrying a free-text string with an apostrophe). */
+ *  `'{}'` they replace). B-718 shipped this as a raw `JSON.stringify` and THREW if the result ever
+ *  contained a single quote (v1's RunConfigSchema was boolean/object-only, so it never did in
+ *  practice) — B-743 adds a free-text `note` key, which absolutely can carry an apostrophe. Rather
+ *  than escaping quotes at the shell boundary (fragile, profile-specific), the fix moves the
+ *  encoding UPSTREAM of that boundary entirely: base64's alphabet (A-Za-z0-9+/=) is shell-safe
+ *  unescaped in every launch profile, so THIS function is now the ONE place `run_config` ever
+ *  crosses from trusted JSON into untrusted-shell territory, and it crosses already-encoded. No
+ *  guard is needed any more — there is nothing left for a raw quote to break. The worker-side
+ *  accessor (src/config/run-config.ts's getRunConfig) already base64-decodes the inline delivery
+ *  form, so this is not a new wire shape, only an earlier encode point.
+ *  scripts/mint-installation-token.mjs's compose* functions decode-then-reencode (never trusting
+ *  the caller's encoding) so a caller that still passes raw JSON (a manual invocation, an older
+ *  test) keeps working unmodified. */
 function runConfigJsonFor(row: ConductionRecord): string {
   const json = JSON.stringify(row.run_config ?? {});
-  if (json.includes("'")) {
-    throw new Error(
-      `conduction ${row.id}: run_config JSON contains a single quote, which is not safe to embed ` +
-        'in the single-quoted shell template literal every launch profile uses for ' +
-        '{run_config_json} — v1 run_config values must be boolean/object only, no free-text strings',
-    );
-  }
-  return json;
+  return Buffer.from(json, 'utf8').toString('base64');
 }
 
 function templateVars(
