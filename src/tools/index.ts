@@ -54,6 +54,7 @@ import {
   consumeAcceptRemark, consumeAcceptRemarkTool,
 } from './briefs.js';
 import { flagReleaseApprovalPending, flagReleaseApprovalPendingTool } from './release-approval.js';
+import { requestConductionReap, requestConductionReapTool } from './request-conduction-reap.js';
 import {
   startElicitationTool, startElicitation,
   fileElicitationRoundTool, fileElicitationRound,
@@ -130,6 +131,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listTicketKnowledgeTool,
     getBuildEvidenceStatusTool,
     createConductionTool,
+    requestConductionReapTool,
     consumePendingAcceptanceEventTool,
     consumeAcceptanceEventTool,
   ];
@@ -370,6 +372,9 @@ export async function handleToolCall(
         break;
       case 'create_conduction':
         result = await createConductionEntry(client, projectId, args as any);
+        break;
+      case 'request_conduction_reap':
+        result = await requestConductionReap(client, args as any);
         break;
       case 'download_attachment':
         result = await downloadAttachment(client, args as any);

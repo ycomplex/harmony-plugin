@@ -14,6 +14,7 @@ function args(overrides: Partial<ClassifyArgs> = {}): ClassifyArgs {
     exitCode: 0,
     progressed: true,
     timedOut: false,
+    operatorReaped: false,
     repoProgressed: false,
     ...overrides,
   };
@@ -243,5 +244,82 @@ describe("the worker-timeout class (B-739) — 'this daemon ruled the launch ove
       timedOut: true,
     });
     expect(classifyWorkerExit(a)).toEqual({ action: 'park', reason: 'worker-timeout' });
+  });
+});
+
+// B-740. The early-reap lever: an operator (web "Reap now" or the request_conduction_reap MCP tool)
+// requested a reap of a hung leg, and this daemon's own reap-escalation actually freed it. Same
+// structural position as the worker-timeout branch (5) — deliberately BEFORE dirty-exit — so it too
+// bypasses B-713's retry ladder by construction.
+describe("the operator-reap class (B-740) — 'an operator's early-reap request actually freed the launch'", () => {
+  it("5b. an otherwise-dirty operator-reaped worker ⇒ park / 'operator-reap', NOT 'dirty-exit'", () => {
+    const a = args({
+      row: { workflow_state: 'Planned', awaiting_human_input: false, stale: false },
+      exitCode: 137,
+      progressed: false,
+      operatorReaped: true,
+    });
+    const outcome = classifyWorkerExit(a);
+    expect(outcome).toEqual({ action: 'park', reason: 'operator-reap' });
+    // The distinct class is what keeps it out of B-713's retry ladder (guarded on 'dirty-exit').
+    expect(exitClass(outcome, a)).toBe('operator-reap');
+  });
+
+  it('1 still beats 5b: an operator-reaped worker that had already filed a brief is a CLEAN PAUSE', () => {
+    const a = args({
+      row: { workflow_state: 'Planned', awaiting_human_input: true, stale: false },
+      exitCode: 137,
+      operatorReaped: true,
+    });
+    expect(classifyWorkerExit(a)).toEqual({ action: 'wait' });
+    expect(exitClass(classifyWorkerExit(a), a)).toBe('clean-pause');
+  });
+
+  it('2 still beats 5b: an operator-reaped worker that had already driven the ticket terminal COMPLETES', () => {
+    const a = args({
+      row: { workflow_state: 'Verified', awaiting_human_input: false, stale: false },
+      exitCode: 137,
+      operatorReaped: true,
+    });
+    expect(classifyWorkerExit(a)).toEqual({ action: 'complete' });
+  });
+
+  it("4 still beats 5b: a stale ticket parks as 'stale', not 'operator-reap'", () => {
+    const a = args({
+      row: { workflow_state: 'Planned', awaiting_human_input: false, stale: true },
+      exitCode: 137,
+      operatorReaped: true,
+    });
+    expect(classifyWorkerExit(a)).toEqual({ action: 'park', reason: 'stale' });
+  });
+
+  it('5 (worker-timeout) and 5b (operator-reap) can never collide in practice, but 5 still wins if BOTH flags are somehow true — worker-timeout is checked first', () => {
+    const a = args({
+      row: { workflow_state: 'Planned', awaiting_human_input: false, stale: false },
+      exitCode: 137,
+      timedOut: true,
+      operatorReaped: true,
+    });
+    expect(classifyWorkerExit(a)).toEqual({ action: 'park', reason: 'worker-timeout' });
+  });
+
+  it("a non-operator-reaped non-zero exit is still 'dirty-exit' — the retry ladder is untouched", () => {
+    const a = args({
+      row: { workflow_state: 'Planned', awaiting_human_input: false, stale: false },
+      exitCode: 1,
+      progressed: false,
+      operatorReaped: false,
+    });
+    expect(classifyWorkerExit(a)).toEqual({ action: 'park', reason: 'dirty-exit' });
+  });
+
+  it('an operator-reaped worker with a CLEAN exit code still parks — the flag decides, not the code', () => {
+    const a = args({
+      row: { workflow_state: 'Planned', awaiting_human_input: false, stale: false },
+      exitCode: 0,
+      progressed: false,
+      operatorReaped: true,
+    });
+    expect(classifyWorkerExit(a)).toEqual({ action: 'park', reason: 'operator-reap' });
   });
 });

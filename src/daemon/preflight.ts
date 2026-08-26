@@ -52,7 +52,11 @@ export interface PreflightProfile {
 }
 
 /** The exact shape src/daemon/scheduler.ts's SchedulerDeps.runCommand already has — reused rather
- *  than adding a second exec path. Preflight calls it as `command -v <tool>`; exit code 0 = found. */
+ *  than adding a second exec path. Preflight calls it as `command -v <tool>`; exit code 0 = found.
+ *  This declared type is narrower than the real runCommand's (which also accepts an optional
+ *  `quietRender` — B-740) DELIBERATELY: preflight always calls with `{ quiet: true }` alone (never a
+ *  `quietRender`), so a passing tool check logs nothing — see quiet-reap.ts's `quietLogLine`. The
+ *  narrower type here is still assignable from the real (wider-accepting) runCommand closure. */
 export type RunCommand = (
   cmd: string,
   opts?: { quiet?: boolean },

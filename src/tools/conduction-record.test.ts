@@ -59,6 +59,7 @@ const conductionRow: ConductionRecord = {
   last_heartbeat_at: null,
   leg_started_at: null,
   clean_shutdown_at: null,
+  reap_requested_at: null,
   retry_count: 0,
   worker_kind: null,
   worker_ref: null,
@@ -217,6 +218,13 @@ describe('getConduction', () => {
     await getConduction(client, 'cond-1');
     const selectedCols = client.select.mock.calls[0][0] as string;
     expect(selectedCols).toContain('run_config');
+  });
+
+  it("B-740: selects reap_requested_at (CONDUCTION_COLS now includes it — daemon/MCP/web reap parity)", async () => {
+    const client = makeClient([{ data: conductionRow }]);
+    await getConduction(client, 'cond-1');
+    const selectedCols = client.select.mock.calls[0][0] as string;
+    expect(selectedCols).toContain('reap_requested_at');
   });
 
   it('B-718: round-trips a non-default run_config value on the returned row', async () => {
@@ -599,5 +607,9 @@ describe('the canonical status axis', () => {
 
   it('CONDUCTION_PATCHABLE_FIELDS includes clean_shutdown_at (B-761)', () => {
     expect(CONDUCTION_PATCHABLE_FIELDS).toContain('clean_shutdown_at');
+  });
+
+  it('CONDUCTION_PATCHABLE_FIELDS includes reap_requested_at (B-740)', () => {
+    expect(CONDUCTION_PATCHABLE_FIELDS).toContain('reap_requested_at');
   });
 });

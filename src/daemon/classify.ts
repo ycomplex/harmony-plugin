@@ -13,6 +13,14 @@
 //   4. stale=true                                      ⇒ park     / 'stale'
 //      (terminal-only stale constraint, B-507/B-575 class)
 //   5. timedOut=true (B-739 — THIS daemon's deadline) ⇒ park     / 'worker-timeout'
+//   5b. operatorReaped=true (B-740 — an operator-      ⇒ park     / 'operator-reap'
+//       requested early reap, via the web "Reap now"
+//       button or the request_conduction_reap MCP tool,
+//       that this daemon's own reap-escalation actually
+//       freed) — same structural position as 5, so it
+//       bypasses B-713's dirty-exit retry ladder by
+//       construction, for the same reason: a deliberate
+//       operator stop is not a transient failure to retry.
 //   6. non-zero (or unknown) exitCode                  ⇒ park     / 'dirty-exit'
 //   7. exitCode=0, flag false, progressed=false,
 //      repoProgressed=false                            ⇒ park     / 'no-progress'
@@ -60,6 +68,13 @@ export interface ClassifyArgs {
    *  so does a worker reaped by a peer's takeover. The exit code cannot say who decided; the flag
    *  says this daemon did. */
   timedOut: boolean;
+  /** B-740: did an OPERATOR request an early reap of this leg (the web's "Reap now" button or the
+   *  request_conduction_reap MCP tool, both of which only ever set `conductions.reap_requested_at` —
+   *  the daemon itself is the sole process that performs the kill) AND this daemon's own reap-
+   *  escalation (the same body the per-launch deadline runs — see scheduler.ts's
+   *  beginReapEscalation) actually free the launch? Keyed on an in-process flag, mirroring
+   *  `timedOut` exactly — never on the exit code, for the same reason. */
+  operatorReaped: boolean;
   /** B-792: did the repo move between fire and settle — a LIVE `git ls-remote` head-SHA probe of
    *  the leg's known work branch (`build_pr.branch`, else `work_branch.branch`), bracketing fire and
    *  settle, NOT a board-field read. True only when both probes succeeded and the SHA differs — a
@@ -77,6 +92,8 @@ export function classifyWorkerExit(args: ClassifyArgs): ExitOutcome {
   if (row.awaiting_human_input === true) return { action: 'wait' };
 
   // 2. The ticket reached a terminal state — the conduction is done. Exact allowlist membership.
+  // Deliberate: terminal-ticket launches are NOT short-circuited here — see B-740 (the launch is a
+  // CLAUDE.md verify-gate extension point).
   if (state !== null && (TICKET_TERMINAL_STATES as readonly string[]).includes(state)) {
     return { action: 'complete' };
   }
@@ -98,6 +115,12 @@ export function classifyWorkerExit(args: ClassifyArgs): ExitOutcome {
   //    generous deadline without exiting is structurally stuck, not transient, so it parks first
   //    time. Retry remains available as a HUMAN action via Re-conduct.
   if (args.timedOut) return { action: 'park', reason: 'worker-timeout' };
+
+  // 5b. B-740: an OPERATOR requested an early reap (web "Reap now" / request_conduction_reap) and
+  //     this daemon's own reap-escalation actually freed the launch. Same structural position as
+  //     branch 5 — deliberately BEFORE the dirty-exit branch — for the identical reason: a
+  //     deliberate operator stop is not a transient failure B-713's retry ladder should retry.
+  if (args.operatorReaped) return { action: 'park', reason: 'operator-reap' };
 
   // 6. Dirty exit — non-zero or unknown code with nothing above explaining it.
   if (exitCode !== 0) return { action: 'park', reason: 'dirty-exit' };

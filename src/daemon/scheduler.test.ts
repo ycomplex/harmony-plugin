@@ -1299,7 +1299,7 @@ describe('B-761: clean-shutdown adoption + the dead-lease wait announcement', ()
     expect(h.logs.filter((l) => /no conductions waiting/.test(l))).toHaveLength(1);
   });
 
-  it('the reap-before-adopt call (handleWonTakeover) requests quiet mode; the dirty-exit retry reap and the deadline reap do not', async () => {
+  it('the reap-before-adopt call (handleWonTakeover) requests quiet mode (with its OWN renderQuietReapOutcome quietRender, B-740); the dirty-exit retry reap and the deadline reap do not', async () => {
     const h = makeHarness({
       conductions: [
         conduction({
@@ -1313,7 +1313,11 @@ describe('B-761: clean-shutdown adoption + the dead-lease wait announcement', ()
     await h.pass(); // takeover pass: CAS win → reap (this is the ONE quiet call site)
     const reapCalls = h.runCommandCalls().filter(([cmd]) => cmd.startsWith('reap'));
     expect(reapCalls).toHaveLength(1);
-    expect(reapCalls[0][1]).toEqual({ quiet: true });
+    expect(reapCalls[0][1]?.quiet).toBe(true);
+    // B-740: the reap-before-adopt call site now supplies its OWN renderer explicitly, rather than
+    // relying on a bare `{ quiet: true }` to unconditionally render a reap outcome (the exact
+    // regression that made every preflight tool-check log "reaped a live worker" on every boot).
+    expect(reapCalls[0][1]?.quietRender?.(0)).toBe('reaped a live worker');
   });
 
   it('the deadline-escalation reap does NOT request quiet mode (that call site stays verbose)', async () => {
@@ -2039,6 +2043,174 @@ describe('B-739: the per-launch deadline is enforced by firing the REAP template
     // And confirm the call site itself: no quiet mode, ever, at this reap call site.
     const reapCalls = h.runCommandCalls().filter(([cmd]) => cmd.startsWith('reap'));
     for (const [, opts] of reapCalls) expect(opts).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-740: the early-reap lever. `reap_requested_at` (stamped by the web's "Reap now" button or the
+// request_conduction_reap MCP tool) is consumed by the SAME per-launch deadline machinery — never a
+// new kill path — via the SAME `beginReapEscalation` body the deadline timeout already runs, just
+// parameterized to flip `operatorReaped` instead of `timedOut`.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('B-740: the early-reap lever (reap_requested_at consumed by the shared reap-escalation)', () => {
+  it('an early reap request fires the SAME reap-escalation body the deadline uses — freeing the blocked launch parks it operator-reap (not worker-timeout, not dirty-exit)', async () => {
+    const h = makeHarness({
+      blockLaunch: true,
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      config: { ...config, retryCap: 2 }, // retry is ENABLED, and must still not engage
+    });
+    await firedAndBlocked(h);
+
+    // The web/MCP write: `row` is re-read FRESH every pass, so mutating the fake row directly is the
+    // correct harness-level stand-in for "a write landed out of band".
+    h.getConduction('cond-1').reap_requested_at = iso(h.now());
+    await h.pass(); // notices reap_requested_at on the fresh row → escalates; the reap frees it
+    await h.pass(); // observes the reap-freed settlement, classifies operator-reap, parks
+
+    expect(h.reaps()).toEqual(['reap cond-1']);
+    expect(h.statusWrites()).toEqual([
+      { status: 'parked', last_worker_exit_code: 137, last_worker_exit_class: 'operator-reap' },
+    ]);
+    expect(h.launches()).toEqual(['launch cond-1 task-1']); // no re-fire, no retry
+  });
+
+  it('fires the reap-escalation exactly ONCE per launch even across several passes with reap_requested_at still set (the `reaping` guard)', async () => {
+    const h = makeHarness({
+      blockLaunch: true,
+      reapNeverFrees: true,
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+    });
+    await firedAndBlocked(h);
+
+    h.getConduction('cond-1').reap_requested_at = iso(h.now());
+    await h.pass(); // triggers the escalation once
+    const reapsAfterFirstPass = h.reaps().length;
+    expect(reapsAfterFirstPass).toBeGreaterThan(0);
+
+    await h.pass();
+    await h.pass();
+    // No SECOND escalation loop was started — attempt count stays bounded by the ONE escalation's
+    // own REAP_ATTEMPT_LIMIT, not multiplied by the number of extra passes that still see
+    // reap_requested_at set on the (still-unsettled, never-freed) row.
+    for (let i = 0; i < 4; i += 1) await h.fireReapGrace();
+    expect(h.reaps()).toHaveLength(3); // REAP_ATTEMPT_LIMIT, exactly as the deadline path bounds it
+  });
+
+  it('cancels the natural per-launch deadline timer once the early-reap path has started its own escalation', async () => {
+    const h = makeHarness({
+      blockLaunch: true,
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+    });
+    await firedAndBlocked(h);
+
+    h.getConduction('cond-1').reap_requested_at = iso(h.now());
+    await h.pass();
+    await h.pass(); // settles via the early-reap escalation, not the natural deadline
+
+    // The natural deadline never got a chance to ALSO fire its own escalation — only ONE reap
+    // sequence ran (bounded, from the early-reap path), never two overlapping ones.
+    expect(h.reaps()).toEqual(['reap cond-1']);
+  });
+
+  it('the early-reap lever stays available on an already-tracked conduction even when the ticket is ALSO archived (archived only gates a NEW fire, never an in-flight one)', async () => {
+    const h = makeHarness({
+      blockLaunch: true,
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+    });
+    await firedAndBlocked(h);
+
+    (h.tasks['task-1'] as DaemonTask).archived = true;
+    h.getConduction('cond-1').reap_requested_at = iso(h.now());
+    await h.pass();
+    await h.pass();
+
+    expect(h.reaps()).toEqual(['reap cond-1']);
+    expect(h.statusWrites()).toEqual([
+      { status: 'parked', last_worker_exit_code: 137, last_worker_exit_class: 'operator-reap' },
+    ]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-740: the archived-ticket pre-fire decline. A NEW fire against an already-archived ticket settles
+// straight to 'parked'/'ticket-archived' via the SAME writeIfHeld park path — never reaches
+// classifyWorkerExit (there is no worker exit to classify: this is a pre-fire decline).
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('B-740: archived-ticket pre-fire decline (settle instead of silently declining forever)', () => {
+  it('a wake against an archived ticket declines the fire and parks with ticket-archived — no launch command ever runs', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: true, archived: false }) },
+    });
+
+    await h.pass(); // baseline
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    (h.tasks['task-1'] as DaemonTask).archived = true;
+    await h.pass();
+
+    expect(h.launches()).toEqual([]); // never fired
+    expect(h.ready()).toEqual([]);
+    expect(h.statusWrites()).toEqual([
+      { status: 'parked', last_worker_exit_code: null, last_worker_exit_class: 'ticket-archived' },
+    ]);
+  });
+
+  it('transition-only logging: the archived-decline line fires exactly once — the park write moves the row out of the active set, so there is no later pass to re-log it', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: true, archived: false }) },
+    });
+    const archivedLines = () => h.logs.filter((l) => l.includes('ticket archived — declining fire'));
+
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    (h.tasks['task-1'] as DaemonTask).archived = true;
+    await h.pass();
+    expect(archivedLines()).toHaveLength(1);
+
+    // The row is now 'parked' in the fake conductions table — the NEXT pass's listConductions
+    // (status: 'active') no longer returns it at all, so there is nothing further to (re-)log.
+    await h.pass();
+    await h.pass();
+    expect(archivedLines()).toHaveLength(1);
+  });
+
+  it('an archived ticket with NO wake (ball stays with the human throughout) never fires and never parks either — this check only gates a NEW fire, it does not retroactively sweep', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      // awaiting_human_input stays true (the default) the whole time — no wake is ever detected, so
+      // the archived check (reached only from the wake-detection block) never even runs.
+      tasks: { 'task-1': pausedTask({ archived: true }) },
+    });
+
+    await h.pass(); // baseline capture only — no prior baseline to diff against yet
+    await h.pass();
+    await h.pass();
+
+    expect(h.launches()).toEqual([]);
+    expect(h.statusWrites()).toEqual([]);
+  });
+
+  it('does NOT gate an already-tracked (in-flight) conduction — only a NEW fire is declined', async () => {
+    const h = makeHarness({
+      blockLaunch: true,
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+    });
+    await firedAndBlocked(h); // fired BEFORE the ticket was archived
+
+    (h.tasks['task-1'] as DaemonTask).archived = true;
+    await h.pass(); // tracked branch only — archived is never even consulted here
+
+    expect(h.statusWrites()).toEqual([]); // no premature park — the launch is still genuinely running
+    expect(h.running()).toEqual(['cond-1']);
   });
 });
 
