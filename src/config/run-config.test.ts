@@ -6,12 +6,15 @@
 import { describe, it, expect } from 'vitest';
 import {
   EMPTY_RUN_CONFIG,
+  PINNED_DEFAULT_MODEL_BY_PROFILE,
   RunConfigSchema,
   getConductionId,
+  getModelForGate,
   getOperatorNote,
   getRunConfig,
   isSessionResumeEnabled,
 } from './run-config.js';
+import type { RunConfig } from './run-config.js';
 
 describe('RunConfigSchema', () => {
   it('accepts an empty object', () => {
@@ -194,5 +197,126 @@ describe('getRunConfig', () => {
     expect(getRunConfig({ HARMONY_RUN_CONFIG_PATH: '', HARMONY_RUN_CONFIG_JSON: '' })).toEqual(
       EMPTY_RUN_CONFIG,
     );
+  });
+});
+
+describe('RunConfigSchema model (B-772)', () => {
+  it('accepts a run_config carrying only model.default', () => {
+    expect(RunConfigSchema.parse({ model: { default: 'claude-opus-4-1' } })).toEqual({
+      model: { default: 'claude-opus-4-1' },
+    });
+  });
+
+  it('accepts a run_config carrying only model.per_gate', () => {
+    expect(RunConfigSchema.parse({ model: { per_gate: { build: 'claude-opus-4-1' } } })).toEqual({
+      model: { per_gate: { build: 'claude-opus-4-1' } },
+    });
+  });
+
+  it('accepts a run_config carrying both model.default and model.per_gate', () => {
+    expect(
+      RunConfigSchema.parse({
+        model: { default: 'claude-sonnet-5', per_gate: { build: 'claude-opus-4-1' } },
+      }),
+    ).toEqual({ model: { default: 'claude-sonnet-5', per_gate: { build: 'claude-opus-4-1' } } });
+  });
+
+  it('accepts an empty model object', () => {
+    expect(RunConfigSchema.parse({ model: {} })).toEqual({ model: {} });
+  });
+
+  it('accepts a per_gate key this build does not recognize as a Gate (forward-compat parse)', () => {
+    expect(
+      RunConfigSchema.parse({ model: { per_gate: { 'some-future-gate': 'claude-opus-4-1' } } }),
+    ).toEqual({ model: { per_gate: { 'some-future-gate': 'claude-opus-4-1' } } });
+  });
+
+  it('rejects a non-string model.default', () => {
+    expect(() => RunConfigSchema.parse({ model: { default: 42 } })).toThrow();
+  });
+
+  it('rejects a non-string value inside model.per_gate', () => {
+    expect(() => RunConfigSchema.parse({ model: { per_gate: { build: 42 } } })).toThrow();
+  });
+
+  it('still passes through unrelated unknown keys alongside model', () => {
+    expect(
+      RunConfigSchema.parse({ model: { default: 'claude-sonnet-5' }, note: 'be terse' }),
+    ).toEqual({ model: { default: 'claude-sonnet-5' }, note: 'be terse' });
+  });
+});
+
+describe('getModelForGate (B-772 three-level fallback)', () => {
+  const PROD_ENV = { HARMONY_SUPABASE_URL: 'https://eioxsunvhakmelhanmnn.supabase.co' };
+  const STAGING_ENV = { HARMONY_SUPABASE_URL: 'https://meqkdgncdzromunylyxf.supabase.co' };
+
+  it('level 1: an explicit per_gate override for the resolved gate wins over everything else', () => {
+    const runConfig: RunConfig = {
+      model: { default: 'run-default-model', per_gate: { build: 'per-gate-build-model' } },
+    };
+    expect(getModelForGate(runConfig, 'build', PROD_ENV)).toBe('per-gate-build-model');
+  });
+
+  it('level 1 only applies to the gate it names — a different gate falls through to level 2', () => {
+    const runConfig: RunConfig = {
+      model: { default: 'run-default-model', per_gate: { build: 'per-gate-build-model' } },
+    };
+    expect(getModelForGate(runConfig, 'release', PROD_ENV)).toBe('run-default-model');
+  });
+
+  it('level 1 is skipped entirely when gate is null (e.g. a terminal-state ticket)', () => {
+    const runConfig: RunConfig = {
+      model: { default: 'run-default-model', per_gate: { build: 'per-gate-build-model' } },
+    };
+    expect(getModelForGate(runConfig, null, PROD_ENV)).toBe('run-default-model');
+  });
+
+  it('level 2: model.default applies when no per_gate override matches', () => {
+    const runConfig: RunConfig = { model: { default: 'run-default-model' } };
+    expect(getModelForGate(runConfig, 'clarify', PROD_ENV)).toBe('run-default-model');
+  });
+
+  it('level 3: an empty run_config falls through to the pinned per-deployment-profile default (prod)', () => {
+    expect(getModelForGate(EMPTY_RUN_CONFIG, 'build', PROD_ENV)).toBe(
+      PINNED_DEFAULT_MODEL_BY_PROFILE.prod,
+    );
+  });
+
+  it('level 3: resolves the STAGING pin when HARMONY_SUPABASE_URL points at the staging project', () => {
+    expect(getModelForGate(EMPTY_RUN_CONFIG, 'build', STAGING_ENV)).toBe(
+      PINNED_DEFAULT_MODEL_BY_PROFILE.staging,
+    );
+  });
+
+  it('level 3: an empty run_config with a null gate still falls through to the pinned default', () => {
+    expect(getModelForGate(EMPTY_RUN_CONFIG, null, PROD_ENV)).toBe(
+      PINNED_DEFAULT_MODEL_BY_PROFILE.prod,
+    );
+  });
+
+  it('level 3: an unrecognized/custom Supabase URL falls back to the prod pin, never undefined', () => {
+    expect(
+      getModelForGate(EMPTY_RUN_CONFIG, 'build', { HARMONY_SUPABASE_URL: 'https://example.com' }),
+    ).toBe(PINNED_DEFAULT_MODEL_BY_PROFILE.prod);
+  });
+
+  it('level 3: a malformed Supabase URL degrades to the prod pin rather than throwing', () => {
+    expect(
+      getModelForGate(EMPTY_RUN_CONFIG, 'build', { HARMONY_SUPABASE_URL: 'not a url' }),
+    ).toBe(PINNED_DEFAULT_MODEL_BY_PROFILE.prod);
+  });
+
+  it('defaults env to process.env when no third argument is given (never throws)', () => {
+    expect(() => getModelForGate(EMPTY_RUN_CONFIG, 'build')).not.toThrow();
+    expect(typeof getModelForGate(EMPTY_RUN_CONFIG, 'build')).toBe('string');
+  });
+});
+
+describe('PINNED_DEFAULT_MODEL_BY_PROFILE', () => {
+  it('carries an explicit, non-empty pin for both known deployment profiles', () => {
+    expect(PINNED_DEFAULT_MODEL_BY_PROFILE.prod).toEqual(expect.any(String));
+    expect(PINNED_DEFAULT_MODEL_BY_PROFILE.prod.length).toBeGreaterThan(0);
+    expect(PINNED_DEFAULT_MODEL_BY_PROFILE.staging).toEqual(expect.any(String));
+    expect(PINNED_DEFAULT_MODEL_BY_PROFILE.staging.length).toBeGreaterThan(0);
   });
 });

@@ -449,6 +449,73 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
     expect(result.stdout).toContain('--some-extra-flag');
   });
 
+  // B-772: HARMONY_MODEL -> --model "$HARMONY_MODEL" appended to EXTRA_HEADLESS_FLAGS, guarded
+  // exactly like the --resume wiring above. Reuses this same extracted block (the guard lives
+  // between EXTRA_HEADLESS_FLAGS' own construction and the cold-start exec line, well inside the
+  // B-718 marker range) — no new extraction helper needed.
+  describe('B-772: HARMONY_MODEL -> --model "$HARMONY_MODEL" guard', () => {
+    function fakeArgsEchoClaude(): string {
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b772-fake-claude-'));
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        ['#!/usr/bin/env bash', 'echo "ARGS=$*"', 'exit 0', ''].join('\n'),
+        { mode: 0o755 },
+      );
+      return claudeStub;
+    }
+
+    it('appends --model "$HARMONY_MODEL" on the cold-start path when HARMONY_MODEL is set', () => {
+      const claudeStub = fakeArgsEchoClaude();
+      const result = runResumeBlock(
+        { HARMONY_MODEL: 'claude-sonnet-5' }, // no run-config at all -> cold start, no resume
+        { fakeClaudeDir: claudeStub },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('--model claude-sonnet-5');
+    });
+
+    it('leaves the cold-start command byte-for-byte unchanged (no --model flag at all) when HARMONY_MODEL is unset', () => {
+      const claudeStub = fakeArgsEchoClaude();
+      const result = runResumeBlock({}, { fakeClaudeDir: claudeStub });
+      expect(result.status).toBe(0);
+      expect(result.stdout).not.toContain('--model');
+    });
+
+    it('leaves the cold-start command unchanged when HARMONY_MODEL is set but empty (empty behaves exactly like unset)', () => {
+      const claudeStub = fakeArgsEchoClaude();
+      const result = runResumeBlock({ HARMONY_MODEL: '' }, { fakeClaudeDir: claudeStub });
+      expect(result.status).toBe(0);
+      expect(result.stdout).not.toContain('--model');
+    });
+
+    it('also appends --model "$HARMONY_MODEL" on the --resume-attach path (same EXTRA_HEADLESS_FLAGS array)', () => {
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b772-fake-claude-resume-'));
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        [
+          '#!/usr/bin/env bash',
+          'if printf \'%s\\n\' "$@" | grep -q -- --resume; then',
+          '  echo "RESUME_ARGS=$*"',
+          '  exit 0',
+          'fi',
+          'echo "COLD_ARGS=$*"',
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      const dir = mkdtempSync(join(tmpdir(), 'b772-home-'));
+      writeSession(dir, 'fake-id');
+      const result = runResumeBlock(
+        { ...enabledRunConfigEnv(), HARMONY_MODEL: 'claude-sonnet-5' },
+        { fakeClaudeDir: claudeStub, homeDir: dir },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('RESUME_ARGS=');
+      expect(result.stdout).toContain('--model claude-sonnet-5');
+    });
+  });
+
   describe('EXECUTED SESSION_RESUME_ENABLED jq parse-failure signal (B-718 reopen fix, item 3)', () => {
     function malformedRunConfigEnv(): NodeJS.ProcessEnv {
       return { HARMONY_RUN_CONFIG_JSON: Buffer.from('not valid json').toString('base64') };

@@ -211,6 +211,17 @@ export function composeConductionIdLine(conductionId) {
   return conductionId ? `HARMONY_CONDUCTION_ID=${conductionId}\n` : '';
 }
 
+/** B-772: 'HARMONY_MODEL=<model>\n', or '' when no model was resolved — mirrors
+ *  composeConductionIdLine's own always-appended-when-present convention exactly. The value here
+ *  arrives ALREADY fully resolved (src/daemon/scheduler.ts's templateVars -> modelFor ->
+ *  src/config/run-config.ts's getModelForGate, the three-level per-gate/per-run/pinned-default
+ *  fallback) — this script never re-derives or re-validates it, it only carries the resolved
+ *  string across the process boundary into the worker's env, the same courier role it already
+ *  plays for HARMONY_CONDUCTION_ID. */
+export function composeModelLine(model) {
+  return model ? `HARMONY_MODEL=${model}\n` : '';
+}
+
 /**
  * B-743: normalize a run-config JSON payload that may arrive as EITHER raw JSON text or
  * base64-encoded JSON text, into raw JSON text. Before this ticket, `--run-config`'s value was
@@ -332,6 +343,7 @@ function parseArgs(argv) {
     conductionId: undefined,
     runConfig: undefined,
     runConfigPath: undefined,
+    model: undefined,
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--base') args.base = argv[++i];
@@ -340,19 +352,21 @@ function parseArgs(argv) {
     else if (argv[i] === '--conduction-id') args.conductionId = argv[++i];
     else if (argv[i] === '--run-config') args.runConfig = argv[++i];
     else if (argv[i] === '--run-config-path') args.runConfigPath = argv[++i];
+    else if (argv[i] === '--model') args.model = argv[++i];
   }
   if (!args.out) {
     throw new Error(
       'Usage: mint-installation-token.mjs --out <per-run env-file> [--base <static env-file>] ' +
         '[--config <deployment-config path>] [--conduction-id <uuid>] ' +
-        "[--run-config <json-string>] [--run-config-path <container-side path>]",
+        "[--run-config <json-string>] [--run-config-path <container-side path>] " +
+        '[--model <resolved model alias>]',
     );
   }
   return args;
 }
 
 export async function main(argv = process.argv.slice(2), env = process.env) {
-  const { base, out, config, conductionId, runConfig, runConfigPath } = parseArgs(argv);
+  const { base, out, config, conductionId, runConfig, runConfigPath, model } = parseArgs(argv);
 
   const appId = env.HARMONY_APP_ID;
   const installationId = env.HARMONY_APP_INSTALLATION_ID;
@@ -387,6 +401,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     envFileContent += composeRunConfigInlineLine(runConfig);
   }
   envFileContent += composeConductionIdLine(conductionId);
+  // B-772: same always-appended-when-present convention as composeConductionIdLine above.
+  envFileContent += composeModelLine(model);
 
   writeEnvFile(out, envFileContent);
 

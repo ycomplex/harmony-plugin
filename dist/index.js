@@ -36370,7 +36370,11 @@ function loadDeploymentConfig(opts = {}) {
 import { readFileSync as nodeReadFileSync } from "node:fs";
 var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
 var NoteSchema = external_exports.string().optional();
-var RunConfigSchema = external_exports.object({ session_resume: SessionResumeSchema, note: NoteSchema }).passthrough();
+var ModelSchema = external_exports.object({
+  default: external_exports.string().optional(),
+  per_gate: external_exports.record(external_exports.string()).optional()
+}).optional();
+var RunConfigSchema = external_exports.object({ session_resume: SessionResumeSchema, note: NoteSchema, model: ModelSchema }).passthrough();
 var EMPTY_RUN_CONFIG = {};
 function getOperatorNote(runConfig) {
   return runConfig.note ? runConfig.note : void 0;

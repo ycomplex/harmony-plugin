@@ -491,6 +491,104 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
     expect(h.logs.some((line) => /will NOT reach the worker/i.test(line))).toBe(false);
   });
 
+  describe('B-772: {model} template substitution — the daemon-resolved per-gate model', () => {
+    it('level 1: a per_gate override for the resolved gate is substituted into {model}', async () => {
+      const h = makeHarness({
+        conductions: [
+          conduction({ run_config: { model: { per_gate: { release: 'per-gate-release-model' } } } }),
+        ],
+        // pausedTask() defaults workflow_state to 'Built' — gate 'release'.
+        tasks: { 'task-1': pausedTask() },
+        config: {
+          ...config,
+          profile: { ...config.profile, launch: "launch {conduction_id} {ticket} --model '{model}'" },
+        },
+      });
+      await wakeAndFire(h);
+      expect(h.launches()).toEqual([`launch cond-1 task-1 --model 'per-gate-release-model'`]);
+    });
+
+    it('level 1 does not apply to a DIFFERENT gate — falls through to level 2 (model.default)', async () => {
+      const h = makeHarness({
+        conductions: [
+          conduction({
+            run_config: {
+              model: { default: 'run-default-model', per_gate: { build: 'per-gate-build-model' } },
+            },
+          }),
+        ],
+        // 'Built' -> gate 'release', which has no per_gate entry above.
+        tasks: { 'task-1': pausedTask() },
+        config: {
+          ...config,
+          profile: { ...config.profile, launch: "launch {conduction_id} {ticket} --model '{model}'" },
+        },
+      });
+      await wakeAndFire(h);
+      expect(h.launches()).toEqual([`launch cond-1 task-1 --model 'run-default-model'`]);
+    });
+
+    it('level 2: model.default is substituted when the conduction row carries no per_gate at all', async () => {
+      const h = makeHarness({
+        conductions: [conduction({ run_config: { model: { default: 'run-default-model' } } })],
+        tasks: { 'task-1': pausedTask() },
+        config: {
+          ...config,
+          profile: { ...config.profile, launch: "launch {conduction_id} {ticket} --model '{model}'" },
+        },
+      });
+      await wakeAndFire(h);
+      expect(h.launches()).toEqual([`launch cond-1 task-1 --model 'run-default-model'`]);
+    });
+
+    it('level 3: an empty/absent run_config substitutes the pinned per-deployment-profile default', async () => {
+      const originalUrl = process.env.HARMONY_SUPABASE_URL;
+      process.env.HARMONY_SUPABASE_URL = 'https://eioxsunvhakmelhanmnn.supabase.co'; // the prod ref
+      try {
+        const h = makeHarness({
+          conductions: [conduction()], // run_config left undefined entirely
+          tasks: { 'task-1': pausedTask() },
+          config: {
+            ...config,
+            profile: { ...config.profile, launch: "launch {conduction_id} {ticket} --model '{model}'" },
+          },
+        });
+        await wakeAndFire(h);
+        expect(h.launches()).toEqual([`launch cond-1 task-1 --model 'claude-sonnet-5'`]);
+      } finally {
+        if (originalUrl === undefined) delete process.env.HARMONY_SUPABASE_URL;
+        else process.env.HARMONY_SUPABASE_URL = originalUrl;
+      }
+    });
+
+    it('{model} is harmless (never throws) when the active launch template does not reference it at all', async () => {
+      const h = makeHarness({
+        conductions: [conduction({ run_config: { model: { default: 'run-default-model' } } })],
+        tasks: { 'task-1': pausedTask() },
+        // No {model} placeholder in this template — same "always computed upstream, only
+        // substituted where referenced" convention {run_config_json} already relies on.
+        config,
+      });
+      await wakeAndFire(h);
+      expect(h.launches()).toEqual(['launch cond-1 task-1']);
+    });
+
+    it('resolves the gate from the CURRENT task read at fire time (Planned -> build gate)', async () => {
+      const h = makeHarness({
+        conductions: [
+          conduction({ run_config: { model: { per_gate: { build: 'per-gate-build-model' } } } }),
+        ],
+        tasks: { 'task-1': pausedTask({ workflow_state: 'Planned' }) },
+        config: {
+          ...config,
+          profile: { ...config.profile, launch: "launch {conduction_id} {ticket} --model '{model}'" },
+        },
+      });
+      await wakeAndFire(h);
+      expect(h.launches()).toEqual([`launch cond-1 task-1 --model 'per-gate-build-model'`]);
+    });
+  });
+
   it('a clean-pause exit is classified and the baseline stored ONLY once the launch settles, on a LATER pass', async () => {
     const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
     await wakeAndFire(h);
