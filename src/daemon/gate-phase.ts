@@ -9,16 +9,26 @@
 // Deliberately lives here (src/daemon/), NOT in src/config/, even though src/config/run-config.ts's
 // getModelForGate accepts a `Gate` value: a design remark proposed moving `Gate` into src/config/ to
 // avoid src/config/ importing from src/daemon/, but that remark was explicitly NOT ratified — the
-// accepted design keeps `Gate` + `resolveGatePhase` together here. run-config.ts imports ONLY the
-// `Gate` TYPE from this file (a type-only import erases at compile time, so this creates no runtime
-// import cycle even though gate-phase.ts itself imports nothing back from config/).
+// accepted design keeps `Gate` + `resolveGatePhase` together here. B-773: run-config.ts now imports the
+// `GATES` runtime array from this file too (not just the `Gate` TYPE) — zod needs a runtime value to
+// build its `auto_approve_gates` enum from, a type alone erases at compile time. This is a genuine
+// runtime import from src/config/ to src/daemon/, and that is intentional and accepted: gate-phase.ts
+// has zero dependencies of its own, so importing its tiny const array pulls in nothing else — no bundle
+// contamination results.
 
 /** The seven forward-path gates a conducted ticket walks, in order. Mirrors the `gate` column of
  *  `skills/harmony-shared/gate-routing.md`'s canonical table exactly (release/verify are the two
  *  hard-floor, always-human gates; the other five may be delegated under harmony-conduct's
  *  --unattended/--escalate/--pause-at modes — irrelevant to gate IDENTITY, which is all this type
- *  captures). */
-export type Gate = 'clarify' | 'decompose' | 'design' | 'plan' | 'build' | 'release' | 'verify';
+ *  captures). A runtime array, not just a type: B-773's `auto_approve_gates` schema (see
+ *  src/config/run-config.ts) needs a real value to build a zod enum from, so this list is the ONE
+ *  runtime source both `Gate` (`typeof GATES[number]`) and that schema derive from — never redeclare
+ *  the gate set as an independent literal elsewhere. */
+export const GATES = ['clarify', 'decompose', 'design', 'plan', 'build', 'release', 'verify'] as const;
+
+/** The `Gate` type, derived from `GATES` (never hand-declared as its own literal union — see GATES'
+ *  own doc comment). */
+export type Gate = (typeof GATES)[number];
 
 /** `workflow_state -> gate` — mirrors gate-routing.md's table's `from workflow_state` column.
  *  `Captured` is included alongside `Proposed` even though gate-routing.md's table itself only

@@ -19,6 +19,7 @@
 
 import { readFileSync as nodeReadFileSync } from 'node:fs';
 import { z } from 'zod';
+import { GATES } from '../daemon/gate-phase.js';
 import type { Gate } from '../daemon/gate-phase.js';
 
 /** B-718: resume-and-reconcile controlled-mode legs from the prior leg's persisted Claude
@@ -59,11 +60,50 @@ const ModelSchema = z
   })
   .optional();
 
+/** B-773: the five forward gates eligible for the per-run `auto_approve_gates` override — every
+ *  `Gate` value EXCEPT `release`/`verify` (the hard floor, never delegable under any mechanism — see
+ *  `skills/harmony-conduct/SKILL.md`'s contract 3 and `skills/harmony-shared/gate-routing.md`'s "The
+ *  hard floor"). Deliberately `Exclude<Gate, 'release' | 'verify'>` rather than its own hand-written
+ *  literal union — see `AUTO_APPROVE_GATE_VALUES` below for why the runtime array driving the zod enum
+ *  is ALSO derived from `GATES` (a filter), not an independently hand-typed array; the two must never
+ *  drift apart. */
+export type AutoApproveGate = Exclude<Gate, 'release' | 'verify'>;
+
+/** The runtime values `AutoApproveGateSchema` accepts — `GATES` (src/daemon/gate-phase.ts's single
+ *  source of truth for gate identity) filtered down to the non-floor gates, never an independent
+ *  `z.enum([...])` literal: zod needs a runtime array to build an enum from (a TYPE alone erases at
+ *  compile time), and deriving it by filtering `GATES` is what keeps this list and `Gate` itself from
+ *  ever silently drifting apart (a `GATES` edit is reflected here automatically, filter logic unchanged). */
+const AUTO_APPROVE_GATE_VALUES = GATES.filter(
+  (gate): gate is AutoApproveGate => gate !== 'release' && gate !== 'verify',
+);
+
+// Compile-time pin (this line does nothing at runtime): if a future edit to `GATES` — dropping or
+// renaming a gate — ever makes `AUTO_APPROVE_GATE_VALUES`'s inferred element type diverge from
+// `AutoApproveGate` (`Exclude<Gate, 'release' | 'verify'>`), this assignment fails to typecheck instead
+// of silently building `AutoApproveGateSchema` for the wrong set at runtime.
+const _autoApproveGateValuesArePinnedToTheType: readonly AutoApproveGate[] = AUTO_APPROVE_GATE_VALUES;
+void _autoApproveGateValuesArePinnedToTheType;
+
+/** B-773: the per-run, per-gate auto-approve override — the human names specific forward gates
+ *  (clarify/decompose/design/plan/build; release/verify are structurally excluded, see
+ *  `AutoApproveGate` above) that auto-advance for THIS run, layered on top of / independent of the
+ *  ambient run mode (controlled / `--pause-at` / `--unattended` / `--escalate`). Consumed by
+ *  `harmony-conduct`'s delegation-test step 2a — see `skills/harmony-conduct/SKILL.md`. */
+const AutoApproveGateSchema = z.enum(
+  AUTO_APPROVE_GATE_VALUES as [AutoApproveGate, ...AutoApproveGate[]],
+);
+
 /** No other axis keys yet — each dependent ticket adds ONE top-level key here.
  *  `.passthrough()` so an accessor build that predates a newer key never throws on it — forward
  *  compatible by construction, same as this ticket's own additive-only design intent. */
 export const RunConfigSchema = z
-  .object({ session_resume: SessionResumeSchema, note: NoteSchema, model: ModelSchema })
+  .object({
+    session_resume: SessionResumeSchema,
+    note: NoteSchema,
+    model: ModelSchema,
+    auto_approve_gates: z.array(AutoApproveGateSchema).optional(),
+  })
   .passthrough();
 export type RunConfig = z.infer<typeof RunConfigSchema>;
 export const EMPTY_RUN_CONFIG: RunConfig = {};
@@ -84,6 +124,18 @@ export function isSessionResumeEnabled(runConfig: RunConfig): boolean {
  *  getRunConfig). */
 export function getOperatorNote(runConfig: RunConfig): string | undefined {
   return runConfig.note ? runConfig.note : undefined;
+}
+
+/** B-773: the set of forward gates this run_config payload auto-approves, or an EMPTY Set when none
+ *  were named — an absent `auto_approve_gates` key and an empty array both read as "no override"
+ *  (mirrors isSessionResumeEnabled's/getOperatorNote's own absence-is-the-off-state convention). Never
+ *  throws — a malformed `auto_approve_gates` shape (a non-array, or an array element outside
+ *  `AutoApproveGate`) would already have been rejected by RunConfigSchema.parse at read time (see
+ *  getRunConfig), so by the time a RunConfig value reaches this accessor it is trusted. Returns a `Set`
+ *  (not an array) because every consumer only ever needs membership (`overrideGates.has(gate)` —
+ *  `skills/harmony-conduct/SKILL.md`'s delegation-test step 2a), never order or duplicates. */
+export function getAutoApproveGates(runConfig: RunConfig): Set<AutoApproveGate> {
+  return new Set(runConfig.auto_approve_gates ?? []);
 }
 
 /** B-694 empty-env-value shadow class, matching src/daemon/config.ts's own envValue convention: a

@@ -190,6 +190,20 @@ class — the signal surfaces *here* instead (see harmony-conduct §3a / §4 "re
 Prefer this path-derived signal over any prose-derived set — the path signal is high-precision and avoids the
 prose false-positives B-516 fixed.
 
+**Override-gate attention block (B-773).** Alongside the risk-class signal above, surface any per-gate
+`auto_approve_gates` overrides this run exercised. `mcp__harmony__list_comments({ task_id })` and collect
+every `OVERRIDE-GATE-EXECUTED gate=<gate> conduction_id=<id-or-"none">` marker (`harmony-conduct` §4b posts
+one per override-provenance auto-advance — see `skills/harmony-shared/gate-routing.md` §Resolution
+provenance and `harmony-conduct` §4b's own marker-posting paragraph). **Filter by `conduction_id`** when
+THIS run has one (`get_project`'s `environment.conduction_id`, from step 0's call — the common
+daemon-driven case): keep only markers whose `conduction_id` matches. **When `conduction_id` is `null`**
+(an ad hoc interactive run with no conduction row), include **every** matching marker found on the ticket —
+a deliberate best-effort imprecision, acceptable because this is an FYI attention line, not a safety floor
+(unlike the risk-class signal above, which IS one). Render the matches as their own attention block on the
+release brief, right alongside the risk-class signal, e.g.: *"ℹ Auto-approved gates this run: **clarify**,
+**plan** — see their `OVERRIDE-GATE-EXECUTED` comments for what each executed."* If none are found, show
+nothing extra.
+
 **One `gh pr view` call, two uses: bot-approval + CI evidence (B-732, B-765 AC4).** Before showing the
 brief, make a single call for the `build_pr` PR, extended with `statusCheckRollup` so the brief's CI
 evidence is FETCHED from the PR's checks rather than asserted from local/partial evidence:

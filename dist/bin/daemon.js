@@ -22538,16 +22538,50 @@ function loadDeploymentConfig(opts = {}) {
 
 // src/config/run-config.ts
 import { readFileSync as nodeReadFileSync } from "node:fs";
+
+// src/daemon/gate-phase.ts
+var GATES = ["clarify", "decompose", "design", "plan", "build", "release", "verify"];
+var GATE_BY_WORKFLOW_STATE = {
+  Captured: "clarify",
+  Proposed: "clarify",
+  Clarified: "decompose",
+  Decomposed: "design",
+  Designed: "plan",
+  Planned: "build",
+  Built: "release",
+  Deployed: "verify"
+};
+function resolveGatePhase(workflow_state, workflow_activity) {
+  void workflow_activity;
+  if (!workflow_state) return null;
+  return GATE_BY_WORKFLOW_STATE[workflow_state] ?? null;
+}
+
+// src/config/run-config.ts
 var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
 var NoteSchema = external_exports.string().optional();
 var ModelSchema = external_exports.object({
   default: external_exports.string().optional(),
   per_gate: external_exports.record(external_exports.string()).optional()
 }).optional();
-var RunConfigSchema = external_exports.object({ session_resume: SessionResumeSchema, note: NoteSchema, model: ModelSchema }).passthrough();
+var AUTO_APPROVE_GATE_VALUES = GATES.filter(
+  (gate) => gate !== "release" && gate !== "verify"
+);
+var AutoApproveGateSchema = external_exports.enum(
+  AUTO_APPROVE_GATE_VALUES
+);
+var RunConfigSchema = external_exports.object({
+  session_resume: SessionResumeSchema,
+  note: NoteSchema,
+  model: ModelSchema,
+  auto_approve_gates: external_exports.array(AutoApproveGateSchema).optional()
+}).passthrough();
 var EMPTY_RUN_CONFIG = {};
 function getOperatorNote(runConfig) {
   return runConfig.note ? runConfig.note : void 0;
+}
+function getAutoApproveGates(runConfig) {
+  return new Set(runConfig.auto_approve_gates ?? []);
 }
 function envValue(env, key) {
   const v = env[key];
@@ -22649,13 +22683,21 @@ function resolveEnvironment(env = process.env, moduleUrl = import.meta.url) {
   } catch {
     operator_note = null;
   }
+  let auto_approve_gates;
+  try {
+    const gates = Array.from(getAutoApproveGates(getRunConfig(env)));
+    auto_approve_gates = gates.length > 0 ? gates : null;
+  } catch {
+    auto_approve_gates = null;
+  }
   return {
     supabase_url,
     supabase_project_ref,
     target: resolveKnownRefs(env)[supabase_project_ref] ?? "custom",
     plugin_version: resolvePluginVersion(env, moduleUrl),
     conduction_id: getConductionId(env) ?? null,
-    operator_note
+    operator_note,
+    auto_approve_gates
   };
 }
 
@@ -23657,23 +23699,6 @@ function exitClass(outcome, args) {
     return state !== null && TICKET_TERMINAL_STATES.includes(state) ? "terminal" : "split-umbrella";
   }
   return "clean-pause";
-}
-
-// src/daemon/gate-phase.ts
-var GATE_BY_WORKFLOW_STATE = {
-  Captured: "clarify",
-  Proposed: "clarify",
-  Clarified: "decompose",
-  Decomposed: "design",
-  Designed: "plan",
-  Planned: "build",
-  Built: "release",
-  Deployed: "verify"
-};
-function resolveGatePhase(workflow_state, workflow_activity) {
-  void workflow_activity;
-  if (!workflow_state) return null;
-  return GATE_BY_WORKFLOW_STATE[workflow_state] ?? null;
 }
 
 // src/daemon/scheduler.ts
