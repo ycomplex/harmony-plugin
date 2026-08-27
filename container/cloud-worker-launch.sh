@@ -29,11 +29,11 @@
 # more waiting for the execution to start — plus raising `LOCK_WAIT_TIMEOUT_S`'s default from 60 to
 # 300 as belt-and-braces for any residual slow creation.
 #
-# Usage: cloud-worker-launch.sh <conduction_id> <ticket> [run_config_json]
+# Usage: cloud-worker-launch.sh <conduction_id> <ticket> [run_config_json] [model]
 set -euo pipefail
 
-CONDUCTION_ID="${1:?usage: cloud-worker-launch.sh <conduction_id> <ticket> [run_config_json]}"
-TICKET="${2:?usage: cloud-worker-launch.sh <conduction_id> <ticket> [run_config_json]}"
+CONDUCTION_ID="${1:?usage: cloud-worker-launch.sh <conduction_id> <ticket> [run_config_json] [model]}"
+TICKET="${2:?usage: cloud-worker-launch.sh <conduction_id> <ticket> [run_config_json] [model]}"
 # B-718: the conduction row's run_config seam value (src/daemon/scheduler.ts's templateVars ->
 # {run_config_json}), forwarded here as a THIRD positional arg — replacing the hardcoded '{}' the
 # mint invocation below used before this ticket. B-743: the daemon-driven value is now
@@ -45,6 +45,14 @@ TICKET="${2:?usage: cloud-worker-launch.sh <conduction_id> <ticket> [run_config_
 # falls back to '{}' byte-for-byte, same as today.
 DEFAULT_RUN_CONFIG='{}'
 RUN_CONFIG_JSON="${3:-$DEFAULT_RUN_CONFIG}"
+
+# B-772: the daemon's resolved per-leg model (src/daemon/scheduler.ts's templateVars ->
+# modelFor), forwarded here as a FOURTH positional arg — same "replaces a hardcoded default,
+# optional/absent falls back cleanly" shape as RUN_CONFIG_JSON above. Unlike RUN_CONFIG_JSON,
+# there is no non-empty default: an empty MODEL is itself a valid "nothing resolved" state
+# (a manual invocation, or an older daemon build that doesn't render this template arg) — the
+# mint invocation below and write_exec_env_file() forward it conditionally, only when non-empty.
+MODEL="${4:-}"
 
 : "${HARMONY_PLUGIN_DIR:?HARMONY_PLUGIN_DIR is required (checkout the mint script runs from, same knob the docker profile uses)}"
 
@@ -164,7 +172,15 @@ EXEC_ENV_FILE="$RUN_DIR/exec-env-vars.yaml"  # per-EXECUTE-call file, deleted ri
 #    matching the local docker profile's launch template exactly (see
 #    container/daemon-profile.example.json's `launch` field) — that static file is where the ack
 #    flag actually lives on this host, same as the docker profile.
-node "$HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs" --base "$HOME/.harmony-container.env" --out "$ENV_FILE" --conduction-id "$CONDUCTION_ID" --run-config "$RUN_CONFIG_JSON"
+# B-772: --model is appended ONLY when MODEL is non-empty — mirrors the mint script's own
+# tolerant contract (scripts/mint-installation-token.mjs's composeModelLine treats an empty
+# string identically to an absent flag), but this wrapper stays explicit about the omission
+# rather than relying on that tolerance.
+MINT_MODEL_FLAG=()
+if [ -n "$MODEL" ]; then
+  MINT_MODEL_FLAG=(--model "$MODEL")
+fi
+node "$HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs" --base "$HOME/.harmony-container.env" --out "$ENV_FILE" --conduction-id "$CONDUCTION_ID" --run-config "$RUN_CONFIG_JSON" "${MINT_MODEL_FLAG[@]}"
 
 GIT_TOKEN="$(grep -m1 '^GIT_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
 if [ -z "$GIT_TOKEN" ]; then
@@ -186,6 +202,13 @@ HARMONY_PLUGIN_POSTURE="$(grep -m1 '^HARMONY_PLUGIN_POSTURE=' "$ENV_FILE" | cut 
 # HARMONY_PLUGIN_POSTURE's own convention): an absent value just means write_exec_env_file() below
 # skips forwarding it, the same fail-soft shape.
 HARMONY_RUN_CONFIG_JSON="$(grep -m1 '^HARMONY_RUN_CONFIG_JSON=' "$ENV_FILE" | cut -d= -f2- || true)"
+
+# B-772: model seam — HARMONY_MODEL is written into the SAME minted $ENV_FILE as GIT_TOKEN/
+# HARMONY_PLUGIN_POSTURE/HARMONY_RUN_CONFIG_JSON above (this profile's mint invocation passes
+# --model "$MODEL" above, conditionally). Read the same grep+cut way, no non-empty check
+# (mirrors HARMONY_RUN_CONFIG_JSON's own convention): an absent value just means
+# write_exec_env_file() below skips forwarding it, the same fail-soft shape.
+HARMONY_MODEL="$(grep -m1 '^HARMONY_MODEL=' "$ENV_FILE" | cut -d= -f2- || true)"
 
 # 2. Compose the per-execution env-vars FILE. A small, isolated function on purpose — see the
 #    CONFIRMED note inside it (round 3: the flag/format question this note originally raised is now
@@ -255,6 +278,14 @@ write_exec_env_file() {
       # YAML line unescaped.
       if [ -n "${HARMONY_RUN_CONFIG_JSON:-}" ]; then
         printf 'HARMONY_RUN_CONFIG_JSON: "%s"\n' "$HARMONY_RUN_CONFIG_JSON"
+      fi
+      # B-772: model seam — forwarded ONLY when the mint script actually wrote one (see the
+      # HARMONY_MODEL acquisition above; same conditional-forward convention as
+      # HARMONY_PLUGIN_POSTURE/HARMONY_RUN_CONFIG_JSON above). No base64-encoding needed — a
+      # model alias string (e.g. claude-sonnet-5) has no characters that would break a quoted
+      # YAML value, unlike the JSON blobs the other two forwards handle.
+      if [ -n "${HARMONY_MODEL:-}" ]; then
+        printf 'HARMONY_MODEL: "%s"\n' "$HARMONY_MODEL"
       fi
       # B-846: HARMONY_CONDUCTION_ID — the plain (not HARMONY_-prefixed) conduction id every
       # run-config-aware worker reads via src/config/run-config.ts's getConductionId(). An
