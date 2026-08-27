@@ -172,6 +172,12 @@ EXEC_ENV_FILE="$RUN_DIR/exec-env-vars.yaml"  # per-EXECUTE-call file, deleted ri
 #    matching the local docker profile's launch template exactly (see
 #    container/daemon-profile.example.json's `launch` field) — that static file is where the ack
 #    flag actually lives on this host, same as the docker profile.
+# B-772 hotfix: the expansion below uses `${ARR[@]+"${ARR[@]}"}`, NOT a bare `"${ARR[@]}"`.
+# On bash 4.4+ expanding an EMPTY array under `set -u` is legal; on bash 3.2 — which macOS still
+# ships, and which the daemon host runs — it trips nounset with "MINT_MODEL_FLAG[@]: unbound
+# variable" and kills the launch before the worker ever starts. This script runs on the DAEMON
+# HOST (unlike provision.sh, which runs inside the Linux container), so it must be bash-3.2 safe.
+# Regression: 2026-08-27, first launch after B-772 merged parked B-773 with no work done.
 # B-772: --model is appended ONLY when MODEL is non-empty — mirrors the mint script's own
 # tolerant contract (scripts/mint-installation-token.mjs's composeModelLine treats an empty
 # string identically to an absent flag), but this wrapper stays explicit about the omission
@@ -180,7 +186,7 @@ MINT_MODEL_FLAG=()
 if [ -n "$MODEL" ]; then
   MINT_MODEL_FLAG=(--model "$MODEL")
 fi
-node "$HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs" --base "$HOME/.harmony-container.env" --out "$ENV_FILE" --conduction-id "$CONDUCTION_ID" --run-config "$RUN_CONFIG_JSON" "${MINT_MODEL_FLAG[@]}"
+node "$HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs" --base "$HOME/.harmony-container.env" --out "$ENV_FILE" --conduction-id "$CONDUCTION_ID" --run-config "$RUN_CONFIG_JSON" ${MINT_MODEL_FLAG[@]+"${MINT_MODEL_FLAG[@]}"}
 
 GIT_TOKEN="$(grep -m1 '^GIT_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
 if [ -z "$GIT_TOKEN" ]; then
