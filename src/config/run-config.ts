@@ -19,6 +19,7 @@
 
 import { readFileSync as nodeReadFileSync } from 'node:fs';
 import { z } from 'zod';
+import type { Gate } from '../daemon/gate-phase.js';
 
 /** B-718: resume-and-reconcile controlled-mode legs from the prior leg's persisted Claude
  *  session, when one is discoverable (see container/provision.sh's same-conduction discovery,
@@ -40,11 +41,29 @@ const SessionResumeSchema = z.object({ enabled: z.boolean() }).optional();
  *  `''`/absent both read as "no note" via getOperatorNote below. */
 const NoteSchema = z.string().optional();
 
+/** B-772: the per-run model-selection axis — the human's Conduct-dialog choice of which Claude
+ *  model each gate's leg runs on. `default` is a run-wide fallback (every gate that has no
+ *  `per_gate` entry of its own uses it); `per_gate` overrides ONE named gate (keyed by the `Gate`
+ *  values src/daemon/gate-phase.ts's `resolveGatePhase` produces — 'clarify'/'decompose'/'design'/
+ *  'plan'/'build'/'release'/'verify'). Both optional, independently: a payload may set only
+ *  `default`, only `per_gate`, both, or neither (the all-pinned-defaults case — see
+ *  getModelForGate's three-level fallback below). Deliberately a bare `Record<string, string>` for
+ *  `per_gate` (not a `Partial<Record<Gate, string>>`) — an operator-authored/web-authored payload
+ *  naming a gate key this build's Gate enum doesn't (yet) recognize must still PARSE (forward
+ *  compat, same reasoning as this schema's own `.passthrough()`); getModelForGate only ever LOOKS
+ *  UP a real `Gate` value, so an unrecognized key is simply never read, never a parse-time reject. */
+const ModelSchema = z
+  .object({
+    default: z.string().optional(),
+    per_gate: z.record(z.string()).optional(),
+  })
+  .optional();
+
 /** No other axis keys yet — each dependent ticket adds ONE top-level key here.
  *  `.passthrough()` so an accessor build that predates a newer key never throws on it — forward
  *  compatible by construction, same as this ticket's own additive-only design intent. */
 export const RunConfigSchema = z
-  .object({ session_resume: SessionResumeSchema, note: NoteSchema })
+  .object({ session_resume: SessionResumeSchema, note: NoteSchema, model: ModelSchema })
   .passthrough();
 export type RunConfig = z.infer<typeof RunConfigSchema>;
 export const EMPTY_RUN_CONFIG: RunConfig = {};
@@ -119,4 +138,77 @@ export function getRunConfig(
   }
 
   return EMPTY_RUN_CONFIG;
+}
+
+/** B-772: this deployment's PINNED per-deployment-profile default model — the last-resort tier of
+ *  getModelForGate's three-level fallback, used ONLY when a run carries neither an explicit
+ *  `run_config.model.per_gate[<gate>]` nor an explicit `run_config.model.default`. Hand-edited,
+ *  never derived from the worker image's own CLI version — the whole point is a value this repo
+ *  controls explicitly, so a container image rebuild (which can silently change the CLI's own
+ *  undeclared default) never silently changes which model a gate runs on. Keyed the SAME way
+ *  src/tools/environment.ts's `KNOWN_REFS` is (`'prod' | 'staging'` project-ref -> name convention)
+ *  — see resolveDeploymentProfile below for why the ref->name MAPPING itself is duplicated here
+ *  rather than imported. Placeholder alias values — update when this deployment settles on real
+ *  per-environment picks; the identity that matters for THIS ticket is "always something explicit
+ *  here, never silence". */
+export const PINNED_DEFAULT_MODEL_BY_PROFILE: Record<string, string> = {
+  prod: 'claude-sonnet-5',
+  staging: 'claude-sonnet-5',
+};
+
+// B-772: duplicated from src/tools/environment.ts's DEFAULT_SUPABASE_URL/KNOWN_REFS, deliberately
+// NOT imported — environment.ts already imports getRunConfig/getOperatorNote FROM this file (its
+// own get_project operator_note plumbing), so an import the other way would cycle. This is small,
+// stable, rarely-changing data (the same tradeoff environment.ts's own header note about KNOWN_REFS
+// documents), so duplication is the accepted cost, not an oversight — keep both maps' key sets in
+// sync by hand if a new project ref is ever added.
+const DEFAULT_SUPABASE_URL = 'https://eioxsunvhakmelhanmnn.supabase.co';
+const KNOWN_REFS_FOR_MODEL: Record<string, string> = {
+  eioxsunvhakmelhanmnn: 'prod',
+  meqkdgncdzromunylyxf: 'staging',
+};
+
+/** Which deployment profile (`'prod'` / `'staging'` / ...) THIS process is talking to, derived from
+ *  its own `HARMONY_SUPABASE_URL` the same way environment.ts's `resolveEnvironment` derives
+ *  `target` — a hostname-prefix lookup against the known project refs. Falls back to `'prod'` for
+ *  an unrecognized/malformed/absent URL (a custom/self-hosted deployment, or a call site with no
+ *  Supabase env at all) — never `undefined`: PINNED_DEFAULT_MODEL_BY_PROFILE's own "always
+ *  something explicit" guarantee only holds if the LOOKUP KEY itself is never allowed to be
+ *  unresolved either. */
+function resolveDeploymentProfile(env: NodeJS.ProcessEnv): string {
+  const url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
+  let ref = '';
+  try {
+    ref = new URL(url).hostname.split('.')[0] ?? '';
+  } catch {
+    // Malformed URL — ref stays '', falls through to the KNOWN_REFS_FOR_MODEL lookup miss below.
+  }
+  return KNOWN_REFS_FOR_MODEL[ref] ?? 'prod';
+}
+
+/** B-772: the ONE fallback-resolution function every caller (the daemon's fireLaunch, and any
+ *  future caller) uses to pick which Claude model a gate's leg runs on — never reimplement this
+ *  chain elsewhere. Three levels, in order:
+ *    1. `runConfig.model?.per_gate?.[gate]` — an explicit per-gate override for THIS run. Skipped
+ *       entirely when `gate` is `null` (no gate resolved — e.g. a terminal-state ticket).
+ *    2. `runConfig.model?.default` — an explicit run-wide default for THIS run, when no per-gate
+ *       override matched (or none could apply).
+ *    3. `PINNED_DEFAULT_MODEL_BY_PROFILE[<this deployment's profile>]` — the hand-edited,
+ *       per-deployment pin (see its own doc comment above), resolved via `env` (defaults to
+ *       `process.env`, injectable for tests — mirrors this file's own getConductionId/getRunConfig
+ *       convention). ALWAYS returns a non-empty string; this is what makes "never the image's
+ *       undeclared CLI default" true by construction — there is no fourth level that falls through
+ *       to silence. */
+export function getModelForGate(
+  runConfig: RunConfig,
+  gate: Gate | null,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const perGate = gate ? runConfig.model?.per_gate?.[gate] : undefined;
+  if (perGate) return perGate;
+
+  if (runConfig.model?.default) return runConfig.model.default;
+
+  const profile = resolveDeploymentProfile(env);
+  return PINNED_DEFAULT_MODEL_BY_PROFILE[profile] ?? PINNED_DEFAULT_MODEL_BY_PROFILE.prod;
 }

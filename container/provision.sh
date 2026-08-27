@@ -265,6 +265,16 @@ case "$MODE" in
     # shellcheck disable=SC2206
     EXTRA_HEADLESS_FLAGS=(${CLAUDE_HEADLESS_FLAGS:-})
 
+    # B-772: HARMONY_MODEL is the daemon's already-resolved per-gate/per-run/pinned-default model
+    # choice (src/config/run-config.ts's getModelForGate, delivered via the minted run.env file —
+    # see scripts/mint-installation-token.mjs's composeModelLine). Guarded exactly like the
+    # --resume wiring above: when unset/empty (an older daemon build, or a deployment profile that
+    # doesn't render {model}), EXTRA_HEADLESS_FLAGS is untouched and every exec line below runs
+    # byte-for-byte unchanged — no --model flag at all, never an empty one.
+    if [ -n "${HARMONY_MODEL:-}" ]; then
+      EXTRA_HEADLESS_FLAGS+=(--model "$HARMONY_MODEL")
+    fi
+
     if [ -z "$RESUME_SESSION_ID" ]; then
       # No prior session to resume (disabled, first leg ever, or nothing resumable) — the existing
       # cold-start path, byte-for-byte unchanged from before this ticket. CLAUDE_HEADLESS_FLAGS may

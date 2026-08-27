@@ -293,15 +293,19 @@ export function loadDaemonConfig(
  *  {run_config_json} (e.g. the reap/probe templates) need not supply it. */
 export function renderTemplate(
   tpl: string,
-  vars: { conduction_id: string; ticket: string; run_config_json?: string },
+  vars: { conduction_id: string; ticket: string; run_config_json?: string; model?: string },
 ): string {
   return tpl.replace(/\{([A-Za-z0-9_]+)\}/g, (_match, name: string) => {
     if (name === 'conduction_id') return vars.conduction_id;
     if (name === 'ticket') return vars.ticket;
     if (name === 'run_config_json' && vars.run_config_json !== undefined) return vars.run_config_json;
+    // B-772: the daemon's resolved per-leg model (see src/daemon/scheduler.ts's templateVars ->
+    // modelFor) — same "always computed upstream, only substituted where the template actually
+    // references it" convention as {run_config_json} above.
+    if (name === 'model' && vars.model !== undefined) return vars.model;
     throw new Error(
       `unknown placeholder {${name}} in launch-profile template — supported: {conduction_id}, ` +
-        `{ticket}, {run_config_json}`,
+        `{ticket}, {run_config_json}, {model}`,
     );
   });
 }

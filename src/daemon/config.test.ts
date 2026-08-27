@@ -241,6 +241,20 @@ describe('renderTemplate', () => {
       renderTemplate('run {run_config_json}', { conduction_id: 'c', ticket: 't' }),
     ).toThrow(/run_config_json/);
   });
+
+  it('B-772: substitutes {model} when supplied', () => {
+    expect(
+      renderTemplate("--model '{model}'", {
+        conduction_id: 'c',
+        ticket: 'B-772',
+        model: 'claude-sonnet-5',
+      }),
+    ).toBe("--model 'claude-sonnet-5'");
+  });
+
+  it('B-772: throws on {model} when the caller did not supply it (same unknown-placeholder discipline)', () => {
+    expect(() => renderTemplate('run {model}', { conduction_id: 'c', ticket: 't' })).toThrow(/model/);
+  });
 });
 
 // B-800: selecting a launch profile BY NAME from an already-loaded deployment config, and the

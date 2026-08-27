@@ -136,6 +136,8 @@ import { classifyWorkerExit, exitClass, type ClassifyArgs } from './classify.js'
 import { renderQuietReapOutcome } from './quiet-reap.js';
 import { exchangeWentInactive } from '../conductor/ball-axis.js';
 import { renderTemplate, type DaemonConfig } from './config.js';
+import { resolveGatePhase } from './gate-phase.js';
+import { getModelForGate, type RunConfig } from '../config/run-config.js';
 import type { HeartbeatKeeper } from './heartbeat.js';
 import { formatDaemonError } from './error-format.js';
 import type {
@@ -150,6 +152,10 @@ import type { Taskish } from '../conductor/poll-loop.js';
 /** The ticket shape the daemon reads (a getTask view:'meta' result is structurally assignable). */
 export type DaemonTask = Taskish & {
   workflow_state?: string | null;
+  /** B-772: read by templateVars' model resolution (resolveGatePhase + getModelForGate) — the
+   *  same `getTask view:'meta'` read this type's other fields already come from already returns
+   *  this column (src/tools/tasks.ts's pinned meta projection), so no new read is needed. */
+  workflow_activity?: string | null;
   stale?: boolean | null;
   task_number?: number | null;
   title?: string | null;
@@ -376,11 +382,25 @@ function runConfigJsonFor(row: ConductionRecord): string {
   return Buffer.from(json, 'utf8').toString('base64');
 }
 
+/** B-772: which Claude model THIS leg should run on — resolveGatePhase projects the task's current
+ *  `workflow_state`/`workflow_activity` onto a gate, then getModelForGate runs its three-level
+ *  fallback (per-gate override -> run-wide default -> pinned per-deployment default) over the
+ *  conduction row's OWN run_config. `task` can be `null` (a best-effort metadata read failed, or a
+ *  reconciled re-attach has no snapshot yet — same degrade this file's `ticket` substitution
+ *  already tolerates, see resolveVisualId's own comment) — resolveGatePhase reads that as "no gate"
+ *  (null workflow_state), which getModelForGate reads as "no per-gate override can apply", falling
+ *  through to level 2/3 exactly as intended; this NEVER throws and always returns a non-empty
+ *  string (getModelForGate's own guarantee). */
+function modelFor(row: ConductionRecord, task: DaemonTask | null): string {
+  const gate = resolveGatePhase(task?.workflow_state, task?.workflow_activity);
+  return getModelForGate((row.run_config ?? {}) as RunConfig, gate);
+}
+
 function templateVars(
   row: ConductionRecord,
   task: DaemonTask | null,
   projectKey: string,
-): { conduction_id: string; ticket: string; run_config_json: string } {
+): { conduction_id: string; ticket: string; run_config_json: string; model: string } {
   // B-827: {ticket} now carries the ticket's VISUAL id (project key + task_number), never the row
   // UUID — everything downstream (the worker prompt, host-side RUN_DIR paths, and, since B-788, the
   // persisted cloud transcript path) must name the ticket the same way B-723's log lines already
@@ -393,6 +413,9 @@ function templateVars(
     // B-718: always computed (harmless when the active template's reap/probe strings don't
     // reference {run_config_json} — renderTemplate only substitutes placeholders actually present).
     run_config_json: runConfigJsonFor(row),
+    // B-772: same "always computed, harmless when unreferenced" convention as run_config_json
+    // above — only the launch template is expected to actually reference {model}.
+    model: modelFor(row, task),
   };
 }
 

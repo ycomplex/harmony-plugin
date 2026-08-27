@@ -449,6 +449,73 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
     expect(result.stdout).toContain('--some-extra-flag');
   });
 
+  // B-772: HARMONY_MODEL -> --model "$HARMONY_MODEL" appended to EXTRA_HEADLESS_FLAGS, guarded
+  // exactly like the --resume wiring above. Reuses this same extracted block (the guard lives
+  // between EXTRA_HEADLESS_FLAGS' own construction and the cold-start exec line, well inside the
+  // B-718 marker range) — no new extraction helper needed.
+  describe('B-772: HARMONY_MODEL -> --model "$HARMONY_MODEL" guard', () => {
+    function fakeArgsEchoClaude(): string {
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b772-fake-claude-'));
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        ['#!/usr/bin/env bash', 'echo "ARGS=$*"', 'exit 0', ''].join('\n'),
+        { mode: 0o755 },
+      );
+      return claudeStub;
+    }
+
+    it('appends --model "$HARMONY_MODEL" on the cold-start path when HARMONY_MODEL is set', () => {
+      const claudeStub = fakeArgsEchoClaude();
+      const result = runResumeBlock(
+        { HARMONY_MODEL: 'claude-sonnet-5' }, // no run-config at all -> cold start, no resume
+        { fakeClaudeDir: claudeStub },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('--model claude-sonnet-5');
+    });
+
+    it('leaves the cold-start command byte-for-byte unchanged (no --model flag at all) when HARMONY_MODEL is unset', () => {
+      const claudeStub = fakeArgsEchoClaude();
+      const result = runResumeBlock({}, { fakeClaudeDir: claudeStub });
+      expect(result.status).toBe(0);
+      expect(result.stdout).not.toContain('--model');
+    });
+
+    it('leaves the cold-start command unchanged when HARMONY_MODEL is set but empty (empty behaves exactly like unset)', () => {
+      const claudeStub = fakeArgsEchoClaude();
+      const result = runResumeBlock({ HARMONY_MODEL: '' }, { fakeClaudeDir: claudeStub });
+      expect(result.status).toBe(0);
+      expect(result.stdout).not.toContain('--model');
+    });
+
+    it('also appends --model "$HARMONY_MODEL" on the --resume-attach path (same EXTRA_HEADLESS_FLAGS array)', () => {
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b772-fake-claude-resume-'));
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        [
+          '#!/usr/bin/env bash',
+          'if printf \'%s\\n\' "$@" | grep -q -- --resume; then',
+          '  echo "RESUME_ARGS=$*"',
+          '  exit 0',
+          'fi',
+          'echo "COLD_ARGS=$*"',
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      const dir = mkdtempSync(join(tmpdir(), 'b772-home-'));
+      writeSession(dir, 'fake-id');
+      const result = runResumeBlock(
+        { ...enabledRunConfigEnv(), HARMONY_MODEL: 'claude-sonnet-5' },
+        { fakeClaudeDir: claudeStub, homeDir: dir },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('RESUME_ARGS=');
+      expect(result.stdout).toContain('--model claude-sonnet-5');
+    });
+  });
+
   describe('EXECUTED SESSION_RESUME_ENABLED jq parse-failure signal (B-718 reopen fix, item 3)', () => {
     function malformedRunConfigEnv(): NodeJS.ProcessEnv {
       return { HARMONY_RUN_CONFIG_JSON: Buffer.from('not valid json').toString('base64') };
@@ -873,6 +940,11 @@ describe('daemon-profile.cloud.example.json shape', () => {
     expect(profile.launch).toContain('{ticket}');
     expect(profile.reap).toContain('{conduction_id}');
     expect(profile.reap).toContain('{ticket}');
+  });
+
+  it('carries the {model} placeholder on the launch template as a 4th positional arg (B-772 — cloud profile forwards the daemon-resolved per-leg model to the wrapper)', () => {
+    const profile = JSON.parse(readFileSync(cloudProfilePath, 'utf8')) as { launch: string };
+    expect(profile.launch).toContain("'{model}'");
   });
 
   it('points launch and reap at the two dedicated cloud wrapper scripts, not an inline docker/gcloud command', () => {
@@ -1343,6 +1415,9 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
         launchScript,
         'HARMONY_RUN_CONFIG_JSON="$(grep -m1',
       );
+      // B-772: model seam acquisition line — same extraction discipline as GIT_TOKEN/posture/
+      // run-config above, so drift in the real acquisition line breaks this EXECUTED test too.
+      const modelAcquisition = extractLine(launchScript, 'HARMONY_MODEL="$(grep -m1');
       const fnBody = extractFunctionBody(launchScript);
 
       const harness = [
@@ -1359,6 +1434,7 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
         gitTokenAcquisition,
         postureAcquisition,
         runConfigAcquisition,
+        modelAcquisition,
         fnBody,
         `write_exec_env_file "${outFile}"`,
         '',
@@ -1406,6 +1482,21 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
       expect(output).not.toContain('HARMONY_RUN_CONFIG_JSON');
     });
 
+    // B-772: model seam — EXECUTED (not just prose-pinned), matching this describe block's own
+    // stated rationale for the adjacent HARMONY_PLUGIN_POSTURE/HARMONY_RUN_CONFIG_JSON coverage
+    // above.
+    it('produces HARMONY_MODEL in the output YAML, verbatim, when the fixture minted env-file carries it', () => {
+      const output = runWriteExecEnvFile(
+        ['GIT_TOKEN=ghs_dummytoken', 'HARMONY_MODEL=claude-sonnet-5', ''].join('\n'),
+      );
+      expect(output).toContain('HARMONY_MODEL: "claude-sonnet-5"');
+    });
+
+    it('omits the HARMONY_MODEL line entirely when the fixture minted env-file does not carry it', () => {
+      const output = runWriteExecEnvFile(['GIT_TOKEN=ghs_dummytoken', ''].join('\n'));
+      expect(output).not.toContain('HARMONY_MODEL');
+    });
+
     it('ALWAYS forwards HARMONY_CONDUCTION_ID from the wrapper\'s own $CONDUCTION_ID (never from the minted env-file — no acquisition line needed for it)', () => {
       const output = runWriteExecEnvFile(['GIT_TOKEN=ghs_dummytoken', ''].join('\n'));
       expect(output).toContain('HARMONY_CONDUCTION_ID: "cond-test-1"');
@@ -1434,6 +1525,122 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
     // still file-based for GIT_TOKEN — the security contract this describe block enforces
     expect(launchScript).toContain('--env-vars-file="$EXEC_ENV_FILE"');
     expect(launchScript).not.toContain('--update-env-vars-file=');
+  });
+});
+
+// B-772: the daemon's resolved per-leg model, forwarded to the cloud profile's wrapper as a
+// FOURTH positional arg (mirrors RUN_CONFIG_JSON's own THIRD-positional-arg precedent above).
+// EXECUTES the real acquisition line and the real MINT_MODEL_FLAG conditional-build block —
+// same "prose-pinned regex alone is not trusted for this wrapper" discipline as the
+// RUN_CONFIG_JSON / write_exec_env_file() EXECUTED blocks elsewhere in this file.
+describe('cloud-worker-launch.sh: B-772 MODEL positional arg + conditional --model forwarding to mint', () => {
+  const launchScript = readFileSync(cloudLaunchScriptPath, 'utf8');
+
+  describe('EXECUTED MODEL positional-arg resolution', () => {
+    /** Extract the single `MODEL="${4:-}"` acquisition line verbatim and run it in a tiny harness
+     *  with the given positional args. Returns exactly what bash resolves MODEL to. */
+    function runModelResolution(fourthArg: string | undefined): string {
+      const at = launchScript.indexOf('MODEL="${4:-}"');
+      expect(at).toBeGreaterThanOrEqual(0);
+      const end = launchScript.indexOf('\n', at);
+      const acquisition = launchScript.slice(at, end);
+
+      const dir = mkdtempSync(join(tmpdir(), 'b772-cloud-model-'));
+      const scriptFile = join(dir, 'harness.sh');
+      const resultFile = join(dir, 'result');
+      const harness = [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        acquisition,
+        `printf '%s' "$MODEL" > "${resultFile}"`,
+        '',
+      ].join('\n');
+      writeFileSync(scriptFile, harness, { mode: 0o700 });
+
+      const args =
+        fourthArg === undefined
+          ? ['ignored-1', 'ignored-2', 'ignored-3']
+          : ['ignored-1', 'ignored-2', 'ignored-3', fourthArg];
+      execFileSync('bash', [scriptFile, ...args]);
+      return readFileSync(resultFile, 'utf8');
+    }
+
+    it('resolves to the empty string when invoked with no fourth positional arg (not a default like RUN_CONFIG_JSON)', () => {
+      expect(runModelResolution(undefined)).toBe('');
+    });
+
+    it('resolves to exactly the given fourth arg when one is supplied', () => {
+      expect(runModelResolution('claude-sonnet-5')).toBe('claude-sonnet-5');
+    });
+  });
+
+  describe('EXECUTED conditional --model forwarding to the mint invocation', () => {
+    /** Extract the MINT_MODEL_FLAG conditional-build block through the mint `node` invocation
+     *  line, verbatim. */
+    function extractMintBlock(): string {
+      const start = launchScript.indexOf('MINT_MODEL_FLAG=()');
+      expect(start).toBeGreaterThanOrEqual(0);
+      const nodeLineAt = launchScript.indexOf(
+        'node "$HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs"',
+        start,
+      );
+      expect(nodeLineAt).toBeGreaterThan(start);
+      const end = launchScript.indexOf('\n', nodeLineAt);
+      expect(end).toBeGreaterThan(nodeLineAt);
+      return launchScript.slice(start, end);
+    }
+
+    /** Run the extracted block with a fake `node` on PATH that just dumps its own argv (one per
+     *  line) to a result file, so this test observes the REAL conditional flag-building logic,
+     *  not just the script's text. */
+    function runMintBlock(model: string): string[] {
+      const dir = mkdtempSync(join(tmpdir(), 'b772-cloud-mint-args-'));
+      const fakeBinDir = join(dir, 'bin');
+      mkdirSync(fakeBinDir);
+      const resultFile = join(dir, 'node-argv');
+      writeFileSync(
+        join(fakeBinDir, 'node'),
+        `#!/usr/bin/env bash\nfor a in "$@"; do printf '%s\\n' "$a"; done > "${resultFile}"\n`,
+        { mode: 0o700 },
+      );
+
+      const block = extractMintBlock();
+      const scriptFile = join(dir, 'harness.sh');
+      const harness = [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        'HARMONY_PLUGIN_DIR="/fake/plugin"',
+        'HOME="/fake/home"',
+        'ENV_FILE="/fake/home/.harmony-conductions/B-772/cond-test-1/run.env"',
+        'CONDUCTION_ID="cond-test-1"',
+        'RUN_CONFIG_JSON="{}"',
+        `MODEL="${model}"`,
+        block,
+        '',
+      ].join('\n');
+      writeFileSync(scriptFile, harness, { mode: 0o700 });
+      execFileSync('bash', [scriptFile], {
+        env: { ...process.env, PATH: `${fakeBinDir}:${process.env.PATH}` },
+      });
+      return readFileSync(resultFile, 'utf8').split('\n').filter((l) => l.length > 0);
+    }
+
+    it('appends --model "$MODEL" to the mint invocation when MODEL is non-empty', () => {
+      const argv = runMintBlock('claude-sonnet-5');
+      const modelFlagAt = argv.indexOf('--model');
+      expect(modelFlagAt).toBeGreaterThanOrEqual(0);
+      expect(argv[modelFlagAt + 1]).toBe('claude-sonnet-5');
+      // The pre-existing flags must still be there, untouched.
+      expect(argv).toContain('--conduction-id');
+      expect(argv).toContain('--run-config');
+    });
+
+    it('omits the --model flag entirely from the mint invocation when MODEL is empty', () => {
+      const argv = runMintBlock('');
+      expect(argv).not.toContain('--model');
+      expect(argv).toContain('--conduction-id');
+      expect(argv).toContain('--run-config');
+    });
   });
 });
 

@@ -22540,7 +22540,11 @@ function loadDeploymentConfig(opts = {}) {
 import { readFileSync as nodeReadFileSync } from "node:fs";
 var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
 var NoteSchema = external_exports.string().optional();
-var RunConfigSchema = external_exports.object({ session_resume: SessionResumeSchema, note: NoteSchema }).passthrough();
+var ModelSchema = external_exports.object({
+  default: external_exports.string().optional(),
+  per_gate: external_exports.record(external_exports.string()).optional()
+}).optional();
+var RunConfigSchema = external_exports.object({ session_resume: SessionResumeSchema, note: NoteSchema, model: ModelSchema }).passthrough();
 var EMPTY_RUN_CONFIG = {};
 function getOperatorNote(runConfig) {
   return runConfig.note ? runConfig.note : void 0;
@@ -22565,9 +22569,34 @@ function getRunConfig(env = process.env, deps = {}) {
   }
   return EMPTY_RUN_CONFIG;
 }
+var PINNED_DEFAULT_MODEL_BY_PROFILE = {
+  prod: "claude-sonnet-5",
+  staging: "claude-sonnet-5"
+};
+var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
+var KNOWN_REFS_FOR_MODEL = {
+  eioxsunvhakmelhanmnn: "prod",
+  meqkdgncdzromunylyxf: "staging"
+};
+function resolveDeploymentProfile(env) {
+  const url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
+  let ref = "";
+  try {
+    ref = new URL(url).hostname.split(".")[0] ?? "";
+  } catch {
+  }
+  return KNOWN_REFS_FOR_MODEL[ref] ?? "prod";
+}
+function getModelForGate(runConfig, gate, env = process.env) {
+  const perGate = gate ? runConfig.model?.per_gate?.[gate] : void 0;
+  if (perGate) return perGate;
+  if (runConfig.model?.default) return runConfig.model.default;
+  const profile = resolveDeploymentProfile(env);
+  return PINNED_DEFAULT_MODEL_BY_PROFILE[profile] ?? PINNED_DEFAULT_MODEL_BY_PROFILE.prod;
+}
 
 // src/tools/environment.ts
-var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
+var DEFAULT_SUPABASE_URL2 = "https://eioxsunvhakmelhanmnn.supabase.co";
 var KNOWN_REFS = {
   eioxsunvhakmelhanmnn: "prod",
   meqkdgncdzromunylyxf: "staging"
@@ -22608,7 +22637,7 @@ function resolvePluginVersion(env, moduleUrl) {
   return null;
 }
 function resolveEnvironment(env = process.env, moduleUrl = import.meta.url) {
-  const supabase_url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
+  const supabase_url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL2;
   let supabase_project_ref = "";
   try {
     supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
@@ -23455,8 +23484,9 @@ function renderTemplate(tpl, vars) {
     if (name === "conduction_id") return vars.conduction_id;
     if (name === "ticket") return vars.ticket;
     if (name === "run_config_json" && vars.run_config_json !== void 0) return vars.run_config_json;
+    if (name === "model" && vars.model !== void 0) return vars.model;
     throw new Error(
-      `unknown placeholder {${name}} in launch-profile template \u2014 supported: {conduction_id}, {ticket}, {run_config_json}`
+      `unknown placeholder {${name}} in launch-profile template \u2014 supported: {conduction_id}, {ticket}, {run_config_json}, {model}`
     );
   });
 }
@@ -23629,6 +23659,23 @@ function exitClass(outcome, args) {
   return "clean-pause";
 }
 
+// src/daemon/gate-phase.ts
+var GATE_BY_WORKFLOW_STATE = {
+  Captured: "clarify",
+  Proposed: "clarify",
+  Clarified: "decompose",
+  Decomposed: "design",
+  Designed: "plan",
+  Planned: "build",
+  Built: "release",
+  Deployed: "verify"
+};
+function resolveGatePhase(workflow_state, workflow_activity) {
+  void workflow_activity;
+  if (!workflow_state) return null;
+  return GATE_BY_WORKFLOW_STATE[workflow_state] ?? null;
+}
+
 // src/daemon/scheduler.ts
 var iso = (ms) => new Date(ms).toISOString();
 var exclusionMemory = /* @__PURE__ */ new WeakMap();
@@ -23700,13 +23747,20 @@ function runConfigJsonFor(row) {
   const json = JSON.stringify(row.run_config ?? {});
   return Buffer.from(json, "utf8").toString("base64");
 }
+function modelFor(row, task) {
+  const gate = resolveGatePhase(task?.workflow_state, task?.workflow_activity);
+  return getModelForGate(row.run_config ?? {}, gate);
+}
 function templateVars(row, task, projectKey) {
   return {
     conduction_id: row.id,
     ticket: resolveVisualId(task, projectKey, row.task_id),
     // B-718: always computed (harmless when the active template's reap/probe strings don't
     // reference {run_config_json} — renderTemplate only substitutes placeholders actually present).
-    run_config_json: runConfigJsonFor(row)
+    run_config_json: runConfigJsonFor(row),
+    // B-772: same "always computed, harmless when unreferenced" convention as run_config_json
+    // above — only the launch template is expected to actually reference {model}.
+    model: modelFor(row, task)
   };
 }
 var TITLE_MAX = 48;

@@ -20,6 +20,7 @@ import {
   serializeReposSection,
   resolveBaseContent,
   composeConductionIdLine,
+  composeModelLine,
   composeRunConfigInlineLine,
   composeRunConfigPathLine,
   normalizeRunConfigJson,
@@ -374,6 +375,20 @@ describe('composeConductionIdLine', () => {
   });
 });
 
+// B-772: composeModelLine mirrors composeConductionIdLine's own always-appended-when-present
+// convention — see src/config/run-config.test.ts for the worker-side getModelForGate coverage
+// that resolves the value this function only ever CARRIES, never re-derives.
+describe('composeModelLine', () => {
+  it("composes 'HARMONY_MODEL=<model>\\n' when a model is given", () => {
+    expect(composeModelLine('claude-sonnet-5')).toBe('HARMONY_MODEL=claude-sonnet-5\n');
+  });
+
+  it('returns an empty string when no model was resolved, so nothing is appended', () => {
+    expect(composeModelLine(undefined)).toBe('');
+    expect(composeModelLine('')).toBe('');
+  });
+});
+
 describe('normalizeRunConfigJson (B-743)', () => {
   it('returns raw JSON input unchanged', () => {
     expect(normalizeRunConfigJson('{"steering_note":"be terse"}')).toBe(
@@ -471,6 +486,35 @@ describe('main(): B-846 run-config seam wiring (file + inline delivery, byte-for
     return async () =>
       ({ ok: true, json: async () => ({ token: 'ghs_minted' }) }) as unknown as Response;
   }
+
+  it('B-772: appends HARMONY_MODEL when --model is given', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b772-mint-main-'));
+    const out = join(dir, 'run.env');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fakeFetchImpl();
+    try {
+      await main(['--out', out, '--conduction-id', 'cond-772', '--model', 'claude-sonnet-5'], fakeEnv());
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    const written = readFileSync(out, 'utf8');
+    expect(written).toContain('HARMONY_MODEL=claude-sonnet-5');
+    expect(written).toContain('HARMONY_CONDUCTION_ID=cond-772');
+  });
+
+  it('B-772: omits HARMONY_MODEL entirely when --model is not given', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b772-mint-main-'));
+    const out = join(dir, 'run.env');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fakeFetchImpl();
+    try {
+      await main(['--out', out, '--conduction-id', 'cond-772b'], fakeEnv());
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    const written = readFileSync(out, 'utf8');
+    expect(written).not.toContain('HARMONY_MODEL');
+  });
 
   it('omits both HARMONY_RUN_CONFIG_PATH and HARMONY_RUN_CONFIG_JSON, and writes no run-config file, when --run-config is not given at all', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'b846-mint-main-'));
