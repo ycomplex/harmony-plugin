@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadDeploymentConfig } from '../config/deployment-config.js';
-import { getConductionId, getOperatorNote, getRunConfig } from '../config/run-config.js';
+import { getAutoApproveGates, getConductionId, getOperatorNote, getRunConfig } from '../config/run-config.js';
 
 // Which backend the plugin is talking to, surfaced via get_project so a session can
 // confirm its code + DB pairing (the staging-channel dogfood check — see B-488).
@@ -22,6 +22,13 @@ export interface EnvironmentInfo {
    *  this file's non-throwing-by-design posture below): a malformed run_config must never break
    *  get_project, the ONE call every conductor run makes before anything else. */
   operator_note: string | null;
+  /** B-773: this leg's `run_config.auto_approve_gates` (the operator's per-run, per-gate
+   *  auto-approve override — see `src/config/run-config.ts`'s `getAutoApproveGates`), as a plain
+   *  string array — `null` when absent/empty OR when the run_config payload can't be read/decoded/
+   *  parsed. Same best-effort, degrade-to-null-never-throw convention as `operator_note` above (this
+   *  field is read ONCE at the top of the run, alongside `conduction_id`/`operator_note`, and cannot
+   *  change mid-leg — see `skills/harmony-conduct/SKILL.md` §1b). */
+  auto_approve_gates: string[] | null;
 }
 
 // Must mirror src/supabase.ts exactly: env override, else the prod project.
@@ -103,6 +110,16 @@ export function resolveEnvironment(
     operator_note = null;
   }
 
+  // B-773: same best-effort degrade-to-null convention as operator_note above — a malformed
+  // run_config must never break get_project.
+  let auto_approve_gates: string[] | null;
+  try {
+    const gates = Array.from(getAutoApproveGates(getRunConfig(env)));
+    auto_approve_gates = gates.length > 0 ? gates : null;
+  } catch {
+    auto_approve_gates = null;
+  }
+
   return {
     supabase_url,
     supabase_project_ref,
@@ -110,5 +127,6 @@ export function resolveEnvironment(
     plugin_version: resolvePluginVersion(env, moduleUrl),
     conduction_id: getConductionId(env) ?? null,
     operator_note,
+    auto_approve_gates,
   };
 }

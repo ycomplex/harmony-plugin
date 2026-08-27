@@ -8,6 +8,7 @@ import {
   EMPTY_RUN_CONFIG,
   PINNED_DEFAULT_MODEL_BY_PROFILE,
   RunConfigSchema,
+  getAutoApproveGates,
   getConductionId,
   getModelForGate,
   getOperatorNote,
@@ -309,6 +310,67 @@ describe('getModelForGate (B-772 three-level fallback)', () => {
   it('defaults env to process.env when no third argument is given (never throws)', () => {
     expect(() => getModelForGate(EMPTY_RUN_CONFIG, 'build')).not.toThrow();
     expect(typeof getModelForGate(EMPTY_RUN_CONFIG, 'build')).toBe('string');
+  });
+});
+
+describe('RunConfigSchema auto_approve_gates (B-773)', () => {
+  it('accepts a run_config carrying a single forward gate', () => {
+    expect(RunConfigSchema.parse({ auto_approve_gates: ['build'] })).toEqual({
+      auto_approve_gates: ['build'],
+    });
+  });
+
+  it('accepts a run_config carrying all five eligible forward gates', () => {
+    const gates = ['clarify', 'decompose', 'design', 'plan', 'build'];
+    expect(RunConfigSchema.parse({ auto_approve_gates: gates })).toEqual({
+      auto_approve_gates: gates,
+    });
+  });
+
+  it('accepts an empty auto_approve_gates array', () => {
+    expect(RunConfigSchema.parse({ auto_approve_gates: [] })).toEqual({ auto_approve_gates: [] });
+  });
+
+  it('rejects release in auto_approve_gates — the hard floor is never delegable', () => {
+    expect(() => RunConfigSchema.parse({ auto_approve_gates: ['release'] })).toThrow();
+  });
+
+  it('rejects verify in auto_approve_gates — the hard floor is never delegable', () => {
+    expect(() => RunConfigSchema.parse({ auto_approve_gates: ['verify'] })).toThrow();
+  });
+
+  it('rejects a gate name this build does not recognize (unlike model.per_gate, this is an enum, not forward-compat)', () => {
+    expect(() => RunConfigSchema.parse({ auto_approve_gates: ['some-future-gate'] })).toThrow();
+  });
+
+  it('rejects a non-array auto_approve_gates', () => {
+    expect(() => RunConfigSchema.parse({ auto_approve_gates: 'build' })).toThrow();
+  });
+
+  it('still passes through unrelated unknown keys alongside auto_approve_gates', () => {
+    expect(
+      RunConfigSchema.parse({ auto_approve_gates: ['build'], note: 'be terse' }),
+    ).toEqual({ auto_approve_gates: ['build'], note: 'be terse' });
+  });
+});
+
+describe('getAutoApproveGates', () => {
+  it('returns an empty Set on the empty run_config ({})', () => {
+    expect(getAutoApproveGates(EMPTY_RUN_CONFIG)).toEqual(new Set());
+  });
+
+  it('returns an empty Set when auto_approve_gates is an empty array', () => {
+    expect(getAutoApproveGates({ auto_approve_gates: [] })).toEqual(new Set());
+  });
+
+  it('returns a Set of the named gates when present', () => {
+    expect(getAutoApproveGates({ auto_approve_gates: ['clarify', 'build'] })).toEqual(
+      new Set(['clarify', 'build']),
+    );
+  });
+
+  it('returns an empty Set when auto_approve_gates is absent but other unrelated keys are present', () => {
+    expect(getAutoApproveGates({ note: 'be terse' })).toEqual(new Set());
   });
 });
 

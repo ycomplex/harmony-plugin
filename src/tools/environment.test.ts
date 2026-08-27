@@ -177,4 +177,38 @@ describe('resolveEnvironment', () => {
     );
     expect(env.target).toBe('prod');
   });
+
+  it('B-773: auto_approve_gates is null when no run_config delivery var is set', () => {
+    const env = resolveEnvironment({}, NOWHERE_URL);
+    expect(env.auto_approve_gates).toBeNull();
+  });
+
+  it("B-773: auto_approve_gates reads the base64-decoded HARMONY_RUN_CONFIG_JSON's auto_approve_gates key", () => {
+    const inline = Buffer.from(
+      JSON.stringify({ auto_approve_gates: ['clarify', 'build'] }),
+      'utf8',
+    ).toString('base64');
+    const env = resolveEnvironment({ HARMONY_RUN_CONFIG_JSON: inline }, NOWHERE_URL);
+    expect(env.auto_approve_gates).toEqual(['clarify', 'build']);
+  });
+
+  it('B-773: auto_approve_gates is null when run_config has no auto_approve_gates key', () => {
+    const inline = Buffer.from(JSON.stringify({ session_resume: { enabled: true } }), 'utf8').toString(
+      'base64',
+    );
+    const env = resolveEnvironment({ HARMONY_RUN_CONFIG_JSON: inline }, NOWHERE_URL);
+    expect(env.auto_approve_gates).toBeNull();
+  });
+
+  it('B-773: auto_approve_gates is null when run_config carries an empty auto_approve_gates array', () => {
+    const inline = Buffer.from(JSON.stringify({ auto_approve_gates: [] }), 'utf8').toString('base64');
+    const env = resolveEnvironment({ HARMONY_RUN_CONFIG_JSON: inline }, NOWHERE_URL);
+    expect(env.auto_approve_gates).toBeNull();
+  });
+
+  it('B-773: auto_approve_gates degrades to null (never throws) on a malformed HARMONY_RUN_CONFIG_JSON — get_project must never break', () => {
+    const env = resolveEnvironment({ HARMONY_RUN_CONFIG_JSON: 'not-valid-base64-json!!' }, NOWHERE_URL);
+    expect(env.auto_approve_gates).toBeNull();
+    expect(env.operator_note).toBeNull(); // sanity: the rest of the block still resolves
+  });
 });

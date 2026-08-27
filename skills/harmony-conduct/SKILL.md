@@ -152,26 +152,37 @@ clarify→decompose→design→…). `get_project` now also returns `agent_trust
 resolved): `agent_trust.level` ∈ `{cautious, balanced, autonomous}` (empty `{}` dial ⇒ `balanced`). **B-743:**
 `get_project` also returns an `environment` block carrying `conduction_id` and `operator_note` — this run's
 `HARMONY_CONDUCTION_ID` and `run_config.note` (already base64-decoded/parsed server-side; see
-src/tools/environment.ts's `resolveEnvironment`), both `null` outside a conduction. This skill's own
+src/tools/environment.ts's `resolveEnvironment`), both `null` outside a conduction. **B-773:** the SAME
+`environment` block also carries `auto_approve_gates` — this run's `run_config.auto_approve_gates`
+(`string[] | null`, resolved server-side via `src/config/run-config.ts`'s `getAutoApproveGates`, `null` when
+absent/empty/unparseable — the identical best-effort convention `operator_note` already uses), read at the
+SAME call. Resolve it into an `overrideGates` set (empty when `null`) — this run's per-run, per-gate
+auto-approve override, consumed by **step 2a** of *The delegation test* below. This skill's own
 `allowed-tools` carries no `Bash`, so an env var can only reach it through an MCP tool boundary like this
-one — never a direct shell read. Hold onto both values (they cannot change mid-leg) for *step 4a* below;
-this ONE call at the top of the run is the only environment read the whole loop needs.
+one — never a direct shell read. Hold onto all three values (they cannot change mid-leg) for *step 2a* and
+*step 4a* below; this ONE call at the top of the run is the only environment read the whole loop needs.
 
 Apply the dial **ceiling** to the parsed per-run `mode`:
 
 - **`agent_trust.level === 'cautious'`** (the kill-switch — `autoAdvances == []`): the dial forbids ALL
-  delegation — **including `--escalate`**. **Override the per-run mode to `controlled`** and **ANNOUNCE** it
-  plainly, e.g.: *"This workspace's Agent-Trust dial is set to **cautious**, which forbids delegation — I'm
-  ignoring `--escalate` and running <ticket> fully controlled (pausing at every gate). Raise the dial to
-  balanced or autonomous in workspace settings to allow per-run delegation."* Never silently drop the flag.
-  (`--escalate` is delegation-with-an-escape-hatch, not a softened controlled run, so the cautious
-  kill-switch vetoes it exactly as it vetoes `--unattended`.)
+  delegation — **including `--escalate`** and **including a per-gate `auto_approve_gates` override (B-773)**.
+  **Override the per-run mode to `controlled`**, **treat `overrideGates` as EMPTY for the rest of the run**,
+  and **ANNOUNCE** both plainly, e.g.: *"This workspace's Agent-Trust dial is set to **cautious**, which
+  forbids delegation — I'm ignoring `--escalate` and your `auto_approve_gates` selection of **<gate,
+  gate>** and running <ticket> fully controlled (pausing at every gate). Raise the dial to balanced or
+  autonomous in workspace settings to allow per-run delegation."* (Omit the `auto_approve_gates` clause
+  when `overrideGates` was empty to begin with — nothing to name.) Never silently drop either. (`--escalate`
+  is delegation-with-an-escape-hatch, not a softened controlled run, and a per-gate override is a
+  finer-grained *channel* for the same delegation the dial governs — the cautious kill-switch vetoes both
+  exactly as it vetoes `--unattended`: the dial can only *restrict*, never let a more specific flag re-open
+  what it closed, contract 4's ceiling invariant.)
 - **`agent_trust.level === 'balanced'` or `'autonomous'`**: the dial permits per-run forward delegation,
-  including `--escalate` — honour the parsed `mode` as-is. (In v1 the dial does not further gate *which*
-  forward gates may be delegated beyond the cautious kill-switch; the per-run flag governs that.
-  release/verify stay human regardless of the level, so the dial's release/verify auto-advance classes are
-  moot here. The risk-class floor (§3a) is computed under *all* permitted modes and at every level — it
-  PAUSES in `--escalate` and is carried to the release brief in `--unattended`/`--pause-at`, B-516.)
+  including `--escalate` and a per-gate `auto_approve_gates` override — honour the parsed `mode` and
+  `overrideGates` as-is. (In v1 the dial does not further gate *which* forward gates may be delegated beyond
+  the cautious kill-switch; the per-run flag/override governs that. release/verify stay human regardless of
+  the level, so the dial's release/verify auto-advance classes are moot here. The risk-class floor (§3a) is
+  computed under *all* permitted modes and at every level — it PAUSES in `--escalate` and is carried to the
+  release brief in `--unattended`/`--pause-at`/an override-eligible gate, B-516/B-773.)
 
 A ticket id is **required** — `/harmony-plugin:harmony-conduct <ticket> [--pause-at <gate> | --unattended | --escalate] [--one-shot]`.
 (Conducting picks a *specific* ticket to its terminal state; that is different from
@@ -322,7 +333,8 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
 
    Otherwise `awaiting_human_input` set means a gate has already drafted a brief. There is one active
    brief per task, so do **NOT** run another gate on top of it. Run *The delegation test* below — which checks, in order, the cautious
-   kill-switch, the hard floor (release/verify), the **`--escalate` risk-class floor** (`risk_classes`
+   kill-switch, the hard floor (release/verify), the **per-gate `auto_approve_gates` override** (step 2a,
+   B-773), the **`--escalate` risk-class floor** (`risk_classes`
    non-empty, in `--escalate` only — B-516), the `--escalate` judgment, and finally the mode table — to
    decide whether this gate is **delegated (auto-advanced)** or **controlled (pause)** for this run. When
    `risk_classes` is non-empty on an auto-advanced gate, **record the classes for the release-brief signal**
@@ -437,10 +449,12 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
 
 Map the just-read `workflow_state` to its **phase** (clarify/decompose/design/plan/build/release/verify;
 use the phase map in *The progress overview*). Apply these checks **in order** — the FIRST that forces a
-pause wins; only if none force a pause does the gate auto-advance:
+pause wins; only if none force a pause does the gate auto-advance. Step 2a does not itself force a pause —
+it marks the gate **OVERRIDE-ELIGIBLE**, which changes how steps 3–5 apply to it (see step 2a below):
 
 1. **Cautious kill-switch (dial, §1b).** If the dial overrode the mode to `controlled`, every gate is
-   controlled — pause. (Already handled at §1b; the effective `mode` is `controlled` here.)
+   controlled — pause. (Already handled at §1b; the effective `mode` is `controlled` here, and `overrideGates`
+   was already reset to empty — so step 2a below is a no-op for the rest of this run.)
 2. **Hard floor (release/verify, contract 3).** If the gate's phase is **release** or **verify**, it is
    NEVER auto-advanced, in any mode — surface and pause (§4). **Decision-only extension (B-681):** the
    **deliverable gate of a `decision-only`-labelled ticket** (clarify for a capture-only ticket; the LAST
@@ -448,6 +462,19 @@ pause wins; only if none force a pause does the gate auto-advance:
    accept completes the ticket to Verified via the fast-forward — so it inherits this same hard floor:
    NEVER auto-advanced, in any mode. (The label is read from the gate skill's own full `get_task`; see
    `skills/harmony-shared/gate-routing.md` §The decision-only fast-forward.)
+2a. **Per-gate override (`auto_approve_gates`, B-773 — NEW).** If the gate's phase is a member of
+   `overrideGates` (§1b) — and it already survived step 2 (release/verify are structurally excluded from
+   `overrideGates` by `AutoApproveGateSchema`, so they can never reach here) — mark the gate
+   **OVERRIDE-ELIGIBLE**. An override-eligible gate **BYPASSES step 4** (the `--escalate` judgment) **and
+   step 5** (the mode table) **entirely**: it auto-advances via **§4b** regardless of the active mode,
+   **including plain `controlled`** — this is the load-bearing behavior the override exists for: an
+   operator-selected gate auto-advances even when the ambient mode would otherwise pause it. It still
+   passes through step 3 (the risk-class floor) — but **ALWAYS** in the `--unattended`-shaped (non-pausing,
+   record-and-carry-to-the-release-brief) form, **NEVER** the `--escalate`-shaped pause, regardless of which
+   mode is actually running (see step 3's own override-eligible bullet below). A gate whose phase is **NOT**
+   a member of `overrideGates` falls through **UNCHANGED** to steps 3–5 exactly as today — the override is
+   strictly additive: it can grant an auto-advance a mode wouldn't otherwise, but it never removes one a
+   mode already grants, and it never touches a gate it doesn't name.
 3. **Risk-class FLOOR (contract 3a — NON-DISCRETIONARY in `--escalate`, RELEASE-BRIEF SIGNAL otherwise — B-516).**
    Read `risk_classes` from the `get_task` of step-1 (the conductor already re-read the ticket). If it is
    **non-empty**:
@@ -461,14 +488,24 @@ pause wins; only if none force a pause does the gate auto-advance:
      release-brief signal surfaces them at the hard floor. *Rationale (B-516):* nothing executes irreversibly
      before release; the hard floor already floors irreversibility for a human, so a mid-run pause here adds
      no safety and would override the human's explicit `--unattended` control choice.
+   - **Override-eligible (step 2a marked it) — regardless of the ACTUAL mode (B-773):** the gate is **NOT**
+     floored — it takes the SAME non-pausing, record-and-carry-to-the-release-brief branch the
+     `--unattended`/`partial` bullet above uses, even when the run's actual mode is `escalate` (which would
+     otherwise floor-pause it) or plain `controlled` (which has no floor branch of its own at all). This is
+     what makes an override-selected gate's risk-class handling match its auto-advance: the operator's
+     explicit per-gate choice, not the ambient mode, decided this gate skips the pause, so its floor branch
+     must not silently reintroduce one via the mode's own shape.
 
    It is still additive — it never grants an auto-advance the mode wouldn't, and it never removes the hard
-   floor's pause; B-516 only narrows *which mode* it pauses.
+   floor's pause; B-516 only narrows *which mode* it pauses, and B-773's override bullet only narrows it
+   further for the gates the operator explicitly named.
 4. **`--escalate` judgment (only in `mode = escalate`, B-493).** If the effective mode is `escalate` and the
    gate survived steps 1–3 (not floored), form the qualitative *"is this gate genuinely worth a human
    opinion?"* judgment over the gate's drafted brief (see *The escalate judgment* below). **Worth it →
    surface and pause (§4)** (revert this gate to controlled for the run). **Not worth it → auto-advance**
-   (fall through to step 5's decide-and-record). In any other mode this step is skipped.
+   (fall through to step 5's decide-and-record). In any other mode this step is skipped. **An
+   OVERRIDE-ELIGIBLE gate (step 2a) skips this judgment entirely** — it never reaches step 4, in any mode,
+   including `escalate`.
 5. **Mode-delegation branch.** Given the effective `mode`, the gate auto-advances iff:
 
 | effective `mode` | a gate auto-advances iff … |
@@ -478,11 +515,15 @@ pause wins; only if none force a pause does the gate auto-advance:
 | `unattended` | the gate's phase is a forward gate (clarify/decompose/design/plan/build) — i.e. **not** release/verify (survived step 2). A risk-class hit does **not** pause it (step 3 records it for the release brief instead) |
 | `escalate` | the gate's phase is a forward gate — AND it survived steps 3–4 (NOT risk-class-floored AND judged routine in step 4) |
 
+**An OVERRIDE-ELIGIBLE gate (step 2a) skips this table entirely** — regardless of `mode` (even plain
+`controlled`, where every row above says "pause"), it already auto-advances via §4b once it clears step 3.
+
 **The hard floor wins over everything:** release and verify are NEVER auto-advanced, in any mode (step 2).
-The **risk-class floor pauses a delegated gate ONLY in `--escalate`** (step 3) — there it beats the mode
-table and the escalate judgment; in `--unattended`/`--pause-at` it does not pause but is carried to the
-release brief. `stale` is likewise never auto-advanced (loop step 3), and a `Captured` ticket always
-self-advances `proposing` as plumbing (loop step 4), not via this test.
+The **risk-class floor pauses a delegated gate ONLY in `--escalate`, and never for an override-eligible
+gate** (step 3) — there it beats the mode table and the escalate judgment; in `--unattended`/`--pause-at`/an
+override-eligible gate it does not pause but is carried to the release brief. `stale` is likewise never
+auto-advanced (loop step 3), and a `Captured` ticket always self-advances `proposing` as plumbing (loop step
+4), not via this test.
 
 A **remark-derived instruction** (§4c's accept-with-remark adjunct case, B-503) goes through this SAME
 delegation test, with the **floor-veto helper** (`src/tools/floor-veto.ts`) as the mechanical backstop — a
@@ -553,12 +594,55 @@ only adds a *pause* decision in front of this one. It does **not** invent a new 
 
 **The synthesized accept declares itself (B-734) — NON-OPTIONAL.** Every `resolve_brief` performed in a
 synthesized accept carries **`provenance: 'agent-synthesized:<mode>'`**, where `<mode>` is this run's
-effective mode — `unattended`, `escalate`, or `pause-at` (the flag name for `mode = partial`). **Never
-`human-in-session`.** The conductor synthesizes the accept through the human's *own* accept path using the
-founder's token, so an undeclared auto-advance would be recorded as a decision the founder personally made —
-and a consumer reading that trail would attribute an agent's call to a human. Pass the provenance through
-whichever gate skill you route to; its accept path takes it in place of the `human-in-session` it declares
-when the human decides. See `skills/harmony-shared/gate-routing.md` §Resolution provenance.
+effective mode — `unattended`, `escalate`, or `pause-at` (the flag name for `mode = partial`) — **or
+`override` (B-773)**, see the next paragraph for when. **Never `human-in-session`.** The conductor
+synthesizes the accept through the human's *own* accept path using the founder's token, so an undeclared
+auto-advance would be recorded as a decision the founder personally made — and a consumer reading that trail
+would attribute an agent's call to a human. Pass the provenance through whichever gate skill you route to;
+its accept path takes it in place of the `human-in-session` it declares when the human decides. See
+`skills/harmony-shared/gate-routing.md` §Resolution provenance.
+
+**`<mode>` is `override` when step 2a — not the ambient mode — is what made this gate eligible (B-773).**
+When the just-advanced gate's phase is a member of `overrideGates` (§1b / step 2a marked it
+OVERRIDE-ELIGIBLE), the provenance declared here is **`agent-synthesized:override`**, never the ambient
+mode's own name — even when the ambient mode is `unattended`/`escalate`/`pause-at` (where the mode table
+would ALSO have auto-advanced this particular gate) and even when it is plain `controlled` (where nothing
+else would have). This keeps the audit trail honest: `override` names the mechanism that actually decided
+this gate skips the pause — the operator's explicit per-gate selection, not the run's ambient mode — per
+`skills/harmony-shared/gate-routing.md` §Resolution provenance's fourth `<mode>` value. A gate that
+auto-advanced via the ordinary mode table (never touched by `overrideGates`) keeps declaring its ambient
+mode exactly as before — `override` is reserved for the gates step 2a actually decided.
+
+**Post the `OVERRIDE-GATE-EXECUTED` marker for an override-provenance auto-advance (B-773).** Immediately
+after the synthesized accept above lands (same step, before resuming the loop below), when the provenance
+just declared was `agent-synthesized:override`, ALSO post a ticket comment carrying a one-line human-readable
+summary of the gate's concrete executed payload plus the machine-parseable marker — the SAME
+one-comment-carries-both-facts convention step 4a's `OPERATOR-NOTE-DELIVERED` and the loop's `AC-FILING-PASS`
+marker use (never a separate write that could desync from the comment):
+
+```
+Override-selected gate <gate> auto-advanced (conduction <conduction_id-or-"none">): <one-line payload summary>
+
+OVERRIDE-GATE-EXECUTED gate=<gate> conduction_id=<conduction_id-or-"none">
+```
+
+The one-line payload summary is gate-specific, drawn from what THIS accept just did (never a re-read):
+
+- **clarify** — the count of acceptance criteria filed, e.g. *"3 ACs filed"*.
+- **decompose** — the children created, e.g. *"created 4 children"*, or *"no-split (work kept on the
+  parent)"*.
+- **design** — the decision type + title, e.g. *"product decision — 'Use a single settings modal'"*.
+- **plan** — the checklist step count, e.g. *"12-step build checklist"*.
+- **build** — the branch + PR, e.g. *"branch `feat/B-773-…`, PR #186"*.
+
+Use `environment.conduction_id` (§1b) — write the literal string `none` when it is `null` (an ad hoc
+interactive run with no conduction row; the marker's `conduction_id=` value must still be present and
+grep-able, never an empty field). This comment is unconditional for every override-provenance auto-advance
+— unlike step 4a's once-per-`(conduction_id, workflow_state)` note delivery, there is no dedup check here:
+each gate a run auto-advances via the override fires its own marker exactly once, because §4b runs once per
+auto-advance and the loop never revisits a gate it has already advanced past. `finish-work`'s O1
+release-brief compose (`skills/finish-work/SKILL.md`, "Risk-class signal on the release brief (B-516)")
+reads these markers back at the hard floor — see that section for how they surface to the human.
 
 **Parity invariant (AC5):** an auto-advanced gate records the **SAME Accepted knowledge** a controlled run
 would. Auto-advance only skips the human *pause* — it does not skip the *decision record*. Because the
