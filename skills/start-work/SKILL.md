@@ -340,10 +340,38 @@ only went smoothly because the founder had been told out-of-band to approve firs
 separate, deliberate `./promote-prod.sh` step (workspace CLAUDE.md → Deploy & Environments). The old
 wording conflated the two (the B-726 read-plane/deploy-plane conflation).
 
+**Carry a recommendation, a why, and the three release must-haves — none is optional (B-874).** The
+old template here had only `decide`, `context` and `items`, and briefs authored from it measurably
+shipped with NO recommendation at the one gate that is irreversible. Fill all of it:
+
+- **`recommend` + `confidence`** — say ship or don't, and how sure you are. A release brief with no
+  recommendation is a naked fork at the hard floor.
+- **The executed act** — what merging actually DOES: which repo, which pull request, that it lands on
+  **staging** (migrations, edge functions, frontend), and that production is a separate deliberate
+  `./promote-prod.sh` step that this accept does not perform.
+- **The unproven residue** — what the build did NOT prove, named honestly. Silence reads as "all
+  covered", which is the claim you are not making.
+- **The mechanical evidence line** — call `mcp__harmony__get_build_evidence_status({ task_id })` and
+  carry its result verbatim. It is the machine's account of the ACs checked, the test cases recorded,
+  and the pushed PR — never a prose paraphrase of it, and never a substitute for the residue above.
+
 ```
+const ev = mcp__harmony__get_build_evidence_status({ task_id })
+
 mcp__harmony__compose_brief({
   task_id, reason: "release-decision-pending", pending_activity: null,
   doc: { decide: "Release <ticket> — merge PR <pr_number> and deploy to staging?",
+    recommend: { text: "Ship it — <one line on why it is safe to merge now>", confidence: "high" },
+    why: [
+      // THE EXECUTED ACT — what the accept actually causes, in operational terms:
+      "Merging PR <pr_number> in <repo> lands <ticket> on `main`, which deploys to STAGING — migrations, edge functions, then the frontend. Production is a separate `./promote-prod.sh` step and is not part of this decision.",
+      // WHY TO TRUST IT — what was added and run:
+      "<the tests added and the gates run: unit/integration/e2e, typecheck, lint, build>",
+      // THE UNPROVEN RESIDUE — what the build did NOT prove:
+      "Not proven by this build: <e.g. no functional run against a live board; the <X> path is covered by unit tests only>.",
+      // THE MECHANICAL EVIDENCE LINE — from get_build_evidence_status, verbatim:
+      "Evidence: <ev — acceptance criteria checked, test cases recorded, pushed PR>",
+    ],
     context: [
       "PR: <pr_url> (branch <branch>, head <head_sha>)",
       // BOT-AUTHORED ONLY — omit this line for a founder-authored PR:

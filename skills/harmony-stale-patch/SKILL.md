@@ -112,6 +112,15 @@ mcp__harmony__compose_brief({
 })
 ```
 
+**The command tail is emitted mechanically — never supply `doc.tail` here (B-874).** The default
+tail ("Type `accept`, `edit`, `iterate <feedback>`, or `defer`.") MISINFORMS at this gate, because
+`defer` does not park a stale-patch review — it rejects the patch. So `compose_brief` renders this
+gate's own tail from the reason, spelling out the accept/defer semantics stated in step 5: accept
+applies the patch and clears the stale flag (state unchanged); **`defer` REJECTS it — the flag clears
+anyway, the divergence is recorded, and the ticket proceeds on the retired decision; it is not a park
+and cannot be undone.** The renderer owns that wording so no author can omit it and it cannot drift.
+An explicit `doc.tail` would override it — do not pass one.
+
 **Null-successor briefs:** OMIT `decision_ref` entirely (it is optional; `{ id: null }` is malformed), and
 state plainly in the doc — *"the decision this ticket depended on was retired without a replacement."*
 `pending_activity` semantics are unchanged: a `revising-*` iff the patch reverts state, else `null`.
