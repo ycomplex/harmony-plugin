@@ -123,13 +123,43 @@ if [ -n "${HARMONY_TRANSCRIPT_MOUNT_ROOT:-}" ]; then
         done
       done
       if [ -n "$SIBLING_SESSION_PATH" ]; then
+        # B-772 round 2: the ACTUAL --resume injection (+ the narrowed session-resume
+        # context-budget guard, which needs a node accessor into the plugin's OWN committed dist)
+        # is deferred to b772_finish_cross_conduction_resume, called once $PLUGIN_DIR is resolved
+        # further down (this gcsfuse block runs BEFORE any repo is cloned — there is no dist/
+        # on disk yet at this point in the script). Only the discovery itself (this whole `if`)
+        # stays here, unchanged, since it needs no plugin code at all.
         SIBLING_SESSION_ID="$(basename "$SIBLING_SESSION_PATH" .jsonl)"
-        export CLAUDE_HEADLESS_FLAGS="${CLAUDE_HEADLESS_FLAGS:-} --resume $SIBLING_SESSION_ID"
-        echo "entrypoint: B-718 cross-conduction resume — found a prior $TICKET session ($SIBLING_SESSION_ID) from another conduction, injecting --resume" >&2
       fi
     fi
   fi
 fi
+
+# B-772 round 2: finish what the B-718 cross-conduction discovery above started — called ONLY once
+# $PLUGIN_DIR is resolved and cloned (both dispatch sites below call this immediately before
+# handing off to provision.sh), because the narrowed session-resume guard needs
+# `harmony model context-budget` from the plugin's OWN committed dist, which does not exist on disk
+# any earlier in this script (see the discovery block's own comment above). A no-op when discovery
+# found nothing (`$SIBLING_SESSION_PATH` unset — including the ordinary case where
+# HARMONY_TRANSCRIPT_MOUNT_ROOT is unset entirely, the local-docker profile). Best-effort throughout,
+# matching every other guard in this file: a lookup failure (no node/dist yet, a malformed budget)
+# degrades to "inject the resume" — the SAME AC5 --resume-is-best-effort fallback downstream in
+# provision.sh already covers a resume that turns out to be unusable for any OTHER reason.
+b772_finish_cross_conduction_resume() {
+  local plugin_dir="$1"
+  [ -n "${SIBLING_SESSION_PATH:-}" ] || return 0
+  if [ -n "${HARMONY_MODEL:-}" ]; then
+    local sibling_size_bytes context_budget_bytes
+    sibling_size_bytes="$(stat -c '%s' "$SIBLING_SESSION_PATH" 2>/dev/null || echo 0)"
+    context_budget_bytes="$(node "$plugin_dir/dist/bin/harmony.js" model context-budget "$HARMONY_MODEL" 2>/dev/null || true)"
+    if [ -n "$context_budget_bytes" ] && [ "$sibling_size_bytes" -gt "$context_budget_bytes" ] 2>/dev/null; then
+      echo "entrypoint: B-772 sibling session $SIBLING_SESSION_ID is ${sibling_size_bytes} bytes, over model '$HARMONY_MODEL''s ${context_budget_bytes}-byte resume budget — NOT injecting --resume (session-resume guard)." >&2
+      return 0
+    fi
+  fi
+  export CLAUDE_HEADLESS_FLAGS="${CLAUDE_HEADLESS_FLAGS:-} --resume $SIBLING_SESSION_ID"
+  echo "entrypoint: B-718 cross-conduction resume — found a prior $TICKET session ($SIBLING_SESSION_ID) from another conduction, injecting --resume" >&2
+}
 
 # Fresh clone per start is the accepted v1 tradeoff (see the B-694 design
 # entry); idempotent when a persistent volume already carries the clones.
@@ -205,6 +235,7 @@ if [ -n "${HARMONY_REPOS_JSON:-}" ]; then
     clone "$url" "$ref" "$path"
   done < <(printf '%s' "$repos_json" | jq -r '.[] | [(.url|tostring), ((.ref // "")|tostring), (.path|tostring), ((.is_plugin // false)|tostring), ((.meta_repo_role // false)|tostring)] | join("\u0001")')
 
+  b772_finish_cross_conduction_resume "$PLUGIN_DIR"
   exec "$PLUGIN_DIR/container/provision.sh" "$@"
 fi
 
@@ -227,4 +258,5 @@ clone "$WORKSPACE_REPO" "$WORKSPACE_REF" /workspace/workspace
 clone "$WEB_REPO" "$WEB_REF" /workspace/workspace/web
 clone "$PLUGIN_REPO" "$PLUGIN_REF" /workspace/workspace/plugin
 
+b772_finish_cross_conduction_resume /workspace/workspace/plugin
 exec /workspace/workspace/plugin/container/provision.sh "$@"

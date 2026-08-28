@@ -3,17 +3,28 @@
 // (absence -> {}, both delivery forms, malformed-input handling) before any dependent ticket
 // starts writing a real top-level key through it.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, existsSync, writeFileSync as fsWriteFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   EMPTY_RUN_CONFIG,
+  MODEL_ALIAS_ALLOWLIST,
+  MODEL_CONTEXT_BUDGET_BYTES,
   PINNED_DEFAULT_MODEL_BY_PROFILE,
   RunConfigSchema,
+  clearModelHandoffRequest,
   getAutoApproveGates,
   getConductionId,
+  getModelContextBudgetBytes,
   getModelForGate,
+  getModelHandoffPath,
   getOperatorNote,
   getRunConfig,
+  isAllowedModelAlias,
   isSessionResumeEnabled,
+  readModelHandoffRequest,
+  writeModelHandoffRequest,
 } from './run-config.js';
 import type { RunConfig } from './run-config.js';
 
@@ -380,5 +391,127 @@ describe('PINNED_DEFAULT_MODEL_BY_PROFILE', () => {
     expect(PINNED_DEFAULT_MODEL_BY_PROFILE.prod.length).toBeGreaterThan(0);
     expect(PINNED_DEFAULT_MODEL_BY_PROFILE.staging).toEqual(expect.any(String));
     expect(PINNED_DEFAULT_MODEL_BY_PROFILE.staging.length).toBeGreaterThan(0);
+  });
+});
+
+describe('B-772 round 2: MODEL_ALIAS_ALLOWLIST / isAllowedModelAlias', () => {
+  it('accepts every value PINNED_DEFAULT_MODEL_BY_PROFILE can produce (the pinned tier must always be a valid switch target)', () => {
+    for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
+      expect(isAllowedModelAlias(pinned)).toBe(true);
+    }
+  });
+
+  it('accepts every value in MODEL_ALIAS_ALLOWLIST itself', () => {
+    for (const alias of MODEL_ALIAS_ALLOWLIST) {
+      expect(isAllowedModelAlias(alias)).toBe(true);
+    }
+  });
+
+  it('rejects an arbitrary/unrecognized string', () => {
+    expect(isAllowedModelAlias('not-a-real-model')).toBe(false);
+  });
+
+  it('rejects an empty string', () => {
+    expect(isAllowedModelAlias('')).toBe(false);
+  });
+
+  it('rejects a shell-metacharacter-laden string (the argv-injection surface this allowlist exists to close)', () => {
+    expect(isAllowedModelAlias('claude-sonnet-5"; rm -rf / #')).toBe(false);
+  });
+});
+
+describe('B-772 round 2: MODEL_CONTEXT_BUDGET_BYTES / getModelContextBudgetBytes', () => {
+  it('returns a positive byte budget for every tabled alias', () => {
+    for (const alias of Object.keys(MODEL_CONTEXT_BUDGET_BYTES)) {
+      expect(getModelContextBudgetBytes(alias)).toBeGreaterThan(0);
+    }
+  });
+
+  it('returns a positive conservative default for an alias absent from the table', () => {
+    const fallback = getModelContextBudgetBytes('some-future-alias');
+    expect(fallback).toBeGreaterThan(0);
+    // The fallback is the SMALLEST tabled budget (biases toward cold-starting, never toward
+    // assuming the largest window on file) — never larger than every tabled entry.
+    for (const alias of Object.keys(MODEL_CONTEXT_BUDGET_BYTES)) {
+      expect(fallback).toBeLessThanOrEqual(MODEL_CONTEXT_BUDGET_BYTES[alias]);
+    }
+  });
+
+  it('never throws on an empty-string alias', () => {
+    expect(() => getModelContextBudgetBytes('')).not.toThrow();
+  });
+});
+
+describe('B-772 round 2: model handoff-file contract', () => {
+  let dir: string;
+  let handoffPath: string;
+  let env: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'b772-handoff-'));
+    handoffPath = join(dir, 'model-handoff-request.json');
+    env = { HARMONY_MODEL_HANDOFF_PATH: handoffPath };
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('getModelHandoffPath honors the HARMONY_MODEL_HANDOFF_PATH override', () => {
+    expect(getModelHandoffPath(env)).toBe(handoffPath);
+  });
+
+  it('getModelHandoffPath falls back to $HOME/.harmony/model-handoff-request.json when no override is set', () => {
+    const resolved = getModelHandoffPath({ HOME: '/fake/home' });
+    expect(resolved).toBe(join('/fake/home', '.harmony', 'model-handoff-request.json'));
+  });
+
+  it('readModelHandoffRequest returns null when no file exists yet', () => {
+    expect(readModelHandoffRequest(env)).toBeNull();
+  });
+
+  it('writeModelHandoffRequest then readModelHandoffRequest round-trips the alias', () => {
+    writeModelHandoffRequest('claude-opus-5', env);
+    expect(existsSync(handoffPath)).toBe(true);
+    expect(readModelHandoffRequest(env)).toEqual({ requested_model: 'claude-opus-5' });
+  });
+
+  it('writeModelHandoffRequest creates the parent directory when it does not exist yet', () => {
+    const nestedPath = join(dir, 'nested', 'sub', 'model-handoff-request.json');
+    writeModelHandoffRequest('claude-sonnet-5', { HARMONY_MODEL_HANDOFF_PATH: nestedPath });
+    expect(existsSync(nestedPath)).toBe(true);
+  });
+
+  it('writeModelHandoffRequest overwrites a prior pending request — only the latest matters', () => {
+    writeModelHandoffRequest('claude-sonnet-5', env);
+    writeModelHandoffRequest('claude-haiku-5', env);
+    expect(readModelHandoffRequest(env)).toEqual({ requested_model: 'claude-haiku-5' });
+  });
+
+  it('readModelHandoffRequest returns null on malformed JSON (best-effort, never throws)', () => {
+    fsWriteFileSync(handoffPath, 'not valid json');
+    expect(readModelHandoffRequest(env)).toBeNull();
+  });
+
+  it('readModelHandoffRequest returns null when requested_model is missing/non-string', () => {
+    fsWriteFileSync(handoffPath, JSON.stringify({ requested_model: 42 }));
+    expect(readModelHandoffRequest(env)).toBeNull();
+  });
+
+  it('readModelHandoffRequest returns null when requested_model is an empty string', () => {
+    fsWriteFileSync(handoffPath, JSON.stringify({ requested_model: '' }));
+    expect(readModelHandoffRequest(env)).toBeNull();
+  });
+
+  it('clearModelHandoffRequest deletes a pending request', () => {
+    writeModelHandoffRequest('claude-sonnet-5', env);
+    clearModelHandoffRequest(env);
+    expect(existsSync(handoffPath)).toBe(false);
+    expect(readModelHandoffRequest(env)).toBeNull();
+  });
+
+  it('clearModelHandoffRequest is idempotent — a second clear on an already-absent file does not throw', () => {
+    expect(() => clearModelHandoffRequest(env)).not.toThrow();
+    expect(() => clearModelHandoffRequest(env)).not.toThrow();
   });
 });

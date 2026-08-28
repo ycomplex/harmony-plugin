@@ -23,6 +23,7 @@ import { registerKnowledgeCommands } from './commands/knowledge.js';
 import { registerSubtaskCommands } from './commands/subtasks.js';
 import { registerConductCommand } from './commands/conduct.js';
 import { registerConfigCommands } from './commands/config.js';
+import { registerModelCommands } from './commands/model.js';
 
 const program = new Command();
 
@@ -52,5 +53,6 @@ registerKnowledgeCommands(program);
 registerSubtaskCommands(program);
 registerConductCommand(program);
 registerConfigCommands(program);
+registerModelCommands(program);
 
 program.parse();

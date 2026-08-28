@@ -28159,10 +28159,33 @@ function resolveConfigPath(config, dotPath) {
 }
 
 // src/config/run-config.ts
-import { readFileSync as nodeReadFileSync } from "node:fs";
+import {
+  readFileSync as nodeReadFileSync,
+  writeFileSync as nodeWriteFileSync,
+  mkdirSync as nodeMkdirSync,
+  existsSync as nodeExistsSync,
+  unlinkSync as nodeUnlinkSync
+} from "node:fs";
+import { homedir as nodeHomedir } from "node:os";
+import { dirname as nodeDirname, join as nodeJoin } from "node:path";
 
 // src/daemon/gate-phase.ts
 var GATES = ["clarify", "decompose", "design", "plan", "build", "release", "verify"];
+var GATE_BY_WORKFLOW_STATE = {
+  Captured: "clarify",
+  Proposed: "clarify",
+  Clarified: "decompose",
+  Decomposed: "design",
+  Designed: "plan",
+  Planned: "build",
+  Built: "release",
+  Deployed: "verify"
+};
+function resolveGatePhase(workflow_state, workflow_activity) {
+  void workflow_activity;
+  if (!workflow_state) return null;
+  return GATE_BY_WORKFLOW_STATE[workflow_state] ?? null;
+}
 
 // src/config/run-config.ts
 var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
@@ -28210,9 +28233,92 @@ function getRunConfig(env2 = process.env, deps = {}) {
   }
   return EMPTY_RUN_CONFIG;
 }
+var PINNED_DEFAULT_MODEL_BY_PROFILE = {
+  prod: "claude-sonnet-5",
+  staging: "claude-sonnet-5"
+};
+var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
+var KNOWN_REFS_FOR_MODEL = {
+  eioxsunvhakmelhanmnn: "prod",
+  meqkdgncdzromunylyxf: "staging"
+};
+function resolveDeploymentProfile(env2) {
+  const url = env2.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
+  let ref = "";
+  try {
+    ref = new URL(url).hostname.split(".")[0] ?? "";
+  } catch {
+  }
+  return KNOWN_REFS_FOR_MODEL[ref] ?? "prod";
+}
+function getModelForGate(runConfig, gate, env2 = process.env) {
+  const perGate = gate ? runConfig.model?.per_gate?.[gate] : void 0;
+  if (perGate) return perGate;
+  if (runConfig.model?.default) return runConfig.model.default;
+  const profile = resolveDeploymentProfile(env2);
+  return PINNED_DEFAULT_MODEL_BY_PROFILE[profile] ?? PINNED_DEFAULT_MODEL_BY_PROFILE.prod;
+}
+var MODEL_ALIAS_ALLOWLIST = [
+  "claude-sonnet-5",
+  "claude-opus-5",
+  "claude-haiku-5"
+];
+for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
+  if (!MODEL_ALIAS_ALLOWLIST.includes(pinned)) {
+    throw new Error(
+      `B-772 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_ALIAS_ALLOWLIST`
+    );
+  }
+}
+function isAllowedModelAlias(alias) {
+  return MODEL_ALIAS_ALLOWLIST.includes(alias);
+}
+var MODEL_CONTEXT_BUDGET_BYTES = {
+  "claude-sonnet-5": 150 * 1024 * 1024,
+  "claude-opus-5": 150 * 1024 * 1024,
+  "claude-haiku-5": 60 * 1024 * 1024
+};
+var DEFAULT_MODEL_CONTEXT_BUDGET_BYTES = 60 * 1024 * 1024;
+function getModelContextBudgetBytes(alias) {
+  return MODEL_CONTEXT_BUDGET_BYTES[alias] ?? DEFAULT_MODEL_CONTEXT_BUDGET_BYTES;
+}
+var DEFAULT_MODEL_HANDOFF_FILENAME = "model-handoff-request.json";
+function getModelHandoffPath(env2 = process.env) {
+  const override = envValue(env2, "HARMONY_MODEL_HANDOFF_PATH");
+  if (override) return override;
+  const home = env2.HOME ?? nodeHomedir();
+  return nodeJoin(home, ".harmony", DEFAULT_MODEL_HANDOFF_FILENAME);
+}
+function writeModelHandoffRequest(alias, env2 = process.env) {
+  const path2 = getModelHandoffPath(env2);
+  nodeMkdirSync(nodeDirname(path2), { recursive: true });
+  const payload = { requested_model: alias };
+  nodeWriteFileSync(path2, JSON.stringify(payload));
+}
+function readModelHandoffRequest(env2 = process.env) {
+  const path2 = getModelHandoffPath(env2);
+  if (!nodeExistsSync(path2)) return null;
+  try {
+    const parsed = JSON.parse(nodeReadFileSync(path2, "utf8"));
+    if (parsed && typeof parsed === "object" && "requested_model" in parsed && typeof parsed.requested_model === "string" && parsed.requested_model) {
+      return { requested_model: parsed.requested_model };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+function clearModelHandoffRequest(env2 = process.env) {
+  const path2 = getModelHandoffPath(env2);
+  try {
+    nodeUnlinkSync(path2);
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
+  }
+}
 
 // src/tools/environment.ts
-var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
+var DEFAULT_SUPABASE_URL2 = "https://eioxsunvhakmelhanmnn.supabase.co";
 var KNOWN_REFS = {
   eioxsunvhakmelhanmnn: "prod",
   meqkdgncdzromunylyxf: "staging"
@@ -28253,7 +28359,7 @@ function resolvePluginVersion(env2, moduleUrl) {
   return null;
 }
 function resolveEnvironment(env2 = process.env, moduleUrl = import.meta.url) {
-  const supabase_url = env2.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
+  const supabase_url = env2.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL2;
   let supabase_project_ref = "";
   try {
     supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
@@ -31128,6 +31234,68 @@ function registerConfigCommands(program3) {
   });
 }
 
+// src/cli/commands/model.ts
+function registerModelCommands(program3) {
+  const model = program3.command("model").description(
+    "B-772 model-switch-loop node accessor \u2014 the ONE place bash (container/provision.sh, container/entrypoint.sh) reads the alias allowlist / context-budget table / handoff-file contract src/config/run-config.ts owns. Never hand-duplicate these tables in bash."
+  );
+  model.command("check-alias").description(
+    'Print "true" and exit 0 if <alias> is in the canonical allowlist; print "false" and exit 1 otherwise.'
+  ).argument("<alias>").action((alias) => {
+    const ok = isAllowedModelAlias(alias);
+    console.log(ok ? "true" : "false");
+    process.exit(ok ? 0 : 1);
+  });
+  model.command("context-budget").description(
+    "Print <alias>'s resumable-session-size budget in bytes (falls back to a conservative default for an alias absent from the table \u2014 always exits 0)."
+  ).argument("<alias>").action((alias) => {
+    console.log(String(getModelContextBudgetBytes(alias)));
+  });
+  model.command("running-model").description(
+    "Print this process's own HARMONY_MODEL env var (the model the currently-running `claude` invocation was actually launched with, set by container/provision.sh's switch loop, re-exported fresh on every re-invocation), or an empty line when unset (this deployment profile does not render {model} at all, round-1's opt-out path). Always exits 0 -- an empty result is a legitimate answer, never an error."
+  ).action(() => {
+    console.log(process.env.HARMONY_MODEL ?? "");
+  });
+  model.command("resolve-gate").description(
+    "Print the model getModelForGate resolves for <workflow-state> (this worker's own HARMONY_RUN_CONFIG_PATH/HARMONY_RUN_CONFIG_JSON env, exactly as the daemon reads it) \u2014 the accessor skills/harmony-conduct/SKILL.md step 1d uses to compute THIS gate's model. Never throws: a run_config parse failure falls back to the empty run_config (getModelForGate's own pinned-default tier still resolves something explicit) rather than crashing the agent's turn."
+  ).argument("<workflow-state>").option("--activity <workflow-activity>", "The ticket's workflow_activity, if known").action((workflowState, opts) => {
+    let runConfig;
+    try {
+      runConfig = getRunConfig();
+    } catch (err) {
+      console.error(`harmony model resolve-gate: WARNING \u2014 failed to read run_config (${err.message}); falling back to no run_config`);
+      runConfig = {};
+    }
+    const gate = resolveGatePhase(workflowState, opts.activity ?? null);
+    console.log(getModelForGate(runConfig, gate));
+  });
+  model.command("request-switch").description(
+    "Write a model-switch handoff request for container/provision.sh's switch loop to pick up. Validates <alias> against the allowlist FIRST \u2014 refuses (exit 1, no file written) on an unrecognized alias."
+  ).argument("<alias>").action((alias) => {
+    if (!isAllowedModelAlias(alias)) {
+      console.error(
+        `harmony model request-switch: '${alias}' is not in the allowlist (${MODEL_ALIAS_ALLOWLIST.join(", ")})`
+      );
+      process.exit(1);
+      return;
+    }
+    writeModelHandoffRequest(alias);
+  });
+  model.command("read-handoff").description(
+    "Print the pending handoff request's alias to stdout and exit 0, or print nothing and exit 1 when none is pending. Does NOT delete the file \u2014 pair with `clear-handoff` after consuming."
+  ).action(() => {
+    const req = readModelHandoffRequest();
+    if (!req) {
+      process.exit(1);
+      return;
+    }
+    console.log(req.requested_model);
+  });
+  model.command("clear-handoff").description("Delete the pending handoff request file, if any. Idempotent \u2014 always exits 0.").action(() => {
+    clearModelHandoffRequest();
+  });
+}
+
 // src/cli/index.ts
 var require2 = createRequire(import.meta.url);
 var { version: version3 } = require2("../../package.json");
@@ -31153,4 +31321,5 @@ registerKnowledgeCommands(program2);
 registerSubtaskCommands(program2);
 registerConductCommand(program2);
 registerConfigCommands(program2);
+registerModelCommands(program2);
 program2.parse();
