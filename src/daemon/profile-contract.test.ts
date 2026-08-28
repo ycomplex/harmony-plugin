@@ -14,6 +14,7 @@ import {
   readlinkSync,
   existsSync,
   utimesSync,
+  truncateSync,
 } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -55,13 +56,14 @@ function provisionModes(script: string): string[] {
 describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fallback', () => {
   const provisionScriptForResume = readFileSync(provisionPath, 'utf8');
 
-  /** Extract the B-718 block verbatim: from its own header comment through the closing
-   *  `exit "$RESUME_EXIT"` line, EXCLUDING the case-arm's own trailing `;;` (the harness supplies
-   *  its own script framing instead of a `case` statement). */
+  /** Extract the B-718/B-772 block verbatim: from its own header comment through the closing
+   *  `exit "$LEG_EXIT"` line (B-772 round 2 renamed the exit-code variable when the bounded
+   *  model-switch loop replaced the old single resume-or-cold dispatch), EXCLUDING the case-arm's
+   *  own trailing `;;` (the harness supplies its own script framing instead of a `case` statement). */
   function extractResumeBlock(): string {
     const startMarker =
       '# --- B-718: same-conduction resume discovery + best-effort --resume wiring (AC5). -----------';
-    const endMarker = 'exit "$RESUME_EXIT"';
+    const endMarker = 'exit "$LEG_EXIT"';
     const start = provisionScriptForResume.indexOf(startMarker);
     expect(start).toBeGreaterThanOrEqual(0);
     const endAt = provisionScriptForResume.indexOf(endMarker, start);
@@ -69,9 +71,16 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
     return provisionScriptForResume.slice(start, endAt + endMarker.length);
   }
 
+  /** B-772: PLUGIN_DIR the real repo root — needed by any test that wants the switch loop's `node
+   *  .../harmony.js model ...` calls to hit the REAL committed dist (handoff read/write/clear,
+   *  check-alias, context-budget), rather than the harness's default fake, ENOENT-and-degrade
+   *  `/fake/plugin` (which every PRE-EXISTING resume/model-flag test below relies on continuing to
+   *  degrade harmlessly — seereadResumeBlock's own default). */
+  const REAL_PLUGIN_DIR = fileURLToPath(new URL('../../', import.meta.url));
+
   function runResumeBlock(
     env: NodeJS.ProcessEnv,
-    opts: { fakeClaudeDir?: string; homeDir?: string } = {},
+    opts: { fakeClaudeDir?: string; homeDir?: string; pluginDir?: string } = {},
   ): { status: number | null; stdout: string; stderr: string; homeDir: string } {
     const scriptDir = mkdtempSync(join(tmpdir(), 'b718-provision-resume-'));
     let homeDir = opts.homeDir;
@@ -84,9 +93,14 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
     const scriptFile = join(scriptDir, 'harness.sh');
     writeFileSync(
       scriptFile,
-      ['#!/usr/bin/env bash', 'set -euo pipefail', 'PLUGIN_DIR="/fake/plugin"', 'PROMPT="do the leg"', block, ''].join(
-        '\n',
-      ),
+      [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        `PLUGIN_DIR="${opts.pluginDir ?? '/fake/plugin'}"`,
+        'PROMPT="do the leg"',
+        block,
+        '',
+      ].join('\n'),
       { mode: 0o700 },
     );
 
@@ -513,6 +527,271 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('RESUME_ARGS=');
       expect(result.stdout).toContain('--model claude-sonnet-5');
+    });
+  });
+
+  // B-772 round 2: the bounded in-worker model-switch loop. Every test here uses REAL_PLUGIN_DIR so
+  // the loop's `node .../harmony.js model ...` calls hit the actual committed dist (handoff
+  // read/check-alias/clear-handoff/context-budget) — a fake PLUGIN_DIR (as every pre-existing test
+  // above uses) degrades those calls to "no request pending", which would silently defeat these
+  // tests' whole point.
+  describe('B-772 round 2: bounded model-switch loop (EXECUTED, real dist accessor)', () => {
+    /** Merges stderr into stdout (`exec 2>&1`) so the loop's own logged lines (re-invoking .../
+     *  rejecting .../ hit its iteration bound) are observable even on a clean (exit 0) run —
+     *  runResumeBlock only captures stderr on the execFileSync error path, which every one of
+     *  these tests' scripts avoids by construction (the fake claude below always exits 0). */
+    function runLoopCombined(env: NodeJS.ProcessEnv, fakeClaudeDir: string): string {
+      const block = extractResumeBlock();
+      const scriptDir = mkdtempSync(join(tmpdir(), 'b772-loop-combined-'));
+      const homeDir = join(scriptDir, 'home');
+      mkdirSync(homeDir, { recursive: true });
+      const scriptFile = join(scriptDir, 'harness.sh');
+      writeFileSync(
+        scriptFile,
+        [
+          '#!/usr/bin/env bash',
+          'set -euo pipefail',
+          'exec 2>&1',
+          `PLUGIN_DIR="${REAL_PLUGIN_DIR}"`,
+          'PROMPT="do it"',
+          block,
+          '',
+        ].join('\n'),
+        { mode: 0o700 },
+      );
+      return execFileSync('bash', [scriptFile], {
+        env: { ...env, HOME: homeDir, PATH: `${fakeClaudeDir}:${process.env.PATH}` },
+      }).toString();
+    }
+
+
+    function fakeSwitchingClaude(opts: {
+      /** Alias to request a switch to, or null to request no switch at all this invocation. */
+      requestSwitchTo: string | null;
+    }): string {
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b772-loop-fake-claude-'));
+      const harmonyJs = join(REAL_PLUGIN_DIR, 'dist', 'bin', 'harmony.js');
+      const requestLine = opts.requestSwitchTo
+        ? `node "${harmonyJs}" model request-switch "${opts.requestSwitchTo}" >&2 || true`
+        : '';
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        [
+          '#!/usr/bin/env bash',
+          'echo "INVOKED model=${HARMONY_MODEL:-<unset>} args=$*"',
+          requestLine,
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      return claudeStub;
+    }
+
+    it('one valid handoff re-invocation: cold-starts a SECOND time with the requested --model, then stops', () => {
+      // First invocation requests claude-opus-5; a fake claude that only requests a switch the
+      // FIRST time it runs (keyed on a counter file) so the loop naturally settles after 2 turns.
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b772-loop-fake-claude-'));
+      const harmonyJs = join(REAL_PLUGIN_DIR, 'dist', 'bin', 'harmony.js');
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        [
+          '#!/usr/bin/env bash',
+          'echo "INVOKED model=${HARMONY_MODEL:-<unset>} args=$*"',
+          'COUNTER_FILE="$HOME/.b772-test-invocation-count"',
+          'COUNT=0',
+          '[ -f "$COUNTER_FILE" ] && COUNT="$(cat "$COUNTER_FILE")"',
+          'COUNT=$((COUNT + 1))',
+          'echo "$COUNT" > "$COUNTER_FILE"',
+          'if [ "$COUNT" -eq 1 ]; then',
+          `  node "${harmonyJs}" model request-switch claude-opus-5 >&2 || true`,
+          'fi',
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+
+      const combined = runLoopCombined({ HARMONY_MODEL: 'claude-sonnet-5' }, claudeStub);
+      expect(combined).toContain('INVOKED model=claude-sonnet-5');
+      expect(combined).toContain('INVOKED model=claude-opus-5');
+      expect(combined).toContain('--model claude-opus-5');
+      // Only ONE re-invocation happened (2 total) — the second turn requested no further switch.
+      expect(combined.split('INVOKED').length - 1).toBe(2);
+      expect(combined).toContain('model-switch handoff — re-invoking claude with --model claude-opus-5');
+    });
+
+    it('an invalid alias is rejected: logs, does NOT loop further, and the first turn\'s exit code stands', () => {
+      // `harmony model request-switch` itself already refuses to WRITE an invalid alias (tested in
+      // src/cli/commands/model.test.ts) — so to exercise provision.sh's OWN defense-in-depth
+      // check-alias validation (the ticket's explicit ask: "never trust this turn's own request
+      // blindly"), this fake claude writes the handoff file DIRECTLY, bypassing that CLI guard
+      // entirely, as a hand-crafted/corrupted request would.
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b772-loop-fake-claude-'));
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        [
+          '#!/usr/bin/env bash',
+          'echo "INVOKED model=${HARMONY_MODEL:-<unset>} args=$*"',
+          'mkdir -p "$HOME/.harmony"',
+          'printf \'{"requested_model":"not-a-real-model"}\' > "$HOME/.harmony/model-handoff-request.json"',
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      const combined = runLoopCombined({ HARMONY_MODEL: 'claude-sonnet-5' }, claudeStub);
+      expect(combined.split('INVOKED').length - 1).toBe(1); // never re-invoked
+      expect(combined).toContain("handoff requested model 'not-a-real-model', which is NOT in the canonical allowlist");
+      expect(combined).toContain('rejecting and NOT looping further');
+    });
+
+    it('trips the 7-iteration bound when every turn keeps requesting a (valid) switch, and logs it', () => {
+      // Always requests a switch to claude-opus-5 (a real allowlisted alias) — every turn asks
+      // again, so the loop must stop itself at the bound rather than spinning forever.
+      const claudeStub = fakeSwitchingClaude({ requestSwitchTo: 'claude-opus-5' });
+      const combined = runLoopCombined({ HARMONY_MODEL: 'claude-sonnet-5' }, claudeStub);
+      expect(combined.split('INVOKED').length - 1).toBe(7); // exactly MAX_MODEL_SWITCH_ITERATIONS
+      expect(combined).toContain('model-switch loop hit its 7-iteration bound');
+    });
+
+    it('the no-HARMONY_MODEL cold-start path is unaffected by the loop refactor (byte-for-byte, single invocation)', () => {
+      const claudeStub = fakeSwitchingClaude({ requestSwitchTo: null });
+      const combined = runLoopCombined({}, claudeStub);
+      expect(combined).toContain('INVOKED model=<unset>');
+      expect(combined).not.toContain('--model');
+      expect(combined.split('INVOKED').length - 1).toBe(1);
+    });
+  });
+
+  // B-772 round 2: the narrowed session-resume guard (same-conduction half — provision.sh). NOT the
+  // general model-switch case (that always cold-starts by construction); this is specifically "same
+  // model, but the resumable session has grown too large for that model's context window". Uses
+  // REAL_PLUGIN_DIR so `harmony model context-budget` returns a REAL numeric budget to compare
+  // against — a fake PLUGIN_DIR (as most tests above use) makes the lookup fail and the guard
+  // no-op (allow the resume attempt), which is the correct degrade but not what these tests probe.
+  describe('B-772 round 2: same-conduction session-resume guard (context-budget, EXECUTED)', () => {
+    function writeSizedSession(homeDir: string, sessionId: string, sizeBytes: number): void {
+      const slugDir = join(homeDir, '.claude', 'projects', '-workspace-workspace');
+      mkdirSync(slugDir, { recursive: true });
+      const file = join(slugDir, `${sessionId}.jsonl`);
+      writeFileSync(file, '');
+      truncateSync(file, sizeBytes); // sparse-extend — fast, no real disk cost, real logical `stat` size
+    }
+
+    function fakeArgsEchoClaude(): string {
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b772-budget-fake-claude-'));
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        ['#!/usr/bin/env bash', 'echo "ARGS=$*"', 'exit 0', ''].join('\n'),
+        { mode: 0o755 },
+      );
+      return claudeStub;
+    }
+
+    it('cold-starts instead of resuming when the resumable session exceeds the model\'s context budget', () => {
+      const claudeStub = fakeArgsEchoClaude();
+      const dir = mkdtempSync(join(tmpdir(), 'b772-budget-home-'));
+      // claude-haiku-5's tabled budget is 60MB (src/config/run-config.ts) — one byte over trips the guard.
+      writeSizedSession(dir, 'fake-id', 60 * 1024 * 1024 + 1);
+      const result = runResumeBlock(
+        { ...enabledRunConfigEnv(), HARMONY_MODEL: 'claude-haiku-5' },
+        { fakeClaudeDir: claudeStub, homeDir: dir, pluginDir: REAL_PLUGIN_DIR },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).not.toContain('--resume');
+      expect(result.stdout).toContain('ARGS=');
+    });
+
+    it('logs why it cold-started (session-resume guard) when the budget is exceeded', () => {
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b772-budget-fake-claude-combined-'));
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        ['#!/usr/bin/env bash', 'echo "ARGS=$*"', 'exit 0', ''].join('\n'),
+        { mode: 0o755 },
+      );
+      const block = extractResumeBlock();
+      const scriptDir = mkdtempSync(join(tmpdir(), 'b772-budget-combined-'));
+      const homeDir = join(scriptDir, 'home');
+      mkdirSync(homeDir, { recursive: true });
+      writeSizedSession(homeDir, 'fake-id', 60 * 1024 * 1024 + 1);
+      const scriptFile = join(scriptDir, 'harness.sh');
+      writeFileSync(
+        scriptFile,
+        [
+          '#!/usr/bin/env bash',
+          'set -euo pipefail',
+          'exec 2>&1',
+          `PLUGIN_DIR="${REAL_PLUGIN_DIR}"`,
+          'PROMPT="do it"',
+          block,
+          '',
+        ].join('\n'),
+        { mode: 0o700 },
+      );
+      const combined = execFileSync('bash', [scriptFile], {
+        env: {
+          ...enabledRunConfigEnv(),
+          HARMONY_MODEL: 'claude-haiku-5',
+          HOME: homeDir,
+          PATH: `${claudeStub}:${process.env.PATH}`,
+        },
+      }).toString();
+      expect(combined).toContain('over model \'claude-haiku-5\'\'s');
+      expect(combined).toContain('cold-starting instead of resuming (session-resume guard)');
+    });
+
+    it('still resumes normally when the session is WELL under the model\'s context budget', () => {
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b772-budget-fake-claude-small-'));
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        [
+          '#!/usr/bin/env bash',
+          'if printf \'%s\\n\' "$@" | grep -q -- --resume; then',
+          '  echo "RESUMED"',
+          '  exit 0',
+          'fi',
+          'echo COLD_STARTED',
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      const dir = mkdtempSync(join(tmpdir(), 'b772-budget-home-small-'));
+      writeSession(dir, 'fake-id'); // tiny ('{}\n') — nowhere near any tabled budget
+      const result = runResumeBlock(
+        { ...enabledRunConfigEnv(), HARMONY_MODEL: 'claude-haiku-5' },
+        { fakeClaudeDir: claudeStub, homeDir: dir, pluginDir: REAL_PLUGIN_DIR },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('RESUMED');
+    });
+
+    it('does not apply the guard at all when HARMONY_MODEL is unset (no model info to compare a budget against)', () => {
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b772-budget-fake-claude-nomodel-'));
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        [
+          '#!/usr/bin/env bash',
+          'if printf \'%s\\n\' "$@" | grep -q -- --resume; then',
+          '  echo "RESUMED"',
+          '  exit 0',
+          'fi',
+          'echo COLD_STARTED',
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      const dir = mkdtempSync(join(tmpdir(), 'b772-budget-home-nomodel-'));
+      writeSizedSession(dir, 'fake-id', 60 * 1024 * 1024 + 1); // huge, but no model to compare against
+      const result = runResumeBlock(enabledRunConfigEnv(), {
+        fakeClaudeDir: claudeStub,
+        homeDir: dir,
+        pluginDir: REAL_PLUGIN_DIR,
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('RESUMED');
     });
   });
 
@@ -2232,16 +2511,19 @@ describe('provision.sh: EXECUTED HARMONY_PLUGIN_POSTURE parsing (B-803 — prose
 });
 
 describe('provision.sh headless branch: background-wait ceiling lifted (B-825)', () => {
-  it('exports CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 inside the headless) branch, before the exec claude line', () => {
+  it('exports CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 inside the headless) branch, before the first claude invocation', () => {
     const script = readFileSync(provisionPath, 'utf8');
     const caseBlock = /^\s*headless\)\s*$([\s\S]*?)^\s*;;\s*$/m.exec(script);
     expect(caseBlock).not.toBeNull();
     const block = caseBlock![1];
     const exportIdx = block.indexOf('export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0');
-    const execIdx = block.search(/^\s*exec claude /m);
-    expect(execIdx).toBeGreaterThan(-1); // the guard's anchor must still exist
+    // B-772 round 2: the bounded model-switch loop converted both `exec claude` invocations to
+    // plain `_b772_run claude` calls (see provision.sh's own header comment on the exec -> plain-
+    // call conversion) — the FIRST real claude invocation site is now this one, inside the loop.
+    const claudeIdx = block.search(/^\s*_b772_run claude /m);
+    expect(claudeIdx).toBeGreaterThan(-1); // the guard's anchor must still exist
     expect(exportIdx).toBeGreaterThan(-1); // the ceiling lift must be present
-    expect(exportIdx).toBeLessThan(execIdx); // and must precede the exec so the env reaches claude
+    expect(exportIdx).toBeLessThan(claudeIdx); // and must precede it so the env reaches claude
   });
 });
 
@@ -2394,15 +2676,20 @@ describe('entrypoint.sh: B-788 EXECUTED transcript-mount symlink fallback', () =
 describe('entrypoint.sh: B-718 cross-conduction resume discovery (cloud profile)', () => {
   const entrypointScript = readFileSync(entrypointPath, 'utf8');
 
-  /** Same block extraction as the B-788 describe block above — the resume-discovery logic this
-   *  ticket adds lives INSIDE the same `if [ -n "${HARMONY_TRANSCRIPT_MOUNT_ROOT:-}" ]; then ... fi`
-   *  block, so the SAME extraction + harness proves it runs for real, not just in prose. */
+  /** Same block extraction as the B-788 describe block above, EXTENDED (B-772 round 2) to also
+   *  capture the `b772_finish_cross_conduction_resume` function definition immediately following
+   *  the `if [ -n "${HARMONY_TRANSCRIPT_MOUNT_ROOT:-}" ]; then ... fi` block — the ACTUAL --resume
+   *  injection now lives in that function (called separately, once $PLUGIN_DIR is resolved; see
+   *  entrypoint.sh's own comment on why), not inside the `if` itself, so the harness must call it
+   *  too for these tests to observe the injection at all. */
   function extractTranscriptBlock(): string {
     const at = entrypointScript.indexOf('if [ -n "${HARMONY_TRANSCRIPT_MOUNT_ROOT:-}" ]; then');
     expect(at).toBeGreaterThanOrEqual(0);
-    const end = entrypointScript.indexOf('\nfi', at);
-    expect(end).toBeGreaterThan(at);
-    return entrypointScript.slice(at, end + '\nfi'.length);
+    const fnAt = entrypointScript.indexOf('b772_finish_cross_conduction_resume() {', at);
+    expect(fnAt).toBeGreaterThan(at);
+    const fnEnd = entrypointScript.indexOf('\n}', fnAt);
+    expect(fnEnd).toBeGreaterThan(fnAt);
+    return entrypointScript.slice(at, fnEnd + '\n}'.length);
   }
 
   function runTranscriptBlock(
@@ -2423,6 +2710,9 @@ describe('entrypoint.sh: B-718 cross-conduction resume discovery (cloud profile)
         '#!/usr/bin/env bash',
         'set -euo pipefail',
         block,
+        // Fake — none of these tests set HARMONY_MODEL, so b772_finish_cross_conduction_resume
+        // never actually reaches the node accessor call; it just performs the plain injection.
+        'b772_finish_cross_conduction_resume "/fake/plugin"',
         'echo "CLAUDE_HEADLESS_FLAGS=[${CLAUDE_HEADLESS_FLAGS:-}]"',
         '',
       ].join('\n'),
@@ -2508,6 +2798,116 @@ describe('entrypoint.sh: B-718 cross-conduction resume discovery (cloud profile)
     );
     expect(result.status).toBe(0);
     expect(result.stderr).toContain('CLAUDE_HEADLESS_FLAGS=[]');
+  });
+
+  // B-772 round 2: the narrowed session-resume guard (cross-conduction half — entrypoint.sh). Uses
+  // the REAL plugin dist so `harmony model context-budget` returns a real numeric budget.
+  describe('B-772 round 2: cross-conduction session-resume guard (context-budget, EXECUTED)', () => {
+    const REAL_PLUGIN_DIR = fileURLToPath(new URL('../../', import.meta.url));
+
+    function runTranscriptBlockWithRealPluginDir(
+      env: NodeJS.ProcessEnv,
+      mountRoot: string,
+    ): { status: number | null; stderr: string } {
+      const dir = mkdtempSync(join(tmpdir(), 'b772-entrypoint-budget-'));
+      const homeDir = join(dir, 'home');
+      mkdirSync(homeDir);
+      mkdirSync(join(homeDir, '.claude', 'projects'), { recursive: true });
+      mkdirSync(join(homeDir, '.claude', 'logs'), { recursive: true });
+
+      const block = extractTranscriptBlock();
+      const scriptFile = join(dir, 'harness.sh');
+      writeFileSync(
+        scriptFile,
+        [
+          '#!/usr/bin/env bash',
+          'set -euo pipefail',
+          'exec 2>&1', // merge stderr into stdout so the guard's logged reasoning is observable
+          block,
+          `b772_finish_cross_conduction_resume "${REAL_PLUGIN_DIR}"`,
+          'echo "CLAUDE_HEADLESS_FLAGS=[${CLAUDE_HEADLESS_FLAGS:-}]"',
+          '',
+        ].join('\n'),
+        { mode: 0o700 },
+      );
+
+      try {
+        const stdout = execFileSync('bash', [scriptFile], {
+          env: { ...env, HOME: homeDir, PATH: process.env.PATH, HARMONY_TRANSCRIPT_MOUNT_ROOT: mountRoot },
+        });
+        return { status: 0, stderr: stdout.toString() };
+      } catch (err) {
+        const e = err as { status: number | null; stderr?: Buffer | string };
+        return { status: e.status, stderr: (e.stderr ?? '').toString() };
+      }
+    }
+
+    it('does NOT inject --resume when the sibling session exceeds the model\'s context budget, and logs why', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'b772-mount-root-'));
+      const oldSlug = join(dir, 'B-772', 'cond-old', 'projects', '-workspace-workspace');
+      mkdirSync(oldSlug, { recursive: true });
+      const sessionFile = join(oldSlug, 'sess-old.jsonl');
+      writeFileSync(sessionFile, '');
+      truncateSync(sessionFile, 60 * 1024 * 1024 + 1); // over claude-haiku-5's 60MB budget
+
+      const runConfig = Buffer.from(JSON.stringify({ session_resume: { enabled: true } })).toString(
+        'base64',
+      );
+      const result = runTranscriptBlockWithRealPluginDir(
+        {
+          CONDUCTION_ID: 'cond-new',
+          TICKET: 'B-772',
+          HARMONY_RUN_CONFIG_JSON: runConfig,
+          HARMONY_MODEL: 'claude-haiku-5',
+        },
+        dir,
+      );
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain('CLAUDE_HEADLESS_FLAGS=[]');
+      expect(result.stderr).toContain('sibling session sess-old is');
+      expect(result.stderr).toContain('NOT injecting --resume (session-resume guard)');
+    });
+
+    it('still injects --resume when the sibling session is well under the budget', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'b772-mount-root-small-'));
+      const oldSlug = join(dir, 'B-772', 'cond-old', 'projects', '-workspace-workspace');
+      mkdirSync(oldSlug, { recursive: true });
+      writeFileSync(join(oldSlug, 'sess-old.jsonl'), '{}\n');
+
+      const runConfig = Buffer.from(JSON.stringify({ session_resume: { enabled: true } })).toString(
+        'base64',
+      );
+      const result = runTranscriptBlockWithRealPluginDir(
+        {
+          CONDUCTION_ID: 'cond-new',
+          TICKET: 'B-772',
+          HARMONY_RUN_CONFIG_JSON: runConfig,
+          HARMONY_MODEL: 'claude-haiku-5',
+        },
+        dir,
+      );
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain('CLAUDE_HEADLESS_FLAGS=[ --resume sess-old]');
+    });
+
+    it('does not apply the guard at all when HARMONY_MODEL is unset', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'b772-mount-root-nomodel-'));
+      const oldSlug = join(dir, 'B-772', 'cond-old', 'projects', '-workspace-workspace');
+      mkdirSync(oldSlug, { recursive: true });
+      const sessionFile = join(oldSlug, 'sess-old.jsonl');
+      writeFileSync(sessionFile, '');
+      truncateSync(sessionFile, 60 * 1024 * 1024 + 1); // huge, but no model to compare against
+
+      const runConfig = Buffer.from(JSON.stringify({ session_resume: { enabled: true } })).toString(
+        'base64',
+      );
+      const result = runTranscriptBlockWithRealPluginDir(
+        { CONDUCTION_ID: 'cond-new', TICKET: 'B-772', HARMONY_RUN_CONFIG_JSON: runConfig },
+        dir,
+      );
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain('CLAUDE_HEADLESS_FLAGS=[ --resume sess-old]');
+    });
   });
 
   it('never fails the script on a malformed HARMONY_RUN_CONFIG_JSON — best-effort degrade to no injection', () => {

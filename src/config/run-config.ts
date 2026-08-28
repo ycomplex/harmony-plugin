@@ -17,7 +17,15 @@
 // The accessor below supports BOTH so it works unmodified regardless of which profile launched
 // the worker. File-path wins when (implausibly) both are set.
 
-import { readFileSync as nodeReadFileSync } from 'node:fs';
+import {
+  readFileSync as nodeReadFileSync,
+  writeFileSync as nodeWriteFileSync,
+  mkdirSync as nodeMkdirSync,
+  existsSync as nodeExistsSync,
+  unlinkSync as nodeUnlinkSync,
+} from 'node:fs';
+import { homedir as nodeHomedir } from 'node:os';
+import { dirname as nodeDirname, join as nodeJoin } from 'node:path';
 import { z } from 'zod';
 import { GATES } from '../daemon/gate-phase.js';
 import type { Gate } from '../daemon/gate-phase.js';
@@ -263,4 +271,170 @@ export function getModelForGate(
 
   const profile = resolveDeploymentProfile(env);
   return PINNED_DEFAULT_MODEL_BY_PROFILE[profile] ?? PINNED_DEFAULT_MODEL_BY_PROFILE.prod;
+}
+
+// =================================================================================================
+// B-772 round 2: the in-worker model-switch loop's plumbing — the alias allowlist, the per-model
+// context-budget table, and the handoff-file contract. See the accepted technical design (revised)
+// on the ticket: the WORKER (skills/harmony-conduct/SKILL.md step 1d), not the daemon, enforces
+// which model a gate actually runs on. Both tables below are consumed by BASH
+// (container/provision.sh, container/entrypoint.sh) via a node subprocess accessor
+// (src/cli/commands/model.ts's `harmony model ...` subcommands) — mirroring the existing
+// `harmony config get` precedent (container/cloud-worker-launch.sh:70) — never hand-duplicated as
+// an independent bash copy. Per the ticket's addendum, this is a SMALL, EXPLICIT,
+// container-local allowlist, not a general-purpose model registry (that is B-881's later job).
+// =================================================================================================
+
+/** B-772: the canonical set of model aliases a handoff request may name. Deliberately small and
+ *  explicit (never derived by scanning some external registry) — a handoff-file alias is about to
+ *  be interpolated into a shell `--model "$X"` argument (container/provision.sh), so this allowlist
+ *  is the ONE gate standing between an arbitrary string an agent turn might write and a real
+ *  argv-injection surface. Includes every value `PINNED_DEFAULT_MODEL_BY_PROFILE` can produce (see
+ *  the compile-time-flavored runtime assertion below) — the pinned fallback tier must always itself
+ *  be a valid switch target, or a leg that starts on the pinned default could never be *requested*
+ *  again after a switch away from it. Placeholder alias values, same caveat as
+ *  PINNED_DEFAULT_MODEL_BY_PROFILE's own doc comment — update when this deployment settles on real
+ *  per-environment picks. */
+export const MODEL_ALIAS_ALLOWLIST: readonly string[] = [
+  'claude-sonnet-5',
+  'claude-opus-5',
+  'claude-haiku-5',
+];
+
+// Runtime guard (not just a doc claim): every PINNED_DEFAULT_MODEL_BY_PROFILE value must be a
+// member of MODEL_ALIAS_ALLOWLIST — thrown at import time (module init), so a future edit to either
+// table that lets them drift apart fails LOUD (an import-time throw a test/build catches
+// immediately) rather than surfacing later as a silently-unrequestable pinned default.
+for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
+  if (!MODEL_ALIAS_ALLOWLIST.includes(pinned)) {
+    throw new Error(
+      `B-772 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_ALIAS_ALLOWLIST`,
+    );
+  }
+}
+
+/** B-772: is `alias` one this deployment allows a model-switch handoff to request? Never throws —
+ *  a bare string-membership check. Consumed directly by src/cli/commands/model.ts's `check-alias`
+ *  and `request-switch` subcommands (the ONLY two places that ever gate a handoff write/consume on
+ *  this), and by the invariant loop above at import time. */
+export function isAllowedModelAlias(alias: string): boolean {
+  return MODEL_ALIAS_ALLOWLIST.includes(alias);
+}
+
+/** B-772: per-model resumable-session-SIZE budget, in BYTES — the narrowed session-resume guard's
+ *  threshold (container/provision.sh same-conduction, container/entrypoint.sh cross-conduction) for
+ *  "would resuming THIS model on THIS session likely blow its context window". Bytes, not tokens:
+ *  both guard sites compare directly against a JSONL transcript's `stat`/`ls`-reported file SIZE —
+ *  converting that to a token count would need the transcript's actual tokenizer, unavailable to a
+ *  bash guard — so this is a deliberately ROUGH, CONSERVATIVE estimate (JSONL's per-message
+ *  protocol overhead skews any fixed bytes-per-token ratio, so this is not exact accounting).  A
+ *  conservative UNDER-estimate is the accepted failure mode (erring toward cold-starting more often
+ *  than strictly necessary costs a bit of redundant context-gathering) — an incorrectly ALLOWED
+ *  resume that then blows the context window mid-leg is far more expensive. Exposed to bash via
+ *  `harmony model context-budget <alias>` (src/cli/commands/model.ts) — NEVER hand-duplicate this
+ *  table in provision.sh/entrypoint.sh. Placeholder values, same caveat as
+ *  PINNED_DEFAULT_MODEL_BY_PROFILE's own doc comment. */
+export const MODEL_CONTEXT_BUDGET_BYTES: Record<string, number> = {
+  'claude-sonnet-5': 150 * 1024 * 1024,
+  'claude-opus-5': 150 * 1024 * 1024,
+  'claude-haiku-5': 60 * 1024 * 1024,
+};
+
+/** Conservative default budget for an alias absent from `MODEL_CONTEXT_BUDGET_BYTES` (an allowed
+ *  but not-yet-tabled alias, or a caller that passes something outside the allowlist entirely) —
+ *  never throws, mirrors getModelForGate's own "always something explicit, never silence"
+ *  discipline. Deliberately the SMALLEST tabled budget (haiku's) rather than the largest — an
+ *  unrecognized alias should bias the guard toward cold-starting, not toward assuming it can afford
+ *  the biggest window on file. */
+const DEFAULT_MODEL_CONTEXT_BUDGET_BYTES = 60 * 1024 * 1024;
+
+/** B-772: `alias`'s resumable-session-size budget in bytes — always returns a number, never
+ *  `undefined`/throws (see DEFAULT_MODEL_CONTEXT_BUDGET_BYTES's own doc comment for the fallback's
+ *  direction). */
+export function getModelContextBudgetBytes(alias: string): number {
+  return MODEL_CONTEXT_BUDGET_BYTES[alias] ?? DEFAULT_MODEL_CONTEXT_BUDGET_BYTES;
+}
+
+/** B-772: the model-switch handoff-file contract. A gate-owning agent turn (step 1d,
+ *  skills/harmony-conduct/SKILL.md) that detects a mismatch between the gate it is about to work
+ *  and the model its running `claude` process was launched with writes ONE of these, then ends its
+ *  turn WITHOUT doing the gate's work. container/provision.sh's bounded switch loop reads it right
+ *  after each `claude` invocation returns, to decide whether to re-invoke with a different
+ *  `--model`. Deliberately a FILE, never an exit code — the CLI's own exit code stays reserved for
+ *  the daemon's exit classifier (src/daemon/scheduler.ts), which this ticket does not touch. */
+export interface ModelHandoffRequest {
+  /** The alias the next `claude` invocation should launch with. NOT pre-validated by this
+   *  interface — every reader (src/cli/commands/model.ts's `read-handoff`/`consume` paths,
+   *  container/provision.sh's loop) must still run it through `isAllowedModelAlias` /
+   *  `harmony model check-alias` before ever interpolating it into a shell argument. */
+  requested_model: string;
+}
+
+const DEFAULT_MODEL_HANDOFF_FILENAME = 'model-handoff-request.json';
+
+/** B-772: where the handoff file lives for THIS process's env — an env-var override
+ *  (`HARMONY_MODEL_HANDOFF_PATH`) for test/deployment-profile flexibility, else a fixed path under
+ *  `$HOME/.harmony/` (mirrors src/config/deployment-config.ts's own `~/.harmony/` convention),
+ *  which is a real, per-container, per-conduction-leg-shared directory on every launch profile
+ *  (same `$HOME` the switch loop's shell and the agent's own Bash tool calls both see) — so the
+ *  agent's write and provision.sh's read always agree on the path with zero extra wiring. Never
+ *  throws (a plain string-join). */
+export function getModelHandoffPath(env: NodeJS.ProcessEnv = process.env): string {
+  const override = envValue(env, 'HARMONY_MODEL_HANDOFF_PATH');
+  if (override) return override;
+  const home = env.HOME ?? nodeHomedir();
+  return nodeJoin(home, '.harmony', DEFAULT_MODEL_HANDOFF_FILENAME);
+}
+
+/** B-772: write a handoff request. Creates the parent directory if needed (a fresh container's
+ *  `$HOME/.harmony/` may not exist yet). Overwrites any prior pending request — only the LATEST
+ *  request from the LATEST turn is ever meaningful; there is no queue. Callers (specifically
+ *  src/cli/commands/model.ts's `request-switch`) are responsible for validating `alias` against
+ *  `isAllowedModelAlias` BEFORE calling this — this function itself does not validate, so it stays
+ *  a pure "write what I'm given" primitive other future callers can also use safely once they do
+ *  their own validation. */
+export function writeModelHandoffRequest(alias: string, env: NodeJS.ProcessEnv = process.env): void {
+  const path = getModelHandoffPath(env);
+  nodeMkdirSync(nodeDirname(path), { recursive: true });
+  const payload: ModelHandoffRequest = { requested_model: alias };
+  nodeWriteFileSync(path, JSON.stringify(payload));
+}
+
+/** B-772: read the pending handoff request, or `null` when none is pending / the file is malformed
+ *  / unreadable. Never throws — a best-effort read, matching every other guard in this ticket
+ *  (container/provision.sh's own best-effort philosophy for run_config reads). Does NOT delete the
+ *  file — pair with `clearModelHandoffRequest` after consuming (see src/cli/commands/model.ts's
+ *  `read-handoff` + `clear-handoff`, called as two distinct shell steps so provision.sh's loop can
+ *  validate the alias BEFORE clearing — an invalid alias still gets cleared, just via an explicit
+ *  second call, never silently left to be misread as still-pending on the next iteration). */
+export function readModelHandoffRequest(env: NodeJS.ProcessEnv = process.env): ModelHandoffRequest | null {
+  const path = getModelHandoffPath(env);
+  if (!nodeExistsSync(path)) return null;
+  try {
+    const parsed: unknown = JSON.parse(nodeReadFileSync(path, 'utf8'));
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      'requested_model' in parsed &&
+      typeof (parsed as { requested_model: unknown }).requested_model === 'string' &&
+      (parsed as { requested_model: string }).requested_model
+    ) {
+      return { requested_model: (parsed as { requested_model: string }).requested_model };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** B-772: delete the pending handoff request file, if any. Idempotent — a missing file is not an
+ *  error (ENOENT is swallowed); any OTHER error (e.g. a permission failure) still throws, since
+ *  that is a genuine environment problem worth surfacing rather than silently masking. */
+export function clearModelHandoffRequest(env: NodeJS.ProcessEnv = process.env): void {
+  const path = getModelHandoffPath(env);
+  try {
+    nodeUnlinkSync(path);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+  }
 }

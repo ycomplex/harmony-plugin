@@ -1,7 +1,7 @@
 ---
 name: harmony-conduct
 description: The opinionated-mode entry point: drive one ticket through the gate sequence end to end. Default = pause at every gate for the human's decision (controlled). Optional per-run delegation — `--pause-at <gate>` (auto-advance up to a gate), `--unattended` (auto-advance to the hard floor), or `--escalate` (auto-advance, but surface any gate genuinely worth a human opinion). A non-discretionary risk-class FLOOR (auth / data-migration / irreversible-destructive / shared-core) PAUSES a delegated gate for a human in `--escalate`; in `--unattended` and the auto-advanced prefix of `--pause-at` it does NOT pause mid-run — it is recorded and SURFACED on the release brief (the hard floor at release+verify already covers irreversibility). Triggers on "conduct B-123", "harmony conduct", "run B-123 through the flow", "drive this ticket to verified". The conductor orchestrates the plumbing BETWEEN gates; at a controlled gate it hands the decision to the human, and an auto-advanced gate still records the SAME Accepted decision a controlled run would. `--one-shot` (the daemon's worker flag, orthogonal to the mode selector) advances one leg and exits at the next human pause WITHOUT arming the watch — the daemon owns watching.
-allowed-tools: mcp__harmony__* Read Grep Glob
+allowed-tools: mcp__harmony__* Read Grep Glob Bash(node *)
 disallowed-tools: Write Edit NotebookEdit
 ---
 
@@ -158,8 +158,10 @@ src/tools/environment.ts's `resolveEnvironment`), both `null` outside a conducti
 absent/empty/unparseable — the identical best-effort convention `operator_note` already uses), read at the
 SAME call. Resolve it into an `overrideGates` set (empty when `null`) — this run's per-run, per-gate
 auto-approve override, consumed by **step 2a** of *The delegation test* below. This skill's own
-`allowed-tools` carries no `Bash`, so an env var can only reach it through an MCP tool boundary like this
-one — never a direct shell read. Hold onto all three values (they cannot change mid-leg) for *step 2a* and
+`allowed-tools` carries no GENERAL `Bash` — only the narrow `Bash(node *)` grant B-772 round 2 added
+for the model-switch loop's CLI accessor (step 1d below) — so an ordinary env var still reaches this
+loop only through an MCP tool boundary like this one, never a direct shell read outside that one
+narrow grant. Hold onto all three values (they cannot change mid-leg) for *step 2a* and
 *step 4a* below; this ONE call at the top of the run is the only environment read the whole loop needs.
 
 Apply the dial **ceiling** to the parsed per-run `mode`:
@@ -317,6 +319,64 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
 
    *(Mirrors 1b's shape exactly — a plumbing consume, not a gate: it commits writes a human already
    authorized by accepting. It composes no new brief and needs no pause of its own.)*
+
+1d. **On EVERY iteration, after 1c's consume has settled the ticket's TRUE `workflow_state` — verify THIS
+   turn is actually running the model the just-settled gate should run on (B-772 round 2: the in-worker
+   model-switch loop).** This is the fix for the original B-772's defect: the daemon resolves+launches a
+   leg's model from `workflow_state` **at fire time**, before the leg has consumed any pending 1c event —
+   so a leg that consumes an event mid-pickup (e.g. Designed→Planned) would otherwise run the **new** gate
+   on the **previous** gate's model. Placing this check HERE, after 1c (which itself loops back to step 1
+   on a consume), guarantees it always evaluates the POST-consume gate, never the daemon's pre-consume
+   guess. Skipped entirely for `auto_approve_gates`-delegated legs no differently than any other leg — the
+   check is per-GATE, not per-mode, so it runs identically whether this gate ends up controlled or
+   auto-advanced by step 2/2a below.
+
+   ```
+   RUNNING_MODEL="$(node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" model running-model)"
+   ```
+
+   **`RUNNING_MODEL` empty ⇒ skip this entire step, proceed to step 2.** An empty result means this
+   deployment's launch profile never rendered `{model}` into the minted env at all (an older daemon build,
+   or a profile that hasn't adopted B-772) — there is no baseline to compare against, and nothing to
+   switch away from. This is round 1's own opt-out path, preserved byte-for-byte: no `HARMONY_MODEL` ⇒ no
+   model-awareness whatsoever, exactly as before this ticket existed.
+
+   Otherwise, resolve what the just-settled gate SHOULD run on — the identical `resolveGatePhase` +
+   `getModelForGate` chain the daemon's fire-time guess uses (`src/config/run-config.ts`), but invoked
+   fresh, now, off the ticket row step 1 just re-read (not the daemon's stale pre-consume snapshot):
+
+   ```
+   WANTED_MODEL="$(node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" model resolve-gate "<workflow_state>" --activity "<workflow_activity>")"
+   ```
+
+   using the SAME `(workflow_state, workflow_activity)` step 1 just re-read this iteration (post-1c). This
+   call reads this worker's own `run_config` env exactly as the daemon does, so a per-gate override or a
+   run-wide default in `run_config.model` is honored identically — it degrades to the pinned per-deployment
+   default, never throws, on a malformed run_config (see the CLI command's own doc comment).
+
+   - **`WANTED_MODEL === RUNNING_MODEL` → nothing to do.** Proceed to step 2 as normal.
+   - **`WANTED_MODEL !== RUNNING_MODEL` → request the switch and END THE TURN, doing NONE of this gate's
+     work.** Write the handoff request:
+
+     ```
+     node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" model request-switch "<WANTED_MODEL>"
+     ```
+
+     then end the turn immediately — **compose no brief, run no delegation test, make no MCP write of any
+     kind**. `container/provision.sh`'s bounded switch loop (the ONLY reader of this handoff file) picks the
+     request up right after this turn's `claude` invocation exits, validates `<WANTED_MODEL>` against the
+     canonical allowlist itself (`src/config/run-config.ts`'s `MODEL_ALIAS_ALLOWLIST` — never trust this
+     turn's own request blindly), and — if valid — cold-starts a fresh `claude -p --model <WANTED_MODEL>`
+     invocation of this SAME prompt in the SAME container, which re-enters this loop at step 1 and finds
+     `RUNNING_MODEL` now matching. Bounded at 7 iterations (one per `GATES` entry,
+     `src/daemon/gate-phase.ts`) — a tripped bound is logged by `provision.sh`, never silently retried
+     forever. `request-switch` itself refuses (exits non-zero, writes no file) if `<WANTED_MODEL>` is not on
+     the allowlist — that refusal is not this turn's problem to handle; just end the turn regardless of the
+     command's exit code, since either way this turn must not proceed on the wrong model.
+
+   *(This step is plumbing, not a gate, exactly like 1b/1c: it decides nothing a human didn't already decide
+   via `run_config.model` — it only enforces that decision lands on the right leg. It composes no brief and
+   needs no pause of its own.)*
 
 2. **If the ticket is already awaiting a human decision → handle per mode.** First check the reason:
 

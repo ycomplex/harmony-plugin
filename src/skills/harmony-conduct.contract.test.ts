@@ -473,12 +473,19 @@ describe('harmony-conduct skill contract', () => {
     expect(body).toMatch(/never at `Captured` itself/);
   });
 
-  it('B-743: operator note delivery is scoped to (conduction_id, workflow_state), sourced from get_project\'s environment block — never a direct Bash env read (this skill carries no Bash in allowed-tools)', () => {
+  it('B-743: operator note delivery is scoped to (conduction_id, workflow_state), sourced from get_project\'s environment block — never a direct Bash env read (this skill carries no GENERAL Bash in allowed-tools, only B-772 round 2\'s narrow Bash(node *) grant)', () => {
     const body = skill.body;
     expect(body).toMatch(/environment\.conduction_id/);
     expect(body).toMatch(/environment\.operator_note/);
     expect(body).toMatch(/OPERATOR-NOTE-DELIVERED conduction_id=.*workflow_state=/);
-    expect(skill.frontmatter['allowed-tools']).not.toMatch(/\bBash\b/);
+    // B-772 round 2 added a NARROW `Bash(node *)` grant for the model-switch loop's CLI accessor
+    // (step 1d) — a bare, UNSCOPED `Bash` token must still never appear (that would defeat this
+    // skill's own MCP-tool-boundary-only containment, see step 1b's doc comment on the same point).
+    const allowedTools = skill.frontmatter['allowed-tools'] as string;
+    // Bash(...) entries carry an internal space (e.g. "Bash(node *)"), so a naive whitespace split
+    // would misparse them — match directly against the raw string instead.
+    expect(allowedTools).not.toMatch(/(^|\s)Bash(\s|$)/); // no BARE/unscoped Bash token
+    expect(allowedTools).toMatch(/Bash\(node \*\)/); // the one narrow grant IS present
     const tools = referencedHarmonyTools(body);
     expect(tools).toContain('list_comments');
     expect(tools).toContain('add_comment');

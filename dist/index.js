@@ -36367,7 +36367,13 @@ function loadDeploymentConfig(opts = {}) {
 }
 
 // src/config/run-config.ts
-import { readFileSync as nodeReadFileSync } from "node:fs";
+import {
+  readFileSync as nodeReadFileSync,
+  writeFileSync as nodeWriteFileSync,
+  mkdirSync as nodeMkdirSync,
+  existsSync as nodeExistsSync,
+  unlinkSync as nodeUnlinkSync
+} from "node:fs";
 
 // src/daemon/gate-phase.ts
 var GATES = ["clarify", "decompose", "design", "plan", "build", "release", "verify"];
@@ -36418,6 +36424,28 @@ function getRunConfig(env = process.env, deps = {}) {
   }
   return EMPTY_RUN_CONFIG;
 }
+var PINNED_DEFAULT_MODEL_BY_PROFILE = {
+  prod: "claude-sonnet-5",
+  staging: "claude-sonnet-5"
+};
+var MODEL_ALIAS_ALLOWLIST = [
+  "claude-sonnet-5",
+  "claude-opus-5",
+  "claude-haiku-5"
+];
+for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
+  if (!MODEL_ALIAS_ALLOWLIST.includes(pinned)) {
+    throw new Error(
+      `B-772 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_ALIAS_ALLOWLIST`
+    );
+  }
+}
+var MODEL_CONTEXT_BUDGET_BYTES = {
+  "claude-sonnet-5": 150 * 1024 * 1024,
+  "claude-opus-5": 150 * 1024 * 1024,
+  "claude-haiku-5": 60 * 1024 * 1024
+};
+var DEFAULT_MODEL_CONTEXT_BUDGET_BYTES = 60 * 1024 * 1024;
 
 // src/tools/environment.ts
 var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";

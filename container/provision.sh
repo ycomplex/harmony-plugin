@@ -249,6 +249,7 @@ case "$MODE" in
     fi
 
     RESUME_SESSION_ID=""
+    RESUME_SESSION_FILE=""
     if [ "$SESSION_RESUME_ENABLED" = "true" ]; then
       NEWEST_MTIME=0
       for f in "$HOME/.claude/projects"/*/*.jsonl; do
@@ -257,59 +258,169 @@ case "$MODE" in
         if [ "$mtime" -gt "$NEWEST_MTIME" ]; then
           NEWEST_MTIME="$mtime"
           RESUME_SESSION_ID="$(basename "$f" .jsonl)"
+          RESUME_SESSION_FILE="$f"
         fi
       done
     fi
 
-    # The flags are deliberately word-split.
+    # --- B-772: session-resume guard, narrowed to same-model context growth. --------------------
+    # NOT the general model-switch case (a switch always cold-starts by construction — see the
+    # bounded loop below); this is specifically "same model, but the resumable session has grown too
+    # large for THAT model's context window". Best-effort throughout, matching every other guard in
+    # this file: a lookup failure (no node/dist present, a malformed alias) degrades to "allow the
+    # resume attempt" — the existing AC5 --resume-is-best-effort fallback already covers a resume
+    # that turns out to be unusable for any OTHER reason. Only runs when there IS a resumable session
+    # AND a model was actually resolved for this leg (HARMONY_MODEL set) — no model info, nothing to
+    # compare a budget against.
+    if [ -n "$RESUME_SESSION_ID" ] && [ -n "${HARMONY_MODEL:-}" ] && [ -f "$RESUME_SESSION_FILE" ]; then
+      SESSION_SIZE_BYTES="$(stat -c '%s' "$RESUME_SESSION_FILE" 2>/dev/null || echo 0)"
+      CONTEXT_BUDGET_BYTES="$(node "$PLUGIN_DIR/dist/bin/harmony.js" model context-budget "$HARMONY_MODEL" 2>/dev/null || true)"
+      if [ -n "$CONTEXT_BUDGET_BYTES" ] && [ "$SESSION_SIZE_BYTES" -gt "$CONTEXT_BUDGET_BYTES" ] 2>/dev/null; then
+        echo "B-772: resumable session $RESUME_SESSION_ID is ${SESSION_SIZE_BYTES} bytes, over model '$HARMONY_MODEL''s ${CONTEXT_BUDGET_BYTES}-byte resume budget — cold-starting instead of resuming (session-resume guard)." >&2
+        RESUME_SESSION_ID=""
+        RESUME_SESSION_FILE=""
+      fi
+    fi
+
+    # The flags are deliberately word-split. EXTRA_HEADLESS_FLAGS_BASE never carries --model — the
+    # switch loop below layers the CURRENT_MODEL on top of it fresh every iteration, so a switch
+    # never accumulates a second/stale --model flag.
     # shellcheck disable=SC2206
-    EXTRA_HEADLESS_FLAGS=(${CLAUDE_HEADLESS_FLAGS:-})
+    EXTRA_HEADLESS_FLAGS_BASE=(${CLAUDE_HEADLESS_FLAGS:-})
 
     # B-772: HARMONY_MODEL is the daemon's already-resolved per-gate/per-run/pinned-default model
     # choice (src/config/run-config.ts's getModelForGate, delivered via the minted run.env file —
     # see scripts/mint-installation-token.mjs's composeModelLine). Guarded exactly like the
     # --resume wiring above: when unset/empty (an older daemon build, or a deployment profile that
-    # doesn't render {model}), EXTRA_HEADLESS_FLAGS is untouched and every exec line below runs
+    # doesn't render {model}), CURRENT_MODEL stays empty and every invocation below runs
     # byte-for-byte unchanged — no --model flag at all, never an empty one.
-    if [ -n "${HARMONY_MODEL:-}" ]; then
-      EXTRA_HEADLESS_FLAGS+=(--model "$HARMONY_MODEL")
-    fi
+    CURRENT_MODEL="${HARMONY_MODEL:-}"
 
-    if [ -z "$RESUME_SESSION_ID" ]; then
-      # No prior session to resume (disabled, first leg ever, or nothing resumable) — the existing
-      # cold-start path, byte-for-byte unchanged from before this ticket. CLAUDE_HEADLESS_FLAGS may
-      # still carry a CROSS-conduction --resume an upstream script injected — that is passed through
-      # untouched here, exactly as it always has been.
-      exec claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" "${EXTRA_HEADLESS_FLAGS[@]}"
-    fi
+    # --- B-772 round 2: bounded in-worker model-switch loop --------------------------------------
+    # The WORKER (skills/harmony-conduct/SKILL.md step 1d), not this daemon-fired guess, is what
+    # actually enforces which model a gate runs on: at step 1 of every gate the running session
+    # compares the gate it is about to work against $HARMONY_MODEL (re-exported below on every
+    # iteration so it always reflects THIS turn's real launch model) and, on a mismatch, writes a
+    # handoff request via `harmony model request-switch <alias>` and ends its turn without doing the
+    # gate's work. This loop picks that request up and cold-starts a fresh `claude -p --model
+    # <alias>` invocation in the SAME container — bounded at 7 iterations
+    # (src/daemon/gate-phase.ts's GATES length: at most one switch per gate in one leg). A tripped
+    # bound is logged, never silently swallowed; either way this script still exits with the LAST
+    # completed invocation's own exit code, so the daemon's exit classifier is unaffected.
+    #
+    # Signal forwarding across the exec -> plain-call conversion. Every `claude` invocation below now
+    # runs as a plain (non-exec'd) call — `exec` would replace this shell's OWN process image with
+    # `claude`'s, which is exactly what let a SIGTERM/SIGINT reach `claude` directly before this
+    # ticket; this script now needs to run code AFTER `claude` returns (the handoff check), so it can
+    # no longer exec. A plain call makes THIS shell the direct signal recipient instead, and bash's
+    # documented default is to defer running a trap handler until the current foreground command
+    # returns — which would delay an operator reap or the daemon's deadline-kill by up to `claude`'s
+    # own remaining runtime. Backgrounding each invocation (`"$@" &`) and `wait`-ing on its specific
+    # PID avoids that: bash runs a pending trap as soon as it fires even while blocked in `wait PID`
+    # (unlike a foreground non-`wait` command), so the trap below forwards the signal to `claude`
+    # immediately, and `wait` then returns claude's own real exit status once it acts on the
+    # forwarded signal — the same promptness the previous `exec`-based script gave the daemon's reap
+    # path, preserved end-to-end. (Item 18 of this ticket's work list — a LIVE operator-reap smoke
+    # test confirming this against the real daemon — is out of scope for this build; this reasoning
+    # is the documented substitute pending that manual verification on staging.)
+    MODEL_SWITCH_CHILD_PID=""
+    _b772_forward_signal() {
+      if [ -n "$MODEL_SWITCH_CHILD_PID" ] && kill -0 "$MODEL_SWITCH_CHILD_PID" 2>/dev/null; then
+        kill -s "$1" "$MODEL_SWITCH_CHILD_PID" 2>/dev/null || true
+      fi
+    }
+    trap '_b772_forward_signal TERM' TERM
+    trap '_b772_forward_signal INT' INT
+    _b772_run() {
+      "$@" &
+      MODEL_SWITCH_CHILD_PID=$!
+      wait "$MODEL_SWITCH_CHILD_PID"
+      local status=$?
+      MODEL_SWITCH_CHILD_PID=""
+      return $status
+    }
 
-    # B-718 AC5: --resume is BEST-EFFORT. A resumed invocation that fails to even ATTACH (corrupt/
-    # truncated session file, a session id the CLI rejects, a stale id left over from an old
-    # conduction, the CLI binary itself being unavailable, a permission error reading the session
-    # file, ...) must fall back to a COLD start — never fail the leg — and log that the fallback
-    # happened, so the degradation is visible to an operator rather than silently absorbed. The gate
-    # is a bare nonzero exit code, deliberately NOT keyed to any specific stderr signature: discovery
-    # here is deterministic, so a session that fails with an error string this gate doesn't recognize
-    # would otherwise re-fail identically on every re-conduct, bricking the ticket with a park reason
-    # that never mentions sessions. Only stderr is captured to a file here (stdout keeps streaming
-    # live to the daemon's log exactly as before); the captured stderr is dumped verbatim right after
-    # the attempt concludes either way, so nothing is lost — only its live interleaving with stdout
-    # during the (expected-brief) resume-attach window. Dumping it verbatim is what keeps an
-    # unfamiliar failure visible even though the fallback no longer requires recognizing it.
-    echo "B-718: attempting to resume prior session $RESUME_SESSION_ID (run_config.session_resume.enabled=true)." >&2
-    RESUME_STDERR_FILE="$(mktemp)"
-    set +e
-    claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" --resume "$RESUME_SESSION_ID" "${EXTRA_HEADLESS_FLAGS[@]}" 2>"$RESUME_STDERR_FILE"
-    RESUME_EXIT=$?
-    set -e
-    cat "$RESUME_STDERR_FILE" >&2
-    if [ "$RESUME_EXIT" -ne 0 ]; then
-      echo "B-718: --resume $RESUME_SESSION_ID failed to attach (exit $RESUME_EXIT; see stderr above) — falling back to a COLD start. Resume was attempted and degraded gracefully; this is expected to be rare — investigate the persisted transcript mount if it recurs." >&2
-      rm -f "$RESUME_STDERR_FILE"
-      exec claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" "${EXTRA_HEADLESS_FLAGS[@]}"
-    fi
-    rm -f "$RESUME_STDERR_FILE"
-    exit "$RESUME_EXIT"
+    MAX_MODEL_SWITCH_ITERATIONS=7
+    ITERATION=1
+    LEG_EXIT=0
+
+    while :; do
+      if [ "$ITERATION" -gt "$MAX_MODEL_SWITCH_ITERATIONS" ]; then
+        echo "B-772: model-switch loop hit its ${MAX_MODEL_SWITCH_ITERATIONS}-iteration bound — running no further re-invocations this leg (last completed turn's exit code stands)." >&2
+        break
+      fi
+
+      # Re-export on every iteration so a running session's own `harmony model running-model` /
+      # `echo "$HARMONY_MODEL"` always reflects the model THIS turn actually launched with,
+      # including after a switch — never the daemon's original fire-time guess once a switch has
+      # moved past it.
+      export HARMONY_MODEL="$CURRENT_MODEL"
+
+      # shellcheck disable=SC2206
+      EXTRA_HEADLESS_FLAGS=("${EXTRA_HEADLESS_FLAGS_BASE[@]}")
+      if [ -n "$CURRENT_MODEL" ]; then
+        EXTRA_HEADLESS_FLAGS+=(--model "$CURRENT_MODEL")
+      fi
+
+      if [ "$ITERATION" -eq 1 ] && [ -n "$RESUME_SESSION_ID" ]; then
+        # B-718 AC5: --resume is BEST-EFFORT. A resumed invocation that fails to even ATTACH
+        # (corrupt/truncated session file, a session id the CLI rejects, a stale id left over from
+        # an old conduction, the CLI binary itself being unavailable, a permission error reading the
+        # session file, ...) must fall back to a COLD start — never fail the leg — and log that the
+        # fallback happened, so the degradation is visible to an operator rather than silently
+        # absorbed. The gate is a bare nonzero exit code, deliberately NOT keyed to any specific
+        # stderr signature: discovery here is deterministic, so a session that fails with an error
+        # string this gate doesn't recognize would otherwise re-fail identically on every
+        # re-conduct, bricking the ticket with a park reason that never mentions sessions. Only
+        # stderr is captured to a file here (stdout keeps streaming live to the daemon's log exactly
+        # as before); the captured stderr is dumped verbatim right after the attempt concludes
+        # either way, so nothing is lost — only its live interleaving with stdout during the
+        # (expected-brief) resume-attach window. Dumping it verbatim is what keeps an unfamiliar
+        # failure visible even though the fallback no longer requires recognizing it.
+        echo "B-718: attempting to resume prior session $RESUME_SESSION_ID (run_config.session_resume.enabled=true)." >&2
+        RESUME_STDERR_FILE="$(mktemp)"
+        set +e
+        _b772_run claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" --resume "$RESUME_SESSION_ID" "${EXTRA_HEADLESS_FLAGS[@]}" 2>"$RESUME_STDERR_FILE"
+        RESUME_EXIT=$?
+        set -e
+        cat "$RESUME_STDERR_FILE" >&2
+        rm -f "$RESUME_STDERR_FILE"
+        if [ "$RESUME_EXIT" -ne 0 ]; then
+          echo "B-718: --resume $RESUME_SESSION_ID failed to attach (exit $RESUME_EXIT; see stderr above) — falling back to a COLD start. Resume was attempted and degraded gracefully; this is expected to be rare — investigate the persisted transcript mount if it recurs." >&2
+          _b772_run claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" "${EXTRA_HEADLESS_FLAGS[@]}"
+          LEG_EXIT=$?
+        else
+          LEG_EXIT=$RESUME_EXIT
+        fi
+      else
+        # No prior session to resume (disabled, first leg ever, nothing resumable, or the
+        # session-resume guard above just cleared it) on iteration 1 — the existing cold-start path,
+        # byte-for-byte unchanged from before this ticket when CURRENT_MODEL is also empty.
+        # CLAUDE_HEADLESS_FLAGS may still carry a CROSS-conduction --resume an upstream script
+        # injected — passed through untouched here, exactly as it always has been. Every iteration
+        # PAST the first is ALWAYS a cold start regardless — a model switch is itself a session
+        # boundary (this ticket's accepted design), so there is never a `--resume` on iteration 2+.
+        _b772_run claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" "${EXTRA_HEADLESS_FLAGS[@]}"
+        LEG_EXIT=$?
+      fi
+
+      # --- did that turn ask to switch models? -----------------------------------------------
+      REQUESTED_MODEL="$(node "$PLUGIN_DIR/dist/bin/harmony.js" model read-handoff 2>/dev/null || true)"
+      if [ -z "$REQUESTED_MODEL" ]; then
+        break
+      fi
+      if ! node "$PLUGIN_DIR/dist/bin/harmony.js" model check-alias "$REQUESTED_MODEL" >/dev/null 2>&1; then
+        echo "B-772: handoff requested model '$REQUESTED_MODEL', which is NOT in the canonical allowlist — rejecting and NOT looping further (last completed turn's exit code stands)." >&2
+        node "$PLUGIN_DIR/dist/bin/harmony.js" model clear-handoff >/dev/null 2>&1 || true
+        break
+      fi
+      node "$PLUGIN_DIR/dist/bin/harmony.js" model clear-handoff >/dev/null 2>&1 || true
+      echo "B-772: model-switch handoff — re-invoking claude with --model $REQUESTED_MODEL (iteration $((ITERATION + 1)) of $MAX_MODEL_SWITCH_ITERATIONS)." >&2
+      CURRENT_MODEL="$REQUESTED_MODEL"
+      ITERATION=$((ITERATION + 1))
+    done
+
+    exit "$LEG_EXIT"
     ;;
   *)
     echo "Unknown mode '$MODE' (expected: shell | headless <prompt>)" >&2
