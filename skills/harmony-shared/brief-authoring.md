@@ -71,6 +71,40 @@ only one.
 underneath — de-risk-by-running and verify-the-base stay system requirements whether or not
 a human reads the brief.
 
+## The altitude contract
+
+Each gate's brief is written at the **altitude of the decision it ratifies**, not at the altitude of
+the work that produced it. A build-shaped brief at a product gate asks the human to ratify something
+they were never asked to judge.
+
+- **Clarify** — product altitude: what becomes true for the user.
+- **Design** — per track: product altitude on the product track, architect altitude on the technical
+  track, the generated surface itself on UX/UI.
+- **Plan** — legitimately low. It is the one lead-by-system gate; concrete and terse is correct here.
+- **Release** — operational altitude: environments, ordering, and what is irreversible.
+- **Verify** — product altitude: observed behaviour, walked by the human.
+
+**The operative test: the reader must be able to judge the brief without the repo open.** A brief
+that needs file names, function names, or knowledge of the current code structure to evaluate has
+FAILED the test — whatever vocabulary it used. Passing is not a matter of avoiding technical words.
+It is a matter of the human being able to say yes or no from what the brief itself tells them.
+
+**Guard against vagueness-laundering.** Altitude governs the OUTCOME prose — the decision, the
+recommendation, the reasoning. It never licenses vagueness anywhere else. Scope lists, the items, and
+what is in and out stay concrete, and may be technical. "Raise the altitude" never means "say less".
+
+## Two authoring rules
+
+**Solving-as-outcome.** The problem statement says what BECOMES TRUE when this ticket is done. It is
+never a restatement of the ticket title, and never a mechanism. "Triage restarts from scratch because
+a filter set is lost on every reload" is an outcome; "Implement saved filters" is the title handed
+back; "Add a saved_filters table" is a mechanism wearing the problem's clothes.
+
+**No implementation details at design.** A design brief names the approach and its consequences —
+what changes about how the system behaves, what that reaches into, what it forecloses. It does not
+name files, functions, or line numbers. Those belong to plan and to the code review; at design they
+are noise the human cannot judge.
+
 ## Per-gate contracts
 
 ### Clarify (Proposed → Clarified — high-engagement)
@@ -106,17 +140,54 @@ each child's clarify originates its own ACs, and the umbrella keeps its ACs by c
 
 ### Design (Decomposed → Designed, per sub-track — high-engagement)
 
-**The question.** Is this the right approach for this sub-track?
+Design runs **per sub-track**, and the three tracks do not owe the same brief.
+
+**What all three owe.** The shared core; the choices and why; the real alternatives and why each
+lost; and the **spillover** — which choices reach beyond this ticket into the app, and how far. For a
+reviewer who isn't in the code, spillover is the highest-signal element of any design brief. What
+differs per track is the question it answers and the altitude it answers at.
+
+#### Design — product sub-track
+
+**The question.** Is this the right BEHAVIOUR?
 
 **The must-haves.**
-- The choices, and why.
-- The **spillover**: which choices reach beyond this ticket into the app, and how far. For a
-  reviewer who isn't in the code, this is the highest-signal element of the brief.
+- The behaviour spec: what the user can now do, and what the system does in response.
+- The acceptance criteria this design **adds or sharpens** over clarify's happy-path set — edge
+  cases, error paths, and non-functional criteria are design's to add.
+- The alternatives as behaviours, and why each lost.
+- The spillover in product terms: which other surfaces this behaviour changes.
+
+**The engagement.** High, at **product altitude** — judgeable with no repo open.
+
+#### Design — technical sub-track
+
+**The question.** Is this the right APPROACH?
+
+**The must-haves.**
+- The approach, named, with its consequences — never file names, function names, or line numbers
+  (see "No implementation details at design" above).
+- The **spillover**: which choices reach beyond this ticket into the app, and how far.
 - The real alternatives, and why each lost.
 - De-risk-by-running evidence for the load-bearing bets, presented as a confidence signal
   under the recommendation.
 
-**The engagement.** High.
+**The engagement.** High, at **architect altitude** — the shape of the system, not the diff.
+
+#### Design — UX/UI sub-track
+
+**The question.** Is this the right SURFACE?
+
+**The must-haves.**
+- **The generated surface itself.** This track routes through `harmony-visual-handoff`, so its brief
+  is never prose-only: the human judges the artefact, and the prose says what to look at and what to
+  judge it against.
+- What the surface commits to: the interaction, the states it must cover, the patterns it reuses or
+  breaks.
+- The alternatives as surfaces, and why each lost.
+- The spillover: which existing screens inherit this pattern once it lands.
+
+**The engagement.** High, judged **against the surface** — never against a description of it.
 
 ### Plan (Designed → Planned — lead-by-system, terse)
 
@@ -137,6 +208,14 @@ attestation stay enforced underneath as system requirements; terse prose never w
 - The deployment's **risk** — the path-based signal computed from the changed paths, never
   prose-detector output.
 - **Why to trust it** — what tests were added, what was run.
+- **The executed act** — what merging actually DOES: which repo(s), which pull request, that it
+  lands on **staging**, and that production is a separate, deliberate `promote-prod` step this
+  accept does not perform. Say "to staging", never "to production".
+- **The unproven residue** — what the build did NOT prove, named honestly. Silence reads as "all
+  covered", which is a claim the build did not make.
+- **The mechanical evidence line** — from `get_build_evidence_status`, carried verbatim. It is the
+  machine's account of the ACs checked, the test cases recorded, and the pushed PR; never a prose
+  paraphrase of it, and never a stand-in for the residue above.
 
 **The footer** (hygiene, demoted below the headline):
 - The drained follow-ups rollup, for the human to veto.

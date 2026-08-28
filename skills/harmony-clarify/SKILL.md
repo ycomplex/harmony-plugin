@@ -210,10 +210,16 @@ mcp__harmony__reference_knowledge({ task_id, decision_id: decision.id })
    mechanism** — "the board exports a PDF that matches the on-screen layout", not "PDF renderer added
    to export pipeline". A mechanism-flavoured draft is rewritten into the observable outcome or pushed
    to design's refine step — mechanism-flavoured ACs at clarify are the solution-shape-smuggling
-   failure mode. The proposed set rides the brief (the brief item below) as a clearly-delimited
-   context block headed exactly **"Proposed acceptance criteria (happy path) — filed on accept:"**
-   with one line per AC. The ACs are NOT written to the ticket at emission time — they land at the
-   brief's ACCEPT (see step 5); filing-at-compose would persist unratified proposals on defer/iterate.
+   failure mode. **The proposed set rides the brief through `doc.payload` — you author it ONCE, as
+   the `acceptance_criterion` items B-810 already requires (the brief call in step 4), and the RENDER
+   emits the block mechanically (B-874).** Do NOT hand-write the block into `doc.context`: the
+   renderer derives one line per criterion from that payload and emits it under the heading
+   **"Proposed acceptance criteria (happy path) — filed on accept:"** whenever the gate reason is
+   `clarification-draft`. One authored source means the criteria the human READS and the criteria the
+   accept FILES can never disagree. That heading string is **byte-stable forever** — older resolved
+   briefs keep the bytes they were rendered with, so it must never change. The ACs are NOT written to
+   the ticket at emission time — they land at the brief's ACCEPT (see step 5); filing-at-compose would
+   persist unratified proposals on defer/iterate.
 
 3. **De-scope block (B-518) — only when the human's answer put work out of immediate scope.** When
    the exchange's phase-split answer (or the human's explicit direction) marked a later phase, the

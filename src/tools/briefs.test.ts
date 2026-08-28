@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, getBrief, resolveBrief, resolveBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, type BriefDoc, type BriefItem } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, getBrief, resolveBrief, resolveBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, type BriefDoc, type BriefItem } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -102,6 +102,141 @@ describe('renderBrief', () => {
   it('omits the depth-pointer footer when no decision_ref is supplied (B-674)', () => {
     const md = renderBrief(baseDoc());
     expect(md).not.toContain('fuller depth lives in the linked decision entry');
+  });
+});
+
+// B-874 — the render's compose-time contract. These are EXACT-STRING pins, deliberately: each line
+// below is prose a human reads at an irreversible gate, and the archive of resolved briefs keeps the
+// bytes it was rendered with forever. A drift here is a silent divergence between old briefs and new.
+describe('renderBrief — compose-time context (B-874)', () => {
+  describe('the On accept: spine line', () => {
+    it('states the transition accept will apply', () => {
+      const md = renderBrief(baseDoc(), null, { reason: 'clarification-draft', accept: { from: 'Proposed', to: 'Clarified' } });
+      expect(md).toContain('**On accept:** advances Proposed → Clarified');
+    });
+
+    it('drops the from-state when the ticket has none yet (from: null)', () => {
+      const md = renderBrief(baseDoc(), null, { reason: 'clarification-draft', accept: { from: null, to: 'Proposed' } });
+      expect(md).toContain('**On accept:** advances to Proposed');
+      expect(md).not.toContain('advances null');
+    });
+
+    it('says "no state change" when the brief advances nothing (accept: null)', () => {
+      const md = renderBrief(baseDoc(), null, { reason: 'release-decision-pending', accept: null });
+      expect(md).toContain('**On accept:** no state change');
+    });
+
+    it('says "no state change" when `accept` is simply absent from the context', () => {
+      const md = renderBrief(baseDoc(), null, { reason: 'release-decision-pending' });
+      expect(md).toContain('**On accept:** no state change');
+    });
+
+    it('sits directly under the recommendation and above the reasoning', () => {
+      const md = renderBrief(baseDoc(), null, { reason: 'clarification-draft', accept: { from: 'Proposed', to: 'Clarified' } });
+      expect(md).toContain('**Recommend:** Sub-section under project views.\n\n**On accept:** advances Proposed → Clarified\n\n**Why:**');
+    });
+
+    it('BACK-COMPAT: a 1-arg call emits NO On accept: line', () => {
+      expect(renderBrief(baseDoc())).not.toContain('**On accept:**');
+    });
+
+    it('BACK-COMPAT: a 2-arg call emits NO On accept: line', () => {
+      expect(renderBrief(baseDoc(), { type: 'specification', id: 'abc' })).not.toContain('**On accept:**');
+    });
+  });
+
+  describe('the gate-specific command tail', () => {
+    // Pinned VERBATIM: on a stale-patch brief `defer` REJECTS the patch (the flag clears anyway and it
+    // cannot be undone), which the default tail does not say. This exact wording is the fix.
+    it('pins the stale-patch tail byte-for-byte', () => {
+      expect(STALE_PATCH_TAIL).toBe(
+        '`accept` applies this patch and clears the stale flag (state unchanged). `defer` REJECTS it — the flag clears anyway, the divergence is recorded, and the ticket proceeds on the retired decision; this is not a park and cannot be undone. Or `edit` / `iterate <feedback>`.',
+      );
+    });
+
+    it('emits the stale-patch tail for reason stale-patch-review', () => {
+      const md = renderBrief(baseDoc(), null, { reason: 'stale-patch-review', accept: null });
+      expect(md).toContain(`> ${STALE_PATCH_TAIL}`);
+      expect(md).not.toContain(DEFAULT_TAIL);
+    });
+
+    it.each([
+      'clarification-draft', 'decomposition-proposal', 'design-decision-draft', 'plan-draft',
+      'release-decision-pending', 'verification-ack-pending', 'revise-scope-review',
+    ])('keeps the default tail for reason %s', (reason) => {
+      const md = renderBrief(baseDoc(), null, { reason, accept: null });
+      expect(md).toContain(`> ${DEFAULT_TAIL}`);
+      expect(md).not.toContain('REJECTS it');
+    });
+
+    it('keeps the default tail when no context is supplied at all', () => {
+      expect(renderBrief(baseDoc())).toContain('> Type `accept`, `edit`, `iterate <feedback>`, or `defer`.');
+    });
+
+    it('an explicit doc.tail still overrides the reason-specific tail', () => {
+      const md = renderBrief(baseDoc({ tail: 'Reply with your pick.' }), null, { reason: 'stale-patch-review', accept: null });
+      expect(md).toContain('> Reply with your pick.');
+      expect(md).not.toContain('REJECTS it');
+    });
+  });
+
+  describe('the clarify proposed-acceptance-criteria block', () => {
+    const withAcs = (over: Partial<BriefDoc> = {}) => baseDoc({
+      payload: [
+        { write_kind: 'acceptance_criterion', ref: 'ac-saved-filter-persists', content: 'A saved filter persists per-user across sessions' },
+        { write_kind: 'acceptance_criterion', ref: 'ac-saved-filter-renames', content: 'A saved filter can be renamed' },
+        { write_kind: 'label_add', ref: 'label-decision-only', label_name: 'decision-only' },
+      ],
+      ...over,
+    });
+
+    // Byte-stable forever: older resolved briefs keep the bytes they were rendered with.
+    it('pins the heading byte-for-byte', () => {
+      expect(PROPOSED_ACS_HEADING).toBe('Proposed acceptance criteria (happy path) — filed on accept:');
+    });
+
+    it('derives one line per acceptance_criterion payload item', () => {
+      const md = renderBrief(withAcs(), null, { reason: 'clarification-draft', accept: { from: 'Proposed', to: 'Clarified' } });
+      expect(md).toContain(
+        'Proposed acceptance criteria (happy path) — filed on accept:\n- A saved filter persists per-user across sessions\n- A saved filter can be renamed\n',
+      );
+    });
+
+    it('renders only acceptance_criterion items — other write kinds stay unrendered', () => {
+      const md = renderBrief(withAcs(), null, { reason: 'clarification-draft', accept: null });
+      expect(md).not.toContain('decision-only');
+      expect(md).not.toContain('label_add');
+    });
+
+    it('sits in the Context region — after Context, before You need to', () => {
+      const md = renderBrief(withAcs({ context: ['B-187 shipped list-action icons'] }), null, { reason: 'clarification-draft', accept: null });
+      expect(md.indexOf('**Context:**')).toBeLessThan(md.indexOf(PROPOSED_ACS_HEADING));
+      expect(md.indexOf(PROPOSED_ACS_HEADING)).toBeLessThan(md.indexOf('**You need to:**'));
+    });
+
+    it.each([
+      'decomposition-proposal', 'design-decision-draft', 'plan-draft',
+      'release-decision-pending', 'verification-ack-pending', 'stale-patch-review', 'revise-scope-review',
+    ])('is emitted for NO other reason (%s) — payload stays unrendered', (reason) => {
+      const md = renderBrief(withAcs(), null, { reason, accept: null });
+      expect(md).not.toContain(PROPOSED_ACS_HEADING);
+      expect(md).not.toContain('A saved filter persists per-user across sessions');
+    });
+
+    it('emits nothing when the payload carries no acceptance_criterion items', () => {
+      const md = renderBrief(baseDoc({ payload: [{ write_kind: 'label_add', ref: 'label-decision-only', label_name: 'decision-only' }] }),
+        null, { reason: 'clarification-draft', accept: null });
+      expect(md).not.toContain(PROPOSED_ACS_HEADING);
+    });
+
+    it('emits nothing when the doc carries no payload at all', () => {
+      const md = renderBrief(baseDoc(), null, { reason: 'clarification-draft', accept: null });
+      expect(md).not.toContain(PROPOSED_ACS_HEADING);
+    });
+
+    it('BACK-COMPAT: a 2-arg call never renders the payload', () => {
+      expect(renderBrief(withAcs(), null)).not.toContain(PROPOSED_ACS_HEADING);
+    });
   });
 });
 
@@ -369,6 +504,65 @@ describe('composeBrief', () => {
     expect(client.update).toHaveBeenCalledWith(expect.objectContaining({
       awaiting_human_input: true, awaiting_human_reason: 'clarification-draft',
       awaiting_human_ref: { type: 'brief', id: 'brief-1' },
+    }));
+  });
+
+  // B-874 — the compose-time seam: the transition lookup is hoisted ABOVE the render, so the persisted
+  // content states what the accept actually does. The lookup itself is unchanged (same reads, same order).
+  it('persists the resolved transition as the On accept: line (B-874)', async () => {
+    // responses: [task state] -> [transition exists] -> [no active brief] -> [insert row] -> [task update]
+    const client = makeClient([
+      { data: { workflow_state: 'Proposed' } },
+      { data: { to_state: 'Clarified' } },
+      { data: null },
+      { data: briefRow },
+      { data: null },
+    ]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, pending_activity: 'clarifying',
+    });
+    expect(client.insert).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining('**On accept:** advances Proposed → Clarified'),
+    }));
+  });
+
+  it('persists "no state change" when the brief advances nothing — and still reads no task row (B-874)', async () => {
+    // responses: [build_pr read (B-732, release only)] -> [no active brief] -> [insert row] -> [task
+    // update]. The `pending_activity: null` path must add NO network read of its own: the tasks
+    // workflow_state / workflow_transitions lookups stay inside the guard.
+    const client = makeClient([{ data: { field_values: {} } }, { data: null }, { data: briefRow }, { data: null }]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'release-decision-pending', doc: okDoc as any, pending_activity: null as any,
+    });
+    expect(client.insert).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining('**On accept:** no state change'),
+    }));
+    expect(client.from).not.toHaveBeenCalledWith('workflow_transitions');
+  });
+
+  it('renders the stale-patch tail from the gate reason (B-874)', async () => {
+    // responses: [no active brief] -> [insert row] -> [task update]
+    const client = makeClient([{ data: null }, { data: briefRow }, { data: null }]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'stale-patch-review', doc: okDoc as any, pending_activity: null as any,
+    });
+    expect(client.insert).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining(STALE_PATCH_TAIL),
+    }));
+  });
+
+  it('renders the proposed-AC block from doc.payload on a clarification brief (B-874)', async () => {
+    // responses: [no active brief] -> [insert row] -> [task update]
+    const client = makeClient([{ data: null }, { data: briefRow }, { data: null }]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', pending_activity: null as any,
+      doc: {
+        ...okDoc,
+        payload: [{ write_kind: 'acceptance_criterion', ref: 'ac-x', content: 'The board exports a PDF' }],
+      } as any,
+    });
+    expect(client.insert).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining(`${PROPOSED_ACS_HEADING}\n- The board exports a PDF`),
     }));
   });
 

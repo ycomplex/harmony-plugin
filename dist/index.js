@@ -36714,6 +36714,11 @@ function softWordBudget(doc) {
   return Math.min(WORD_BUDGET_BASE + WORD_BUDGET_PER_UNIT * units, WORD_BUDGET_MAX);
 }
 var DEFAULT_TAIL = "Type `accept`, `edit`, `iterate <feedback>`, or `defer`.";
+var STALE_PATCH_TAIL = "`accept` applies this patch and clears the stale flag (state unchanged). `defer` REJECTS it \u2014 the flag clears anyway, the divergence is recorded, and the ticket proceeds on the retired decision; this is not a park and cannot be undone. Or `edit` / `iterate <feedback>`.";
+var PROPOSED_ACS_HEADING = "Proposed acceptance criteria (happy path) \u2014 filed on accept:";
+function tailForReason(reason) {
+  return reason === "stale-patch-review" ? STALE_PATCH_TAIL : void 0;
+}
 var SENTENCE_WORD_LIMIT = 50;
 function stripForLegibility(content) {
   return content.replace(/```[\s\S]*?```/g, " ").replace(/`[^`\n]+`/g, " ").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\(\s*https?:\/\/[^)]*\)/g, " ").replace(/https?:\/\/\S+/g, " ").split("\n").filter((line) => !/^\s*>/.test(line) && !/^\s*- \[[ xX]\]/.test(line)).join("\n");
@@ -36754,7 +36759,7 @@ function analyzeLegibility(content) {
     adjacentParens
   };
 }
-function renderBrief(doc, decisionRef) {
+function renderBrief(doc, decisionRef, ctx) {
   const out = [];
   out.push(`## DECIDE: ${doc.decide}`, "");
   if (doc.load_bearing_gap) {
@@ -36770,6 +36775,16 @@ function renderBrief(doc, decisionRef) {
     else if (doc.recommend.confidence === "high") suffix = " (high confidence)";
     out.push(`**Recommend${suffix}:** ${doc.recommend.text}`, "");
   }
+  if (ctx) {
+    if (ctx.accept) {
+      out.push(
+        ctx.accept.from ? `**On accept:** advances ${ctx.accept.from} \u2192 ${ctx.accept.to}` : `**On accept:** advances to ${ctx.accept.to}`,
+        ""
+      );
+    } else {
+      out.push("**On accept:** no state change", "");
+    }
+  }
   if (doc.why?.length) {
     out.push("**Why:**", ...doc.why.map((w) => `- ${w}`), "");
   }
@@ -36778,6 +36793,14 @@ function renderBrief(doc, decisionRef) {
   }
   if (doc.context?.length) {
     out.push("**Context:**", ...doc.context.map((c) => `- ${c}`), "");
+  }
+  if (ctx?.reason === "clarification-draft") {
+    const criteria = (doc.payload ?? []).filter(
+      (p) => p.write_kind === "acceptance_criterion" && typeof p.content === "string" && p.content.trim().length > 0
+    );
+    if (criteria.length) {
+      out.push(PROPOSED_ACS_HEADING, ...criteria.map((c) => `- ${c.content}`), "");
+    }
   }
   if (doc.items.length) {
     out.push("**You need to:**");
@@ -36794,7 +36817,7 @@ function renderBrief(doc, decisionRef) {
   if (decisionRef) {
     out.push("_This brief is a summary \u2014 fuller depth lives in the linked decision entry._", "");
   }
-  out.push(`> ${doc.tail ?? DEFAULT_TAIL}`);
+  out.push(`> ${doc.tail ?? tailForReason(ctx?.reason) ?? DEFAULT_TAIL}`);
   return out.join("\n");
 }
 function mentionsApprovalRequirement(content) {
@@ -36887,13 +36910,8 @@ async function composeBrief(client, projectId, userId, args) {
     const fv = taskRow?.field_values;
     buildPr = fv?.build_pr ?? void 0;
   }
-  const content = renderBrief(args.doc, args.decision_ref);
-  const lint = lintBrief(args.doc, content, { reason: args.reason, buildPr });
-  if (!lint.ok) {
-    throw new Error(`Brief failed the \xA73.2 pre-send lint:
-- ${lint.errors.join("\n- ")}`);
-  }
   const pendingActivity = typeof args.pending_activity === "string" && args.pending_activity.trim().toLowerCase() === "null" ? null : args.pending_activity;
+  let accept = null;
   if (pendingActivity) {
     const { data: task, error: tErr } = await client.from("tasks").select("workflow_state, stale").eq("id", taskId).single();
     if (tErr) throw new Error(tErr.message);
@@ -36911,6 +36929,13 @@ async function composeBrief(client, projectId, userId, args) {
     if (!tr) {
       throw new Error(`pending_activity '${pendingActivity}' has no valid transition from state '${fromState ?? "NULL"}'`);
     }
+    accept = { from: fromState, to: tr.to_state };
+  }
+  const content = renderBrief(args.doc, args.decision_ref, { reason: args.reason, accept });
+  const lint = lintBrief(args.doc, content, { reason: args.reason, buildPr });
+  if (!lint.ok) {
+    throw new Error(`Brief failed the \xA73.2 pre-send lint:
+- ${lint.errors.join("\n- ")}`);
   }
   const payload = {
     reason: args.reason,

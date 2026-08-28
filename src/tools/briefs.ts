@@ -69,7 +69,26 @@ function softWordBudget(doc: BriefDoc): number {
   return Math.min(WORD_BUDGET_BASE + WORD_BUDGET_PER_UNIT * units, WORD_BUDGET_MAX);
 }
 
-const DEFAULT_TAIL = 'Type `accept`, `edit`, `iterate <feedback>`, or `defer`.';
+export const DEFAULT_TAIL = 'Type `accept`, `edit`, `iterate <feedback>`, or `defer`.';
+
+// B-874 — the stale-patch gate's command tail. The default tail is MISINFORMING there: on a
+// `stale-patch-review` brief `defer` does not park the ticket, it REJECTS the patch — the stale flag
+// clears anyway, the divergence is recorded, and the ticket proceeds on the retired decision. That is
+// irreversible, so the human must read it at the moment of deciding. Emitted mechanically by the render
+// (keyed on the gate reason), so no author can forget it and the wording cannot drift.
+export const STALE_PATCH_TAIL =
+  '`accept` applies this patch and clears the stale flag (state unchanged). `defer` REJECTS it — the flag clears anyway, the divergence is recorded, and the ticket proceeds on the retired decision; this is not a park and cannot be undone. Or `edit` / `iterate <feedback>`.';
+
+// B-874 — the clarify gate's proposed-AC block heading. BYTE-STABLE FOREVER: older resolved briefs keep
+// their rendered bytes, so changing this string would make new briefs disagree with the archive. The
+// block itself is DERIVED from `doc.payload`'s acceptance_criterion items — the author no longer
+// hand-writes it into context, so the promised writes and the rendered promise cannot diverge.
+export const PROPOSED_ACS_HEADING = 'Proposed acceptance criteria (happy path) — filed on accept:';
+
+/** The tail this gate reason owes the human, or undefined when the default one is correct. */
+function tailForReason(reason: string | undefined): string | undefined {
+  return reason === 'stale-patch-review' ? STALE_PATCH_TAIL : undefined;
+}
 
 // ——— B-660 legibility nudges (warn-only — same soft tier as the word budget) ———
 // The legibility contract (skills/harmony-shared/brief-authoring.md) is not self-enforcing:
@@ -181,11 +200,28 @@ export function analyzeLegibility(content: string): LegibilityStats {
   };
 }
 
+/** Compose-time context the render needs but the canonical doc cannot carry (B-874): the gate `reason`
+ *  this brief is being composed for, and the state transition its ACCEPT will actually apply.
+ *  `composeBrief` resolves both before rendering; every field is optional so a bare 1-/2-arg call still
+ *  renders exactly today's bytes. */
+export interface BriefRenderContext {
+  /** The gate reason (§6.5) — selects the reason-specific tail and the clarify proposed-AC block. */
+  reason?: string;
+  /** The resolved accept-transition: the row `pending_activity` matched in `workflow_transitions`.
+   *  `null`/absent ⇒ accept advances no state. */
+  accept?: { from: string | null; to: string } | null;
+}
+
 /** Render the canonical doc to the §3.1 BLUF Markdown blob, deterministically.
  *  When `decisionRef` is present (B-674), the render mechanically appends the depth-pointer
  *  footer just above the command tail — the authoring agent no longer hand-writes it. A brief
- *  with no `decision_ref` correctly shows no pointer. */
-export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null): string {
+ *  with no `decision_ref` correctly shows no pointer.
+ *
+ *  B-874 — `ctx` carries the compose-time facts the doc cannot know. When it is supplied the render also
+ *  emits the **On accept:** spine line (what this accept actually does to the ticket's state), selects the
+ *  gate-specific command tail, and derives the clarify proposed-AC block from `doc.payload`. When it is
+ *  ABSENT (an old 1-/2-arg caller) none of that is emitted — the output is byte-identical to before. */
+export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null, ctx?: BriefRenderContext): string {
   const out: string[] = [];
   out.push(`## DECIDE: ${doc.decide}`, '');
 
@@ -204,6 +240,23 @@ export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null): st
     out.push(`**Recommend${suffix}:** ${doc.recommend.text}`, '');
   }
 
+  // B-874 — the spine line: what accepting this brief DOES to the ticket, stated in the brief itself.
+  // It sits directly under the recommendation and above the reasoning, because it is the consequence the
+  // human is actually ratifying. Only emitted when the caller supplied compose-time context: a 1-/2-arg
+  // call (tests, any pre-B-874 caller) renders exactly today's bytes.
+  if (ctx) {
+    if (ctx.accept) {
+      out.push(
+        ctx.accept.from
+          ? `**On accept:** advances ${ctx.accept.from} → ${ctx.accept.to}`
+          : `**On accept:** advances to ${ctx.accept.to}`,
+        '',
+      );
+    } else {
+      out.push('**On accept:** no state change', '');
+    }
+  }
+
   if (doc.why?.length) {
     out.push('**Why:**', ...doc.why.map((w) => `- ${w}`), '');
   }
@@ -212,6 +265,19 @@ export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null): st
   }
   if (doc.context?.length) {
     out.push('**Context:**', ...doc.context.map((c) => `- ${c}`), '');
+  }
+
+  // B-874 — clarify's proposed happy-path acceptance criteria, DERIVED from the payload that accept will
+  // actually file (`doc.payload`, B-810) instead of hand-written prose that could disagree with it. Part
+  // of the Context region: it is context the reader needs to judge the clarification, not an ask. Emitted
+  // for `clarification-draft` only; `payload` stays unrendered for every other reason.
+  if (ctx?.reason === 'clarification-draft') {
+    const criteria = (doc.payload ?? []).filter(
+      (p) => p.write_kind === 'acceptance_criterion' && typeof p.content === 'string' && p.content.trim().length > 0,
+    );
+    if (criteria.length) {
+      out.push(PROPOSED_ACS_HEADING, ...criteria.map((c) => `- ${c.content}`), '');
+    }
   }
 
   if (doc.items.length) {
@@ -234,7 +300,9 @@ export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null): st
     out.push('_This brief is a summary — fuller depth lives in the linked decision entry._', '');
   }
 
-  out.push(`> ${doc.tail ?? DEFAULT_TAIL}`);
+  // Tail precedence (B-874): an explicit `doc.tail` (the author's deliberate override) wins, then the
+  // gate-specific tail, then the default.
+  out.push(`> ${doc.tail ?? tailForReason(ctx?.reason) ?? DEFAULT_TAIL}`);
   return out.join('\n');
 }
 
@@ -421,13 +489,6 @@ export async function composeBrief(
     buildPr = (fv?.build_pr as BriefLintContext['buildPr']) ?? undefined;
   }
 
-  // Render the canonical doc to the blob, then lint the doc (what's checked is what's rendered).
-  const content = renderBrief(args.doc, args.decision_ref);
-  const lint = lintBrief(args.doc, content, { reason: args.reason, buildPr });
-  if (!lint.ok) {
-    throw new Error(`Brief failed the §3.2 pre-send lint:\n- ${lint.errors.join('\n- ')}`);
-  }
-
   // B-625: a literal-string "null" (case-insensitive, trimmed) is the string-serialized form of JSON null
   // — treat it as omitted (parity with B-466's null≡omitted), advancing no state. Narrow: ONLY the exact
   // "null" token; any other unknown activity still hits the transition guard below (a typo'd "buildng" must
@@ -440,6 +501,12 @@ export async function composeBrief(
   // Compose-time guard (fail-fast): a pending_activity must yield a real transition from the current state.
   // Invariant: P1's seed has (from_state, activity) unique, so maybeSingle is exact; if a future seed adds
   // a second to_state for the same (from_state, activity), maybeSingle errors loudly (a safe fail).
+  //
+  // B-874: this runs BEFORE the render (it used to sit after it) so the resolved transition can be handed
+  // to renderBrief as the **On accept:** line — the brief states what accepting it actually does. Nothing
+  // else moves: the same reads, the same guards, the same messages, and STILL no task read at all on the
+  // `pending_activity: null` path.
+  let accept: BriefRenderContext['accept'] = null;
   if (pendingActivity) {
     const { data: task, error: tErr } = await client
       .from('tasks').select('workflow_state, stale').eq('id', taskId).single();
@@ -464,6 +531,17 @@ export async function composeBrief(
     if (!tr) {
       throw new Error(`pending_activity '${pendingActivity}' has no valid transition from state '${fromState ?? 'NULL'}'`);
     }
+    accept = { from: fromState, to: (tr as { to_state: string }).to_state };
+  }
+
+  // Render the canonical doc to the blob, then lint the doc (what's checked is what's rendered).
+  // The third argument (B-874) carries the compose-time facts the doc cannot know — the gate reason and
+  // the resolved accept-transition — which drive the **On accept:** line, the gate-specific command tail,
+  // and clarify's payload-derived proposed-AC block.
+  const content = renderBrief(args.doc, args.decision_ref, { reason: args.reason, accept });
+  const lint = lintBrief(args.doc, content, { reason: args.reason, buildPr });
+  if (!lint.ok) {
+    throw new Error(`Brief failed the §3.2 pre-send lint:\n- ${lint.errors.join('\n- ')}`);
   }
 
   const payload = {
