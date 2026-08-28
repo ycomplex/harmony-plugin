@@ -820,6 +820,19 @@ export interface ConsumeAcceptRemarkResult {
 const isMissingAcceptRemark = (msg: string | undefined): boolean =>
   !!msg && /accept_remark/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
 
+/**
+ * B-883 — the WRITE-side sibling of isMissingAcceptRemark above, and deliberately NOT that predicate.
+ *
+ * isMissingAcceptRemark matches `accept_remark`: the COLUMN, on the read path. The write-side failure is
+ * a different thing entirely — passing `p_remark` to a database whose `resolve_brief` signature predates
+ * the parameter is a PostgREST FUNCTION-resolution failure (PGRST202, "Could not find the function ... in
+ * the schema cache") whose message names `p_remark`, the PARAMETER. The string `p_remark` does not contain
+ * `accept_remark`, so reusing the read-side guard here would never fire: the drift case would throw in
+ * production while the code looked like it handled it.
+ */
+const isMissingRemarkParam = (msg: string | undefined): boolean =>
+  !!msg && /p_remark/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
+
 export async function consumeAcceptRemark(
   client: SupabaseClient,
   _projectId: string,
@@ -937,7 +950,7 @@ export function validateResolutionProvenance(raw: unknown): string {
   );
 }
 
-export interface ResolveBriefArgs { task_id: string; command: string; detail?: string; provenance: string; }
+export interface ResolveBriefArgs { task_id: string; command: string; detail?: string; remark?: string; provenance: string; }
 
 export async function resolveBrief(
   client: SupabaseClient,
@@ -949,6 +962,16 @@ export async function resolveBrief(
     throw new Error('resolve_brief handles only accept/defer; edit/iterate are skill-side, expand/related are reads on get_brief');
   }
   const provenance = validateResolutionProvenance(args.provenance);
+  // B-883: a remark rides on ACCEPT only. A deferred ticket parks, so a remark attached to a defer would
+  // sit unconsumed forever — and quietly storing it would be the very silent-loss failure this change
+  // exists to close. Rejected BEFORE the RPC: nothing is written, so there is no partial state to reason
+  // about. A blank remark is treated as absent (below), so it never trips this.
+  const remark = typeof args.remark === 'string' ? args.remark.trim() : '';
+  if (remark && args.command === 'defer') {
+    throw new Error(
+      "a remark cannot accompany 'defer': the remark channel rides on accept, and a deferred ticket parks, so the remark would never be consumed. Drop the remark, or accept instead — for a defer reason use `detail`.",
+    );
+  }
   const taskId = await resolveTaskId(client, projectId, args.task_id);
   // Unique-lookup guard (partial unique index): exactly one active brief, or none.
   const { data: active, error: lookupErr } = await client
@@ -987,15 +1010,39 @@ export async function resolveBrief(
     throw new Error(`no active brief for task ${args.task_id}`);
   }
 
-  const { data, error } = await client.rpc('resolve_brief', {
+  const rpcArgs = {
     _brief_id: (active as { id: string }).id,
     _command: args.command,
     _detail: args.detail ?? null,
     // B-734: the decision entry's attribution. Validated above — never a caller's raw string.
     p_provenance: provenance,
-  });
-  if (error) throw new Error(error.message);
-  return data;
+  };
+
+  // A blank remark omits the parameter entirely — that IS "blank is absent", so it needs no other branch.
+  const { data, error } = await client.rpc(
+    'resolve_brief',
+    remark ? { ...rpcArgs, p_remark: remark } : rpcArgs,
+  );
+  if (!error) return remark ? withRemarkRecorded(data, true) : data;
+
+  // B-883: write-side schema drift. The parameter is unresolvable, so the WHOLE call failed and the accept
+  // did NOT happen — degrading therefore cannot mean "the accept succeeded and the remark was skipped", it
+  // must mean RETRY. Safe on both old and new deployments because the migration declares
+  // `p_remark text DEFAULT NULL`, so omitting the argument is always valid. The accept lands, and the
+  // dropped remark is REPORTED rather than silently swallowed — a silent drop here would reproduce the
+  // exact failure this ticket exists to close, inside its own fix.
+  if (remark && isMissingRemarkParam(error.message)) {
+    const { data: retried, error: retryErr } = await client.rpc('resolve_brief', rpcArgs);
+    if (retryErr) throw new Error(retryErr.message);
+    return withRemarkRecorded(retried, false);
+  }
+  throw new Error(error.message);
+}
+
+/** Attach the B-883 remark-visibility flag to the RPC's ack without assuming its shape. */
+function withRemarkRecorded(data: unknown, recorded: boolean): Record<string, unknown> {
+  const base = data && typeof data === 'object' ? (data as Record<string, unknown>) : {};
+  return { ...base, remark_recorded: recorded };
 }
 
 export const getBriefTool = {
@@ -1013,13 +1060,15 @@ export const resolveBriefTool = {
   description:
     "Resolve the active brief on a task. accept = promote the Asserted knowledge entry to Accepted, advance the state machine, clear the flag. defer = park the ticket. Idempotent (re-issuing the same command is safe). (edit/iterate are skill-side LLM work via compose_brief; expand/related are reads via get_brief.) " +
     "B-734: `provenance` is REQUIRED — it attributes the recorded decision entry, and absent provenance is stored as null and read as UNATTRIBUTED, never as a human. Accepted from the plugin: 'human-in-session' (the human typed accept/defer in this session) or 'agent-synthesized' / 'agent-synthesized:<mode>' (the conductor synthesized it under a delegation mode, e.g. 'agent-synthesized:unattended'). " +
-    "FAILS CLOSED: 'human-in-browser' is the web client's alone and is REJECTED here (the plugin is never the browser), and any other value — including near-misses like the British 'agent-synthesised' — is REJECTED rather than stored, because a wrong value would render as unattributed forever.",
+    "FAILS CLOSED: 'human-in-browser' is the web client's alone and is REJECTED here (the plugin is never the browser), and any other value — including near-misses like the British 'agent-synthesised' — is REJECTED rather than stored, because a wrong value would render as unattributed forever. " +
+    "B-883: `detail` and `remark` are DIFFERENT CHANNELS and are not interchangeable. `remark` is an instruction for the NEXT leg — it rides on an accept, surfaces as `pending_remark` on get_task, and is consumed once. `detail` is an inert note (it lands in resolved_detail) and is NEVER surfaced as pending_remark, so an instruction passed as `detail` is stored and silently never reaches anyone. A remark on 'defer' is REJECTED (a deferred ticket parks, so it could never be consumed). Against a database predating the remark parameter the accept still SUCCEEDS and the ack carries `remark_recorded: false` — the drop is visible, never silent.",
   inputSchema: {
     type: 'object' as const,
     properties: {
       task_id: { type: 'string', description: 'The task whose active brief to resolve — UUID, task number, or visual ID (e.g., B-43)' },
       command: { type: 'string', description: "'accept' | 'defer'" },
-      detail: { type: 'string', description: 'Optional note (e.g. the defer reason)' },
+      detail: { type: 'string', description: "Optional INERT note recorded against the resolution (e.g. the defer reason). Lands in resolved_detail and is never surfaced as pending_remark — if you want the next leg to ACT on something, that is `remark`, not this." },
+      remark: { type: 'string', description: "Optional instruction for the NEXT leg, carried with an ACCEPT (B-503's remark channel). Surfaces as `pending_remark` on get_task and is consumed once by the conductor. Rejected with 'defer' (a parked ticket would never consume it). Blank/whitespace-only is treated as no remark. On a database predating the parameter the accept still succeeds and the ack reports `remark_recorded: false`." },
       provenance: {
         type: 'string',
         description:

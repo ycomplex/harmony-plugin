@@ -1022,6 +1022,148 @@ describe('resolveBrief', () => {
   });
 });
 
+// B-883: the plugin can carry a remark on an accept — the channel B-503 built and only the browser
+// could reach. The governing rule for this whole surface: a remark is either recorded and consumable, or
+// the caller is TOLD it was not. There is no third outcome where a remark is accepted and quietly dropped.
+describe('resolveBrief — accept-with-remark (B-883)', () => {
+  // A stateful fake standing in for the briefs row, so the headline test can be a REAL round trip:
+  // resolveBrief WRITES through the RPC, then fetchPendingRemark (what backs get_task's pending_remark)
+  // READS it back. Both are the production functions; only the database is faked.
+  function makeRoundTripClient(opts: { supportsRemarkParam?: boolean } = {}) {
+    const supportsRemarkParam = opts.supportsRemarkParam !== false;
+    const store: { accept_remark: string | null; accept_remark_consumed_at: string | null } = {
+      accept_remark: null,
+      accept_remark_consumed_at: null,
+    };
+    const chain: any = { store, rpcCalls: [] as unknown[] };
+    for (const m of ['from', 'select', 'eq', 'is', 'not', 'order', 'limit']) chain[m] = vi.fn(() => chain);
+
+    // Reads: the active-brief lookup (resolveBrief) and the pending-remark read (fetchPendingRemark).
+    let readMode: 'active' | 'remark' = 'active';
+    chain.select = vi.fn((cols: string) => { readMode = cols.includes('accept_remark') ? 'remark' : 'active'; return chain; });
+    chain.maybeSingle = vi.fn(async () => {
+      if (readMode === 'active') return { data: { id: 'brief-1' }, error: null };
+      if (store.accept_remark && !store.accept_remark_consumed_at) {
+        return { data: { id: 'brief-1', reason: 'plan-draft', accept_remark: store.accept_remark }, error: null };
+      }
+      return { data: null, error: null };
+    });
+
+    chain.rpc = vi.fn(async (_name: string, params: any) => {
+      chain.rpcCalls.push(params);
+      if ('p_remark' in params && !supportsRemarkParam) {
+        // What PostgREST returns when the deployed function signature lacks the parameter (PGRST202).
+        return { data: null, error: { message: 'Could not find the function public.resolve_brief(_brief_id, _command, _detail, p_provenance, p_remark) in the schema cache' } };
+      }
+      // The RPC's own guard: a blank remark writes nothing.
+      if (typeof params.p_remark === 'string' && params.p_remark.trim() !== '') store.accept_remark = params.p_remark;
+      return { data: { brief_id: 'brief-1', command: params._command, workflow_state: 'Planned', brief_status: 'accepted' }, error: null };
+    });
+    return chain;
+  }
+
+  it('ROUND TRIP: an accept carrying a remark is afterwards visible as pending_remark', async () => {
+    const client = makeRoundTripClient();
+    await resolveBrief(client, PROJECT_ID, {
+      task_id: 'task-1', command: 'accept', remark: 'bump to 0.14.135, read the version from main',
+      provenance: 'human-in-session',
+    });
+    // Forwarded as the RPC parameter that actually writes briefs.accept_remark.
+    expect(client.rpcCalls[0]).toEqual({
+      _brief_id: 'brief-1', _command: 'accept', _detail: null,
+      p_provenance: 'human-in-session', p_remark: 'bump to 0.14.135, read the version from main',
+    });
+    // ...and read back through the SAME projection the conductor picks up on.
+    expect(await fetchPendingRemark(client, 'task-1')).toEqual({
+      brief_id: 'brief-1', reason: 'plan-draft', detail: 'bump to 0.14.135, read the version from main',
+    });
+  });
+
+  it('a bare accept is unchanged: no p_remark parameter, no remark_recorded flag', async () => {
+    const client = makeRoundTripClient();
+    const result = await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', provenance: 'human-in-session' });
+    expect(client.rpcCalls[0]).not.toHaveProperty('p_remark');
+    expect(result).not.toHaveProperty('remark_recorded');
+    expect(await fetchPendingRemark(client, 'task-1')).toBeNull();
+  });
+
+  it('reports remark_recorded: true when the remark landed', async () => {
+    const client = makeRoundTripClient();
+    const result: any = await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', remark: 'do the thing', provenance: 'human-in-session' });
+    expect(result.remark_recorded).toBe(true);
+  });
+
+  it('REJECTS a remark supplied with defer, naming the reason — before any write', async () => {
+    const client = makeRoundTripClient();
+    await expect(resolveBrief(client, PROJECT_ID, {
+      task_id: 'task-1', command: 'defer', remark: 'do this next', provenance: 'human-in-session',
+    })).rejects.toThrow(/remark cannot accompany 'defer'/i);
+    // Pre-RPC: nothing was written, so there is no partial state to reason about.
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('a plain defer is unaffected — detail still passes through', async () => {
+    const client = makeRoundTripClient();
+    await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'defer', detail: 'later', provenance: 'human-in-session' });
+    expect(client.rpcCalls[0]).toEqual({ _brief_id: 'brief-1', _command: 'defer', _detail: 'later', p_provenance: 'human-in-session' });
+  });
+
+  it('a blank / whitespace-only remark behaves exactly as NO remark', async () => {
+    for (const blank of ['', '   ', '\n\t ']) {
+      const client = makeRoundTripClient();
+      const result = await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', remark: blank, provenance: 'human-in-session' });
+      expect(client.rpcCalls[0]).not.toHaveProperty('p_remark');
+      expect(result).not.toHaveProperty('remark_recorded');
+      expect(await fetchPendingRemark(client, 'task-1')).toBeNull();
+    }
+  });
+
+  it('a blank remark on a DEFER is not rejected either (blank is absent, so nothing rides on the defer)', async () => {
+    const client = makeRoundTripClient();
+    await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'defer', remark: '   ', provenance: 'human-in-session' })).resolves.toBeDefined();
+  });
+
+  // The visible-degrade rule. A SILENT degrade here would rebuild this ticket's own bug inside its fix.
+  it('SCHEMA DRIFT: the accept still succeeds (retried without p_remark) and reports remark_recorded: false', async () => {
+    const client = makeRoundTripClient({ supportsRemarkParam: false });
+    const result: any = await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', remark: 'do the thing', provenance: 'human-in-session' });
+    // First attempt carried the parameter; the retry dropped it so the accept could land.
+    expect(client.rpcCalls).toHaveLength(2);
+    expect(client.rpcCalls[0]).toHaveProperty('p_remark');
+    expect(client.rpcCalls[1]).not.toHaveProperty('p_remark');
+    // The accept happened...
+    expect(result.brief_status).toBe('accepted');
+    // ...and the loss is VISIBLE, not silent.
+    expect(result.remark_recorded).toBe(false);
+  });
+
+  it('the drift predicate is NOT the read-side accept_remark guard — a p_remark error must still be caught', async () => {
+    // Regression pin: isMissingAcceptRemark matches 'accept_remark' (the column). This message names
+    // 'p_remark' (the parameter) and contains no 'accept_remark' substring, so reusing that guard would
+    // never fire and this accept would throw instead of degrading.
+    const msg = 'Could not find the function public.resolve_brief(_brief_id, _command, _detail, p_provenance, p_remark) in the schema cache';
+    expect(msg).not.toContain('accept_remark');
+    const client = makeRoundTripClient({ supportsRemarkParam: false });
+    await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', remark: 'x', provenance: 'human-in-session' })).resolves.toBeDefined();
+  });
+
+  it('a NON-drift RPC error is still loud (never swallowed by the retry path)', async () => {
+    const client = makeRoundTripClient();
+    client.rpc = vi.fn(async () => ({ data: null, error: { message: 'permission denied for table briefs' } }));
+    await expect(resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', remark: 'x', provenance: 'human-in-session' }))
+      .rejects.toThrow(/permission denied/);
+  });
+
+  it('the tool surface distinguishes remark from detail', async () => {
+    expect(resolveBriefTool.inputSchema.properties).toHaveProperty('remark');
+    // remark is optional — a bare accept must stay valid.
+    expect(resolveBriefTool.inputSchema.required).not.toContain('remark');
+    expect((resolveBriefTool.inputSchema.properties as any).detail.description).toMatch(/never surfaced as pending_remark/i);
+    expect((resolveBriefTool.inputSchema.properties as any).remark.description).toMatch(/pending_remark/);
+    expect(resolveBriefTool.description).toMatch(/DIFFERENT CHANNELS/);
+  });
+});
+
 // B-734 Phase B: provenance is a REQUIRED, VALIDATED input. The DB stores it verbatim and harmony-web
 // attributes on an EXACT match, so a wrong value is not a soft failure — it renders as unattributed
 // forever and reads as a data problem. The plugin therefore rejects rather than passes through.
