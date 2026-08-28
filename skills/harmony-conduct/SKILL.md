@@ -206,6 +206,18 @@ one and stop.
   data-migration / irreversible-destructive / shared-core), and always at **release** and **verify**.
   (Auto-advanced gates still record their decision as Accepted.)"*
 
+**Whenever `overrideGates` (the resolved `auto_approve_gates` set from `environment.auto_approve_gates`,
+§1b) is NON-EMPTY, the mode announcement above MUST also NAME the override-selected gates** — layered on
+top of whichever mode wording otherwise applies, regardless of which run-mode flag (or none) was passed.
+This is additional to the mode line, never a replacement for it. For example, a bare `controlled`
+invocation (no flag) with `auto_approve_gates: ["decompose", "design"]` announces something like:
+
+> *"Conducting <ticket> from <state>. I'll pause at every gate for your decision, except: **decompose**,
+> **design** — auto-approved by this run's configuration."*
+
+The same naming applies on top of `partial`/`unattended`/`escalate` wording when `overrideGates` is
+non-empty for that run — always name the gates, never just say "some gates are auto-approved."
+
 Note the floor's behaviour once up front, matched to the mode: in **`--escalate`** say *"I'll also pause —
 regardless of judgment — on any gate whose subject touches auth, a data migration, an irreversible/destructive
 change, or a shared-core module."*; in **`--unattended`/`--pause-at`** say *"A risk class on a forward gate
@@ -498,12 +510,20 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
 
 6. **Otherwise, determine the next forward activity and RUN it** by delegating to the owning gate skill
    (state→activity map below). The gate skill queries knowledge, drafts the decision, and `compose_brief`s
-   — setting `awaiting_human_input`. Then the loop re-reads at step 1, lands in step 2 (now awaiting), and
-   either pauses (controlled gate) or auto-advances (delegated gate). *(Side-effecting note: the gate
-   skills' accept paths carry the side effects — `harmony-decompose` creates children on accept,
-   `finish-work` does the merge/deploy on accept. In a controlled run those happen at the human's accept;
-   in a delegated run the conductor synthesizes the accept and the gate skill performs the same side
-   effects — see §4b.)*
+   — setting `awaiting_human_input`. **The SAME turn MUST then continue, without ending, into step 1's
+   re-read of the ticket the `compose_brief` just updated, then step 2's delegation-test evaluation of
+   THAT SAME brief.** This continuation is NOT optional and NOT merely descriptive of what typically
+   happens next — it is a MUST: the turn must never end in the gap between a gate skill's `compose_brief`
+   and the delegation test's evaluation of the brief it just composed. This applies identically on a
+   conduction's very first leg (fresh `Proposed`/`Captured` state, nothing pending to consume) as on any
+   later leg — there is no "compose the brief and stop" exit here. The ONLY places the turn may end after
+   this step's `compose_brief` are: (a) step 2's evaluation lands the gate on a genuine controlled pause
+   (§4 — the ball is legitimately in the human's court), or (b) under `--one-shot`, §4c's step-0 guard
+   fires at that same pause. Ending the turn anywhere else between `compose_brief` and the delegation
+   test's evaluation is the bug this rule closes. *(Side-effecting note: the gate skills' accept paths
+   carry the side effects — `harmony-decompose` creates children on accept, `finish-work` does the
+   merge/deploy on accept. In a controlled run those happen at the human's accept; in a delegated run the
+   conductor synthesizes the accept and the gate skill performs the same side effects — see §4b.)*
 
 ### The delegation test — is THIS gate auto-advanced for this run?
 
@@ -905,7 +925,12 @@ brief-surface pause. It is regenerated, not mutated, so it can never disagree wi
 
 ### 3. One step per iteration — auto-advance continues, a controlled gate pauses
 
-After delegating to a gate skill, the loop re-reads at step 1 and the delegation test decides:
+**Same MUST-continue-same-turn rule as step 6 above — restated here, not a paraphrase that could drift out
+of sync with it.** After delegating to a gate skill and it `compose_brief`s, the SAME turn MUST continue,
+without ending, into step 1's re-read and step 2's delegation-test evaluation of that same brief; the turn
+must never end in that gap. Only step 2's evaluation landing on a genuine controlled pause (§4), or —
+under `--one-shot` — §4c's step-0 guard firing at that pause, may end the turn. Once step 1's re-read and
+step 2's delegation test have run, the test decides:
 - a **controlled** gate → the gate has composed a brief and set `awaiting_human_input`; the ball is now in
   the human's court → §4 (pause).
 - a **delegated** gate → §4b (synthesize accept, continue looping).
