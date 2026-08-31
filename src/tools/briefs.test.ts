@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, getBrief, resolveBrief, resolveBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, DE_SCOPE_HEADING, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, getBrief, resolveBrief, resolveBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, DE_SCOPE_HEADING, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -468,7 +468,10 @@ const USER_ID = 'user-1';
 
 // A chainable supabase mock whose terminal methods (single/maybeSingle) and direct `await` pop a queued
 // response in call order. `then` makes the builder awaitable for the trailing tasks-update.
-function makeClient(responses: Array<{ data: unknown; error?: unknown }>) {
+function makeClient(
+  responses: Array<{ data: unknown; error?: unknown }>,
+  rpcResponses: Record<string, { data: unknown; error?: unknown }> = {},
+) {
   let i = 0;
   const next = () => responses[i++] ?? { data: null, error: null };
   const chain: any = {};
@@ -476,6 +479,11 @@ function makeClient(responses: Array<{ data: unknown; error?: unknown }>) {
   chain.maybeSingle = vi.fn(async () => next());
   chain.single = vi.fn(async () => next());
   chain.then = (resolve: (v: unknown) => unknown) => resolve(next());
+  // B-843: the iterate path now calls `compose_brief_revision` FIRST. An RPC with no queued response
+  // defaults to the B-383 "function does not exist" shape — i.e. a PRE-MIGRATION DB — so every test
+  // written before B-843 keeps exercising the in-place fallback it was written against, byte for byte.
+  chain.rpc = vi.fn(async (name: string) =>
+    rpcResponses[name] ?? { data: null, error: { code: '42883', message: `function public.${name} does not exist` } });
   return chain;
 }
 
@@ -719,6 +727,223 @@ describe('composeBrief', () => {
       }),
     ).rejects.toThrow(/no valid transition/i);
     expect(client.insert).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// B-843 — an iterate RETAINS its predecessor: compose_brief_revision + the absent-vs-null patch.
+//
+// Two things are load-bearing here and are asserted separately, because conflating them is exactly how
+// the original bug got in:
+//   * WHAT IS SENT — the patch carries ONLY what changed. A field the caller did not pass must be ABSENT
+//     from the patch (so the DB carries it forward), not present-as-null (which would clear it). The
+//     `decision_ref` case is the specific silent data loss this ticket exists to close.
+//   * WHAT HAPPENS WHEN THE RPC IS NOT THERE — plugin `main` reaches the prod board before harmony-web's
+//     migration does, so an absent RPC must degrade to today's in-place iterate, and ONLY an absent RPC:
+//     a permission error or a transient blip must be loud.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+describe('composeBrief — B-843 retained revisions (compose_brief_revision)', () => {
+  const revisionRow = { id: 'brief-1', task_id: 'task-1', reason: 'clarification-draft', content: 'rendered', status: 'active', iteration: 2, lineage_id: 'lin-1', iterate_feedback: 'lead with the tradeoff' };
+  const revisionOk = { compose_brief_revision: { data: revisionRow, error: null } };
+
+  /** The single `compose_brief_revision` call's params. */
+  function patchOf(client: any): any {
+    const call = client.rpc.mock.calls.find((c: any[]) => c[0] === 'compose_brief_revision');
+    return call?.[1];
+  }
+
+  it('iterates through the RPC — the prior revision is superseded server-side, never updated in place', async () => {
+    // responses: [active brief found] -> (rpc) -> [task update]
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: null }], revisionOk);
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      iterate_feedback: 'lead with the tradeoff',
+    });
+    expect(client.rpc).toHaveBeenCalledWith('compose_brief_revision', expect.objectContaining({
+      _task_id: 'task-1', _iterate_feedback: 'lead with the tradeoff', _created_by: USER_ID,
+    }));
+    expect(result.brief).toEqual(revisionRow);
+    // The in-place UPDATE of the briefs row must NOT happen — the only update left is the tasks flag.
+    expect(client.update).not.toHaveBeenCalledWith(expect.objectContaining({ iteration: expect.anything() }));
+    expect(client.update).toHaveBeenCalledWith(expect.objectContaining({
+      awaiting_human_input: true, awaiting_human_ref: { type: 'brief', id: 'brief-1' },
+    }));
+  });
+
+  it('OMITS decision_ref from the patch when the caller does not pass one — the pointer carries forward', async () => {
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: null }], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, iterate_feedback: 'again',
+    });
+    // ABSENT, not null. `_patch: { decision_ref: null }` is the old destructive write wearing a new hat.
+    expect(patchOf(client)._patch).not.toHaveProperty('decision_ref');
+    expect(patchOf(client)._patch).not.toHaveProperty('pending_activity');
+    expect(patchOf(client)._patch).not.toHaveProperty('expand_sections');
+    expect(patchOf(client)._patch).not.toHaveProperty('related');
+  });
+
+  it('sends decision_ref when the caller passes one, and an explicit null when they pass null', async () => {
+    const c1 = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: null }], revisionOk);
+    await composeBrief(c1, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      decision_ref: { type: 'decision', id: 'dec-9' },
+    });
+    expect(patchOf(c1)._patch.decision_ref).toEqual({ type: 'decision', id: 'dec-9' });
+
+    const c2 = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: null }], revisionOk);
+    await composeBrief(c2, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      decision_ref: null as any,
+    });
+    expect(patchOf(c2)._patch).toHaveProperty('decision_ref');
+    expect(patchOf(c2)._patch.decision_ref).toBeNull();
+  });
+
+  it('sends pending_activity only when the caller passes it — including an explicit null', async () => {
+    // pending_activity: null -> the transition guard is skipped, and the key IS present (clear it).
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: null }], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'stale-patch-review', doc: okDoc as any, pending_activity: null as any,
+    });
+    expect(patchOf(client)._patch).toHaveProperty('pending_activity');
+    expect(patchOf(client)._patch.pending_activity).toBeNull();
+  });
+
+  it('the patch always carries the recomposed reason, doc and rendered content', async () => {
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: null }], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      expand_sections: { reasoning: 'long form' }, related: [{ type: 'ticket', id: 'B-1' }],
+    });
+    const patch = patchOf(client)._patch;
+    expect(patch.reason).toBe('clarification-draft');
+    expect(patch.doc).toEqual(expect.objectContaining({ decide: 'x' }));
+    expect(patch.content).toContain('## DECIDE: x');
+    expect(patch.expand_sections).toEqual({ reasoning: 'long form' });
+    expect(patch.related).toEqual([{ type: 'ticket', id: 'B-1' }]);
+  });
+
+  it('passes _iterate_feedback: null on a re-compose with no feedback — never fabricates one', async () => {
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: null }], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    });
+    expect(patchOf(client)._iterate_feedback).toBeNull();
+  });
+
+  it('a FIRST compose never calls the revision RPC — there is no predecessor to supersede', async () => {
+    // responses: [no active brief] -> [insert row] -> [task update]
+    const client = makeClient([{ data: null }, { data: { id: 'brief-1' } }, { data: null }], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, iterate_feedback: 'ignored here',
+    });
+    expect(client.rpc).not.toHaveBeenCalled();
+    expect(client.insert).toHaveBeenCalled();
+  });
+
+  // ── the guarded degradation (B-383): only an ABSENT RPC degrades ─────────────────────────────────
+  it('degrades to the in-place iterate when compose_brief_revision does not exist (42883)', async () => {
+    // responses: [active found] -> [in-place update row] -> [task update]
+    const client = makeClient(
+      [{ data: { id: 'brief-1', iteration: 1 } }, { data: { id: 'brief-1', iteration: 2 } }, { data: null }],
+      { compose_brief_revision: { data: null, error: { code: '42883', message: 'function public.compose_brief_revision(uuid, jsonb, text, uuid) does not exist' } } },
+    );
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, iterate_feedback: 'lost on an old DB, by design',
+    });
+    expect(client.update).toHaveBeenCalledWith(expect.objectContaining({ iteration: 2 }));
+    expect((result.brief as any).iteration).toBe(2);
+  });
+
+  it('degrades on the PostgREST schema-cache shape (PGRST202) too', async () => {
+    const client = makeClient(
+      [{ data: { id: 'brief-1', iteration: 1 } }, { data: { id: 'brief-1', iteration: 2 } }, { data: null }],
+      { compose_brief_revision: { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.compose_brief_revision in the schema cache' } } },
+    );
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    });
+    expect(client.update).toHaveBeenCalledWith(expect.objectContaining({ iteration: 2 }));
+  });
+
+  it('the in-place fallback still carries the pre-B-843 payload — including the pending_resolution clear', async () => {
+    const client = makeClient(
+      [{ data: { id: 'brief-1', iteration: 1 } }, { data: { id: 'brief-1', iteration: 2 } }, { data: null }],
+      { compose_brief_revision: { data: null, error: { code: '42883', message: 'does not exist' } } },
+    );
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    });
+    expect(client.update).toHaveBeenCalledWith(expect.objectContaining({ pending_resolution: null, iteration: 2 }));
+  });
+
+  it('RETHROWS a permission error from the RPC — never silently falls back to the destructive write', async () => {
+    const client = makeClient(
+      [{ data: { id: 'brief-1', iteration: 1 } }, { data: { id: 'brief-1', iteration: 2 } }, { data: null }],
+      { compose_brief_revision: { data: null, error: { code: '42501', message: 'permission denied for table briefs' } } },
+    );
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    })).rejects.toThrow(/permission denied/);
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
+  it('RETHROWS a transient error from the RPC — a blip is not "substrate absent"', async () => {
+    const client = makeClient(
+      [{ data: { id: 'brief-1', iteration: 1 } }, { data: { id: 'brief-1', iteration: 2 } }, { data: null }],
+      { compose_brief_revision: { data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } } },
+    );
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    })).rejects.toThrow(/statement timeout/);
+  });
+
+  describe('isMissingComposeBriefRevision', () => {
+    it('matches only the two schema-absence shapes', () => {
+      expect(isMissingComposeBriefRevision({ code: '42883', message: 'x' })).toBe(true);
+      expect(isMissingComposeBriefRevision({ code: 'PGRST202', message: 'x' })).toBe(true);
+      expect(isMissingComposeBriefRevision({ message: 'Could not find the function public.compose_brief_revision in the schema cache' })).toBe(true);
+    });
+    it('never matches a permission, transient or unrelated error', () => {
+      expect(isMissingComposeBriefRevision({ code: '42501', message: 'permission denied' })).toBe(false);
+      expect(isMissingComposeBriefRevision({ code: '57014', message: 'statement timeout' })).toBe(false);
+      expect(isMissingComposeBriefRevision({ message: 'compose_brief_revision returned null' })).toBe(false);
+      expect(isMissingComposeBriefRevision(null)).toBe(false);
+      expect(isMissingComposeBriefRevision(undefined)).toBe(false);
+    });
+  });
+
+  it('compose_brief exposes iterate_feedback as a string parameter', () => {
+    const props = composeBriefTool.inputSchema.properties as any;
+    expect(props.iterate_feedback.type).toBe('string');
+    expect(props.iterate_feedback.description).toMatch(/VERBATIM/);
+    // Never required: a first draft has no causing feedback.
+    expect(composeBriefTool.inputSchema.required).not.toContain('iterate_feedback');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// B-843 — the three gate skills that own an iterate branch must tell the composer to pass the feedback.
+// Prose contract test, same pattern as the B-876 / B-732 skill-pointer tests below.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+describe.each([
+  ['harmony-clarify', 'skills/harmony-clarify/SKILL.md'],
+  ['harmony-decompose', 'skills/harmony-decompose/SKILL.md'],
+  ['harmony-design-decide', 'skills/harmony-design-decide/SKILL.md'],
+])('B-843 iterate_feedback threading — %s', (_name, rel) => {
+  const prose = readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), 'utf8');
+
+  it('its edit/iterate branch names iterate_feedback and demands the human\'s VERBATIM words', () => {
+    const line = prose.split('\n').find((l) => l.includes('**edit** / **iterate**'));
+    expect(line).toBeDefined();
+    expect(line).toContain('iterate_feedback');
+    expect(line).toMatch(/VERBATIM/);
+  });
+
+  it('it warns that omitted fields CARRY FORWARD rather than being cleared', () => {
+    const line = prose.split('\n').find((l) => l.includes('**edit** / **iterate**'));
+    expect(line).toMatch(/CARRY FORWARD/);
+    expect(line).toContain('decision_ref');
   });
 });
 

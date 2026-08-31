@@ -290,6 +290,9 @@ mcp__harmony__compose_brief({
 one entry per change made this round, each bound to the feedback it answers. It renders under the
 **On accept:** line, never above the frame: the human approves the totality, never the diff.
 
+`doc.revision` and `iterate_feedback` are not substitutes for each other and you owe BOTH: `doc.revision`
+records what YOU changed, `iterate_feedback` records what THEY said, verbatim (B-843).
+
 **PRODUCT track only (B-810) — also author `doc.payload` for step 2b's ADD/SHARPEN/drop edits.** The
 technical and UX/UI sub-tracks author no `doc.payload` at all (they carry no AC edits — unchanged by
 B-810). For the product track, mirror step 2b's edits exactly:
@@ -392,7 +395,7 @@ Show the rendered `content`. On the human's command:
   **Fallback (B-352):** no rationale still parks — prompt once, then skip the authoring if declined. (Web
   `defer` is mechanical-only and never authors this — documented v1 asymmetry.)
 - **expand** / **related** → show the pre-generated sections from `get_brief`.
-- **edit** / **iterate** → revise and re-call `compose_brief`.
+- **edit** / **iterate** → revise and re-call `compose_brief`, passing `iterate_feedback` = the human's words VERBATIM. B-843: the re-compose no longer edits the brief in place — it retains the previous revision and stores the feedback that caused this one, so a paraphrase (or an omission) loses the human's actual words permanently. The call is also a PARTIAL: fields you omit CARRY FORWARD from the previous revision, so never re-state `decision_ref` merely to keep it, and pass an explicit null only when you mean to clear it.
 - **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
 - **A staged `pending_resolution` you can only partially apply** → apply what you structurally can, then file a `worker-question` round scoped to the blocked residue per `skills/harmony-shared/elicitation-engine.md` §Resuming onto a staged pending_resolution you can only partially apply (file the round before recomposing — crash-safety ordering, never wholesale-discard an actionable resolution).
 

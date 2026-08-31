@@ -37644,6 +37644,13 @@ function withDiffDerivedRiskClasses(doc, changedPaths) {
   const risk_classes = paths.length > 0 ? detectRiskClasses({ changedPaths: paths }) : [];
   return { ...doc, frame: { ...doc.frame, risk_classes } };
 }
+var isMissingComposeBriefRevision = (err) => {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42883" || code === "PGRST202") return true;
+  const msg = err.message ?? "";
+  return /compose_brief_revision/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg);
+};
 async function composeBrief(client, projectId, userId, args) {
   if (!args.task_id) throw new Error("task_id is required");
   if (!VALID_REASONS.includes(args.reason)) {
@@ -37717,19 +37724,36 @@ async function composeBrief(client, projectId, userId, args) {
     pending_resolution: null
   };
   const isMissingPendingResolution = (msg) => !!msg && /pending_resolution/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
+  const revisionPatch = { reason: args.reason, doc, content };
+  if (args.expand_sections !== void 0) revisionPatch.expand_sections = args.expand_sections;
+  if (args.related !== void 0) revisionPatch.related = args.related;
+  if (args.pending_activity !== void 0) revisionPatch.pending_activity = pendingActivity ?? null;
+  if (args.decision_ref !== void 0) revisionPatch.decision_ref = args.decision_ref ?? null;
   let brief;
   if (existing) {
-    const updateRow = { ...payload, iteration: (existing.iteration ?? 1) + 1 };
     const briefId = existing.id;
-    const { data, error: error2 } = await client.from("briefs").update(updateRow).eq("id", briefId).select(BRIEF_COLS).single();
-    if (error2) {
-      if (!isMissingPendingResolution(error2.message)) throw new Error(error2.message);
-      const { pending_resolution: _drop, ...fallback } = updateRow;
-      const { data: data2, error: error22 } = await client.from("briefs").update(fallback).eq("id", briefId).select(BRIEF_COLS).single();
-      if (error22) throw new Error(error22.message);
-      brief = data2;
+    const { data: revision, error: revisionErr } = await client.rpc("compose_brief_revision", {
+      _task_id: taskId,
+      _patch: revisionPatch,
+      _iterate_feedback: args.iterate_feedback ?? null,
+      _created_by: userId
+    });
+    if (!revisionErr) {
+      brief = revision;
+    } else if (isMissingComposeBriefRevision(revisionErr)) {
+      const updateRow = { ...payload, iteration: (existing.iteration ?? 1) + 1 };
+      const { data, error: error2 } = await client.from("briefs").update(updateRow).eq("id", briefId).select(BRIEF_COLS).single();
+      if (error2) {
+        if (!isMissingPendingResolution(error2.message)) throw new Error(error2.message);
+        const { pending_resolution: _drop, ...fallback } = updateRow;
+        const { data: data2, error: error22 } = await client.from("briefs").update(fallback).eq("id", briefId).select(BRIEF_COLS).single();
+        if (error22) throw new Error(error22.message);
+        brief = data2;
+      } else {
+        brief = data;
+      }
     } else {
-      brief = data;
+      throw new Error(revisionErr.message);
     }
     if (args.underwriting_claim_ids !== void 0) {
       const kept = args.underwriting_claim_ids;
@@ -37766,7 +37790,7 @@ async function composeBrief(client, projectId, userId, args) {
 }
 var composeBriefTool = {
   name: "compose_brief",
-  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate). On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING \u2014 no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates.",
+  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) on every round-2+ call. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING \u2014 no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates.",
   inputSchema: {
     type: "object",
     properties: {
@@ -37808,18 +37832,19 @@ var composeBriefTool = {
           },
           payload: {
             type: "array",
-            description: "B-810 \u2014 the promised structured writes this brief's ACCEPT will materialize (AcceptanceEventPayloadItem[], acceptance-events.ts): one item per acceptance_criterion / child_ticket / checklist_item / ac_transfer / label_add write, mirroring exactly what the gate's own same-session accept-time materialization performs. NEVER rendered \u2014 a side-channel consumed only by the B-797 cross-session safety net (a web accept with no session running). Every item's `ref` MUST be derived via `slugRef` + deduped via `dedupeRefs` (payload-refs.ts) \u2014 a content-derived slug, never a positional index, stable across an in-place iterate recompose. Omit or pass `[]` when this gate has no promised writes (e.g. decompose's 'no split').",
+            description: "B-810 \u2014 the promised structured writes this brief's ACCEPT will materialize (AcceptanceEventPayloadItem[], acceptance-events.ts): one item per acceptance_criterion / child_ticket / checklist_item / ac_transfer / label_add / knowledge_entry_content write, mirroring exactly what the gate's own same-session accept-time materialization performs. A `knowledge_entry_content` item (B-843) CARRIES the full prose of the knowledge entry this brief's decision_ref names, so accept promotes the wording the human approved rather than the draft they iterated away from \u2014 author its `content` from the brief you are composing NOW, never leave it to be synthesized later. NEVER rendered \u2014 a side-channel consumed only by the B-797 cross-session safety net (a web accept with no session running). Every item's `ref` MUST be derived via `slugRef` + deduped via `dedupeRefs` (payload-refs.ts) \u2014 a content-derived slug, never a positional index, stable across an in-place iterate recompose. Omit or pass `[]` when this gate has no promised writes (e.g. decompose's 'no split').",
             items: {
               type: "object",
               properties: {
-                write_kind: { type: "string", description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add'" },
+                write_kind: { type: "string", description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content'" },
                 ref: { type: "string", description: "Stable, content-derived, within-payload-unique ref \u2014 from slugRef/dedupeRefs (payload-refs.ts)" },
-                content: { type: "string", description: "Required for acceptance_criterion and ac_transfer \u2014 the full text, verbatim" },
+                content: { type: "string", description: "Required for acceptance_criterion, ac_transfer and knowledge_entry_content \u2014 the full text, verbatim" },
                 title: { type: "string", description: "Required for child_ticket and checklist_item" },
                 description: { type: ["string", "null"], description: "Optional, child_ticket only" },
                 target_child_ref: { type: "string", description: "ac_transfer only \u2014 the destination child_ticket item's own `ref` from this SAME payload" },
                 from_ac_id: { type: ["string", "null"], description: "ac_transfer only \u2014 the parent AC's own id being removed; omit only for the rare copy-not-move case" },
-                label_name: { type: "string", description: "label_add only (B-688) \u2014 the label to add; defaults to 'decision-only' when omitted (the only real-world caller today)" }
+                label_name: { type: "string", description: "label_add only (B-688) \u2014 the label to add; defaults to 'decision-only' when omitted (the only real-world caller today)" },
+                entry_id: { type: ["string", "null"], description: "knowledge_entry_content only (B-843) \u2014 the target knowledge entry; omit to let the DB resolve it from this brief's own decision_ref (the normal case)" }
               },
               required: ["write_kind", "ref"]
             }
@@ -37836,7 +37861,11 @@ var composeBriefTool = {
         items: { type: "string" },
         description: "B-876 \u2014 the build's changed file paths (`git diff --name-only origin/main...HEAD`). Used ONLY to compute a release frame's `risk_classes` with the deterministic path detector; compose is authoritative for that field and overwrites whatever the doc authored. Omit (or pass []) and the field is [] \u2014 the risk signal is path-derived or it is nothing, never prose-guessed."
       },
-      underwriting_claim_ids: { type: "array", items: { type: "string" }, description: "B-645 iterate-prune: on an in-place iterate, the KEPT set of elicitation-claim ids that still underwrite this brief. Coupled Asserted claims NOT listed are archived; [] archives all coupled Asserted claims; omit \u21D2 no prune. Ignored on a first compose (nothing is coupled yet)." }
+      underwriting_claim_ids: { type: "array", items: { type: "string" }, description: "B-645 iterate-prune: on an in-place iterate, the KEPT set of elicitation-claim ids that still underwrite this brief. Coupled Asserted claims NOT listed are archived; [] archives all coupled Asserted claims; omit \u21D2 no prune. Ignored on a first compose (nothing is coupled yet)." },
+      iterate_feedback: {
+        type: "string",
+        description: "B-843 \u2014 the human's feedback that CAUSED this iterate, VERBATIM. Pass it on EVERY round-2+ compose (`edit` / `iterate <feedback>`, and the browser reshape's `pending_resolution.detail`); omit it only on a first draft, where nothing caused the brief. It is stored on the NEW revision, so the retained history reads as \"this is what they asked for, and this is what I changed\". Never guessed, never paraphrased into a summary, and never left out because `doc.revision` already names the changes \u2014 `doc.revision` records what YOU changed, this records what THEY said."
+      }
     },
     required: ["task_id", "reason", "doc"]
   }
@@ -41748,7 +41777,7 @@ async function getPendingAcceptanceEvent(client, projectId, taskId) {
   }
   return event ?? null;
 }
-var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add"]);
+var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add", "knowledge_entry_content"]);
 function rawItemsOf(payload) {
   const withNestedPayload = payload;
   if (Array.isArray(withNestedPayload?.payload)) return withNestedPayload.payload;
@@ -41781,7 +41810,11 @@ async function applyAcceptanceEventPayload(client, event) {
     "checklist_item",
     "acceptance_criterion",
     "ac_transfer",
-    "label_add"
+    "label_add",
+    // B-843 LAST, on purpose: it promotes the gate's knowledge entry and supersedes the previous round's.
+    // Running it after every AC/child/checklist write means a payload that fails partway leaves the
+    // knowledge base untouched rather than promoting a decision whose materialization never landed.
+    "knowledge_entry_content"
   ];
   const ordered = order.flatMap((kind) => items.filter((i) => i.write_kind === kind));
   let applied = 0;
@@ -41830,6 +41863,19 @@ async function applyAcceptanceEventPayload(client, event) {
           _from_ac_id: item.from_ac_id ?? null
         });
         if (error2) throw new Error(error2.message);
+        result = data;
+      } else if (item.write_kind === "knowledge_entry_content") {
+        if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content \u2014 the payload CARRIES the entry text; it is never synthesized from doc fields`);
+        const { data, error: error2 } = await client.rpc("consume_knowledge_entry_content_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _content: item.content,
+          _entry_id: item.entry_id ?? null
+        });
+        if (error2) {
+          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("knowledge_entry_content");
+          throw new Error(error2.message);
+        }
         result = data;
       } else if (item.write_kind === "label_add") {
         if (item.label_name === "") throw new Error(`label_add item '${item.ref}' has an empty label_name`);
@@ -41890,7 +41936,7 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId) {
 }
 var consumePendingAcceptanceEventTool = {
   name: "consume_pending_acceptance_event",
-  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
+  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals, B-843 knowledge-entry content + per-gate supersede) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
   inputSchema: {
     type: "object",
     properties: {
