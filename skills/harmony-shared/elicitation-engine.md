@@ -6,7 +6,8 @@ is the ONE behavioural contract every elicitation-running skill follows; the tri
 pre-draft-clarify, B-461 discuss, B-518 phase-split-probe) supply **only a `trigger` + context** and
 inherit everything below. The substrate is `elicitation_exchanges` (one ACTIVE exchange per task,
 append-only `rounds`); the tools are `start_elicitation`, `file_elicitation_round`,
-`get_elicitation`, `conclude_elicitation`; the pure lints live in `src/elicitation/engine.ts`.
+`get_elicitation`, `conclude_elicitation`, `submit_elicitation_answers`; the pure lints live in
+`src/elicitation/engine.ts`.
 
 An exchange is an **interaction model within a gate** — it never advances `workflow_state`, and it
 can run while a brief is active (a `discuss` exchange attaches via `brief_id`).
@@ -71,6 +72,17 @@ question id; the engine stamps each echo `via:'terminal'` and guards the write (
 only; a web-submitted answer is never overwritten; verbs must fit the question kind — confirm /
 correct / skip for a `validate`, answer / skip for an `open`). The rounds history is the provenance
 trail — an exchange answered at the terminal must read identically to one answered on the web.
+
+**When the next move isn't decided yet, RECORD the answers on their own (B-893).** Both
+`prior_answers` paths are consumes — they ride a write that also files the next round or concludes,
+and both CLEAR `answers_submitted_at`. When you (or an out-of-band caller holding answers the human
+gave in the terminal) only need to bank a round's answers and hand the ball back, call
+`submit_elicitation_answers({ task_id, answers })` — the terminal twin of the web's answer form.
+Identical `answers` shape and identical guards (whole call refused, no partial write), but it is the
+PRODUCER: it stamps `answers_submitted_at`, leaves the exchange **active** so a follow-up round can
+still be filed, and clears the task's awaiting flag so the watch classifies `answers-landed`. Never
+reach for `conclude_elicitation` merely to get terminal answers on the record — concluding is a
+decision about the exchange, not a way to save answers.
 
 ## Convergence — agent-detected, a signal never a gate
 

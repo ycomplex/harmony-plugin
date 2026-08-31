@@ -60,6 +60,7 @@ import {
   fileElicitationRoundTool, fileElicitationRound,
   getElicitationTool, getElicitation,
   concludeElicitationTool, concludeElicitation,
+  submitElicitationAnswersTool, submitElicitationAnswers,
 } from './elicitation.js';
 import {
   advanceWorkflowTool, advanceWorkflow,
@@ -126,6 +127,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     composeBriefTool, getBriefTool, resolveBriefTool, consumeAcceptRemarkTool,
     flagReleaseApprovalPendingTool,
     startElicitationTool, fileElicitationRoundTool, getElicitationTool, concludeElicitationTool,
+    submitElicitationAnswersTool,
     advanceWorkflowTool,
     referenceKnowledgeTool,
     listTicketKnowledgeTool,
@@ -357,6 +359,9 @@ export async function handleToolCall(
         break;
       case 'conclude_elicitation':
         result = await concludeElicitation(client, projectId, args as any);
+        break;
+      case 'submit_elicitation_answers':
+        result = await submitElicitationAnswers(client, projectId, args as any);
         break;
       case 'advance_workflow':
         result = await advanceWorkflow(client, projectId, args as any);
