@@ -36378,6 +36378,111 @@ import {
 // src/daemon/gate-phase.ts
 var GATES = ["clarify", "decompose", "design", "plan", "build", "release", "verify"];
 
+// src/tools/conduction-record.ts
+var CONDUCTION_LIVE_STATUSES = ["active"];
+var CONDUCTION_HUMAN_OWNED_STATUSES = ["parked"];
+var CONDUCTION_TERMINAL_STATUSES = ["completed", "cancelled"];
+var CONDUCTION_STATUSES = [
+  ...CONDUCTION_LIVE_STATUSES,
+  ...CONDUCTION_HUMAN_OWNED_STATUSES,
+  ...CONDUCTION_TERMINAL_STATUSES
+];
+var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, reap_requested_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
+var ActiveConductionExistsError = class extends Error {
+  code = "active-conduction-exists";
+  task_id;
+  constructor(taskId, cause) {
+    super(
+      `an active conduction already exists for task ${taskId} \u2014 the atomic insert IS the lease-acquisition primitive, so losing it means another holder owns the run` + (cause ? ` (${cause})` : "")
+    );
+    this.name = "ActiveConductionExistsError";
+    this.task_id = taskId;
+  }
+};
+var isUniqueViolation = (error2) => error2.code === "23505" || /duplicate key value violates unique constraint/i.test(error2.message ?? "");
+async function createConduction(client, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const row = {
+    task_id: args.task_id,
+    status: "active",
+    mode: args.mode ?? "controlled",
+    lease_holder: args.lease_holder ?? null,
+    worker_kind: args.worker_kind ?? null,
+    worker_ref: args.worker_ref ?? null,
+    created_by: args.created_by ?? null
+  };
+  if (args.lease_holder) row.lease_acquired_at = (/* @__PURE__ */ new Date()).toISOString();
+  if (args.run_config !== void 0) row.run_config = args.run_config;
+  const { data, error: error2 } = await client.from("conductions").insert(row).select(CONDUCTION_COLS).single();
+  if (error2) {
+    if (isUniqueViolation(error2)) throw new ActiveConductionExistsError(args.task_id, error2.message);
+    throw new Error(error2.message);
+  }
+  return data;
+}
+var ConductorExcludedError = class extends Error {
+  code = "conductor-excluded";
+  task_id;
+  constructor(taskId) {
+    super(
+      `This ticket is taken away from the conductor (task ${taskId}, conductor_excluded_at is set) \u2014 Return it first (the "Return to conductor" action) before handing it off.`
+    );
+    this.name = "ConductorExcludedError";
+    this.task_id = taskId;
+  }
+};
+async function assertNotExcluded(client, taskId) {
+  if (!taskId) throw new Error("task_id is required");
+  const { data, error: error2 } = await client.from("tasks").select("conductor_excluded_at").eq("id", taskId).single();
+  if (error2) throw new Error(error2.message);
+  if (data?.conductor_excluded_at) throw new ConductorExcludedError(taskId);
+}
+async function getConduction(client, id) {
+  if (!id) throw new Error("id is required");
+  const { data, error: error2 } = await client.from("conductions").select(CONDUCTION_COLS).eq("id", id).maybeSingle();
+  if (error2) throw new Error(error2.message);
+  return data ?? null;
+}
+var CONDUCTION_PATCHABLE_FIELDS = [
+  "status",
+  "lease_holder",
+  "lease_acquired_at",
+  "last_heartbeat_at",
+  "leg_started_at",
+  "clean_shutdown_at",
+  "reap_requested_at",
+  "retry_count",
+  "worker_kind",
+  "worker_ref",
+  "last_worker_exit_code",
+  "last_worker_exit_class",
+  "current_pr_ref"
+];
+function assertPatchable(patch) {
+  const keys = Object.keys(patch ?? {});
+  if (keys.length === 0) {
+    throw new Error(`patch must contain at least one of: ${CONDUCTION_PATCHABLE_FIELDS.join(", ")}`);
+  }
+  const rejected = keys.filter(
+    (k) => !CONDUCTION_PATCHABLE_FIELDS.includes(k)
+  );
+  if (rejected.length > 0) {
+    throw new Error(
+      `non-patchable field(s): ${rejected.join(", ")} \u2014 a conduction patch may only touch: ` + CONDUCTION_PATCHABLE_FIELDS.join(", ")
+    );
+  }
+  if ("status" in patch && !CONDUCTION_STATUSES.includes(patch.status)) {
+    throw new Error(`status must be one of: ${CONDUCTION_STATUSES.join(", ")}`);
+  }
+}
+async function updateConduction(client, id, patch) {
+  if (!id) throw new Error("id is required");
+  assertPatchable(patch);
+  const { data, error: error2 } = await client.from("conductions").update(patch).eq("id", id).select(CONDUCTION_COLS).single();
+  if (error2) throw error2;
+  return data;
+}
+
 // src/config/run-config.ts
 var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
 var NoteSchema = external_exports.string().optional();
@@ -36423,6 +36528,18 @@ function getRunConfig(env = process.env, deps = {}) {
     return RunConfigSchema.parse(JSON.parse(decoded));
   }
   return EMPTY_RUN_CONFIG;
+}
+async function resolveRunConfigFromConduction(client, conductionId) {
+  if (!client || !conductionId) return null;
+  try {
+    const conduction = await getConduction(client, conductionId);
+    const raw = conduction?.run_config;
+    if (raw == null) return null;
+    const parsed = RunConfigSchema.safeParse(raw);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 var PINNED_DEFAULT_MODEL_BY_PROFILE = {
   prod: "claude-sonnet-5",
@@ -36488,32 +36605,43 @@ function resolvePluginVersion(env, moduleUrl) {
   }
   return null;
 }
-function resolveEnvironment(env = process.env, moduleUrl = import.meta.url) {
+function readEnvRunConfig(env) {
+  try {
+    return getRunConfig(env);
+  } catch {
+    return null;
+  }
+}
+async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url, client) {
   const supabase_url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
   let supabase_project_ref = "";
   try {
     supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
   } catch {
   }
-  let operator_note;
-  try {
-    operator_note = getOperatorNote(getRunConfig(env)) ?? null;
-  } catch {
-    operator_note = null;
-  }
-  let auto_approve_gates;
-  try {
-    const gates = Array.from(getAutoApproveGates(getRunConfig(env)));
-    auto_approve_gates = gates.length > 0 ? gates : null;
-  } catch {
-    auto_approve_gates = null;
+  const conduction_id = getConductionId(env) ?? null;
+  const runConfig = await resolveRunConfigFromConduction(client, conduction_id) ?? readEnvRunConfig(env);
+  let operator_note = null;
+  let auto_approve_gates = null;
+  if (runConfig) {
+    try {
+      operator_note = getOperatorNote(runConfig) ?? null;
+    } catch {
+      operator_note = null;
+    }
+    try {
+      const gates = Array.from(getAutoApproveGates(runConfig));
+      auto_approve_gates = gates.length > 0 ? gates : null;
+    } catch {
+      auto_approve_gates = null;
+    }
   }
   return {
     supabase_url,
     supabase_project_ref,
     target: resolveKnownRefs(env)[supabase_project_ref] ?? "custom",
     plugin_version: resolvePluginVersion(env, moduleUrl),
-    conduction_id: getConductionId(env) ?? null,
+    conduction_id,
     operator_note,
     auto_approve_gates
   };
@@ -36545,7 +36673,8 @@ async function getProject(client, projectId) {
     overrides: rawTrust.overrides ?? {}
   };
   const { workspace: _workspace, ...project } = row;
-  return { ...project, agent_trust, environment: resolveEnvironment() };
+  const environment = await resolveEnvironment(void 0, void 0, client);
+  return { ...project, agent_trust, environment };
 }
 
 // src/tools/epics.ts
@@ -40913,111 +41042,6 @@ var flagReleaseApprovalPendingTool = {
     required: ["task_id", "pr_url"]
   }
 };
-
-// src/tools/conduction-record.ts
-var CONDUCTION_LIVE_STATUSES = ["active"];
-var CONDUCTION_HUMAN_OWNED_STATUSES = ["parked"];
-var CONDUCTION_TERMINAL_STATUSES = ["completed", "cancelled"];
-var CONDUCTION_STATUSES = [
-  ...CONDUCTION_LIVE_STATUSES,
-  ...CONDUCTION_HUMAN_OWNED_STATUSES,
-  ...CONDUCTION_TERMINAL_STATUSES
-];
-var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, reap_requested_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
-var ActiveConductionExistsError = class extends Error {
-  code = "active-conduction-exists";
-  task_id;
-  constructor(taskId, cause) {
-    super(
-      `an active conduction already exists for task ${taskId} \u2014 the atomic insert IS the lease-acquisition primitive, so losing it means another holder owns the run` + (cause ? ` (${cause})` : "")
-    );
-    this.name = "ActiveConductionExistsError";
-    this.task_id = taskId;
-  }
-};
-var isUniqueViolation = (error2) => error2.code === "23505" || /duplicate key value violates unique constraint/i.test(error2.message ?? "");
-async function createConduction(client, args) {
-  if (!args.task_id) throw new Error("task_id is required");
-  const row = {
-    task_id: args.task_id,
-    status: "active",
-    mode: args.mode ?? "controlled",
-    lease_holder: args.lease_holder ?? null,
-    worker_kind: args.worker_kind ?? null,
-    worker_ref: args.worker_ref ?? null,
-    created_by: args.created_by ?? null
-  };
-  if (args.lease_holder) row.lease_acquired_at = (/* @__PURE__ */ new Date()).toISOString();
-  if (args.run_config !== void 0) row.run_config = args.run_config;
-  const { data, error: error2 } = await client.from("conductions").insert(row).select(CONDUCTION_COLS).single();
-  if (error2) {
-    if (isUniqueViolation(error2)) throw new ActiveConductionExistsError(args.task_id, error2.message);
-    throw new Error(error2.message);
-  }
-  return data;
-}
-var ConductorExcludedError = class extends Error {
-  code = "conductor-excluded";
-  task_id;
-  constructor(taskId) {
-    super(
-      `This ticket is taken away from the conductor (task ${taskId}, conductor_excluded_at is set) \u2014 Return it first (the "Return to conductor" action) before handing it off.`
-    );
-    this.name = "ConductorExcludedError";
-    this.task_id = taskId;
-  }
-};
-async function assertNotExcluded(client, taskId) {
-  if (!taskId) throw new Error("task_id is required");
-  const { data, error: error2 } = await client.from("tasks").select("conductor_excluded_at").eq("id", taskId).single();
-  if (error2) throw new Error(error2.message);
-  if (data?.conductor_excluded_at) throw new ConductorExcludedError(taskId);
-}
-async function getConduction(client, id) {
-  if (!id) throw new Error("id is required");
-  const { data, error: error2 } = await client.from("conductions").select(CONDUCTION_COLS).eq("id", id).maybeSingle();
-  if (error2) throw new Error(error2.message);
-  return data ?? null;
-}
-var CONDUCTION_PATCHABLE_FIELDS = [
-  "status",
-  "lease_holder",
-  "lease_acquired_at",
-  "last_heartbeat_at",
-  "leg_started_at",
-  "clean_shutdown_at",
-  "reap_requested_at",
-  "retry_count",
-  "worker_kind",
-  "worker_ref",
-  "last_worker_exit_code",
-  "last_worker_exit_class",
-  "current_pr_ref"
-];
-function assertPatchable(patch) {
-  const keys = Object.keys(patch ?? {});
-  if (keys.length === 0) {
-    throw new Error(`patch must contain at least one of: ${CONDUCTION_PATCHABLE_FIELDS.join(", ")}`);
-  }
-  const rejected = keys.filter(
-    (k) => !CONDUCTION_PATCHABLE_FIELDS.includes(k)
-  );
-  if (rejected.length > 0) {
-    throw new Error(
-      `non-patchable field(s): ${rejected.join(", ")} \u2014 a conduction patch may only touch: ` + CONDUCTION_PATCHABLE_FIELDS.join(", ")
-    );
-  }
-  if ("status" in patch && !CONDUCTION_STATUSES.includes(patch.status)) {
-    throw new Error(`status must be one of: ${CONDUCTION_STATUSES.join(", ")}`);
-  }
-}
-async function updateConduction(client, id, patch) {
-  if (!id) throw new Error("id is required");
-  assertPatchable(patch);
-  const { data, error: error2 } = await client.from("conductions").update(patch).eq("id", id).select(CONDUCTION_COLS).single();
-  if (error2) throw error2;
-  return data;
-}
 
 // src/tools/request-conduction-reap.ts
 async function requestConductionReap(client, args) {

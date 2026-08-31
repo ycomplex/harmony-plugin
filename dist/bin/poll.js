@@ -22542,6 +22542,23 @@ import {
 // src/daemon/gate-phase.ts
 var GATES = ["clarify", "decompose", "design", "plan", "build", "release", "verify"];
 
+// src/tools/conduction-record.ts
+var CONDUCTION_LIVE_STATUSES = ["active"];
+var CONDUCTION_HUMAN_OWNED_STATUSES = ["parked"];
+var CONDUCTION_TERMINAL_STATUSES = ["completed", "cancelled"];
+var CONDUCTION_STATUSES = [
+  ...CONDUCTION_LIVE_STATUSES,
+  ...CONDUCTION_HUMAN_OWNED_STATUSES,
+  ...CONDUCTION_TERMINAL_STATUSES
+];
+var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, reap_requested_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
+async function getConduction(client, id) {
+  if (!id) throw new Error("id is required");
+  const { data, error } = await client.from("conductions").select(CONDUCTION_COLS).eq("id", id).maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ?? null;
+}
+
 // src/config/run-config.ts
 var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
 var NoteSchema = external_exports.string().optional();
@@ -22587,6 +22604,18 @@ function getRunConfig(env = process.env, deps = {}) {
     return RunConfigSchema.parse(JSON.parse(decoded));
   }
   return EMPTY_RUN_CONFIG;
+}
+async function resolveRunConfigFromConduction(client, conductionId) {
+  if (!client || !conductionId) return null;
+  try {
+    const conduction = await getConduction(client, conductionId);
+    const raw = conduction?.run_config;
+    if (raw == null) return null;
+    const parsed = RunConfigSchema.safeParse(raw);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 var PINNED_DEFAULT_MODEL_BY_PROFILE = {
   prod: "claude-sonnet-5",
@@ -22652,32 +22681,43 @@ function resolvePluginVersion(env, moduleUrl) {
   }
   return null;
 }
-function resolveEnvironment(env = process.env, moduleUrl = import.meta.url) {
+function readEnvRunConfig(env) {
+  try {
+    return getRunConfig(env);
+  } catch {
+    return null;
+  }
+}
+async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url, client) {
   const supabase_url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
   let supabase_project_ref = "";
   try {
     supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
   } catch {
   }
-  let operator_note;
-  try {
-    operator_note = getOperatorNote(getRunConfig(env)) ?? null;
-  } catch {
-    operator_note = null;
-  }
-  let auto_approve_gates;
-  try {
-    const gates = Array.from(getAutoApproveGates(getRunConfig(env)));
-    auto_approve_gates = gates.length > 0 ? gates : null;
-  } catch {
-    auto_approve_gates = null;
+  const conduction_id = getConductionId(env) ?? null;
+  const runConfig = await resolveRunConfigFromConduction(client, conduction_id) ?? readEnvRunConfig(env);
+  let operator_note = null;
+  let auto_approve_gates = null;
+  if (runConfig) {
+    try {
+      operator_note = getOperatorNote(runConfig) ?? null;
+    } catch {
+      operator_note = null;
+    }
+    try {
+      const gates = Array.from(getAutoApproveGates(runConfig));
+      auto_approve_gates = gates.length > 0 ? gates : null;
+    } catch {
+      auto_approve_gates = null;
+    }
   }
   return {
     supabase_url,
     supabase_project_ref,
     target: resolveKnownRefs(env)[supabase_project_ref] ?? "custom",
     plugin_version: resolvePluginVersion(env, moduleUrl),
-    conduction_id: getConductionId(env) ?? null,
+    conduction_id,
     operator_note,
     auto_approve_gates
   };
@@ -22704,7 +22744,8 @@ async function getProject(client, projectId) {
     overrides: rawTrust.overrides ?? {}
   };
   const { workspace: _workspace, ...project } = row;
-  return { ...project, agent_trust, environment: resolveEnvironment() };
+  const environment = await resolveEnvironment(void 0, void 0, client);
+  return { ...project, agent_trust, environment };
 }
 
 // src/tools/resolve-task-id.ts

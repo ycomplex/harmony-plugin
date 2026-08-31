@@ -7,22 +7,69 @@
 // either table (the addendum's explicit ask; see the ticket's own WorkflowPrimaryAction.tsx
 // cautionary tale).
 //
-// Deliberately NOT wired through runCommand/getAuthenticatedContext (src/cli/run-command.ts): every
-// subcommand here reads/writes a local file or a pure in-memory table — no Harmony API call, no
-// login required. Same reasoning as config.ts's own header note.
+// Deliberately NOT wired through runCommand (src/cli/run-command.ts): every subcommand here
+// reads/writes a local file or a pure in-memory table, and none of them wants runCommand's
+// error-to-exit-1 shape. Same reasoning as config.ts's own header note.
+//
+// B-892 exception: `resolve-gate` now takes an OPTIONAL, best-effort trip through
+// getAuthenticatedContext to re-read `conductions.run_config` from the DB at the gate boundary (the
+// launch env is a frozen snapshot that a mid-conduction operator edit can never reach). It is still
+// not wired through runCommand, and login is still not REQUIRED — every failure on that path
+// (no conduction id, no login, no network, an unreadable row) falls back to the launch env, so the
+// subcommand's never-throws contract is unchanged. Every OTHER subcommand remains offline.
 
 import { Command } from 'commander';
 import {
   clearModelHandoffRequest,
+  getConductionId,
   getModelContextBudgetBytes,
   getRunConfig,
   getModelForGate,
   isAllowedModelAlias,
   MODEL_ALIAS_ALLOWLIST,
   readModelHandoffRequest,
+  resolveRunConfigFromConduction,
   writeModelHandoffRequest,
+  type RunConfig,
 } from '../../config/run-config.js';
 import { resolveGatePhase } from '../../daemon/gate-phase.js';
+import { getAuthenticatedContext } from '../auth.js';
+
+/** B-892: the run_config `resolve-gate` should resolve THIS gate's model from — the live
+ *  `conductions.run_config` row when it is readable, else this leg's frozen launch env, else the
+ *  empty config (getModelForGate's pinned-default tier still resolves something explicit).
+ *
+ *  Never throws, by construction: every failure mode degrades one tier down and logs a WARNING to
+ *  STDERR only, because provision.sh's switch loop captures this command's STDOUT as the wanted
+ *  model. A leg that cannot reach the board must still resolve a model and keep running — the
+ *  launch env is the same payload the row held at fire time, so the fallback is only stale by
+ *  whatever the operator edited mid-run. */
+async function resolveGateRunConfig(): Promise<RunConfig> {
+  const conductionId = getConductionId();
+  if (conductionId) {
+    try {
+      const { client } = await getAuthenticatedContext();
+      const fromRow = await resolveRunConfigFromConduction(client, conductionId);
+      if (fromRow) return fromRow;
+      console.error(
+        `harmony model resolve-gate: WARNING — conduction ${conductionId}'s run_config was unreadable from the board; falling back to this leg's launch env`,
+      );
+    } catch (err: any) {
+      console.error(
+        `harmony model resolve-gate: WARNING — could not reach the board to re-read run_config (${err?.message ?? String(err)}); falling back to this leg's launch env`,
+      );
+    }
+  }
+
+  try {
+    return getRunConfig();
+  } catch (err: any) {
+    console.error(
+      `harmony model resolve-gate: WARNING — failed to read run_config (${err?.message ?? String(err)}); falling back to no run_config`,
+    );
+    return {};
+  }
+}
 
 export function registerModelCommands(program: Command): void {
   const model = program
@@ -72,23 +119,21 @@ export function registerModelCommands(program: Command): void {
   model
     .command('resolve-gate')
     .description(
-      "Print the model getModelForGate resolves for <workflow-state> (this worker's own " +
-        'HARMONY_RUN_CONFIG_PATH/HARMONY_RUN_CONFIG_JSON env, exactly as the daemon reads it) — the ' +
-        "accessor skills/harmony-conduct/SKILL.md step 1d uses to compute THIS gate's model. Never " +
-        "throws: a run_config parse failure falls back to the empty run_config (getModelForGate's " +
-        'own pinned-default tier still resolves something explicit) rather than crashing the ' +
-        "agent's turn.",
+      'Print the model getModelForGate resolves for <workflow-state> — the accessor ' +
+        "skills/harmony-conduct/SKILL.md step 1d uses to compute THIS gate's model. B-892: reads " +
+        "the LIVE conductions.run_config row (this worker's HARMONY_CONDUCTION_ID) so a " +
+        'mid-conduction operator edit lands at the gate boundary, falling back to this leg\'s ' +
+        'frozen HARMONY_RUN_CONFIG_PATH/HARMONY_RUN_CONFIG_JSON launch env when the row is ' +
+        "unreachable/unreadable or there is no conduction. Never throws: every failure degrades a " +
+        "tier (getModelForGate's own pinned-default tier still resolves something explicit) rather " +
+        "than crashing the agent's turn. NOTE this is the WANTED model — `running-model` (what this " +
+        'process actually launched with) is the other half of step 1d\'s comparison and is ' +
+        'deliberately env-only.',
     )
     .argument('<workflow-state>')
     .option('--activity <workflow-activity>', 'The ticket\'s workflow_activity, if known')
-    .action((workflowState: string, opts: { activity?: string }) => {
-      let runConfig;
-      try {
-        runConfig = getRunConfig();
-      } catch (err: any) {
-        console.error(`harmony model resolve-gate: WARNING — failed to read run_config (${err.message}); falling back to no run_config`);
-        runConfig = {};
-      }
+    .action(async (workflowState: string, opts: { activity?: string }) => {
+      const runConfig = await resolveGateRunConfig();
       const gate = resolveGatePhase(workflowState, opts.activity ?? null);
       console.log(getModelForGate(runConfig, gate));
     });

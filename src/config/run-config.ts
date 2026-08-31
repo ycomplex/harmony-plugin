@@ -26,9 +26,11 @@ import {
 } from 'node:fs';
 import { homedir as nodeHomedir } from 'node:os';
 import { dirname as nodeDirname, join as nodeJoin } from 'node:path';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { GATES } from '../daemon/gate-phase.js';
 import type { Gate } from '../daemon/gate-phase.js';
+import { getConduction } from '../tools/conduction-record.js';
 
 /** B-718: resume-and-reconcile controlled-mode legs from the prior leg's persisted Claude
  *  session, when one is discoverable (see container/provision.sh's same-conduction discovery,
@@ -198,6 +200,56 @@ export function getRunConfig(
   }
 
   return EMPTY_RUN_CONFIG;
+}
+
+// =================================================================================================
+// B-892: the GATE-BOUNDARY re-read.
+//
+// Everything above this line resolves run_config from the LAUNCH ENVIRONMENT — the file/inline
+// payload the daemon froze into the worker's env when it fired this leg. That snapshot can never
+// change while the leg runs, so an operator who edits `conductions.run_config` mid-conduction (from
+// the web's Run-options surface) could never reach a leg already in flight.
+//
+// The fix is to re-read the ROW at each gate boundary, with the launch env as the FALLBACK. The
+// consumers are worker-side and per-gate — src/tools/environment.ts's resolveEnvironment (the
+// `operator_note` / `auto_approve_gates` the conduct loop reads via get_project) and
+// src/cli/commands/model.ts's `resolve-gate`. Deliberately NOT the daemon: the daemon consumes
+// `session_resume` at leg LAUNCH, before a worker exists, so that axis stays per-leg by design and
+// nothing under src/daemon/ reads this function.
+// =================================================================================================
+
+/** B-892: this conduction row's CURRENT `run_config`, or `null` on ANY failure — no client, no
+ *  conduction id, an unreadable/missing row, a transport/auth error, or a payload that does not
+ *  parse as a RunConfig. NEVER THROWS: it is the same degrade-to-null-never-throw posture
+ *  src/tools/environment.ts already documents for `operator_note`/`auto_approve_gates`, and for the
+ *  same reason — `get_project` is the first call every conductor run makes, so a run_config the run
+ *  cannot do anything about anyway must never break it. A `null` return means "no answer from the
+ *  row", which every caller reads as "fall back to the launch env", never as "the operator cleared
+ *  the payload" (that case is a successful read returning `{}`).
+ *
+ *  Reuses src/tools/conduction-record.ts's `getConduction` — the ONE conduction-row accessor —
+ *  rather than issuing its own select: `CONDUCTION_COLS` has carried `run_config` since B-718, so
+ *  the column comes back already. The resulting config -> tools import is TYPE-ONLY in the other
+ *  direction (conduction-record.ts imports `type RunConfig` from this file), so it erases at compile
+ *  time and there is no runtime cycle.
+ *
+ *  Re-parsed through RunConfigSchema rather than trusted: the row is operator/web-authored JSON that
+ *  never passed through getRunConfig's own parse, and `.passthrough()` keeps an unrecognized future
+ *  key from failing this read (same forward-compat contract as the env path). */
+export async function resolveRunConfigFromConduction(
+  client: SupabaseClient | null | undefined,
+  conductionId: string | null | undefined,
+): Promise<RunConfig | null> {
+  if (!client || !conductionId) return null;
+  try {
+    const conduction = await getConduction(client, conductionId);
+    const raw = conduction?.run_config;
+    if (raw == null) return null;
+    const parsed = RunConfigSchema.safeParse(raw);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 
 /** B-772: this deployment's PINNED per-deployment-profile default model — the last-resort tier of

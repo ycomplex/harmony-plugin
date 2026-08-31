@@ -61,6 +61,13 @@ export async function getProject(client: SupabaseClient, projectId: string): Pro
 
   // Strip the raw embed and surface a clean, resolved `agent_trust` field, plus the
   // runtime environment (non-throwing — degrades rather than breaking get_project).
+  //
+  // B-892: resolveEnvironment is now async and takes THIS call's authenticated client, so its
+  // `operator_note`/`auto_approve_gates` come from the live `conductions.run_config` row (the
+  // gate-boundary re-read) rather than the frozen launch env. `undefined` for the first two
+  // arguments keeps their defaults — in particular `moduleUrl`, which must stay environment.ts's
+  // OWN import.meta.url for the plugin-version walk-up to resolve.
   const { workspace: _workspace, ...project } = row;
-  return { ...project, agent_trust, environment: resolveEnvironment() } as unknown as ProjectWithTrust;
+  const environment = await resolveEnvironment(undefined, undefined, client);
+  return { ...project, agent_trust, environment } as unknown as ProjectWithTrust;
 }

@@ -146,7 +146,11 @@ Note that `--pause-at release` and `--pause-at verify` are *expressible* but red
 (release/verify are never auto-advanced anyway). They are accepted (they correctly auto-advance everything
 before the floor); just be aware the floor already enforces the pause there.
 
-**1b. Resolve mode + the dial ceiling.** Call `mcp__harmony__get_project`. If `mode !== 'opinionated'`,
+**1b. Resolve mode + the dial ceiling.** Call `mcp__harmony__get_project` — **at the top of the run AND
+again on every iteration of the loop below, never once per run** (B-892: the `environment` block this call
+returns is resolved live from the run's `conductions.run_config` row, so an operator who edits this run's
+options mid-conduction reaches the leg at its next gate boundary; the mode/dial half is stable, so the
+effective-mode ANNOUNCEMENT below still happens once, at the run start). If `mode !== 'opinionated'`,
 stop — the conductor drives the opinionated-mode lifecycle (manual-mode projects use the normal board, not
 clarify→decompose→design→…). `get_project` now also returns `agent_trust` (the owning workspace's dial,
 resolved): `agent_trust.level` ∈ `{cautious, balanced, autonomous}` (empty `{}` dial ⇒ `balanced`). **B-743:**
@@ -161,8 +165,11 @@ auto-approve override, consumed by **step 2a** of *The delegation test* below. T
 `allowed-tools` carries no GENERAL `Bash` — only the narrow `Bash(node *)` grant B-772 round 2 added
 for the model-switch loop's CLI accessor (step 1d below) — so an ordinary env var still reaches this
 loop only through an MCP tool boundary like this one, never a direct shell read outside that one
-narrow grant. Hold onto all three values (they cannot change mid-leg) for *step 2a* and
-*step 4a* below; this ONE call at the top of the run is the only environment read the whole loop needs.
+narrow grant. **Capture all three values at the GATE BOUNDARY — this iteration's `get_project` call — and
+hold that capture for the duration of THIS gate** (*step 2a* and *step 4a* below use it), then re-capture at
+the next iteration's boundary. They are no longer fixed for the run (B-892): the human can edit this run's
+note or auto-approve selection mid-conduction and it takes effect at the NEXT gate. Never re-read them
+part-way through a gate — one gate decides on one consistent snapshot.
 
 Apply the dial **ceiling** to the parsed per-run `mode`:
 
@@ -449,8 +456,8 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    back to step 1 before this step is ever reached, so by the time it runs `workflow_state` already reflects
    the post-advance value. Advances no state, composes no brief, needs no pause — plumbing, like 1b/1c.
 
-   Use `environment.conduction_id` / `environment.operator_note` from step 1b's `get_project` call (no new
-   call needed — neither value can change mid-leg).
+   Use `environment.conduction_id` / `environment.operator_note` from THIS iteration's step 1b
+   `get_project` call (no new call needed — 1b already re-captured both at this gate's boundary, B-892).
 
    - **Nothing to deliver:** `conduction_id` is `null` (a manual/no-conduction invocation has nothing to
      scope a marker to) OR `operator_note` is `null`/empty → skip, proceed to step 5.
