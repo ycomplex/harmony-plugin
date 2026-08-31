@@ -1242,7 +1242,7 @@ resolved (in the browser or terminal); classify which resolution it was:
 
 **Accept-with-remark (B-503) — an ADJUNCT to cases 1 and 5, never a replacement.** The flag cleared, the
 state advanced (case 1) or a non-advancing sub-track accept resolved (case 5), AND `get_task` shows an
-unconsumed `pending_remark: { brief_id, reason, detail }` (the poll's exit detail carries the same field
+unconsumed `pending_remark: { brief_id, reason, detail, decision_ref, referent }` (the poll's exit detail carries the same field
 alongside its trigger — an accept WITH a remark both advances state AND carries the remark; report and
 handle BOTH, the B-611 swallow class). Handle it in two steps, strictly ordered:
 
@@ -1251,7 +1251,18 @@ handle BOTH, the B-611 swallow class). Handle it in two steps, strictly ordered:
 2. **Then interpret the remark** (`detail`), by weight:
    - **LIGHT amendment** — the promoted decision stays the same decision (a wording fix, a clarifying
      constraint, a small addendum): apply it to the promoted knowledge entry via
-     `mcp__harmony__update_knowledge_entry`.
+     `mcp__harmony__update_knowledge_entry`. **Amend the REFERENT, never a re-authored copy of it
+     (B-866).** `pending_remark.referent` names what the accept actually promoted:
+     - `status: 'entry'` — `entry_id` + the entry's live `content`. Amend THAT entry, from THAT text.
+     - `status: 'reconstructed'` — the entry could NOT be read; `content` is a LOCAL projection of the
+       brief's doc and `warning` says why. **Re-read the entry (`get_knowledge_entry`) before amending**,
+       and if it still cannot be read, say so to the human rather than writing over it from the
+       reconstruction. A reconstruction presented as the stored text is how an amendment lands on prose
+       nobody has.
+     - `status: 'unavailable'` — there is nothing to amend. Surface it; do not invent a target.
+     Note the entry's body is now a DERIVED projection of the ratified brief (B-866), so an amendment
+     that would change the DECISION belongs in the substantive branch below, not here — amending the
+     projection in place makes it disagree with the brief it is stamped as derived from.
    - **Run-scoped downstream instruction** — e.g. *"auto-accept decompose if the proposal is no-split"*:
      honored for THIS run only, consumed once, and routed through *The delegation test* with the
      **floor-veto** (`src/tools/floor-veto.ts`, the single source of truth): release

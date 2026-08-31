@@ -6,6 +6,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
 import { detectRiskClasses } from './risk-class.js';
 import type { AcceptanceEventPayloadItem } from './acceptance-events.js';
+import { slugRef } from './payload-refs.js';
 
 export interface BriefItem {
   /** §3.2 sort: a decision (always recommended), a content-input (only the human can supply it),
@@ -296,6 +297,25 @@ export const PROPOSED_ACS_HEADING = 'Proposed acceptance criteria (happy path) �
 // reads it), which is exactly why the string needs a home in code: this constant is the single source a
 // contract test can pin, so the prose and the archive cannot drift apart unnoticed.
 export const DE_SCOPE_HEADING = 'De-scope — re-ticketed on accept:';
+
+// B-866 — the heading for the payload-derived promise block, the generalisation of the clarify
+// proposed-AC block above past `clarification-draft`. BYTE-STABLE FOREVER, for exactly the same reason:
+// older resolved briefs keep the bytes they were rendered with. Every payload-bearing gate now renders
+// its promise FROM THE PAYLOAD IT WILL EXECUTE, so the writes the human reads and the writes the accept
+// performs cannot disagree at any gate — not just at clarify.
+export const PROMISED_WRITES_HEADING = 'On accept, this brief files:';
+
+// B-866 — the element-level ratification mark carried by a DERIVED knowledge entry (`renderEntry`).
+// Deliberately NOT a trailing "not ratified" appendix: a blanket banner cannot tell a reader WHICH claim
+// is unvetted, and an entry's whole value is that a later reader can lean on a specific claim. The mark
+// rides the element itself; the construction stamp below explains it once.
+export const NOT_RATIFIED_MARK = '⚠️ [NOT RATIFIED]';
+
+/** B-866 — the construction-provenance stamp every derived entry opens with. A reader must be able to
+ *  tell a post-change (stamped) entry from the thousands of pre-change unstamped ones, so the
+ *  "unmarked means ratified" convention is scoped to stamped entries ONLY and can never be read back
+ *  onto the archive. */
+export const ENTRY_PROVENANCE_PREFIX = 'Derived from the ratified brief';
 
 /** The tail this gate reason owes the human, or undefined when the default one is correct. */
 function tailForReason(reason: string | undefined): string | undefined {
@@ -612,6 +632,118 @@ function renderFrame(frame: GateFrame): string[] {
   return out;
 }
 
+// ——— B-866: the shared section BODIES ————————————————————————————————————————————————————————————
+//
+// The single most important constraint in this change (technical decision f0d55b23): "a brief is
+// structured once, rendered deterministically, and stored once — both surfaces display the exact same
+// blob, no parallel rendering pipeline." So the ELEMENT formatters live here, exactly once, and BOTH
+// projections call them: `renderBrief` wraps them in the brief's headings, `renderEntry` wraps the SAME
+// strings in the entry's. One authored copy, projected twice. If an element's brief line and its entry
+// line were ever produced by two different bits of code, the duplication this change exists to remove
+// would simply have moved somewhere less visible.
+//
+// They are ELEMENT-level on purpose. `renderEntry` marks each projected element ratified-or-not by
+// asking whether its text appears in the brief the human actually read — a question that is only
+// mechanically answerable because both renders emit the identical string for the same element.
+
+function whyLines(doc: BriefDoc): string[] {
+  return (doc.why ?? []).map((w) => `- ${w}`);
+}
+
+function alternativeLines(doc: BriefDoc): string[] {
+  return (doc.alternatives ?? []).map((a) => `- ${a.option} — ${a.rejection}`);
+}
+
+function contextLines(doc: BriefDoc): string[] {
+  return (doc.context ?? []).map((c) => `- ${c}`);
+}
+
+function revisionLines(doc: BriefDoc): string[] {
+  return (doc.revision?.changes ?? []).map((c) => `- ${c.change} — *answers: ${c.responds_to}*`);
+}
+
+function researchLines(doc: BriefDoc): string[] {
+  return (doc.research ?? []).map((p, i) => `${i + 1}. ${p}`);
+}
+
+function planStepLines(frame: GateFrame): string[] {
+  return frame.kind === 'plan' ? (frame.steps ?? []).map((step, i) => `${i + 1}. ${step}`) : [];
+}
+
+/** The `**Recommend…:**` line, confidence suffix and all — or undefined when the doc carries none. */
+function recommendLine(doc: BriefDoc): string | undefined {
+  if (!doc.recommend) return undefined;
+  let suffix = '';
+  if (doc.recommend.cede) suffix = ' (low confidence — this is a values call you should own)';
+  else if (doc.recommend.confidence === 'low') suffix = ' (low confidence — see below)';
+  else if (doc.recommend.confidence === 'medium') suffix = ' (moderate confidence)';
+  else if (doc.recommend.confidence === 'high') suffix = ' (high confidence)';
+  return `**Recommend${suffix}:** ${doc.recommend.text}`;
+}
+
+/** The rendered ask lines. `derived-constraint` items never render — the lint rejects them first. */
+function itemLines(doc: BriefDoc): string[] {
+  const out: string[] = [];
+  for (const item of doc.items ?? []) {
+    if (item.kind === 'content-input') {
+      out.push(`- [ ] ${item.text} *(your input needed)*`);
+    } else if (item.kind === 'decision') {
+      const rec = !item.deferred && item.recommendation ? ` — *recommend: ${item.recommendation}*` : '';
+      out.push(`- [ ] ${item.text}${rec}`);
+    }
+  }
+  return out;
+}
+
+/** B-874 — clarify's proposed happy-path ACs, one line per `acceptance_criterion` payload item. */
+function proposedAcLines(payload: AcceptanceEventPayloadItem[] | undefined): string[] {
+  return (payload ?? [])
+    .filter((p) => p.write_kind === 'acceptance_criterion' && typeof p.content === 'string' && p.content.trim().length > 0)
+    .map((p) => `- ${p.content}`);
+}
+
+/** B-866 — one promise line per payload item, in the item's own terms. Returns null for an item that
+ *  carries nothing renderable: a promise the reader cannot check is worse than no promise at all. */
+function promisedWriteLine(item: AcceptanceEventPayloadItem): string | null {
+  const text = (v: string | null | undefined): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  switch (item.write_kind) {
+    case 'acceptance_criterion': {
+      const content = text(item.content);
+      return content ? `- acceptance criterion — ${content}` : null;
+    }
+    case 'child_ticket': {
+      const title = text(item.title);
+      return title ? `- new child ticket — ${title}` : null;
+    }
+    case 'checklist_item': {
+      const title = text(item.title);
+      return title ? `- checklist item — ${title}` : null;
+    }
+    case 'ac_transfer': {
+      const content = text(item.content);
+      return content ? `- moves an acceptance criterion to ${text(item.target_child_ref) ?? '(unnamed child)'} — ${content}` : null;
+    }
+    case 'label_add':
+      return `- label — ${text(item.label_name) ?? 'decision-only'}`;
+    case 'knowledge_entry_content':
+      return '- the linked decision entry, written from THIS brief (derived, never separately authored)';
+    default:
+      return null;
+  }
+}
+
+/** B-866 — the promise block's lines. `skipAcceptanceCriteria` is set at `clarification-draft`, where
+ *  the ACs already render under their own byte-stable heading and must not be listed twice. */
+function promisedWriteLines(
+  payload: AcceptanceEventPayloadItem[] | undefined,
+  skipAcceptanceCriteria: boolean,
+): string[] {
+  return (payload ?? [])
+    .filter((p) => !(skipAcceptanceCriteria && p.write_kind === 'acceptance_criterion'))
+    .map(promisedWriteLine)
+    .filter((line): line is string => line !== null);
+}
+
 /** Render the canonical doc to the §3.1 BLUF Markdown blob, deterministically.
  *  When `decisionRef` is present (B-674), the render mechanically appends the depth-pointer
  *  footer just above the command tail — the authoring agent no longer hand-writes it. A brief
@@ -620,7 +752,11 @@ function renderFrame(frame: GateFrame): string[] {
  *  B-874 — `ctx` carries the compose-time facts the doc cannot know. When it is supplied the render also
  *  emits the **On accept:** spine line (what this accept actually does to the ticket's state), selects the
  *  gate-specific command tail, and derives the clarify proposed-AC block from `doc.payload`. When it is
- *  ABSENT (an old 1-/2-arg caller) none of that is emitted — the output is byte-identical to before. */
+ *  ABSENT (an old 1-/2-arg caller) none of that is emitted — the output is byte-identical to before.
+ *
+ *  B-866 — the payload-derived promise now extends past `clarification-draft`: every payload-bearing
+ *  reason renders its promise from the payload its accept will execute. Still `ctx`-gated, and still
+ *  byte-identical for a doc with no payload. */
 export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null, ctx?: BriefRenderContext): string {
   const out: string[] = [];
   const frame = doc.frame;
@@ -640,15 +776,11 @@ export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null, ctx
     // Research-first (§3.2): open with the research, defer the substantive recommendation — never buried.
     out.push("**Recommend:** I don't know enough yet — run the research below before deciding.", '');
     out.push('**Research first:**');
-    (doc.research ?? []).forEach((p, i) => out.push(`${i + 1}. ${p}`));
+    out.push(...researchLines(doc));
     out.push('');
-  } else if (doc.recommend) {
-    let suffix = '';
-    if (doc.recommend.cede) suffix = ' (low confidence — this is a values call you should own)';
-    else if (doc.recommend.confidence === 'low') suffix = ' (low confidence — see below)';
-    else if (doc.recommend.confidence === 'medium') suffix = ' (moderate confidence)';
-    else if (doc.recommend.confidence === 'high') suffix = ' (high confidence)';
-    out.push(`**Recommend${suffix}:** ${doc.recommend.text}`, '');
+  } else {
+    const recommend = recommendLine(doc);
+    if (recommend) out.push(recommend, '');
   }
 
   // B-876 — every other frame renders after the recommendation and above the **On accept:** line, so the
@@ -675,55 +807,46 @@ export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null, ctx
   // B-876 — the iteration delta, directly under the On-accept line and NEVER above the frame. The human
   // approves the totality; the diff is shown so an "already reflected" claim has a falsifiable form.
   if (doc.revision?.changes?.length) {
-    out.push(
-      '**Changed this round:**',
-      ...doc.revision.changes.map((c) => `- ${c.change} — *answers: ${c.responds_to}*`),
-      '',
-    );
+    out.push('**Changed this round:**', ...revisionLines(doc), '');
   }
 
   if (doc.why?.length) {
-    out.push('**Why:**', ...doc.why.map((w) => `- ${w}`), '');
+    out.push('**Why:**', ...whyLines(doc), '');
   }
   if (doc.alternatives?.length) {
-    out.push('**Alternatives:**', ...doc.alternatives.map((a) => `- ${a.option} — ${a.rejection}`), '');
+    out.push('**Alternatives:**', ...alternativeLines(doc), '');
   }
   if (doc.context?.length) {
-    out.push('**Context:**', ...doc.context.map((c) => `- ${c}`), '');
+    out.push('**Context:**', ...contextLines(doc), '');
   }
 
   // B-874 — clarify's proposed happy-path acceptance criteria, DERIVED from the payload that accept will
   // actually file (`doc.payload`, B-810) instead of hand-written prose that could disagree with it. Part
-  // of the Context region: it is context the reader needs to judge the clarification, not an ask. Emitted
-  // for `clarification-draft` only; `payload` stays unrendered for every other reason.
-  if (ctx?.reason === 'clarification-draft') {
-    const criteria = (doc.payload ?? []).filter(
-      (p) => p.write_kind === 'acceptance_criterion' && typeof p.content === 'string' && p.content.trim().length > 0,
-    );
-    if (criteria.length) {
-      out.push(PROPOSED_ACS_HEADING, ...criteria.map((c) => `- ${c.content}`), '');
+  // of the Context region: it is context the reader needs to judge the clarification, not an ask.
+  //
+  // B-866 generalises the invariant this comment states. The clarify block is UNCHANGED (byte-stable
+  // heading, byte-stable lines); every OTHER promised write — at clarify AND at every other payload-
+  // bearing gate — now renders under PROMISED_WRITES_HEADING from the same payload. A gate that promises
+  // writes the reader never sees is the same defect as prose that disagrees with them.
+  if (ctx) {
+    const isClarify = ctx.reason === 'clarification-draft';
+    if (isClarify) {
+      const criteria = proposedAcLines(doc.payload);
+      if (criteria.length) out.push(PROPOSED_ACS_HEADING, ...criteria, '');
     }
+    const promised = promisedWriteLines(doc.payload, isClarify);
+    if (promised.length) out.push(PROMISED_WRITES_HEADING, ...promised, '');
   }
 
   // B-876 — the plan's own steps, under their own heading between the reasoning and the ask. The plan gate
   // is the one whose artefact had no home at all: in 6/14 briefs the plan rendered under **Context:**, the
   // block that everywhere else means "no action needed", while the checkbox degenerated into a pointer.
   if (frame?.kind === 'plan' && frame.steps?.length) {
-    out.push('**Plan:**', ...frame.steps.map((step, i) => `${i + 1}. ${step}`), '');
+    out.push('**Plan:**', ...planStepLines(frame), '');
   }
 
   if (doc.items.length) {
-    out.push('**You need to:**');
-    for (const item of doc.items) {
-      if (item.kind === 'content-input') {
-        out.push(`- [ ] ${item.text} *(your input needed)*`);
-      } else if (item.kind === 'decision') {
-        const rec = !item.deferred && item.recommendation ? ` — *recommend: ${item.recommendation}*` : '';
-        out.push(`- [ ] ${item.text}${rec}`);
-      }
-      // derived-constraint items never render — the lint rejects them before this point.
-    }
-    out.push('');
+    out.push('**You need to:**', ...itemLines(doc), '');
   }
 
   if (decisionRef) {
@@ -736,6 +859,96 @@ export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null, ctx
   // gate-specific tail, then the default.
   out.push(`> ${doc.tail ?? tailForReason(ctx?.reason) ?? DEFAULT_TAIL}`);
   return out.join('\n');
+}
+
+// ——— B-866: the SECOND projection of the one authored source ——————————————————————————————————————
+//
+// The problem this closes: the composing agent used to hand-author the brief prose AND the knowledge
+// entry prose in sequence; the human ratified the BRIEF; the accept promoted the ENTRY. Two copies, one
+// vetted. Nothing enforced that they matched, and nothing could — they were separately authored.
+//
+// So the structured `BriefDoc` the human ratifies is the SINGLE authored prose source. The human reads
+// `renderBrief(doc)`; the accept promotes `renderEntry(doc)`. Both are mechanical projections of one
+// object, built from the SAME element formatters above. There is one copy, projected twice.
+
+/** Compose-time context for the entry projection. Extends the brief's own render context because the
+ *  entry is derived from the brief the human read — the ratification test literally re-renders it. */
+export interface EntryRenderContext extends BriefRenderContext {
+  /** The brief's decision_ref, so the oracle re-renders the human's exact blob (depth-pointer included). */
+  decisionRef?: DecisionRef | null;
+  /** The construction date. Injectable so the projection is deterministic under test; defaults to now. */
+  now?: Date;
+}
+
+/** The construction-provenance line every derived entry opens with (see ENTRY_PROVENANCE_PREFIX). */
+export function entryProvenanceStamp(ctx?: EntryRenderContext): string {
+  const when = (ctx?.now ?? new Date()).toISOString().slice(0, 10);
+  const gate = ctx?.reason ? ` at the ${ctx.reason} gate` : '';
+  return (
+    `_${ENTRY_PROVENANCE_PREFIX}${gate}, ${when} — a mechanical projection of the brief the human ` +
+    `approved, not separately authored prose. Every element below appeared in that brief, except any ` +
+    `marked ${NOT_RATIFIED_MARK}._`
+  );
+}
+
+/**
+ * Project the ratified doc into the knowledge entry the accept promotes.
+ *
+ * NOT a second renderer: every element line below comes from the same formatter `renderBrief` uses, and
+ * the ratification oracle is `renderBrief` itself. What differs is only the WRAPPING — an entry is read
+ * later, by someone who was not at the gate, so it leads with the decision rather than the ask, drops
+ * the command tail and the depth-pointer (a pointer back to its own source), and marks provenance.
+ *
+ * RATIFICATION IS ELEMENT-LEVEL, and it is measured, not declared: an element is ratified iff its text
+ * appears in the blob the human actually read. That is why the recommendation of a `load_bearing_gap`
+ * brief comes out marked — the brief showed "I don't know enough yet" in its place, so the human never
+ * ratified it — and why research prompts authored without the gap flag come out marked too.
+ */
+export function renderEntry(doc: BriefDoc, ctx?: EntryRenderContext): string {
+  const briefContent = renderBrief(doc, ctx?.decisionRef ?? null, ctx);
+  // Blank text is vacuously ratified: there is no claim in it to vet.
+  const isRatified = (text: string): boolean => !text.trim() || briefContent.includes(text);
+  const mark = (text: string): string => (isRatified(text) ? text : `${text} ${NOT_RATIFIED_MARK}`);
+  const markAll = (lines: string[]): string[] => lines.map(mark);
+
+  const out: string[] = [entryProvenanceStamp(ctx), ''];
+
+  // The decision itself, first — an entry is read for what was decided, not for what was asked.
+  out.push(`**Decision:** ${doc.recommend ? mark(doc.recommend.text) : '(the brief made no recommendation)'}`, '');
+  out.push(`**Question put to the human:** ${mark(doc.decide)}`, '');
+
+  if (doc.frame) out.push(...markAll(renderFrame(doc.frame)), '');
+
+  const research = researchLines(doc);
+  if (research.length) out.push('**Research first:**', ...markAll(research), '');
+
+  const why = whyLines(doc);
+  if (why.length) out.push('**Why:**', ...markAll(why), '');
+  const alternatives = alternativeLines(doc);
+  if (alternatives.length) out.push('**Alternatives:**', ...markAll(alternatives), '');
+  const context = contextLines(doc);
+  if (context.length) out.push('**Context:**', ...markAll(context), '');
+
+  const isClarify = ctx?.reason === 'clarification-draft';
+  if (isClarify) {
+    const criteria = proposedAcLines(doc.payload);
+    if (criteria.length) out.push(PROPOSED_ACS_HEADING, ...markAll(criteria), '');
+  }
+  const promised = promisedWriteLines(doc.payload, isClarify);
+  if (promised.length) out.push(PROMISED_WRITES_HEADING, ...markAll(promised), '');
+
+  if (doc.frame?.kind === 'plan') {
+    const steps = planStepLines(doc.frame);
+    if (steps.length) out.push('**Plan:**', ...markAll(steps), '');
+  }
+
+  const items = itemLines(doc);
+  if (items.length) out.push('**Ratified asks:**', ...markAll(items), '');
+
+  const changes = revisionLines(doc);
+  if (changes.length) out.push('**Changed in the final round:**', ...markAll(changes), '');
+
+  return out.join('\n').trimEnd();
 }
 
 /** Task-derived context the lint needs but cannot see in the doc alone (B-732). */
@@ -1147,6 +1360,122 @@ const VALID_REASONS = [
 
 export interface DecisionRef { type: string; id: string; }
 
+// ——— B-866: the eight-reason coverage ledger ——————————————————————————————————————————————————————
+//
+// Pinned in CODE (and in `derivation-contract.test.ts`) rather than left implicit, because the failure
+// mode here is silence: a gate that quietly flows through neither half looks exactly like a gate nobody
+// got to yet. Every one of the eight §6.5 reasons is NAMED, with the reason it does or does not carry
+// each half — so an unflowed reason is a stated exemption a reader can contest, never an omission.
+//
+// THE COUNT IS FIVE, and it was verified against the skills in this repo, not inherited:
+//   * FIVE reasons carry a `decision_ref` — clarification-draft, decomposition-proposal,
+//     design-decision-draft, stale-patch-review, revise-scope-review. Their accept promotes a knowledge
+//     entry, so their entry prose is DERIVED here.
+//   * plan-draft is the WRITES half ONLY. It composes promised writes (the plan-step checklist) and
+//     composes NO decision_ref — it promotes no entry, so there is no entry prose to derive.
+//   * release-decision-pending and verification-ack-pending are NEITHER: they promote no entry and
+//     promise no structured writes. Their accept executes a landing / acknowledges reality.
+// Any "6 of 8" reading is wrong; plan-draft is the reason it is easy to get wrong.
+
+export interface GateReasonFlow {
+  /** Does this gate's brief carry a `decision_ref` — does its accept promote a knowledge entry whose
+   *  prose must therefore be DERIVED from the ratified doc rather than separately authored? */
+  derives_entry: boolean;
+  /** Does this gate's brief carry promised structured writes in `doc.payload`? */
+  carries_writes: boolean;
+  /** Why. Present on EVERY row, including the flowed ones — an exemption nobody wrote down is
+   *  indistinguishable from an oversight. */
+  note: string;
+}
+
+export const GATE_REASON_FLOW: Record<string, GateReasonFlow> = {
+  'clarification-draft': {
+    derives_entry: true,
+    carries_writes: true,
+    note: "Promotes the clarified-intent specification entry; promises the happy-path acceptance criteria (and any de-scope re-tickets).",
+  },
+  'decomposition-proposal': {
+    derives_entry: true,
+    carries_writes: true,
+    note: "Promotes the decomposition rationale entry; promises the child tickets and any AC transfers.",
+  },
+  'design-decision-draft': {
+    derives_entry: true,
+    carries_writes: true,
+    note: "Promotes the design decision entry (technical / product / ux-ui track); promises the product track's AC manifest and the decision-only label.",
+  },
+  'stale-patch-review': {
+    derives_entry: true,
+    carries_writes: false,
+    note: "Promotes the SUCCESSOR entry the patch reconciles onto — except on a null-successor brief, which deliberately omits decision_ref and therefore derives nothing. Promises no structured writes. THE ONE ASYMMETRIC ROW: its decision_ref names a PRE-EXISTING entry authored at another gate, not a placeholder this gate just recorded, so the derived write REPLACES that entry's body. Flagged for the human at B-866 build time rather than silently exempted here — a carve-out invented in code is exactly what this ledger exists to prevent.",
+  },
+  'revise-scope-review': {
+    derives_entry: true,
+    carries_writes: false,
+    note: "Promotes the B-763 rationale record for the scope revision. Promises no structured writes.",
+  },
+  'plan-draft': {
+    derives_entry: false,
+    carries_writes: true,
+    note: "WRITES HALF ONLY — composes no decision_ref, so its accept promotes no knowledge entry and there is no entry prose to derive. It does promise the plan-step checklist.",
+  },
+  'release-decision-pending': {
+    derives_entry: false,
+    carries_writes: false,
+    note: "NEITHER HALF — the accept executes a landing (merge + deploy); it promotes no entry and promises no structured writes.",
+  },
+  'verification-ack-pending': {
+    derives_entry: false,
+    carries_writes: false,
+    note: "NEITHER HALF — the accept acknowledges observed reality against the criteria ledger; it promotes no entry and promises no structured writes.",
+  },
+};
+
+/** Does this gate's accept promote a knowledge entry whose prose must be derived from the doc? */
+export function derivesEntryContent(reason: string | undefined): boolean {
+  return !!reason && GATE_REASON_FLOW[reason]?.derives_entry === true;
+}
+
+/**
+ * B-866 — DERIVE the `knowledge_entry_content` payload item from the doc the human is about to ratify.
+ *
+ * This is the wiring that makes the accept consume what was approved. Before it, the composing agent
+ * hand-authored the entry prose separately from the brief prose; the human ratified the brief; the
+ * accept promoted the entry. One copy vetted, the other promoted, nothing enforcing they matched.
+ *
+ * The fixed point is deliberate and load-bearing: the promise line the render emits for a
+ * `knowledge_entry_content` item names the entry but does NOT contain the entry text, so deriving the
+ * content from a doc that ALREADY carries the (content-less) item is stable —
+ * `renderEntry(result) === result's own knowledge_entry_content.content`. That equality is exactly what
+ * `derivation-contract.test.ts` pins, and it would be unprovable if the promise embedded the content.
+ *
+ * Returns the doc UNCHANGED for a reason that derives no entry, and for a brief with no decision_ref
+ * (the stale-patch null-successor case) — there is no entry to write, so there is nothing to promise.
+ */
+export function withDerivedEntryContent(
+  doc: BriefDoc,
+  reason: string,
+  decisionRef: DecisionRef | null | undefined,
+  ctx: EntryRenderContext,
+): BriefDoc {
+  if (!derivesEntryContent(reason)) return doc;
+  if (!decisionRef?.id) return doc;
+
+  // Any hand-authored knowledge_entry_content item is REPLACED, never merged: the whole point is that
+  // the entry prose has exactly one source, and a surviving hand-authored copy would be a second one.
+  const others = (doc.payload ?? []).filter((p) => p.write_kind !== 'knowledge_entry_content');
+  // Ref derived from the ENTRY's identity, not from its content: the content changes on every iterate,
+  // and an external_ref that moved with it would defeat the ledger's retry idempotency.
+  const ref = slugRef('entry', decisionRef.id);
+  // `entry_id` is set explicitly rather than left for the DB to resolve from the brief's decision_ref:
+  // the snapshotted payload is then self-describing, and the item's ref and its target agree by
+  // construction.
+  const stub: AcceptanceEventPayloadItem = { write_kind: 'knowledge_entry_content', ref, entry_id: decisionRef.id };
+  const staged: BriefDoc = { ...doc, payload: [...others, stub] };
+  const content = renderEntry(staged, { ...ctx, decisionRef });
+  return { ...staged, payload: [...others, { ...stub, content }] };
+}
+
 export interface ComposeBriefArgs {
   task_id: string;
   reason: string;
@@ -1316,10 +1645,22 @@ export async function composeBrief(
   // client and the resolved task id — nothing derived from `doc`, `content` or `payload` — so the hoist is
   // safe; its one consequence is an extra SELECT on a compose that then fails the lint, a read not a write.
   // `existing` is still what the upsert below branches on; nothing about that use changed.
+  //
+  // B-866: it also reads `decision_ref`, because the render must use the MERGED value rather than the
+  // one THIS call happened to pass (below).
   const { data: existing, error: lookupErr } = await client
-    .from('briefs').select('id, iteration')
+    .from('briefs').select('id, iteration, decision_ref')
     .eq('task_id', taskId).eq('status', 'active').maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
+
+  // B-866 — THE MERGED decision_ref: what the row will actually carry after this compose, not what this
+  // call passed. The B-843 revision patch is a PARTIAL — an omitted `decision_ref` CARRIES FORWARD — so
+  // rendering from `args.decision_ref` made a partial recompose keep the pointer on the row while
+  // silently dropping the depth-pointer line from the content the human reads. Absent ≠ null here, and
+  // that distinction is the whole fix: omitted means "keep whatever is there", explicit null means clear.
+  const existingRow = existing as { id: string; iteration?: number; decision_ref?: DecisionRef | null } | null;
+  const mergedDecisionRef: DecisionRef | null =
+    args.decision_ref !== undefined ? (args.decision_ref ?? null) : (existingRow?.decision_ref ?? null);
 
   // Render the canonical doc to the blob, then lint the doc (what's checked is what's rendered).
   // The third argument (B-874) carries the compose-time facts the doc cannot know — the gate reason and
@@ -1327,8 +1668,17 @@ export async function composeBrief(
   // and clarify's payload-derived proposed-AC block.
   // B-876: `doc` is the canonical doc with compose-authoritative fields resolved (today: the release
   // frame's diff-derived `risk_classes`). It — not `args.doc` — is what gets rendered, linted and stored.
-  const doc = withDiffDerivedRiskClasses(args.doc, args.changed_paths);
-  const content = renderBrief(doc, args.decision_ref, { reason: args.reason, accept });
+  // B-866: `doc` also carries the DERIVED `knowledge_entry_content` payload item for the five gate
+  // reasons whose accept promotes a knowledge entry — the entry prose is a projection of this same doc
+  // (`renderEntry`), so the human ratifies and the accept promotes one authored source, not two.
+  const renderCtx: BriefRenderContext = { reason: args.reason, accept };
+  const doc = withDerivedEntryContent(
+    withDiffDerivedRiskClasses(args.doc, args.changed_paths),
+    args.reason,
+    mergedDecisionRef,
+    renderCtx,
+  );
+  const content = renderBrief(doc, mergedDecisionRef, renderCtx);
   const lint = lintBrief(doc, content, {
     reason: args.reason,
     buildPr,
@@ -1348,7 +1698,10 @@ export async function composeBrief(
     expand_sections: args.expand_sections ?? {},
     related: args.related ?? [],
     pending_activity: pendingActivity ?? null,
-    decision_ref: args.decision_ref ?? null,
+    // B-866: the MERGED ref (see above), so the non-RPC fallback UPDATE below no longer nulls a
+    // carried-forward pointer that the rendered content still advertises. On the INSERT path there is no
+    // prior revision, so this is exactly `args.decision_ref ?? null` — unchanged.
+    decision_ref: mergedDecisionRef,
     // B-485 Phase 2 (release-review fix): composing/iterating a brief CONSUMES any browser-submitted
     // reshape, so null out `pending_resolution` as part of the write. The conductor owns no brief-write
     // tool; a browser `reshape` writes `pending_resolution`, then the running conductor re-composes via
@@ -1494,6 +1847,7 @@ export const composeBriefTool = {
   name: 'compose_brief',
   description:
     "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) on every round-2+ call. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one — so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref — do not hand-write it. " +
+    "B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; the accept promotes a mechanical projection of the SAME doc as the knowledge entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately — put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. " +
     "B-876: also author `doc.frame` — the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING — no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) — compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates.",
   inputSchema: {
     type: 'object' as const,
@@ -1539,7 +1893,7 @@ export const composeBriefTool = {
           payload: {
             type: 'array',
             description:
-              "B-810 — the promised structured writes this brief's ACCEPT will materialize (AcceptanceEventPayloadItem[], acceptance-events.ts): one item per acceptance_criterion / child_ticket / checklist_item / ac_transfer / label_add / knowledge_entry_content write, mirroring exactly what the gate's own same-session accept-time materialization performs. A `knowledge_entry_content` item (B-843) CARRIES the full prose of the knowledge entry this brief's decision_ref names, so accept promotes the wording the human approved rather than the draft they iterated away from — author its `content` from the brief you are composing NOW, never leave it to be synthesized later. NEVER rendered — a side-channel consumed only by the B-797 cross-session safety net (a web accept with no session running). Every item's `ref` MUST be derived via `slugRef` + deduped via `dedupeRefs` (payload-refs.ts) — a content-derived slug, never a positional index, stable across an in-place iterate recompose. Omit or pass `[]` when this gate has no promised writes (e.g. decompose's 'no split').",
+              "B-810 — the promised structured writes this brief's ACCEPT will materialize (AcceptanceEventPayloadItem[], acceptance-events.ts): one item per acceptance_criterion / child_ticket / checklist_item / ac_transfer / label_add / knowledge_entry_content write, mirroring exactly what the gate's own same-session accept-time materialization performs. A `knowledge_entry_content` item (B-843) CARRIES the full prose of the knowledge entry this brief's decision_ref names. B-866: DO NOT AUTHOR ONE — compose DERIVES it from this same doc (renderEntry) for every reason that carries a decision_ref (clarification-draft, decomposition-proposal, design-decision-draft, stale-patch-review, revise-scope-review), sets its `ref` and `entry_id`, and REPLACES any item you supply; the entry's prose belongs in the doc (recommend / why / alternatives / context / frame), never in a second hand-authored copy. The payload is executed by the B-797 cross-session safety net (a web accept with no session running); since B-866 the brief also RENDERS its promise — one line per promised write — so what the reader sees and what the accept executes cannot disagree. Every item's `ref` MUST be derived via `slugRef` + deduped via `dedupeRefs` (payload-refs.ts) — a content-derived slug, never a positional index, stable across an in-place iterate recompose. Omit or pass `[]` when this gate has no promised writes (e.g. decompose's 'no split').",
             items: {
               type: 'object',
               properties: {
@@ -1629,11 +1983,122 @@ export interface PendingRemark {
   reason: string;
   /** The human's remark text (briefs.accept_remark). */
   detail: string;
+  /** B-866 — the brief's own `decision_ref`: the knowledge entry this accept promoted. */
+  decision_ref: DecisionRef | null;
+  /** B-866 — the resolved referent (see RemarkReferent). Always present; never silently omitted. */
+  referent: RemarkReferent;
+}
+
+/**
+ * B-866 — WHAT A REMARK REFERS TO.
+ *
+ * A LIGHT amendment ("the promoted decision stays the same decision — a wording fix, a clarifying
+ * constraint") is applied to THE PROMOTED KNOWLEDGE ENTRY. Until now the consumer was handed
+ * `{ brief_id, reason, detail }` and had to work out which entry that was, which in practice meant
+ * re-authoring one from memory of the brief — the exact separately-authored-second-copy failure this
+ * ticket exists to close, re-entering through the remark door.
+ *
+ * So the referent is RESOLVED here, from the brief's `decision_ref`, and its provenance is part of the
+ * value. DEGRADATION IS STATED, NEVER SILENT: when the entry cannot be read, the caller gets a
+ * RECONSTRUCTION — `renderEntry` over the brief's own stored doc, which is the same projection the
+ * accept would have promoted — carrying an explicit `warning` that it was not read from the board. A
+ * reconstruction presented as though it were the real thing is worse than no referent at all: it invites
+ * an amendment written against text that may not be what is stored.
+ */
+export type RemarkReferent =
+  /** Read from the board. `content` is the entry's live prose — amend THIS. */
+  | { status: 'entry'; entry_id: string; title: string | null; content: string }
+  /** NOT read from the board. `content` is a local projection of the brief's stored doc. */
+  | { status: 'reconstructed'; entry_id: string | null; content: string; warning: string }
+  /** Neither readable nor reconstructable — say so rather than hand back a guess. */
+  | { status: 'unavailable'; entry_id: string | null; warning: string };
+
+/** Reconstruct the entry from the brief's own stored doc — the SAME projection the accept promotes —
+ *  or report that even that is impossible. Both branches carry the warning verbatim. */
+function reconstructReferent(
+  doc: unknown,
+  entryId: string | null,
+  reason: string,
+  warning: string,
+): RemarkReferent {
+  const isDoc = !!doc && typeof doc === 'object' && !Array.isArray(doc) && typeof (doc as BriefDoc).decide === 'string';
+  if (!isDoc) {
+    return { status: 'unavailable', entry_id: entryId, warning: `${warning} The brief's stored doc could not be read either, so no reconstruction is possible.` };
+  }
+  return {
+    status: 'reconstructed',
+    entry_id: entryId,
+    content: renderEntry(doc as BriefDoc, { reason }),
+    warning,
+  };
+}
+
+/** Resolve the entry the accept promoted. Never throws: every failure becomes a STATED degradation. */
+async function resolveRemarkReferent(
+  client: SupabaseClient,
+  row: { id: string; reason: string; decision_ref?: unknown; doc?: unknown },
+): Promise<{ decision_ref: DecisionRef | null; referent: RemarkReferent }> {
+  const rawRef = row.decision_ref;
+  const decisionRef =
+    rawRef && typeof rawRef === 'object' && typeof (rawRef as DecisionRef).id === 'string'
+      ? (rawRef as DecisionRef)
+      : null;
+
+  if (!decisionRef) {
+    return {
+      decision_ref: null,
+      referent: reconstructReferent(
+        row.doc,
+        null,
+        row.reason,
+        `This brief carried no decision_ref, so its accept promoted no knowledge entry. What follows is a LOCAL RECONSTRUCTION of the brief's own entry projection — it was NOT read from the board, and no stored entry corresponds to it.`,
+      ),
+    };
+  }
+
+  try {
+    const { data, error } = await client
+      .from('knowledge_decisions')
+      .select('id, title, content')
+      .eq('id', decisionRef.id)
+      .maybeSingle();
+    if (!error && data) {
+      const entry = data as { id: string; title?: string | null; content?: string | null };
+      return {
+        decision_ref: decisionRef,
+        referent: { status: 'entry', entry_id: entry.id, title: entry.title ?? null, content: entry.content ?? '' },
+      };
+    }
+    const why = error ? `Reading it failed: ${error.message}.` : 'No such entry was returned.';
+    return {
+      decision_ref: decisionRef,
+      referent: reconstructReferent(
+        row.doc,
+        decisionRef.id,
+        row.reason,
+        `The promoted knowledge entry ${decisionRef.id} could NOT be read. ${why} What follows is a LOCAL RECONSTRUCTION of the brief's own entry projection — it was NOT read from the board, so it may differ from what is stored. Re-read the entry before amending it.`,
+      ),
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      decision_ref: decisionRef,
+      referent: reconstructReferent(
+        row.doc,
+        decisionRef.id,
+        row.reason,
+        `The promoted knowledge entry ${decisionRef.id} could NOT be read (${message}). What follows is a LOCAL RECONSTRUCTION of the brief's own entry projection — it was NOT read from the board. Re-read the entry before amending it.`,
+      ),
+    };
+  }
 }
 
 /** Fetch the task's most recent brief whose accept_remark is unconsumed, defensively (mirrors
  *  fetchPendingResolution). Returns null on absent columns (older DB) / no such brief / any error —
- *  never throws, so it can never regress get_task on a DB without the B-503 migration. */
+ *  never throws, so it can never regress get_task on a DB without the B-503 migration.
+ *
+ *  B-866: it also resolves the remark's REFERENT — the knowledge entry the accept promoted — so a light
+ *  amendment is applied to the thing that was promoted rather than to a re-authored copy of it. */
 export async function fetchPendingRemark(
   client: SupabaseClient,
   taskId: string,
@@ -1641,7 +2106,7 @@ export async function fetchPendingRemark(
   try {
     const { data, error } = await client
       .from('briefs')
-      .select('id, reason, accept_remark')
+      .select('id, reason, accept_remark, decision_ref, doc')
       .eq('task_id', taskId)
       .not('accept_remark', 'is', null)
       .is('accept_remark_consumed_at', null)
@@ -1650,10 +2115,11 @@ export async function fetchPendingRemark(
       .maybeSingle();
     if (error || !data) return null;
     // Cast: the columns may be absent from generated types / the deployed schema. Guard for null.
-    const row = data as unknown as { id: string; reason: string; accept_remark?: unknown };
+    const row = data as unknown as { id: string; reason: string; accept_remark?: unknown; decision_ref?: unknown; doc?: unknown };
     const detail = row.accept_remark;
     if (typeof detail !== 'string' || detail.trim().length === 0) return null;
-    return { brief_id: row.id, reason: row.reason, detail };
+    const { decision_ref, referent } = await resolveRemarkReferent(client, row);
+    return { brief_id: row.id, reason: row.reason, detail, decision_ref, referent };
   } catch {
     return null;
   }
@@ -1720,7 +2186,7 @@ export async function consumeAcceptRemark(
 export const consumeAcceptRemarkTool = {
   name: 'consume_accept_remark',
   description:
-    "Mark a brief's accept-with-remark as consumed (B-503). get_task surfaces the task's most recent unconsumed remark as `pending_remark: { brief_id, reason, detail }`; after APPLYING the remark (consume-after-apply — never stamp before the apply completes), call this with that brief_id to stamp `accept_remark_consumed_at` so the remark is not re-consumed. Idempotent: an already-consumed (or absent) remark returns { consumed: false, already: true } — no error. On a DB that predates the B-503 columns, returns { consumed: false, unsupported: true }.",
+    "Mark a brief's accept-with-remark as consumed (B-503). get_task surfaces the task's most recent unconsumed remark as `pending_remark: { brief_id, reason, detail, decision_ref, referent }` — B-866's `referent` is the knowledge entry the accept promoted, which is what a LIGHT amendment is applied to: { status: 'entry', entry_id, title, content } when it was read from the board, or { status: 'reconstructed' | 'unavailable', warning } when it could NOT be, in which case any `content` is a LOCAL projection of the brief's doc and the warning says so — never amend from a reconstruction without re-reading the entry; after APPLYING the remark (consume-after-apply — never stamp before the apply completes), call this with that brief_id to stamp `accept_remark_consumed_at` so the remark is not re-consumed. Idempotent: an already-consumed (or absent) remark returns { consumed: false, already: true } — no error. On a DB that predates the B-503 columns, returns { consumed: false, unsupported: true }.",
   inputSchema: {
     type: 'object' as const,
     properties: {

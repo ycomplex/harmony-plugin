@@ -233,27 +233,7 @@ back-up happened*, not what the re-run should conclude.
 const decision = mcp__harmony__record_decision({
   type: "specification",
   title: "<ticket>: revise-scope rationale — back up to <target gate>",
-  content: `
-Trigger: <what was discovered, and at which gate (e.g. "design") it was surfaced>
-
-Target gate + depth: <target gate> — <why this depth; why a shallower back-up (e.g. decompose instead of
-clarify) would not be enough>
-
-Supersede-list:
-- <decision title/id>: <why it falls on this side — the scope change actually invalidates it>
-- ...
-
-Keep-list:
-- <decision title/id>: <why it's unaffected — the "supersede only what's invalidated" precedent>
-- ...
-
-Broadened-scope statement: <the one-paragraph summary the re-run gate is meant to author against>
-
-AC axis classification (surviving acceptance criteria):
-- Keep: <ACs the broadened scope leaves untouched>
-- Restate: <ACs that need rewording under the broadened scope>
-- Discard candidate: <ACs the broadened scope likely invalidates — the re-run gate confirms/discards>
-`,
+  content: "<placeholder — one line: 'revise-scope rationale for <ticket>; body derived from the ratified brief'>",
   domain: [ /* the domain(s) the broadened scope reaches, per step 2 */ ],
   source_type: "manual",
   source_activity: "revise-scope",
@@ -261,6 +241,15 @@ AC axis classification (surviving acceptance criteria):
 })
 mcp__harmony__reference_knowledge({ task_id, decision_id: decision.id })
 ```
+
+> **B-866 — the rationale is authored in the BRIEF, not in the entry.** This gate used to write the
+> trigger, the target-gate depth, the supersede/keep lists, the broadened-scope statement and the AC axis
+> classification into the entry's `content` — where the human never read them, and the accept promoted
+> them anyway. That is exactly the defect B-866 closes. Author every one of those into the brief's
+> `doc.context` (worked example below), where the human ratifies them and the accept promotes the
+> projection. The entry's `content` above is a **placeholder seat**, and a hand-authored
+> `knowledge_entry_content` payload item is REPLACED by `compose_brief`. See
+> `skills/harmony-shared/brief-authoring.md` §"The brief is the only authored copy".
 
 Status defaults to **Asserted** — do not pass an explicit Accepted status; the brief's accept is what
 promotes it (below, via `decision_ref`). `reference_knowledge` makes it ticket-scoped-discoverable via
@@ -285,6 +274,16 @@ mcp__harmony__compose_brief({
       "The design-gate discussion grew the scope from X to X+Y",
       "The accepted clarify spec + no-split decompose decision assume the narrow scope",
       "Re-running clarify natively authors a fresh spec through the clarify gate's own surface (not folded here)"
+    ],
+    // B-866: the durable rationale lives HERE — the human ratifies it, and the accept promotes the
+    // projection of it as the entry's body. One line per element; do not restate it in the entry.
+    context: [
+      "Trigger: <what was discovered, and at which gate it was surfaced>",
+      "Target gate + depth: <target gate> — <why this depth; why a shallower back-up would not be enough>",
+      "Supersede: <decision title/id> — <why the scope change actually invalidates it>",
+      "Keep: <decision title/id> — <why it is unaffected (supersede only what is invalidated)>",
+      "Broadened scope: <the one-paragraph summary the re-run gate authors against>",
+      "AC axis — keep: <untouched ACs>; restate: <ACs needing rewording>; discard candidate: <ACs the broadened scope likely invalidates>"
     ],
     items: [
       { kind: "decision", text: "Revert to Proposed and re-run clarify natively; supersede the clarify spec + decompose decision; keep the unaffected product-design sub-track", recommendation: "accept" }

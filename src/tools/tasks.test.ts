@@ -857,7 +857,14 @@ describe('getTask', () => {
   });
 
   const remarkRow = { id: 'brief-9', reason: 'decomposition-proposal', accept_remark: 'auto-accept decompose if no-split' };
-  const projectedRemark = { brief_id: 'brief-9', reason: 'decomposition-proposal', detail: 'auto-accept decompose if no-split' };
+  // B-866: the projection also carries the remark's REFERENT — the entry the accept promoted, or a
+  // STATED degradation when it could not be read. This row carries no decision_ref and no doc, so the
+  // referent is honestly 'unavailable' rather than a guess.
+  const projectedRemark = {
+    brief_id: 'brief-9', reason: 'decomposition-proposal', detail: 'auto-accept decompose if no-split',
+    decision_ref: null,
+    referent: { status: 'unavailable', entry_id: null, warning: expect.stringContaining('no decision_ref') },
+  };
 
   it('B-503: the FULL payload carries pending_remark from an unconsumed accept-with-remark', async () => {
     const client = makeRemarkClient({ remarkRow });

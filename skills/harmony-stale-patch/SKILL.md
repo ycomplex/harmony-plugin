@@ -112,6 +112,16 @@ mcp__harmony__compose_brief({
 })
 ```
 
+> **B-866 — this gate's `decision_ref` is the ONLY one that names a PRE-EXISTING entry.** At the other
+> four entry-promoting gates the brief's `decision_ref` names an entry this same gate just recorded, so
+> deriving its body from the ratified brief replaces a placeholder. Here it names the SUCCESSOR decision,
+> authored at a different gate and already carrying its own ratified rationale — and `compose_brief`
+> derives a `knowledge_entry_content` item for every `decision_ref`-carrying reason, which the accept
+> writes onto that entry. **Do not compose a stale-patch brief against a successor whose body you are not
+> prepared to see replaced by this brief's projection**; on a null-successor brief the `decision_ref` is
+> omitted and nothing is derived at all. Raised for the human at build time (B-866) and NOT silently
+> resolved here.
+
 **The command tail is emitted mechanically — never supply `doc.tail` here (B-874).** The default
 tail ("Type `accept`, `edit`, `iterate <feedback>`, or `defer`.") MISINFORMS at this gate, because
 `defer` does not park a stale-patch review — it rejects the patch. So `compose_brief` renders this
