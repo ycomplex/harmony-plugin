@@ -7,8 +7,16 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { registerModelCommands } from './model.js';
 import { PINNED_DEFAULT_MODEL_BY_PROFILE } from '../../config/run-config.js';
+
+// B-892: resolve-gate now takes a best-effort trip through getAuthenticatedContext to re-read
+// conductions.run_config at the gate boundary. Mocked so these tests never touch a network/config
+// file — every OTHER subcommand in this file is unaffected (none of them authenticates), and
+// resolve-gate itself only reaches this mock when HARMONY_CONDUCTION_ID is set.
+const authMock = vi.hoisted(() => ({ getAuthenticatedContext: vi.fn() }));
+vi.mock('../auth.js', () => authMock);
 
 class ExitSentinel extends Error {
   constructor(readonly code: number) {
@@ -45,6 +53,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  authMock.getAuthenticatedContext.mockReset();
   logSpy.mockRestore();
   errSpy.mockRestore();
   exitSpy.mockRestore();
@@ -186,5 +195,118 @@ describe('harmony model request-switch / read-handoff / clear-handoff', () => {
     vi.stubEnv('HARMONY_MODEL_HANDOFF_PATH', handoffPath);
     await run(['model', 'clear-handoff']);
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+});
+
+// =================================================================================================
+// B-892: resolve-gate resolves the WANTED model from the LIVE conduction row, launch env as
+// fallback. `running-model` is deliberately untouched — it reports what THIS process is actually
+// running, which is the correct baseline for step 1d's comparison.
+// =================================================================================================
+
+/** Stands in for the one call shape getConduction makes. */
+function fakeConductionClient(
+  result: { data: unknown; error: unknown } | 'throws',
+): SupabaseClient {
+  const chain: Record<string, unknown> = {};
+  chain.select = () => chain;
+  chain.eq = () => chain;
+  chain.maybeSingle = async () => {
+    if (result === 'throws') throw new Error('transport exploded');
+    return result;
+  };
+  return { from: () => chain } as unknown as SupabaseClient;
+}
+
+const conductionRow = (run_config: unknown) => ({
+  data: { id: 'cond-892', task_id: 't-1', status: 'active', run_config },
+  error: null,
+});
+
+function stubAuthWith(result: { data: unknown; error: unknown } | 'throws'): void {
+  authMock.getAuthenticatedContext.mockResolvedValue({
+    client: fakeConductionClient(result),
+    projectId: 'proj-1',
+    userId: 'user-1',
+  });
+}
+
+// The frozen launch-env payload every test below contrasts the row against: 'Planned' -> gate
+// 'build' (src/daemon/gate-phase.ts), pinned to opus by the LAUNCH env.
+const ENV_MODEL_PAYLOAD = Buffer.from(
+  JSON.stringify({ model: { per_gate: { build: 'claude-opus-5' } } }),
+).toString('base64');
+
+function stubConductedEnv(): void {
+  vi.stubEnv('HARMONY_CONDUCTION_ID', 'cond-892');
+  vi.stubEnv('HARMONY_RUN_CONFIG_PATH', '');
+  vi.stubEnv('HARMONY_RUN_CONFIG_JSON', ENV_MODEL_PAYLOAD);
+  vi.stubEnv('HARMONY_SUPABASE_URL', '');
+}
+
+describe('B-892 harmony model resolve-gate — gate-boundary re-read of conductions.run_config', () => {
+  it("prefers the LIVE row's model over the frozen launch env", async () => {
+    stubConductedEnv();
+    stubAuthWith(conductionRow({ model: { per_gate: { build: 'claude-haiku-5' } } }));
+    await run(['model', 'resolve-gate', 'Planned']);
+    expect(logSpy).toHaveBeenCalledWith('claude-haiku-5');
+  });
+
+  it("honors a row-level run-wide default over the launch env's per-gate pin", async () => {
+    stubConductedEnv();
+    stubAuthWith(conductionRow({ model: { default: 'claude-haiku-5' } }));
+    await run(['model', 'resolve-gate', 'Planned']);
+    expect(logSpy).toHaveBeenCalledWith('claude-haiku-5');
+  });
+
+  it('falls back to the launch env when the row is missing', async () => {
+    stubConductedEnv();
+    stubAuthWith({ data: null, error: null });
+    await run(['model', 'resolve-gate', 'Planned']);
+    expect(logSpy).toHaveBeenCalledWith('claude-opus-5');
+    expect(errSpy).toHaveBeenCalled();
+  });
+
+  it('falls back to the launch env when the row query errors', async () => {
+    stubConductedEnv();
+    stubAuthWith({ data: null, error: { message: 'permission denied' } });
+    await run(['model', 'resolve-gate', 'Planned']);
+    expect(logSpy).toHaveBeenCalledWith('claude-opus-5');
+  });
+
+  it('falls back to the launch env (never throws) when the row payload is MALFORMED', async () => {
+    stubConductedEnv();
+    stubAuthWith(conductionRow({ model: 'not-an-object' }));
+    await run(['model', 'resolve-gate', 'Planned']);
+    expect(logSpy).toHaveBeenCalledWith('claude-opus-5');
+  });
+
+  it('falls back to the launch env (never throws) when authentication is unavailable', async () => {
+    stubConductedEnv();
+    authMock.getAuthenticatedContext.mockRejectedValue(
+      new Error('No active project. Run `harmony login` to add one.'),
+    );
+    await run(['model', 'resolve-gate', 'Planned']);
+    expect(logSpy).toHaveBeenCalledWith('claude-opus-5');
+    expect(errSpy).toHaveBeenCalled();
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('never authenticates at all when there is no HARMONY_CONDUCTION_ID (unchanged from before)', async () => {
+    vi.stubEnv('HARMONY_CONDUCTION_ID', '');
+    vi.stubEnv('HARMONY_RUN_CONFIG_PATH', '');
+    vi.stubEnv('HARMONY_RUN_CONFIG_JSON', ENV_MODEL_PAYLOAD);
+    await run(['model', 'resolve-gate', 'Planned']);
+    expect(authMock.getAuthenticatedContext).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith('claude-opus-5');
+  });
+
+  it('running-model still reports HARMONY_MODEL, never the row (the switch comparison baseline)', async () => {
+    stubConductedEnv();
+    vi.stubEnv('HARMONY_MODEL', 'claude-opus-5');
+    stubAuthWith(conductionRow({ model: { per_gate: { build: 'claude-haiku-5' } } }));
+    await run(['model', 'running-model']);
+    expect(logSpy).toHaveBeenCalledWith('claude-opus-5');
+    expect(authMock.getAuthenticatedContext).not.toHaveBeenCalled();
   });
 });

@@ -3,12 +3,14 @@
 // (absence -> {}, both delivery forms, malformed-input handling) before any dependent ticket
 // starts writing a real top-level key through it.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { mkdtempSync, rmSync, existsSync, writeFileSync as fsWriteFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   EMPTY_RUN_CONFIG,
+  resolveRunConfigFromConduction,
   MODEL_ALIAS_ALLOWLIST,
   MODEL_CONTEXT_BUDGET_BYTES,
   PINNED_DEFAULT_MODEL_BY_PROFILE,
@@ -513,5 +515,102 @@ describe('B-772 round 2: model handoff-file contract', () => {
   it('clearModelHandoffRequest is idempotent — a second clear on an already-absent file does not throw', () => {
     expect(() => clearModelHandoffRequest(env)).not.toThrow();
     expect(() => clearModelHandoffRequest(env)).not.toThrow();
+  });
+});
+
+// =================================================================================================
+// B-892: resolveRunConfigFromConduction — the gate-boundary re-read of conductions.run_config.
+// Contract under test: returns the row's parsed run_config, or NULL on ANY failure, and NEVER
+// throws (callers read null as "fall back to the launch env").
+// =================================================================================================
+
+/** Stands in for the one call shape getConduction makes:
+ *  `client.from('conductions').select(COLS).eq('id', id).maybeSingle()`. */
+function fakeConductionClient(
+  result: { data: unknown; error: unknown } | 'throws',
+): { client: SupabaseClient; fromSpy: ReturnType<typeof vi.fn> } {
+  const chain: Record<string, unknown> = {};
+  chain.select = () => chain;
+  chain.eq = () => chain;
+  chain.maybeSingle = async () => {
+    if (result === 'throws') throw new Error('transport exploded');
+    return result;
+  };
+  const fromSpy = vi.fn(() => chain);
+  return { client: { from: fromSpy } as unknown as SupabaseClient, fromSpy };
+}
+
+const conductionRow = (run_config: unknown) => ({
+  data: { id: 'cond-892', task_id: 't-1', status: 'active', run_config },
+  error: null,
+});
+
+describe('B-892 resolveRunConfigFromConduction', () => {
+  it("returns the row's run_config, parsed", async () => {
+    const { client } = fakeConductionClient(
+      conductionRow({ note: 'edited mid-run', auto_approve_gates: ['design'] }),
+    );
+    await expect(resolveRunConfigFromConduction(client, 'cond-892')).resolves.toEqual({
+      note: 'edited mid-run',
+      auto_approve_gates: ['design'],
+    });
+  });
+
+  it("returns an EMPTY config (not null) for a row whose run_config is `{}` — a cleared payload is an ANSWER, not a failure", async () => {
+    const { client } = fakeConductionClient(conductionRow({}));
+    await expect(resolveRunConfigFromConduction(client, 'cond-892')).resolves.toEqual({});
+  });
+
+  it('preserves forward compatibility — an unrecognized top-level key passes through, never rejects', async () => {
+    const { client } = fakeConductionClient(conductionRow({ some_future_axis: { on: true } }));
+    const parsed = await resolveRunConfigFromConduction(client, 'cond-892');
+    expect(parsed).toEqual({ some_future_axis: { on: true } });
+  });
+
+  it('returns null (no DB call at all) when the conduction id is absent', async () => {
+    const { client, fromSpy } = fakeConductionClient(conductionRow({ note: 'x' }));
+    await expect(resolveRunConfigFromConduction(client, null)).resolves.toBeNull();
+    await expect(resolveRunConfigFromConduction(client, undefined)).resolves.toBeNull();
+    await expect(resolveRunConfigFromConduction(client, '')).resolves.toBeNull();
+    expect(fromSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns null when there is no client', async () => {
+    await expect(resolveRunConfigFromConduction(null, 'cond-892')).resolves.toBeNull();
+    await expect(resolveRunConfigFromConduction(undefined, 'cond-892')).resolves.toBeNull();
+  });
+
+  it('returns null when the row does not exist', async () => {
+    const { client } = fakeConductionClient({ data: null, error: null });
+    await expect(resolveRunConfigFromConduction(client, 'cond-892')).resolves.toBeNull();
+  });
+
+  it('returns null (never throws) when the query errors', async () => {
+    const { client } = fakeConductionClient({ data: null, error: { message: 'permission denied' } });
+    await expect(resolveRunConfigFromConduction(client, 'cond-892')).resolves.toBeNull();
+  });
+
+  it('returns null (never throws) when the transport blows up', async () => {
+    const { client } = fakeConductionClient('throws');
+    await expect(resolveRunConfigFromConduction(client, 'cond-892')).resolves.toBeNull();
+  });
+
+  it('returns null for a MALFORMED run_config payload rather than throwing', async () => {
+    for (const malformed of [
+      { auto_approve_gates: 'not-an-array' },
+      { note: 42 },
+      { auto_approve_gates: ['release'] }, // structurally excluded from the auto-approve enum
+      'a bare string',
+      [1, 2, 3],
+      7,
+    ]) {
+      const { client } = fakeConductionClient(conductionRow(malformed));
+      await expect(resolveRunConfigFromConduction(client, 'cond-892')).resolves.toBeNull();
+    }
+  });
+
+  it('returns null when the row carries a null run_config (a pre-migration/absent column)', async () => {
+    const { client } = fakeConductionClient(conductionRow(null));
+    await expect(resolveRunConfigFromConduction(client, 'cond-892')).resolves.toBeNull();
   });
 });

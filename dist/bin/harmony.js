@@ -28187,6 +28187,72 @@ function resolveGatePhase(workflow_state, workflow_activity) {
   return GATE_BY_WORKFLOW_STATE[workflow_state] ?? null;
 }
 
+// src/tools/conduction-record.ts
+var CONDUCTION_LIVE_STATUSES = ["active"];
+var CONDUCTION_HUMAN_OWNED_STATUSES = ["parked"];
+var CONDUCTION_TERMINAL_STATUSES = ["completed", "cancelled"];
+var CONDUCTION_STATUSES = [
+  ...CONDUCTION_LIVE_STATUSES,
+  ...CONDUCTION_HUMAN_OWNED_STATUSES,
+  ...CONDUCTION_TERMINAL_STATUSES
+];
+var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, reap_requested_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
+var ActiveConductionExistsError = class extends Error {
+  code = "active-conduction-exists";
+  task_id;
+  constructor(taskId, cause) {
+    super(
+      `an active conduction already exists for task ${taskId} \u2014 the atomic insert IS the lease-acquisition primitive, so losing it means another holder owns the run` + (cause ? ` (${cause})` : "")
+    );
+    this.name = "ActiveConductionExistsError";
+    this.task_id = taskId;
+  }
+};
+var isUniqueViolation = (error) => error.code === "23505" || /duplicate key value violates unique constraint/i.test(error.message ?? "");
+async function createConduction(client, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const row = {
+    task_id: args.task_id,
+    status: "active",
+    mode: args.mode ?? "controlled",
+    lease_holder: args.lease_holder ?? null,
+    worker_kind: args.worker_kind ?? null,
+    worker_ref: args.worker_ref ?? null,
+    created_by: args.created_by ?? null
+  };
+  if (args.lease_holder) row.lease_acquired_at = (/* @__PURE__ */ new Date()).toISOString();
+  if (args.run_config !== void 0) row.run_config = args.run_config;
+  const { data, error } = await client.from("conductions").insert(row).select(CONDUCTION_COLS).single();
+  if (error) {
+    if (isUniqueViolation(error)) throw new ActiveConductionExistsError(args.task_id, error.message);
+    throw new Error(error.message);
+  }
+  return data;
+}
+var ConductorExcludedError = class extends Error {
+  code = "conductor-excluded";
+  task_id;
+  constructor(taskId) {
+    super(
+      `This ticket is taken away from the conductor (task ${taskId}, conductor_excluded_at is set) \u2014 Return it first (the "Return to conductor" action) before handing it off.`
+    );
+    this.name = "ConductorExcludedError";
+    this.task_id = taskId;
+  }
+};
+async function assertNotExcluded(client, taskId) {
+  if (!taskId) throw new Error("task_id is required");
+  const { data, error } = await client.from("tasks").select("conductor_excluded_at").eq("id", taskId).single();
+  if (error) throw new Error(error.message);
+  if (data?.conductor_excluded_at) throw new ConductorExcludedError(taskId);
+}
+async function getConduction(client, id) {
+  if (!id) throw new Error("id is required");
+  const { data, error } = await client.from("conductions").select(CONDUCTION_COLS).eq("id", id).maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ?? null;
+}
+
 // src/config/run-config.ts
 var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
 var NoteSchema = external_exports.string().optional();
@@ -28232,6 +28298,18 @@ function getRunConfig(env2 = process.env, deps = {}) {
     return RunConfigSchema.parse(JSON.parse(decoded));
   }
   return EMPTY_RUN_CONFIG;
+}
+async function resolveRunConfigFromConduction(client, conductionId) {
+  if (!client || !conductionId) return null;
+  try {
+    const conduction = await getConduction(client, conductionId);
+    const raw = conduction?.run_config;
+    if (raw == null) return null;
+    const parsed = RunConfigSchema.safeParse(raw);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 var PINNED_DEFAULT_MODEL_BY_PROFILE = {
   prod: "claude-sonnet-5",
@@ -28358,32 +28436,43 @@ function resolvePluginVersion(env2, moduleUrl) {
   }
   return null;
 }
-function resolveEnvironment(env2 = process.env, moduleUrl = import.meta.url) {
+function readEnvRunConfig(env2) {
+  try {
+    return getRunConfig(env2);
+  } catch {
+    return null;
+  }
+}
+async function resolveEnvironment(env2 = process.env, moduleUrl = import.meta.url, client) {
   const supabase_url = env2.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL2;
   let supabase_project_ref = "";
   try {
     supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
   } catch {
   }
-  let operator_note;
-  try {
-    operator_note = getOperatorNote(getRunConfig(env2)) ?? null;
-  } catch {
-    operator_note = null;
-  }
-  let auto_approve_gates;
-  try {
-    const gates = Array.from(getAutoApproveGates(getRunConfig(env2)));
-    auto_approve_gates = gates.length > 0 ? gates : null;
-  } catch {
-    auto_approve_gates = null;
+  const conduction_id = getConductionId(env2) ?? null;
+  const runConfig = await resolveRunConfigFromConduction(client, conduction_id) ?? readEnvRunConfig(env2);
+  let operator_note = null;
+  let auto_approve_gates = null;
+  if (runConfig) {
+    try {
+      operator_note = getOperatorNote(runConfig) ?? null;
+    } catch {
+      operator_note = null;
+    }
+    try {
+      const gates = Array.from(getAutoApproveGates(runConfig));
+      auto_approve_gates = gates.length > 0 ? gates : null;
+    } catch {
+      auto_approve_gates = null;
+    }
   }
   return {
     supabase_url,
     supabase_project_ref,
     target: resolveKnownRefs(env2)[supabase_project_ref] ?? "custom",
     plugin_version: resolvePluginVersion(env2, moduleUrl),
-    conduction_id: getConductionId(env2) ?? null,
+    conduction_id,
     operator_note,
     auto_approve_gates
   };
@@ -28410,7 +28499,8 @@ async function getProject(client, projectId) {
     overrides: rawTrust.overrides ?? {}
   };
   const { workspace: _workspace, ...project } = row;
-  return { ...project, agent_trust, environment: resolveEnvironment() };
+  const environment = await resolveEnvironment(void 0, void 0, client);
+  return { ...project, agent_trust, environment };
 }
 
 // src/cli/config.ts
@@ -31103,66 +31193,6 @@ function registerSubtaskCommands(program3) {
   });
 }
 
-// src/tools/conduction-record.ts
-var CONDUCTION_LIVE_STATUSES = ["active"];
-var CONDUCTION_HUMAN_OWNED_STATUSES = ["parked"];
-var CONDUCTION_TERMINAL_STATUSES = ["completed", "cancelled"];
-var CONDUCTION_STATUSES = [
-  ...CONDUCTION_LIVE_STATUSES,
-  ...CONDUCTION_HUMAN_OWNED_STATUSES,
-  ...CONDUCTION_TERMINAL_STATUSES
-];
-var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, reap_requested_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
-var ActiveConductionExistsError = class extends Error {
-  code = "active-conduction-exists";
-  task_id;
-  constructor(taskId, cause) {
-    super(
-      `an active conduction already exists for task ${taskId} \u2014 the atomic insert IS the lease-acquisition primitive, so losing it means another holder owns the run` + (cause ? ` (${cause})` : "")
-    );
-    this.name = "ActiveConductionExistsError";
-    this.task_id = taskId;
-  }
-};
-var isUniqueViolation = (error) => error.code === "23505" || /duplicate key value violates unique constraint/i.test(error.message ?? "");
-async function createConduction(client, args) {
-  if (!args.task_id) throw new Error("task_id is required");
-  const row = {
-    task_id: args.task_id,
-    status: "active",
-    mode: args.mode ?? "controlled",
-    lease_holder: args.lease_holder ?? null,
-    worker_kind: args.worker_kind ?? null,
-    worker_ref: args.worker_ref ?? null,
-    created_by: args.created_by ?? null
-  };
-  if (args.lease_holder) row.lease_acquired_at = (/* @__PURE__ */ new Date()).toISOString();
-  if (args.run_config !== void 0) row.run_config = args.run_config;
-  const { data, error } = await client.from("conductions").insert(row).select(CONDUCTION_COLS).single();
-  if (error) {
-    if (isUniqueViolation(error)) throw new ActiveConductionExistsError(args.task_id, error.message);
-    throw new Error(error.message);
-  }
-  return data;
-}
-var ConductorExcludedError = class extends Error {
-  code = "conductor-excluded";
-  task_id;
-  constructor(taskId) {
-    super(
-      `This ticket is taken away from the conductor (task ${taskId}, conductor_excluded_at is set) \u2014 Return it first (the "Return to conductor" action) before handing it off.`
-    );
-    this.name = "ConductorExcludedError";
-    this.task_id = taskId;
-  }
-};
-async function assertNotExcluded(client, taskId) {
-  if (!taskId) throw new Error("task_id is required");
-  const { data, error } = await client.from("tasks").select("conductor_excluded_at").eq("id", taskId).single();
-  if (error) throw new Error(error.message);
-  if (data?.conductor_excluded_at) throw new ConductorExcludedError(taskId);
-}
-
 // src/cli/commands/conduct.ts
 function registerConductCommand(program3) {
   program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor daemon picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").action(async (ticket) => {
@@ -31235,6 +31265,31 @@ function registerConfigCommands(program3) {
 }
 
 // src/cli/commands/model.ts
+async function resolveGateRunConfig() {
+  const conductionId = getConductionId();
+  if (conductionId) {
+    try {
+      const { client } = await getAuthenticatedContext();
+      const fromRow = await resolveRunConfigFromConduction(client, conductionId);
+      if (fromRow) return fromRow;
+      console.error(
+        `harmony model resolve-gate: WARNING \u2014 conduction ${conductionId}'s run_config was unreadable from the board; falling back to this leg's launch env`
+      );
+    } catch (err) {
+      console.error(
+        `harmony model resolve-gate: WARNING \u2014 could not reach the board to re-read run_config (${err?.message ?? String(err)}); falling back to this leg's launch env`
+      );
+    }
+  }
+  try {
+    return getRunConfig();
+  } catch (err) {
+    console.error(
+      `harmony model resolve-gate: WARNING \u2014 failed to read run_config (${err?.message ?? String(err)}); falling back to no run_config`
+    );
+    return {};
+  }
+}
 function registerModelCommands(program3) {
   const model = program3.command("model").description(
     "B-772 model-switch-loop node accessor \u2014 the ONE place bash (container/provision.sh, container/entrypoint.sh) reads the alias allowlist / context-budget table / handoff-file contract src/config/run-config.ts owns. Never hand-duplicate these tables in bash."
@@ -31257,15 +31312,9 @@ function registerModelCommands(program3) {
     console.log(process.env.HARMONY_MODEL ?? "");
   });
   model.command("resolve-gate").description(
-    "Print the model getModelForGate resolves for <workflow-state> (this worker's own HARMONY_RUN_CONFIG_PATH/HARMONY_RUN_CONFIG_JSON env, exactly as the daemon reads it) \u2014 the accessor skills/harmony-conduct/SKILL.md step 1d uses to compute THIS gate's model. Never throws: a run_config parse failure falls back to the empty run_config (getModelForGate's own pinned-default tier still resolves something explicit) rather than crashing the agent's turn."
-  ).argument("<workflow-state>").option("--activity <workflow-activity>", "The ticket's workflow_activity, if known").action((workflowState, opts) => {
-    let runConfig;
-    try {
-      runConfig = getRunConfig();
-    } catch (err) {
-      console.error(`harmony model resolve-gate: WARNING \u2014 failed to read run_config (${err.message}); falling back to no run_config`);
-      runConfig = {};
-    }
+    "Print the model getModelForGate resolves for <workflow-state> \u2014 the accessor skills/harmony-conduct/SKILL.md step 1d uses to compute THIS gate's model. B-892: reads the LIVE conductions.run_config row (this worker's HARMONY_CONDUCTION_ID) so a mid-conduction operator edit lands at the gate boundary, falling back to this leg's frozen HARMONY_RUN_CONFIG_PATH/HARMONY_RUN_CONFIG_JSON launch env when the row is unreachable/unreadable or there is no conduction. Never throws: every failure degrades a tier (getModelForGate's own pinned-default tier still resolves something explicit) rather than crashing the agent's turn. NOTE this is the WANTED model \u2014 `running-model` (what this process actually launched with) is the other half of step 1d's comparison and is deliberately env-only."
+  ).argument("<workflow-state>").option("--activity <workflow-activity>", "The ticket's workflow_activity, if known").action(async (workflowState, opts) => {
+    const runConfig = await resolveGateRunConfig();
     const gate = resolveGatePhase(workflowState, opts.activity ?? null);
     console.log(getModelForGate(runConfig, gate));
   });
