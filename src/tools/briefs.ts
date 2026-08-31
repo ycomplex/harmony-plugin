@@ -4,6 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+import { detectRiskClasses } from './risk-class.js';
 import type { AcceptanceEventPayloadItem } from './acceptance-events.js';
 
 export interface BriefItem {
@@ -20,6 +21,160 @@ export interface BriefAlternative {
   option: string;
   rejection: string;
 }
+
+// ——— B-876: the per-gate FRAME ———————————————————————————————————————————————————————————————————
+//
+// The BLUF spine (decide / recommend / why / context / items) is a decision-memo schema and a good one.
+// What it never had is a home for each gate's OWN must-have — the elements at decompose, the reach at
+// design, the carried-unproven residue at plan, the landing act at release, the criteria ledger at
+// verify — so those facts degraded into freeform `context[]` and then disappeared (measured across a
+// 14-brief-per-gate corpus: docs/2026-07-31-gate-brief-reader-needs.md §3).
+//
+// `frame` is ONE optional, `kind`-discriminated field emitting ONE extra block, positioned per gate.
+// Two invariants make it deployable warn-only:
+//   1. A doc with NO frame renders exactly today's bytes — nothing in flight changes.
+//   2. Every frame lint rule added here is a WARNING. `compose_brief` gains no new way to refuse, so
+//      an unattended daemon leg can never hard-stop on a frame defect (§4.4 blast radius).
+// The error flip is deliberately a LATER ticket, one gate at a time (§5 step 5).
+
+/** plan.carried_unproven ≡ release.unproven — one shape, authored predictively, rendered at both gates. */
+export interface Unproven { item: string; reason: string }
+
+/** clarify.not_solving ≡ decompose's out-of-scope pointers. `lands` binds the brief to the disposition
+ *  discipline: every exclusion resolves SOMEWHERE. `"nowhere — nobody is tracking this"` is an explicit,
+ *  sanctioned value (§7#4) and is the highest-signal entry in the block, not an escape hatch. */
+export interface Excluded { item: string; lands: string }
+
+/** Release's executed-aware evidence counts (§8 item 5). Deliberately NOT a single string: B-745 shipped
+ *  a non-functional RPC behind a test that was WRITTEN but never RAN, and "an unexecuted test is not weak
+ *  evidence, it is zero evidence". The full per-AC ledger stays at verify; release gets the counts. */
+export interface EvidenceSummary {
+  /** ACs proven by a test that actually EXECUTED. */
+  proven_by_run: number;
+  /** ACs deliberately deferred to the verify runbook. */
+  walk_at_verify: number;
+  /** ACs in the `unproven[]` residue below. */
+  unproven: number;
+  total: number;
+  detail?: string;
+}
+
+/** The iteration delta (round 2+ only). Each change is BOUND to the feedback it answers, so an
+ *  "already reflected" claim has a falsifiable form. It renders BELOW the frame, never above it:
+ *  the human approves the totality, never the diff (B-239/B-856). */
+export interface RevisionBlock {
+  round: number;
+  changes: Array<{ change: string; responds_to: string }>;
+}
+
+/** The release topology — FIXED at plan (`frame.plan.landing`), EXECUTED at release (`frame.release.act`).
+ *  One object both times, so the plan reader can be held to the topology they authorized. */
+export interface LandingShape {
+  repos: string[];
+  pr_count: number;
+  lands_in: 'staging' | 'production' | 'both' | 'merged-main';
+  atomicity: 'single' | 'together' | 'ordered';
+  /** REQUIRED when `atomicity === 'ordered'` — the lint warns when it is missing. */
+  ordering?: string;
+  /** `[]` is a meaningful, renderable answer ("nothing"). */
+  irreversible: string[];
+}
+
+/** One row of verify's criteria ledger — the gate whose whole contract is "confirm reality against these
+ *  criteria" rendered the criterion text in 0/14 briefs before this. */
+export interface CriterionRow {
+  ac_id: string;
+  text: string;
+  checked: boolean;
+  disposition: 'walk' | 'blocked' | 'test-proven' | 'not-hand-checkable' | 'carried' | 'unproven';
+  /** REQUIRED when `disposition === 'walk'` — a walk step the human cannot find is not a runbook. */
+  step_ref?: string;
+  blocked_reason?: string;
+  carried_to?: string;
+  backed_by?: string;
+}
+
+/** Design's three sub-tracks. Declared as its own alias rather than inlined: an indexed access like
+ *  `GateFrame['track']` is illegal on a union whose other members carry no `track` key. */
+export type DesignTrack = 'product-design' | 'technical-design' | 'ux-ui-design';
+
+export interface DesignTrackEntry {
+  track: DesignTrack;
+  status: 'accepted' | 'this-brief' | 'pending' | 'not-required';
+  /** REQUIRED (lint-warned) on a `not-required` entry: declaring a track away is a decision, not a fact. */
+  note?: string;
+}
+
+/** The gate frame — one variant per framed gate. `stale-patch-review` and `revise-scope-review` are
+ *  deliberately absent: n=1 and n=4 respectively, which cannot support a schema (§3.9, §7#6).
+ *
+ *  All six members are declared, including `clarify`; the clarify AUTHORING lives in its own ticket, so
+ *  `harmony-clarify` does not populate this yet. The renderer needs the member regardless — a variant the
+ *  type cannot express is a variant the render cannot position. */
+export type GateFrame =
+  // `solving` is the OUTCOME paragraph — what becomes true for the product when this ships, in product
+  // terms. NEVER a restatement of the problem: briefs restate pain well and never state the outcome
+  // (§8 item 2). Altitude per §4.0 — judgeable without the repo open.
+  | { kind: 'clarify'; solving: string; in_scope: string[]; not_solving: Excluded[] }
+  | {
+      kind: 'decompose';
+      elements: Array<{ text: string; surface?: string; covers?: string }>;
+      coverage: string;
+      existing_children_checked: boolean;
+    }
+  | {
+      kind: 'design';
+      track: DesignTrack;
+      tracks: DesignTrackEntry[];
+      /** `[]` is a real answer ("this reaches nothing beyond the ticket"); an ABSENT key is not. */
+      reach: string[];
+      not_reopened?: string[];
+      derisk?: { run: string[]; not_run: string[] };
+      /** Product track only — the AC manifest this accept files. */
+      files_on_accept?: string[];
+    }
+  | {
+      kind: 'plan';
+      scope: { repos: string[]; surfaces: string[]; has_migration: boolean };
+      /** Renders under its own **Plan:** heading, between Why and You-need-to. */
+      steps: string[];
+      attestation: { base_verified: string; derisked_by_running?: string };
+      /** The KEY must be present; `[]` = explicitly none. Absence and "none" are different claims. */
+      carried_unproven: Unproven[];
+      ac_coverage: string;
+      /** Lint-warned as REQUIRED when the scope names more than one repo or carries a migration (§8 item 6). */
+      landing?: LandingShape;
+      design_delta?: string;
+    }
+  | {
+      kind: 'release';
+      act: LandingShape;
+      unproven: Unproven[];
+      evidence_status: EvidenceSummary;
+      /** PATH-DERIVED FROM THE DIFF, and computed at compose — `composeBrief` overwrites whatever the
+       *  skill authored here (B-876 step 7). No diff ⇒ `[]`, never a prose guess. This is NOT the B-516
+       *  carried-from-gates signal, which is a different, non-diff-derived signal and still rides prose. */
+      risk_classes: string[];
+      pr_review_state?: string;
+    }
+  | {
+      kind: 'verify';
+      environment: 'staging' | 'production' | 'merged-main' | 'local';
+      criteria: CriterionRow[];
+      exempt_reason?: string;
+      evidence_status: string;
+      bounded_accept?: { open_ac_ids: string[]; closes_when: string };
+    };
+
+/** The `reason` each frame variant belongs to — the render is positional, the lint is the matcher. */
+export const FRAME_KIND_FOR_REASON: Record<string, GateFrame['kind']> = {
+  'clarification-draft': 'clarify',
+  'decomposition-proposal': 'decompose',
+  'design-decision-draft': 'design',
+  'plan-draft': 'plan',
+  'release-decision-pending': 'release',
+  'verification-ack-pending': 'verify',
+};
 
 /** The canonical structured brief (the BLUF skeleton as data). renderBrief() is its only renderer. */
 export interface BriefDoc {
@@ -42,6 +197,11 @@ export interface BriefDoc {
    *  "no split", or a gate not yet wired to author this shape) — `classifyPayload` in acceptance-events.ts
    *  treats an empty array as a legitimate zero-write accept, never a hollow-advance signal. */
   payload?: AcceptanceEventPayloadItem[];
+  /** B-876 — the gate-specific frame. Optional forever: the corpus is permanently mixed (old briefs keep
+   *  their bytes), so no consumer may treat a missing frame as malformed. */
+  frame?: GateFrame;
+  /** B-876 — the round-2+ iteration delta, rendered under the **On accept:** line. */
+  revision?: RevisionBlock;
 }
 
 export interface BriefLintResult {
@@ -63,9 +223,53 @@ const WORD_BUDGET_BASE = 600;
 const WORD_BUDGET_PER_UNIT = 75;   // unchanged
 const WORD_BUDGET_MAX = 1400;
 
-/** Tier-aware soft word budget: base + per-unit × (items + alternatives), clamped to a max. */
+/** B-876 — the frame's STRUCTURAL size, in the same units the tier budget already counts.
+ *
+ *  Without this the change self-sabotages: a frame adds words but no `items`/`alternatives`, so the
+ *  bloat warning would fire on exactly the briefs that improved — a 14-row verify ledger is DATA, not
+ *  rambling, and the budget exists to stop rambling. Counts the renderable sub-elements per variant
+ *  (elements / criteria rows / act steps / unproven entries and their siblings). Pure + exported so the
+ *  calibration can be measured with exactly the shipped logic. */
+export function frameUnits(frame?: GateFrame): number {
+  if (!frame) return 0;
+  switch (frame.kind) {
+    case 'clarify':
+      return (frame.in_scope?.length ?? 0) + (frame.not_solving?.length ?? 0);
+    case 'decompose':
+      return frame.elements?.length ?? 0;
+    case 'design':
+      return (
+        (frame.tracks?.length ?? 0) +
+        (frame.reach?.length ?? 0) +
+        (frame.not_reopened?.length ?? 0) +
+        (frame.derisk?.run.length ?? 0) +
+        (frame.derisk?.not_run.length ?? 0) +
+        (frame.files_on_accept?.length ?? 0)
+      );
+    case 'plan':
+      return (
+        (frame.steps?.length ?? 0) +
+        (frame.carried_unproven?.length ?? 0) +
+        landingUnits(frame.landing)
+      );
+    case 'release':
+      return (frame.unproven?.length ?? 0) + landingUnits(frame.act);
+    case 'verify':
+      return frame.criteria?.length ?? 0;
+    default:
+      return 0;
+  }
+}
+
+/** A landing/act block's own renderable steps: one per repo, plus one per irreversible item. */
+function landingUnits(landing?: LandingShape): number {
+  if (!landing) return 0;
+  return (landing.repos?.length ?? 0) + (landing.irreversible?.length ?? 0);
+}
+
+/** Tier-aware soft word budget: base + per-unit × (items + alternatives + frame sub-elements), clamped. */
 function softWordBudget(doc: BriefDoc): number {
-  const units = doc.items.length + (doc.alternatives?.length ?? 0);
+  const units = doc.items.length + (doc.alternatives?.length ?? 0) + frameUnits(doc.frame);
   return Math.min(WORD_BUDGET_BASE + WORD_BUDGET_PER_UNIT * units, WORD_BUDGET_MAX);
 }
 
@@ -131,9 +335,24 @@ function stripForLegibility(content: string): string {
     .replace(/\(\s*https?:\/\/[^)]*\)/g, ' ') // parenthesized bare URLs
     .replace(/https?:\/\/\S+/g, ' ')          // bare URLs
     .split('\n')
-    // Template chrome: the command tail (blockquote) + rendered checkbox items (structured
-    // text — recommendation fields joined by em-dashes, not authored prose sentences).
-    .filter((line) => !/^\s*>/.test(line) && !/^\s*- \[[ xX]\]/.test(line))
+    // Template chrome: the command tail (blockquote), rendered checkbox items (structured text —
+    // recommendation fields joined by em-dashes, not authored prose sentences), and — B-876 — the
+    // frame's structured output: Markdown table rows (verify's criteria ledger) and `**Label:**`
+    // field lines. Without those two, the verify ledger would trip the sentence-length and
+    // stacked-paren nudges on every framed brief, which is a false positive on data, not prose.
+    //
+    // ONE deliberate exemption: the `**Recommend…:**` line. It is authored prose, and it is the line
+    // the B-660 calibration positive (the reconstructed B-550 brief) carries its long sentence and its
+    // stacked parentheticals on — stripping it would silently retire the nudge at the exact spot it was
+    // calibrated to fire. Every other `**Label:**` line the render emits is either a bare section
+    // header (zero words) or mechanical field output.
+    .filter(
+      (line) =>
+        !/^\s*>/.test(line) &&
+        !/^\s*- \[[ xX]\]/.test(line) &&
+        !/^\s*\|/.test(line) &&
+        (!/^\s*\*\*[^*]+:\*\*/.test(line) || /^\s*\*\*Recommend\b/.test(line)),
+    )
     .join('\n');
 }
 
@@ -212,6 +431,179 @@ export interface BriefRenderContext {
   accept?: { from: string | null; to: string } | null;
 }
 
+// ——— B-876: frame rendering ————————————————————————————————————————————————————————————————————
+//
+// Deterministic, and positional per gate. Two exceptions to "below Recommend", both deliberate:
+//   * `clarify` renders ABOVE `## DECIDE:` — it is the only gate where the frame IS the artefact being
+//     produced, so leading with the ask inverts the document.
+//   * `release` renders BELOW DECIDE and ABOVE Recommend — the object of the decision must be named
+//     before an opinion is offered about it (§4.2's one placement disagreement, kept rather than smoothed).
+// Everything else renders after Recommend and before the **On accept:** line, so the revision block —
+// which sits directly under On-accept — can never float above the frame.
+
+/** A LandingShape as one operational sentence: fixed at plan, executed at release, same words both times. */
+function renderLanding(landing: LandingShape): string {
+  const repos = landing.repos?.length ? landing.repos.join(', ') : 'no repo named';
+  const prs = `${landing.pr_count} pull request${landing.pr_count === 1 ? '' : 's'}`;
+  const atomicity =
+    landing.atomicity === 'ordered'
+      ? `ordered${landing.ordering ? ` — ${landing.ordering}` : ''}`
+      : landing.atomicity === 'together'
+        ? 'landed together, not sequenced'
+        : 'a single landing';
+  return `${prs} across ${repos} — lands in ${landing.lands_in}, ${atomicity}`;
+}
+
+/** `[]` is a meaningful answer here, so an empty list renders the word rather than nothing at all. */
+function renderIrreversible(landing: LandingShape): string {
+  return landing.irreversible?.length ? landing.irreversible.join('; ') : 'nothing — every step is revertable';
+}
+
+function renderUnprovenBlock(label: string, entries: Unproven[] | undefined): string[] {
+  const list = entries ?? [];
+  if (!list.length) return [`**${label}:** nothing`];
+  return [`**${label} — ${list.length}:**`, ...list.map((u) => `- ${u.item} — ${u.reason}`)];
+}
+
+const DISPOSITION_MARK: Record<CriterionRow['disposition'], string> = {
+  walk: '✅ walk now',
+  blocked: '⚠️ blocked',
+  'test-proven': '🧪 test-proven',
+  'not-hand-checkable': '🛈 not hand-checkable',
+  carried: '🔁 carried',
+  unproven: '❌ unproven',
+};
+
+/** Escape a pipe so a criterion containing one cannot break the ledger's table row. */
+function cell(value: string | undefined): string {
+  return (value ?? '—').replace(/\|/g, '\\|').replace(/\n+/g, ' ').trim() || '—';
+}
+
+/** The frame block for one gate, as Markdown lines (no trailing blank — the caller adds it). */
+function renderFrame(frame: GateFrame): string[] {
+  const out: string[] = [];
+  switch (frame.kind) {
+    case 'clarify': {
+      out.push(`## SOLVING: ${frame.solving}`, '');
+      if (frame.in_scope?.length) out.push('**In scope:**', ...frame.in_scope.map((e) => `- ${e}`), '');
+      const excluded = frame.not_solving ?? [];
+      out.push('**Not solving:**');
+      if (excluded.length) out.push(...excluded.map((e) => `- ${e.item} — ${e.lands}`));
+      else out.push('- nothing is being excluded — the whole problem is in scope');
+      break;
+    }
+    case 'decompose': {
+      const elements = frame.elements ?? [];
+      out.push(`**The elements — ${elements.length}:**`);
+      for (const el of elements) {
+        const surface = el.surface ? ` — *${el.surface}*` : '';
+        const covers = el.covers ? ` — covers ${el.covers}` : '';
+        out.push(`- ${el.text}${surface}${covers}`);
+      }
+      if (!elements.length) out.push('- (none enumerated)');
+      out.push('', `**Coverage:** ${frame.coverage}`);
+      out.push(
+        `**Existing children checked:** ${frame.existing_children_checked ? 'yes' : 'no — an existing child set was NOT checked'}`,
+      );
+      break;
+    }
+    case 'design': {
+      const others = (frame.tracks ?? [])
+        .filter((t) => t.track !== frame.track)
+        .map((t) => `${t.track} ${t.status}${t.note ? ` (${t.note})` : ''}`);
+      out.push(`**Track:** ${[frame.track, ...others].join(' · ')}`);
+      const reach = frame.reach ?? [];
+      if (reach.length) out.push('**Reach beyond this ticket:**', ...reach.map((r) => `- ${r}`));
+      else out.push('**Reach beyond this ticket:** none — this decision reaches nothing outside the ticket');
+      if (frame.not_reopened?.length) {
+        out.push('**Not reopened here:**', ...frame.not_reopened.map((r) => `- ${r}`));
+      }
+      if (frame.derisk) {
+        const run = frame.derisk.run?.length ? frame.derisk.run.join('; ') : 'nothing';
+        const notRun = frame.derisk.not_run?.length ? frame.derisk.not_run.join('; ') : 'nothing load-bearing outstanding';
+        out.push(`**De-risked by running:** ${run}`, `**Not run:** ${notRun}`);
+      }
+      if (frame.files_on_accept?.length) {
+        out.push('**Files on accept:**', ...frame.files_on_accept.map((f) => `- ${f}`));
+      }
+      break;
+    }
+    case 'plan': {
+      const scope = frame.scope ?? { repos: [], surfaces: [], has_migration: false };
+      const repos = scope.repos?.length ? scope.repos.join(', ') : 'no repo named';
+      const surfaces = scope.surfaces?.length ? ` — ${scope.surfaces.join(', ')}` : '';
+      out.push(`**Touches:** ${repos}${surfaces}. Migration: ${scope.has_migration ? 'yes' : 'no'}.`);
+      out.push(`**Base verified:** ${frame.attestation?.base_verified ?? '(not attested)'}`);
+      if (frame.attestation?.derisked_by_running) {
+        out.push(`**De-risked by running:** ${frame.attestation.derisked_by_running}`);
+      }
+      out.push(...renderUnprovenBlock('Carried into build unproven', frame.carried_unproven));
+      out.push(`**Covers:** ${frame.ac_coverage}`);
+      if (frame.landing) {
+        out.push(`**Landing:** ${renderLanding(frame.landing)}`, `**One-way in this:** ${renderIrreversible(frame.landing)}`);
+      }
+      if (frame.design_delta) out.push(`**Design delta:** ${frame.design_delta}`);
+      break;
+    }
+    case 'release': {
+      // Defensive: `act` is lint-warned rather than lint-refused, so a doc CAN reach the render without
+      // one. The render must degrade to a legible "not stated" line — a throw here would turn a
+      // warn-only rule into a hard compose failure through the back door.
+      if (frame.act) {
+        out.push(`**This accept executes:** ${renderLanding(frame.act)}`);
+        out.push(`**Lands in:** ${frame.act.lands_in}`);
+        out.push(`**One-way in this:** ${renderIrreversible(frame.act)}`);
+      } else {
+        out.push('**This accept executes:** not stated — the landing sequence is missing from this brief.');
+      }
+      out.push(...renderUnprovenBlock('Live but unproven when this lands', frame.unproven));
+      const risk = frame.risk_classes ?? [];
+      out.push(`**Risk (path-derived from the diff):** ${risk.length ? risk.join(', ') : 'none'}`);
+      const ev = frame.evidence_status;
+      if (ev) {
+        out.push(
+          `**Evidence (mechanical):** ${ev.proven_by_run}/${ev.total} proven by a test that RAN · ` +
+            `${ev.walk_at_verify} deferred to the verify runbook · ${ev.unproven} unproven` +
+            `${ev.detail ? ` — ${ev.detail}` : ''}`,
+        );
+      }
+      if (frame.pr_review_state) out.push(`**PR review state:** ${frame.pr_review_state}`);
+      break;
+    }
+    case 'verify': {
+      const rows = frame.criteria ?? [];
+      const confirmable = rows.filter((r) => r.disposition === 'walk').length;
+      out.push(
+        `**Verifying against — ${rows.length} criteria on file · you can confirm ${confirmable} today**`,
+        '',
+      );
+      if (rows.length) {
+        out.push('| # | Criterion (as filed) | Disposition | Step | Backed by |', '|---|---|---|---|---|');
+        rows.forEach((r, i) => {
+          const disposition =
+            DISPOSITION_MARK[r.disposition] +
+            (r.disposition === 'blocked' && r.blocked_reason ? ` — ${r.blocked_reason}` : '') +
+            (r.disposition === 'carried' && r.carried_to ? ` to ${r.carried_to}` : '');
+          out.push(`| ${i + 1} | ${cell(r.text)} | ${cell(disposition)} | ${cell(r.step_ref)} | ${cell(r.backed_by)} |`);
+        });
+        out.push('');
+      } else if (frame.exempt_reason) {
+        out.push(`This ticket carries no acceptance criteria of its own — ${frame.exempt_reason}`, '');
+      }
+      out.push(`**Covers:** ${frame.environment}`);
+      out.push(`**Evidence (mechanical):** ${frame.evidence_status}`);
+      if (frame.bounded_accept) {
+        const ids = frame.bounded_accept.open_ac_ids?.length
+          ? frame.bounded_accept.open_ac_ids.join(', ')
+          : 'none';
+        out.push(`**Bounded accept:** criteria left open — ${ids}. Closes when ${frame.bounded_accept.closes_when}`);
+      }
+      break;
+    }
+  }
+  return out;
+}
+
 /** Render the canonical doc to the §3.1 BLUF Markdown blob, deterministically.
  *  When `decisionRef` is present (B-674), the render mechanically appends the depth-pointer
  *  footer just above the command tail — the authoring agent no longer hand-writes it. A brief
@@ -223,7 +615,18 @@ export interface BriefRenderContext {
  *  ABSENT (an old 1-/2-arg caller) none of that is emitted — the output is byte-identical to before. */
 export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null, ctx?: BriefRenderContext): string {
   const out: string[] = [];
+  const frame = doc.frame;
+
+  // B-876 — clarify is the ONLY gate whose frame precedes the ask: the problem statement IS the artefact
+  // being produced, so leading with DECIDE would invert the document. Every other gate INHERITS the
+  // problem, and porting this shape downstream would restate what the reader already has.
+  if (frame?.kind === 'clarify') out.push(...renderFrame(frame), '');
+
   out.push(`## DECIDE: ${doc.decide}`, '');
+
+  // B-876 — release's frame sits below DECIDE and ABOVE Recommend: at the one gate with a measured wrong
+  // accept, the object of the decision must be named before an opinion is offered about it.
+  if (frame?.kind === 'release') out.push(...renderFrame(frame), '');
 
   if (doc.load_bearing_gap) {
     // Research-first (§3.2): open with the research, defer the substantive recommendation — never buried.
@@ -240,6 +643,10 @@ export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null, ctx
     out.push(`**Recommend${suffix}:** ${doc.recommend.text}`, '');
   }
 
+  // B-876 — every other frame renders after the recommendation and above the **On accept:** line, so the
+  // revision block (which sits directly under On-accept) can never float above the frame.
+  if (frame && frame.kind !== 'clarify' && frame.kind !== 'release') out.push(...renderFrame(frame), '');
+
   // B-874 — the spine line: what accepting this brief DOES to the ticket, stated in the brief itself.
   // It sits directly under the recommendation and above the reasoning, because it is the consequence the
   // human is actually ratifying. Only emitted when the caller supplied compose-time context: a 1-/2-arg
@@ -255,6 +662,16 @@ export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null, ctx
     } else {
       out.push('**On accept:** no state change', '');
     }
+  }
+
+  // B-876 — the iteration delta, directly under the On-accept line and NEVER above the frame. The human
+  // approves the totality; the diff is shown so an "already reflected" claim has a falsifiable form.
+  if (doc.revision?.changes?.length) {
+    out.push(
+      '**Changed this round:**',
+      ...doc.revision.changes.map((c) => `- ${c.change} — *answers: ${c.responds_to}*`),
+      '',
+    );
   }
 
   if (doc.why?.length) {
@@ -278,6 +695,13 @@ export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null, ctx
     if (criteria.length) {
       out.push(PROPOSED_ACS_HEADING, ...criteria.map((c) => `- ${c.content}`), '');
     }
+  }
+
+  // B-876 — the plan's own steps, under their own heading between the reasoning and the ask. The plan gate
+  // is the one whose artefact had no home at all: in 6/14 briefs the plan rendered under **Context:**, the
+  // block that everywhere else means "no action needed", while the checkbox degenerated into a pointer.
+  if (frame?.kind === 'plan' && frame.steps?.length) {
+    out.push('**Plan:**', ...frame.steps.map((step, i) => `${i + 1}. ${step}`), '');
   }
 
   if (doc.items.length) {
@@ -312,6 +736,97 @@ export interface BriefLintContext {
   reason?: string;
   /** `tasks.field_values.build_pr` — the B-722 pushed-PR record, when one exists. */
   buildPr?: { author_is_bot?: boolean; pr_url?: string; pr_number?: number } | null;
+  /** B-876 — EVERY pull request readable from the task's `field_values`, defensively (see
+   *  `readBuildPrReferences`). Drives the warn-only "the release brief names no PR" rule. */
+  buildPrRefs?: BuildPrReference[];
+}
+
+/** B-876 — one pull request read out of a task's `field_values`. `key` is the path it was found at
+ *  (`build_pr`, `build_pr.web_pr`, `build_pr_plugin`, …) so the brief can name WHICH reference it means. */
+export interface BuildPrReference {
+  key: string;
+  pr_url?: string;
+  pr_number?: number;
+  author_is_bot?: boolean;
+  branch?: string;
+  head_sha?: string;
+}
+
+/** Is this value shaped like a pull-request record? PRESENCE of a url or a number, nothing more —
+ *  `work_branch` (B-844's sibling key) carries neither, so it is correctly not a PR. */
+function isPrShaped(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.pr_url === 'string' || typeof v.pr_number === 'number';
+}
+
+function toPrReference(key: string, value: Record<string, unknown>): BuildPrReference {
+  const ref: BuildPrReference = { key };
+  if (typeof value.pr_url === 'string') ref.pr_url = value.pr_url;
+  if (typeof value.pr_number === 'number') ref.pr_number = value.pr_number;
+  if (typeof value.author_is_bot === 'boolean') ref.author_is_bot = value.author_is_bot;
+  if (typeof value.branch === 'string') ref.branch = value.branch;
+  if (typeof value.head_sha === 'string') ref.head_sha = value.head_sha;
+  return ref;
+}
+
+/**
+ * B-876 — read every pull request a task's `field_values` can yield, DEFENSIVELY.
+ *
+ * `field_values.build_pr` has no enforced shape and three divergent forms exist on the live board:
+ *   * B-740 — SIBLING KEYS: `build_pr` plus a separate top-level `build_pr_plugin`.
+ *   * B-743 — NESTED: `build_pr` carrying its own `web_pr` / `plugin_pr` children.
+ *   * B-844 — `build_pr` plus a sibling `work_branch`, which is NOT a PR at all.
+ *
+ * So the contract is: NAME WHAT CAN BE READ, OMIT WHAT CANNOT, AND NEVER THROW. A shape this function
+ * does not understand yields fewer references, never an exception — a brief compose must not die because
+ * a build wrote an unfamiliar artefact. Nesting is one level deep on purpose: that is the only nesting
+ * observed, and an unbounded walk would start inventing references out of arbitrary objects.
+ */
+export function readBuildPrReferences(fieldValues: unknown): BuildPrReference[] {
+  const refs: BuildPrReference[] = [];
+  try {
+    if (!fieldValues || typeof fieldValues !== 'object' || Array.isArray(fieldValues)) return refs;
+    const fv = fieldValues as Record<string, unknown>;
+    const seen = new Set<string>();
+    const push = (key: string, value: unknown) => {
+      if (!isPrShaped(value)) return;
+      const ref = toPrReference(key, value);
+      const identity = `${ref.pr_url ?? ''}#${ref.pr_number ?? ''}`;
+      if (seen.has(identity)) return; // B-743 repeats the parent's own PR inside `plugin_pr`
+      seen.add(identity);
+      refs.push(ref);
+    };
+    // `build_pr` first (the primary reference every release path knows how to land), then its nested
+    // children, then any OTHER PR-shaped top-level key (B-740's `build_pr_plugin`, B-715's `companion_pr`).
+    const primary = fv.build_pr;
+    push('build_pr', primary);
+    if (primary && typeof primary === 'object' && !Array.isArray(primary)) {
+      for (const [k, v] of Object.entries(primary as Record<string, unknown>)) {
+        push(`build_pr.${k}`, v);
+      }
+    }
+    for (const [k, v] of Object.entries(fv)) {
+      if (k === 'build_pr') continue;
+      push(k, v);
+    }
+  } catch {
+    return refs; // never throw — a malformed field_values degrades to "nothing readable"
+  }
+  return refs;
+}
+
+/** The PRIMARY `build_pr` record, read defensively for the B-732 approval rule. Unchanged semantics:
+ *  a task with no readable `build_pr` yields undefined and the rule simply does not apply. */
+export function readBuildPr(fieldValues: unknown): BriefLintContext['buildPr'] {
+  try {
+    if (!fieldValues || typeof fieldValues !== 'object' || Array.isArray(fieldValues)) return undefined;
+    const value = (fieldValues as Record<string, unknown>).build_pr;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    return value as BriefLintContext['buildPr'];
+  } catch {
+    return undefined;
+  }
 }
 
 /** Does the rendered brief actually tell the human an approval is REQUIRED? (B-732)
@@ -335,6 +850,142 @@ function mentionsApprovalRequirement(content: string): boolean {
   return c
     .split(/[.!?\n]+/)
     .some((sentence) => APPROVAL.test(sentence) && REQUIREMENT.test(sentence));
+}
+
+// ——— B-876: the per-gate frame lint ————————————————————————————————————————————————————————————
+//
+// Reason-gated, exactly as the B-732 release rule already is — that precedent also establishes that the
+// lint stays a pure function of its ARGUMENTS: `composeBrief` does the fetching and hands facts in.
+//
+// EVERY RULE HERE IS A WARNING. Not one of them can refuse a brief, and that is the whole deployability
+// argument: `composeBrief` throws on a failed lint, so each new ERROR class would be a new way for an
+// unattended daemon leg to hard-stop mid-run — and an in-place `iterate` re-composes a doc authored under
+// the old rules, which a hard error would refuse an hour after it was legal. The error flip is a later
+// ticket, one gate at a time, ascending blast radius (§5 step 5). `reach` is included in the warn-only
+// set deliberately, despite §8 arguing it up to an error: nothing refuses a brief in this change.
+
+const blank = (value: unknown): boolean => typeof value !== 'string' || value.trim().length === 0;
+
+/** Frame rules for the gate this brief is being composed for. Appends WARNINGS only — never errors. */
+function lintFrame(doc: BriefDoc, ctx: BriefLintContext, warnings: string[]): void {
+  const expected = ctx.reason ? FRAME_KIND_FOR_REASON[ctx.reason] : undefined;
+  // stale-patch-review (n=1) and revise-scope-review (n=4, unanalysed) have no frame variant: `frame` is
+  // unconstrained there rather than inheriting a sibling gate's rules.
+  if (!expected) return;
+
+  const frame = doc.frame;
+  if (!frame) {
+    warnings.push(
+      `This ${ctx.reason} brief carries no \`doc.frame\`. The gate's own must-haves have no other typed home, so they degrade into \`context[]\` and stop being read — author the \`${expected}\` frame (see skills/harmony-shared/brief-authoring.md).`,
+    );
+    return;
+  }
+  if (frame.kind !== expected) {
+    warnings.push(
+      `\`doc.frame.kind\` is '${frame.kind}' but this brief's reason is '${ctx.reason}', which expects the '${expected}' frame. The render positions the frame by kind, so a mismatched frame lands in the wrong place.`,
+    );
+    return;
+  }
+
+  switch (frame.kind) {
+    case 'clarify':
+      if (blank(frame.solving)) {
+        warnings.push('`frame.solving` is blank. It is the OUTCOME — what becomes true for the product when this ships — never a restatement of the problem.');
+      }
+      if (!Array.isArray(frame.not_solving)) {
+        warnings.push('`frame.not_solving` is absent. The KEY is required even when nothing is excluded — `[]` is a legal, meaningful answer; absence is not.');
+      } else {
+        for (const entry of frame.not_solving) {
+          if (blank(entry?.lands)) {
+            warnings.push(`Excluded item "${entry?.item ?? '(unnamed)'}" names no destination. Every exclusion resolves somewhere — a ticket id, a later phase, or the explicit "nowhere — nobody is tracking this".`);
+          }
+        }
+      }
+      break;
+
+    case 'decompose':
+      if (!frame.elements?.length) {
+        warnings.push('`frame.elements` is empty. The gate decides whether these elements ship as one unit or N children — with no inventory the fork cannot be priced.');
+      }
+      if (blank(frame.coverage)) {
+        warnings.push('`frame.coverage` is blank. State the attestation against the accepted clarification: no gaps, no overlaps.');
+      }
+      if (!doc.alternatives?.length) {
+        warnings.push('This decomposition brief carries no `alternatives`. Name the rejected cut and price it by independent shippability — 1/14 briefs did, and the un-split default is the expensive-to-detect error.');
+      }
+      break;
+
+    case 'design':
+      if (blank(frame.track)) {
+        warnings.push('`frame.track` is absent. One gate reason serves three sub-tracks; the reader cannot otherwise tell which of three serialized decisions they are holding.');
+      }
+      for (const entry of frame.tracks ?? []) {
+        if (entry?.status === 'not-required' && blank(entry.note)) {
+          warnings.push(`Track '${entry.track}' is declared not-required with no note. Declaring a track away is a decision — say why, so a reader can contest it.`);
+        }
+      }
+      if (!Array.isArray(frame.reach)) {
+        warnings.push('`frame.reach` is absent. The KEY is required: `[]` ("this reaches nothing beyond the ticket") is a real answer, and a negative reach claim is often what carries the recommendation.');
+      }
+      if (!doc.alternatives?.length && frame.track !== 'ux-ui-design') {
+        warnings.push("This design brief carries no `alternatives`. Name the real options and why each lost. (The ux-ui-design track is exempt: `visual-handoff.md` §D2 forbids auto-generating a guessed variant.)");
+      }
+      break;
+
+    case 'plan':
+      if (blank(frame.attestation?.base_verified)) {
+        warnings.push('`frame.attestation.base_verified` is blank. The plan reader is the only one who can judge "safe to build from" — say what was verified against real code, not from memory.');
+      }
+      if (!Array.isArray(frame.carried_unproven)) {
+        warnings.push('`frame.carried_unproven` is absent. The KEY is required: `[]` = "nothing carried unproven", which is a different claim from silence.');
+      }
+      if (blank(frame.ac_coverage)) {
+        warnings.push('`frame.ac_coverage` is blank. Say whether the plan covers the ticket’s acceptance criteria.');
+      }
+      if (!frame.landing && ((frame.scope?.repos?.length ?? 0) > 1 || frame.scope?.has_migration === true)) {
+        warnings.push('`frame.landing` is absent on a multi-repo or migration-carrying plan. The release topology is FIXED here and merely executed at release — an unstated ordering is exactly the risk that is invisible from the diff.');
+      }
+      break;
+
+    case 'release':
+      if (!frame.act) {
+        warnings.push('`frame.act` is absent. The release gate has no field for the act it authorizes unless this is filled — name the repos, the PR count, the environment, and the atomicity.');
+      } else if (frame.act.atomicity === 'ordered' && blank(frame.act.ordering)) {
+        warnings.push("`frame.act.atomicity` is 'ordered' but `frame.act.ordering` is blank. An ordered landing with no stated order is not executable.");
+      }
+      if (!Array.isArray(frame.unproven)) {
+        warnings.push('`frame.unproven` is absent. The KEY is required: the ship decision IS accepting this residue, and `[]` ("nothing") is the answer a clean release gives.');
+      }
+      if (!frame.evidence_status) {
+        warnings.push('`frame.evidence_status` is absent. Carry the mechanical, executed-aware counts — an unexecuted test is zero evidence, not weak evidence.');
+      }
+      break;
+
+    case 'verify':
+      if (!frame.criteria?.length && blank(frame.exempt_reason)) {
+        warnings.push('`frame.criteria` is empty and no `exempt_reason` is given. This is the gate whose whole contract is confirming reality against the filed criteria — an empty ledger acks against nothing.');
+      }
+      for (const row of frame.criteria ?? []) {
+        if (row?.disposition === 'walk' && blank(row.step_ref)) {
+          warnings.push(`Criterion "${row?.text ?? row?.ac_id ?? '(unnamed)'}" is dispositioned 'walk' but names no \`step_ref\`. A walk with no step is not a runbook step the human can follow.`);
+        }
+      }
+      if (blank(frame.evidence_status)) {
+        warnings.push('`frame.evidence_status` is blank. It is mechanical by construction and present on every verify brief — supporting confidence, never the thing being acked.');
+      }
+      break;
+  }
+}
+
+/** Does the rendered brief name a pull request the human can go and look at? (B-876 step 9)
+ *  Generous about form — the recorded url, a `#123` number, or any `/pull/<n>` link all count. */
+function mentionsPullRequest(content: string, refs: BuildPrReference[]): boolean {
+  if (/\/pull\/\d+/.test(content)) return true;
+  for (const ref of refs) {
+    if (ref.pr_url && content.includes(ref.pr_url)) return true;
+    if (typeof ref.pr_number === 'number' && new RegExp(`#${ref.pr_number}\\b`).test(content)) return true;
+  }
+  return false;
 }
 
 /** Enforce the §3.2 disciplines on the canonical doc. `content` is the rendered blob (for the word budget). */
@@ -364,6 +1015,36 @@ export function lintBrief(
       errors.push(
         `This release brief is for a BOT-AUTHORED pull request${ctx.buildPr.pr_url ? ` (${ctx.buildPr.pr_url})` : ''}, which GitHub will not let the worker merge until a human approves it. The brief must SAY so — name the pull request, state that your approval on GitHub is required before the merge, and surface its current reviewDecision. Without that, accepting this brief starts a release that cannot proceed.`,
       );
+    }
+  }
+
+  // B-876 — the release brief must name the pull request it is about. WARN-ONLY, and reason-gated on the
+  // same fetched fact the B-732 rule uses. A release manager whose structural value is NOT having built
+  // the thing cannot go and look at a PR the brief never names.
+  if (ctx.reason === 'release-decision-pending' && ctx.buildPrRefs?.length) {
+    if (!mentionsPullRequest(content, ctx.buildPrRefs)) {
+      const named = ctx.buildPrRefs
+        .map((r) => r.pr_url ?? (typeof r.pr_number === 'number' ? `#${r.pr_number}` : r.key))
+        .join(', ');
+      warnings.push(
+        `This task records a pushed pull request (${named}) but the brief names no PR reference. Put it on the brief — the release reader must be able to open the thing they are authorizing a merge of.`,
+      );
+    }
+  }
+
+  // B-876 — the per-gate frame rules. Warn-only by construction (see lintFrame's header).
+  lintFrame(doc, ctx, warnings);
+
+  // B-876 — the revision block is a round-2+ artefact, and each change must name the feedback it answers;
+  // an unbound change is a diff, not a response, and cannot be checked against what was asked.
+  if (doc.revision) {
+    if (typeof doc.revision.round === 'number' && doc.revision.round < 2) {
+      warnings.push(`\`doc.revision.round\` is ${doc.revision.round}. The revision block is a round-2+ artefact — a first-round brief has no prior feedback to answer.`);
+    }
+    for (const change of doc.revision.changes ?? []) {
+      if (blank(change?.responds_to)) {
+        warnings.push(`Revision change "${change?.change ?? '(unnamed)'}" names no feedback it responds to. Bind each change to the feedback it answers, so an "already reflected" claim has a falsifiable form.`);
+      }
     }
   }
 
@@ -455,6 +1136,36 @@ export interface ComposeBriefArgs {
    *  On an in-place iterate, coupled Asserted claims NOT in this list are archived (empty array ⇒
    *  archive all coupled Asserted claims). Omitted ⇒ no prune (back-compat). */
   underwriting_claim_ids?: string[];
+  /** B-876 — the build's changed file paths (`git diff --name-only origin/main...HEAD`). The ONLY input
+   *  to a release frame's `risk_classes`: compose computes that field and overwrites whatever the skill
+   *  authored. No diff ⇒ `[]` — the signal is path-derived or it is nothing. */
+  changed_paths?: string[];
+}
+
+/**
+ * B-876 — COMPOSE IS AUTHORITATIVE for a release frame's `risk_classes`.
+ *
+ * The field is PATH-DERIVED FROM THE DIFF, computed here with the same pure detector `get_task` uses
+ * (`detectRiskClasses`, src/tools/risk-class.ts) — never a second detector, and never a prose guess. The
+ * skill's authored value is OVERWRITTEN, because a hand-written risk list is exactly the prose-keyed
+ * signal B-516's path filter exists to replace. No `changed_paths` ⇒ `[]`.
+ *
+ * Note the deliberate omission of `text`: passing the brief's prose would re-admit the prose false
+ * positives (a brief that merely MENTIONS "migration" while the diff touches one frontend file).
+ *
+ * THIS DOES NOT REPLACE the B-516 carried-from-gates signal. Two DIFFERENT signals reach a release brief:
+ * (a) this one, diff-derived; and (b) the classes recorded at gates an `--unattended` run auto-advanced,
+ * which are NOT diff-derived, still ride the brief as prose, and must be labelled as carried from gates.
+ * Reading "diff-derived, not prose" as "drop everything that is not diff-derived" would silently weaken
+ * the unattended-mode floor — the very floor that exists because those runs do not pause mid-flight.
+ *
+ * Returns a doc CLONE when it rewrites anything; the caller's object is never mutated.
+ */
+function withDiffDerivedRiskClasses(doc: BriefDoc, changedPaths?: string[]): BriefDoc {
+  if (doc.frame?.kind !== 'release') return doc;
+  const paths = Array.isArray(changedPaths) ? changedPaths.filter((x) => typeof x === 'string') : [];
+  const risk_classes = paths.length > 0 ? (detectRiskClasses({ changedPaths: paths }) as string[]) : [];
+  return { ...doc, frame: { ...doc.frame, risk_classes } };
 }
 
 export async function composeBrief(
@@ -478,7 +1189,12 @@ export async function composeBrief(
   // bot-authored PR. Guarded: a task with no build_pr (every non-release brief, and any pre-B-722
   // ticket) simply yields undefined and the rule does not apply. A read failure must never block
   // brief composition — the rule degrades to "not applicable" rather than erroring the gate.
+  //
+  // B-876: the SAME guarded read now also yields every readable PR reference (`readBuildPrReferences`),
+  // which tolerates the three divergent live shapes — B-740's sibling keys, B-743's nesting, B-844's
+  // non-PR `work_branch` sibling. It names what it can read and omits what it cannot; it never throws.
   let buildPr: BriefLintContext['buildPr'];
+  let buildPrRefs: BuildPrReference[] | undefined;
   if (args.reason === 'release-decision-pending') {
     const { data: taskRow } = await client
       .from('tasks')
@@ -486,7 +1202,8 @@ export async function composeBrief(
       .eq('id', taskId)
       .maybeSingle();
     const fv = (taskRow as { field_values?: Record<string, unknown> } | null)?.field_values;
-    buildPr = (fv?.build_pr as BriefLintContext['buildPr']) ?? undefined;
+    buildPr = readBuildPr(fv);
+    buildPrRefs = readBuildPrReferences(fv);
   }
 
   // B-625: a literal-string "null" (case-insensitive, trimmed) is the string-serialized form of JSON null
@@ -538,15 +1255,18 @@ export async function composeBrief(
   // The third argument (B-874) carries the compose-time facts the doc cannot know — the gate reason and
   // the resolved accept-transition — which drive the **On accept:** line, the gate-specific command tail,
   // and clarify's payload-derived proposed-AC block.
-  const content = renderBrief(args.doc, args.decision_ref, { reason: args.reason, accept });
-  const lint = lintBrief(args.doc, content, { reason: args.reason, buildPr });
+  // B-876: `doc` is the canonical doc with compose-authoritative fields resolved (today: the release
+  // frame's diff-derived `risk_classes`). It — not `args.doc` — is what gets rendered, linted and stored.
+  const doc = withDiffDerivedRiskClasses(args.doc, args.changed_paths);
+  const content = renderBrief(doc, args.decision_ref, { reason: args.reason, accept });
+  const lint = lintBrief(doc, content, { reason: args.reason, buildPr, buildPrRefs });
   if (!lint.ok) {
     throw new Error(`Brief failed the §3.2 pre-send lint:\n- ${lint.errors.join('\n- ')}`);
   }
 
   const payload = {
     reason: args.reason,
-    doc: args.doc,
+    doc,
     content,
     expand_sections: args.expand_sections ?? {},
     related: args.related ?? [],
@@ -662,7 +1382,8 @@ export async function composeBrief(
 export const composeBriefTool = {
   name: 'compose_brief',
   description:
-    "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate). On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref — do not hand-write it.",
+    "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate). On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref — do not hand-write it. " +
+    "B-876: also author `doc.frame` — the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING — no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) — compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates.",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -694,6 +1415,16 @@ export const composeBriefTool = {
           research: { type: 'array', items: { type: 'string' }, description: 'Research prompts — required + surfaced up front when load_bearing_gap, never buried' },
           load_bearing_gap: { type: 'boolean', description: 'true when a load-bearing knowledge gap blocks a substantive decision (forces research-first)' },
           tail: { type: 'string', description: 'Optional custom command tail line; defaults to the standard one' },
+          frame: {
+            type: 'object',
+            description:
+              "B-876 — the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta? } | 'release' { act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state? } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], exempt_reason?, evidence_status, bounded_accept? }. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[] }. Every rule over this field is a WARNING — an absent or malformed frame never refuses the brief; omit it entirely and the render is byte-identical to the pre-B-876 output.",
+          },
+          revision: {
+            type: 'object',
+            description:
+              "B-876 — round-2+ only: { round: number, changes: [{ change, responds_to }] }. One entry per change made this round, each bound to the feedback it answers. Renders under the **On accept:** line as 'Changed this round:' and never above the frame — the human approves the totality, not the diff.",
+          },
           payload: {
             type: 'array',
             description:
@@ -720,6 +1451,12 @@ export const composeBriefTool = {
       related: { type: 'array', description: 'Pre-generated related decisions/tickets/knowledge' },
       pending_activity: { type: ['string', 'null'], description: 'The workflow activity `accept` applies (e.g. clarifying, decomposing, deploying, verifying). A real activity is validated against the transition table; null or omitted ⇒ accept advances no state.' },
       decision_ref: { type: 'object', description: 'The Asserted knowledge entry to promote on accept: { type: "decision", id: "<uuid>" }' },
+      changed_paths: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          "B-876 — the build's changed file paths (`git diff --name-only origin/main...HEAD`). Used ONLY to compute a release frame's `risk_classes` with the deterministic path detector; compose is authoritative for that field and overwrites whatever the doc authored. Omit (or pass []) and the field is [] — the risk signal is path-derived or it is nothing, never prose-guessed.",
+      },
       underwriting_claim_ids: { type: 'array', items: { type: 'string' }, description: 'B-645 iterate-prune: on an in-place iterate, the KEPT set of elicitation-claim ids that still underwrite this brief. Coupled Asserted claims NOT listed are archived; [] archives all coupled Asserted claims; omit ⇒ no prune. Ignored on a first compose (nothing is coupled yet).' },
     },
     required: ['task_id', 'reason', 'doc'],

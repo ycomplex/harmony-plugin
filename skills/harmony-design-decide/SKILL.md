@@ -232,6 +232,29 @@ Set `pending_activity: "designing"` **only if this is the last required sub-trac
 Accepted). Otherwise set `pending_activity: null` — accepting this brief promotes the decision and clears
 the flag without advancing state (state advances to Designed only when *all* required sub-tracks are in).
 
+**Also author `doc.frame` (B-876) — the design gate's own must-haves.** One gate reason serves three
+sub-tracks and three different readers, and the brief today cannot say which of three serialized
+decisions the human is holding, what the other tracks own, or how far this decision reaches. The frame
+says all of it:
+
+- **`track` + `tracks[]`** — which sub-track this brief decides, and the status of the others
+  (`accepted` / `this-brief` / `pending` / `not-required`). A `not-required` entry MUST carry a `note`:
+  declaring a track away is a decision, and it is the line a designer would object to. B-698 shipped a
+  new status vocabulary with no designer in the loop off an uncontested `context[]` aside.
+- **`reach`** — the spillover: how far this decision goes beyond this ticket. `brief-authoring.md` calls
+  it the highest-signal element of the brief and it rendered as a labelled block in 2/14. The KEY is
+  required; `[]` ("this reaches nothing beyond the ticket") is a real answer, and a *negative* reach
+  claim is often exactly what carries a no-UX/UI-track proposal.
+- **`not_reopened`** — the upstream decisions this brief is NOT reopening. Scope discipline.
+- **`derisk`** — `run` is what you actually executed; `not_run` is what was NOT run and is NOT claimed.
+  Both halves, always: "not run and not claimed" is the easiest sentence in a brief to skim past.
+- **`files_on_accept`** — **PRODUCT TRACK ONLY**: the AC manifest this accept files, as a list. The
+  product accept is a WRITE and nothing marks it today.
+
+`frame.kind` must be `"design"`; the render places it below the recommendation. The `ux-ui-design` track
+is the one exempt from the alternatives rule — `visual-handoff.md` §D2 forbids auto-generating a guessed
+variant, so an empty `alternatives` is correct there and only there.
+
 ```
 mcp__harmony__compose_brief({
   task_id,
@@ -241,12 +264,31 @@ mcp__harmony__compose_brief({
   doc: {
     decide: "Technical approach for the saved-filter store?",
     recommend: { text: "Reuse the existing per-user settings JSONB column", confidence: "high" },
+    frame: {
+      kind: "design",
+      track: "technical-design",                      // the sub-track THIS brief decides
+      tracks: [
+        { track: "product-design", status: "accepted" },
+        { track: "technical-design", status: "this-brief" },
+        { track: "ux-ui-design", status: "not-required", note: "<why — e.g. an operator table view analogous to the existing views, not a new visual language. Override me if you disagree.>" }
+      ],
+      reach: ["<what this decision touches beyond this ticket>"],   // [] is a real answer; absence is not
+      not_reopened: ["<the upstream decisions this brief does NOT reopen>"],
+      derisk: { run: ["<what you actually executed, with the observation>"],
+                not_run: ["<what was NOT run and is NOT claimed>"] }
+      // PRODUCT TRACK ONLY — the AC manifest this accept files:
+      // , files_on_accept: ["<criterion 1>", "<criterion 2>"]
+    },
     why: ["Existing settings store handles per-user state", "Avoids a new table + RLS"],
     alternatives: [{ option: "New saved_filters table", rejection: "More schema + RLS for v1 scope" }],
     items: [{ kind: "decision", text: "Where saved-filter state lives", recommendation: "settings JSONB" }]
   }
 })
 ```
+
+**On an iterate (round 2+), also author `doc.revision`** — `{ round, changes: [{ change, responds_to }] }`,
+one entry per change made this round, each bound to the feedback it answers. It renders under the
+**On accept:** line, never above the frame: the human approves the totality, never the diff.
 
 **PRODUCT track only (B-810) — also author `doc.payload` for step 2b's ADD/SHARPEN/drop edits.** The
 technical and UX/UI sub-tracks author no `doc.payload` at all (they carry no AC edits — unchanged by

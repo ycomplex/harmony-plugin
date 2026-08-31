@@ -65,11 +65,45 @@ same `payload` / `manage_checklist_items` list this section builds, granularity 
 steps — without a human needing to remark it in. This mandates the lookup only; the content is each
 repo's own CLAUDE.md, never hardcoded here.
 
+**Also author `doc.frame` (B-876) — the plan gate's own must-haves.** The plan is the artefact being
+ratified and it had no home: in 6/14 briefs it rendered under **Context:**, the block that everywhere
+else means "no action needed", while the checkbox degenerated into a pointer at it. `frame.steps`
+renders under its own **Plan:** heading, between the reasoning and the ask. The rest of the frame is
+what makes the plan *refusable*:
+
+- **`scope`** — repos, surfaces, and whether a migration is involved. Blast radius as fact, not argument.
+- **`attestation.base_verified`** — what you verified by reading REAL current code and the live API, not
+  from memory. You are the only reader who can judge "safe to build from".
+- **`carried_unproven`** — the residual bets the build carries, each with the reason it cannot be proven
+  first. The KEY is required: `[]` = "nothing carried unproven", which is a different claim from silence.
+  Rendered 3/14 today, and it is the decision-relevant half of the attestation.
+- **`ac_coverage`** — whether the plan covers the ticket's acceptance criteria.
+- **`landing`** — REQUIRED (warned) whenever the scope names more than one repo or carries a migration.
+  The release topology is FIXED here and merely EXECUTED at release; the two 2026-08-26 plan-gate catches
+  (B-743, B-740) were ordering risks invisible from the diff. Same shape the release brief renders.
+- **`design_delta`** — where the plan deviates from, exceeds, or adds to the Accepted design.
+
 ```
 mcp__harmony__compose_brief({
   task_id, reason: "plan-draft", pending_activity: "planning",
   doc: {
     decide: "Approve this execution plan?",
+    recommend: { text: "<proceed as planned below — one line on the shape>", confidence: "high" },
+    frame: {
+      kind: "plan",
+      scope: { repos: ["harmony-plugin"], surfaces: ["<the files/modules touched>"], has_migration: false },
+      // The plan itself, as an ordered sequence the reader can scan. Same granularity as the checklist.
+      steps: ["Write the migration", "Add the MCP tool", "Tests + typecheck + lint", "Land as one PR"],
+      attestation: {
+        base_verified: "<what you read in CURRENT code this session — never from memory>",
+        derisked_by_running: "<what you actually ran, and what it showed>"
+      },
+      // [] = explicitly nothing carried unproven. Never omit the key.
+      carried_unproven: [{ item: "<the bet the build carries>", reason: "<why it cannot be proven before the build runs>" }],
+      ac_coverage: "<which of the ticket's acceptance criteria this plan covers, and any it does not>",
+      // REQUIRED when repos > 1 or has_migration — the release topology this plan FIXES:
+      landing: { repos: ["harmony-plugin"], pr_count: 1, lands_in: "staging", atomicity: "single", irreversible: [] }
+    },
     items: [{ kind: "decision", text: "<plan summary>", recommendation: "proceed" }],
     // one item per concrete plan step — same list the accept step below writes via manage_checklist_items
     payload: [
@@ -79,6 +113,12 @@ mcp__harmony__compose_brief({
   }
 })
 ```
+
+`frame.steps` and the `checklist_item` payload are the SAME list at the same granularity — the frame is
+what the human reads, the payload is what the accept materializes. Keep them in step.
+
+**On an iterate (round 2+), also author `doc.revision`** — `{ round, changes: [{ change, responds_to }] }`,
+each change bound to the feedback it answers. It renders under the **On accept:** line, below the frame.
 
 On **accept** → **first materialize the plan's own steps as the ticket's checklist (B-797 — this is what
 closes specimen 6, B-800: the accepted plan's steps must be READABLE at build time, not just narrated in
@@ -355,13 +395,42 @@ shipped with NO recommendation at the one gate that is irreversible. Fill all of
   carry its result verbatim. It is the machine's account of the ACs checked, the test cases recorded,
   and the pushed PR — never a prose paraphrase of it, and never a substitute for the residue above.
 
+**Also author the release `doc.frame` and pass `changed_paths` (B-876).** A release brief drafted here is
+the SAME artefact the release gate surfaces, so it owes the same frame — the act it authorizes, the
+unproven residue, and the executed-aware evidence counts, rendered below DECIDE and above Recommend.
+`skills/finish-work/SKILL.md` § "The release frame (B-876)" is the field-by-field reference; author
+against it rather than a second copy of it here. Two things to get right at THIS gate:
+
+- **`changed_paths`** — the build's own diff (`git diff --name-only origin/main...HEAD` over the branch
+  you just pushed). You have it here; the release gate would have to re-derive it.
+- **`risk_classes`** — leave it `[]`. `compose_brief` recomputes it from `changed_paths` with the
+  deterministic path detector and **overwrites** whatever you author, so it can never drift from the
+  diff and can never be prose-guessed.
+
 ```
 const ev = mcp__harmony__get_build_evidence_status({ task_id })
 
 mcp__harmony__compose_brief({
   task_id, reason: "release-decision-pending", pending_activity: null,
+  // The paths compose derives frame.risk_classes from — the diff you just pushed:
+  changed_paths: [<git diff --name-only origin/main...HEAD>],
   doc: { decide: "Release <ticket> — merge PR <pr_number> and deploy to staging?",
     recommend: { text: "Ship it — <one line on why it is safe to merge now>", confidence: "high" },
+    // THE RELEASE FRAME (B-876) — field-by-field reference: finish-work § "The release frame (B-876)".
+    frame: {
+      kind: "release",
+      // What the accept literally executes, and where it lands. `lands_in` is an enum so the brief
+      // cannot say "to production?" while the act is a merge to `main`.
+      act: { repos: ["<repo>"], pr_count: 1, lands_in: "staging", atomicity: "single",
+             // ordering: "<REQUIRED when atomicity is 'ordered'>",
+             irreversible: [] },   // [] renders as "nothing — every step is revertable"
+      // The SAME residue as the `why` bullet below, as a closed enumeration. [] = nothing.
+      unproven: [{ item: "<what is unproven>", reason: "<why the build did not prove it>" }],
+      // Executed-aware counts behind `ev` — an unexecuted test is ZERO evidence, not weak evidence.
+      evidence_status: { proven_by_run: <n>, walk_at_verify: <n>, unproven: <n>, total: <n>, detail: "<ev, verbatim>" },
+      risk_classes: [],            // OVERWRITTEN at compose from `changed_paths` — do not hand-author it
+      pr_review_state: "<reviewDecision>"
+    },
     why: [
       // THE EXECUTED ACT — what the accept actually causes, in operational terms:
       "Merging PR <pr_number> in <repo> lands <ticket> on `main`, which deploys to STAGING — migrations, edge functions, then the frontend. Production is a separate `./promote-prod.sh` step and is not part of this decision.",

@@ -36733,12 +36733,259 @@ async function resolveAssignee(client, projectId, assignee) {
   throw new Error(`No member found matching "${assignee}". Use list_members to see available members.`);
 }
 
+// src/tools/risk-class.ts
+var RISK_CLASSES = [
+  "auth",
+  "data-migration",
+  "irreversible-destructive",
+  "shared-core"
+];
+var kw = (re, senseOk) => ({ re, senseOk });
+var AUTH_TOKEN_QUALIFIER = /\b(?:auth|access|api|bearer|jwt|session|refresh|csrf)\b/i;
+function tokenIsAuthSense(text, start, end) {
+  const before = text.slice(Math.max(0, start - 24), start);
+  const after = text.slice(end, end + 24);
+  const window2 = before + " " + after;
+  return AUTH_TOKEN_QUALIFIER.test(window2);
+}
+var KEYWORD_TABLE = {
+  auth: [
+    // auth / login / logout / session / token / password / oauth / RLS / permission / role
+    kw(/\bauth(?:entication|orization|z|n)?\b/i),
+    kw(/\boauth\b/i),
+    kw(/\blog[\s-]?in\b/i),
+    kw(/\blog[\s-]?out\b/i),
+    kw(/\bsign[\s-]?in\b/i),
+    kw(/\bsign[\s-]?out\b/i),
+    kw(/\bsession\b/i),
+    kw(/\btokens?\b/i, tokenIsAuthSense),
+    kw(/\bpasswords?\b/i),
+    kw(/\bcredentials?\b/i),
+    kw(/\bRLS\b/i),
+    kw(/\brow[\s-]?level[\s-]?security\b/i),
+    kw(/\bpermissions?\b/i),
+    kw(/\broles?\b/i)
+  ],
+  "data-migration": [
+    // migration / schema / ALTER TABLE / backfill / DROP COLUMN
+    kw(/\bmigrations?\b/i),
+    kw(/\bschema\b/i),
+    kw(/\balter\s+table\b/i),
+    kw(/\badd\s+column\b/i),
+    kw(/\bdrop\s+column\b/i),
+    kw(/\bbackfill(?:s|ed|ing)?\b/i),
+    kw(/\bdata[\s-]?migration\b/i)
+  ],
+  "irreversible-destructive": [
+    // DROP / DELETE FROM / TRUNCATE / irreversible / hard-delete / purge
+    kw(/\bdrop\s+(?:table|column|database|schema|index|constraint)\b/i),
+    kw(/\bdelete\s+from\b/i),
+    kw(/\btruncate\b/i),
+    kw(/\birreversible\b/i),
+    kw(/\bhard[\s.-]?delete(?:s|d)?\b/i),
+    kw(/\bpurge(?:s|d|ing)?\b/i),
+    kw(/\bdestructive\b/i),
+    kw(/\bunrecoverable\b/i),
+    kw(/\bpermanently\s+(?:delete|remove|destroy)/i)
+  ],
+  "shared-core": [
+    // curated shared module names that, if touched, have broad blast radius
+    kw(/\bsupabase\.ts\b/i),
+    kw(/\bauth\.ts\b/i),
+    kw(/\bsrc\/tools\/registry\b/i),
+    kw(/\bsrc\/tools\/index\.ts\b/i),
+    kw(/\bregisterTools\b/i),
+    kw(/\bshared[\s-]?core\b/i)
+  ]
+};
+var NEGATION_CUES = /* @__PURE__ */ new Set(["no", "not", "without", "zero", "neither", "nor", "none"]);
+var NEGATION_WINDOW = 4;
+var CLAUSE_BOUNDARY_TOKENS = /* @__PURE__ */ new Set(["and", "but", "or", "then", "so", "yet"]);
+var CLAUSE_BOUNDARY_PUNCT = /[,;:.–—]/;
+var ASCII_LETTER = /[a-z]/;
+function precedingTokens(text, matchStart) {
+  const slice = text.slice(Math.max(0, matchStart - 48), matchStart).toLowerCase();
+  const isWordChar = (k) => {
+    const c = slice[k];
+    if (c === void 0) return false;
+    if (ASCII_LETTER.test(c) || c === "'") return true;
+    if (c === "-") return ASCII_LETTER.test(slice[k - 1] ?? "") && ASCII_LETTER.test(slice[k + 1] ?? "");
+    return false;
+  };
+  const inClause = [];
+  let i = slice.length - 1;
+  while (i >= 0 && inClause.length < NEGATION_WINDOW) {
+    if (CLAUSE_BOUNDARY_PUNCT.test(slice[i])) break;
+    if (isWordChar(i)) {
+      let j = i;
+      while (j >= 0 && isWordChar(j)) j--;
+      const word = slice.slice(j + 1, i + 1);
+      i = j;
+      if (word.length === 0) continue;
+      if (CLAUSE_BOUNDARY_TOKENS.has(word)) break;
+      inClause.push(word);
+    } else {
+      if (slice[i] === "-") break;
+      i--;
+    }
+  }
+  return inClause;
+}
+function isNegated(text, start) {
+  for (const tok of precedingTokens(text, start)) {
+    if (NEGATION_CUES.has(tok)) return true;
+    if (tok.endsWith("n't")) return true;
+  }
+  return false;
+}
+function textHitsClass(text, cls) {
+  for (const keyword of KEYWORD_TABLE[cls]) {
+    const g = new RegExp(keyword.re.source, keyword.re.flags.includes("g") ? keyword.re.flags : keyword.re.flags + "g");
+    let m;
+    while ((m = g.exec(text)) !== null) {
+      const start = m.index;
+      const end = m.index + m[0].length;
+      if (m[0].length === 0) {
+        g.lastIndex++;
+        continue;
+      }
+      if (keyword.senseOk && !keyword.senseOk(text, start, end)) continue;
+      if (isNegated(text, start)) continue;
+      return true;
+    }
+  }
+  return false;
+}
+var PATH_GLOB_TABLE = {
+  auth: ["**/auth/**", "**/auth.ts", "**/auth.tsx", "**/*auth*.ts", "**/middleware/auth*", "**/rls/**"],
+  "data-migration": ["**/migrations/**", "**/migration/**", "**/*.sql", "**/schema.sql", "**/supabase/migrations/**"],
+  // No reliably-destructive path signature (destructiveness lives in content, not the path);
+  // kept empty so this class trips on text/labels, never on an innocent path. The conservative
+  // bias is served by the keyword table here, not by over-broad path globs.
+  "irreversible-destructive": [],
+  "shared-core": [
+    "**/supabase.ts",
+    "**/auth.ts",
+    "**/src/tools/index.ts",
+    "**/src/tools/registry*",
+    "**/src/supabase.ts",
+    "**/src/auth.ts"
+  ]
+};
+function globToRegExp(glob) {
+  let re = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") {
+      if (glob[i + 1] === "*") {
+        re += ".*";
+        i++;
+        if (glob[i + 1] === "/") i++;
+      } else {
+        re += "[^/]*";
+      }
+    } else if (c === "?") {
+      re += "[^/]";
+    } else if ("\\^$.|+()[]{}".includes(c)) {
+      re += "\\" + c;
+    } else {
+      re += c;
+    }
+  }
+  return new RegExp("^" + re + "$", "i");
+}
+var PATH_REGEX_TABLE = {
+  auth: PATH_GLOB_TABLE.auth.map(globToRegExp),
+  "data-migration": PATH_GLOB_TABLE["data-migration"].map(globToRegExp),
+  "irreversible-destructive": PATH_GLOB_TABLE["irreversible-destructive"].map(globToRegExp),
+  "shared-core": PATH_GLOB_TABLE["shared-core"].map(globToRegExp)
+};
+function labelToRiskClass(label) {
+  const l = label.trim().toLowerCase().replace(/^risk[:/-]/, "");
+  switch (l) {
+    case "auth":
+      return "auth";
+    case "data-migration":
+    case "migration":
+    case "data migration":
+      return "data-migration";
+    case "irreversible-destructive":
+    case "irreversible":
+    case "destructive":
+      return "irreversible-destructive";
+    case "shared-core":
+    case "shared core":
+    case "core":
+      return "shared-core";
+    default:
+      return null;
+  }
+}
+function pathHitsClass(paths, cls) {
+  const globs = PATH_REGEX_TABLE[cls];
+  return globs.length > 0 && paths.some((p) => globs.some((re) => re.test(p)));
+}
+function detectRiskClasses(input) {
+  const hits = /* @__PURE__ */ new Set();
+  const text = typeof input.text === "string" ? input.text : "";
+  const paths = Array.isArray(input.changedPaths) ? input.changedPaths.filter((p) => typeof p === "string") : [];
+  const labels = Array.isArray(input.labels) ? input.labels.filter((l) => typeof l === "string") : [];
+  const hasDiff = paths.length > 0;
+  for (const label of labels) {
+    const cls = labelToRiskClass(label);
+    if (cls) hits.add(cls);
+  }
+  for (const cls of RISK_CLASSES) {
+    if (pathHitsClass(paths, cls)) hits.add(cls);
+  }
+  if (text.length > 0) {
+    for (const cls of RISK_CLASSES) {
+      if (hits.has(cls)) continue;
+      if (!textHitsClass(text, cls)) continue;
+      const demotedByCleanDiff = hasDiff && PATH_GLOB_TABLE[cls].length > 0 && !pathHitsClass(paths, cls);
+      if (!demotedByCleanDiff) hits.add(cls);
+    }
+  }
+  return RISK_CLASSES.filter((cls) => hits.has(cls));
+}
+
 // src/tools/briefs.ts
+var FRAME_KIND_FOR_REASON = {
+  "clarification-draft": "clarify",
+  "decomposition-proposal": "decompose",
+  "design-decision-draft": "design",
+  "plan-draft": "plan",
+  "release-decision-pending": "release",
+  "verification-ack-pending": "verify"
+};
 var WORD_BUDGET_BASE = 600;
 var WORD_BUDGET_PER_UNIT = 75;
 var WORD_BUDGET_MAX = 1400;
+function frameUnits(frame) {
+  if (!frame) return 0;
+  switch (frame.kind) {
+    case "clarify":
+      return (frame.in_scope?.length ?? 0) + (frame.not_solving?.length ?? 0);
+    case "decompose":
+      return frame.elements?.length ?? 0;
+    case "design":
+      return (frame.tracks?.length ?? 0) + (frame.reach?.length ?? 0) + (frame.not_reopened?.length ?? 0) + (frame.derisk?.run.length ?? 0) + (frame.derisk?.not_run.length ?? 0) + (frame.files_on_accept?.length ?? 0);
+    case "plan":
+      return (frame.steps?.length ?? 0) + (frame.carried_unproven?.length ?? 0) + landingUnits(frame.landing);
+    case "release":
+      return (frame.unproven?.length ?? 0) + landingUnits(frame.act);
+    case "verify":
+      return frame.criteria?.length ?? 0;
+    default:
+      return 0;
+  }
+}
+function landingUnits(landing) {
+  if (!landing) return 0;
+  return (landing.repos?.length ?? 0) + (landing.irreversible?.length ?? 0);
+}
 function softWordBudget(doc) {
-  const units = doc.items.length + (doc.alternatives?.length ?? 0);
+  const units = doc.items.length + (doc.alternatives?.length ?? 0) + frameUnits(doc.frame);
   return Math.min(WORD_BUDGET_BASE + WORD_BUDGET_PER_UNIT * units, WORD_BUDGET_MAX);
 }
 var DEFAULT_TAIL = "Type `accept`, `edit`, `iterate <feedback>`, or `defer`.";
@@ -36749,7 +36996,9 @@ function tailForReason(reason) {
 }
 var SENTENCE_WORD_LIMIT = 50;
 function stripForLegibility(content) {
-  return content.replace(/```[\s\S]*?```/g, " ").replace(/`[^`\n]+`/g, " ").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\(\s*https?:\/\/[^)]*\)/g, " ").replace(/https?:\/\/\S+/g, " ").split("\n").filter((line) => !/^\s*>/.test(line) && !/^\s*- \[[ xX]\]/.test(line)).join("\n");
+  return content.replace(/```[\s\S]*?```/g, " ").replace(/`[^`\n]+`/g, " ").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\(\s*https?:\/\/[^)]*\)/g, " ").replace(/https?:\/\/\S+/g, " ").split("\n").filter(
+    (line) => !/^\s*>/.test(line) && !/^\s*- \[[ xX]\]/.test(line) && !/^\s*\|/.test(line) && (!/^\s*\*\*[^*]+:\*\*/.test(line) || /^\s*\*\*Recommend\b/.test(line))
+  ).join("\n");
 }
 function countProseWords(s) {
   return s.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
@@ -36787,9 +37036,148 @@ function analyzeLegibility(content) {
     adjacentParens
   };
 }
+function renderLanding(landing) {
+  const repos = landing.repos?.length ? landing.repos.join(", ") : "no repo named";
+  const prs = `${landing.pr_count} pull request${landing.pr_count === 1 ? "" : "s"}`;
+  const atomicity = landing.atomicity === "ordered" ? `ordered${landing.ordering ? ` \u2014 ${landing.ordering}` : ""}` : landing.atomicity === "together" ? "landed together, not sequenced" : "a single landing";
+  return `${prs} across ${repos} \u2014 lands in ${landing.lands_in}, ${atomicity}`;
+}
+function renderIrreversible(landing) {
+  return landing.irreversible?.length ? landing.irreversible.join("; ") : "nothing \u2014 every step is revertable";
+}
+function renderUnprovenBlock(label, entries) {
+  const list = entries ?? [];
+  if (!list.length) return [`**${label}:** nothing`];
+  return [`**${label} \u2014 ${list.length}:**`, ...list.map((u) => `- ${u.item} \u2014 ${u.reason}`)];
+}
+var DISPOSITION_MARK = {
+  walk: "\u2705 walk now",
+  blocked: "\u26A0\uFE0F blocked",
+  "test-proven": "\u{1F9EA} test-proven",
+  "not-hand-checkable": "\u{1F6C8} not hand-checkable",
+  carried: "\u{1F501} carried",
+  unproven: "\u274C unproven"
+};
+function cell(value) {
+  return (value ?? "\u2014").replace(/\|/g, "\\|").replace(/\n+/g, " ").trim() || "\u2014";
+}
+function renderFrame(frame) {
+  const out = [];
+  switch (frame.kind) {
+    case "clarify": {
+      out.push(`## SOLVING: ${frame.solving}`, "");
+      if (frame.in_scope?.length) out.push("**In scope:**", ...frame.in_scope.map((e) => `- ${e}`), "");
+      const excluded = frame.not_solving ?? [];
+      out.push("**Not solving:**");
+      if (excluded.length) out.push(...excluded.map((e) => `- ${e.item} \u2014 ${e.lands}`));
+      else out.push("- nothing is being excluded \u2014 the whole problem is in scope");
+      break;
+    }
+    case "decompose": {
+      const elements = frame.elements ?? [];
+      out.push(`**The elements \u2014 ${elements.length}:**`);
+      for (const el of elements) {
+        const surface = el.surface ? ` \u2014 *${el.surface}*` : "";
+        const covers = el.covers ? ` \u2014 covers ${el.covers}` : "";
+        out.push(`- ${el.text}${surface}${covers}`);
+      }
+      if (!elements.length) out.push("- (none enumerated)");
+      out.push("", `**Coverage:** ${frame.coverage}`);
+      out.push(
+        `**Existing children checked:** ${frame.existing_children_checked ? "yes" : "no \u2014 an existing child set was NOT checked"}`
+      );
+      break;
+    }
+    case "design": {
+      const others = (frame.tracks ?? []).filter((t) => t.track !== frame.track).map((t) => `${t.track} ${t.status}${t.note ? ` (${t.note})` : ""}`);
+      out.push(`**Track:** ${[frame.track, ...others].join(" \xB7 ")}`);
+      const reach = frame.reach ?? [];
+      if (reach.length) out.push("**Reach beyond this ticket:**", ...reach.map((r) => `- ${r}`));
+      else out.push("**Reach beyond this ticket:** none \u2014 this decision reaches nothing outside the ticket");
+      if (frame.not_reopened?.length) {
+        out.push("**Not reopened here:**", ...frame.not_reopened.map((r) => `- ${r}`));
+      }
+      if (frame.derisk) {
+        const run = frame.derisk.run?.length ? frame.derisk.run.join("; ") : "nothing";
+        const notRun = frame.derisk.not_run?.length ? frame.derisk.not_run.join("; ") : "nothing load-bearing outstanding";
+        out.push(`**De-risked by running:** ${run}`, `**Not run:** ${notRun}`);
+      }
+      if (frame.files_on_accept?.length) {
+        out.push("**Files on accept:**", ...frame.files_on_accept.map((f) => `- ${f}`));
+      }
+      break;
+    }
+    case "plan": {
+      const scope = frame.scope ?? { repos: [], surfaces: [], has_migration: false };
+      const repos = scope.repos?.length ? scope.repos.join(", ") : "no repo named";
+      const surfaces = scope.surfaces?.length ? ` \u2014 ${scope.surfaces.join(", ")}` : "";
+      out.push(`**Touches:** ${repos}${surfaces}. Migration: ${scope.has_migration ? "yes" : "no"}.`);
+      out.push(`**Base verified:** ${frame.attestation?.base_verified ?? "(not attested)"}`);
+      if (frame.attestation?.derisked_by_running) {
+        out.push(`**De-risked by running:** ${frame.attestation.derisked_by_running}`);
+      }
+      out.push(...renderUnprovenBlock("Carried into build unproven", frame.carried_unproven));
+      out.push(`**Covers:** ${frame.ac_coverage}`);
+      if (frame.landing) {
+        out.push(`**Landing:** ${renderLanding(frame.landing)}`, `**One-way in this:** ${renderIrreversible(frame.landing)}`);
+      }
+      if (frame.design_delta) out.push(`**Design delta:** ${frame.design_delta}`);
+      break;
+    }
+    case "release": {
+      if (frame.act) {
+        out.push(`**This accept executes:** ${renderLanding(frame.act)}`);
+        out.push(`**Lands in:** ${frame.act.lands_in}`);
+        out.push(`**One-way in this:** ${renderIrreversible(frame.act)}`);
+      } else {
+        out.push("**This accept executes:** not stated \u2014 the landing sequence is missing from this brief.");
+      }
+      out.push(...renderUnprovenBlock("Live but unproven when this lands", frame.unproven));
+      const risk = frame.risk_classes ?? [];
+      out.push(`**Risk (path-derived from the diff):** ${risk.length ? risk.join(", ") : "none"}`);
+      const ev = frame.evidence_status;
+      if (ev) {
+        out.push(
+          `**Evidence (mechanical):** ${ev.proven_by_run}/${ev.total} proven by a test that RAN \xB7 ${ev.walk_at_verify} deferred to the verify runbook \xB7 ${ev.unproven} unproven${ev.detail ? ` \u2014 ${ev.detail}` : ""}`
+        );
+      }
+      if (frame.pr_review_state) out.push(`**PR review state:** ${frame.pr_review_state}`);
+      break;
+    }
+    case "verify": {
+      const rows = frame.criteria ?? [];
+      const confirmable = rows.filter((r) => r.disposition === "walk").length;
+      out.push(
+        `**Verifying against \u2014 ${rows.length} criteria on file \xB7 you can confirm ${confirmable} today**`,
+        ""
+      );
+      if (rows.length) {
+        out.push("| # | Criterion (as filed) | Disposition | Step | Backed by |", "|---|---|---|---|---|");
+        rows.forEach((r, i) => {
+          const disposition = DISPOSITION_MARK[r.disposition] + (r.disposition === "blocked" && r.blocked_reason ? ` \u2014 ${r.blocked_reason}` : "") + (r.disposition === "carried" && r.carried_to ? ` to ${r.carried_to}` : "");
+          out.push(`| ${i + 1} | ${cell(r.text)} | ${cell(disposition)} | ${cell(r.step_ref)} | ${cell(r.backed_by)} |`);
+        });
+        out.push("");
+      } else if (frame.exempt_reason) {
+        out.push(`This ticket carries no acceptance criteria of its own \u2014 ${frame.exempt_reason}`, "");
+      }
+      out.push(`**Covers:** ${frame.environment}`);
+      out.push(`**Evidence (mechanical):** ${frame.evidence_status}`);
+      if (frame.bounded_accept) {
+        const ids2 = frame.bounded_accept.open_ac_ids?.length ? frame.bounded_accept.open_ac_ids.join(", ") : "none";
+        out.push(`**Bounded accept:** criteria left open \u2014 ${ids2}. Closes when ${frame.bounded_accept.closes_when}`);
+      }
+      break;
+    }
+  }
+  return out;
+}
 function renderBrief(doc, decisionRef, ctx) {
   const out = [];
+  const frame = doc.frame;
+  if (frame?.kind === "clarify") out.push(...renderFrame(frame), "");
   out.push(`## DECIDE: ${doc.decide}`, "");
+  if (frame?.kind === "release") out.push(...renderFrame(frame), "");
   if (doc.load_bearing_gap) {
     out.push("**Recommend:** I don't know enough yet \u2014 run the research below before deciding.", "");
     out.push("**Research first:**");
@@ -36803,6 +37191,7 @@ function renderBrief(doc, decisionRef, ctx) {
     else if (doc.recommend.confidence === "high") suffix = " (high confidence)";
     out.push(`**Recommend${suffix}:** ${doc.recommend.text}`, "");
   }
+  if (frame && frame.kind !== "clarify" && frame.kind !== "release") out.push(...renderFrame(frame), "");
   if (ctx) {
     if (ctx.accept) {
       out.push(
@@ -36812,6 +37201,13 @@ function renderBrief(doc, decisionRef, ctx) {
     } else {
       out.push("**On accept:** no state change", "");
     }
+  }
+  if (doc.revision?.changes?.length) {
+    out.push(
+      "**Changed this round:**",
+      ...doc.revision.changes.map((c) => `- ${c.change} \u2014 *answers: ${c.responds_to}*`),
+      ""
+    );
   }
   if (doc.why?.length) {
     out.push("**Why:**", ...doc.why.map((w) => `- ${w}`), "");
@@ -36829,6 +37225,9 @@ function renderBrief(doc, decisionRef, ctx) {
     if (criteria.length) {
       out.push(PROPOSED_ACS_HEADING, ...criteria.map((c) => `- ${c.content}`), "");
     }
+  }
+  if (frame?.kind === "plan" && frame.steps?.length) {
+    out.push("**Plan:**", ...frame.steps.map((step, i) => `${i + 1}. ${step}`), "");
   }
   if (doc.items.length) {
     out.push("**You need to:**");
@@ -36848,12 +37247,175 @@ function renderBrief(doc, decisionRef, ctx) {
   out.push(`> ${doc.tail ?? tailForReason(ctx?.reason) ?? DEFAULT_TAIL}`);
   return out.join("\n");
 }
+function isPrShaped(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const v = value;
+  return typeof v.pr_url === "string" || typeof v.pr_number === "number";
+}
+function toPrReference(key, value) {
+  const ref = { key };
+  if (typeof value.pr_url === "string") ref.pr_url = value.pr_url;
+  if (typeof value.pr_number === "number") ref.pr_number = value.pr_number;
+  if (typeof value.author_is_bot === "boolean") ref.author_is_bot = value.author_is_bot;
+  if (typeof value.branch === "string") ref.branch = value.branch;
+  if (typeof value.head_sha === "string") ref.head_sha = value.head_sha;
+  return ref;
+}
+function readBuildPrReferences(fieldValues) {
+  const refs = [];
+  try {
+    if (!fieldValues || typeof fieldValues !== "object" || Array.isArray(fieldValues)) return refs;
+    const fv = fieldValues;
+    const seen = /* @__PURE__ */ new Set();
+    const push = (key, value) => {
+      if (!isPrShaped(value)) return;
+      const ref = toPrReference(key, value);
+      const identity = `${ref.pr_url ?? ""}#${ref.pr_number ?? ""}`;
+      if (seen.has(identity)) return;
+      seen.add(identity);
+      refs.push(ref);
+    };
+    const primary = fv.build_pr;
+    push("build_pr", primary);
+    if (primary && typeof primary === "object" && !Array.isArray(primary)) {
+      for (const [k, v] of Object.entries(primary)) {
+        push(`build_pr.${k}`, v);
+      }
+    }
+    for (const [k, v] of Object.entries(fv)) {
+      if (k === "build_pr") continue;
+      push(k, v);
+    }
+  } catch {
+    return refs;
+  }
+  return refs;
+}
+function readBuildPr(fieldValues) {
+  try {
+    if (!fieldValues || typeof fieldValues !== "object" || Array.isArray(fieldValues)) return void 0;
+    const value = fieldValues.build_pr;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return void 0;
+    return value;
+  } catch {
+    return void 0;
+  }
+}
 function mentionsApprovalRequirement(content) {
   const c = content.toLowerCase();
   if (/reviewdecision|review_required/.test(c)) return true;
   const APPROVAL = /\bapprov\w*/;
   const REQUIREMENT = /\brequir\w*|\bneed\w*|\bmust\b|\bbefore\b|\buntil\b|\bcannot\b|\bcan't\b|\bunable\b/;
   return c.split(/[.!?\n]+/).some((sentence) => APPROVAL.test(sentence) && REQUIREMENT.test(sentence));
+}
+var blank = (value) => typeof value !== "string" || value.trim().length === 0;
+function lintFrame(doc, ctx, warnings) {
+  const expected = ctx.reason ? FRAME_KIND_FOR_REASON[ctx.reason] : void 0;
+  if (!expected) return;
+  const frame = doc.frame;
+  if (!frame) {
+    warnings.push(
+      `This ${ctx.reason} brief carries no \`doc.frame\`. The gate's own must-haves have no other typed home, so they degrade into \`context[]\` and stop being read \u2014 author the \`${expected}\` frame (see skills/harmony-shared/brief-authoring.md).`
+    );
+    return;
+  }
+  if (frame.kind !== expected) {
+    warnings.push(
+      `\`doc.frame.kind\` is '${frame.kind}' but this brief's reason is '${ctx.reason}', which expects the '${expected}' frame. The render positions the frame by kind, so a mismatched frame lands in the wrong place.`
+    );
+    return;
+  }
+  switch (frame.kind) {
+    case "clarify":
+      if (blank(frame.solving)) {
+        warnings.push("`frame.solving` is blank. It is the OUTCOME \u2014 what becomes true for the product when this ships \u2014 never a restatement of the problem.");
+      }
+      if (!Array.isArray(frame.not_solving)) {
+        warnings.push("`frame.not_solving` is absent. The KEY is required even when nothing is excluded \u2014 `[]` is a legal, meaningful answer; absence is not.");
+      } else {
+        for (const entry of frame.not_solving) {
+          if (blank(entry?.lands)) {
+            warnings.push(`Excluded item "${entry?.item ?? "(unnamed)"}" names no destination. Every exclusion resolves somewhere \u2014 a ticket id, a later phase, or the explicit "nowhere \u2014 nobody is tracking this".`);
+          }
+        }
+      }
+      break;
+    case "decompose":
+      if (!frame.elements?.length) {
+        warnings.push("`frame.elements` is empty. The gate decides whether these elements ship as one unit or N children \u2014 with no inventory the fork cannot be priced.");
+      }
+      if (blank(frame.coverage)) {
+        warnings.push("`frame.coverage` is blank. State the attestation against the accepted clarification: no gaps, no overlaps.");
+      }
+      if (!doc.alternatives?.length) {
+        warnings.push("This decomposition brief carries no `alternatives`. Name the rejected cut and price it by independent shippability \u2014 1/14 briefs did, and the un-split default is the expensive-to-detect error.");
+      }
+      break;
+    case "design":
+      if (blank(frame.track)) {
+        warnings.push("`frame.track` is absent. One gate reason serves three sub-tracks; the reader cannot otherwise tell which of three serialized decisions they are holding.");
+      }
+      for (const entry of frame.tracks ?? []) {
+        if (entry?.status === "not-required" && blank(entry.note)) {
+          warnings.push(`Track '${entry.track}' is declared not-required with no note. Declaring a track away is a decision \u2014 say why, so a reader can contest it.`);
+        }
+      }
+      if (!Array.isArray(frame.reach)) {
+        warnings.push('`frame.reach` is absent. The KEY is required: `[]` ("this reaches nothing beyond the ticket") is a real answer, and a negative reach claim is often what carries the recommendation.');
+      }
+      if (!doc.alternatives?.length && frame.track !== "ux-ui-design") {
+        warnings.push("This design brief carries no `alternatives`. Name the real options and why each lost. (The ux-ui-design track is exempt: `visual-handoff.md` \xA7D2 forbids auto-generating a guessed variant.)");
+      }
+      break;
+    case "plan":
+      if (blank(frame.attestation?.base_verified)) {
+        warnings.push('`frame.attestation.base_verified` is blank. The plan reader is the only one who can judge "safe to build from" \u2014 say what was verified against real code, not from memory.');
+      }
+      if (!Array.isArray(frame.carried_unproven)) {
+        warnings.push('`frame.carried_unproven` is absent. The KEY is required: `[]` = "nothing carried unproven", which is a different claim from silence.');
+      }
+      if (blank(frame.ac_coverage)) {
+        warnings.push("`frame.ac_coverage` is blank. Say whether the plan covers the ticket\u2019s acceptance criteria.");
+      }
+      if (!frame.landing && ((frame.scope?.repos?.length ?? 0) > 1 || frame.scope?.has_migration === true)) {
+        warnings.push("`frame.landing` is absent on a multi-repo or migration-carrying plan. The release topology is FIXED here and merely executed at release \u2014 an unstated ordering is exactly the risk that is invisible from the diff.");
+      }
+      break;
+    case "release":
+      if (!frame.act) {
+        warnings.push("`frame.act` is absent. The release gate has no field for the act it authorizes unless this is filled \u2014 name the repos, the PR count, the environment, and the atomicity.");
+      } else if (frame.act.atomicity === "ordered" && blank(frame.act.ordering)) {
+        warnings.push("`frame.act.atomicity` is 'ordered' but `frame.act.ordering` is blank. An ordered landing with no stated order is not executable.");
+      }
+      if (!Array.isArray(frame.unproven)) {
+        warnings.push('`frame.unproven` is absent. The KEY is required: the ship decision IS accepting this residue, and `[]` ("nothing") is the answer a clean release gives.');
+      }
+      if (!frame.evidence_status) {
+        warnings.push("`frame.evidence_status` is absent. Carry the mechanical, executed-aware counts \u2014 an unexecuted test is zero evidence, not weak evidence.");
+      }
+      break;
+    case "verify":
+      if (!frame.criteria?.length && blank(frame.exempt_reason)) {
+        warnings.push("`frame.criteria` is empty and no `exempt_reason` is given. This is the gate whose whole contract is confirming reality against the filed criteria \u2014 an empty ledger acks against nothing.");
+      }
+      for (const row of frame.criteria ?? []) {
+        if (row?.disposition === "walk" && blank(row.step_ref)) {
+          warnings.push(`Criterion "${row?.text ?? row?.ac_id ?? "(unnamed)"}" is dispositioned 'walk' but names no \`step_ref\`. A walk with no step is not a runbook step the human can follow.`);
+        }
+      }
+      if (blank(frame.evidence_status)) {
+        warnings.push("`frame.evidence_status` is blank. It is mechanical by construction and present on every verify brief \u2014 supporting confidence, never the thing being acked.");
+      }
+      break;
+  }
+}
+function mentionsPullRequest(content, refs) {
+  if (/\/pull\/\d+/.test(content)) return true;
+  for (const ref of refs) {
+    if (ref.pr_url && content.includes(ref.pr_url)) return true;
+    if (typeof ref.pr_number === "number" && new RegExp(`#${ref.pr_number}\\b`).test(content)) return true;
+  }
+  return false;
 }
 function lintBrief(doc, content, ctx = {}) {
   const errors = [];
@@ -36864,6 +37426,25 @@ function lintBrief(doc, content, ctx = {}) {
       errors.push(
         `This release brief is for a BOT-AUTHORED pull request${ctx.buildPr.pr_url ? ` (${ctx.buildPr.pr_url})` : ""}, which GitHub will not let the worker merge until a human approves it. The brief must SAY so \u2014 name the pull request, state that your approval on GitHub is required before the merge, and surface its current reviewDecision. Without that, accepting this brief starts a release that cannot proceed.`
       );
+    }
+  }
+  if (ctx.reason === "release-decision-pending" && ctx.buildPrRefs?.length) {
+    if (!mentionsPullRequest(content, ctx.buildPrRefs)) {
+      const named = ctx.buildPrRefs.map((r) => r.pr_url ?? (typeof r.pr_number === "number" ? `#${r.pr_number}` : r.key)).join(", ");
+      warnings.push(
+        `This task records a pushed pull request (${named}) but the brief names no PR reference. Put it on the brief \u2014 the release reader must be able to open the thing they are authorizing a merge of.`
+      );
+    }
+  }
+  lintFrame(doc, ctx, warnings);
+  if (doc.revision) {
+    if (typeof doc.revision.round === "number" && doc.revision.round < 2) {
+      warnings.push(`\`doc.revision.round\` is ${doc.revision.round}. The revision block is a round-2+ artefact \u2014 a first-round brief has no prior feedback to answer.`);
+    }
+    for (const change of doc.revision.changes ?? []) {
+      if (blank(change?.responds_to)) {
+        warnings.push(`Revision change "${change?.change ?? "(unnamed)"}" names no feedback it responds to. Bind each change to the feedback it answers, so an "already reflected" claim has a falsifiable form.`);
+      }
     }
   }
   for (const item of doc.items) {
@@ -36925,6 +37506,12 @@ var VALID_REASONS = [
   "stale-patch-review",
   "revise-scope-review"
 ];
+function withDiffDerivedRiskClasses(doc, changedPaths) {
+  if (doc.frame?.kind !== "release") return doc;
+  const paths = Array.isArray(changedPaths) ? changedPaths.filter((x) => typeof x === "string") : [];
+  const risk_classes = paths.length > 0 ? detectRiskClasses({ changedPaths: paths }) : [];
+  return { ...doc, frame: { ...doc.frame, risk_classes } };
+}
 async function composeBrief(client, projectId, userId, args) {
   if (!args.task_id) throw new Error("task_id is required");
   if (!VALID_REASONS.includes(args.reason)) {
@@ -36933,10 +37520,12 @@ async function composeBrief(client, projectId, userId, args) {
   if (!args.doc?.decide?.trim()) throw new Error("doc.decide is required");
   const taskId = await resolveTaskId(client, projectId, args.task_id);
   let buildPr;
+  let buildPrRefs;
   if (args.reason === "release-decision-pending") {
     const { data: taskRow } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
     const fv = taskRow?.field_values;
-    buildPr = fv?.build_pr ?? void 0;
+    buildPr = readBuildPr(fv);
+    buildPrRefs = readBuildPrReferences(fv);
   }
   const pendingActivity = typeof args.pending_activity === "string" && args.pending_activity.trim().toLowerCase() === "null" ? null : args.pending_activity;
   let accept = null;
@@ -36959,15 +37548,16 @@ async function composeBrief(client, projectId, userId, args) {
     }
     accept = { from: fromState, to: tr.to_state };
   }
-  const content = renderBrief(args.doc, args.decision_ref, { reason: args.reason, accept });
-  const lint = lintBrief(args.doc, content, { reason: args.reason, buildPr });
+  const doc = withDiffDerivedRiskClasses(args.doc, args.changed_paths);
+  const content = renderBrief(doc, args.decision_ref, { reason: args.reason, accept });
+  const lint = lintBrief(doc, content, { reason: args.reason, buildPr, buildPrRefs });
   if (!lint.ok) {
     throw new Error(`Brief failed the \xA73.2 pre-send lint:
 - ${lint.errors.join("\n- ")}`);
   }
   const payload = {
     reason: args.reason,
-    doc: args.doc,
+    doc,
     content,
     expand_sections: args.expand_sections ?? {},
     related: args.related ?? [],
@@ -37037,7 +37627,7 @@ async function composeBrief(client, projectId, userId, args) {
 }
 var composeBriefTool = {
   name: "compose_brief",
-  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate). On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it.",
+  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task updates the active brief in place (edit/iterate). On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING \u2014 no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates.",
   inputSchema: {
     type: "object",
     properties: {
@@ -37069,6 +37659,14 @@ var composeBriefTool = {
           research: { type: "array", items: { type: "string" }, description: "Research prompts \u2014 required + surfaced up front when load_bearing_gap, never buried" },
           load_bearing_gap: { type: "boolean", description: "true when a load-bearing knowledge gap blocks a substantive decision (forces research-first)" },
           tail: { type: "string", description: "Optional custom command tail line; defaults to the standard one" },
+          frame: {
+            type: "object",
+            description: "B-876 \u2014 the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta? } | 'release' { act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state? } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], exempt_reason?, evidence_status, bounded_accept? }. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[] }. Every rule over this field is a WARNING \u2014 an absent or malformed frame never refuses the brief; omit it entirely and the render is byte-identical to the pre-B-876 output."
+          },
+          revision: {
+            type: "object",
+            description: "B-876 \u2014 round-2+ only: { round: number, changes: [{ change, responds_to }] }. One entry per change made this round, each bound to the feedback it answers. Renders under the **On accept:** line as 'Changed this round:' and never above the frame \u2014 the human approves the totality, not the diff."
+          },
           payload: {
             type: "array",
             description: "B-810 \u2014 the promised structured writes this brief's ACCEPT will materialize (AcceptanceEventPayloadItem[], acceptance-events.ts): one item per acceptance_criterion / child_ticket / checklist_item / ac_transfer / label_add write, mirroring exactly what the gate's own same-session accept-time materialization performs. NEVER rendered \u2014 a side-channel consumed only by the B-797 cross-session safety net (a web accept with no session running). Every item's `ref` MUST be derived via `slugRef` + deduped via `dedupeRefs` (payload-refs.ts) \u2014 a content-derived slug, never a positional index, stable across an in-place iterate recompose. Omit or pass `[]` when this gate has no promised writes (e.g. decompose's 'no split').",
@@ -37094,6 +37692,11 @@ var composeBriefTool = {
       related: { type: "array", description: "Pre-generated related decisions/tickets/knowledge" },
       pending_activity: { type: ["string", "null"], description: "The workflow activity `accept` applies (e.g. clarifying, decomposing, deploying, verifying). A real activity is validated against the transition table; null or omitted \u21D2 accept advances no state." },
       decision_ref: { type: "object", description: 'The Asserted knowledge entry to promote on accept: { type: "decision", id: "<uuid>" }' },
+      changed_paths: {
+        type: "array",
+        items: { type: "string" },
+        description: "B-876 \u2014 the build's changed file paths (`git diff --name-only origin/main...HEAD`). Used ONLY to compute a release frame's `risk_classes` with the deterministic path detector; compose is authoritative for that field and overwrites whatever the doc authored. Omit (or pass []) and the field is [] \u2014 the risk signal is path-derived or it is nothing, never prose-guessed."
+      },
       underwriting_claim_ids: { type: "array", items: { type: "string" }, description: "B-645 iterate-prune: on an in-place iterate, the KEPT set of elicitation-claim ids that still underwrite this brief. Coupled Asserted claims NOT listed are archived; [] archives all coupled Asserted claims; omit \u21D2 no prune. Ignored on a first compose (nothing is coupled yet)." }
     },
     required: ["task_id", "reason", "doc"]
@@ -37574,222 +38177,6 @@ async function fetchActiveExchange(client, taskId) {
   } catch {
     return null;
   }
-}
-
-// src/tools/risk-class.ts
-var RISK_CLASSES = [
-  "auth",
-  "data-migration",
-  "irreversible-destructive",
-  "shared-core"
-];
-var kw = (re, senseOk) => ({ re, senseOk });
-var AUTH_TOKEN_QUALIFIER = /\b(?:auth|access|api|bearer|jwt|session|refresh|csrf)\b/i;
-function tokenIsAuthSense(text, start, end) {
-  const before = text.slice(Math.max(0, start - 24), start);
-  const after = text.slice(end, end + 24);
-  const window2 = before + " " + after;
-  return AUTH_TOKEN_QUALIFIER.test(window2);
-}
-var KEYWORD_TABLE = {
-  auth: [
-    // auth / login / logout / session / token / password / oauth / RLS / permission / role
-    kw(/\bauth(?:entication|orization|z|n)?\b/i),
-    kw(/\boauth\b/i),
-    kw(/\blog[\s-]?in\b/i),
-    kw(/\blog[\s-]?out\b/i),
-    kw(/\bsign[\s-]?in\b/i),
-    kw(/\bsign[\s-]?out\b/i),
-    kw(/\bsession\b/i),
-    kw(/\btokens?\b/i, tokenIsAuthSense),
-    kw(/\bpasswords?\b/i),
-    kw(/\bcredentials?\b/i),
-    kw(/\bRLS\b/i),
-    kw(/\brow[\s-]?level[\s-]?security\b/i),
-    kw(/\bpermissions?\b/i),
-    kw(/\broles?\b/i)
-  ],
-  "data-migration": [
-    // migration / schema / ALTER TABLE / backfill / DROP COLUMN
-    kw(/\bmigrations?\b/i),
-    kw(/\bschema\b/i),
-    kw(/\balter\s+table\b/i),
-    kw(/\badd\s+column\b/i),
-    kw(/\bdrop\s+column\b/i),
-    kw(/\bbackfill(?:s|ed|ing)?\b/i),
-    kw(/\bdata[\s-]?migration\b/i)
-  ],
-  "irreversible-destructive": [
-    // DROP / DELETE FROM / TRUNCATE / irreversible / hard-delete / purge
-    kw(/\bdrop\s+(?:table|column|database|schema|index|constraint)\b/i),
-    kw(/\bdelete\s+from\b/i),
-    kw(/\btruncate\b/i),
-    kw(/\birreversible\b/i),
-    kw(/\bhard[\s.-]?delete(?:s|d)?\b/i),
-    kw(/\bpurge(?:s|d|ing)?\b/i),
-    kw(/\bdestructive\b/i),
-    kw(/\bunrecoverable\b/i),
-    kw(/\bpermanently\s+(?:delete|remove|destroy)/i)
-  ],
-  "shared-core": [
-    // curated shared module names that, if touched, have broad blast radius
-    kw(/\bsupabase\.ts\b/i),
-    kw(/\bauth\.ts\b/i),
-    kw(/\bsrc\/tools\/registry\b/i),
-    kw(/\bsrc\/tools\/index\.ts\b/i),
-    kw(/\bregisterTools\b/i),
-    kw(/\bshared[\s-]?core\b/i)
-  ]
-};
-var NEGATION_CUES = /* @__PURE__ */ new Set(["no", "not", "without", "zero", "neither", "nor", "none"]);
-var NEGATION_WINDOW = 4;
-var CLAUSE_BOUNDARY_TOKENS = /* @__PURE__ */ new Set(["and", "but", "or", "then", "so", "yet"]);
-var CLAUSE_BOUNDARY_PUNCT = /[,;:.–—]/;
-var ASCII_LETTER = /[a-z]/;
-function precedingTokens(text, matchStart) {
-  const slice = text.slice(Math.max(0, matchStart - 48), matchStart).toLowerCase();
-  const isWordChar = (k) => {
-    const c = slice[k];
-    if (c === void 0) return false;
-    if (ASCII_LETTER.test(c) || c === "'") return true;
-    if (c === "-") return ASCII_LETTER.test(slice[k - 1] ?? "") && ASCII_LETTER.test(slice[k + 1] ?? "");
-    return false;
-  };
-  const inClause = [];
-  let i = slice.length - 1;
-  while (i >= 0 && inClause.length < NEGATION_WINDOW) {
-    if (CLAUSE_BOUNDARY_PUNCT.test(slice[i])) break;
-    if (isWordChar(i)) {
-      let j = i;
-      while (j >= 0 && isWordChar(j)) j--;
-      const word = slice.slice(j + 1, i + 1);
-      i = j;
-      if (word.length === 0) continue;
-      if (CLAUSE_BOUNDARY_TOKENS.has(word)) break;
-      inClause.push(word);
-    } else {
-      if (slice[i] === "-") break;
-      i--;
-    }
-  }
-  return inClause;
-}
-function isNegated(text, start) {
-  for (const tok of precedingTokens(text, start)) {
-    if (NEGATION_CUES.has(tok)) return true;
-    if (tok.endsWith("n't")) return true;
-  }
-  return false;
-}
-function textHitsClass(text, cls) {
-  for (const keyword of KEYWORD_TABLE[cls]) {
-    const g = new RegExp(keyword.re.source, keyword.re.flags.includes("g") ? keyword.re.flags : keyword.re.flags + "g");
-    let m;
-    while ((m = g.exec(text)) !== null) {
-      const start = m.index;
-      const end = m.index + m[0].length;
-      if (m[0].length === 0) {
-        g.lastIndex++;
-        continue;
-      }
-      if (keyword.senseOk && !keyword.senseOk(text, start, end)) continue;
-      if (isNegated(text, start)) continue;
-      return true;
-    }
-  }
-  return false;
-}
-var PATH_GLOB_TABLE = {
-  auth: ["**/auth/**", "**/auth.ts", "**/auth.tsx", "**/*auth*.ts", "**/middleware/auth*", "**/rls/**"],
-  "data-migration": ["**/migrations/**", "**/migration/**", "**/*.sql", "**/schema.sql", "**/supabase/migrations/**"],
-  // No reliably-destructive path signature (destructiveness lives in content, not the path);
-  // kept empty so this class trips on text/labels, never on an innocent path. The conservative
-  // bias is served by the keyword table here, not by over-broad path globs.
-  "irreversible-destructive": [],
-  "shared-core": [
-    "**/supabase.ts",
-    "**/auth.ts",
-    "**/src/tools/index.ts",
-    "**/src/tools/registry*",
-    "**/src/supabase.ts",
-    "**/src/auth.ts"
-  ]
-};
-function globToRegExp(glob) {
-  let re = "";
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob[i];
-    if (c === "*") {
-      if (glob[i + 1] === "*") {
-        re += ".*";
-        i++;
-        if (glob[i + 1] === "/") i++;
-      } else {
-        re += "[^/]*";
-      }
-    } else if (c === "?") {
-      re += "[^/]";
-    } else if ("\\^$.|+()[]{}".includes(c)) {
-      re += "\\" + c;
-    } else {
-      re += c;
-    }
-  }
-  return new RegExp("^" + re + "$", "i");
-}
-var PATH_REGEX_TABLE = {
-  auth: PATH_GLOB_TABLE.auth.map(globToRegExp),
-  "data-migration": PATH_GLOB_TABLE["data-migration"].map(globToRegExp),
-  "irreversible-destructive": PATH_GLOB_TABLE["irreversible-destructive"].map(globToRegExp),
-  "shared-core": PATH_GLOB_TABLE["shared-core"].map(globToRegExp)
-};
-function labelToRiskClass(label) {
-  const l = label.trim().toLowerCase().replace(/^risk[:/-]/, "");
-  switch (l) {
-    case "auth":
-      return "auth";
-    case "data-migration":
-    case "migration":
-    case "data migration":
-      return "data-migration";
-    case "irreversible-destructive":
-    case "irreversible":
-    case "destructive":
-      return "irreversible-destructive";
-    case "shared-core":
-    case "shared core":
-    case "core":
-      return "shared-core";
-    default:
-      return null;
-  }
-}
-function pathHitsClass(paths, cls) {
-  const globs = PATH_REGEX_TABLE[cls];
-  return globs.length > 0 && paths.some((p) => globs.some((re) => re.test(p)));
-}
-function detectRiskClasses(input) {
-  const hits = /* @__PURE__ */ new Set();
-  const text = typeof input.text === "string" ? input.text : "";
-  const paths = Array.isArray(input.changedPaths) ? input.changedPaths.filter((p) => typeof p === "string") : [];
-  const labels = Array.isArray(input.labels) ? input.labels.filter((l) => typeof l === "string") : [];
-  const hasDiff = paths.length > 0;
-  for (const label of labels) {
-    const cls = labelToRiskClass(label);
-    if (cls) hits.add(cls);
-  }
-  for (const cls of RISK_CLASSES) {
-    if (pathHitsClass(paths, cls)) hits.add(cls);
-  }
-  if (text.length > 0) {
-    for (const cls of RISK_CLASSES) {
-      if (hits.has(cls)) continue;
-      if (!textHitsClass(text, cls)) continue;
-      const demotedByCleanDiff = hasDiff && PATH_GLOB_TABLE[cls].length > 0 && !pathHitsClass(paths, cls);
-      if (!demotedByCleanDiff) hits.add(cls);
-    }
-  }
-  return RISK_CLASSES.filter((cls) => hits.has(cls));
 }
 
 // src/tools/tasks.ts
