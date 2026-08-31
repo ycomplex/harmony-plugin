@@ -289,6 +289,14 @@ export const STALE_PATCH_TAIL =
 // hand-writes it into context, so the promised writes and the rendered promise cannot diverge.
 export const PROPOSED_ACS_HEADING = 'Proposed acceptance criteria (happy path) — filed on accept:';
 
+// B-877 — the clarify gate's de-scope block heading (B-518). BYTE-STABLE FOREVER, for the same reason as
+// the proposed-AC heading above: older resolved briefs keep their rendered bytes, so changing this string
+// would make new briefs disagree with the archive. Unlike that heading, this block is NOT rendered here —
+// it exists today only in skill prose (`harmony-clarify` authors it into `doc.context`, `harmony-decompose`
+// reads it), which is exactly why the string needs a home in code: this constant is the single source a
+// contract test can pin, so the prose and the archive cannot drift apart unnoticed.
+export const DE_SCOPE_HEADING = 'De-scope — re-ticketed on accept:';
+
 /** The tail this gate reason owes the human, or undefined when the default one is correct. */
 function tailForReason(reason: string | undefined): string | undefined {
   return reason === 'stale-patch-review' ? STALE_PATCH_TAIL : undefined;
@@ -739,6 +747,11 @@ export interface BriefLintContext {
   /** B-876 — EVERY pull request readable from the task's `field_values`, defensively (see
    *  `readBuildPrReferences`). Drives the warn-only "the release brief names no PR" rule. */
   buildPrRefs?: BuildPrReference[];
+  /** B-877 — the iteration this brief WILL have once the compose lands (post-increment), never the one
+   *  it had. A first compose is 1; an in-place iterate over an active brief at N is N+1. Drives the
+   *  warn-only "a round-2+ brief carries no `doc.revision`" rule, which must stay silent on a first
+   *  compose. Absent when the caller supplies no iteration, and absence warns on nothing. */
+  iteration?: number;
 }
 
 /** B-876 — one pull request read out of a task's `field_values`. `key` is the path it was found at
@@ -1037,6 +1050,16 @@ export function lintBrief(
 
   // B-876 — the revision block is a round-2+ artefact, and each change must name the feedback it answers;
   // an unbound change is a diff, not a response, and cannot be checked against what was asked.
+  //
+  // B-877 completes the rule's other half (audit §4.2): the block is not merely constrained WHEN present,
+  // it is OWED once the brief iterates. An iterated brief carrying no record of what changed and what
+  // feedback it answers leaves the reader unable to tell what moved between rounds — they must diff two
+  // renders in their head to find out. Gated on the POST-increment `ctx.iteration`, so a FIRST compose
+  // (iteration 1, or absent when the caller supplies none) can never warn; warning there would fire on
+  // every brief ever composed, which is the exact inverse of this tail-case signal.
+  if (!doc.revision && ctx.iteration !== undefined && ctx.iteration > 1) {
+    warnings.push(`This brief is being composed as round ${ctx.iteration} but carries no \`doc.revision\`. An iterated brief owes the reader a record of what changed and which feedback each change answers — without it they must diff two renders to find out what moved.`);
+  }
   if (doc.revision) {
     if (typeof doc.revision.round === 'number' && doc.revision.round < 2) {
       warnings.push(`\`doc.revision.round\` is ${doc.revision.round}. The revision block is a round-2+ artefact — a first-round brief has no prior feedback to answer.`);
@@ -1251,6 +1274,16 @@ export async function composeBrief(
     accept = { from: fromState, to: (tr as { to_state: string }).to_state };
   }
 
+  // B-877 — the active-brief lookup is HOISTED above the render/lint pair because the lint needs the
+  // iteration this compose will land on (a round-2+ brief owes a `doc.revision`). It depends only on the
+  // client and the resolved task id — nothing derived from `doc`, `content` or `payload` — so the hoist is
+  // safe; its one consequence is an extra SELECT on a compose that then fails the lint, a read not a write.
+  // `existing` is still what the upsert below branches on; nothing about that use changed.
+  const { data: existing, error: lookupErr } = await client
+    .from('briefs').select('id, iteration')
+    .eq('task_id', taskId).eq('status', 'active').maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+
   // Render the canonical doc to the blob, then lint the doc (what's checked is what's rendered).
   // The third argument (B-874) carries the compose-time facts the doc cannot know — the gate reason and
   // the resolved accept-transition — which drive the **On accept:** line, the gate-specific command tail,
@@ -1259,7 +1292,14 @@ export async function composeBrief(
   // frame's diff-derived `risk_classes`). It — not `args.doc` — is what gets rendered, linted and stored.
   const doc = withDiffDerivedRiskClasses(args.doc, args.changed_paths);
   const content = renderBrief(doc, args.decision_ref, { reason: args.reason, accept });
-  const lint = lintBrief(doc, content, { reason: args.reason, buildPr, buildPrRefs });
+  const lint = lintBrief(doc, content, {
+    reason: args.reason,
+    buildPr,
+    buildPrRefs,
+    // The POST-increment iteration — identical to the value the update below writes, so the lint judges the
+    // round the human will actually read. No active brief means this compose is round 1.
+    iteration: existing ? ((existing as { iteration: number }).iteration ?? 1) + 1 : 1,
+  });
   if (!lint.ok) {
     throw new Error(`Brief failed the §3.2 pre-send lint:\n- ${lint.errors.join('\n- ')}`);
   }
@@ -1285,11 +1325,8 @@ export async function composeBrief(
     pending_resolution: null,
   };
 
-  // Upsert: update the active brief in place (edit/iterate — §3.2) or insert a new one (compose).
-  const { data: existing, error: lookupErr } = await client
-    .from('briefs').select('id, iteration')
-    .eq('task_id', taskId).eq('status', 'active').maybeSingle();
-  if (lookupErr) throw new Error(lookupErr.message);
+  // Upsert: update the active brief in place (edit/iterate — §3.2) or insert a new one (compose) — the
+  // lookup itself was hoisted above the lint (B-877), which needs the iteration this compose will land on.
 
   // Guarded write: `pending_resolution` is added by harmony-web's Phase-1 migration. On a DB that predates
   // it, including the column in the write 400s the whole compose (the B-383 schema-drift class). So if the

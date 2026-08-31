@@ -37437,6 +37437,9 @@ function lintBrief(doc, content, ctx = {}) {
     }
   }
   lintFrame(doc, ctx, warnings);
+  if (!doc.revision && ctx.iteration !== void 0 && ctx.iteration > 1) {
+    warnings.push(`This brief is being composed as round ${ctx.iteration} but carries no \`doc.revision\`. An iterated brief owes the reader a record of what changed and which feedback each change answers \u2014 without it they must diff two renders to find out what moved.`);
+  }
   if (doc.revision) {
     if (typeof doc.revision.round === "number" && doc.revision.round < 2) {
       warnings.push(`\`doc.revision.round\` is ${doc.revision.round}. The revision block is a round-2+ artefact \u2014 a first-round brief has no prior feedback to answer.`);
@@ -37548,9 +37551,18 @@ async function composeBrief(client, projectId, userId, args) {
     }
     accept = { from: fromState, to: tr.to_state };
   }
+  const { data: existing, error: lookupErr } = await client.from("briefs").select("id, iteration").eq("task_id", taskId).eq("status", "active").maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
   const doc = withDiffDerivedRiskClasses(args.doc, args.changed_paths);
   const content = renderBrief(doc, args.decision_ref, { reason: args.reason, accept });
-  const lint = lintBrief(doc, content, { reason: args.reason, buildPr, buildPrRefs });
+  const lint = lintBrief(doc, content, {
+    reason: args.reason,
+    buildPr,
+    buildPrRefs,
+    // The POST-increment iteration — identical to the value the update below writes, so the lint judges the
+    // round the human will actually read. No active brief means this compose is round 1.
+    iteration: existing ? (existing.iteration ?? 1) + 1 : 1
+  });
   if (!lint.ok) {
     throw new Error(`Brief failed the \xA73.2 pre-send lint:
 - ${lint.errors.join("\n- ")}`);
@@ -37575,8 +37587,6 @@ async function composeBrief(client, projectId, userId, args) {
     // §3), and the update is wrapped in a guarded fallback below so an older DB degrades instead of 400-ing.
     pending_resolution: null
   };
-  const { data: existing, error: lookupErr } = await client.from("briefs").select("id, iteration").eq("task_id", taskId).eq("status", "active").maybeSingle();
-  if (lookupErr) throw new Error(lookupErr.message);
   const isMissingPendingResolution = (msg) => !!msg && /pending_resolution/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
   let brief;
   if (existing) {

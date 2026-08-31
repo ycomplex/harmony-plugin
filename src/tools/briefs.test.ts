@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, getBrief, resolveBrief, resolveBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, getBrief, resolveBrief, resolveBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, DE_SCOPE_HEADING, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -190,9 +190,12 @@ describe('renderBrief — compose-time context (B-874)', () => {
       ...over,
     });
 
-    // Byte-stable forever: older resolved briefs keep the bytes they were rendered with.
-    it('pins the heading byte-for-byte', () => {
+    // Byte-stable forever: older resolved briefs keep the bytes they were rendered with. Both of clarify's
+    // filing headings are pinned here (B-877) — the rendered one above and the prose-authored de-scope one —
+    // because they are the same kind of promise and a reader looking for one will look for the other.
+    it('pins both clarify filing headings byte-for-byte', () => {
       expect(PROPOSED_ACS_HEADING).toBe('Proposed acceptance criteria (happy path) — filed on accept:');
+      expect(DE_SCOPE_HEADING).toBe('De-scope — re-ticketed on accept:');
     });
 
     it('derives one line per acceptance_criterion payload item', () => {
@@ -1368,6 +1371,33 @@ describe('harmony-conduct §4b synthesized-accept prose ↔ provenance contract 
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// B-877 — the de-scope filing heading: constant ↔ prose contract.
+//
+// `DE_SCOPE_HEADING` is byte-stable forever (older resolved briefs keep their rendered bytes), but unlike
+// the proposed-AC heading it is not emitted by the renderer — the skills author it. That split is exactly
+// how it drifts: an editor rewording the heading in one SKILL.md leaves the other, and the archive,
+// disagreeing, with nothing to catch it. This pins the constant against BOTH prose sites.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+const skillPath = (skill: string) => fileURLToPath(new URL(`../../skills/${skill}/SKILL.md`, import.meta.url));
+
+describe('the de-scope heading matches the skill prose that authors and reads it (B-877)', () => {
+  it.each([
+    ['harmony-clarify', 'authors the block'],
+    ['harmony-decompose', 'reads the block'],
+  ])('%s (%s) still carries the exact heading', (skill) => {
+    expect(readFileSync(skillPath(skill), 'utf8')).toContain(DE_SCOPE_HEADING);
+  });
+
+  it('POSITIVE CONTROL — the assertion can fail: a reworded heading is not present in either file', () => {
+    const reworded = DE_SCOPE_HEADING.replace('—', '-');
+    expect(reworded).not.toBe(DE_SCOPE_HEADING);
+    for (const skill of ['harmony-clarify', 'harmony-decompose']) {
+      expect(readFileSync(skillPath(skill), 'utf8')).not.toContain(reworded);
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // B-732 AC-3: a release brief for a BOT-AUTHORED PR must name the approval requirement
 // ---------------------------------------------------------------------------
@@ -1938,6 +1968,115 @@ describe('B-876 gate frame', () => {
       expect(r.errors).toEqual([]);
       expect(r.warnings.join(' ')).toContain('is a round-2+ artefact');
       expect(r.warnings.join(' ')).toContain('names no feedback it responds to');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // B-877 — the CLARIFY frame rules, pinned as a regression.
+  //
+  // The rules themselves shipped with B-876; what B-877 adds is the skill prose that authors the frame.
+  // These tests exist so the shipped clarify case cannot silently regress under the new prose, and they
+  // assert `ok: true` with zero errors in EVERY case including the failures — a frame defect must never
+  // be able to refuse a brief.
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  describe('the clarify frame warns on each defect and never refuses the brief', () => {
+    const CLARIFY = 'clarification-draft';
+    const lintClarify = (doc: BriefDoc) => lintBrief(doc, renderBrief(doc, null, { reason: CLARIFY }), { reason: CLARIFY });
+    const frameWarnings = (r: { warnings: string[] }) => r.warnings.filter((w) => /`frame\./.test(w) || /doc\.frame/.test(w));
+
+    it('1. no `doc.frame` at all — warns, no error', () => {
+      const r = lintClarify(baseDoc());
+      expect(r.errors).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.warnings.join(' ')).toContain('carries no `doc.frame`');
+    });
+
+    it('2. a blank `frame.solving` — warns that it is the OUTCOME, no error', () => {
+      const r = lintClarify(baseDoc({ frame: clarifyFrame({ solving: '   ' }) }));
+      expect(r.errors).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.warnings.join(' ')).toContain('`frame.solving` is blank');
+      expect(r.warnings.join(' ')).toContain('OUTCOME');
+    });
+
+    it('3. an ABSENT `not_solving` key — warns that `[]` is the legal way to say "nothing", no error', () => {
+      const frame = clarifyFrame();
+      delete (frame as unknown as Record<string, unknown>).not_solving;
+      const r = lintClarify(baseDoc({ frame }));
+      expect(r.errors).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.warnings.join(' ')).toContain('`frame.not_solving` is absent');
+    });
+
+    it('3b. an exclusion naming no destination — warns, no error', () => {
+      const r = lintClarify(baseDoc({ frame: clarifyFrame({ not_solving: [{ item: 'saved sort order', lands: '' }] }) }));
+      expect(r.errors).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.warnings.join(' ')).toContain('names no destination');
+    });
+
+    it('3c. an EMPTY `not_solving` list is a legal, silent answer', () => {
+      const r = lintClarify(baseDoc({ frame: clarifyFrame({ not_solving: [] }) }));
+      expect(r.errors).toEqual([]);
+      expect(frameWarnings(r)).toEqual([]);
+    });
+
+    it('4. a `frame.kind` mismatched against the reason — warns, no error', () => {
+      const r = lintClarify(baseDoc({ frame: planFrame() }));
+      expect(r.errors).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.warnings.join(' ')).toContain("but this brief's reason is 'clarification-draft'");
+    });
+
+    it('5. a fully valid clarify frame is clean — no frame warnings, no errors', () => {
+      const r = lintClarify(baseDoc({ frame: clarifyFrame() }));
+      expect(r.errors).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(frameWarnings(r)).toEqual([]);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // B-877 — the iteration-gated half of the revision rule (audit §4.2).
+  //
+  // The sharp edge is the off-by-one: `ctx.iteration` is the POST-increment round, so a FIRST compose is
+  // 1 and must never warn. Getting this wrong would fire on every brief ever composed.
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  describe('a round-2+ brief owes a revision block (warn-only)', () => {
+    const OWED = /carries no `doc.revision`/;
+    const lintAt = (doc: BriefDoc, iteration?: number) => lintBrief(doc, renderBrief(doc), { iteration });
+
+    it('warns when the compose will land as iteration 2 and the doc carries no revision', () => {
+      const r = lintAt(baseDoc(), 2);
+      expect(r.errors).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.warnings.join(' ')).toMatch(OWED);
+      expect(r.warnings.join(' ')).toContain('round 2');
+    });
+
+    it('does NOT warn on a FIRST compose (iteration 1) — the off-by-one this rule must not get wrong', () => {
+      expect(lintAt(baseDoc(), 1).warnings.join(' ')).not.toMatch(OWED);
+    });
+
+    it('does NOT warn when the caller supplies no iteration at all', () => {
+      expect(lintAt(baseDoc(), undefined).warnings.join(' ')).not.toMatch(OWED);
+      expect(lintBrief(baseDoc(), renderBrief(baseDoc()), {}).warnings.join(' ')).not.toMatch(OWED);
+    });
+
+    it('is silent at iteration 2 once a well-formed revision block rides the doc', () => {
+      const doc = baseDoc({ revision: { round: 2, changes: [{ change: 'Narrowed the boundary', responds_to: 'iterate: too broad' }] } });
+      const r = lintAt(doc, 2);
+      expect(r.errors).toEqual([]);
+      expect(r.warnings.join(' ')).not.toMatch(OWED);
+      expect(r.warnings.join(' ')).not.toContain('is a round-2+ artefact');
+      expect(r.warnings.join(' ')).not.toContain('names no feedback it responds to');
+    });
+
+    it('still warns at a high iteration, and stays warn-only', () => {
+      const r = lintAt(baseDoc({ frame: clarifyFrame() }), 7);
+      expect(r.errors).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.warnings.join(' ')).toContain('round 7');
     });
   });
 
