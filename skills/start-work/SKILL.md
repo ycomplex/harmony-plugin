@@ -65,11 +65,45 @@ same `payload` / `manage_checklist_items` list this section builds, granularity 
 steps — without a human needing to remark it in. This mandates the lookup only; the content is each
 repo's own CLAUDE.md, never hardcoded here.
 
+**Also author `doc.frame` (B-876) — the plan gate's own must-haves.** The plan is the artefact being
+ratified and it had no home: in 6/14 briefs it rendered under **Context:**, the block that everywhere
+else means "no action needed", while the checkbox degenerated into a pointer at it. `frame.steps`
+renders under its own **Plan:** heading, between the reasoning and the ask. The rest of the frame is
+what makes the plan *refusable*:
+
+- **`scope`** — repos, surfaces, and whether a migration is involved. Blast radius as fact, not argument.
+- **`attestation.base_verified`** — what you verified by reading REAL current code and the live API, not
+  from memory. You are the only reader who can judge "safe to build from".
+- **`carried_unproven`** — the residual bets the build carries, each with the reason it cannot be proven
+  first. The KEY is required: `[]` = "nothing carried unproven", which is a different claim from silence.
+  Rendered 3/14 today, and it is the decision-relevant half of the attestation.
+- **`ac_coverage`** — whether the plan covers the ticket's acceptance criteria.
+- **`landing`** — REQUIRED (warned) whenever the scope names more than one repo or carries a migration.
+  The release topology is FIXED here and merely EXECUTED at release; the two 2026-08-26 plan-gate catches
+  (B-743, B-740) were ordering risks invisible from the diff. Same shape the release brief renders.
+- **`design_delta`** — where the plan deviates from, exceeds, or adds to the Accepted design.
+
 ```
 mcp__harmony__compose_brief({
   task_id, reason: "plan-draft", pending_activity: "planning",
   doc: {
     decide: "Approve this execution plan?",
+    recommend: { text: "<proceed as planned below — one line on the shape>", confidence: "high" },
+    frame: {
+      kind: "plan",
+      scope: { repos: ["harmony-plugin"], surfaces: ["<the files/modules touched>"], has_migration: false },
+      // The plan itself, as an ordered sequence the reader can scan. Same granularity as the checklist.
+      steps: ["Write the migration", "Add the MCP tool", "Tests + typecheck + lint", "Land as one PR"],
+      attestation: {
+        base_verified: "<what you read in CURRENT code this session — never from memory>",
+        derisked_by_running: "<what you actually ran, and what it showed>"
+      },
+      // [] = explicitly nothing carried unproven. Never omit the key.
+      carried_unproven: [{ item: "<the bet the build carries>", reason: "<why it cannot be proven before the build runs>" }],
+      ac_coverage: "<which of the ticket's acceptance criteria this plan covers, and any it does not>",
+      // REQUIRED when repos > 1 or has_migration — the release topology this plan FIXES:
+      landing: { repos: ["harmony-plugin"], pr_count: 1, lands_in: "staging", atomicity: "single", irreversible: [] }
+    },
     items: [{ kind: "decision", text: "<plan summary>", recommendation: "proceed" }],
     // one item per concrete plan step — same list the accept step below writes via manage_checklist_items
     payload: [
@@ -79,6 +113,12 @@ mcp__harmony__compose_brief({
   }
 })
 ```
+
+`frame.steps` and the `checklist_item` payload are the SAME list at the same granularity — the frame is
+what the human reads, the payload is what the accept materializes. Keep them in step.
+
+**On an iterate (round 2+), also author `doc.revision`** — `{ round, changes: [{ change, responds_to }] }`,
+each change bound to the feedback it answers. It renders under the **On accept:** line, below the frame.
 
 On **accept** → **first materialize the plan's own steps as the ticket's checklist (B-797 — this is what
 closes specimen 6, B-800: the accepted plan's steps must be READABLE at build time, not just narrated in

@@ -82,6 +82,20 @@ full text, copied verbatim — never reworded; `target_child_ref` = that destina
 (`payload-refs.ts`) — never reinvented. The common case (no AC reassignment) still authors `ac_transfer:
 []`, never omits the key. "No decomposition needed" authors `payload: []`.
 
+**Also author `doc.frame` (B-876) — the decompose gate's own must-haves.** Two of them have no other
+typed home, so without the frame they degrade into `context[]` and stop being read: the **element
+inventory** (what is actually inside this ticket, each with its repo/file surface and the acceptance
+criteria it covers) and the **coverage attestation** against the accepted clarification (no gaps, no
+overlaps). Set `existing_children_checked` truthfully — B-646 duplicated a hierarchy 4 → 8 because nobody
+checked. `frame.kind` must be `"decompose"`; the render places it below the recommendation.
+
+**Carry `alternatives` too — the rejected cut, named and priced by independent shippability.** Measured
+1/14 across the decompose corpus, and it is the block that makes the no-split default a *priced* choice
+rather than an unexamined one. Say the asymmetry once, in `coverage` or in the rejection: over-splitting
+is the expensive error (un-splitting needs `subsume_task`, which has no inverse per B-617, and discards
+the children's clarifications), un-*no*-splitting is cheap. A cross-capable reader knowing the asymmetry
+and being made to price it are different acts.
+
 ```
 mcp__harmony__compose_brief({
   task_id,
@@ -90,6 +104,24 @@ mcp__harmony__compose_brief({
   doc: {
     decide: "Decompose <ticket> into N children, or keep as one ticket?",
     recommend: { text: "Three children: schema, MCP surface, web UI" },
+    frame: {
+      kind: "decompose",
+      // One entry per element INSIDE this ticket — the inventory the split/no-split fork is priced against.
+      elements: [
+        { text: "<what this element is, in one line>",
+          surface: "<repo: the file/module surface it touches>",
+          covers: "<the acceptance criterion/criteria it discharges>" }
+      ],
+      // The attestation, plus the one thing to price before accepting (an unknown repo footprint, a
+      // cross-repo lockstep the release gate will later ask for in one irreversible accept, ...).
+      coverage: "Every acceptance criterion maps to at least one element and no element is claimed by two. <the one thing to price>",
+      existing_children_checked: true   // did you actually check for an existing child set? (B-646)
+    },
+    // The rejected cut — never omit it; a fork with one arm named is not a fork.
+    alternatives: [
+      { option: "<the cut you did NOT take, e.g. two children split by repo>",
+        rejection: "<why it loses — independent shippability, and the asymmetry between the two errors>" }
+    ],
     items: [
       { kind: "decision", text: "Child 1 — schema migration", recommendation: "create" },
       { kind: "decision", text: "Child 2 — MCP tools", recommendation: "create" },

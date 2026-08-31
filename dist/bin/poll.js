@@ -22747,93 +22747,6 @@ async function resolveTaskId(client, projectId, input) {
   return data.id;
 }
 
-// src/tools/briefs.ts
-async function fetchPendingResolution(client, taskId) {
-  try {
-    const { data, error } = await client.from("briefs").select("pending_resolution").eq("task_id", taskId).eq("status", "active").maybeSingle();
-    if (error) return null;
-    const pr = data?.pending_resolution;
-    return pr ?? null;
-  } catch {
-    return null;
-  }
-}
-async function fetchPendingRemark(client, taskId) {
-  try {
-    const { data, error } = await client.from("briefs").select("id, reason, accept_remark").eq("task_id", taskId).not("accept_remark", "is", null).is("accept_remark_consumed_at", null).order("created_at", { ascending: false }).limit(1).maybeSingle();
-    if (error || !data) return null;
-    const row = data;
-    const detail = row.accept_remark;
-    if (typeof detail !== "string" || detail.trim().length === 0) return null;
-    return { brief_id: row.id, reason: row.reason, detail };
-  } catch {
-    return null;
-  }
-}
-var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
-var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
-var ACCEPTED_PROVENANCE = `'${PROVENANCE_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_SYNTHESIZED}', or '${PROVENANCE_AGENT_SYNTHESIZED}:<mode>'`;
-
-// src/elicitation/engine.ts
-var MAX_QUESTIONS_PER_ROUND = 5;
-function currentRoundNumber(rounds) {
-  if (!Array.isArray(rounds) || rounds.length === 0) return 0;
-  const last = rounds[rounds.length - 1];
-  return typeof last?.n === "number" ? last.n : rounds.length;
-}
-
-// src/tools/elicitation.ts
-var fileElicitationRoundTool = {
-  name: "file_elicitation_round",
-  description: `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld \u2014 load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) \u2014 read the previous round's answers via get_elicitation before filing the next. For a brief-attached ('discuss') exchange, filing ROUND 1 also clears the attached brief's pending_resolution discuss marker (B-461 \u2014 the filing IS the consume). If the exchange was mechanically cancelled ('abandoned'), returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel).`,
-  inputSchema: {
-    type: "object",
-    properties: {
-      exchange_id: { type: "string", description: "The exchange to file on. Or pass task_id to target its active exchange." },
-      task_id: { type: "string", description: "Alternative to exchange_id \u2014 the task whose ACTIVE exchange to file on (UUID, task number, or visual ID)." },
-      context_line: { type: "string", description: "ONE plain-prose line framing the round (what this round is settling and why)." },
-      questions: {
-        type: "array",
-        description: `The round's questions (max ${MAX_QUESTIONS_PER_ROUND}).`,
-        items: {
-          type: "object",
-          properties: {
-            id: { type: "string", description: "Round-unique id the answer keys on (e.g. 'q1')." },
-            stakes: { type: "string", description: "'low' | 'load-bearing' \u2014 how much a wrong answer steers the work. Load-bearing \u21D2 kind must be 'open'." },
-            kind: { type: "string", description: "'validate' (confirm/correct an inference \u2014 requires statement) | 'open' (open text)." },
-            statement: { type: "string", description: "The agent's inference the human confirms or corrects. Required for kind='validate'." },
-            text: { type: "string", description: "The question text." },
-            why: { type: "string", description: `Optional "why I'm asking" expander.` }
-          },
-          required: ["id", "stakes", "kind", "text"]
-        }
-      },
-      prior_answers: {
-        type: "object",
-        description: "Terminal-given answers to the PREVIOUS round, echoed into the exchange record in the same write (B-462 \u2014 the human answered in the terminal, not the web). Keyed by question id: { <qid>: { verb, text? } } with verb confirm|correct|skip for a 'validate' question and answer|skip for an 'open' one (correct/answer require text). Only the LAST filed round's unanswered questions may be echoed; each echo is stamped via:'terminal'. Omit entirely for web-submitted answers \u2014 the web writes those itself."
-      }
-    },
-    required: ["context_line", "questions"]
-  }
-};
-async function fetchActiveExchange(client, taskId) {
-  try {
-    const { data, error } = await client.from("elicitation_exchanges").select("id, status, rounds, answers_submitted_at, force_quit_requested_at").eq("task_id", taskId).eq("status", "active").maybeSingle();
-    if (error || !data) return null;
-    const row = data;
-    const rounds = Array.isArray(row.rounds) ? row.rounds : [];
-    return {
-      exchange_id: row.id,
-      status: row.status,
-      round: currentRoundNumber(rounds),
-      answers_submitted_at: row.answers_submitted_at ?? null,
-      force_quit_requested_at: row.force_quit_requested_at ?? null
-    };
-  } catch {
-    return null;
-  }
-}
-
 // src/tools/risk-class.ts
 var RISK_CLASSES = [
   "auth",
@@ -23048,6 +22961,93 @@ function detectRiskClasses(input) {
     }
   }
   return RISK_CLASSES.filter((cls) => hits.has(cls));
+}
+
+// src/tools/briefs.ts
+async function fetchPendingResolution(client, taskId) {
+  try {
+    const { data, error } = await client.from("briefs").select("pending_resolution").eq("task_id", taskId).eq("status", "active").maybeSingle();
+    if (error) return null;
+    const pr = data?.pending_resolution;
+    return pr ?? null;
+  } catch {
+    return null;
+  }
+}
+async function fetchPendingRemark(client, taskId) {
+  try {
+    const { data, error } = await client.from("briefs").select("id, reason, accept_remark").eq("task_id", taskId).not("accept_remark", "is", null).is("accept_remark_consumed_at", null).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (error || !data) return null;
+    const row = data;
+    const detail = row.accept_remark;
+    if (typeof detail !== "string" || detail.trim().length === 0) return null;
+    return { brief_id: row.id, reason: row.reason, detail };
+  } catch {
+    return null;
+  }
+}
+var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
+var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
+var ACCEPTED_PROVENANCE = `'${PROVENANCE_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_SYNTHESIZED}', or '${PROVENANCE_AGENT_SYNTHESIZED}:<mode>'`;
+
+// src/elicitation/engine.ts
+var MAX_QUESTIONS_PER_ROUND = 5;
+function currentRoundNumber(rounds) {
+  if (!Array.isArray(rounds) || rounds.length === 0) return 0;
+  const last = rounds[rounds.length - 1];
+  return typeof last?.n === "number" ? last.n : rounds.length;
+}
+
+// src/tools/elicitation.ts
+var fileElicitationRoundTool = {
+  name: "file_elicitation_round",
+  description: `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld \u2014 load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) \u2014 read the previous round's answers via get_elicitation before filing the next. For a brief-attached ('discuss') exchange, filing ROUND 1 also clears the attached brief's pending_resolution discuss marker (B-461 \u2014 the filing IS the consume). If the exchange was mechanically cancelled ('abandoned'), returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel).`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      exchange_id: { type: "string", description: "The exchange to file on. Or pass task_id to target its active exchange." },
+      task_id: { type: "string", description: "Alternative to exchange_id \u2014 the task whose ACTIVE exchange to file on (UUID, task number, or visual ID)." },
+      context_line: { type: "string", description: "ONE plain-prose line framing the round (what this round is settling and why)." },
+      questions: {
+        type: "array",
+        description: `The round's questions (max ${MAX_QUESTIONS_PER_ROUND}).`,
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Round-unique id the answer keys on (e.g. 'q1')." },
+            stakes: { type: "string", description: "'low' | 'load-bearing' \u2014 how much a wrong answer steers the work. Load-bearing \u21D2 kind must be 'open'." },
+            kind: { type: "string", description: "'validate' (confirm/correct an inference \u2014 requires statement) | 'open' (open text)." },
+            statement: { type: "string", description: "The agent's inference the human confirms or corrects. Required for kind='validate'." },
+            text: { type: "string", description: "The question text." },
+            why: { type: "string", description: `Optional "why I'm asking" expander.` }
+          },
+          required: ["id", "stakes", "kind", "text"]
+        }
+      },
+      prior_answers: {
+        type: "object",
+        description: "Terminal-given answers to the PREVIOUS round, echoed into the exchange record in the same write (B-462 \u2014 the human answered in the terminal, not the web). Keyed by question id: { <qid>: { verb, text? } } with verb confirm|correct|skip for a 'validate' question and answer|skip for an 'open' one (correct/answer require text). Only the LAST filed round's unanswered questions may be echoed; each echo is stamped via:'terminal'. Omit entirely for web-submitted answers \u2014 the web writes those itself."
+      }
+    },
+    required: ["context_line", "questions"]
+  }
+};
+async function fetchActiveExchange(client, taskId) {
+  try {
+    const { data, error } = await client.from("elicitation_exchanges").select("id, status, rounds, answers_submitted_at, force_quit_requested_at").eq("task_id", taskId).eq("status", "active").maybeSingle();
+    if (error || !data) return null;
+    const row = data;
+    const rounds = Array.isArray(row.rounds) ? row.rounds : [];
+    return {
+      exchange_id: row.id,
+      status: row.status,
+      round: currentRoundNumber(rounds),
+      answers_submitted_at: row.answers_submitted_at ?? null,
+      force_quit_requested_at: row.force_quit_requested_at ?? null
+    };
+  } catch {
+    return null;
+  }
 }
 
 // src/tools/tasks.ts

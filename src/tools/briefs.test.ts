@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, getBrief, resolveBrief, resolveBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, type BriefDoc, type BriefItem } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, getBrief, resolveBrief, resolveBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -1468,5 +1468,637 @@ describe('lintBrief — bot-authored release brief must name the approval requir
     });
 
     expect(lint.ok).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// B-876 — the per-gate frame
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('B-876 gate frame', () => {
+  // ——— fixtures, one per variant ———
+  const clarifyFrame = (over: Record<string, unknown> = {}): GateFrame => ({
+    kind: 'clarify',
+    solving: 'Every gate brief states its own gate-specific must-have in a typed field.',
+    in_scope: ['the frame field', 'the render positions'],
+    not_solving: [{ item: 'the clarify authoring', lands: 'B-877' }],
+    ...over,
+  } as GateFrame);
+
+  const decomposeFrame = (over: Record<string, unknown> = {}): GateFrame => ({
+    kind: 'decompose',
+    elements: [{ text: 'the typed frame', surface: 'harmony-plugin: briefs.ts', covers: 'AC1' }],
+    coverage: 'Every acceptance criterion maps to one element and no element is claimed twice.',
+    existing_children_checked: true,
+    ...over,
+  } as GateFrame);
+
+  const designFrame = (over: Record<string, unknown> = {}): GateFrame => ({
+    kind: 'design',
+    track: 'technical-design',
+    tracks: [
+      { track: 'product-design', status: 'accepted' },
+      { track: 'technical-design', status: 'this-brief' },
+      { track: 'ux-ui-design', status: 'not-required', note: 'no rendered surface' },
+    ],
+    reach: ['the web cards view must learn the frame before it renders'],
+    not_reopened: ['the accepted decomposition'],
+    derisk: { run: ['rendered all six variants'], not_run: ['nothing load-bearing outstanding'] },
+    ...over,
+  } as GateFrame);
+
+  const planFrame = (over: Record<string, unknown> = {}): GateFrame => ({
+    kind: 'plan',
+    scope: { repos: ['harmony-plugin'], surfaces: ['briefs.ts', 'five skills'], has_migration: false },
+    steps: ['Add the types', 'Render per gate', 'Lint warn-only'],
+    attestation: { base_verified: 'renderBrief and lintBrief were read in current code this session.' },
+    carried_unproven: [],
+    ac_coverage: 'All nine acceptance criteria.',
+    ...over,
+  } as GateFrame);
+
+  const releaseFrame = (over: Record<string, unknown> = {}): GateFrame => ({
+    kind: 'release',
+    act: {
+      repos: ['harmony-plugin'],
+      pr_count: 1,
+      lands_in: 'staging',
+      atomicity: 'single',
+      irreversible: [],
+    },
+    unproven: [{ item: 'the web cards view', reason: 'it does not render the frame yet' }],
+    evidence_status: { proven_by_run: 7, walk_at_verify: 2, unproven: 0, total: 9 },
+    risk_classes: [],
+    ...over,
+  } as GateFrame);
+
+  const criterionRow = (i: number, over: Partial<CriterionRow> = {}): CriterionRow => ({
+    ac_id: `ac-${i}`,
+    text: `Criterion ${i} — the frame renders in the right place`,
+    checked: false,
+    disposition: 'walk',
+    step_ref: String(i),
+    ...over,
+  });
+
+  const verifyFrame = (rows = 3, over: Record<string, unknown> = {}): GateFrame => ({
+    kind: 'verify',
+    environment: 'staging',
+    criteria: Array.from({ length: rows }, (_, i) => criterionRow(i + 1)),
+    evidence_status: '✓ complete',
+    ...over,
+  } as GateFrame);
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // THE ACCEPTANCE CRITERION: a frame-less doc renders EXACTLY today's bytes.
+  //
+  // Both strings below were captured from the PRE-B-876 renderer (git HEAD before this change,
+  // bundled and executed), not from the new one — so they are a genuine before/after pin, not a
+  // snapshot of whatever the code happens to produce now.
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  describe('a frame-absent doc renders byte-identical output to today', () => {
+    const PRE_B876_RELEASE_SHAPED = "## DECIDE: Release B-876 — merge the plugin PR and deploy to staging?\n\n**Recommend (high confidence):** Ship it.\n\n**On accept:** advances Built → Deployed\n\n**Why:**\n- The suite is green.\n- The change is additive.\n\n**Alternatives:**\n- Hold for the next batch — nothing else is queued\n\n**Context:**\n- PR: https://example.invalid/pull/1\n\n**You need to:**\n- [ ] Ship the built artefact — *recommend: release*\n\n_This brief is a summary — fuller depth lives in the linked decision entry._\n\n> Type `accept`, `edit`, `iterate <feedback>`, or `defer`.";
+
+    const PRE_B876_CLARIFY_SHAPED = "## DECIDE: Lock the clarified scope for B-876?\n\n**Recommend (moderate confidence):** Lock it.\n\n**On accept:** no state change\n\n**Why:**\n- The boundary held through two rounds.\n\n**Context:**\n- B-865 is the parent frame decision.\n\nProposed acceptance criteria (happy path) — filed on accept:\n- The frame renders per gate\n\n**You need to:**\n- [ ] Lock the scope — *recommend: lock*\n- [ ] Name the excluded surface *(your input needed)*\n\n> Type `accept`, `edit`, `iterate <feedback>`, or `defer`.";
+
+    const releaseShapedDoc = (): BriefDoc => ({
+      decide: 'Release B-876 — merge the plugin PR and deploy to staging?',
+      recommend: { text: 'Ship it.', confidence: 'high' },
+      why: ['The suite is green.', 'The change is additive.'],
+      alternatives: [{ option: 'Hold for the next batch', rejection: 'nothing else is queued' }],
+      context: ['PR: https://example.invalid/pull/1'],
+      items: [{ kind: 'decision', text: 'Ship the built artefact', recommendation: 'release' }],
+    });
+
+    const clarifyShapedDoc = (): BriefDoc => ({
+      decide: 'Lock the clarified scope for B-876?',
+      recommend: { text: 'Lock it.', confidence: 'medium' },
+      why: ['The boundary held through two rounds.'],
+      context: ['B-865 is the parent frame decision.'],
+      items: [
+        { kind: 'decision', text: 'Lock the scope', recommendation: 'lock' },
+        { kind: 'content-input', text: 'Name the excluded surface' },
+      ],
+      payload: [{ write_kind: 'acceptance_criterion', ref: 'ac-x', content: 'The frame renders per gate' }],
+    });
+
+    it('renders the pre-B-876 bytes exactly, for a full release-shaped doc with no frame', () => {
+      const md = renderBrief(releaseShapedDoc(), { type: 'decision', id: 'dec-1' }, {
+        reason: 'release-decision-pending', accept: { from: 'Built', to: 'Deployed' },
+      });
+      expect(md).toBe(PRE_B876_RELEASE_SHAPED);
+    });
+
+    it('renders the pre-B-876 bytes exactly, for a clarify-shaped doc with a payload-derived AC block', () => {
+      const md = renderBrief(clarifyShapedDoc(), null, { reason: 'clarification-draft', accept: null });
+      expect(md).toBe(PRE_B876_CLARIFY_SHAPED);
+    });
+
+    it('an explicitly-undefined frame and revision are indistinguishable from omitting them', () => {
+      const withKeys = { ...releaseShapedDoc(), frame: undefined, revision: undefined };
+      const md = renderBrief(withKeys, { type: 'decision', id: 'dec-1' }, {
+        reason: 'release-decision-pending', accept: { from: 'Built', to: 'Deployed' },
+      });
+      expect(md).toBe(PRE_B876_RELEASE_SHAPED);
+    });
+
+    it('still renders today’s bytes on a bare 1-arg call (no decisionRef, no ctx)', () => {
+      const md = renderBrief(releaseShapedDoc());
+      expect(md).not.toContain('**On accept:**');
+      expect(md).toContain('## DECIDE: Release B-876');
+      expect(md.endsWith(`> ${DEFAULT_TAIL}`)).toBe(true);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // Position, per gate — including both exceptions.
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  describe('render position', () => {
+    const render = (frame: GateFrame, over: Partial<BriefDoc> = {}) =>
+      renderBrief(baseDoc({ recommend: { text: 'Proceed.', confidence: 'high' }, frame, ...over }), null, {
+        reason: 'x', accept: { from: 'A', to: 'B' },
+      });
+
+    it('EXCEPTION 1 — clarify renders ABOVE ## DECIDE:', () => {
+      const md = render(clarifyFrame());
+      expect(md.indexOf('## SOLVING:')).toBeGreaterThanOrEqual(0);
+      expect(md.indexOf('## SOLVING:')).toBeLessThan(md.indexOf('## DECIDE:'));
+      expect(md).toContain('**In scope:**');
+      expect(md).toContain('- the clarify authoring — B-877');
+    });
+
+    it('EXCEPTION 2 — release renders AFTER DECIDE and BEFORE Recommend', () => {
+      const md = render(releaseFrame());
+      const decide = md.indexOf('## DECIDE:');
+      const act = md.indexOf('**This accept executes:**');
+      const rec = md.indexOf('**Recommend');
+      expect(decide).toBeLessThan(act);
+      expect(act).toBeLessThan(rec);
+      expect(md).toContain('**One-way in this:** nothing — every step is revertable');
+      expect(md).toContain('**Risk (path-derived from the diff):** none');
+      expect(md).toContain('**Evidence (mechanical):** 7/9 proven by a test that RAN');
+    });
+
+    it('decompose renders after Recommend and above the On-accept line', () => {
+      const md = render(decomposeFrame());
+      const rec = md.indexOf('**Recommend');
+      const elements = md.indexOf('**The elements — 1:**');
+      const onAccept = md.indexOf('**On accept:**');
+      expect(rec).toBeLessThan(elements);
+      expect(elements).toBeLessThan(onAccept);
+      expect(md).toContain('**Coverage:**');
+      expect(md).toContain('**Existing children checked:** yes');
+    });
+
+    it('design renders after Recommend, with the track map and an explicit empty reach', () => {
+      const md = render(designFrame({ reach: [] }));
+      expect(md.indexOf('**Recommend')).toBeLessThan(md.indexOf('**Track:**'));
+      expect(md).toContain('**Track:** technical-design · product-design accepted · ux-ui-design not-required (no rendered surface)');
+      expect(md).toContain('**Reach beyond this ticket:** none — this decision reaches nothing outside the ticket');
+      expect(md).toContain('**De-risked by running:**');
+    });
+
+    it('plan renders its frame after Recommend and its STEPS under **Plan:** just above the ask', () => {
+      const md = render(planFrame(), { context: ['a context bullet'] });
+      const rec = md.indexOf('**Recommend');
+      const touches = md.indexOf('**Touches:**');
+      const plan = md.indexOf('**Plan:**');
+      const needTo = md.indexOf('**You need to:**');
+      expect(rec).toBeLessThan(touches);
+      expect(touches).toBeLessThan(plan);
+      expect(plan).toBeLessThan(needTo);
+      expect(md).toContain('1. Add the types');
+      expect(md).toContain('**Carried into build unproven:** nothing');
+    });
+
+    it('verify renders the criteria ledger as a table after Recommend', () => {
+      const md = render(verifyFrame(2));
+      expect(md.indexOf('**Recommend')).toBeLessThan(md.indexOf('**Verifying against'));
+      expect(md).toContain('**Verifying against — 2 criteria on file · you can confirm 2 today**');
+      expect(md).toContain('| # | Criterion (as filed) | Disposition | Step | Backed by |');
+      expect(md).toContain('| 1 | Criterion 1 — the frame renders in the right place | ✅ walk now | 1 | — |');
+      expect(md).toContain('**Covers:** staging');
+    });
+
+    it('escapes a pipe inside a criterion so one AC cannot break the ledger table', () => {
+      const md = render(verifyFrame(1, { criteria: [criterionRow(1, { text: 'a | b' })] }));
+      expect(md).toContain('| 1 | a \\| b |');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // The revision block.
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  describe('the revision block', () => {
+    it('renders directly under the On-accept line on round 2, never above the frame', () => {
+      const md = renderBrief(
+        baseDoc({
+          frame: decomposeFrame(),
+          revision: { round: 2, changes: [{ change: 'Priced the rejected cut', responds_to: 'your round-1 note on shippability' }] },
+        }),
+        null,
+        { reason: 'decomposition-proposal', accept: { from: 'Clarified', to: 'Decomposed' } },
+      );
+      const frame = md.indexOf('**The elements');
+      const onAccept = md.indexOf('**On accept:**');
+      const changed = md.indexOf('**Changed this round:**');
+      const why = md.indexOf('**Why:**');
+      expect(frame).toBeLessThan(onAccept);
+      expect(onAccept).toBeLessThan(changed);
+      expect(changed).toBeLessThan(why);
+      expect(md).toContain('- Priced the rejected cut — *answers: your round-1 note on shippability*');
+    });
+
+    it('renders under the clarify frame too — the frame stays the top line at every round', () => {
+      const md = renderBrief(
+        baseDoc({ frame: clarifyFrame(), revision: { round: 3, changes: [{ change: 'Narrowed the boundary', responds_to: 'iterate: too broad' }] } }),
+        null,
+        { reason: 'clarification-draft', accept: null },
+      );
+      expect(md.indexOf('## SOLVING:')).toBeLessThan(md.indexOf('**Changed this round:**'));
+    });
+
+    it('is ABSENT on a first-round brief that carries no revision block', () => {
+      const md = renderBrief(baseDoc({ frame: decomposeFrame() }), null, { reason: 'decomposition-proposal', accept: null });
+      expect(md).not.toContain('**Changed this round:**');
+    });
+
+    it('is absent when the revision block carries no changes', () => {
+      const md = renderBrief(baseDoc({ revision: { round: 2, changes: [] } }), null, { reason: 'plan-draft', accept: null });
+      expect(md).not.toContain('**Changed this round:**');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // frameUnits + the tier word budget.
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  describe('frameUnits and the tier-aware budget', () => {
+    it('counts nothing for an absent frame', () => {
+      expect(frameUnits(undefined)).toBe(0);
+    });
+
+    it('counts criteria rows, elements, act steps and unproven entries', () => {
+      expect(frameUnits(verifyFrame(14))).toBe(14);
+      expect(frameUnits(decomposeFrame())).toBe(1);
+      // release: 1 unproven + (1 repo + 0 irreversible)
+      expect(frameUnits(releaseFrame())).toBe(2);
+      // plan: 3 steps + 0 carried_unproven + no landing
+      expect(frameUnits(planFrame())).toBe(3);
+      expect(frameUnits(clarifyFrame())).toBe(3);
+    });
+
+    it('prevents a FALSE bloat warning on a large criteria ledger (same bytes, budget differs)', () => {
+      const content = 'word '.repeat(900);
+      const framed = baseDoc({ frame: verifyFrame(14), recommend: { text: 'Ack.', confidence: 'high' } });
+      const unframed = baseDoc({ recommend: { text: 'Ack.', confidence: 'high' } });
+      const bloat = /soft budget/;
+      // Positive control: the identical rendered length DOES warn without the frame's units.
+      expect(lintBrief(unframed, content).warnings.join(' ')).toMatch(bloat);
+      expect(lintBrief(framed, content).warnings.join(' ')).not.toMatch(bloat);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // stripForLegibility additions (exercised through the two B-660 nudges).
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  describe('stripForLegibility treats frame output as structured, not prose', () => {
+    const NUDGE_A = /one idea per sentence/i;
+    const NUDGE_B = /unstack these/i;
+    const quiet = baseDoc({ recommend: { text: 'Adopt.', confidence: 'high' } });
+    const longRun = Array.from({ length: SENTENCE_WORD_LIMIT + 5 }, (_, i) => `word${i}`).join(' ');
+
+    it('does not read a Markdown table row as a sentence (the verify ledger)', () => {
+      const content = `## DECIDE: x\n\n| # | Criterion | Disposition |\n|---|---|---|\n| 1 | ${longRun} (an aside (inside an aside)) | walk |\n`;
+      const r = lintBrief(quiet, content);
+      expect(r.warnings.join(' ')).not.toMatch(NUDGE_A);
+      expect(r.warnings.join(' ')).not.toMatch(NUDGE_B);
+    });
+
+    it('does not read a **Label:** field line as prose', () => {
+      const content = `## DECIDE: x\n\n**Coverage:** ${longRun} (an aside (inside an aside)).\n`;
+      const r = lintBrief(quiet, content);
+      expect(r.warnings.join(' ')).not.toMatch(NUDGE_A);
+      expect(r.warnings.join(' ')).not.toMatch(NUDGE_B);
+    });
+
+    it('POSITIVE CONTROL — the same words as an ordinary paragraph still trip both nudges', () => {
+      const content = `## DECIDE: x\n\n${longRun} (an aside (inside an aside)).\n`;
+      const r = lintBrief(quiet, content);
+      expect(r.warnings.join(' ')).toMatch(NUDGE_A);
+      expect(r.warnings.join(' ')).toMatch(NUDGE_B);
+    });
+
+    it('POSITIVE CONTROL — the **Recommend:** line is NOT stripped (the B-660 calibration anchor)', () => {
+      const content = `## DECIDE: x\n\n**Recommend (high confidence):** ${longRun} (an aside (inside an aside)).\n`;
+      const r = lintBrief(quiet, content);
+      expect(r.warnings.join(' ')).toMatch(NUDGE_A);
+      expect(r.warnings.join(' ')).toMatch(NUDGE_B);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // THE OTHER ACCEPTANCE CRITERION: every new rule is a WARNING. Nothing refuses a brief.
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  describe('every frame rule warns and none errors', () => {
+    const FRAMED_REASONS = Object.keys(FRAME_KIND_FOR_REASON);
+    const wellFormed: Record<string, GateFrame> = {
+      'clarification-draft': clarifyFrame(),
+      'decomposition-proposal': decomposeFrame(),
+      'design-decision-draft': designFrame(),
+      'plan-draft': planFrame(),
+      'release-decision-pending': releaseFrame(),
+      'verification-ack-pending': verifyFrame(2),
+    };
+
+    it.each(FRAMED_REASONS)('a MISSING frame at %s warns and never errors', (reason) => {
+      const doc = baseDoc();
+      const r = lintBrief(doc, renderBrief(doc, null, { reason }), { reason });
+      expect(r.errors).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.warnings.join(' ')).toContain('carries no `doc.frame`');
+    });
+
+    it.each(FRAMED_REASONS)('a MISMATCHED frame kind at %s warns and never errors', (reason) => {
+      const otherReason = FRAMED_REASONS.find((x) => x !== reason)!;
+      const doc = baseDoc({ frame: wellFormed[otherReason] });
+      const r = lintBrief(doc, renderBrief(doc, null, { reason }), { reason });
+      expect(r.errors).toEqual([]);
+      expect(r.warnings.join(' ')).toContain("but this brief's reason is");
+    });
+
+    it.each(FRAMED_REASONS)('a MALFORMED frame at %s warns and never errors', (reason) => {
+      // The bare `kind` alone — every required sub-field missing.
+      const doc = baseDoc({ frame: { kind: FRAME_KIND_FOR_REASON[reason] } as GateFrame });
+      const r = lintBrief(doc, renderBrief(doc, null, { reason }), { reason });
+      expect(r.errors).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.warnings.length).toBeGreaterThan(0);
+    });
+
+    it('a malformed frame still RENDERS without throwing at every framed reason', () => {
+      for (const reason of FRAMED_REASONS) {
+        const doc = baseDoc({ frame: { kind: FRAME_KIND_FOR_REASON[reason] } as GateFrame });
+        expect(() => renderBrief(doc, null, { reason })).not.toThrow();
+      }
+    });
+
+    it('names the specific decompose gaps: empty elements, blank coverage, absent alternatives', () => {
+      const doc = baseDoc({ frame: decomposeFrame({ elements: [], coverage: '  ' }) });
+      const w = lintBrief(doc, renderBrief(doc), { reason: 'decomposition-proposal' });
+      expect(w.errors).toEqual([]);
+      expect(w.warnings.join(' ')).toContain('`frame.elements` is empty');
+      expect(w.warnings.join(' ')).toContain('`frame.coverage` is blank');
+      expect(w.warnings.join(' ')).toContain('no `alternatives`');
+    });
+
+    it('warns on an absent reach KEY at design — the highest-signal rule, and still only a warning', () => {
+      const frame = designFrame();
+      delete (frame as unknown as Record<string, unknown>).reach;
+      const doc = baseDoc({ frame, alternatives: [{ option: 'a', rejection: 'b' }] });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'design-decision-draft' });
+      expect(r.errors).toEqual([]);
+      expect(r.warnings.join(' ')).toContain('`frame.reach` is absent');
+    });
+
+    it('exempts the ux-ui-design track from the alternatives rule (visual-handoff §D2)', () => {
+      const doc = baseDoc({ frame: designFrame({ track: 'ux-ui-design' }) });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'design-decision-draft' });
+      expect(r.warnings.join(' ')).not.toContain('no `alternatives`');
+    });
+
+    it('warns when a not-required track carries no note', () => {
+      const doc = baseDoc({
+        alternatives: [{ option: 'a', rejection: 'b' }],
+        frame: designFrame({ tracks: [{ track: 'ux-ui-design', status: 'not-required' }] }),
+      });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'design-decision-draft' });
+      expect(r.warnings.join(' ')).toContain("declared not-required with no note");
+    });
+
+    it('warns when a multi-repo or migration plan states no landing shape', () => {
+      const doc = baseDoc({ frame: planFrame({ scope: { repos: ['harmony-web', 'harmony-plugin'], surfaces: [], has_migration: true } }) });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'plan-draft' });
+      expect(r.errors).toEqual([]);
+      expect(r.warnings.join(' ')).toContain('`frame.landing` is absent');
+    });
+
+    it('warns when an ordered release names no ordering', () => {
+      const doc = baseDoc({
+        frame: releaseFrame({ act: { repos: ['a', 'b'], pr_count: 2, lands_in: 'staging', atomicity: 'ordered', irreversible: ['the migration'] } }),
+      });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'release-decision-pending' });
+      expect(r.errors).toEqual([]);
+      expect(r.warnings.join(' ')).toContain("`frame.act.ordering` is blank");
+    });
+
+    it("warns when a 'walk' criterion names no step_ref", () => {
+      const doc = baseDoc({ frame: verifyFrame(1, { criteria: [criterionRow(1, { step_ref: undefined })] }) });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
+      expect(r.errors).toEqual([]);
+      expect(r.warnings.join(' ')).toContain("names no `step_ref`");
+    });
+
+    it("warns on an empty criteria ledger with no exempt_reason, and stays silent when one is given", () => {
+      const bare = baseDoc({ frame: verifyFrame(0) });
+      expect(lintBrief(bare, renderBrief(bare), { reason: 'verification-ack-pending' }).warnings.join(' '))
+        .toContain('acks against nothing');
+      const exempt = baseDoc({ frame: verifyFrame(0, { exempt_reason: 'umbrella — carried by children' }) });
+      expect(lintBrief(exempt, renderBrief(exempt), { reason: 'verification-ack-pending' }).warnings.join(' '))
+        .not.toContain('acks against nothing');
+    });
+
+    it('leaves `frame` UNCONSTRAINED at stale-patch-review and revise-scope-review', () => {
+      for (const reason of ['stale-patch-review', 'revise-scope-review']) {
+        const doc = baseDoc();
+        const r = lintBrief(doc, renderBrief(doc, null, { reason }), { reason });
+        expect(r.errors).toEqual([]);
+        expect(r.warnings.join(' ')).not.toContain('doc.frame');
+      }
+    });
+
+    it('a well-formed frame produces no frame warnings at its own gate', () => {
+      const cases: Array<[string, BriefDoc]> = [
+        ['decomposition-proposal', baseDoc({ frame: decomposeFrame(), alternatives: [{ option: 'split by repo', rejection: 'no independent shippability' }] })],
+        ['design-decision-draft', baseDoc({ frame: designFrame(), alternatives: [{ option: 'a sibling column', rejection: 'splits the canonical artefact' }] })],
+        ['plan-draft', baseDoc({ frame: planFrame() })],
+        ['release-decision-pending', baseDoc({ frame: releaseFrame() })],
+        ['verification-ack-pending', baseDoc({ frame: verifyFrame(2) })],
+        ['clarification-draft', baseDoc({ frame: clarifyFrame() })],
+      ];
+      for (const [reason, doc] of cases) {
+        const r = lintBrief(doc, renderBrief(doc, null, { reason }), { reason });
+        expect(r.errors).toEqual([]);
+        expect(r.warnings.filter((w) => /`frame\./.test(w) || /doc\.frame/.test(w))).toEqual([]);
+      }
+    });
+
+    it('warns (never errors) on a round-1 revision block and an unbound change', () => {
+      const doc = baseDoc({ revision: { round: 1, changes: [{ change: 'Rewrote the ask', responds_to: '' }] } });
+      const r = lintBrief(doc, renderBrief(doc), {});
+      expect(r.errors).toEqual([]);
+      expect(r.warnings.join(' ')).toContain('is a round-2+ artefact');
+      expect(r.warnings.join(' ')).toContain('names no feedback it responds to');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // The PR-reference rule (warn-only), and the defensive build_pr read.
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  describe('the release brief must name its pull request (warn-only)', () => {
+    const refs = [{ key: 'build_pr', pr_url: 'https://github.com/ycomplex/harmony-plugin/pull/184', pr_number: 184 }];
+
+    it('warns when the doc names no PR reference at all', () => {
+      const doc = baseDoc({ frame: releaseFrame() });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'release-decision-pending', buildPrRefs: refs });
+      expect(r.errors).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.warnings.join(' ')).toContain('names no PR reference');
+    });
+
+    it('is silent once the PR url rides the doc', () => {
+      const doc = baseDoc({ frame: releaseFrame(), context: [`PR: ${refs[0].pr_url}`] });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'release-decision-pending', buildPrRefs: refs });
+      expect(r.warnings.join(' ')).not.toContain('names no PR reference');
+    });
+
+    it('is silent when only the PR number is cited', () => {
+      const doc = baseDoc({ decide: 'Release — merge #184 to staging?', frame: releaseFrame() });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'release-decision-pending', buildPrRefs: refs });
+      expect(r.warnings.join(' ')).not.toContain('names no PR reference');
+    });
+
+    it('does not apply at any other gate', () => {
+      const doc = baseDoc({ frame: planFrame() });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'plan-draft', buildPrRefs: refs });
+      expect(r.warnings.join(' ')).not.toContain('names no PR reference');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // Reading `field_values.build_pr` defensively — against the THREE REAL live shapes, verbatim.
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  describe('readBuildPrReferences tolerates every observed field_values shape', () => {
+    const B740_SIBLING_KEYS = JSON.parse('{"build_pr":{"base":"main","branch":"feat/b740-stranded-tickets","pr_url":"https://github.com/ycomplex/harmony-web/pull/411","head_sha":"ddc78b89614fd8ffe840bb21bdd593612b82677c","opened_at":"2026-08-26T10:27:40Z","pr_number":411,"author_login":"app/harmony-daemon","author_is_bot":true},"build_pr_plugin":{"base":"main","branch":"feat/b740-stranded-tickets","pr_url":"https://github.com/ycomplex/harmony-plugin/pull/184","head_sha":"ddcd3b666ac7a9b542db1a932e1d92d64ba21e26","opened_at":"2026-08-26T10:27:50Z","pr_number":184,"author_login":"app/harmony-daemon","author_is_bot":true}}');
+
+    const B743_NESTED = JSON.parse('{"build_pr":{"base":"main","branch":"feat/b743-run-options","pr_url":"https://github.com/ycomplex/harmony-plugin/pull/185","web_pr":{"pr_url":"https://github.com/ycomplex/harmony-web/pull/413","head_sha":"ae91f7db515f0f942be60c0716e547dfe5c7abb8","pr_number":413,"author_login":"app/harmony-daemon","author_is_bot":true},"head_sha":"04090fd80428393f76bfc67dea20442142ab2c88","opened_at":"2026-08-26T10:50:00Z","plugin_pr":{"pr_url":"https://github.com/ycomplex/harmony-plugin/pull/185","head_sha":"04090fd80428393f76bfc67dea20442142ab2c88","pr_number":185,"author_login":"app/harmony-daemon","author_is_bot":true},"pr_number":185,"author_login":"app/harmony-daemon","author_is_bot":true}}');
+
+    const B844_WORK_BRANCH = JSON.parse('{"build_pr":{"base":"main","branch":"fix/daemon-error-format-v2","pr_url":"https://github.com/ycomplex/harmony-plugin/pull/183","head_sha":"c210423e8bf3560b079bcfae6fc0cfe888e2ccdb","opened_at":"2026-08-26T08:25:00Z","pr_number":183,"author_login":"app/harmony-daemon","author_is_bot":true},"work_branch":{"branch":"fix/daemon-error-format-v2","started_at":"2026-08-26T08:20:00Z"}}');
+
+    it('B-740 SIBLING KEYS — names both PRs, the primary first', () => {
+      const refs = readBuildPrReferences(B740_SIBLING_KEYS);
+      expect(refs.map((r) => [r.key, r.pr_number])).toEqual([
+        ['build_pr', 411],
+        ['build_pr_plugin', 184],
+      ]);
+      expect(refs[0].author_is_bot).toBe(true);
+      expect(refs[0].pr_url).toBe('https://github.com/ycomplex/harmony-web/pull/411');
+    });
+
+    it('B-743 NESTED — names the parent and the distinct nested web PR, deduping the repeated plugin PR', () => {
+      const refs = readBuildPrReferences(B743_NESTED);
+      expect(refs.map((r) => [r.key, r.pr_number])).toEqual([
+        ['build_pr', 185],
+        ['build_pr.web_pr', 413],
+      ]);
+    });
+
+    it('B-844 work_branch — reads the one PR and does NOT invent one out of a branch record', () => {
+      const refs = readBuildPrReferences(B844_WORK_BRANCH);
+      expect(refs.map((r) => [r.key, r.pr_number])).toEqual([['build_pr', 183]]);
+    });
+
+    it('never throws, whatever it is handed', () => {
+      for (const junk of [null, undefined, 'a string', 42, [], [1, 2], {}, { build_pr: 'nope' }, { build_pr: null }, { build_pr: [] }]) {
+        expect(() => readBuildPrReferences(junk)).not.toThrow();
+        expect(readBuildPrReferences(junk)).toEqual([]);
+      }
+    });
+
+    it('readBuildPr yields the PRIMARY record for the B-732 approval rule, on all three shapes', () => {
+      expect(readBuildPr(B740_SIBLING_KEYS)?.author_is_bot).toBe(true);
+      expect(readBuildPr(B743_NESTED)?.pr_number).toBe(185);
+      expect(readBuildPr(B844_WORK_BRANCH)?.pr_url).toBe('https://github.com/ycomplex/harmony-plugin/pull/183');
+      expect(readBuildPr({ build_pr: 'nope' })).toBeUndefined();
+      expect(readBuildPr(null)).toBeUndefined();
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // compose is AUTHORITATIVE for a release frame's risk_classes.
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  describe('composeBrief computes frame.risk_classes from changed_paths', () => {
+    const briefRow = { id: 'brief-1', task_id: 'task-1', reason: 'release-decision-pending', content: 'r', status: 'active', iteration: 1 };
+    const releaseDoc = (risk: string[]) => ({
+      decide: 'Release — merge the PR?',
+      recommend: { text: 'Ship.', confidence: 'high' },
+      items: [{ kind: 'decision', text: 'Ship it', recommendation: 'release' }],
+      frame: { ...(releaseFrame() as Record<string, unknown>), risk_classes: risk },
+    });
+    // responses: [field_values read] -> [no active brief] -> [insert] -> [task update]
+    const client4 = () => makeClient([{ data: { field_values: {} } }, { data: null }, { data: briefRow }, { data: null }]);
+
+    const insertedFrame = (client: any) =>
+      (client.insert.mock.calls[0][0] as { doc: { frame: { risk_classes: string[] } } }).doc.frame;
+
+    it('derives the classes from the DIFF, overwriting whatever the skill authored', async () => {
+      const client = client4();
+      await composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'release-decision-pending', pending_activity: null as any,
+        doc: releaseDoc(['irreversible-destructive']) as any,
+        changed_paths: ['web/supabase/migrations/20260831_add_column.sql'],
+      });
+      expect(insertedFrame(client).risk_classes).toEqual(['data-migration']);
+    });
+
+    it('NO DIFF ⇒ an empty list — never a prose guess', async () => {
+      const client = client4();
+      await composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'release-decision-pending', pending_activity: null as any,
+        doc: releaseDoc(['auth', 'data-migration']) as any,
+      });
+      expect(insertedFrame(client).risk_classes).toEqual([]);
+    });
+
+    it('a clean diff that touches no risk surface yields an empty list', async () => {
+      const client = client4();
+      await composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'release-decision-pending', pending_activity: null as any,
+        doc: releaseDoc([]) as any,
+        changed_paths: ['plugin/skills/finish-work/SKILL.md'],
+      });
+      expect(insertedFrame(client).risk_classes).toEqual([]);
+    });
+
+    it('does not mutate the caller’s doc', async () => {
+      const client = client4();
+      const doc = releaseDoc(['auth']);
+      await composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'release-decision-pending', pending_activity: null as any,
+        doc: doc as any, changed_paths: ['web/src/pages/Board.tsx'],
+      });
+      expect((doc.frame as { risk_classes: string[] }).risk_classes).toEqual(['auth']);
+      expect(insertedFrame(client).risk_classes).toEqual([]);
+    });
+
+    it('leaves a NON-release frame alone — the field only exists on the release variant', async () => {
+      // responses: [no active brief] -> [insert] -> [task update]
+      const client = makeClient([{ data: null }, { data: briefRow }, { data: null }]);
+      await composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'plan-draft', pending_activity: null as any,
+        doc: { ...okDoc, frame: planFrame() } as any,
+        changed_paths: ['web/supabase/migrations/x.sql'],
+      });
+      const inserted = (client.insert.mock.calls[0][0] as { doc: { frame: Record<string, unknown> } }).doc.frame;
+      expect(inserted.kind).toBe('plan');
+      expect(inserted.risk_classes).toBeUndefined();
+    });
+
+    it('advertises changed_paths, frame and revision on the tool schema', () => {
+      const props = composeBriefTool.inputSchema.properties as Record<string, unknown>;
+      expect(props.changed_paths).toBeDefined();
+      const docProps = (props.doc as { properties: Record<string, unknown> }).properties;
+      expect(docProps.frame).toBeDefined();
+      expect(docProps.revision).toBeDefined();
+    });
   });
 });

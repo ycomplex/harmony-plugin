@@ -78,9 +78,15 @@ sequence, and do NOT touch git):
   ```
   mcp__harmony__compose_brief({
     task_id, reason: "verification-ack-pending", pending_activity: "verifying",
-    doc: { decide: "Does the umbrella work end-to-end across its children?", items: [
-      { kind: "decision", text: "Acknowledge the umbrella works end-to-end across its children", recommendation: "verify once confirmed" }
-    ] }
+    doc: { decide: "Does the umbrella work end-to-end across its children?",
+      // B-876 verify frame — an umbrella carries no criteria of its own, so say so with `exempt_reason`
+      // rather than rendering an empty ledger (an empty list reads as "nothing to verify", a false claim).
+      frame: { kind: "verify", environment: "staging", criteria: [],
+               exempt_reason: "umbrella — the work was verified in its children",
+               evidence_status: "Evidence: N/A (umbrella — carried by children)" },
+      items: [
+        { kind: "decision", text: "Acknowledge the umbrella works end-to-end across its children", recommendation: "verify once confirmed" }
+      ] }
   })
   ```
 
@@ -132,9 +138,16 @@ by the shape of the ticket row.
    ```
    mcp__harmony__compose_brief({
      task_id, reason: "release-decision-pending", pending_activity: null,
+     changed_paths: [<the PR diff paths — compose derives frame.risk_classes from them>],
      doc: { decide: "Release <ticket> — merge PR <pr_number> and deploy to staging?",
+       // The release frame (B-876) — see "The release frame" below for every field.
+       frame: { kind: "release",
+         act: { repos: ["<repo>"], pr_count: 1, lands_in: "staging", atomicity: "single", irreversible: [] },
+         unproven: [], evidence_status: { proven_by_run: 0, walk_at_verify: 0, unproven: 0, total: 0 },
+         risk_classes: [] },
        context: [
          "The prior acceptance wasn't recorded — please re-affirm.",
+         // The PR reference rides doc.context, never a new typed field — read build_pr defensively.
          "PR: <pr_url> (branch <branch>, head <head_sha>)",
        ],
        items: [{ kind: "decision", text: "Re-affirm shipping the built artefact — PR <pr_url>", recommendation: "release" }] }
@@ -186,9 +199,30 @@ class — the signal surfaces *here* instead (see harmony-conduct §3a / §4 "re
 3. If `risk_classes` is **non-empty**, prepend an attention line to what you show the human, e.g.:
    *"⚠ Risk floor: this change touches **auth + data-migration** — review accordingly before releasing."*
    (List the classes from `risk_classes`, comma-joined.) If it is empty, show nothing extra.
+4. **Pass the same paths into `compose_brief` as `changed_paths` (B-876).** `compose_brief` recomputes
+   `frame.risk_classes` from them with the same deterministic detector and **overwrites whatever the doc
+   authored** — compose is authoritative for that field, so it cannot drift from the diff and cannot be
+   prose-guessed. No `changed_paths` ⇒ an empty list, which is the honest answer for an umbrella with no
+   diff of its own.
 
 Prefer this path-derived signal over any prose-derived set — the path signal is high-precision and avoids the
 prose false-positives B-516 fixed.
+
+**TWO DIFFERENT SIGNALS REACH THIS BRIEF — and the second one is NOT diff-derived (B-516 / B-876).** Do not
+collapse them:
+
+- **`frame.risk_classes`** — path-derived from THIS build's diff, computed by `compose_brief` (above).
+- **The classes recorded at gates this run AUTO-ADVANCED** under `--unattended` / the auto-advanced prefix
+  of `--pause-at`. Those runs deliberately do not pause mid-flight on a risk class; the conductor records
+  the classes instead and this brief is where the human finally sees them (`harmony-conduct` §3a / §4b).
+  They are **not** derived from any diff, so the diff-derived field above does not carry them and never
+  will. Surface them as their own prose line on the brief, **explicitly labelled as carried from gates**,
+  e.g.: *"⚠ Carried from gates auto-advanced this run: **auth** (design), **data-migration** (plan) —
+  recorded rather than paused on, per B-516; this is your first look at them."* If the run paused at every
+  gate, or no class was ever recorded, show nothing extra.
+
+Dropping that second line because the first one is now typed and mechanical would silently weaken the
+unattended-mode floor — the floor exists *because* those runs do not stop mid-flight.
 
 **Override-gate attention block (B-773).** Alongside the risk-class signal above, surface any per-gate
 `auto_approve_gates` overrides this run exercised. `mcp__harmony__list_comments({ task_id })` and collect
@@ -229,6 +263,52 @@ confirmation."* Never assert local/partial evidence (a local typecheck/lint run,
 its place, and never silently omit the line. This is the capability-denial doctrine (stated in full at O2
 below, where it also governs the merge-time CI wait) applied at brief-compose time: a proceed-worthy read
 failure, since branch protection independently backs whatever the checks would have shown.
+
+**The release frame (B-876) — author `doc.frame` on every release brief you compose or re-compose.**
+Release is the one gate with a measured wrong accept, and it had no field at all for the act it
+authorizes; one author faked one with an ALL-CAPS header inside a `context[]` string. The frame renders
+**below DECIDE and above Recommend** — the object of the decision named before an opinion is offered
+about it:
+
+```
+frame: {
+  kind: "release",
+  act: {
+    repos: ["harmony-plugin"],
+    pr_count: 1,
+    lands_in: "staging",                  // 'staging' | 'production' | 'both' | 'merged-main'
+    atomicity: "single",                  // 'single' | 'together' | 'ordered'
+    // ordering: "<REQUIRED when atomicity is 'ordered' — web first, then plugin, ...>",
+    irreversible: []                      // [] renders as "nothing — every step is revertable"
+  },
+  // What will be LIVE BUT UNPROVEN when this lands, closed-enumeration, each with its reason. [] = nothing.
+  unproven: [{ item: "<what is unproven>", reason: "<why the build did not prove it>" }],
+  // EXECUTED-AWARE counts from get_build_evidence_status + your own knowledge of what actually RAN.
+  // An unexecuted test is ZERO evidence, not weak evidence (B-745 shipped an RPC that raised on every call).
+  evidence_status: { proven_by_run: 7, walk_at_verify: 2, unproven: 0, total: 9, detail: "<the mechanical line, verbatim>" },
+  risk_classes: [],                       // leave empty — compose OVERWRITES this from `changed_paths`
+  pr_review_state: "<the PR's reviewDecision, e.g. REVIEW_REQUIRED>"
+}
+```
+
+`lands_in` is an enum precisely so a release brief can no longer say "to production?" while the act is a
+merge to `main` (2/14 briefs misstated the environment). `irreversible` names the specific one-way part —
+a `supabase db push` is forward-only and can only be repaired by a second migration — separated from the
+parts that are merely git-revertable; a blanket "this is irreversible" is not the same claim.
+
+**The PR reference rides `doc.context`, NOT a typed field (B-876).** Read `field_values.build_pr` and put
+a PR line in `doc.context`, e.g. `"PR: <pr_url> (branch <branch>, head <head_sha>, reviewDecision
+<reviewDecision>)"`. Do **not** invent a new typed `doc` field for it: the shipped web cards renderer
+enumerates the recognized-kind fields by name, so a field it does not know is dropped on the floor with no
+error anywhere — the reader simply never sees it, in the view they use by default. `compose_brief` warns
+(never refuses) when the task records a pushed PR and the brief names none.
+
+Read `build_pr` **defensively**: its shape is not enforced and three divergent forms exist on the live
+board — sibling keys (`build_pr` + `build_pr_plugin`, B-740), nesting (`build_pr.web_pr` /
+`build_pr.plugin_pr`, B-743), and a non-PR sibling (`work_branch`, B-844). **Name what you can read and
+omit what you cannot**; never fail the compose over an unfamiliar key. (The multi-PR *merge* guard is a
+separate thing and still applies at O2 below — naming extra PRs on the brief is not permission to merge
+them.)
 
 Say the approval line on the brief rather than only at the merge, so the human can approve while they are
 already looking at the release decision instead of being stopped afterwards. On the human's **accept**:
@@ -652,10 +732,45 @@ at the two edges where cost turns irreversible, never a second definition. As th
 so the refusal is answerable: the substrate guard would refuse by RAISING, which reaches a daemon leg as a
 dirty exit and an operator page.
 
+**4. The verify frame (B-876) — author `doc.frame` as the criteria LEDGER.** This is the gate whose whole
+contract is "confirm reality against these criteria", and the criterion text appeared in **0/14** rendered
+briefs — the reader had to trust a bare list of digits. The frame puts every filed criterion on the page,
+**verbatim from step 1's `list_acceptance_criteria` read**, one row each, with its disposition and the
+runbook step that discharges it:
+
+```
+frame: {
+  kind: "verify",
+  environment: "staging",             // 'staging' | 'production' | 'merged-main' | 'local' — which
+                                      // environment this ack actually covers. Three briefs meant three
+                                      // different things by "Verified"; this is an enum so it cannot be vague.
+  criteria: [
+    { ac_id: "<id>", text: "<the criterion VERBATIM as filed>", checked: true,
+      disposition: "walk",            // 'walk' | 'blocked' | 'test-proven' | 'not-hand-checkable' | 'carried' | 'unproven'
+      step_ref: "1" },                // REQUIRED on a 'walk' — the runbook step the human follows
+    { ac_id: "<id>", text: "<...>", checked: false, disposition: "blocked",
+      blocked_reason: "<why it cannot be exercised here>" },
+    { ac_id: "<id>", text: "<...>", checked: false, disposition: "carried",
+      carried_to: "<ticket>", backed_by: "<the tests that do cover it>" }
+  ],
+  // exempt_reason: "<umbrella — carried by children / decision-only>"  — when the ticket has no ACs of its own
+  evidence_status: "<the B-560 line from get_build_evidence_status, verbatim>",
+  // bounded_accept: { open_ac_ids: ["<id>"], closes_when: "<what closes them, and where>" }
+}
+```
+
+The header line the render computes from it — *"N criteria on file · you can confirm M today"* — is the
+number the reader previously had to derive by reconciling ten context bullets against one `why` bullet.
+Use `carried` (with `carried_to`) for a criterion this ack deliberately closes OUT of the ticket: accepting
+closes it permanently, and the human should see that as a row, not infer it from prose.
+
 ```
 mcp__harmony__compose_brief({
   task_id, reason: "verification-ack-pending", pending_activity: "verifying",
-  doc: { decide: "Does production behaviour match the design?", items: [{ kind: "decision", text: "Acknowledge verified", recommendation: "verify once confirmed" }] }
+  doc: { decide: "Does production behaviour match the design?",
+    frame: { kind: "verify", environment: "staging", criteria: [/* one row per filed criterion, verbatim */],
+             evidence_status: "<the B-560 line, verbatim>" },
+    items: [{ kind: "decision", text: "Acknowledge verified", recommendation: "verify once confirmed" }] }
 })
 ```
 
