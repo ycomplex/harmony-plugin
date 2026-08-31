@@ -1165,10 +1165,17 @@ export interface ComposeBriefArgs {
   changed_paths?: string[];
   /** B-843 — the human feedback that CAUSED this iterate, stored on the NEW revision.
    *
-   *  An EXPLICIT parameter, never a scrape. `briefs.pending_resolution` is written by exactly one thing —
-   *  the browser-only reshape RPC (`submit_brief_command` / `request_brief_reshape`) — so sourcing the
-   *  feedback from it would record NOTHING for a terminal `iterate <feedback>`, which is where most
-   *  iterations come from. Omitted on a first draft (nothing caused it); never fabricated. */
+   *  An EXPLICIT parameter, never a scrape. Sourcing the feedback from `briefs.pending_resolution`
+   *  would record NOTHING for a terminal `iterate <feedback>` — which is where most iterations come
+   *  from, since a same-session iterate writes no marker at all. Omitted on a first draft (nothing
+   *  caused it); never fabricated.
+   *
+   *  B-896 NOTE: this parameter's rationale is unchanged, but one fact in its original phrasing is not.
+   *  `pending_resolution` used to be written by exactly ONE thing (the browser's `submit_brief_command`);
+   *  `reshapeBrief` below is now a second writer, so a marker's mere existence no longer implies a human
+   *  in a browser. That is precisely why reshapeBrief records provenance on its own audit row rather than
+   *  leaving authorship to be inferred from the marker. (The original comment also named the RPC
+   *  `request_brief_reshape`, which exists nowhere in harmony-web — the function is `submit_brief_command`.) */
   iterate_feedback?: string;
 }
 
@@ -1892,6 +1899,141 @@ function withRemarkRecorded(data: unknown, recorded: boolean): Record<string, un
   return { ...base, remark_recorded: recorded };
 }
 
+// ——— B-896: reshape — send an ACTIVE brief back for rework ——————————————————————————————————————
+//
+// The terminal twin of the browser's reshape (useReshapeBrief). A SIBLING of resolve_brief, never a
+// third command on it: resolve_brief's DB function hard-rejects anything but accept/defer, and an
+// iterate is a different act entirely — the brief SURVIVES (stays `active`, carries the marker, and
+// the ball goes to the agent) instead of being resolved.
+//
+// It composes two already-granted RPCs, and THE ORDER IS A SAFETY PROPERTY:
+//   1. log_brief_decision_event — the provenance-bearing audit row.        FIRST.
+//   2. submit_brief_command     — B-498's atomic marker + ball-handoff.    SECOND.
+// A crash between them leaves an ORPHAN AUDIT ROW: harmless, and truthful — someone did decide to
+// reshape. The reverse order would leave a marker with NO provenance, which is exactly the state this
+// tool exists to prevent: an agent-authored reshape indistinguishable from a human's. NEVER reorder.
+//
+// NO FLOOR VETO — deliberately. A release or verify brief CAN be reshaped. floor-veto.ts is scoped to
+// pre-ACCEPTING a gate a human must read; declining is the opposite act, and sending the work back
+// for rework IS the human reading it. (The motivating incident was three release briefs that needed
+// rework.) Do not import floorVeto here.
+export interface ReshapeBriefArgs { task_id: string; feedback: string; provenance: string; }
+
+/**
+ * B-383-class drift guard, in the shape of the neighbouring isMissingAcceptRemark/isMissingRemarkParam:
+ * a database missing EITHER composed RPC. PostgREST's PGRST202 names the unresolvable FUNCTION, so the
+ * predicate matches the function names — the reshape then degrades to a clear, actionable error naming
+ * the missing capability instead of an opaque schema-cache string.
+ */
+const isReshapeRpcSchemaDrift = (msg: string | undefined): boolean =>
+  !!msg &&
+  /(log_brief_decision_event|submit_brief_command)/.test(msg) &&
+  /(does not exist|could not find|schema cache|function)/i.test(msg);
+
+export async function reshapeBrief(
+  client: SupabaseClient,
+  projectId: string,
+  args: ReshapeBriefArgs,
+): Promise<unknown> {
+  if (!args.task_id) throw new Error('task_id is required');
+  // Same fail-closed validator resolve_brief uses — never a second one. 'human-in-browser' is rejected
+  // here too: the plugin is never the browser, and a reshape is precisely the act whose author matters.
+  const provenance = validateResolutionProvenance(args.provenance);
+
+  // Feedback is REQUIRED, and blank is not feedback (B-883's remark convention: blank ≡ absent — here
+  // absent is a refusal rather than an omission). A reshape hands the ball back to the agent; with no
+  // instruction the agent is woken to nothing and re-composes the same brief. Refused BEFORE either
+  // RPC, so NOTHING is written and there is no partial state to reason about.
+  const feedback = typeof args.feedback === 'string' ? args.feedback.trim() : '';
+  if (!feedback) {
+    throw new Error(
+      'feedback is required to reshape a brief — a reshape sends the brief back for rework, and blank feedback tells the agent nothing about what to change. Nothing was written.',
+    );
+  }
+
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  // Unique-lookup guard (partial unique index): exactly one active brief, or none. `reason` is read
+  // here because the audit row records the gate the decision was taken AT — the brief's own reason.
+  const { data: active, error: lookupErr } = await client
+    .from('briefs').select('id, reason')
+    .eq('task_id', taskId).eq('status', 'active').maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+
+  if (!active) {
+    // The submitElicitationAnswers guard shape: distinguish "never composed" from "already resolved",
+    // because the two need different next moves. NOTHING is written on either path.
+    const { data: latest, error: latestErr } = await client
+      .from('briefs').select('id, status, resolved_command')
+      .eq('task_id', taskId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (latestErr) throw new Error(latestErr.message);
+    const row = latest as { id: string; status?: string; resolved_command?: string | null } | null;
+    if (!row) {
+      throw new Error(
+        `task ${args.task_id} has no brief to reshape — no brief has ever been composed for it, so there is nothing to send back. Compose one first with compose_brief; nothing was written.`,
+      );
+    }
+    const via = row.resolved_command ? ` (resolved via '${row.resolved_command}')` : '';
+    throw new Error(
+      `the brief on task ${args.task_id} is already resolved — brief ${row.id} is '${row.status}'${via}, and a reshape is only offered on an ACTIVE brief. Compose a new brief rather than reshaping a concluded one; nothing was written.`,
+    );
+  }
+
+  const brief = active as { id: string; reason: string };
+
+  // WRITE 1 — the provenance-bearing audit row. FIRST, always (see the ordering note above).
+  const { error: auditErr } = await client.rpc('log_brief_decision_event', {
+    p_task_id: taskId,
+    p_brief_id: brief.id,
+    p_command: 'iterate',
+    p_reason: brief.reason,
+    // Validated above — never a caller's raw string.
+    p_provenance: provenance,
+    p_detail: feedback,
+  });
+  if (auditErr) {
+    // Drift on write 1: the audit row could not be written, so write 2 is NOT attempted — a marker with
+    // no provenance is the one outcome this tool must never produce. Nothing was written.
+    if (isReshapeRpcSchemaDrift(auditErr.message)) {
+      throw new Error(
+        `reshape is unavailable on this database: it predates the decision-trail RPC (log_brief_decision_event). Nothing was written — the reshape was NOT applied. Reshape from the browser, or promote the schema first. Underlying error: ${auditErr.message}`,
+      );
+    }
+    throw new Error(auditErr.message);
+  }
+
+  // WRITE 2 — B-498's atomic marker + ball-handoff. SECOND. The brief stays `active` and keeps its
+  // workflow_state; the conductor consumes {command:'iterate', detail} on pickup and re-composes.
+  const { data, error } = await client.rpc('submit_brief_command', {
+    _brief_id: brief.id,
+    _command: 'iterate',
+    _detail: feedback,
+  });
+  if (error) {
+    if (isReshapeRpcSchemaDrift(error.message)) {
+      throw new Error(
+        `reshape is unavailable on this database: it predates the handoff RPC (submit_brief_command). The reshape did NOT land — the brief is untouched and still awaiting the human. A decision entry was already recorded and is now orphaned, which is harmless (it truthfully records that a reshape was attempted). Reshape from the browser, or promote the schema first. Underlying error: ${error.message}`,
+      );
+    }
+    throw new Error(error.message);
+  }
+
+  // A compact, server-computed ack (B-683's projection contract): the RPC's own payload, plus the gate
+  // it was reshaped at and the provenance actually recorded. The caller's feedback text is deliberately
+  // NOT echoed back — it is caller-sent body, and the ack exists to confirm server state.
+  const base = data && typeof data === 'object' ? (data as Record<string, unknown>) : {};
+  return {
+    brief_id: brief.id,
+    task_id: taskId,
+    command: 'iterate',
+    reason: brief.reason,
+    ...base,
+    provenance,
+  };
+}
+
 export const getBriefTool = {
   name: 'get_brief',
   description: "Get the active brief for a task (its rendered content blob + canonical doc + pre-generated expand sections + related), plus `pending_resolution` — a browser-submitted reshape request ({command:'iterate', detail:<feedback>}) the running conductor consumes on pickup, or null if none. Returns null if no brief is awaiting input.",
@@ -1905,7 +2047,7 @@ export const getBriefTool = {
 export const resolveBriefTool = {
   name: 'resolve_brief',
   description:
-    "Resolve the active brief on a task. accept = promote the Asserted knowledge entry to Accepted, advance the state machine, clear the flag. defer = park the ticket. Idempotent (re-issuing the same command is safe). (edit/iterate are skill-side LLM work via compose_brief; expand/related are reads via get_brief.) " +
+    "Resolve the active brief on a task. accept = promote the Asserted knowledge entry to Accepted, advance the state machine, clear the flag. defer = park the ticket. Idempotent (re-issuing the same command is safe). (To send a brief BACK for rework instead of resolving it, use reshape_brief — the sibling tool; it keeps the brief active, records the provenance-bearing decision entry, and hands the ball to the agent. edit is skill-side authoring via compose_brief; expand/related are reads via get_brief.) " +
     "B-734: `provenance` is REQUIRED — it attributes the recorded decision entry, and absent provenance is stored as null and read as UNATTRIBUTED, never as a human. Accepted from the plugin: 'human-in-session' (the human typed accept/defer in this session) or 'agent-synthesized' / 'agent-synthesized:<mode>' (the conductor synthesized it under a delegation mode, e.g. 'agent-synthesized:unattended'). " +
     "FAILS CLOSED: 'human-in-browser' is the web client's alone and is REJECTED here (the plugin is never the browser), and any other value — including near-misses like the British 'agent-synthesised' — is REJECTED rather than stored, because a wrong value would render as unattributed forever. " +
     "B-883: `detail` and `remark` are DIFFERENT CHANNELS and are not interchangeable. `remark` is an instruction for the NEXT leg — it rides on an accept, surfaces as `pending_remark` on get_task, and is consumed once. `detail` is an inert note (it lands in resolved_detail) and is NEVER surfaced as pending_remark, so an instruction passed as `detail` is stored and silently never reaches anyone. A remark on 'defer' is REJECTED (a deferred ticket parks, so it could never be consumed). Against a database predating the remark parameter the accept still SUCCEEDS and the ack carries `remark_recorded: false` — the drop is visible, never silent.",
@@ -1923,5 +2065,28 @@ export const resolveBriefTool = {
       },
     },
     required: ['task_id', 'command', 'provenance'],
+  },
+};
+
+export const reshapeBriefTool = {
+  name: 'reshape_brief',
+  description:
+    "Send a task's ACTIVE brief BACK FOR REWORK with feedback — the terminal twin of the browser's reshape, and the SIBLING of resolve_brief (accept/defer). The brief stays active and its workflow_state is untouched; a {command:'iterate', detail:<feedback>} marker is written and the ball is handed to the agent, which consumes the marker on pickup and re-composes. Use this when the brief is wrong, thin, or aimed at the wrong thing — not resolve_brief, which only concludes. " +
+    "`feedback` is REQUIRED: it is the instruction the re-compose acts on, and blank/whitespace-only is REFUSED with nothing written. " +
+    "`provenance` is REQUIRED and validated exactly as on resolve_brief (B-734): 'human-in-session' | 'agent-synthesized' | 'agent-synthesized:<mode>'. 'human-in-browser' is the web client's alone and is REJECTED here, so an agent can never make its own reshape look like a human's — which is the whole point of recording it. " +
+    "A RELEASE or VERIFY brief CAN be reshaped: the accept-side floor does not apply, because sending work back is the opposite of pre-accepting it. " +
+    "Refuses, writing nothing, when the task has no active brief — distinguishing 'no brief has ever been composed' from 'the brief is already resolved'. On a database predating the underlying RPCs it fails with a clear unavailable-here error rather than an opaque one.",
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      task_id: { type: 'string', description: 'The task whose ACTIVE brief to send back for rework — UUID, task number, or visual ID (e.g., B-43)' },
+      feedback: { type: 'string', description: "REQUIRED. What is wrong and what to change — the instruction the re-compose acts on. Lands as the marker's `detail` and as the decision entry's detail. Blank/whitespace-only is refused and nothing is written." },
+      provenance: {
+        type: 'string',
+        description:
+          "REQUIRED. Who decided to send it back: 'human-in-session' (the human said so in this session) | 'agent-synthesized' | 'agent-synthesized:<mode>' (conductor delegation mode). 'human-in-browser' is the web client's alone and is rejected here; any other value is rejected too.",
+      },
+    },
+    required: ['task_id', 'feedback', 'provenance'],
   },
 };

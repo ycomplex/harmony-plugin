@@ -51,6 +51,7 @@ import {
   composeBrief, composeBriefTool,
   getBrief, getBriefTool,
   resolveBrief, resolveBriefTool,
+  reshapeBrief, reshapeBriefTool,
   consumeAcceptRemark, consumeAcceptRemarkTool,
 } from './briefs.js';
 import { flagReleaseApprovalPending, flagReleaseApprovalPendingTool } from './release-approval.js';
@@ -124,7 +125,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     createEntityTool, updateEntityTool, reconcileEntityTool,
-    composeBriefTool, getBriefTool, resolveBriefTool, consumeAcceptRemarkTool,
+    composeBriefTool, getBriefTool, resolveBriefTool, reshapeBriefTool, consumeAcceptRemarkTool,
     flagReleaseApprovalPendingTool,
     startElicitationTool, fileElicitationRoundTool, getElicitationTool, concludeElicitationTool,
     submitElicitationAnswersTool,
@@ -335,6 +336,9 @@ export async function handleToolCall(
         break;
       case 'resolve_brief':
         result = await resolveBrief(client, projectId, args as any);
+        break;
+      case 'reshape_brief':
+        result = await reshapeBrief(client, projectId, args as any);
         break;
       case 'consume_accept_remark':
         result = await consumeAcceptRemark(client, projectId, args as any);

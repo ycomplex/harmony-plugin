@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, getBrief, resolveBrief, resolveBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, DE_SCOPE_HEADING, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, getBrief, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, DE_SCOPE_HEADING, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -2464,5 +2464,264 @@ describe('B-876 gate frame', () => {
       expect(docProps.frame).toBeDefined();
       expect(docProps.revision).toBeDefined();
     });
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// B-896 — reshape_brief: the terminal RESHAPE verb (send an active brief back for rework).
+//
+// A SIBLING of resolve_brief that composes two already-granted RPCs. The whole point of the tool is
+// that an agent-authored reshape is DISTINGUISHABLE from a human's, so the provenance-bearing audit
+// row is written FIRST and the marker SECOND — every test below that touches the write path pins
+// that order, because the reverse would produce a marker with no provenance.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+describe('reshapeBrief (B-896)', () => {
+  const LOG = 'log_brief_decision_event';
+  const SUBMIT = 'submit_brief_command';
+
+  function makeReshapeClient(opts: {
+    active?: { id: string; reason: string } | null;
+    latest?: { id: string; status: string; resolved_command?: string | null } | null;
+    failOn?: string;
+    failMessage?: string;
+  } = {}) {
+    const active = opts.active === undefined ? { id: 'brief-1', reason: 'plan-draft' } : opts.active;
+    const chain: any = { rpcCalls: [] as Array<{ name: string; params: any }> };
+    for (const m of ['from', 'eq', 'order', 'limit', 'is', 'not']) chain[m] = vi.fn(() => chain);
+    // The two reads are told apart by their projections: the active lookup asks for 'id, reason';
+    // the never-composed-vs-already-resolved lookup asks for 'id, status, resolved_command'.
+    let readMode: 'active' | 'latest' = 'active';
+    chain.select = vi.fn((cols: string) => { readMode = cols.includes('status') ? 'latest' : 'active'; return chain; });
+    chain.maybeSingle = vi.fn(async () =>
+      readMode === 'active' ? { data: active, error: null } : { data: opts.latest ?? null, error: null });
+    chain.rpc = vi.fn(async (name: string, params: any) => {
+      chain.rpcCalls.push({ name, params });
+      if (opts.failOn === name) return { data: null, error: { message: opts.failMessage ?? 'boom' } };
+      if (name === LOG) return { data: null, error: null }; // returns void
+      return { data: { brief_id: params._brief_id, task_id: 'task-1', command: params._command }, error: null };
+    });
+    return chain;
+  }
+
+  const reshape = (client: any, over: Record<string, unknown> = {}) =>
+    reshapeBrief(client, PROJECT_ID, {
+      task_id: 'task-1', feedback: 'the release brief omits the migration ordering', provenance: 'human-in-session',
+      ...over,
+    } as any);
+
+  // ——— the ordering safety property ————————————————————————————————————————————————————————————
+  it('writes PROVENANCE FIRST, MARKER SECOND — the crash between them must orphan an audit row, never orphan a marker', async () => {
+    const client = makeReshapeClient({ active: { id: 'brief-7', reason: 'release-decision-pending' } });
+    await reshape(client, { provenance: 'agent-synthesized:unattended' });
+    expect(client.rpcCalls.map((c: any) => c.name)).toEqual([LOG, SUBMIT]);
+    expect(client.rpcCalls[0].params).toEqual({
+      p_task_id: 'task-1',
+      p_brief_id: 'brief-7',
+      p_command: 'iterate',
+      // The brief's OWN reason — what the reshape was decided AT.
+      p_reason: 'release-decision-pending',
+      p_provenance: 'agent-synthesized:unattended',
+      p_detail: 'the release brief omits the migration ordering',
+    });
+    expect(client.rpcCalls[1].params).toEqual({
+      _brief_id: 'brief-7', _command: 'iterate', _detail: 'the release brief omits the migration ordering',
+    });
+  });
+
+  it('returns an ack naming the brief, the gate it was reshaped at, and the recorded provenance', async () => {
+    const client = makeReshapeClient();
+    const result: any = await reshape(client);
+    expect(result).toMatchObject({
+      brief_id: 'brief-1', task_id: 'task-1', command: 'iterate',
+      reason: 'plan-draft', provenance: 'human-in-session',
+    });
+    // B-683: the ack confirms SERVER state — the caller's own feedback text is not echoed back.
+    expect(result).not.toHaveProperty('feedback');
+  });
+
+  it('trims the feedback it forwards (surrounding whitespace is not content)', async () => {
+    const client = makeReshapeClient();
+    await reshape(client, { feedback: '  redo the risk table\n' });
+    expect(client.rpcCalls[0].params.p_detail).toBe('redo the risk table');
+    expect(client.rpcCalls[1].params._detail).toBe('redo the risk table');
+  });
+
+  // ——— feedback is REQUIRED ———————————————————————————————————————————————————————————————————
+  it.each([[''], ['   '], ['\n\t '], [undefined as any], [null as any]])(
+    'REFUSES blank/absent feedback (%j) and writes NOTHING — neither RPC fires',
+    async (feedback) => {
+      const client = makeReshapeClient();
+      await expect(reshape(client, { feedback })).rejects.toThrow(/feedback is required/i);
+      expect(client.rpc).not.toHaveBeenCalled();
+    },
+  );
+
+  it('says nothing was written when it refuses blank feedback', async () => {
+    const client = makeReshapeClient();
+    await expect(reshape(client, { feedback: '   ' })).rejects.toThrow(/nothing was written/i);
+  });
+
+  // ——— NO FLOOR VETO (acceptance criterion) ————————————————————————————————————————————————————
+  // floor-veto.ts is scoped to pre-ACCEPTING a hard-floor gate. Declining is the opposite act, and
+  // the motivating incident was three RELEASE briefs that needed rework — so these must succeed.
+  it.each([
+    ['release-decision-pending', 'the release hard floor'],
+    ['verification-ack-pending', 'the verify hard floor'],
+    ['stale-patch-review', 'a stale-patch review'],
+  ])('reshapes a %s brief (%s) — there is NO floor veto on sending work back', async (reason) => {
+    const client = makeReshapeClient({ active: { id: 'brief-9', reason } });
+    await expect(reshape(client)).resolves.toBeDefined();
+    expect(client.rpcCalls.map((c: any) => c.name)).toEqual([LOG, SUBMIT]);
+    expect(client.rpcCalls[0].params.p_reason).toBe(reason);
+  });
+
+  it('does not import the accept-side floor veto at all', () => {
+    const source = readFileSync(fileURLToPath(new URL('./briefs.ts', import.meta.url)), 'utf8');
+    expect(source).not.toContain("from './floor-veto.js'");
+  });
+
+  // ——— no active brief: refuse, write nothing, distinguish the two cases ————————————————————————
+  it('REFUSES when no brief has ever been composed — naming that case, writing nothing', async () => {
+    const client = makeReshapeClient({ active: null, latest: null });
+    await expect(reshape(client)).rejects.toThrow(/no brief has ever been composed/i);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES when the brief is already resolved — naming THAT case instead, writing nothing', async () => {
+    const client = makeReshapeClient({
+      active: null,
+      latest: { id: 'brief-3', status: 'accepted', resolved_command: 'accept' },
+    });
+    await expect(reshape(client)).rejects.toThrow(/already resolved/i);
+    await expect(reshape(client)).rejects.toThrow(/brief-3 is 'accepted' \(resolved via 'accept'\)/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('the two refusals are DISTINGUISHABLE — neither message could be mistaken for the other', async () => {
+    const never = makeReshapeClient({ active: null, latest: null });
+    const done = makeReshapeClient({ active: null, latest: { id: 'brief-3', status: 'deferred', resolved_command: 'defer' } });
+    const neverMsg = await reshape(never).catch((e: Error) => e.message);
+    const doneMsg = await reshape(done).catch((e: Error) => e.message);
+    expect(neverMsg).not.toBe(doneMsg);
+    expect(neverMsg).not.toMatch(/already resolved/i);
+    expect(doneMsg).not.toMatch(/never been composed/i);
+    for (const msg of [neverMsg, doneMsg]) expect(msg).toMatch(/nothing was written/i);
+  });
+
+  // ——— provenance fails closed (the same validator resolve_brief uses) ——————————————————————————
+  it("REJECTS 'human-in-browser' — the plugin is never the browser, and a forged reshape is the exact harm", async () => {
+    const client = makeReshapeClient();
+    await expect(reshape(client, { provenance: PROVENANCE_WEB_ONLY }))
+      .rejects.toThrow(/'human-in-browser' is the web client's alone/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it.each([[undefined as any], [''], ['agent-synthesised'], ['human'], ['agent-synthesized:']])(
+    'FAILS CLOSED on provenance %j — nothing is written',
+    async (provenance) => {
+      const client = makeReshapeClient();
+      await expect(reshape(client, { provenance })).rejects.toThrow();
+      expect(client.rpc).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([['human-in-session'], ['agent-synthesized'], ['agent-synthesized:unattended']])(
+    'threads accepted provenance %s to the audit row verbatim',
+    async (provenance) => {
+      const client = makeReshapeClient();
+      await reshape(client, { provenance });
+      expect(client.rpcCalls[0].params.p_provenance).toBe(provenance);
+    },
+  );
+
+  // ——— schema drift degrades clearly (B-383 class) ——————————————————————————————————————————————
+  it('DRIFT on the audit RPC: fails clearly and NEVER attempts the marker (no marker without provenance)', async () => {
+    const client = makeReshapeClient({
+      failOn: LOG,
+      failMessage: 'Could not find the function public.log_brief_decision_event(p_task_id, p_brief_id, p_command, p_reason, p_provenance, p_detail) in the schema cache',
+    });
+    await expect(reshape(client)).rejects.toThrow(/reshape is unavailable on this database/i);
+    await expect(reshape(client)).rejects.toThrow(/log_brief_decision_event/);
+    // The load-bearing half: the marker RPC was never reached.
+    expect(client.rpcCalls.map((c: any) => c.name)).toEqual([LOG, LOG]);
+  });
+
+  it('DRIFT on the handoff RPC: fails clearly, says the reshape did NOT land, and names the harmless orphan', async () => {
+    const client = makeReshapeClient({
+      failOn: SUBMIT,
+      failMessage: 'Could not find the function public.submit_brief_command(_brief_id, _command, _detail) in the schema cache',
+    });
+    await expect(reshape(client)).rejects.toThrow(/reshape is unavailable on this database/i);
+    await expect(reshape(client)).rejects.toThrow(/did NOT land/);
+    await expect(reshape(client)).rejects.toThrow(/orphan/i);
+  });
+
+  it('a NON-drift RPC error stays loud on either call (never swallowed by the drift guard)', async () => {
+    for (const failOn of [LOG, SUBMIT]) {
+      const client = makeReshapeClient({ failOn, failMessage: 'permission denied for table briefs' });
+      await expect(reshape(client)).rejects.toThrow(/permission denied/);
+    }
+  });
+
+  it('a lookup error is not swallowed either', async () => {
+    const client = makeReshapeClient();
+    client.maybeSingle = vi.fn(async () => ({ data: null, error: { message: 'permission denied for table briefs' } }));
+    await expect(reshape(client)).rejects.toThrow(/permission denied/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  // ——— the tool surface ————————————————————————————————————————————————————————————————————————
+  it('advertises feedback and provenance as REQUIRED, under its own name', () => {
+    expect(reshapeBriefTool.name).toBe('reshape_brief');
+    expect(reshapeBriefTool.inputSchema.required).toEqual(['task_id', 'feedback', 'provenance']);
+    expect(reshapeBriefTool.description).toMatch(/RELEASE or VERIFY brief CAN be reshaped/);
+  });
+
+  it("resolve_brief's description now points iterate at this tool, not at compose_brief", () => {
+    expect(resolveBriefTool.description).toContain('reshape_brief');
+    expect(resolveBriefTool.description).not.toMatch(/edit\/iterate are skill-side LLM work via compose_brief/);
+  });
+
+  // ——— the round trip: what we WRITE is what the consumer READS (B-896 ← B-843) ——————————————————
+  // The write payload is pinned above. This pins the OTHER half: the keys `submit_brief_command`
+  // derives from those params are exactly the keys the consume side reads. The RPC builds the marker
+  // server-side as jsonb_build_object('command', _command, 'detail', _detail), so `_command`/`_detail`
+  // surface as `command`/`detail` — the shape harmony-conduct §4c case 2 switches on, and the shape
+  // B-843's compose_brief_revision path then consumes by starting its successor row at the NULL
+  // default. Without this pin, a rename on either side would pass every other test in this file.
+  it('writes a marker whose consumed shape is exactly what fetchPendingResolution reads (round trip)', async () => {
+    const client = makeReshapeClient({ active: { id: 'brief-9', reason: 'release-decision-pending' } });
+    await reshape(client, { feedback: 'rebase onto main first' });
+    const sent = client.rpcCalls.find((c: any) => c.name === SUBMIT).params;
+
+    // What the DB stores, derived from those params exactly as the RPC's jsonb_build_object does.
+    const stored = { command: sent._command, detail: sent._detail };
+
+    const reader: any = {};
+    for (const m of ['from', 'eq', 'order', 'limit']) reader[m] = vi.fn(() => reader);
+    reader.select = vi.fn(() => reader);
+    reader.maybeSingle = vi.fn(async () => ({ data: { pending_resolution: stored }, error: null }));
+
+    expect(await fetchPendingResolution(reader, 'task-1')).toEqual({
+      command: 'iterate',
+      detail: 'rebase onto main first',
+    });
+  });
+
+});
+
+// B-896 — §2b's self-heal keys on a `brief_resolved` entry to recover the clarification brief's id.
+// This ticket puts a SECOND command value ('iterate') into that same event type with the same reason,
+// so the predicate must discriminate on command. Prose cannot be type-checked; this pins it.
+describe('harmony-design-decide §2b self-heal predicate filters on command (B-896)', () => {
+  const prose = readFileSync(skillPath('harmony-design-decide'), 'utf8');
+
+  it("requires metadata.command === 'accept' alongside the reason", () => {
+    expect(prose).toContain("e.metadata?.command === 'accept'");
+  });
+
+  it('still keys on the clarification reason (the command filter is an addition, not a replacement)', () => {
+    expect(prose).toContain("e.metadata?.reason === 'clarification-draft'");
   });
 });

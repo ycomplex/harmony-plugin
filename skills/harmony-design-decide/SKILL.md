@@ -128,9 +128,16 @@ while filing is still outstanding. Both are rejected as the trigger here.
    ```
    const activity = mcp__harmony__list_activity({ task_id })
    const resolved = activity.find(e =>
-     e.event_type === 'brief_resolved' && e.metadata?.reason === 'clarification-draft')
+     e.event_type === 'brief_resolved' && e.metadata?.command === 'accept' &&
+     e.metadata?.reason === 'clarification-draft')
    const clarificationBriefId = resolved.metadata.brief_id
    ```
+   **`metadata.command === 'accept'` is load-bearing, not decoration (B-896).** `brief_resolved` is
+   the event type for every recorded brief decision, not just accepts: `reshape_brief` records an
+   `iterate` under the same event type and the same `reason`, so a reason-only predicate would match
+   a *send-back-for-rework* entry — a clarification that was pushed back, not one that concluded —
+   and key the filing-pass marker off it.
+
    This is NOT the race B-744's first draft was rejected for: that draft would have gated the FILING
    decision itself on whether a `brief_resolved` event exists yet, which races clarify's own accept
    path (filing runs BEFORE `resolve_brief` there, so a web-accepted-no-session clarification can
