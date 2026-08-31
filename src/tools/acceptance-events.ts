@@ -70,9 +70,18 @@ export const DECISION_ONLY_LABEL_CONTRACT = {
  *  `label_add` (B-688) — the decision-only stamping guard's ledgered write. `label_name` defaults to
  *  `'decision-only'` at the dispatch site (the only real-world caller today) when omitted — never
  *  hardcode a payload author to a different label via this field's absence; an author who means some
- *  other label must set it explicitly. */
+ *  other label must set it explicitly.
+ *
+ *  `knowledge_entry_content` (B-843) — the ACCEPTED brief's wording, CARRIED to the knowledge entry the
+ *  brief's `decision_ref` names. `content` is the entry's full prose, authored at compose time and
+ *  snapshotted verbatim with the rest of the payload. It is emphatically NOT synthesized from `doc`
+ *  fields at consume time (that would destroy authored rationale the brief never carried) and it is NOT a
+ *  replacement for `decision_ref` — `resolve_brief` and the stale-coupling trigger both still key off it,
+ *  and it is how this write finds its target when `entry_id` is omitted. The same RPC performs the folded
+ *  B-766 per-gate supersede: every OTHER Accepted entry for this (source_task_id, source_activity, type)
+ *  becomes Superseded. */
 export interface AcceptanceEventPayloadItem {
-  write_kind: 'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add';
+  write_kind: 'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content';
   ref: string;
   content?: string;
   title?: string;
@@ -80,6 +89,10 @@ export interface AcceptanceEventPayloadItem {
   target_child_ref?: string;
   from_ac_id?: string | null;
   label_name?: string;
+  /** `knowledge_entry_content` only — the target knowledge entry. Omit to let the DB resolve it from the
+   *  brief's own `decision_ref`, which is the normal case; set it only when the payload deliberately
+   *  targets an entry the brief does not point at. */
+  entry_id?: string | null;
 }
 
 export interface PendingAcceptanceEvent {
@@ -153,7 +166,7 @@ export async function getPendingAcceptanceEvent(
   return (event as PendingAcceptanceEvent | null) ?? null;
 }
 
-const KNOWN_WRITE_KINDS = new Set(['acceptance_criterion', 'child_ticket', 'checklist_item', 'ac_transfer', 'label_add']);
+const KNOWN_WRITE_KINDS = new Set(['acceptance_criterion', 'child_ticket', 'checklist_item', 'ac_transfer', 'label_add', 'knowledge_entry_content']);
 
 /** B-816 — the live snapshot shape from `resolve_brief` (which snapshots a brief's whole `doc` VERBATIM)
  *  is `event.payload.payload` (an array): B-810's `compose_brief` call sites author the structured
@@ -244,6 +257,10 @@ export async function applyAcceptanceEventPayload(
   const items = itemsOf(event.payload);
   const order: AcceptanceEventPayloadItem['write_kind'][] = [
     'child_ticket', 'checklist_item', 'acceptance_criterion', 'ac_transfer', 'label_add',
+    // B-843 LAST, on purpose: it promotes the gate's knowledge entry and supersedes the previous round's.
+    // Running it after every AC/child/checklist write means a payload that fails partway leaves the
+    // knowledge base untouched rather than promoting a decision whose materialization never landed.
+    'knowledge_entry_content',
   ];
   const ordered = order.flatMap((kind) => items.filter((i) => i.write_kind === kind));
 
@@ -285,6 +302,19 @@ export async function applyAcceptanceEventPayload(
           _target_child_external_ref: item.target_child_ref, _from_ac_id: item.from_ac_id ?? null,
         });
         if (error) throw new Error(error.message);
+        result = data as { applied?: boolean };
+      } else if (item.write_kind === 'knowledge_entry_content') {
+        if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content — the payload CARRIES the entry text; it is never synthesized from doc fields`);
+        const { data, error } = await client.rpc('consume_knowledge_entry_content_write', {
+          _event_id: event.id, _external_ref: item.ref, _content: item.content, _entry_id: item.entry_id ?? null,
+        });
+        if (error) {
+          // Same B-383 window as label_add below: harmony-web's migration reaches prod only at the next
+          // promote, so this RPC can be genuinely absent while plugin `main` is live. Degrade SAFELY. A
+          // real failure (no target entry, entry not found) is NOT this class and must propagate.
+          if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError('knowledge_entry_content');
+          throw new Error(error.message);
+        }
         result = data as { applied?: boolean };
       } else if (item.write_kind === 'label_add') {
         if (item.label_name === '') throw new Error(`label_add item '${item.ref}' has an empty label_name`);
@@ -421,7 +451,7 @@ export const consumePendingAcceptanceEventTool = {
   description:
     'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, ' +
     'decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only ' +
-    'label proposals) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup — ' +
+    'label proposals, B-843 knowledge-entry content + per-gate supersede) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup — ' +
     'mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an ' +
     'older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing ' +
     '(today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. ' +

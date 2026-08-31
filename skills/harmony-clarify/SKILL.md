@@ -608,8 +608,8 @@ Show the rendered `content` verbatim. On the human's command:
   "defer", provenance: "human-in-session" })`. (The web `defer`, P5, is mechanical-only and never authors
   this entry — the documented v1 asymmetry.)
 - **expand** / **related** → show the pre-generated sections from `get_brief`.
-- **edit** / **iterate** → revise the `doc` per the human's input and re-call `compose_brief` (updates
-  in place, bumps `iteration`; pass `underwriting_claim_ids` when claims are coupled — see step 4).
+- **edit** / **iterate** → revise the `doc` per the human's input and re-call `compose_brief`, passing `iterate_feedback` = the human's words VERBATIM. B-843: the re-compose no longer edits the brief in place — it retains the previous revision and stores the feedback that caused this one, so a paraphrase (or an omission) loses the human's actual words permanently. The call is also a PARTIAL: fields you omit CARRY FORWARD from the previous revision, so never re-state `decision_ref` merely to keep it, and pass an explicit null only when you mean to clear it.
+  Pass `underwriting_claim_ids` when claims are coupled — see step 4.
 - **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
 - **A staged `pending_resolution` you can only partially apply** → apply what you structurally can, then file a `worker-question` round scoped to the blocked residue per `skills/harmony-shared/elicitation-engine.md` §Resuming onto a staged pending_resolution you can only partially apply (file the round before recomposing — crash-safety ordering, never wholesale-discard an actionable resolution).
 

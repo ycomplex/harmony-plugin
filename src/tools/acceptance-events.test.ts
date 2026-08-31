@@ -123,6 +123,9 @@ const transferItem = (ref: string, targetRef: string, over: Partial<AcceptanceEv
 const labelAddItem = (ref: string, over: Partial<AcceptanceEventPayloadItem> = {}): AcceptanceEventPayloadItem => ({
   write_kind: 'label_add', ref, label_name: 'decision-only', ...over,
 });
+const knowledgeEntryItem = (ref: string, over: Partial<AcceptanceEventPayloadItem> = {}): AcceptanceEventPayloadItem => ({
+  write_kind: 'knowledge_entry_content', ref, content: `Entry prose ${ref}`, ...over,
+});
 
 function makeEvent(items: AcceptanceEventPayloadItem[]): PendingAcceptanceEvent {
   return {
@@ -305,6 +308,88 @@ describe('applyAcceptanceEventPayload', () => {
     expect(result.applied).toBe(1);
     expect(result.by_write_kind).toEqual({ acceptance_criterion: 1 });
   });
+
+  // ── B-843: knowledge_entry_content — the entry text RIDES the payload ────────────────────────────
+  it('dispatches a knowledge_entry_content item to consume_knowledge_entry_content_write with the right args', async () => {
+    const client = makeClient({
+      rpcResponses: { consume_knowledge_entry_content_write: [{ data: { applied: true, result_id: 'entry-1' } }] },
+    });
+    const event = makeEvent([knowledgeEntryItem('entry-1', { content: 'THE ACCEPTED WORDING' })]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.applied).toBe(1);
+    expect(result.by_write_kind).toEqual({ knowledge_entry_content: 1 });
+    expect(client.rpc).toHaveBeenCalledWith('consume_knowledge_entry_content_write', {
+      _event_id: 'event-1', _external_ref: 'entry-1', _content: 'THE ACCEPTED WORDING', _entry_id: null,
+    });
+  });
+
+  it('passes an explicit entry_id through when the payload names one', async () => {
+    const client = makeClient({
+      rpcResponses: { consume_knowledge_entry_content_write: [{ data: { applied: true } }] },
+    });
+    await applyAcceptanceEventPayload(client, makeEvent([knowledgeEntryItem('entry-1', { entry_id: 'kd-77' })]));
+    expect(client.rpc).toHaveBeenCalledWith('consume_knowledge_entry_content_write',
+      expect.objectContaining({ _entry_id: 'kd-77' }));
+  });
+
+  it('refuses a knowledge_entry_content item with no content — the payload CARRIES the text, it is never synthesized', async () => {
+    const client = makeClient();
+    const event = makeEvent([knowledgeEntryItem('entry-1', { content: undefined })]);
+    await expect(applyAcceptanceEventPayload(client, event)).rejects.toThrow(/missing content/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('a retry where the entry write already landed reports applied:false — counted as skipped', async () => {
+    const client = makeClient({
+      rpcResponses: { consume_knowledge_entry_content_write: [{ data: { applied: false } }] },
+    });
+    const result = await applyAcceptanceEventPayload(client, makeEvent([knowledgeEntryItem('entry-1')]));
+    expect(result.applied).toBe(0);
+    expect(result.skipped_already_done).toBe(1);
+  });
+
+  it('B-383 — a missing consume_knowledge_entry_content_write RPC degrades to substrate_absent_for, never throws', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_knowledge_entry_content_write: [{ data: null, error: { code: '42883', message: 'function consume_knowledge_entry_content_write does not exist' } }],
+      },
+    });
+    const result = await applyAcceptanceEventPayload(client, makeEvent([knowledgeEntryItem('entry-1')]));
+    expect(result.substrate_absent_for).toBe('knowledge_entry_content');
+  });
+
+  it('propagates a REAL error from the entry write (no target entry) — never swallowed as substrate-absent', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_knowledge_entry_content_write: [{ data: null, error: { code: 'P0001', message: 'knowledge_entry_content write entry-1 has no target entry' } }],
+      },
+    });
+    await expect(applyAcceptanceEventPayload(client, makeEvent([knowledgeEntryItem('entry-1')])))
+      .rejects.toThrow(/no target entry/);
+  });
+
+  // ORDER: the knowledge promotion + per-gate supersede runs LAST, after every AC/child/checklist write.
+  // A payload that fails partway must never leave the knowledge base promoted for work that never landed.
+  it('applies knowledge_entry_content LAST, whatever order the payload authored it in', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_knowledge_entry_content_write: [{ data: { applied: true } }],
+        consume_child_mint_write: [{ data: { applied: true, result_id: 'child-a' } }],
+        consume_ac_add_write: [{ data: { applied: true } }],
+        consume_label_add_write: [{ data: { applied: true } }],
+      },
+    });
+    const event = makeEvent([
+      knowledgeEntryItem('entry-1'), labelAddItem('label-1'), acItem('ac-1'), childItem('child-1'),
+    ]);
+    await applyAcceptanceEventPayload(client, event);
+    expect(client.rpcCalls.map((c: { name: string }) => c.name)).toEqual([
+      'consume_child_mint_write',
+      'consume_ac_add_write',
+      'consume_label_add_write',
+      'consume_knowledge_entry_content_write',
+    ]);
+  });
 });
 
 describe('consumeAcceptanceEvent', () => {
@@ -407,6 +492,17 @@ describe('classifyPayload — the safety valve against a hollow advance under a 
   // clarify-proposed decision-only shape) classifies "structured", never "unrecognized".
   it('classifies a mix of acceptance_criterion + label_add items as "structured" (B-688)', () => {
     expect(classifyPayload({ items: [acItem('ac-1'), labelAddItem('label-decision-only')] })).toBe('structured');
+  });
+
+  // B-843 — knowledge_entry_content is a KNOWN write_kind. If it were not registered, a design brief's
+  // payload would classify "unrecognized" and the whole event would stop auto-consuming: the failure
+  // would look like a routing bug, not a missing registration.
+  it('classifies a mix of acceptance_criterion + knowledge_entry_content items as "structured" (B-843)', () => {
+    expect(classifyPayload({ items: [acItem('ac-1'), knowledgeEntryItem('entry-1')] })).toBe('structured');
+  });
+
+  it('classifies a knowledge_entry_content-only payload as "structured", never "unrecognized" (B-843)', () => {
+    expect(classifyPayload({ payload: [knowledgeEntryItem('entry-1')] })).toBe('structured');
   });
 
   it('classifies today\'s generic BLUF `doc.items` shape ({kind, text, recommendation}) as "unrecognized" — NEVER silently empty', () => {
