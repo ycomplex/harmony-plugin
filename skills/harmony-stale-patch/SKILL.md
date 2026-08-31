@@ -112,15 +112,16 @@ mcp__harmony__compose_brief({
 })
 ```
 
-> **B-866 — this gate's `decision_ref` is the ONLY one that names a PRE-EXISTING entry.** At the other
-> four entry-promoting gates the brief's `decision_ref` names an entry this same gate just recorded, so
-> deriving its body from the ratified brief replaces a placeholder. Here it names the SUCCESSOR decision,
-> authored at a different gate and already carrying its own ratified rationale — and `compose_brief`
-> derives a `knowledge_entry_content` item for every `decision_ref`-carrying reason, which the accept
-> writes onto that entry. **Do not compose a stale-patch brief against a successor whose body you are not
-> prepared to see replaced by this brief's projection**; on a null-successor brief the `decision_ref` is
-> omitted and nothing is derived at all. Raised for the human at build time (B-866) and NOT silently
-> resolved here.
+> **B-866 — this gate is POINTER-ONLY, and that is a settled exemption, not a hazard to work around.**
+> At the four gates that derive their entry's body from the ratified brief, `decision_ref` names an entry
+> that same gate recorded as a placeholder moments earlier. Here it names the SUCCESSOR decision —
+> authored at a *different* gate and already carrying its own ratified rationale. Projecting this
+> patch-review brief onto it would destroy ratified content, so `compose_brief` **does not derive a
+> `knowledge_entry_content` item for `stale-patch-review` at all**. Nothing about this gate's behaviour
+> changed: the `decision_ref` still renders the depth-pointer, the accept still promotes the entry, and
+> the entry's body is never overwritten. The exemption is a named row in `GATE_REASON_FLOW`
+> (`src/tools/briefs.ts`) pinned in both directions, so it can neither widen to another gate nor quietly
+> disappear. Author the brief exactly as before — there is nothing to avoid here.
 
 **The command tail is emitted mechanically — never supply `doc.tail` here (B-874).** The default
 tail ("Type `accept`, `edit`, `iterate <feedback>`, or `defer`.") MISINFORMS at this gate, because

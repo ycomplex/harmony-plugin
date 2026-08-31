@@ -23147,6 +23147,7 @@ var STALE_PATCH_TAIL = "`accept` applies this patch and clears the stale flag (s
 var PROPOSED_ACS_HEADING = "Proposed acceptance criteria (happy path) \u2014 filed on accept:";
 var PROMISED_WRITES_HEADING = "On accept, this brief files:";
 var NOT_RATIFIED_MARK = "\u26A0\uFE0F [NOT RATIFIED]";
+var RATIFICATION_CONVENTION = `Every element below appeared in that brief, except any marked ${NOT_RATIFIED_MARK}.`;
 var ENTRY_PROVENANCE_PREFIX = "Derived from the ratified brief";
 function tailForReason(reason) {
   return reason === "stale-patch-review" ? STALE_PATCH_TAIL : void 0;
@@ -23421,7 +23422,7 @@ function renderBrief(doc, decisionRef, ctx) {
 function entryProvenanceStamp(ctx) {
   const when = (ctx?.now ?? /* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const gate = ctx?.reason ? ` at the ${ctx.reason} gate` : "";
-  return `_${ENTRY_PROVENANCE_PREFIX}${gate}, ${when} \u2014 a mechanical projection of the brief the human approved, not separately authored prose. Every element below appeared in that brief, except any marked ${NOT_RATIFIED_MARK}._`;
+  return `_${ENTRY_PROVENANCE_PREFIX}${gate}, ${when} \u2014 a mechanical projection of the brief the human approved, not separately authored prose. ${RATIFICATION_CONVENTION}_`;
 }
 function renderEntry(doc, ctx) {
   const briefContent = renderBrief(doc, ctx?.decisionRef ?? null, ctx);

@@ -107,9 +107,11 @@ are noise the human cannot judge.
 
 ## The brief is the only authored copy (B-866)
 
-**Do not author the knowledge entry's prose.** At the five gates whose accept promotes a knowledge
-entry — clarify, decompose, design (all three tracks), stale-patch, revise-scope — the entry's body is
-**DERIVED by `compose_brief`** from the very `doc` you are composing. The human reads
+**Do not author the knowledge entry's prose.** At the four gates that RECORD their own entry — clarify,
+decompose, design (all three tracks), revise-scope — the entry's body is **DERIVED by `compose_brief`**
+from the very `doc` you are composing. (`stale-patch` also carries a `decision_ref`, but it is a named
+**pointer-only** exemption: its entry was ratified at another gate, so nothing is derived and nothing is
+overwritten. See `skills/harmony-stale-patch/SKILL.md` step 4.) The human reads
 `renderBrief(doc)`; the accept promotes `renderEntry(doc)`. One structured source, projected twice.
 
 What that changes in your hands:

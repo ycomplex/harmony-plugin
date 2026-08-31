@@ -311,6 +311,17 @@ export const PROMISED_WRITES_HEADING = 'On accept, this brief files:';
 // rides the element itself; the construction stamp below explains it once.
 export const NOT_RATIFIED_MARK = '⚠️ [NOT RATIFIED]';
 
+/** B-866 — the sentence that DEFINES what an unmarked element means, carried in every stamp.
+ *
+ *  The mark and this line are ONE mechanism, not two. The entry marks only the EXCEPTIONS — a positive
+ *  tick on every ratified element would bury the one signal that matters in noise — and that is only
+ *  readable because the stamp says so. Reword either half alone and they silently stop referring to each
+ *  other: the token becomes an unexplained glyph, or the convention describes a mark that no longer
+ *  exists. So the convention INTERPOLATES the token rather than restating it, and
+ *  `derivation-contract.test.ts` pins both literals AND that this line contains that token. */
+export const RATIFICATION_CONVENTION =
+  `Every element below appeared in that brief, except any marked ${NOT_RATIFIED_MARK}.`;
+
 /** B-866 — the construction-provenance stamp every derived entry opens with. A reader must be able to
  *  tell a post-change (stamped) entry from the thousands of pre-change unstamped ones, so the
  *  "unmarked means ratified" convention is scoped to stamped entries ONLY and can never be read back
@@ -886,8 +897,7 @@ export function entryProvenanceStamp(ctx?: EntryRenderContext): string {
   const gate = ctx?.reason ? ` at the ${ctx.reason} gate` : '';
   return (
     `_${ENTRY_PROVENANCE_PREFIX}${gate}, ${when} — a mechanical projection of the brief the human ` +
-    `approved, not separately authored prose. Every element below appeared in that brief, except any ` +
-    `marked ${NOT_RATIFIED_MARK}._`
+    `approved, not separately authored prose. ${RATIFICATION_CONVENTION}_`
   );
 }
 
@@ -1378,9 +1388,18 @@ export interface DecisionRef { type: string; id: string; }
 // Any "6 of 8" reading is wrong; plan-draft is the reason it is easy to get wrong.
 
 export interface GateReasonFlow {
-  /** Does this gate's brief carry a `decision_ref` — does its accept promote a knowledge entry whose
-   *  prose must therefore be DERIVED from the ratified doc rather than separately authored? */
-  derives_entry: boolean;
+  /** Does this gate's brief carry a `decision_ref` — the POINTER fact? It drives the depth-pointer line
+   *  and names the entry the accept promotes. FIVE reasons do. */
+  carries_decision_ref: boolean;
+  /** Does compose DERIVE this gate's entry BODY from the ratified doc? FOUR reasons do — deliberately
+   *  one fewer than carry the pointer.
+   *
+   *  THE TWO FACTS ARE SEPARATE FIELDS BECAUSE THEY ARE SEPARATE FACTS. Collapsed into one, "carries a
+   *  decision_ref" silently implies "may be overwritten from this brief", which is how
+   *  `stale-patch-review` nearly acquired a destructive write by implication rather than by decision. Its
+   *  row below is a NAMED, PRINCIPLED EXEMPTION rather than a gap — and it is pinned in both directions,
+   *  so it can neither silently widen to another reason nor silently vanish. */
+  derives_entry_content: boolean;
   /** Does this gate's brief carry promised structured writes in `doc.payload`? */
   carries_writes: boolean;
   /** Why. Present on EVERY row, including the flowed ones — an exemption nobody wrote down is
@@ -1390,50 +1409,65 @@ export interface GateReasonFlow {
 
 export const GATE_REASON_FLOW: Record<string, GateReasonFlow> = {
   'clarification-draft': {
-    derives_entry: true,
+    carries_decision_ref: true,
+    derives_entry_content: true,
     carries_writes: true,
-    note: "Promotes the clarified-intent specification entry; promises the happy-path acceptance criteria (and any de-scope re-tickets).",
+    note: "Promotes the clarified-intent specification entry, whose body this gate records as a PLACEHOLDER moments before composing — so deriving it replaces a seat, never ratified prose. Promises the happy-path acceptance criteria (and any de-scope re-tickets).",
   },
   'decomposition-proposal': {
-    derives_entry: true,
+    carries_decision_ref: true,
+    derives_entry_content: true,
     carries_writes: true,
-    note: "Promotes the decomposition rationale entry; promises the child tickets and any AC transfers.",
+    note: "Promotes the decomposition rationale entry, recorded as a placeholder by this same gate. Promises the child tickets and any AC transfers.",
   },
   'design-decision-draft': {
-    derives_entry: true,
+    carries_decision_ref: true,
+    derives_entry_content: true,
     carries_writes: true,
-    note: "Promotes the design decision entry (technical / product / ux-ui track); promises the product track's AC manifest and the decision-only label.",
+    note: "Promotes the design decision entry (technical / product / ux-ui track), recorded as a placeholder by this same gate; its `madr` block keeps its own authored value, only the body is projected. Promises the product track's AC manifest and the decision-only label.",
   },
   'stale-patch-review': {
-    derives_entry: true,
+    carries_decision_ref: true,
+    derives_entry_content: false,
     carries_writes: false,
-    note: "Promotes the SUCCESSOR entry the patch reconciles onto — except on a null-successor brief, which deliberately omits decision_ref and therefore derives nothing. Promises no structured writes. THE ONE ASYMMETRIC ROW: its decision_ref names a PRE-EXISTING entry authored at another gate, not a placeholder this gate just recorded, so the derived write REPLACES that entry's body. Flagged for the human at B-866 build time rather than silently exempted here — a carve-out invented in code is exactly what this ledger exists to prevent.",
+    note: "POINTER-ONLY, BY CONSTRUCTION — a NAMED, PRINCIPLED EXEMPTION, not a gap. It DOES carry a decision_ref, so the depth-pointer still renders and the accept still promotes the entry; today's stale-patch behaviour is unchanged, which is the point. But its decision_ref names `stale_ref.superseded_by`: ANOTHER GATE'S ALREADY-RATIFIED ENTRY, not a placeholder this gate recorded. Projecting the patch-review brief onto it would DESTROY ratified content — the inverse of this ticket's guarantee, aimed at an artefact the human ratified elsewhere. So content derivation stops here. (A null-successor brief omits decision_ref entirely and carries neither half.) Promises no structured writes.",
   },
   'revise-scope-review': {
-    derives_entry: true,
+    carries_decision_ref: true,
+    derives_entry_content: true,
     carries_writes: false,
-    note: "Promotes the B-763 rationale record for the scope revision. Promises no structured writes.",
+    note: "Promotes the B-763 rationale record, recorded as a placeholder by this same gate; its trigger / supersede-list / keep-list / broadened-scope / AC-axis content now rides the brief's `doc.context`, where the human ratifies it. Promises no structured writes.",
   },
   'plan-draft': {
-    derives_entry: false,
+    carries_decision_ref: false,
+    derives_entry_content: false,
     carries_writes: true,
     note: "WRITES HALF ONLY — composes no decision_ref, so its accept promotes no knowledge entry and there is no entry prose to derive. It does promise the plan-step checklist.",
   },
   'release-decision-pending': {
-    derives_entry: false,
+    carries_decision_ref: false,
+    derives_entry_content: false,
     carries_writes: false,
     note: "NEITHER HALF — the accept executes a landing (merge + deploy); it promotes no entry and promises no structured writes.",
   },
   'verification-ack-pending': {
-    derives_entry: false,
+    carries_decision_ref: false,
+    derives_entry_content: false,
     carries_writes: false,
     note: "NEITHER HALF — the accept acknowledges observed reality against the criteria ledger; it promotes no entry and promises no structured writes.",
   },
 };
 
-/** Does this gate's accept promote a knowledge entry whose prose must be derived from the doc? */
+/** Does compose DERIVE this gate's entry body from the doc? Reads the ledger's OWN field — never
+ *  re-derived from "does it carry a decision_ref", which is a DIFFERENT question with a different
+ *  answer at exactly one gate. */
 export function derivesEntryContent(reason: string | undefined): boolean {
-  return !!reason && GATE_REASON_FLOW[reason]?.derives_entry === true;
+  return !!reason && GATE_REASON_FLOW[reason]?.derives_entry_content === true;
+}
+
+/** Does this gate's brief carry a decision_ref (the pointer fact)? */
+export function carriesDecisionRef(reason: string | undefined): boolean {
+  return !!reason && GATE_REASON_FLOW[reason]?.carries_decision_ref === true;
 }
 
 /**
@@ -1847,7 +1881,7 @@ export const composeBriefTool = {
   name: 'compose_brief',
   description:
     "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) on every round-2+ call. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one — so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref — do not hand-write it. " +
-    "B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; the accept promotes a mechanical projection of the SAME doc as the knowledge entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately — put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. " +
+    "B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately — put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. " +
     "B-876: also author `doc.frame` — the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING — no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) — compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates.",
   inputSchema: {
     type: 'object' as const,
@@ -1893,7 +1927,7 @@ export const composeBriefTool = {
           payload: {
             type: 'array',
             description:
-              "B-810 — the promised structured writes this brief's ACCEPT will materialize (AcceptanceEventPayloadItem[], acceptance-events.ts): one item per acceptance_criterion / child_ticket / checklist_item / ac_transfer / label_add / knowledge_entry_content write, mirroring exactly what the gate's own same-session accept-time materialization performs. A `knowledge_entry_content` item (B-843) CARRIES the full prose of the knowledge entry this brief's decision_ref names. B-866: DO NOT AUTHOR ONE — compose DERIVES it from this same doc (renderEntry) for every reason that carries a decision_ref (clarification-draft, decomposition-proposal, design-decision-draft, stale-patch-review, revise-scope-review), sets its `ref` and `entry_id`, and REPLACES any item you supply; the entry's prose belongs in the doc (recommend / why / alternatives / context / frame), never in a second hand-authored copy. The payload is executed by the B-797 cross-session safety net (a web accept with no session running); since B-866 the brief also RENDERS its promise — one line per promised write — so what the reader sees and what the accept executes cannot disagree. Every item's `ref` MUST be derived via `slugRef` + deduped via `dedupeRefs` (payload-refs.ts) — a content-derived slug, never a positional index, stable across an in-place iterate recompose. Omit or pass `[]` when this gate has no promised writes (e.g. decompose's 'no split').",
+              "B-810 — the promised structured writes this brief's ACCEPT will materialize (AcceptanceEventPayloadItem[], acceptance-events.ts): one item per acceptance_criterion / child_ticket / checklist_item / ac_transfer / label_add / knowledge_entry_content write, mirroring exactly what the gate's own same-session accept-time materialization performs. A `knowledge_entry_content` item (B-843) CARRIES the full prose of the knowledge entry this brief's decision_ref names. B-866: DO NOT AUTHOR ONE — compose DERIVES it from this same doc (renderEntry) for the FOUR reasons whose gate records the entry itself (clarification-draft, decomposition-proposal, design-decision-draft, revise-scope-review), sets its `ref` and `entry_id`, and REPLACES any item you supply. stale-patch-review is a NAMED EXEMPTION: it carries a decision_ref (the depth-pointer still renders) but its entry was ratified at another gate, so its body is never overwritten; the entry's prose belongs in the doc (recommend / why / alternatives / context / frame), never in a second hand-authored copy. The payload is executed by the B-797 cross-session safety net (a web accept with no session running); since B-866 the brief also RENDERS its promise — one line per promised write — so what the reader sees and what the accept executes cannot disagree. Every item's `ref` MUST be derived via `slugRef` + deduped via `dedupeRefs` (payload-refs.ts) — a content-derived slug, never a positional index, stable across an in-place iterate recompose. Omit or pass `[]` when this gate has no promised writes (e.g. decompose's 'no split').",
             items: {
               type: 'object',
               properties: {

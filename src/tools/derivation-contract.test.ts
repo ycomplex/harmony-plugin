@@ -6,8 +6,11 @@ import {
   withDerivedEntryContent,
   derivesEntryContent,
   GATE_REASON_FLOW,
+  carriesDecisionRef,
   ENTRY_PROVENANCE_PREFIX,
   NOT_RATIFIED_MARK,
+  RATIFICATION_CONVENTION,
+  entryProvenanceStamp,
   PROMISED_WRITES_HEADING,
   type BriefDoc,
   type DecisionRef,
@@ -120,24 +123,81 @@ describe('the eight-reason coverage ledger is PINNED, so an unflowed reason is n
     expect(Object.keys(GATE_REASON_FLOW).sort()).toEqual([...REASONS].sort());
   });
 
-  it('EXACTLY FIVE reasons derive an entry — the corrected count, not the inherited "6 of 8"', () => {
-    const derives = REASONS.filter((r) => GATE_REASON_FLOW[r].derives_entry);
-    expect(derives.sort()).toEqual([
+  it('EXACTLY FIVE reasons carry a decision_ref — the corrected count, not the inherited "6 of 8"', () => {
+    const carries = REASONS.filter((r) => GATE_REASON_FLOW[r].carries_decision_ref);
+    expect(carries.sort()).toEqual([
       'clarification-draft', 'decomposition-proposal', 'design-decision-draft',
       'revise-scope-review', 'stale-patch-review',
     ]);
-    expect(derives).toHaveLength(5);
+    expect(carries).toHaveLength(5);
+  });
+
+  it('EXACTLY FOUR reasons derive the entry body — one fewer than carry the pointer', () => {
+    const derives = REASONS.filter((r) => GATE_REASON_FLOW[r].derives_entry_content);
+    expect(derives.sort()).toEqual([
+      'clarification-draft', 'decomposition-proposal', 'design-decision-draft', 'revise-scope-review',
+    ]);
+    expect(derives).toHaveLength(4);
   });
 
   it('plan-draft is the WRITES half only — it composes no decision_ref, so it derives no entry', () => {
-    expect(GATE_REASON_FLOW['plan-draft']).toMatchObject({ derives_entry: false, carries_writes: true });
+    expect(GATE_REASON_FLOW['plan-draft']).toMatchObject({
+      carries_decision_ref: false, derives_entry_content: false, carries_writes: true,
+    });
     expect(derivesEntryContent('plan-draft')).toBe(false);
   });
 
   it('release and verify are NEITHER half — stated, not merely missing', () => {
     for (const reason of ['release-decision-pending', 'verification-ack-pending']) {
-      expect(GATE_REASON_FLOW[reason]).toMatchObject({ derives_entry: false, carries_writes: false });
+      expect(GATE_REASON_FLOW[reason]).toMatchObject({
+        carries_decision_ref: false, derives_entry_content: false, carries_writes: false,
+      });
     }
+  });
+
+  // ——— The stale-patch exemption: a NAMED, PRINCIPLED ROW, pinned so it can neither silently widen
+  // nor silently vanish. Both directions matter. If it VANISHES, a stale-patch accept starts writing
+  // this brief's projection over another gate's already-ratified entry — the destructive case the
+  // founder ruled out as "the disease itself, aimed at an artefact the human ratified elsewhere". If it
+  // WIDENS, a gate that records its own placeholder entry silently stops deriving, and the ticket's
+  // whole guarantee (the accept consumes what was approved) quietly lapses at that gate.
+  describe('the stale-patch-review exemption is pinned in both directions', () => {
+    it('DOES NOT VANISH: stale-patch-review carries the pointer but derives NO content', () => {
+      expect(GATE_REASON_FLOW['stale-patch-review']).toMatchObject({
+        carries_decision_ref: true,
+        derives_entry_content: false,
+      });
+      expect(carriesDecisionRef('stale-patch-review')).toBe(true);
+      expect(derivesEntryContent('stale-patch-review')).toBe(false);
+    });
+
+    it('DOES NOT WIDEN: stale-patch-review is the ONLY reason that carries a pointer without deriving', () => {
+      const pointerOnly = REASONS.filter(
+        (r) => GATE_REASON_FLOW[r].carries_decision_ref && !GATE_REASON_FLOW[r].derives_entry_content,
+      );
+      expect(pointerOnly).toEqual(['stale-patch-review']);
+    });
+
+    it('no reason derives content without carrying the pointer — there would be nothing to write to', () => {
+      const orphans = REASONS.filter(
+        (r) => GATE_REASON_FLOW[r].derives_entry_content && !GATE_REASON_FLOW[r].carries_decision_ref,
+      );
+      expect(orphans).toEqual([]);
+    });
+
+    it('the row STATES the reason for the exemption — it is a decision, not a gap', () => {
+      const note = GATE_REASON_FLOW['stale-patch-review'].note;
+      expect(note).toContain('POINTER-ONLY, BY CONSTRUCTION');
+      expect(note).toContain("ANOTHER GATE'S ALREADY-RATIFIED ENTRY");
+    });
+
+    it("BEHAVIOUR: a stale-patch compose derives no entry item, and STILL renders the depth-pointer", async () => {
+      const stored = await composeAndCapture('stale-patch-review', ratifiedDoc());
+      expect(entryItemOf(stored.doc)).toBeUndefined();
+      // The pointer fact is untouched by the exemption — that is why the two are separate fields.
+      expect(stored.decision_ref).toEqual(DECISION_REF);
+      expect(stored.content).toContain('fuller depth lives in the linked decision entry');
+    });
   });
 
   it('every row NAMES why — an exemption nobody wrote down is indistinguishable from an oversight', () => {
@@ -150,7 +210,7 @@ describe('the eight-reason coverage ledger is PINNED, so an unflowed reason is n
 // ——— Step 8: approved doc in, promoted entry and executed writes out ——————————————————————————————
 
 describe('the derivation contract: approved doc in, promoted entry + executed writes out (B-866)', () => {
-  it.each(['clarification-draft', 'decomposition-proposal', 'design-decision-draft', 'stale-patch-review', 'revise-scope-review'])(
+  it.each(['clarification-draft', 'decomposition-proposal', 'design-decision-draft', 'revise-scope-review'])(
     'compose DERIVES the knowledge_entry_content item at the %s gate',
     async (reason) => {
       const stored = await composeAndCapture(reason, ratifiedDoc());
@@ -168,6 +228,11 @@ describe('the derivation contract: approved doc in, promoted entry + executed wr
       expect(entryItemOf(stored.doc)).toBeUndefined();
     },
   );
+
+  it('derives NOTHING at stale-patch-review even WITH a decision_ref — the named exemption', async () => {
+    const stored = await composeAndCapture('stale-patch-review', ratifiedDoc());
+    expect(entryItemOf(stored.doc)).toBeUndefined();
+  });
 
   it('derives nothing when the brief carries no decision_ref (the stale-patch null-successor brief)', async () => {
     const stored = await composeAndCapture('stale-patch-review', ratifiedDoc(), null);
@@ -230,6 +295,24 @@ describe('the derivation contract: approved doc in, promoted entry + executed wr
 // ——— Step 2: element-level ratification + the construction stamp ——————————————————————————————————
 
 describe('the derived entry marks ratification per element and stamps its construction (B-866)', () => {
+  // The mark tells the reader WHICH claim is unvetted; the convention line tells them what an UNMARKED
+  // element means. Neither works alone, so neither may be reworded alone. Pinned as literals AND as a
+  // containment relationship, so a rewording that detaches the two fails here rather than shipping an
+  // unexplained glyph (or a convention describing a mark that no longer exists).
+  it('PINS the ratification token and its convention line TOGETHER', () => {
+    expect(NOT_RATIFIED_MARK).toBe('⚠️ [NOT RATIFIED]');
+    expect(RATIFICATION_CONVENTION).toBe('Every element below appeared in that brief, except any marked ⚠️ [NOT RATIFIED].');
+    // The relationship: the convention must name the exact token the render emits.
+    expect(RATIFICATION_CONVENTION).toContain(NOT_RATIFIED_MARK);
+    // ...and every stamp must carry that convention verbatim, so no entry marks without explaining.
+    expect(entryProvenanceStamp({ reason: 'design-decision-draft', now: new Date('2026-08-31T00:00:00Z') }))
+      .toContain(RATIFICATION_CONVENTION);
+    // ...and the token the entry actually emits is that same literal.
+    const doc = ratifiedDoc({ research: ['A prompt the brief never rendered'] });
+    expect(renderEntry(doc, { reason: 'design-decision-draft' })).toContain(RATIFICATION_CONVENTION);
+    expect(renderEntry(doc, { reason: 'design-decision-draft' })).toContain(`rendered ${NOT_RATIFIED_MARK}`);
+  });
+
   it('opens with the construction-provenance stamp, so the archive is not read as stamped', () => {
     const entry = renderEntry(ratifiedDoc(), { reason: 'design-decision-draft', now: new Date('2026-08-31T00:00:00Z') });
     expect(entry.split('\n')[0]).toContain(ENTRY_PROVENANCE_PREFIX);
