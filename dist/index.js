@@ -38004,6 +38004,74 @@ function withRemarkRecorded(data, recorded) {
   const base = data && typeof data === "object" ? data : {};
   return { ...base, remark_recorded: recorded };
 }
+var isReshapeRpcSchemaDrift = (msg) => !!msg && /(log_brief_decision_event|submit_brief_command)/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
+async function reshapeBrief(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const provenance = validateResolutionProvenance(args.provenance);
+  const feedback = typeof args.feedback === "string" ? args.feedback.trim() : "";
+  if (!feedback) {
+    throw new Error(
+      "feedback is required to reshape a brief \u2014 a reshape sends the brief back for rework, and blank feedback tells the agent nothing about what to change. Nothing was written."
+    );
+  }
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const { data: active, error: lookupErr } = await client.from("briefs").select("id, reason").eq("task_id", taskId).eq("status", "active").maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+  if (!active) {
+    const { data: latest, error: latestErr } = await client.from("briefs").select("id, status, resolved_command").eq("task_id", taskId).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (latestErr) throw new Error(latestErr.message);
+    const row = latest;
+    if (!row) {
+      throw new Error(
+        `task ${args.task_id} has no brief to reshape \u2014 no brief has ever been composed for it, so there is nothing to send back. Compose one first with compose_brief; nothing was written.`
+      );
+    }
+    const via = row.resolved_command ? ` (resolved via '${row.resolved_command}')` : "";
+    throw new Error(
+      `the brief on task ${args.task_id} is already resolved \u2014 brief ${row.id} is '${row.status}'${via}, and a reshape is only offered on an ACTIVE brief. Compose a new brief rather than reshaping a concluded one; nothing was written.`
+    );
+  }
+  const brief = active;
+  const { error: auditErr } = await client.rpc("log_brief_decision_event", {
+    p_task_id: taskId,
+    p_brief_id: brief.id,
+    p_command: "iterate",
+    p_reason: brief.reason,
+    // Validated above — never a caller's raw string.
+    p_provenance: provenance,
+    p_detail: feedback
+  });
+  if (auditErr) {
+    if (isReshapeRpcSchemaDrift(auditErr.message)) {
+      throw new Error(
+        `reshape is unavailable on this database: it predates the decision-trail RPC (log_brief_decision_event). Nothing was written \u2014 the reshape was NOT applied. Reshape from the browser, or promote the schema first. Underlying error: ${auditErr.message}`
+      );
+    }
+    throw new Error(auditErr.message);
+  }
+  const { data, error: error2 } = await client.rpc("submit_brief_command", {
+    _brief_id: brief.id,
+    _command: "iterate",
+    _detail: feedback
+  });
+  if (error2) {
+    if (isReshapeRpcSchemaDrift(error2.message)) {
+      throw new Error(
+        `reshape is unavailable on this database: it predates the handoff RPC (submit_brief_command). The reshape did NOT land \u2014 the brief is untouched and still awaiting the human. A decision entry was already recorded and is now orphaned, which is harmless (it truthfully records that a reshape was attempted). Reshape from the browser, or promote the schema first. Underlying error: ${error2.message}`
+      );
+    }
+    throw new Error(error2.message);
+  }
+  const base = data && typeof data === "object" ? data : {};
+  return {
+    brief_id: brief.id,
+    task_id: taskId,
+    command: "iterate",
+    reason: brief.reason,
+    ...base,
+    provenance
+  };
+}
 var getBriefTool = {
   name: "get_brief",
   description: "Get the active brief for a task (its rendered content blob + canonical doc + pre-generated expand sections + related), plus `pending_resolution` \u2014 a browser-submitted reshape request ({command:'iterate', detail:<feedback>}) the running conductor consumes on pickup, or null if none. Returns null if no brief is awaiting input.",
@@ -38015,7 +38083,7 @@ var getBriefTool = {
 };
 var resolveBriefTool = {
   name: "resolve_brief",
-  description: "Resolve the active brief on a task. accept = promote the Asserted knowledge entry to Accepted, advance the state machine, clear the flag. defer = park the ticket. Idempotent (re-issuing the same command is safe). (edit/iterate are skill-side LLM work via compose_brief; expand/related are reads via get_brief.) B-734: `provenance` is REQUIRED \u2014 it attributes the recorded decision entry, and absent provenance is stored as null and read as UNATTRIBUTED, never as a human. Accepted from the plugin: 'human-in-session' (the human typed accept/defer in this session) or 'agent-synthesized' / 'agent-synthesized:<mode>' (the conductor synthesized it under a delegation mode, e.g. 'agent-synthesized:unattended'). FAILS CLOSED: 'human-in-browser' is the web client's alone and is REJECTED here (the plugin is never the browser), and any other value \u2014 including near-misses like the British 'agent-synthesised' \u2014 is REJECTED rather than stored, because a wrong value would render as unattributed forever. B-883: `detail` and `remark` are DIFFERENT CHANNELS and are not interchangeable. `remark` is an instruction for the NEXT leg \u2014 it rides on an accept, surfaces as `pending_remark` on get_task, and is consumed once. `detail` is an inert note (it lands in resolved_detail) and is NEVER surfaced as pending_remark, so an instruction passed as `detail` is stored and silently never reaches anyone. A remark on 'defer' is REJECTED (a deferred ticket parks, so it could never be consumed). Against a database predating the remark parameter the accept still SUCCEEDS and the ack carries `remark_recorded: false` \u2014 the drop is visible, never silent.",
+  description: "Resolve the active brief on a task. accept = promote the Asserted knowledge entry to Accepted, advance the state machine, clear the flag. defer = park the ticket. Idempotent (re-issuing the same command is safe). (To send a brief BACK for rework instead of resolving it, use reshape_brief \u2014 the sibling tool; it keeps the brief active, records the provenance-bearing decision entry, and hands the ball to the agent. edit is skill-side authoring via compose_brief; expand/related are reads via get_brief.) B-734: `provenance` is REQUIRED \u2014 it attributes the recorded decision entry, and absent provenance is stored as null and read as UNATTRIBUTED, never as a human. Accepted from the plugin: 'human-in-session' (the human typed accept/defer in this session) or 'agent-synthesized' / 'agent-synthesized:<mode>' (the conductor synthesized it under a delegation mode, e.g. 'agent-synthesized:unattended'). FAILS CLOSED: 'human-in-browser' is the web client's alone and is REJECTED here (the plugin is never the browser), and any other value \u2014 including near-misses like the British 'agent-synthesised' \u2014 is REJECTED rather than stored, because a wrong value would render as unattributed forever. B-883: `detail` and `remark` are DIFFERENT CHANNELS and are not interchangeable. `remark` is an instruction for the NEXT leg \u2014 it rides on an accept, surfaces as `pending_remark` on get_task, and is consumed once. `detail` is an inert note (it lands in resolved_detail) and is NEVER surfaced as pending_remark, so an instruction passed as `detail` is stored and silently never reaches anyone. A remark on 'defer' is REJECTED (a deferred ticket parks, so it could never be consumed). Against a database predating the remark parameter the accept still SUCCEEDS and the ack carries `remark_recorded: false` \u2014 the drop is visible, never silent.",
   inputSchema: {
     type: "object",
     properties: {
@@ -38029,6 +38097,22 @@ var resolveBriefTool = {
       }
     },
     required: ["task_id", "command", "provenance"]
+  }
+};
+var reshapeBriefTool = {
+  name: "reshape_brief",
+  description: "Send a task's ACTIVE brief BACK FOR REWORK with feedback \u2014 the terminal twin of the browser's reshape, and the SIBLING of resolve_brief (accept/defer). The brief stays active and its workflow_state is untouched; a {command:'iterate', detail:<feedback>} marker is written and the ball is handed to the agent, which consumes the marker on pickup and re-composes. Use this when the brief is wrong, thin, or aimed at the wrong thing \u2014 not resolve_brief, which only concludes. `feedback` is REQUIRED: it is the instruction the re-compose acts on, and blank/whitespace-only is REFUSED with nothing written. `provenance` is REQUIRED and validated exactly as on resolve_brief (B-734): 'human-in-session' | 'agent-synthesized' | 'agent-synthesized:<mode>'. 'human-in-browser' is the web client's alone and is REJECTED here, so an agent can never make its own reshape look like a human's \u2014 which is the whole point of recording it. A RELEASE or VERIFY brief CAN be reshaped: the accept-side floor does not apply, because sending work back is the opposite of pre-accepting it. Refuses, writing nothing, when the task has no active brief \u2014 distinguishing 'no brief has ever been composed' from 'the brief is already resolved'. On a database predating the underlying RPCs it fails with a clear unavailable-here error rather than an opaque one.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "The task whose ACTIVE brief to send back for rework \u2014 UUID, task number, or visual ID (e.g., B-43)" },
+      feedback: { type: "string", description: "REQUIRED. What is wrong and what to change \u2014 the instruction the re-compose acts on. Lands as the marker's `detail` and as the decision entry's detail. Blank/whitespace-only is refused and nothing is written." },
+      provenance: {
+        type: "string",
+        description: "REQUIRED. Who decided to send it back: 'human-in-session' (the human said so in this session) | 'agent-synthesized' | 'agent-synthesized:<mode>' (conductor delegation mode). 'human-in-browser' is the web client's alone and is rejected here; any other value is rejected too."
+      }
+    },
+    required: ["task_id", "feedback", "provenance"]
   }
 };
 
@@ -42002,6 +42086,7 @@ function registerTools(disabledFeatures) {
     composeBriefTool,
     getBriefTool,
     resolveBriefTool,
+    reshapeBriefTool,
     consumeAcceptRemarkTool,
     flagReleaseApprovalPendingTool,
     startElicitationTool,
@@ -42203,6 +42288,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "resolve_brief":
         result = await resolveBrief(client, projectId, args);
+        break;
+      case "reshape_brief":
+        result = await reshapeBrief(client, projectId, args);
         break;
       case "consume_accept_remark":
         result = await consumeAcceptRemark(client, projectId, args);
