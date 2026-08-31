@@ -40,6 +40,32 @@ describe('start-work skill contract (evolved)', () => {
     // set pending_activity:'deploying' here would reintroduce the B-60 "Deployed before deploy" bug.
     expect(skill.body).toMatch(/release-decision-pending",\s*pending_activity:\s*null/);
   });
+
+  // B-876: the release brief drafted HERE is the same artefact the release gate surfaces, so it owes the
+  // same frame. This template was the one release compose site that shipped unframed on the first pass —
+  // an unframed release brief renders no act, no unproven residue and no evidence counts, which is exactly
+  // the "the gate has no field for the act it authorizes" defect the frame exists to close. Pinned so the
+  // two release compose sites (this one and finish-work's) cannot drift apart again.
+  it('B-876: the release-brief template carries the release frame and passes changed_paths', () => {
+    const body = skill.body;
+    // The frame, on the same compose call as the release reason.
+    expect(body).toMatch(/frame:\s*\{\s*\n?\s*kind:\s*"release"/);
+    for (const field of ['act:', 'unproven:', 'evidence_status:', 'risk_classes:']) {
+      expect(body, `the release frame template is missing ${field}`).toContain(field);
+    }
+    // `lands_in` is an enum precisely so the brief cannot claim production while merging to main.
+    expect(body).toMatch(/lands_in:\s*"staging"/);
+    // changed_paths is what compose derives frame.risk_classes from — the build gate has the diff.
+    expect(body).toContain('changed_paths:');
+    // …and the skill must say the field is OVERWRITTEN at compose, so nobody hand-authors a risk set.
+    expect(body.toLowerCase()).toMatch(/overwrit\w+/);
+    // Point at the single field-by-field reference rather than carrying a second copy of it.
+    expect(body).toContain('The release frame (B-876)');
+    // The B-874 must-haves and the bot-approval line are NOT displaced by the frame.
+    expect(body).toContain('Not proven by this build:');
+    expect(body).toContain('needs your approval on GitHub before it can merge');
+    expect(body).toMatch(/recommend:\s*\{\s*text:\s*"Ship it/);
+  });
   it('carries the build role profile (can commit; cannot author design knowledge)', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/record_decision/);
   });
