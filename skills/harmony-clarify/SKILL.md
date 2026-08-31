@@ -317,6 +317,31 @@ actual authority on whether the label may land — this proposal is never a guar
 riding the same accept the human already reviews (see step 5's accept branch for what happens on a
 guard-blocked or not-yet-deployed apply).
 
+**Also author `doc.frame` (B-876) — the clarify gate's own must-haves.** The clarification IS the
+artefact being ratified, and the two things the human is actually being asked to lock have no other typed
+home: without the frame they degrade into `context[]`, the block that everywhere else means "no action
+needed", and stop being read.
+
+- **`solving`** — the **OUTCOME**: what becomes true for the product when this ships, in product terms.
+  Never a restatement of the problem. Briefs restate pain fluently and then never say what changes —
+  "triage is slow because filters reset" is the problem; "a triager reopens the board and their filter is
+  already applied" is the outcome. Pitched so a reader can judge it without the repo open.
+- **`in_scope`** — what this ticket covers, as a list. The positive half of the boundary.
+- **`not_solving`** — what it excludes, and **for each exclusion, where it lands**: a ticket id, a later
+  phase, or the explicit `"nowhere — nobody is tracking this"`. That last value is sanctioned and is the
+  highest-signal entry in the block, not an escape hatch — an exclusion with no destination is the
+  deferred work that quietly evaporates (`skills/harmony-shared/disposition-discipline.md`). The KEY is
+  **required even when nothing is excluded**: `[]` ("this excludes nothing") is a legal, meaningful
+  answer; absence is not, because silence and "nothing" are different claims.
+
+The de-scope block (step 3) and `not_solving` answer different questions and both stand: the de-scope
+block is the *executable* list the accept re-tickets, `not_solving` is the *boundary* the human is
+ratifying — an exclusion can be out of scope without being re-ticketed here.
+
+`frame.kind` must be `"clarify"`; the render places it **above DECIDE** — the boundary is the first thing
+read, not a footnote under the ask. Every frame rule is a **WARNING** — a frame defect can never refuse a
+brief — and omitting the frame entirely renders exactly the pre-B-876 bytes.
+
 **"Ticket comments considered" context block (B-821).** When step 2's `list_comments` call found any
 non-marker comments, `doc.context` carries a block headed exactly **"Ticket comments considered:"** —
 one line per comment, rendered the same way step 3c renders the related-tickets disposition list (one
@@ -336,6 +361,18 @@ mcp__harmony__compose_brief({
   doc: {
     decide: "Is a 'Saved Filter' per-user or shared at project scope?",
     recommend: { text: "Per-user, project-scoped — matches existing filter UX", confidence: "medium" },
+    frame: {
+      kind: "clarify",
+      // The OUTCOME — what becomes true for the product when this ships. Never the problem restated.
+      solving: "A triager reopens the board and the filter they saved is already applied.",
+      in_scope: ["saving and restoring a filter per user", "renaming a saved filter"],
+      // Every exclusion names where it lands: a ticket id, a later phase, or the explicit
+      // "nowhere — nobody is tracking this". The KEY is required even when the list is empty.
+      not_solving: [
+        { item: "sharing a saved filter across a project", lands: "phase 2 — de-scoped below" },
+        { item: "saved sort/grouping", lands: "nowhere — nobody is tracking this" }
+      ]
+    },
     why: ["Existing filters are per-user", "No product entry on filter sharing yet"],
     context: [
       "What I learned from you: (You said) saved filters exist to speed up triage, not reporting; (You confirmed) per-user scope",
