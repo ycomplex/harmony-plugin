@@ -38161,6 +38161,62 @@ var concludeElicitationTool = {
     required: ["outcome"]
   }
 };
+async function findLatestExchange(client, taskId) {
+  const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("task_id", taskId).order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (error2) throw new Error(error2.message);
+  return data ?? null;
+}
+async function submitElicitationAnswers(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const exchange = await findActiveExchange(client, taskId);
+  if (!exchange) {
+    const latest = await findLatestExchange(client, taskId);
+    if (!latest) {
+      throw new Error(
+        `task ${args.task_id} has no open elicitation exchange \u2014 there is no filed round to record answers against. Open one with start_elicitation and file a round first; nothing was written.`
+      );
+    }
+    if (latest.status === "abandoned") {
+      throw new Error(
+        `exchange ${latest.id} is 'abandoned' \u2014 the human cancelled the discussion, so these answers cannot be recorded and the call must not be retried. Nothing was written.`
+      );
+    }
+    throw new Error(
+      `exchange ${latest.id} is '${latest.status}' \u2014 answers can only be recorded on an active exchange, and this one is already concluded. Nothing was written.`
+    );
+  }
+  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+  const echoed = echoPriorAnswers(
+    Array.isArray(exchange.rounds) ? exchange.rounds : [],
+    args.answers,
+    nowIso
+  );
+  if (echoed.errors.length > 0) {
+    throw new Error(`answers failed the echo guards:
+- ${echoed.errors.join("\n- ")}`);
+  }
+  const { data, error: error2 } = await client.from("elicitation_exchanges").update({ rounds: echoed.rounds, answers_submitted_at: nowIso }).eq("id", exchange.id).select(EXCHANGE_COLS).single();
+  if (error2) throw new Error(error2.message);
+  const { error: taskErr } = await client.from("tasks").update({ awaiting_human_input: false, awaiting_human_reason: null, awaiting_human_ref: null }).eq("id", exchange.task_id);
+  if (taskErr) throw new Error(taskErr.message);
+  return data;
+}
+var submitElicitationAnswersTool = {
+  name: "submit_elicitation_answers",
+  description: "Record terminal-given answers to the OPEN round of a task's active elicitation exchange and hand the ball back to the agent \u2014 WITHOUT asking another round and WITHOUT concluding the exchange. This is the terminal twin of the web's answer form and the PRODUCER of the answers marker: it stamps answers_submitted_at, leaves the exchange 'active' (a follow-up round can still be filed), and clears the task's awaiting_human_input (reason/ref nulled) so the conductor watch classifies 'answers-landed'. Never touches workflow_state. Use it when an out-of-band caller holds answers the human gave in the terminal and the next move hasn't been decided yet; use file_elicitation_round's or conclude_elicitation's prior_answers instead when you are filing the next round or concluding in the same turn (those CONSUME the marker). Same guards as prior_answers: only the last filed round's unanswered questions may be answered, a submitted answer is never overwritten, and verbs must fit the question kind \u2014 any violation refuses the whole call with no partial write. Each answer is stamped via:'terminal'. Refuses (writing nothing) when the task has no open exchange, or when its exchange is already concluded \u2014 an 'abandoned' exchange means the human cancelled the discussion, so do not retry.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "The task whose ACTIVE exchange to record answers on \u2014 UUID, task number, or visual ID (e.g., B-43)" },
+      answers: {
+        type: "object",
+        description: "The human's terminal-given answers to the OPEN round, keyed by question id: { <qid>: { verb, text? } } with verb confirm|correct|skip for a 'validate' question and answer|skip for an 'open' one (correct/answer require text). Answering only SOME of the round's questions is legitimate \u2014 the rest stay unanswered and the round stays open."
+      }
+    },
+    required: ["task_id", "answers"]
+  }
+};
 async function fetchActiveExchange(client, taskId) {
   try {
     const { data, error: error2 } = await client.from("elicitation_exchanges").select("id, status, rounds, answers_submitted_at, force_quit_requested_at").eq("task_id", taskId).eq("status", "active").maybeSingle();
@@ -41599,6 +41655,7 @@ var ackProjections = {
   start_elicitation: (result) => elicitationAck(result),
   file_elicitation_round: (result) => elicitationAck(result),
   conclude_elicitation: (result) => elicitationAck(result),
+  submit_elicitation_answers: (result) => elicitationAck(result),
   // ——— attachments ———
   attach_file: (result) => (
     // content_type/byte_size/status come from the server-side finalize sniff; `filename` is derived
@@ -41871,6 +41928,7 @@ function registerTools(disabledFeatures) {
     fileElicitationRoundTool,
     getElicitationTool,
     concludeElicitationTool,
+    submitElicitationAnswersTool,
     advanceWorkflowTool,
     referenceKnowledgeTool,
     listTicketKnowledgeTool,
@@ -42089,6 +42147,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "conclude_elicitation":
         result = await concludeElicitation(client, projectId, args);
+        break;
+      case "submit_elicitation_answers":
+        result = await submitElicitationAnswers(client, projectId, args);
         break;
       case "advance_workflow":
         result = await advanceWorkflow(client, projectId, args);

@@ -22,8 +22,9 @@ back through MCP. It never edits code (discovery role).
 > question is the sole load-bearing residual — step 2b), `gate: 'clarifying'`, and the clarify-specific
 > flow below. ALL turn, convergence, and emission behaviour (stakes-split, round lints, cold-start cap,
 > force-quit, claims provenance + disposal, mint-time dedupe) comes from
-> `skills/harmony-shared/elicitation-engine.md` and its four tools (`start_elicitation`,
-> `file_elicitation_round`, `get_elicitation`, `conclude_elicitation`). A behaviour gap found here is
+> `skills/harmony-shared/elicitation-engine.md` and its tools (`start_elicitation`,
+> `file_elicitation_round`, `get_elicitation`, `conclude_elicitation`,
+> `submit_elicitation_answers`). A behaviour gap found here is
 > an ENGINE amendment to surface to the human — never a local workaround in this skill.
 
 > **Product legibility (B-434).** The `clarifying` activity IS the product-legibility transformation. Agent-filed findings may enter at Captured in a raw working-context register, but the clarification must render the ticket in the **product register**: title = product-visible outcome (not mechanism); plain-language first paragraph; mechanism + searchable keywords under a `## Technical` heading. See the *ticket two-audience register* doctrine and `create_task`'s description.
@@ -172,6 +173,11 @@ Rounds follow the engine contract (≤5 questions, stakes-split — a load-beari
   echoed via the NEXT engine write's `prior_answers` — on `file_elicitation_round` when filing the
   following round, or on `conclude_elicitation` at convergence. The exchange history stays complete
   regardless of which surface the human answered on; the engine stamps each echo `via:'terminal'`.
+- **Not filing or concluding this turn? Record the answers on their own (B-893):**
+  `submit_elicitation_answers({ task_id, answers })` banks the open round's terminal answers (same
+  shape, same guards, stamped `via:'terminal'`), leaves the exchange ACTIVE, and hands the ball back
+  to the agent. Use it whenever the answers are in hand but the next move isn't decided — never
+  `conclude_elicitation` just to get them on the record.
 - **Consume (either surface):** `get_elicitation` → read the last round's answers → *converged?*
   (per the engine's convergence test) → `conclude_elicitation('converged')` and go to step 3. *More
   load-bearing residual?* → file the next round (filing IS the consume of the web marker; carry

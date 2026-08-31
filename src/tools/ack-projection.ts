@@ -289,6 +289,7 @@ export const ackProjections: Record<string, AckProjection> = {
   start_elicitation: (result) => elicitationAck(result),
   file_elicitation_round: (result) => elicitationAck(result),
   conclude_elicitation: (result) => elicitationAck(result),
+  submit_elicitation_answers: (result) => elicitationAck(result),
 
   // ——— attachments ———
   attach_file: (result) =>

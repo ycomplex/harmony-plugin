@@ -1,11 +1,13 @@
 // B-645 Phase 2: the elicitation exchange tools (elicitation-first discovery, B-550).
 //
-// Four tools over the `elicitation_exchanges` substrate (harmony-web Phase-1 migration
+// Five tools over the `elicitation_exchanges` substrate (harmony-web Phase-1 migration
 // 20260702142754_b645_elicitation_exchange_substrate.sql):
-//   start_elicitation      — open (or return) the one active exchange for a task
-//   file_elicitation_round — lint + append a round, hand the ball to the human
-//   get_elicitation        — read the active (or most recent) exchange
-//   conclude_elicitation   — close the exchange (converged | force-quit | abandoned)
+//   start_elicitation          — open (or return) the one active exchange for a task
+//   file_elicitation_round     — lint + append a round, hand the ball to the human
+//   get_elicitation            — read the active (or most recent) exchange
+//   conclude_elicitation       — close the exchange (converged | force-quit | abandoned)
+//   submit_elicitation_answers — record terminal-given answers to the OPEN round and hand the ball
+//                                back to the agent, without asking again or concluding (B-893)
 //
 // Division of labour (technical commitment 370c1c10 §3): the web is mechanical-only — it captures
 // answers into `rounds[].answers`, stamps `answers_submitted_at` / `force_quit_requested_at`, and
@@ -429,6 +431,135 @@ export const concludeElicitationTool = {
       },
     },
     required: ['outcome'],
+  },
+};
+
+// ---------------------------------------------------------------------------
+// submit_elicitation_answers
+// ---------------------------------------------------------------------------
+
+export interface SubmitElicitationAnswersArgs {
+  task_id: string;
+  /** Terminal-given answers to the OPEN (last filed) round — same shape as prior_answers (B-462). */
+  answers: Record<string, ElicitationAnswer>;
+}
+
+/** The task's most recent exchange regardless of status (mirrors get_elicitation's fallback query).
+ *  Used ONLY to tell "this task never had an exchange" apart from "its exchange is already
+ *  concluded" so the refusal can name which one it is. Throws on error. */
+async function findLatestExchange(client: SupabaseClient, taskId: string): Promise<ExchangeRow | null> {
+  const { data, error } = await client
+    .from('elicitation_exchanges')
+    .select(EXCHANGE_COLS)
+    .eq('task_id', taskId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as unknown as ExchangeRow) ?? null;
+}
+
+/**
+ * B-893: RECORD the open round's terminal-given answers and hand the ball back to the agent —
+ * without asking another round and without declaring the exchange finished.
+ *
+ * Before this tool, terminal answers could only ride as `prior_answers` on file_elicitation_round /
+ * conclude_elicitation: both mutate the exchange lifecycle, and both CLEAR `answers_submitted_at`
+ * (they are the CONSUME side of the marker). This tool is the PRODUCER — it raises the marker and
+ * leaves the exchange ACTIVE, so an out-of-band caller (an orchestrator holding answers the human
+ * gave in the terminal) can bank a round's answers and let the owning gate skill decide what comes
+ * next. It is the terminal twin of the web's mechanical `submit_exchange_answers` form.
+ */
+export async function submitElicitationAnswers(
+  client: SupabaseClient,
+  projectId: string,
+  args: SubmitElicitationAnswersArgs,
+): Promise<unknown> {
+  if (!args.task_id) throw new Error('task_id is required');
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+
+  const exchange = await findActiveExchange(client, taskId);
+  if (!exchange) {
+    // Guard 1/2 — nothing to record against. Distinguish "never had an exchange" from "the exchange
+    // is already concluded" so the refusal is actionable; NOTHING is written on either path.
+    const latest = await findLatestExchange(client, taskId);
+    if (!latest) {
+      throw new Error(
+        `task ${args.task_id} has no open elicitation exchange — there is no filed round to record answers against. Open one with start_elicitation and file a round first; nothing was written.`,
+      );
+    }
+    if (latest.status === 'abandoned') {
+      // Named specially: 'abandoned' means the human cancelled the discussion, so the caller must
+      // NOT retry — it should stand down (and archive any claims it minted that turn).
+      throw new Error(
+        `exchange ${latest.id} is 'abandoned' — the human cancelled the discussion, so these answers cannot be recorded and the call must not be retried. Nothing was written.`,
+      );
+    }
+    throw new Error(
+      `exchange ${latest.id} is '${latest.status}' — answers can only be recorded on an active exchange, and this one is already concluded. Nothing was written.`,
+    );
+  }
+
+  const nowIso = new Date().toISOString();
+
+  // The SAME engine guards the two prior_answers callers run (B-462): only the last filed round may
+  // be echoed, a submitted answer is never overwritten, and each verb must fit its question's kind.
+  // Any error refuses the WHOLE call — never a partial write.
+  const echoed = echoPriorAnswers(
+    Array.isArray(exchange.rounds) ? exchange.rounds : [],
+    args.answers,
+    nowIso,
+  );
+  if (echoed.errors.length > 0) {
+    throw new Error(`answers failed the echo guards:\n- ${echoed.errors.join('\n- ')}`);
+  }
+
+  // WRITE ORDER IS LOAD-BEARING — exchange FIRST, task SECOND. A crash between the two leaves the
+  // answers recorded with the awaiting flag still raised: today's known, recoverable state (the
+  // human simply re-submits, or the gate reads them on re-entry). The reverse order would clear the
+  // flag with NO answers recorded — waking the daemon to nothing.
+  //
+  // Write 1 — the exchange row: the echoed rounds, and answers_submitted_at RAISED. Status stays
+  // 'active' (a follow-up round can still be filed) and the marker is deliberately NOT cleared:
+  // clearing it is the consume, and this tool is the producer — the inverse of what
+  // file_elicitation_round / conclude_elicitation do.
+  const { data, error } = await client
+    .from('elicitation_exchanges')
+    .update({ rounds: echoed.rounds!, answers_submitted_at: nowIso })
+    .eq('id', exchange.id)
+    .select(EXCHANGE_COLS)
+    .single();
+  if (error) throw new Error(error.message);
+
+  // Write 2 — the task row: the ball goes back to the AGENT. The awaiting flag is cleared because
+  // src/conductor/poll-loop.ts treats `awaiting_human_input` going true→false as its SOLE
+  // flag-based exit signal — leaving it raised would produce no 'answers-landed' classification at
+  // all. (The web form this mirrors, submit_exchange_answers, clears it too.) NEVER touches
+  // workflow_state — an exchange is an interaction model within a gate, not a state transition.
+  const { error: taskErr } = await client
+    .from('tasks')
+    .update({ awaiting_human_input: false, awaiting_human_reason: null, awaiting_human_ref: null })
+    .eq('id', exchange.task_id);
+  if (taskErr) throw new Error(taskErr.message);
+
+  return data;
+}
+
+export const submitElicitationAnswersTool = {
+  name: 'submit_elicitation_answers',
+  description:
+    "Record terminal-given answers to the OPEN round of a task's active elicitation exchange and hand the ball back to the agent — WITHOUT asking another round and WITHOUT concluding the exchange. This is the terminal twin of the web's answer form and the PRODUCER of the answers marker: it stamps answers_submitted_at, leaves the exchange 'active' (a follow-up round can still be filed), and clears the task's awaiting_human_input (reason/ref nulled) so the conductor watch classifies 'answers-landed'. Never touches workflow_state. Use it when an out-of-band caller holds answers the human gave in the terminal and the next move hasn't been decided yet; use file_elicitation_round's or conclude_elicitation's prior_answers instead when you are filing the next round or concluding in the same turn (those CONSUME the marker). Same guards as prior_answers: only the last filed round's unanswered questions may be answered, a submitted answer is never overwritten, and verbs must fit the question kind — any violation refuses the whole call with no partial write. Each answer is stamped via:'terminal'. Refuses (writing nothing) when the task has no open exchange, or when its exchange is already concluded — an 'abandoned' exchange means the human cancelled the discussion, so do not retry.",
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      task_id: { type: 'string', description: 'The task whose ACTIVE exchange to record answers on — UUID, task number, or visual ID (e.g., B-43)' },
+      answers: {
+        type: 'object',
+        description:
+          "The human's terminal-given answers to the OPEN round, keyed by question id: { <qid>: { verb, text? } } with verb confirm|correct|skip for a 'validate' question and answer|skip for an 'open' one (correct/answer require text). Answering only SOME of the round's questions is legitimate — the rest stay unanswered and the round stays open.",
+      },
+    },
+    required: ['task_id', 'answers'],
   },
 };
 

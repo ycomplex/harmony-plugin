@@ -4,6 +4,7 @@ import {
   fileElicitationRound,
   getElicitation,
   concludeElicitation,
+  submitElicitationAnswers,
   fetchActiveExchange,
 } from './elicitation.js';
 
@@ -428,6 +429,185 @@ describe('concludeElicitation', () => {
     await expect(
       concludeElicitation(client, PROJECT_ID, { task_id: 'task-1', outcome: 'converged' }),
     ).rejects.toThrow(/no active elicitation exchange/i);
+  });
+});
+
+describe('submitElicitationAnswers (B-893 — record terminal answers, hand the ball back)', () => {
+  // An exchange with ONE open round: a validate question and a load-bearing open one.
+  const openRound = {
+    n: 1,
+    context_line: 'Settling the drivers.',
+    questions: [
+      { id: 'q1', stakes: 'low', kind: 'validate', statement: 'It is per-user.', text: 'Correct?' },
+      { id: 'q2', stakes: 'load-bearing', kind: 'open', text: 'What drives this?' },
+    ],
+    answers: {},
+  };
+  const withOpenRound = { ...exchangeRow, rounds: [openRound] };
+
+  it('records the answers against the round that asked them and leaves the exchange OPEN', async () => {
+    // responses: [active lookup] -> [exchange update] -> [task flag clear (direct await)]
+    const client = makeClient([{ data: withOpenRound }, { data: withOpenRound }, { data: null }]);
+    await submitElicitationAnswers(client, PROJECT_ID, {
+      task_id: 'task-1',
+      answers: { q1: { verb: 'confirm' }, q2: { verb: 'answer', text: 'Speed of triage.' } },
+    });
+
+    const exchangeUpdate = client.update.mock.calls[0][0];
+    expect(exchangeUpdate.rounds).toEqual([
+      expect.objectContaining({
+        n: 1,
+        answered_at: expect.any(String),
+        answers: {
+          q1: { verb: 'confirm', via: 'terminal' },
+          q2: { verb: 'answer', text: 'Speed of triage.', via: 'terminal' },
+        },
+      }),
+    ]);
+    // The exchange stays ACTIVE — recording answers is not a conclusion, so a follow-up round can
+    // still be filed. The write never carries a status at all.
+    expect(exchangeUpdate).not.toHaveProperty('status');
+  });
+
+  it('hands the ball back to the agent: the task is no longer awaiting human input', async () => {
+    const client = makeClient([{ data: withOpenRound }, { data: withOpenRound }, { data: null }]);
+    await submitElicitationAnswers(client, PROJECT_ID, {
+      task_id: 'task-1', answers: { q2: { verb: 'answer', text: 'Speed of triage.' } },
+    });
+    expect(client.from).toHaveBeenCalledWith('tasks');
+    // Cleared (not merely left alone): poll-loop's SOLE flag-based exit signal is
+    // awaiting_human_input going true→false, so a raised flag would classify nothing.
+    expect(client.update).toHaveBeenCalledWith({
+      awaiting_human_input: false,
+      awaiting_human_reason: null,
+      awaiting_human_ref: null,
+    });
+  });
+
+  it("RAISES answers_submitted_at (the producer) so a subsequent leg picks the answers up", async () => {
+    const client = makeClient([{ data: withOpenRound }, { data: withOpenRound }, { data: null }]);
+    await submitElicitationAnswers(client, PROJECT_ID, {
+      task_id: 'task-1', answers: { q1: { verb: 'confirm' } },
+    });
+    // The inverse of file_elicitation_round / conclude_elicitation, which CLEAR this marker.
+    expect(client.update.mock.calls[0][0].answers_submitted_at).toEqual(expect.any(String));
+    expect(client.update.mock.calls[0][0].answers_submitted_at).not.toBeNull();
+  });
+
+  it("stamps every recorded answer via:'terminal', distinguishing it from a web submit", async () => {
+    const client = makeClient([{ data: withOpenRound }, { data: withOpenRound }, { data: null }]);
+    await submitElicitationAnswers(client, PROJECT_ID, {
+      task_id: 'task-1',
+      answers: { q1: { verb: 'correct', text: 'Per-workspace, actually.' }, q2: { verb: 'skip' } },
+    });
+    const [round] = client.update.mock.calls[0][0].rounds;
+    for (const answer of Object.values(round.answers) as Array<{ via?: string }>) {
+      expect(answer.via).toBe('terminal');
+    }
+  });
+
+  it('refuses when the task has no elicitation exchange at all — nothing written', async () => {
+    // responses: [active lookup → none] -> [most-recent lookup → none]
+    const client = makeClient([{ data: null }, { data: null }]);
+    await expect(
+      submitElicitationAnswers(client, PROJECT_ID, { task_id: 'task-1', answers: { q1: { verb: 'confirm' } } }),
+    ).rejects.toThrow(/no open elicitation exchange[\s\S]*nothing was written/i);
+    expect(client.update).not.toHaveBeenCalled();
+    expect(client.from).not.toHaveBeenCalledWith('tasks');
+  });
+
+  it('refuses on a CONCLUDED exchange, naming its status — the concluded record is untouched', async () => {
+    const concluded = { ...withOpenRound, status: 'converged' };
+    const client = makeClient([{ data: null }, { data: concluded }]);
+    await expect(
+      submitElicitationAnswers(client, PROJECT_ID, { task_id: 'task-1', answers: { q1: { verb: 'confirm' } } }),
+    ).rejects.toThrow(/'converged'[\s\S]*already concluded/i);
+    expect(client.update).not.toHaveBeenCalled();
+    expect(client.from).not.toHaveBeenCalledWith('tasks');
+  });
+
+  it("names 'abandoned' as the human having cancelled the discussion, so the caller does not retry", async () => {
+    const abandoned = { ...withOpenRound, status: 'abandoned' };
+    const client = makeClient([{ data: null }, { data: abandoned }]);
+    await expect(
+      submitElicitationAnswers(client, PROJECT_ID, { task_id: 'task-1', answers: { q1: { verb: 'confirm' } } }),
+    ).rejects.toThrow(/'abandoned'[\s\S]*cancelled the discussion[\s\S]*must not be retried/i);
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses the WHOLE call when an answer names a question outside the open round — no partial write', async () => {
+    const client = makeClient([{ data: withOpenRound }]);
+    await expect(
+      submitElicitationAnswers(client, PROJECT_ID, {
+        task_id: 'task-1',
+        // q1 is valid; q9 is not in the open round — the good answer must NOT land on its own.
+        answers: { q1: { verb: 'confirm' }, q9: { verb: 'answer', text: 'stray' } },
+      }),
+    ).rejects.toThrow(/echo guards[\s\S]*"q9" is not in the last filed round/i);
+    expect(client.update).not.toHaveBeenCalled();
+    expect(client.from).not.toHaveBeenCalledWith('tasks');
+  });
+
+  it('refuses the WHOLE call when an answer overwrites an already-answered question — no partial write', async () => {
+    const partlyAnswered = {
+      ...exchangeRow,
+      rounds: [{ ...openRound, answers: { q1: { verb: 'confirm' } } }],
+    };
+    const client = makeClient([{ data: partlyAnswered }]);
+    await expect(
+      submitElicitationAnswers(client, PROJECT_ID, {
+        task_id: 'task-1',
+        answers: { q1: { verb: 'correct', text: 'changed my mind' }, q2: { verb: 'answer', text: 'valid' } },
+      }),
+    ).rejects.toThrow(/echo guards[\s\S]*never overwritten/i);
+    expect(client.update).not.toHaveBeenCalled();
+    expect(client.from).not.toHaveBeenCalledWith('tasks');
+  });
+
+  it('a PARTIAL submit succeeds: unanswered questions stay unanswered and the round stays open', async () => {
+    const client = makeClient([{ data: withOpenRound }, { data: withOpenRound }, { data: null }]);
+    await submitElicitationAnswers(client, PROJECT_ID, {
+      task_id: 'task-1', answers: { q2: { verb: 'answer', text: 'Speed of triage.' } },
+    });
+    const [round] = client.update.mock.calls[0][0].rounds;
+    expect(round.answers).toEqual({ q2: { verb: 'answer', text: 'Speed of triage.', via: 'terminal' } });
+    expect(round.answers.q1).toBeUndefined();
+    // Both questions are still on the round, and the exchange is still active — q1 can be answered
+    // later or re-asked in the next round.
+    expect(round.questions.map((q: { id: string }) => q.id)).toEqual(['q1', 'q2']);
+    expect(client.update.mock.calls[0][0]).not.toHaveProperty('status');
+  });
+
+  it('NEVER touches workflow_state — no update payload carries it', async () => {
+    const client = makeClient([{ data: withOpenRound }, { data: withOpenRound }, { data: null }]);
+    await submitElicitationAnswers(client, PROJECT_ID, {
+      task_id: 'task-1', answers: { q1: { verb: 'confirm' } },
+    });
+    for (const call of client.update.mock.calls) {
+      expect(call[0]).not.toHaveProperty('workflow_state');
+    }
+  });
+
+  it('writes the EXCHANGE before the TASK — the load-bearing order', async () => {
+    const client = makeClient([{ data: withOpenRound }, { data: withOpenRound }, { data: null }]);
+    await submitElicitationAnswers(client, PROJECT_ID, {
+      task_id: 'task-1', answers: { q1: { verb: 'confirm' } },
+    });
+    // A crash between the two must leave answers recorded with the flag still raised (recoverable),
+    // never a cleared flag with no answers (the daemon woken to nothing).
+    expect(client.from.mock.calls.map((c: unknown[]) => c[0])).toEqual([
+      'elicitation_exchanges', 'elicitation_exchanges', 'tasks',
+    ]);
+    expect(client.update.mock.calls[0][0]).toHaveProperty('answers_submitted_at');
+    expect(client.update.mock.calls[1][0]).toEqual({
+      awaiting_human_input: false, awaiting_human_reason: null, awaiting_human_ref: null,
+    });
+  });
+
+  it('resolves a visual ID via resolveTaskId', async () => {
+    const client = makeClient([{ data: withOpenRound }, { data: withOpenRound }, { data: null }]);
+    await submitElicitationAnswers(client, PROJECT_ID, { task_id: 'B-42', answers: { q1: { verb: 'confirm' } } });
+    expect(mockResolveTaskId).toHaveBeenCalledWith(client, PROJECT_ID, 'B-42');
   });
 });
 
