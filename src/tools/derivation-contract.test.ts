@@ -346,6 +346,73 @@ describe('the derived entry marks ratification per element and stamps its constr
   });
 });
 
+// ——— B-902: ratified asks render DECIDED, and the entry drops the promised-writes block —————————————
+//
+// A promoted entry is read AFTER the decision was made. Before this ticket, `renderEntry` rendered each
+// ratified ask exactly as `itemLines` renders it for the BRIEF — an unticked checkbox with a live
+// "recommend:" label, as though the human had not yet decided — and every entry carried a line
+// describing its own filing ("On accept, this brief files:"), self-referential furniture once the write
+// it describes has already landed. These pins hold the fix: decided-form items, content-level
+// ratification (so the new wrapping cannot spuriously flag a ratified item), and the promised-writes
+// block gone from the entry while `renderBrief` keeps it untouched.
+describe('B-902: ratified asks render in DECIDED form, and the entry drops the promised-writes block', () => {
+  it('a ratified decision item with an adopted recommendation renders ticked, naming what was decided — never a live open checkbox', () => {
+    const entry = renderEntry(ratifiedDoc(), { reason: 'design-decision-draft' });
+    expect(entry).toContain('- [x] Adopt the projection — Decided: adopt');
+    expect(entry).not.toContain('- [ ]');
+    expect(entry).not.toContain('*recommend:');
+    expect(entry).not.toContain(`Adopt the projection — Decided: adopt ${NOT_RATIFIED_MARK}`);
+  });
+
+  it('the no-recommendation case: a content-input item (and a decision item with nothing adopted) renders ticked with no "Decided:" suffix', () => {
+    const doc = ratifiedDoc({
+      items: [
+        { kind: 'content-input', text: 'Supply the missing detail' },
+        { kind: 'decision', text: 'Bare decision, no recommendation offered' },
+      ],
+    });
+    const entry = renderEntry(doc, { reason: 'design-decision-draft' });
+    expect(entry).toContain('- [x] Supply the missing detail');
+    expect(entry).toContain('- [x] Bare decision, no recommendation offered');
+    expect(entry).not.toContain('Decided:');
+    // Neither line carries a claim the brief didn't show, so neither is marked.
+    const body = entry.split('\n').slice(1).join('\n');
+    expect(body).not.toContain(NOT_RATIFIED_MARK);
+  });
+
+  it('a genuinely-unratified item: a deferred decision item still carrying a recommendation the brief never showed is marked, even though its decided-form line has nothing to hang "Decided:" on', () => {
+    const doc = ratifiedDoc({
+      items: [{
+        kind: 'decision', text: 'Deferred pending research', deferred: true,
+        recommendation: 'a stale recommendation the deferred brief line never renders',
+      }],
+    });
+    const brief = renderBrief(doc, null, { reason: 'design-decision-draft' });
+    const entry = renderEntry(doc, { reason: 'design-decision-draft' });
+    // The brief's own itemLines suppresses a deferred item's recommendation — CONTENT-level ratification
+    // still catches it, because the item's own text+recommendation pair is what is checked, not whether
+    // the decided-form line happens to display it.
+    expect(brief).not.toContain('a stale recommendation the deferred brief line never renders');
+    expect(entry).toContain(`- [x] Deferred pending research ${NOT_RATIFIED_MARK}`);
+  });
+
+  it('the entry NEVER contains the promised-writes block — renderBrief still does', async () => {
+    const stored = await composeAndCapture('design-decision-draft', ratifiedDoc({
+      payload: [{ write_kind: 'label_add', ref: 'l1', label_name: 'decision-only' }],
+    }));
+    // The brief the human read still shows what accepting it will do.
+    expect(stored.content).toContain(PROMISED_WRITES_HEADING);
+    expect(stored.content).toContain('label — decision-only');
+    // The entry it promoted drops the whole block, heading and lines both.
+    const promoted = entryItemOf(stored.doc)!.content!;
+    expect(promoted).not.toContain(PROMISED_WRITES_HEADING);
+    expect(promoted).not.toContain('On accept, this brief files');
+    expect(promoted).not.toContain('label — decision-only');
+    // ...but the interpretive "Question put to the human" context line survives.
+    expect(promoted).toContain('**Question put to the human:**');
+  });
+});
+
 // ——— The f0d55b23 constraint + backward compatibility ————————————————————————————————————————————
 
 describe('one structuring, two projections — and the archive is untouched (B-866)', () => {

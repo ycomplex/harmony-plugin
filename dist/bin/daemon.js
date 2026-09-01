@@ -23424,11 +23424,25 @@ function entryProvenanceStamp(ctx) {
   const gate = ctx?.reason ? ` at the ${ctx.reason} gate` : "";
   return `_${ENTRY_PROVENANCE_PREFIX}${gate}, ${when} \u2014 a mechanical projection of the brief the human approved, not separately authored prose. ${RATIFICATION_CONVENTION}_`;
 }
+function decidedItemLine(item) {
+  const decided = item.kind === "decision" && !item.deferred && item.recommendation ? ` \u2014 Decided: ${item.recommendation}` : "";
+  return `- [x] ${item.text}${decided}`;
+}
+function decidedItems(doc) {
+  const out = [];
+  for (const item of doc.items ?? []) {
+    if (item.kind === "content-input" || item.kind === "decision") {
+      out.push({ item, line: decidedItemLine(item) });
+    }
+  }
+  return out;
+}
 function renderEntry(doc, ctx) {
   const briefContent = renderBrief(doc, ctx?.decisionRef ?? null, ctx);
   const isRatified = (text) => !text.trim() || briefContent.includes(text);
   const mark = (text) => isRatified(text) ? text : `${text} ${NOT_RATIFIED_MARK}`;
   const markAll = (lines) => lines.map(mark);
+  const isItemRatified = (item) => isRatified(item.text) && isRatified(item.recommendation ?? "");
   const out = [entryProvenanceStamp(ctx), ""];
   out.push(`**Decision:** ${doc.recommend ? mark(doc.recommend.text) : "(the brief made no recommendation)"}`, "");
   out.push(`**Question put to the human:** ${mark(doc.decide)}`, "");
@@ -23446,14 +23460,18 @@ function renderEntry(doc, ctx) {
     const criteria = proposedAcLines(doc.payload);
     if (criteria.length) out.push(PROPOSED_ACS_HEADING, ...markAll(criteria), "");
   }
-  const promised = promisedWriteLines(doc.payload, isClarify);
-  if (promised.length) out.push(PROMISED_WRITES_HEADING, ...markAll(promised), "");
   if (doc.frame?.kind === "plan") {
     const steps = planStepLines(doc.frame);
     if (steps.length) out.push("**Plan:**", ...markAll(steps), "");
   }
-  const items = itemLines(doc);
-  if (items.length) out.push("**Ratified asks:**", ...markAll(items), "");
+  const items = decidedItems(doc);
+  if (items.length) {
+    out.push(
+      "**Ratified asks:**",
+      ...items.map(({ item, line }) => isItemRatified(item) ? line : `${line} ${NOT_RATIFIED_MARK}`),
+      ""
+    );
+  }
   const changes = revisionLines(doc);
   if (changes.length) out.push("**Changed in the final round:**", ...markAll(changes), "");
   return out.join("\n").trimEnd();
