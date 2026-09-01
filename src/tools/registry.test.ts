@@ -37,6 +37,11 @@ describe('tool registry', () => {
     expect(names).toContain('conclude_elicitation');
   });
 
+  it('registers the B-867 gate-slot write tool', () => {
+    const names = registerTools().map((t) => t.name);
+    expect(names).toContain('write_gate_slot');
+  });
+
   it('registers the B-893 terminal answer-recording tool', () => {
     const names = registerTools().map((t) => t.name);
     expect(names).toContain('submit_elicitation_answers');

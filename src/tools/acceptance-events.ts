@@ -20,6 +20,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+import { writeGateSlot } from './gate-slots.js';
 
 /**
  * B-688 — the CONTRACT this module's `label_add` dispatch depends on from harmony-web's decision-only
@@ -79,9 +80,19 @@ export const DECISION_ONLY_LABEL_CONTRACT = {
  *  replacement for `decision_ref` — `resolve_brief` and the stale-coupling trigger both still key off it,
  *  and it is how this write finds its target when `entry_id` is omitted. The same RPC performs the folded
  *  B-766 per-gate supersede: every OTHER Accepted entry for this (source_task_id, source_activity, type)
- *  becomes Superseded. */
+ *  becomes Superseded.
+ *
+ *  `gate_slot` (B-867) — the accepted brief's ratified content, LANDED on the ticket as a durable
+ *  displayed section (`tasks.field_values.gate_slots.<gate>`, latest-accepted-per-gate). Carries `gate`
+ *  (which section) and `slot_content` (the section's fields). Like `knowledge_entry_content` it is
+ *  CARRIED, not synthesized at consume time — but unlike it, the content is a mechanical projection of
+ *  the same doc (`renderSlot`, briefs.ts), derived at compose by `withDerivedGateSlot` and never
+ *  hand-authored. `ratified_by` / `ratified_at` are stamped by the WRITE, never sent from here: a
+ *  replayed payload must not be able to back-date a slot. ONE gate reaches this write through a payload
+ *  item (clarify); release and verify have no acceptance event to ride and reach the same helper through
+ *  the `write_gate_slot` MCP tool. */
 export interface AcceptanceEventPayloadItem {
-  write_kind: 'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content';
+  write_kind: 'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'gate_slot';
   ref: string;
   content?: string;
   title?: string;
@@ -93,6 +104,15 @@ export interface AcceptanceEventPayloadItem {
    *  brief's own `decision_ref`, which is the normal case; set it only when the payload deliberately
    *  targets an entry the brief does not point at. */
   entry_id?: string | null;
+  /** `gate_slot` only (B-867) — WHICH durable section this write lands ('clarify' | 'release' |
+   *  'verify' today; the storage key is deliberately open). Also the slot's `ratified_by`, stamped from
+   *  it by the write itself. */
+  gate?: string;
+  /** `gate_slot` only (B-867) — the section's fields, as `renderSlot` projected them. A separate field
+   *  from `content` because a slot's content is an OBJECT the display lays out field-by-field, not
+   *  prose. An EMPTY object is valid and meaningful: it says this gate ratified an empty answer, which
+   *  is a different claim from never having ratified (that one is carried by the slot key's absence). */
+  slot_content?: Record<string, unknown>;
 }
 
 export interface PendingAcceptanceEvent {
@@ -166,7 +186,7 @@ export async function getPendingAcceptanceEvent(
   return (event as PendingAcceptanceEvent | null) ?? null;
 }
 
-const KNOWN_WRITE_KINDS = new Set(['acceptance_criterion', 'child_ticket', 'checklist_item', 'ac_transfer', 'label_add', 'knowledge_entry_content']);
+const KNOWN_WRITE_KINDS = new Set(['acceptance_criterion', 'child_ticket', 'checklist_item', 'ac_transfer', 'label_add', 'knowledge_entry_content', 'gate_slot']);
 
 /** B-816 — the live snapshot shape from `resolve_brief` (which snapshots a brief's whole `doc` VERBATIM)
  *  is `event.payload.payload` (an array): B-810's `compose_brief` call sites author the structured
@@ -257,6 +277,13 @@ export async function applyAcceptanceEventPayload(
   const items = itemsOf(event.payload);
   const order: AcceptanceEventPayloadItem['write_kind'][] = [
     'child_ticket', 'checklist_item', 'acceptance_criterion', 'ac_transfer', 'label_add',
+    // B-867 sits HERE — after every concrete materialization, before the entry promotion. Same reasoning
+    // as the line below, one notch weaker: the slot is the ticket's DISPLAYED record of what this accept
+    // did, so a payload that fails partway must not leave a section on the ticket announcing writes that
+    // never landed. It stays AHEAD of the entry promotion because a slot is a projection of the brief,
+    // repaired by the next accept (latest-accepted-per-gate), whereas a wrongly-promoted entry has
+    // already superseded a real one.
+    'gate_slot',
     // B-843 LAST, on purpose: it promotes the gate's knowledge entry and supersedes the previous round's.
     // Running it after every AC/child/checklist write means a payload that fails partway leaves the
     // knowledge base untouched rather than promoting a decision whose materialization never landed.
@@ -316,6 +343,23 @@ export async function applyAcceptanceEventPayload(
           throw new Error(error.message);
         }
         result = data as { applied?: boolean };
+      } else if (item.write_kind === 'gate_slot') {
+        if (!item.gate?.trim()) throw new Error(`gate_slot item '${item.ref}' names no gate — the slot is keyed by the gate that ratified it`);
+        // An EMPTY object is valid (the gate ratified an empty answer); a MISSING one is not — it would
+        // land a section claiming a ratification the payload never carried.
+        if (!item.slot_content || typeof item.slot_content !== 'object' || Array.isArray(item.slot_content)) {
+          throw new Error(`gate_slot item '${item.ref}' for gate '${item.gate}' carries no slot_content object — an EMPTY object is valid (the gate ratified an empty answer), an absent one is not`);
+        }
+        const slotResult = await writeGateSlot(client, {
+          gate: item.gate,
+          content: item.slot_content,
+          target: { via: 'acceptance-event', event_id: event.id, external_ref: item.ref },
+        });
+        // The SAME B-383 window as the two branches above: harmony-web's migration reaches prod only at
+        // the next promote, so `consume_gate_slot_write` can be genuinely absent while plugin `main` is
+        // live. Degrade SAFELY — never an opaque throw, never a consume on a partially-applied payload.
+        if (slotResult.substrate_absent) throw new WriteKindSubstrateAbsentError('gate_slot');
+        result = { applied: slotResult.applied };
       } else if (item.write_kind === 'label_add') {
         if (item.label_name === '') throw new Error(`label_add item '${item.ref}' has an empty label_name`);
         const labelName = item.label_name ?? 'decision-only';
@@ -451,7 +495,8 @@ export const consumePendingAcceptanceEventTool = {
   description:
     'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, ' +
     'decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only ' +
-    'label proposals, B-843 knowledge-entry content + per-gate supersede) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup — ' +
+    'label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ' +
+    'ticket section) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup — ' +
     'mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an ' +
     'older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing ' +
     '(today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. ' +

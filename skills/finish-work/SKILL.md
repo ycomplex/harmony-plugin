@@ -322,6 +322,27 @@ this gate can ever carry from the plugin: release is the hard floor, so the cond
 (`skills/harmony-shared/gate-routing.md` §Resolution provenance). That accept is also what writes the
 `brief_resolved` entry a later resume reads at the top of this section.
 
+**Land the release section on the ticket (B-867) — immediately after the accept, NON-OPTIONAL:**
+
+```
+mcp__harmony__write_gate_slot({ task_id, gate: "release" })
+```
+
+A gate brief is a moment: once it resolves, what release ratified — what shipped, where it landed, the
+PRs it landed through, what is live but unproven — survives only inside a brief row nobody reads again.
+This lands it on the ticket's own face, permanently. **You author nothing**: the tool reads this gate's
+own brief and projects the `doc` the human just ratified, so the section and the brief cannot disagree —
+there is deliberately no `content` parameter to fill in. It only needs the release **frame** you already
+authored above (`doc.frame.kind: "release"`); a brief without one returns `{ written: false, reason }`
+and changes nothing, which is a signal your brief was frameless, not an error to route around.
+
+Call it **after** the accept and **before** the merge (O2): the accept is what ratifies the content, and
+`field_values.build_pr` — which the section's PR list is pinned from — is already recorded by then.
+Re-running it is safe: it replaces THIS gate's section, touches no other gate's, and never disturbs any
+other `field_values` key (`build_pr` / `work_branch` are safe by construction).
+
+Clarify needs no such call — its section rides its own accept payload automatically.
+
 The release brief carries `pending_activity: null` (state-machine §6.1 — Built→Deployed is
 SYSTEM-on-deploy-success, not human-accept). So accept is only the human's "go"; the ticket stays **Built**
 until the deploy actually succeeds (O2). In a live, synchronous session the accept above falls straight into
@@ -795,13 +816,23 @@ Deployed→Verified (terminal-positive). Verify is the other hard-floor gate, so
 **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
 **A staged `pending_resolution` you can only partially apply** → apply what you structurally can, then file a `worker-question` round scoped to the blocked residue per `skills/harmony-shared/elicitation-engine.md` §Resuming onto a staged pending_resolution you can only partially apply (file the round before recomposing — crash-safety ordering, never wholesale-discard an actionable resolution).
 
-**Land the verify result on the ticket (B-560) — NON-OPTIONAL.** Immediately after the accept, comment
-the verify outcome so the ticket carries the closing leg of the build→release→verify trail as durable
-evidence:
+**Land the verify result on the ticket — NON-OPTIONAL, both halves.** Immediately after the accept:
 
 ```
-mcp__harmony__add_comment({ task_id, content: "Verified — production behaviour matches the design (human-acked <date>)." })
+mcp__harmony__write_gate_slot({ task_id, gate: "verify" })                                    // B-867
+mcp__harmony__add_comment({ task_id, content: "Verified — production behaviour matches the design (human-acked <date>)." })   // B-560
 ```
+
+They are not redundant. The **comment** is the closing leg of the build→release→verify trail, in the
+timeline. The **section** (B-867) is the runbook itself, kept on the ticket's face: which environment
+this ack covered, every criterion it was judged against and how each was discharged, and the evidence
+behind it — the answer to "what did *Verified* actually mean on this ticket?", asked months later, when
+the brief that answered it is long gone.
+
+**You author nothing** — the tool reads this gate's own brief and projects the `doc` the human just
+ratified, so the section and the runbook they accepted cannot disagree; there is deliberately no
+`content` parameter. It needs the verify **frame** from step 4 (`doc.frame.kind: "verify"`); a brief
+without one returns `{ written: false, reason }` and changes nothing rather than failing the accept.
 
 **Drain any remaining rollup items (B-585, B-641) — if not already drained at the release gate (O2).**
 Any out-of-scope items surfaced this run (including during verify) that weren't fix-first'd must be **drained
