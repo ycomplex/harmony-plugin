@@ -49,6 +49,54 @@ import type { Taskish } from '../conductor/poll-loop.js';
  *  predicate bug class; `isConductionTerminal` is the same discipline on the conduction axis). */
 export const TICKET_TERMINAL_STATES = ['Verified', 'Cancelled', 'Parked'] as const;
 
+/** B-870: the row-shape half of branches 1-3 below, extracted so the INTERACTIVE Stop gate
+ *  (`src/hooks/stop-gate.ts`) and this daemon-side classifier decide "is this row clean?" from ONE
+ *  list rather than two paraphrases that can drift. The two fields it reads are exactly the two
+ *  branches 1-3 read; every other axis (exit code, staleness, timeout, progress) is the daemon's
+ *  alone and stays in `classifyWorkerExit`. */
+export interface CleanRowShape {
+  workflow_state?: string | null;
+  awaiting_human_input?: boolean | null;
+}
+
+/** Which of the three clean shapes a row is, or null when it is none of them. Named after the
+ *  `exitClass` labels the daemon already records, so the two vocabularies cannot drift either. */
+export type CleanRowKind = 'clean-pause' | 'terminal' | 'split-umbrella';
+
+/** The ONE ordered statement of branches 1-3. `classifyWorkerExit` calls this instead of
+ *  re-testing the three shapes inline, and `isCleanRowShape` is the boolean face of it — the
+ *  kind-returning form exists only because the daemon needs to know WHICH clean shape it got
+ *  (branch 1 is a `wait`, branches 2-3 are a `complete`), and re-deriving that at the call site
+ *  would reintroduce exactly the duplication this extraction removes.
+ *
+ *  Branch ORDER is preserved verbatim — it is the B-693 worker exit contract. */
+export function classifyCleanRowShape(
+  row: CleanRowShape,
+  nonArchivedChildCount: number,
+): CleanRowKind | null {
+  // 1. The session paused for a human (brief filed / exchange open) — the clean one-shot exit.
+  if (row.awaiting_human_input === true) return 'clean-pause';
+
+  // 2. The ticket reached a terminal state. Exact allowlist membership, never substring matching.
+  const state = row.workflow_state ?? null;
+  if (state !== null && (TICKET_TERMINAL_STATES as readonly string[]).includes(state)) {
+    return 'terminal';
+  }
+
+  // 3. Split-umbrella: decomposed into live children, flag down.
+  if (state === 'Decomposed' && nonArchivedChildCount >= 1 && row.awaiting_human_input === false) {
+    return 'split-umbrella';
+  }
+
+  return null;
+}
+
+/** Does this ticket row shape count as a CLEAN place to stop? The shared predicate both the
+ *  interactive Stop gate and the daemon's exit classifier decide from (B-870 AC7). */
+export function isCleanRowShape(row: CleanRowShape, nonArchivedChildCount: number): boolean {
+  return classifyCleanRowShape(row, nonArchivedChildCount) !== null;
+}
+
 export type ExitOutcome =
   | { action: 'wait' }
   | { action: 'complete' }
@@ -86,22 +134,17 @@ export interface ClassifyArgs {
 
 export function classifyWorkerExit(args: ClassifyArgs): ExitOutcome {
   const { row, nonArchivedChildCount, exitCode, progressed } = args;
-  const state = row.workflow_state ?? null;
 
-  // 1. The worker paused for a human (brief filed / exchange open) — the clean one-shot exit.
-  if (row.awaiting_human_input === true) return { action: 'wait' };
-
-  // 2. The ticket reached a terminal state — the conduction is done. Exact allowlist membership.
-  // Deliberate: terminal-ticket launches are NOT short-circuited here — see B-740 (the launch is a
-  // CLAUDE.md verify-gate extension point).
-  if (state !== null && (TICKET_TERMINAL_STATES as readonly string[]).includes(state)) {
-    return { action: 'complete' };
-  }
-
-  // 3. Split-umbrella: the worker decomposed the ticket into live children and exited.
-  if (state === 'Decomposed' && nonArchivedChildCount >= 1 && row.awaiting_human_input === false) {
-    return { action: 'complete' };
-  }
+  // Branches 1-3 — the CLEAN row shapes — are stated once, in `classifyCleanRowShape` above, and
+  // shared verbatim with the interactive Stop gate (B-870 AC7). Order and behaviour are unchanged:
+  //   1. awaiting_human_input=true                       ⇒ 'clean-pause'    ⇒ wait
+  //   2. workflow_state ∈ TICKET_TERMINAL_STATES         ⇒ 'terminal'       ⇒ complete
+  //      (Deliberate: terminal-ticket launches are NOT short-circuited here — see B-740, the launch
+  //      is a CLAUDE.md verify-gate extension point.)
+  //   3. Decomposed + ≥1 non-archived child + flag false ⇒ 'split-umbrella' ⇒ complete
+  const cleanKind = classifyCleanRowShape(row, nonArchivedChildCount);
+  if (cleanKind === 'clean-pause') return { action: 'wait' };
+  if (cleanKind !== null) return { action: 'complete' };
 
   // 4. Stale ticket ⇒ the conduction parks (a human must reconcile via harmony-stale-patch).
   if (row.stale === true) return { action: 'park', reason: 'stale' };

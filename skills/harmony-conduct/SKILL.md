@@ -95,6 +95,32 @@ and persisting it would let the system delegate a future run the human didn't au
 
 ## Flow
 
+### 0. Leg start — write the conduct-session breadcrumb (B-870)
+
+**Before anything else in a run, write this session's conduct breadcrumb.** It is what tells the
+mechanical turn-end gate (§4f) that THIS session is driving a ticket, and it is the only thing that
+distinguishes a conducted session from an ordinary one. Write it once, at leg start, as soon as you have
+resolved the target ticket in §1 — every subsequent leg of the same conduction rewrites it.
+
+```bash
+mkdir -p "${HARMONY_HOME:-$HOME/.harmony}/conduct-sessions"
+cat > "${HARMONY_HOME:-$HOME/.harmony}/conduct-sessions/<session_id>.json" <<'JSON'
+{ "session_id": "<session_id>", "task_id": "<ticket uuid>", "ticket": "B-123", "started_at": "<ISO>" }
+JSON
+```
+
+- **`<session_id>` is this Claude Code session's own id** — the plugin's `SessionStart` hook reports it in
+  context at session start ("Harmony conduct-session id: …", with the exact path to write) and also leaves
+  it at `${HARMONY_HOME:-$HOME/.harmony}/conduct-sessions/current-session`. Use the reported id; the file's
+  NAME and its `session_id` field must be the same id, or the gate ignores the breadcrumb (a mislabelled
+  breadcrumb never blocks anyone — it degrades to "not conducting").
+- **It is deliberately NOT `.harmony-task.json`.** That file is written by `start-work` at the **build**
+  gate, into a worktree root: it does not exist during clarify / decompose / design / plan, and a stale copy
+  sitting in the cwd can name a completely different ticket. The breadcrumb lives under `~/.harmony`, is
+  keyed by session, and covers the WHOLE conduction, not just the build gate.
+- **If you cannot write it, continue anyway.** The breadcrumb arms a backstop; it is not a precondition for
+  conducting. A missing breadcrumb only means this session's turn-ends are ungated.
+
 ### 1. Parse the per-run mode, then resolve the dial ceiling + the target ticket
 
 **1a. Parse the invocation flags into a `mode`.** Exactly one of:
@@ -957,6 +983,22 @@ risk-class floor tripped (§3a)**, ALWAYS at release + verify (the hard floor) a
 every mode. (In `--unattended`/`--pause-at` a risk-class hit does **not** reach this pause — it is recorded
 and surfaced on the **release brief** instead, §3a/B-516; see *The release-brief risk signal* below.)
 
+**The seam rule — the pause happens ON the brief, never in the gap before it (B-870).** A gate's pause is
+only ever taken on a **composed brief** or a **filed elicitation round**. The gap between the previous
+gate's accept and this gate's `compose_brief` is a **seam, not a pause point** — there is nothing on the
+board there, so a human who looks sees a ticket that simply stopped. Concretely: *"want me to draft the
+plan?"*, *"shall I go ahead and compose the design brief?"*, *"ready for me to start on this?"* are **bugs,
+not politeness**. The accept you already have IS the authorization for the next gate's draft. Draft it,
+compose it, arm the watch, and pause on the decision the brief actually asks for. The only question worth
+ending a turn on is one the brief itself poses.
+
+**The same rule at the release and verify hard floor.** The floor guarantees a human decides — it does not
+license a bare verb-wait. *"Let me know when you want me to merge"* / *"tell me when you've verified"* end
+the turn with nothing on the board and no decision recorded. `finish-work` composes the
+`release-decision-pending` / `verification-ack-pending` brief FIRST; the wait then happens **on that brief**,
+exactly like every other gate. A hard floor is a pause on a composed brief, never an absence of one.
+
+
 Surface the active brief so the human can decide:
 
 - **At a `verify` hard-floor pause, route to `/harmony-plugin:finish-work`'s O3 *re-entry freshness check*
@@ -1415,6 +1457,51 @@ nothing on the board while still having pushed real, findable work). A ticket th
 finished work with no comment trail is indistinguishable from one where nothing happened — the daemon's
 `repo-active-board-silent` park reason (B-792) is what catches this mechanically for a daemon-driven
 leg; an interactive session has no such backstop and must self-enforce it here.
+
+### 4f. The turn-end gate — the backstop is now MECHANICAL, not just discipline (B-870)
+
+Everything in §4e is the rule; this is the **mechanism that enforces it**. The plugin ships a Claude Code
+`Stop` hook (`hooks/stop-gate.sh`) that runs when a session tries to end its turn. If this session left a
+conduct breadcrumb (§0), the hook re-reads the ticket row and, unless the row is one of the sanctioned
+shapes, **blocks the turn-end and tells you which remedy to take**. The gate is a floor under the
+discipline, not a replacement for it — write the board first and the gate never fires.
+
+**The four shapes that let a turn end.** These are the SAME list the daemon's worker-exit classifier uses
+(`src/daemon/classify.ts`'s `isCleanRowShape`, shared verbatim — one list, not two paraphrases):
+
+1. **`awaiting_human_input: true`** — you composed a brief or filed an elicitation round and the ball is
+   genuinely with the human;
+2. **a terminal `workflow_state`** — `Verified` / `Cancelled` / `Parked` (a park carries an authored reason);
+3. **`Decomposed` with ≥1 non-archived child** and the flag down — the split-umbrella report-and-stop;
+4. **no breadcrumb at all** — the session is not driving a ticket, so there is nothing to enforce.
+
+**What the block says.** The block reason names the row it read and the three remedies: *compose the brief*,
+*file an elicitation round*, or *defer/park with a reason*. It also names the fourth move, which is usually
+the right one for a small question: **decide it yourself, record the decision and its rationale as a ticket
+comment, and keep going** (`skills/harmony-shared/elicitation-engine.md` §Below load-bearing).
+
+**It degrades, it never wedges.** The gate blocks the same turn-end at most **twice**; the third attempt is
+allowed through and prints a loud line naming the row state it could not classify. Any failure — the row
+query erroring, timing out, a malformed payload, a broken CLI — **fails open**: the stop is allowed. And an
+operator can switch the gate off for their own session by exporting `HARMONY_STOP_GATE_OFF` in their shell
+profile; the hook logs a line whenever that switch is active. (It is deliberately absent from every
+daemon/container profile, so a worker can never run with the gate silently off.)
+
+**A milestone or finding comment mid-build is not a stopping point.** Posting *"tests are green, moving to
+the release gate"* or *"found an adjacent bug, rolled it into the follow-ups comment"* is a **progress
+write, not a pause**: post it and **continue in the same turn**. A comment does not set
+`awaiting_human_input`, so it leaves the ball with you — ending the turn on one is precisely the silent
+stall this gate exists to catch. The only comment that legitimately precedes a turn-end is the clean-exit
+contract's clause (b) progress note, and even then the turn ends because the ticket reached one of the four
+shapes above, not because the comment was posted.
+
+**`AskUserQuestion` is never a pause vehicle in a ticket-driving session.** Flat ban, no exceptions, at
+every gate and in every delegated gate skill. It is terminal-only: the board never sees it, a daemon worker
+cannot render it, and its answer lands in no rounds history — so a question asked that way is invisible to
+the human on the web, unanswerable in an unattended run, and leaves no provenance trail. Every question that
+reaches the human from a conducted session goes through the board: a **composed brief** or a **filed
+elicitation round**. Outside ticket-driving sessions `AskUserQuestion` remains a perfectly good tool; inside
+one it is a bug.
 
 ### 5. Terminal conditions — when the loop ends (not pauses)
 

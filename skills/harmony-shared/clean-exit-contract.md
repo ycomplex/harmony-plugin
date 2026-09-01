@@ -35,9 +35,37 @@ from "spun and did nothing." The fix is not to force a state advance the leg isn
 make the in-between state legible with a comment, so whatever reads the ticket next (human or the daemon)
 can tell the two apart.
 
-## Where this is enforced mechanically — and where it is a discipline
+## Where this is enforced mechanically — ONE rule, two surfaces
 
-The daemon's worker-exit classifier (`src/daemon/classify.ts`) is the one surface that enforces (b)
+Both surfaces are mechanical now, and both decide from the **same list**. That is the point of this
+section: the interactive side and the daemon side must state ONE rule, not two paraphrases that drift.
+
+**The shared list.** `isCleanRowShape(row, nonArchivedChildCount)` in `src/daemon/classify.ts` is the single
+statement of what a clean place to stop looks like, in this order:
+
+1. `awaiting_human_input: true` — a composed brief or a filed elicitation round is holding the ball;
+2. `workflow_state` ∈ `Verified` / `Cancelled` / `Parked` — a terminal outcome (a park carries an authored
+   reason);
+3. `Decomposed` with ≥1 non-archived child and the flag down — the split-umbrella report-and-stop.
+
+Nothing else is a clean voluntary stop. A contract test (`src/hooks/stop-gate.contract.test.ts`) runs a
+table of row shapes through **both** consumers and fails if they ever disagree.
+
+**Interactive sessions: the turn-end gate (B-870).** A session driving a ticket writes a conduct breadcrumb
+at leg start (`~/.harmony/conduct-sessions/<session_id>.json`, holding the ticket id — deliberately not
+`.harmony-task.json`, which only exists at the build gate and can be stale in the cwd). The plugin's
+`Stop` hook (`hooks/stop-gate.sh`) reads that breadcrumb, re-reads the ticket row, applies the shared list
+above, and **blocks the turn-end** (exit 2, reason on stderr) when the row is none of the three shapes,
+naming the remedy: compose the brief, file an elicitation round, or defer/park. A session with no breadcrumb
+is untouched and pays no cost — the breadcrumb check is a `test -f` before any interpreter starts. The gate
+is bounded on purpose: it blocks the same turn-end at most twice and then degrades with a loud line naming
+the row state it could not classify, it fails **open** on any error (query failure, timeout, malformed
+input), and an operator can disable it for their own session with `HARMONY_STOP_GATE_OFF` — a human-only
+control, logged whenever it is active, and absent from every daemon profile. It is a floor under the
+discipline, never a substitute for it: `skills/harmony-conduct/SKILL.md` §4f is the doctrine it enforces,
+and §4e's backstop invariant is unchanged.
+
+**Daemon workers: the exit classifier.** The daemon's worker-exit classifier (`src/daemon/classify.ts`) is the one surface that enforces (b)
 **mechanically**: it now probes the repo directly (a live `git ls-remote` of the leg's known work branch,
 bracketing fire and settle — never a board-field read, since a board field can go stale the moment a
 rebase-push moves a PR head without re-recording it) and widens its board-progress read (an in-place brief
@@ -49,11 +77,15 @@ didn't get to the board write" apart from "this one is genuinely stuck," at a gl
 it from the repo by hand. This is distinguishability only — it does not auto-requeue or retry a parked
 conduction; a human still decides what happens next.
 
-Everywhere else — an interactive session, a delegated build subagent, a gate skill mid-run — the
-enforcement is a **discipline**, not a mechanism: there is no daemon watching an interactive session's
-exit. `skills/harmony-conduct/SKILL.md` §4e's backstop invariant is the interactive instance of clause
-(a); its extension to also require (b) — and its explicit pointer back to this doc — is what keeps the
-interactive and daemon-driven paths stating the SAME rule instead of two paraphrases that can drift.
+**What is still discipline.** The gate above checks the BOARD half — the row shape. Clause (a)
+(consume every marker you acted on) and clause (b) (leave a progress comment when real repo work landed with
+no state-advancing write yet possible) remain disciplines on the interactive side: a session can satisfy the
+row-shape check while still leaving a marker dangling or a push unreported. `skills/harmony-conduct/SKILL.md`
+§4e states both and points back here; the daemon's `repo-active-board-silent` park reason is the only place
+clause (b) is mechanical. A delegated build subagent (no MCP tools, no Stop hook of its own) is discipline
+throughout — it reports upward via the `WORKER-QUESTION:` marker and its delegating gate skill owns the
+board write.
+
 `start-work`'s build-in-flight/FAILURE PATH steps and `finish-work`'s B-774 post-merge-deploy confirmation
 are both instances of (a)/(b) applied to their own gate's specific markers and repo artefacts — read those
 skills for the mechanics; this doc is the one place the RULE itself is stated.

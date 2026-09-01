@@ -32,4 +32,38 @@ describe('harmony-research skill contract', () => {
   it('carries the discovery role profile', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
   });
+
+  // B-870 AC4: the human relay is no longer a bare terminal ask — the prompts ride a worker-question
+  // elicitation round, and the answers come back through the round.
+  it('the relay runs on the elicitation engine: a worker-question round CARRYING the commands to run', () => {
+    const body = skill.body;
+    expect(referencedHarmonyTools(body)).toContain('file_elicitation_round');
+    expect(body).toContain("trigger: 'worker-question'");
+    expect(body).toContain('elicitation-engine.md');
+    expect(body).toMatch(/stakes: 'load-bearing'/);
+    expect(body).toMatch(/kind: 'open'/);
+    // The round carries the runnable prompts themselves.
+    expect(body).toMatch(/CARRIES THE COMMANDS TO RUN/);
+    expect(body).toMatch(/verbatim and\s*\n?copy-pasteable/);
+  });
+
+  it('the answers return THROUGH the round, and filing it is the clean pause', () => {
+    const body = skill.body;
+    expect(body).toMatch(/answers return THROUGH THE ROUND/i);
+    expect(body).toMatch(/get_elicitation/);
+    expect(body).toMatch(/awaiting_human_input/);
+    expect(body).toMatch(/elicitation-round/);
+  });
+
+  it('names WHY a bare terminal ask is wrong — invisible on the board, unrenderable in a daemon worker', () => {
+    const body = skill.body;
+    expect(body).toMatch(/never on a bare terminal ask/i);
+    expect(body).toMatch(/ends the turn with nothing on the board/);
+    expect(body).toMatch(/daemon worker has no terminal/);
+  });
+
+  it('keeps the inline paste for the ONE case with no ticket to hang a round on', () => {
+    expect(skill.body).toMatch(/Outside a ticket-driving session/);
+    expect(skill.body).toMatch(/that is the only case/);
+  });
 });

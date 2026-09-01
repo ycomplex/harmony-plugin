@@ -10,6 +10,27 @@
             "timeout": 180
           }
         ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "d=\"${HARMONY_HOME:-$HOME/.harmony}/conduct-sessions\"; mkdir -p \"$d\" 2>/dev/null; i=$(cat 2>/dev/null | tr -d '\\n' | sed -n 's/.*\"session_id\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p'); if [ -n \"$i\" ]; then printf '%s' \"$i\" > \"$d/current-session\"; fi; find \"$d\" -type f -mtime +7 -delete 2>/dev/null; printf '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"Harmony conduct-session id: %s. A session that drives a Harmony ticket writes its conduct breadcrumb at %s/%s.json (see the harmony-conduct skill).\"}}' \"$i\" \"$d\" \"$i\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-gate.sh\"",
+            "timeout": 30
+          }
+        ]
       }
     ]
   }

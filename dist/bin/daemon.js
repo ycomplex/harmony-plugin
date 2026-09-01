@@ -24104,16 +24104,22 @@ function detectWake(baseline, current) {
 
 // src/daemon/classify.ts
 var TICKET_TERMINAL_STATES = ["Verified", "Cancelled", "Parked"];
-function classifyWorkerExit(args) {
-  const { row, nonArchivedChildCount, exitCode, progressed } = args;
+function classifyCleanRowShape(row, nonArchivedChildCount) {
+  if (row.awaiting_human_input === true) return "clean-pause";
   const state = row.workflow_state ?? null;
-  if (row.awaiting_human_input === true) return { action: "wait" };
   if (state !== null && TICKET_TERMINAL_STATES.includes(state)) {
-    return { action: "complete" };
+    return "terminal";
   }
   if (state === "Decomposed" && nonArchivedChildCount >= 1 && row.awaiting_human_input === false) {
-    return { action: "complete" };
+    return "split-umbrella";
   }
+  return null;
+}
+function classifyWorkerExit(args) {
+  const { row, nonArchivedChildCount, exitCode, progressed } = args;
+  const cleanKind = classifyCleanRowShape(row, nonArchivedChildCount);
+  if (cleanKind === "clean-pause") return { action: "wait" };
+  if (cleanKind !== null) return { action: "complete" };
   if (row.stale === true) return { action: "park", reason: "stale" };
   if (args.timedOut) return { action: "park", reason: "worker-timeout" };
   if (args.operatorReaped) return { action: "park", reason: "operator-reap" };

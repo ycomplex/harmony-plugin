@@ -1,6 +1,6 @@
 ---
 name: harmony-research
-description: Fill a load-bearing knowledge gap via the v1 human-relayed research hand-off. Triggers on "research X", "harmony research", "I don't know enough about Y", or when a gate skill hits a load-bearing gap. Emits concrete research prompts for the human to run in their tool of choice, then ingests the pasted result as Asserted knowledge (never auto-Accepted).
+description: Fill a load-bearing knowledge gap via the v1 human-relayed research hand-off. Triggers on "research X", "harmony research", "I don't know enough about Y", or when a gate skill hits a load-bearing gap. Emits concrete research prompts for the human to run in their tool of choice — handed over as a filed elicitation round in a ticket-driving session — then ingests the returned result as Asserted knowledge (never auto-Accepted).
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
@@ -25,18 +25,47 @@ confidence instead and return to the gate skill.
 
 Produce 1–3 specific, runnable research prompts (for Perplexity / a deep-research tool / Claude). Make
 them concrete enough to paste verbatim. **Never bury these behind `expand`** — they are the headline.
-Display them and ask the human to run them and paste the results back.
+
+**The relay runs on the elicitation engine — never on a bare terminal ask (B-870).** In a ticket-driving
+session, "display them and wait for a paste" ends the turn with nothing on the board: the human on the web
+sees a ticket that simply stopped, a daemon worker has no terminal to display to at all, and the answers
+come back with no provenance trail. So hand the prompts over the same way every other question from a
+conducted session reaches a human — as a **filed elicitation round**, per
+`skills/harmony-shared/elicitation-engine.md` §The worker-question trigger:
+
+- **`trigger: 'worker-question'`**, **`gate`** = the blocked gate's activity (`clarifying` / `designing` /
+  `planning`), `stakes: 'load-bearing'` / `kind: 'open'` — a load-bearing knowledge gap is exactly what this
+  trigger is for, and the load-bearing-must-be-open binding applies unchanged.
+- **The round CARRIES THE COMMANDS TO RUN.** Each question's text is one runnable prompt, verbatim and
+  copy-pasteable, plus the one plain-prose context line saying what is blocked and why these prompts unblock
+  it. ≤5 questions per round, like any other round.
+- **The answers return THROUGH THE ROUND** — the human pastes each result into the web answer form (or
+  answers in the terminal, which you then echo via `prior_answers` / `submit_elicitation_answers`, per the
+  engine's terminal-answers rule). Filing the round sets `awaiting_human_input` with reason
+  `elicitation-round` — a first-class, web-visible pause, and the clean turn-end this skill is allowed to
+  take.
 
 ```
-I don't have enough `operations` knowledge to decide this. Please run these and paste the answers:
-
-1. "How does <project>'s CI handle PRs that target an integration branch vs main? ..."
-2. "What is the rollback procedure for a failed Supabase migration deploy? ..."
+mcp__harmony__file_elicitation_round({
+  task_id,
+  context: "I don't have enough `operations` knowledge to decide this — run these and paste each result back.",
+  questions: [
+    { id: "q1", kind: "open", stakes: "load-bearing",
+      text: "How does <project>'s CI handle PRs that target an integration branch vs main? ..." },
+    { id: "q2", kind: "open", stakes: "load-bearing",
+      text: "What is the rollback procedure for a failed Supabase migration deploy? ..." },
+  ],
+})
 ```
 
-### 3. Ingest the pasted result as Asserted knowledge
+Outside a ticket-driving session (an ad-hoc `research X` with no ticket to hang a round on) there is no
+board to write to, so displaying the prompts inline and taking the paste is fine — that is the only case.
 
-Transform the human's pasted answer into knowledge entries with **research provenance** and a freshness
+### 3. Ingest the returned result as Asserted knowledge
+
+Read the answers back off the round (`get_elicitation` — the last round's `answers`, keyed by question id;
+a partial submit is legitimate signal, not an error), or off the human's inline paste in the no-ticket case.
+Transform them into knowledge entries with **research provenance** and a freshness
 date. A finding that is a durable decision/spec → `record_decision`; a discrete relational fact →
 `assert_fact`. Both with `source_type: "research"` and a `review_by`.
 
@@ -82,6 +111,7 @@ This records that researching happened (the guard keeps the state unchanged for 
 
 ### 5. Return to the gate
 
-Tell the calling skill the gap is now filled (Asserted) and it can re-query knowledge and resume its
+Conclude the exchange (`conclude_elicitation('converged')`) if you opened one, then tell the calling skill
+the gap is now filled (Asserted) and it can re-query knowledge and resume its
 decision. Remind the human these entries are Asserted — they should be reviewed/promoted before agents
 act on them autonomously.

@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyWorkerExit,
+  classifyCleanRowShape,
+  isCleanRowShape,
   exitClass,
   TICKET_TERMINAL_STATES,
   type ClassifyArgs,
@@ -321,5 +323,96 @@ describe("the operator-reap class (B-740) — 'an operator's early-reap request 
       operatorReaped: true,
     });
     expect(classifyWorkerExit(a)).toEqual({ action: 'park', reason: 'operator-reap' });
+  });
+});
+
+// B-870. The clean row shapes (branches 1-3) are now ONE exported predicate, shared with the
+// interactive Stop gate. These pin the predicate DIRECTLY — its three true shapes, everything that
+// is not one of them, and the fact that pulling it out changed neither behaviour nor branch order.
+describe('isCleanRowShape / classifyCleanRowShape (B-870) — the shared clean-row predicate', () => {
+  it("1. awaiting_human_input=true ⇒ 'clean-pause' (whatever the state, including no state at all)", () => {
+    for (const state of ['Built', 'Planned', 'Decomposed', null]) {
+      expect(classifyCleanRowShape({ workflow_state: state, awaiting_human_input: true }, 0)).toBe(
+        'clean-pause',
+      );
+      expect(isCleanRowShape({ workflow_state: state, awaiting_human_input: true }, 0)).toBe(true);
+    }
+  });
+
+  it.each(['Verified', 'Cancelled', 'Parked'])("2. terminal state %s ⇒ 'terminal'", (state) => {
+    expect(classifyCleanRowShape({ workflow_state: state, awaiting_human_input: false }, 0)).toBe(
+      'terminal',
+    );
+  });
+
+  it('2b. exact allowlist membership — a state merely CONTAINING a terminal name is not clean', () => {
+    for (const impostor of ['Unverified', 'Verified-ish', 'Parked lot', 'revising-Cancelled']) {
+      expect(
+        classifyCleanRowShape({ workflow_state: impostor, awaiting_human_input: false }, 0),
+      ).toBeNull();
+    }
+  });
+
+  it("3. Decomposed + ≥1 non-archived child + flag false ⇒ 'split-umbrella'", () => {
+    expect(
+      classifyCleanRowShape({ workflow_state: 'Decomposed', awaiting_human_input: false }, 3),
+    ).toBe('split-umbrella');
+  });
+
+  it('3b. Decomposed with ZERO non-archived children is NOT clean (the umbrella has nothing carrying it)', () => {
+    expect(
+      classifyCleanRowShape({ workflow_state: 'Decomposed', awaiting_human_input: false }, 0),
+    ).toBeNull();
+    expect(isCleanRowShape({ workflow_state: 'Decomposed', awaiting_human_input: false }, 0)).toBe(
+      false,
+    );
+  });
+
+  it('an ordinary mid-flight row (Built, flag down) is NOT clean — this is the shape the stop gate exists to catch', () => {
+    expect(classifyCleanRowShape({ workflow_state: 'Built', awaiting_human_input: false }, 0)).toBeNull();
+    expect(isCleanRowShape({ workflow_state: 'Built', awaiting_human_input: false }, 0)).toBe(false);
+  });
+
+  it('a MISSING awaiting flag (undefined/null) is not the same as false — it is still not clean', () => {
+    expect(classifyCleanRowShape({ workflow_state: 'Built' }, 0)).toBeNull();
+    expect(classifyCleanRowShape({ workflow_state: 'Built', awaiting_human_input: null }, 0)).toBeNull();
+  });
+
+  it('branch ORDER survives the extraction: awaiting=true on a Decomposed umbrella is a clean-pause, never a split-umbrella', () => {
+    expect(
+      classifyCleanRowShape({ workflow_state: 'Decomposed', awaiting_human_input: true }, 5),
+    ).toBe('clean-pause');
+  });
+
+  it('branch ORDER survives the extraction: awaiting=true on a Verified ticket is a clean-pause, never terminal', () => {
+    expect(
+      classifyCleanRowShape({ workflow_state: 'Verified', awaiting_human_input: true }, 0),
+    ).toBe('clean-pause');
+  });
+
+  it('the split-umbrella branch requires the flag to be exactly false — branch 3 is order-dependent on branch 1', () => {
+    // Not a boolean at all: neither branch 1 (=== true) nor branch 3 (=== false) fires.
+    expect(classifyCleanRowShape({ workflow_state: 'Decomposed' }, 4)).toBeNull();
+  });
+
+  it("classifyWorkerExit still CALLS the predicate — its clean kinds map to the same actions and exitClass labels as before", () => {
+    const cases: Array<[ClassifyArgs, 'wait' | 'complete', string]> = [
+      [args({ row: { workflow_state: 'Built', awaiting_human_input: true, stale: false } }), 'wait', 'clean-pause'],
+      [args({ row: { workflow_state: 'Verified', awaiting_human_input: false, stale: false } }), 'complete', 'terminal'],
+      [
+        args({
+          row: { workflow_state: 'Decomposed', awaiting_human_input: false, stale: false },
+          nonArchivedChildCount: 2,
+        }),
+        'complete',
+        'split-umbrella',
+      ],
+    ];
+    for (const [a, action, cls] of cases) {
+      const outcome = classifyWorkerExit(a);
+      expect(outcome.action).toBe(action);
+      expect(exitClass(outcome, a)).toBe(cls);
+      expect(isCleanRowShape(a.row, a.nonArchivedChildCount)).toBe(true);
+    }
   });
 });

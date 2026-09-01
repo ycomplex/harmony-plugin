@@ -212,9 +212,48 @@ engine unchanged:
 to stop rather than continue — it must leave the ticket in exactly one of: state advanced normally (a
 gate accepted/completed), an explicit park with an authored reason, or an open elicitation round. No
 other voluntary stop path exists; writing a question to stdout and exiting is never one of the three.
+**This is enforced mechanically on both sides now (B-870):** the daemon by its worker-exit classifier,
+an interactive session by the `Stop` hook turn-end gate — one shared clean-row list, named in
+`skills/harmony-shared/clean-exit-contract.md`.
 This does **not** cover involuntary termination (a SIGKILL/OOM'd worker, exit 137, no output) — that
 worker never chose to stop, and is squarely the daemon's dirty-exit classifier's domain, not this
 invariant's.
+
+## Below load-bearing — DECIDE it, comment it, continue (B-870)
+
+The worker-question round mandates `stakes: 'load-bearing'` / `kind: 'open'` (above). That is correct and
+stays: a worker's own judgment call is never a rubber-stampable validate. The consequence, though, is that a
+question **below** load-bearing has **no home in this engine** — and an audit found those questions leaking
+straight to the terminal, where they end the turn with nothing on the board.
+
+**The rule: below load-bearing stakes, you do not ask. You decide.**
+
+1. **Decide it** — take the reasonable reading, the conventional default, the option consistent with the
+   ticket and the KB.
+2. **Record it** — `add_comment` on the ticket with the decision AND the rationale, in one or two lines:
+   *"Named the flag `--dry-run` rather than `--preview` — matches the two existing flags in this CLI.
+   Trivially reversible; say so if you'd rather have `--preview`."*
+3. **Continue** — in the SAME turn. A comment is a progress write, not a pause: it does not set
+   `awaiting_human_input`, so the ball never left you.
+
+The test for "below load-bearing" is the same impact × ignorance judgment as everywhere else: would a wrong
+answer meaningfully steer the work, or is it a detail a human would answer in three seconds and forget? If
+it genuinely steers the work, it IS load-bearing — file the worker-question round. If you are unsure, ask
+whether the decision is cheaply reversible: cheaply reversible ⇒ decide and comment.
+
+**A non-blocking "proceeding unless redirected" round is REJECTED — do not file one.** It looks like the
+obvious middle path and it does not work: nothing can inject a redirect into a running daemon worker, so the
+"unless redirected" half is unreachable by construction, and the round would sit on the board looking like
+an open question that the human's answer can no longer affect. The **comment** is the right vehicle for
+"here is what I decided, tell me if you disagree" — it is durable, web-visible, answerable at the human's
+leisure, and it does not pretend the run is waiting.
+
+**`AskUserQuestion` is never a pause vehicle in a governed (ticket-driving) session.** Not for a
+load-bearing question (that is a round), and not for a small one (that is a decision + a comment). It is
+terminal-only: the board never sees it, a daemon worker cannot render it, and its answer lands in **no**
+rounds history — so it produces a question the human may never see and an answer with no provenance. Every
+question that reaches a human from a ticket-driving session arrives on the board, as a **brief** or a
+**filed round**. Outside ticket-driving sessions it stays a perfectly good tool.
 
 ## Resuming onto a staged pending_resolution you can only partially apply (B-733)
 

@@ -29944,6 +29944,94 @@ async function bulkCreateTasks(client, projectId, userId, args) {
   return data;
 }
 
+// src/tools/decomposition.ts
+async function listSubtasks(client, projectId, args) {
+  const rootId = await resolveTaskId(client, projectId, args.task_id);
+  const depth = args.depth ?? 1;
+  const all = [];
+  let frontier = [rootId];
+  let level = 0;
+  while (frontier.length > 0 && (depth === -1 || level < depth)) {
+    const { data, error } = await client.from("tasks").select("id, parent_task_id, task_number, title, status, workflow_state, awaiting_human_input, awaiting_human_reason, stale, project_id, archived, created_at").in("parent_task_id", frontier).order("created_at", { ascending: true });
+    if (error) throw error;
+    const rows = data ?? [];
+    if (rows.length === 0) break;
+    all.push(...rows);
+    frontier = rows.map((r) => r.id);
+    level++;
+  }
+  return all;
+}
+async function listParent(client, projectId, args) {
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const { data: task, error: taskErr } = await client.from("tasks").select("parent_task_id").eq("id", resolvedId).single();
+  if (taskErr) throw taskErr;
+  if (!task?.parent_task_id) return null;
+  const { data: parent, error: parentErr } = await client.from("tasks").select("id, task_number, title, status, workflow_state, awaiting_human_input, awaiting_human_reason, stale, project_id, archived").eq("id", task.parent_task_id).single();
+  if (parentErr) throw parentErr;
+  return parent;
+}
+async function manageSubtasks(client, projectId, userId, args) {
+  const parentId = await resolveTaskId(client, projectId, args.task_id);
+  const result = {
+    attached: [],
+    created: [],
+    detached: []
+  };
+  const { data: parent, error: parentErr } = await client.from("tasks").select("project_id, epic_id").eq("id", parentId).single();
+  if (parentErr) throw parentErr;
+  if (args.add && args.add.length > 0) {
+    const childIds = await Promise.all(args.add.map((id) => resolveTaskId(client, projectId, id)));
+    for (const cid of childIds) {
+      if (cid === parentId) throw new Error("A task cannot be its own subtask.");
+    }
+    const { error } = await client.from("tasks").update({ parent_task_id: parentId }).in("id", childIds);
+    if (error) throw error;
+    result.attached = childIds;
+  }
+  if (args.add_new && args.add_new.length > 0) {
+    const rows = args.add_new.map((input) => ({
+      title: input.title,
+      description: input.description,
+      priority: input.priority ?? "medium",
+      status: input.status ?? "Backlog",
+      // B-465: default explicitly (matches the DB default; don't rely on supabase-js dropping undefined)
+      assignee_id: input.assignee_id,
+      due_date: input.due_date,
+      project_id: input.project_id ?? parent.project_id,
+      epic_id: input.epic_id ?? parent.epic_id,
+      cycle_id: input.cycle_id,
+      milestone_id: input.milestone_id,
+      parent_task_id: parentId,
+      created_by: userId
+    }));
+    const { data, error } = await client.from("tasks").insert(rows).select("id, task_number, title, status, project_id, parent_task_id");
+    if (error) throw error;
+    result.created = data ?? [];
+  }
+  if (args.remove && args.remove.length > 0) {
+    const childIds = await Promise.all(args.remove.map((id) => resolveTaskId(client, projectId, id)));
+    const { error } = await client.from("tasks").update({ parent_task_id: null }).in("id", childIds);
+    if (error) throw error;
+    result.detached = childIds;
+  }
+  return result;
+}
+
+// src/daemon/classify.ts
+var TICKET_TERMINAL_STATES = ["Verified", "Cancelled", "Parked"];
+function classifyCleanRowShape(row, nonArchivedChildCount) {
+  if (row.awaiting_human_input === true) return "clean-pause";
+  const state = row.workflow_state ?? null;
+  if (state !== null && TICKET_TERMINAL_STATES.includes(state)) {
+    return "terminal";
+  }
+  if (state === "Decomposed" && nonArchivedChildCount >= 1 && row.awaiting_human_input === false) {
+    return "split-umbrella";
+  }
+  return null;
+}
+
 // src/cli/auth.ts
 async function getAuthenticatedContext(projectConfig) {
   const project = projectConfig ?? getActiveProject();
@@ -30022,6 +30110,30 @@ function registerTaskCommands(program3) {
         { label: "Due", value: formatDate(task.due_date) },
         { label: "Description", value: task.description ?? "" }
       ])
+    );
+  });
+  tasks.command("clean-check").description("Report whether a task row is a clean place for a ticket-driving session to stop").argument("<id>", "Task ID (UUID, number, or B-123)").action(async (id) => {
+    await runCommand(
+      program3.opts(),
+      async (ctx) => {
+        const task = await getTask(ctx.client, ctx.projectId, { task_id: id, view: "meta" });
+        let nonArchivedChildCount = 0;
+        if (task.workflow_state === "Decomposed") {
+          const children = await listSubtasks(ctx.client, ctx.projectId, { task_id: id });
+          nonArchivedChildCount = children.filter((c) => !c.archived).length;
+        }
+        const kind = classifyCleanRowShape(task, nonArchivedChildCount);
+        return {
+          task_id: task.id,
+          task_number: task.task_number ?? null,
+          workflow_state: task.workflow_state ?? null,
+          awaiting_human_input: task.awaiting_human_input ?? null,
+          non_archived_child_count: nonArchivedChildCount,
+          clean: kind !== null,
+          clean_kind: kind
+        };
+      },
+      (r) => r.clean ? `clean (${r.clean_kind})` : "NOT clean \u2014 nothing on the board for this leg"
     );
   });
   tasks.command("create").description("Create a new task").requiredOption("--title <title>", "Task title").option("--status <status>", "Status (default: Backlog)").option("--priority <priority>", "Priority: high, medium, low").option("--assignee <id>", "Assignee (name, email, or UUID)").option("--epic <id>", "Epic ID").option("--description <text>", "Task description").option("--due <date>", "Due date (YYYY-MM-DD)").option("--cycle <id>", "Cycle ID").option("--milestone <id>", "Milestone ID").action(async (opts) => {
@@ -31539,80 +31651,6 @@ function registerKnowledgeCommands(program3) {
       ({ superseded, replacement }) => replacement ? `Superseded "${superseded.title}" \u2192 created "${replacement.title}" (${replacement.id})` : `Retired "${superseded.title}" (no successor)`
     );
   });
-}
-
-// src/tools/decomposition.ts
-async function listSubtasks(client, projectId, args) {
-  const rootId = await resolveTaskId(client, projectId, args.task_id);
-  const depth = args.depth ?? 1;
-  const all = [];
-  let frontier = [rootId];
-  let level = 0;
-  while (frontier.length > 0 && (depth === -1 || level < depth)) {
-    const { data, error } = await client.from("tasks").select("id, parent_task_id, task_number, title, status, workflow_state, awaiting_human_input, awaiting_human_reason, stale, project_id, archived, created_at").in("parent_task_id", frontier).order("created_at", { ascending: true });
-    if (error) throw error;
-    const rows = data ?? [];
-    if (rows.length === 0) break;
-    all.push(...rows);
-    frontier = rows.map((r) => r.id);
-    level++;
-  }
-  return all;
-}
-async function listParent(client, projectId, args) {
-  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
-  const { data: task, error: taskErr } = await client.from("tasks").select("parent_task_id").eq("id", resolvedId).single();
-  if (taskErr) throw taskErr;
-  if (!task?.parent_task_id) return null;
-  const { data: parent, error: parentErr } = await client.from("tasks").select("id, task_number, title, status, workflow_state, awaiting_human_input, awaiting_human_reason, stale, project_id, archived").eq("id", task.parent_task_id).single();
-  if (parentErr) throw parentErr;
-  return parent;
-}
-async function manageSubtasks(client, projectId, userId, args) {
-  const parentId = await resolveTaskId(client, projectId, args.task_id);
-  const result = {
-    attached: [],
-    created: [],
-    detached: []
-  };
-  const { data: parent, error: parentErr } = await client.from("tasks").select("project_id, epic_id").eq("id", parentId).single();
-  if (parentErr) throw parentErr;
-  if (args.add && args.add.length > 0) {
-    const childIds = await Promise.all(args.add.map((id) => resolveTaskId(client, projectId, id)));
-    for (const cid of childIds) {
-      if (cid === parentId) throw new Error("A task cannot be its own subtask.");
-    }
-    const { error } = await client.from("tasks").update({ parent_task_id: parentId }).in("id", childIds);
-    if (error) throw error;
-    result.attached = childIds;
-  }
-  if (args.add_new && args.add_new.length > 0) {
-    const rows = args.add_new.map((input) => ({
-      title: input.title,
-      description: input.description,
-      priority: input.priority ?? "medium",
-      status: input.status ?? "Backlog",
-      // B-465: default explicitly (matches the DB default; don't rely on supabase-js dropping undefined)
-      assignee_id: input.assignee_id,
-      due_date: input.due_date,
-      project_id: input.project_id ?? parent.project_id,
-      epic_id: input.epic_id ?? parent.epic_id,
-      cycle_id: input.cycle_id,
-      milestone_id: input.milestone_id,
-      parent_task_id: parentId,
-      created_by: userId
-    }));
-    const { data, error } = await client.from("tasks").insert(rows).select("id, task_number, title, status, project_id, parent_task_id");
-    if (error) throw error;
-    result.created = data ?? [];
-  }
-  if (args.remove && args.remove.length > 0) {
-    const childIds = await Promise.all(args.remove.map((id) => resolveTaskId(client, projectId, id)));
-    const { error } = await client.from("tasks").update({ parent_task_id: null }).in("id", childIds);
-    if (error) throw error;
-    result.detached = childIds;
-  }
-  return result;
 }
 
 // src/cli/commands/subtasks.ts
