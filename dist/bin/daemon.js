@@ -22621,7 +22621,8 @@ async function updateConduction(client, id, patch) {
 async function listConductions(client, args) {
   let query = client.from("conductions").select(`${CONDUCTION_COLS}, tasks(priority)`);
   if (args.status) query = query.eq("status", args.status);
-  const { data, error } = await query.order("started_at", { ascending: true });
+  if (args.task_id) query = query.eq("task_id", args.task_id);
+  const { data, error } = await query.order("started_at", { ascending: args.order !== "desc" });
   if (error) throw error;
   const rows = data ?? [];
   return rows.map((row) => {

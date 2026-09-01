@@ -11,6 +11,7 @@ import {
   markCleanShutdown,
   assertNotExcluded,
   ActiveConductionExistsError,
+  ConductionInsertDeniedError,
   ConductorExcludedError,
   CONDUCTION_LIVE_STATUSES,
   CONDUCTION_HUMAN_OWNED_STATUSES,
@@ -168,12 +169,54 @@ describe('createConduction', () => {
     );
   });
 
-  it('throws a PLAIN error (not the lease-loss type) on any other insert failure', async () => {
-    const client = makeClient([{ data: null, error: { code: '42501', message: 'permission denied' } }]);
+  it('throws a PLAIN error (neither typed refusal) on any other insert failure', async () => {
+    const client = makeClient([
+      { data: null, error: { code: '08006', message: 'connection failure' } },
+    ]);
     const err = await createConduction(client, { task_id: 'task-1' }).catch((e) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(ActiveConductionExistsError);
-    expect(err.message).toBe('permission denied');
+    expect(err).not.toBeInstanceOf(ConductionInsertDeniedError);
+    expect(err.message).toBe('connection failure');
+  });
+
+  // B-894: an RLS refusal of the insert is a TYPED refusal that names its cause — never the raw
+  // database error (the defect this ticket closes). Both arms of the predicate are covered: the
+  // postgres code, and the message fallback for a client that drops the code (same code-plus-
+  // fallback shape, and same reason, as the unique-violation predicate above).
+
+  it('B-894: surfaces an RLS denial (postgres 42501) as the DISTINGUISHABLE ConductionInsertDeniedError, naming its cause', async () => {
+    const client = makeClient([
+      {
+        data: null,
+        error: {
+          code: '42501',
+          message: 'new row violates row-level security policy for table "conductions"',
+        },
+      },
+    ]);
+    const err = await createConduction(client, { task_id: 'task-1' }).catch((e) => e);
+    expect(err).toBeInstanceOf(ConductionInsertDeniedError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(ActiveConductionExistsError);
+    expect(err.code).toBe('conduction-insert-denied');
+    expect(err.task_id).toBe('task-1');
+    // Names the cause — the policy's created_by = auth.uid() condition — not a bare DB error.
+    expect(err.message).toMatch(/created_by = auth\.uid\(\)/i);
+    expect(err.message).toMatch(/refused this row for task task-1/i);
+  });
+
+  it('B-894: recognizes the RLS denial by message when the client drops the code', async () => {
+    const client = makeClient([
+      {
+        data: null,
+        error: { message: 'new row violates row-level security policy for table "conductions"' },
+      },
+    ]);
+    const err = await createConduction(client, { task_id: 'task-1' }).catch((e) => e);
+    expect(err).toBeInstanceOf(ConductionInsertDeniedError);
+    expect(err.code).toBe('conduction-insert-denied');
+    expect(err.message).toMatch(/created_by = auth\.uid\(\)/i);
   });
 
   it('rejects a missing task_id before any DB access', async () => {
@@ -345,6 +388,38 @@ describe('listConductions', () => {
     // B-717: task_priority is additive — embedded via the tasks(priority) FK join and flattened;
     // a row with no nested `tasks` object (the fixture doesn't carry one) reads as null.
     expect(result).toEqual([{ ...conductionRow, task_priority: null }]);
+  });
+
+  // B-894 PIN: the DEFAULT order must stay ASCENDING. The daemon's scheduler calls listConductions
+  // every pass and its queue discipline depends on this started_at-ascending order (and on the
+  // B-717 tasks(priority) embed). B-894 added an opt-in `order` option; a silent flip of its
+  // default would silently reorder the daemon's queue, so this asserts the default explicitly.
+  it('B-894: DEFAULTS to ASCENDING started_at when `order` is omitted — the daemon queue-discipline pin', async () => {
+    const client = makeClient([{ data: [conductionRow] }]);
+    await listConductions(client, {});
+    expect(client.order).toHaveBeenCalledWith('started_at', { ascending: true });
+    expect(client.order).not.toHaveBeenCalledWith('started_at', { ascending: false });
+  });
+
+  it("B-894: the daemon's own call — { status: 'active' }, no order — is byte-for-byte the pre-B-894 query (status filter, tasks(priority) embed, ascending)", async () => {
+    const client = makeClient([{ data: [conductionRow] }]);
+    await listConductions(client, { status: 'active' });
+    expect(client.select).toHaveBeenCalledWith(expect.stringContaining('tasks(priority)'));
+    expect(client.eq).toHaveBeenCalledTimes(1); // ONLY the status filter — no task_id filter added
+    expect(client.eq).toHaveBeenCalledWith('status', 'active');
+    expect(client.order).toHaveBeenCalledWith('started_at', { ascending: true });
+  });
+
+  it('B-894: orders DESCENDING only when explicitly asked', async () => {
+    const client = makeClient([{ data: [conductionRow] }]);
+    await listConductions(client, { order: 'desc' });
+    expect(client.order).toHaveBeenCalledWith('started_at', { ascending: false });
+  });
+
+  it("B-894: filters eq('task_id', ...) when a task_id is given", async () => {
+    const client = makeClient([{ data: [conductionRow] }]);
+    await listConductions(client, { task_id: 'task-1' });
+    expect(client.eq).toHaveBeenCalledWith('task_id', 'task-1');
   });
 
   it('applies NO status filter when none is given', async () => {

@@ -57,6 +57,7 @@ import {
 } from './briefs.js';
 import { flagReleaseApprovalPending, flagReleaseApprovalPendingTool } from './release-approval.js';
 import { requestConductionReap, requestConductionReapTool } from './request-conduction-reap.js';
+import { listConductions as listConductionsEntry, listConductionsTool } from './list-conductions.js';
 import {
   startElicitationTool, startElicitation,
   fileElicitationRoundTool, fileElicitationRound,
@@ -99,6 +100,7 @@ export {
   getActiveConduction,
   updateConduction,
   ActiveConductionExistsError,
+  ConductionInsertDeniedError,
   ConductorExcludedError,
   assertNotExcluded,
   CONDUCTION_LIVE_STATUSES,
@@ -136,6 +138,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listTicketKnowledgeTool,
     getBuildEvidenceStatusTool,
     createConductionTool,
+    listConductionsTool,
     requestConductionReapTool,
     consumePendingAcceptanceEventTool,
     consumeAcceptanceEventTool,
@@ -389,7 +392,10 @@ export async function handleToolCall(
         result = await getBuildEvidenceStatus(client, projectId, args as any);
         break;
       case 'create_conduction':
-        result = await createConductionEntry(client, projectId, args as any);
+        result = await createConductionEntry(client, projectId, userId, args as any);
+        break;
+      case 'list_conductions':
+        result = await listConductionsEntry(client, projectId, args as any);
         break;
       case 'request_conduction_reap':
         result = await requestConductionReap(client, args as any);

@@ -28209,6 +28209,18 @@ var ActiveConductionExistsError = class extends Error {
   }
 };
 var isUniqueViolation = (error) => error.code === "23505" || /duplicate key value violates unique constraint/i.test(error.message ?? "");
+var ConductionInsertDeniedError = class extends Error {
+  code = "conduction-insert-denied";
+  task_id;
+  constructor(taskId, cause) {
+    super(
+      `the conductions INSERT policy refused this row for task ${taskId} \u2014 the policy requires created_by = auth.uid(), so the insert must carry the acting user's id` + (cause ? ` (${cause})` : "")
+    );
+    this.name = "ConductionInsertDeniedError";
+    this.task_id = taskId;
+  }
+};
+var isRlsDenial = (error) => error.code === "42501" || /violates row-level security policy/i.test(error.message ?? "");
 async function createConduction(client, args) {
   if (!args.task_id) throw new Error("task_id is required");
   const row = {
@@ -28225,6 +28237,7 @@ async function createConduction(client, args) {
   const { data, error } = await client.from("conductions").insert(row).select(CONDUCTION_COLS).single();
   if (error) {
     if (isUniqueViolation(error)) throw new ActiveConductionExistsError(args.task_id, error.message);
+    if (isRlsDenial(error)) throw new ConductionInsertDeniedError(args.task_id, error.message);
     throw new Error(error.message);
   }
   return data;
