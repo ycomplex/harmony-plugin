@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, getBrief, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -2836,5 +2836,198 @@ describe('harmony-design-decide §2b self-heal predicate filters on command (B-8
 
   it('still keys on the clarification reason (the command filter is an addition, not a replacement)', () => {
     expect(prose).toContain("e.metadata?.reason === 'clarification-draft'");
+  });
+});
+
+// ——— B-878: the brief history read ——————————————————————————————————————————————————————————————
+describe('listBriefs (B-878)', () => {
+  const rev = (over: Record<string, unknown> = {}) => ({
+    id: 'b-2', task_id: 'task-1', lineage_id: 'lin-1', reason: 'clarification-draft',
+    doc: { decide: 'x', items: [] }, content: 'rendered', pending_activity: 'clarifying',
+    status: 'active', iteration: 2, iterate_feedback: 'narrow the scope',
+    resolved_command: null, resolved_detail: null, resolved_at: null,
+    created_at: '2026-05-30T00:00:00Z',
+    ...over,
+  });
+
+  // created_at DESCENDING, as the query asks for them.
+  const ROWS = [
+    rev(),
+    rev({ id: 'b-1', iteration: 1, status: 'superseded', iterate_feedback: null, resolved_command: 'iterate', resolved_detail: 'narrow the scope', created_at: '2026-05-29T00:00:00Z' }),
+    rev({ id: 'b-0', lineage_id: 'lin-0', reason: 'plan-draft', pending_activity: 'planning', status: 'accepted', iteration: 1, iterate_feedback: null, resolved_command: 'accept', created_at: '2026-05-28T00:00:00Z' }),
+  ];
+  const EXCHANGES = [
+    { id: 'ex-1', task_id: 'task-1', brief_id: 'b-1', trigger: 'discuss', gate: 'clarifying', status: 'converged', rounds: [] },
+    { id: 'ex-0', task_id: 'task-1', brief_id: null, trigger: 'pre-draft-clarify', gate: null, status: 'converged', rounds: [] },
+  ];
+  const VIEW = [
+    { lineage_id: 'lin-1', task_id: 'task-1', retained_revisions: 2, iteration: 2, unretained_revisions: 3, has_unretained_revisions: true },
+    { lineage_id: 'lin-0', task_id: 'task-1', retained_revisions: 1, iteration: 1, unretained_revisions: 0, has_unretained_revisions: false },
+  ];
+
+  it('reads briefs at EVERY status (never status=active) and groups them into lineages, newest first', async () => {
+    // responses: [briefs] -> [exchanges] -> [lineage view]
+    const client = makeClient([{ data: ROWS }, { data: EXCHANGES }, { data: VIEW }]);
+    const result = await listBriefs(client, PROJECT_ID, { task_id: 'task-1' });
+
+    expect(client.from).toHaveBeenCalledWith('briefs');
+    expect(client.eq).toHaveBeenCalledWith('task_id', 'task-1');
+    // get_brief's active-only contract is exactly what history must NOT inherit.
+    expect(client.eq).not.toHaveBeenCalledWith('status', 'active');
+    expect(client.order).toHaveBeenCalledWith('created_at', { ascending: false });
+
+    expect(result.lineages.map((l) => l.lineage_id)).toEqual(['lin-1', 'lin-0']);
+    expect(result.lineages[0].revisions.map((r) => r.id)).toEqual(['b-2', 'b-1']);
+    expect(result.lineages[1].revisions.map((r) => r.id)).toEqual(['b-0']);
+  });
+
+  it('carries the per-revision record: doc, content, reason, iteration, iterate_feedback and the resolution', async () => {
+    const client = makeClient([{ data: ROWS }, { data: EXCHANGES }, { data: VIEW }]);
+    const result = await listBriefs(client, PROJECT_ID, { task_id: 'task-1' });
+    const [newest, oldest] = result.lineages[0].revisions;
+
+    expect(newest).toMatchObject({
+      id: 'b-2', reason: 'clarification-draft', iteration: 2, content: 'rendered',
+      // The feedback that PRODUCED this revision lives on the successor, not on what it rejected.
+      iterate_feedback: 'narrow the scope', status: 'active',
+    });
+    expect(newest.doc).toEqual({ decide: 'x', items: [] });
+    expect(oldest).toMatchObject({
+      id: 'b-1', iterate_feedback: null, status: 'superseded',
+      resolved_command: 'iterate', resolved_detail: 'narrow the scope', resolved_at: null,
+    });
+  });
+
+  it('reports the lineage-level outcome and the retained / not-retained counts from the view', async () => {
+    const client = makeClient([{ data: ROWS }, { data: EXCHANGES }, { data: VIEW }]);
+    const result = await listBriefs(client, PROJECT_ID, { task_id: 'task-1' });
+
+    expect(client.from).toHaveBeenCalledWith('brief_revision_lineages');
+    expect(result.lineages[0]).toMatchObject({
+      reason: 'clarification-draft', status: 'active',
+      retained_revisions: 2, unretained_revisions: 3, has_unretained_revisions: true,
+    });
+    expect(result.lineages[1]).toMatchObject({
+      status: 'accepted', resolved_command: 'accept',
+      retained_revisions: 1, unretained_revisions: 0, has_unretained_revisions: false,
+    });
+  });
+
+  it('anchors exchanges: a brief_id to ITS revision, a NULL brief_id at lineage level', async () => {
+    const client = makeClient([{ data: ROWS }, { data: EXCHANGES }, { data: VIEW }]);
+    const result = await listBriefs(client, PROJECT_ID, { task_id: 'task-1' });
+
+    expect(client.from).toHaveBeenCalledWith('elicitation_exchanges');
+    const lin1 = result.lineages[0];
+    expect(lin1.revisions.find((r) => r.id === 'b-1')!.exchanges.map((e) => e.id)).toEqual(['ex-1']);
+    expect(lin1.revisions.find((r) => r.id === 'b-2')!.exchanges).toEqual([]);
+    expect(lin1.pre_draft_exchanges).toEqual([]);
+    // The gate-less pre-draft conversation preceded the FIRST draft on the ticket.
+    expect(result.lineages[1].pre_draft_exchanges.map((e) => e.id)).toEqual(['ex-0']);
+  });
+
+  it('resolves a visual ID via resolveTaskId before reading', async () => {
+    const client = makeClient([{ data: ROWS }, { data: EXCHANGES }, { data: VIEW }]);
+    const result = await listBriefs(client, PROJECT_ID, { task_id: 'B-42' });
+    expect(mockResolveTaskId).toHaveBeenCalledWith(client, PROJECT_ID, 'B-42');
+    expect(result.task_id).toBe('B-42');
+  });
+
+  it('requires task_id', async () => {
+    const client = makeClient([]);
+    await expect(listBriefs(client, PROJECT_ID, { task_id: '' })).rejects.toThrow('task_id is required');
+  });
+
+  it('returns an empty lineage list (not an error) for a task that never had a brief', async () => {
+    const client = makeClient([{ data: [] }, { data: [] }, { data: [] }]);
+    const result = await listBriefs(client, PROJECT_ID, { task_id: 'task-1' });
+    expect(result.lineages).toEqual([]);
+    expect(result.substrate).toEqual({ revision_columns: 'present', lineage_view: 'present', exchanges: 'present' });
+  });
+});
+
+describe('listBriefs — B-383 tolerance (the substrate may not be on this DB yet)', () => {
+  const plain = { id: 'b-1', task_id: 'task-1', reason: 'plan-draft', doc: {}, content: 'c', status: 'accepted', iteration: 1, pending_activity: 'planning' };
+
+  it('degrades to one lineage per brief when the revision COLUMNS are absent — and says so', async () => {
+    // responses: [briefs: column error] -> [briefs fallback] -> [exchanges] -> [lineage view]
+    const client = makeClient([
+      { data: null, error: { code: '42703', message: 'column briefs.lineage_id does not exist' } },
+      { data: [plain] },
+      { data: [] },
+      { data: [] },
+    ]);
+    const result = await listBriefs(client, PROJECT_ID, { task_id: 'task-1' });
+
+    expect(result.substrate.revision_columns).toBe('absent');
+    expect(result.lineages).toHaveLength(1);
+    // Keyed by the brief's own id — a revision is degraded, never dropped.
+    expect(result.lineages[0].lineage_id).toBe('b-1');
+    expect(result.lineages[0].revisions[0].iterate_feedback).toBeNull();
+    expect(result.lineages[0].retained_revisions).toBe(1);
+  });
+
+  it('degrades to the revisions it holds when the counts VIEW is absent — and says so', async () => {
+    const client = makeClient([
+      { data: [plain] },
+      { data: [] },
+      { data: null, error: { code: 'PGRST205', message: "Could not find the table 'public.brief_revision_lineages' in the schema cache" } },
+    ]);
+    const result = await listBriefs(client, PROJECT_ID, { task_id: 'task-1' });
+
+    expect(result.substrate.lineage_view).toBe('absent');
+    expect(result.lineages[0]).toMatchObject({
+      retained_revisions: 1, unretained_revisions: 0, has_unretained_revisions: false,
+    });
+  });
+
+  it('degrades to no exchanges when the exchange table is absent — and says so', async () => {
+    const client = makeClient([
+      { data: [plain] },
+      { data: null, error: { code: '42P01', message: 'relation "elicitation_exchanges" does not exist' } },
+      { data: [] },
+    ]);
+    const result = await listBriefs(client, PROJECT_ID, { task_id: 'task-1' });
+
+    expect(result.substrate.exchanges).toBe('absent');
+    expect(result.lineages[0].revisions[0].exchanges).toEqual([]);
+    expect(result.lineages[0].pre_draft_exchanges).toEqual([]);
+  });
+
+  it('PROPAGATES a non-schema error (permission / transient) instead of reading it as absent substrate', async () => {
+    const denied = { data: null, error: { code: '42501', message: 'permission denied for table briefs' } };
+    await expect(listBriefs(makeClient([denied]), PROJECT_ID, { task_id: 'task-1' }))
+      .rejects.toThrow('permission denied for table briefs');
+
+    const blip = { data: null, error: { code: '08006', message: 'connection failure' } };
+    await expect(listBriefs(makeClient([{ data: [plain] }, blip]), PROJECT_ID, { task_id: 'task-1' }))
+      .rejects.toThrow('connection failure');
+  });
+
+  it('isMissingBriefHistorySubstrate matches only schema-absence, never another error class', () => {
+    expect(isMissingBriefHistorySubstrate({ code: '42703', message: 'column briefs.lineage_id does not exist' })).toBe(true);
+    expect(isMissingBriefHistorySubstrate({ code: '42P01', message: 'relation does not exist' })).toBe(true);
+    expect(isMissingBriefHistorySubstrate({ code: 'PGRST205', message: 'not found' })).toBe(true);
+    expect(isMissingBriefHistorySubstrate({ message: "Could not find the 'iterate_feedback' column in the schema cache" })).toBe(true);
+    expect(isMissingBriefHistorySubstrate({ code: '42501', message: 'permission denied' })).toBe(false);
+    expect(isMissingBriefHistorySubstrate({ message: 'fetch failed' })).toBe(false);
+    expect(isMissingBriefHistorySubstrate(null)).toBe(false);
+  });
+});
+
+describe('list_briefs tool registration (B-878)', () => {
+  it('is a read taking a single task_id, and does not touch get_brief’s active-only contract', () => {
+    expect(listBriefsTool.name).toBe('list_briefs');
+    expect(listBriefsTool.inputSchema.required).toEqual(['task_id']);
+    expect(Object.keys(listBriefsTool.inputSchema.properties)).toEqual(['task_id']);
+    // get_brief is unchanged: still the ACTIVE brief only (the conductor loop depends on it).
+    expect(getBriefTool.name).toBe('get_brief');
+    expect(getBriefTool.description).toContain('active brief');
+  });
+
+  it('tells the reader what a not-retained count means, so it is never read as "there were none"', () => {
+    expect(listBriefsTool.description).toContain('predate revision retention');
+    expect(listBriefsTool.description).toContain('iterate_feedback');
+    expect(listBriefsTool.description).toContain('pre_draft_exchanges');
   });
 });

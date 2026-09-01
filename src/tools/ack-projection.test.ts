@@ -48,6 +48,8 @@ const READ_TOOLS = [
   'list_subtasks',
   'list_parent',
   'get_brief',
+  // B-878 — the brief HISTORY read (lineages -> retained revisions); no record echo to strip.
+  'list_briefs',
   'get_elicitation',
   'list_ticket_knowledge',
   'get_build_evidence_status',

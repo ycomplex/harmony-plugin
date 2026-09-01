@@ -50,6 +50,7 @@ import { listSubtasksTool, listSubtasks, listParentTool, listParent, manageSubta
 import {
   composeBrief, composeBriefTool,
   getBrief, getBriefTool,
+  listBriefs, listBriefsTool,
   resolveBrief, resolveBriefTool,
   reshapeBrief, reshapeBriefTool,
   consumeAcceptRemark, consumeAcceptRemarkTool,
@@ -125,7 +126,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     createEntityTool, updateEntityTool, reconcileEntityTool,
-    composeBriefTool, getBriefTool, resolveBriefTool, reshapeBriefTool, consumeAcceptRemarkTool,
+    composeBriefTool, getBriefTool, listBriefsTool, resolveBriefTool, reshapeBriefTool, consumeAcceptRemarkTool,
     flagReleaseApprovalPendingTool,
     startElicitationTool, fileElicitationRoundTool, getElicitationTool, concludeElicitationTool,
     submitElicitationAnswersTool,
@@ -333,6 +334,9 @@ export async function handleToolCall(
         break;
       case 'get_brief':
         result = await getBrief(client, projectId, args as any);
+        break;
+      case 'list_briefs':
+        result = await listBriefs(client, projectId, args as any);
         break;
       case 'resolve_brief':
         result = await resolveBrief(client, projectId, args as any);

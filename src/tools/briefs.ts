@@ -2251,6 +2251,229 @@ export async function getBrief(
   return { ...(data as Record<string, unknown>), pending_resolution };
 }
 
+// ——— B-878: the brief HISTORY read ———————————————————————————————————————————————————————————————
+//
+// `get_brief` above answers "what is awaiting the human RIGHT NOW" — it filters status='active' and the
+// conductor loop depends on exactly that. It is deliberately NOT widened here: history is a SECOND,
+// additive read, so nothing that reads the active brief changes shape.
+//
+// What this returns is the record B-843 started retaining: every gate ask on the ticket (a LINEAGE),
+// every retained revision of it at every status, the reshape feedback that produced each revision, and
+// the elicitation exchanges anchored where they actually happened.
+
+/** The history read needs BRIEF_COLS plus B-843's two revision columns. */
+const BRIEF_HISTORY_COLS = `${BRIEF_COLS}, lineage_id, iterate_feedback`;
+
+/** The exchange columns the history read surfaces (no consumable markers — history never answers). */
+const HISTORY_EXCHANGE_COLS = 'id, task_id, brief_id, trigger, gate, status, rounds, created_at';
+
+/**
+ * B-878 / B-383 — "this DB does not have the revision-history substrate (yet)": the lineage/feedback
+ * COLUMNS, or the `brief_revision_lineages` VIEW. Same idiom (and the same hard limits) as
+ * `isMissingComposeBriefRevision` above and `isMissingRelationOrFunction` in acceptance-events.ts:
+ * 42703 = undefined_column, 42P01 = undefined_table, PGRST204/PGRST205 = PostgREST "column/table not
+ * found in schema cache". It NEVER matches a permission error, a transient network failure, or any
+ * other error class — those must propagate, never be silently read as "substrate absent".
+ */
+export const isMissingBriefHistorySubstrate = (
+  err: { code?: string; message?: string } | null | undefined,
+): boolean => {
+  if (!err) return false;
+  const code = err.code ?? '';
+  if (code === '42703' || code === '42P01' || code === 'PGRST204' || code === 'PGRST205') return true;
+  const msg = err.message ?? '';
+  if (/(lineage_id|iterate_feedback|brief_revision_lineages)/.test(msg)
+    && /(does not exist|could not find|schema cache)/i.test(msg)) return true;
+  return false;
+};
+
+export interface ListBriefsArgs { task_id: string; }
+
+interface HistoryExchangeRow {
+  id: string;
+  brief_id: string | null;
+  [field: string]: unknown;
+}
+
+/** One retained revision, with whatever was discussed ON it. */
+export interface BriefRevisionEntry {
+  id: string;
+  iteration: number | null;
+  reason: string | null;
+  doc: unknown;
+  content: string | null;
+  iterate_feedback: string | null;
+  status: string | null;
+  resolved_command: string | null;
+  resolved_detail: string | null;
+  resolved_at: string | null;
+  created_at: string | null;
+  /** Exchanges whose `brief_id` points at THIS revision. An array, not a single value: a revision can
+   *  carry an abandoned discussion AND the one that converged, and history must drop neither. */
+  exchanges: HistoryExchangeRow[];
+}
+
+export interface BriefLineageEntry {
+  lineage_id: string;
+  reason: string | null;
+  /** The newest revision's status — how the ask stands (or ended). */
+  status: string | null;
+  resolved_command: string | null;
+  resolved_detail: string | null;
+  retained_revisions: number;
+  unretained_revisions: number;
+  has_unretained_revisions: boolean;
+  /** Newest revision first. */
+  revisions: BriefRevisionEntry[];
+  /** `brief_id IS NULL` — a conversation that ran BEFORE any draft existed, so it anchors to the
+   *  lineage rather than to a revision. */
+  pre_draft_exchanges: HistoryExchangeRow[];
+}
+
+export interface ListBriefsResult {
+  task_id: string;
+  lineages: BriefLineageEntry[];
+  /**
+   * Which parts of the substrate this DB actually has. Reported rather than assumed, so a degraded
+   * read is VISIBLE to the caller (the B-843/B-883 discipline: a drop is never silent).
+   */
+  substrate: {
+    revision_columns: 'present' | 'absent';
+    lineage_view: 'present' | 'absent';
+    exchanges: 'present' | 'absent';
+  };
+}
+
+/**
+ * B-878 — every brief a task has ever had, grouped into lineages, at EVERY status.
+ *
+ * Degrades, never throws, when a piece of the substrate is missing (a plugin `main` reaches the prod
+ * board before harmony-web's migration does — see B-383): absent revision columns make each brief its
+ * own single-revision lineage, an absent counts view falls back to the revisions actually held, and an
+ * absent exchange table simply contributes no exchanges. Any NON-schema error still propagates.
+ */
+export async function listBriefs(
+  client: SupabaseClient,
+  projectId: string,
+  args: ListBriefsArgs,
+): Promise<ListBriefsResult> {
+  if (!args.task_id) throw new Error('task_id is required');
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+
+  // 1) Every brief on the task — no status filter (that active-only blindness is what this closes).
+  let revision_columns: 'present' | 'absent' = 'present';
+  let rows: Record<string, unknown>[] = [];
+  {
+    const { data, error } = await client
+      .from('briefs').select(BRIEF_HISTORY_COLS)
+      .eq('task_id', taskId).order('created_at', { ascending: false });
+    if (error) {
+      if (!isMissingBriefHistorySubstrate(error)) throw new Error(error.message);
+      revision_columns = 'absent';
+      const fallback = await client
+        .from('briefs').select(BRIEF_COLS)
+        .eq('task_id', taskId).order('created_at', { ascending: false });
+      if (fallback.error) throw new Error(fallback.error.message);
+      rows = (fallback.data as Record<string, unknown>[]) ?? [];
+    } else {
+      rows = (data as Record<string, unknown>[]) ?? [];
+    }
+  }
+
+  // 2) The exchanges, at every status — anchored per revision below by brief_id.
+  let exchanges: HistoryExchangeRow[] = [];
+  let exchangesPresence: 'present' | 'absent' = 'present';
+  {
+    const { data, error } = await client
+      .from('elicitation_exchanges').select(HISTORY_EXCHANGE_COLS).eq('task_id', taskId);
+    if (error) {
+      if (!isMissingBriefHistorySubstrate(error)) throw new Error(error.message);
+      exchangesPresence = 'absent';
+    } else {
+      exchanges = (data as HistoryExchangeRow[]) ?? [];
+    }
+  }
+
+  // 3) The counts view — the only place that knows how many revisions predate retention.
+  const counts = new Map<string, Record<string, unknown>>();
+  let lineage_view: 'present' | 'absent' = 'present';
+  {
+    const { data, error } = await client
+      .from('brief_revision_lineages').select('*').eq('task_id', taskId);
+    if (error) {
+      if (!isMissingBriefHistorySubstrate(error)) throw new Error(error.message);
+      lineage_view = 'absent';
+    } else {
+      for (const row of ((data as Record<string, unknown>[]) ?? [])) {
+        const key = row.lineage_id;
+        if (typeof key === 'string') counts.set(key, row);
+      }
+    }
+  }
+
+  const anchored = exchanges.filter((e) => !!e.brief_id);
+  const preDraft = exchanges.filter((e) => !e.brief_id);
+
+  // Group, preserving the created_at-descending order the query returned.
+  const grouped = new Map<string, Record<string, unknown>[]>();
+  for (const row of rows) {
+    // A brief written before the lineage column existed still groups — as its own lineage keyed by its
+    // id. Tolerance, never a dropped revision.
+    const key = typeof row.lineage_id === 'string' ? row.lineage_id : String(row.id);
+    const bucket = grouped.get(key);
+    if (bucket) bucket.push(row);
+    else grouped.set(key, [row]);
+  }
+
+  const entries = [...grouped.entries()];
+  const lineages: BriefLineageEntry[] = entries.map(([lineage_id, revisions], index) => {
+    const latest = revisions[0] ?? {};
+    const countRow = counts.get(lineage_id);
+    const num = (v: unknown, fallback: number) => (typeof v === 'number' ? v : fallback);
+    return {
+      lineage_id,
+      reason: (latest.reason as string) ?? null,
+      status: (latest.status as string) ?? null,
+      resolved_command: (latest.resolved_command as string) ?? null,
+      resolved_detail: (latest.resolved_detail as string) ?? null,
+      retained_revisions: num(countRow?.retained_revisions, revisions.length),
+      unretained_revisions: num(countRow?.unretained_revisions, 0),
+      has_unretained_revisions: countRow?.has_unretained_revisions === true,
+      revisions: revisions.map((row) => ({
+        id: row.id as string,
+        iteration: (row.iteration as number) ?? null,
+        reason: (row.reason as string) ?? null,
+        doc: row.doc ?? null,
+        content: (row.content as string) ?? null,
+        iterate_feedback: (row.iterate_feedback as string) ?? null,
+        status: (row.status as string) ?? null,
+        resolved_command: (row.resolved_command as string) ?? null,
+        resolved_detail: (row.resolved_detail as string) ?? null,
+        resolved_at: (row.resolved_at as string) ?? null,
+        created_at: (row.created_at as string) ?? null,
+        exchanges: anchored.filter((e) => e.brief_id === row.id),
+      })),
+      // A pre-draft exchange preceded a lineage's FIRST draft: match it by gate when the gate says
+      // which lineage it belongs to, else it belongs to the OLDEST lineage (the first ask on the
+      // ticket) — the only lineage a gate-less pre-draft conversation can have preceded.
+      pre_draft_exchanges: preDraft.filter((e) => {
+        const gate = e.gate;
+        if (typeof gate === 'string' && gate) {
+          if (revisions.some((r) => r.pending_activity === gate)) return true;
+          if (rows.some((r) => r.pending_activity === gate)) return false;
+        }
+        return index === entries.length - 1;
+      }),
+    };
+  });
+
+  return {
+    task_id: taskId,
+    lineages,
+    substrate: { revision_columns, lineage_view, exchanges: exchangesPresence },
+  };
+}
+
 // ——— B-734 Phase B: resolution provenance ————————————————————————————————————————————————————————
 //
 // resolve_brief now records a `brief_resolved` decision entry carrying WHO decided. Provenance FAILS
@@ -2540,6 +2763,20 @@ export const getBriefTool = {
   inputSchema: {
     type: 'object' as const,
     properties: { task_id: { type: 'string', description: 'The task whose active brief to fetch — UUID, task number, or visual ID (e.g., B-43)' } },
+    required: ['task_id'],
+  },
+};
+
+export const listBriefsTool = {
+  name: 'list_briefs',
+  description:
+    "Read the FULL brief history of a task: every gate ask (a lineage), every RETAINED revision of it at every status, newest first — the record `get_brief` cannot show you, because get_brief answers only 'what is awaiting the human right now' (status='active') and is unchanged by this tool. " +
+    "Each lineage carries its reason (the gate), how it stands or ended (status + resolved_command + resolved_detail), the retained revision count, and — from the brief_revision_lineages view — how many earlier revisions were NOT retained because they predate revision retention (B-843): a real count of briefs whose text is gone, never a claim that there were none. " +
+    "Each revision carries `doc`, `content`, `reason`, `iteration`, `iterate_feedback` (the send-back feedback that PRODUCED this revision — stored on the successor, not on the version it rejected), `status`, `resolved_command`, `resolved_detail`, `resolved_at`, plus the elicitation exchanges attached to that specific revision (elicitation_exchanges.brief_id match). Exchanges with a NULL brief_id are pre-draft conversations and are reported at LINEAGE level as `pre_draft_exchanges` — what preceded the first draft. " +
+    "Degrades rather than failing against a database that predates the substrate (B-383's merge-before-promote window): the `substrate` block reports which of the revision columns / the counts view / the exchange table were actually present, so a partial answer is visible as partial and never mistaken for 'there is no history'.",
+  inputSchema: {
+    type: 'object' as const,
+    properties: { task_id: { type: 'string', description: 'The task whose brief history to read — UUID, task number, or visual ID (e.g., B-43)' } },
     required: ['task_id'],
   },
 };
