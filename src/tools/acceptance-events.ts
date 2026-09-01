@@ -1,9 +1,14 @@
-// B-797 — the conductor's consume path for an accepted gate brief's deferred payload. Accept becomes a
-// consumed EVENT for the four agent-owned-payload reasons (clarification-draft, decomposition-proposal,
-// plan-draft, design-decision-draft on the product track): web-accept snapshots the brief's payload into
-// a `pending_acceptance_events` row and DEFERS the workflow-state advance; this module executes every
-// promised write via the per-write-kind SECURITY DEFINER RPCs, then commits the deferred advance via
-// `consume_acceptance_event` — the FINAL write, never the prologue.
+// B-797 (extended by B-904) — the conductor's consume path for an accepted gate brief's deferred payload.
+// Accept becomes a consumed EVENT for the agent-owned-payload reasons — clarification-draft,
+// decomposition-proposal, plan-draft, design-decision-draft (EVERY track: product, technical, ux-ui — B-904
+// dropped the earlier product-only restriction), and revise-scope-review (B-904 added this reason entirely,
+// closing the stub bug where its derived knowledge_entry_content payload had no consume vehicle): web-accept
+// snapshots the brief's payload into a `pending_acceptance_events` row and DEFERS the workflow-state advance;
+// this module executes every promised write via the per-write-kind SECURITY DEFINER RPCs, then commits the
+// deferred advance via `consume_acceptance_event` — the FINAL write, never the prologue. The actual
+// reason-eligibility decision lives in harmony-web's `resolve_brief` SQL function (v_is_event_reason), not
+// in this module — this file's dispatch (`applyAcceptanceEventPayload`, below) is purely by `write_kind`
+// and has never needed reason/track branching of its own.
 //
 // PROBE 3 / absent-substrate tolerance (B-383): the tables/RPCs this module depends on reach the prod DB
 // only at the next `promote-prod`, but plugin `main` runs against prod immediately once merged. So there
