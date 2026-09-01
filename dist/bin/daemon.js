@@ -23458,6 +23458,7 @@ function renderEntry(doc, ctx) {
   if (changes.length) out.push("**Changed in the final round:**", ...markAll(changes), "");
   return out.join("\n").trimEnd();
 }
+var BRIEF_COLS = "id, task_id, reason, doc, content, expand_sections, related, pending_activity, decision_ref, status, iteration, resolved_command, resolved_detail, resolved_at, created_by, created_at, updated_at";
 async function fetchPendingResolution(client, taskId) {
   try {
     const { data, error } = await client.from("briefs").select("pending_resolution").eq("task_id", taskId).eq("status", "active").maybeSingle();
@@ -23539,6 +23540,7 @@ async function fetchPendingRemark(client, taskId) {
     return null;
   }
 }
+var BRIEF_HISTORY_COLS = `${BRIEF_COLS}, lineage_id, iterate_feedback`;
 var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
 var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
 var ACCEPTED_PROVENANCE = `'${PROVENANCE_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_SYNTHESIZED}', or '${PROVENANCE_AGENT_SYNTHESIZED}:<mode>'`;

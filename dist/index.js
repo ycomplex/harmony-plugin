@@ -38168,6 +38168,114 @@ async function getBrief(client, projectId, args) {
   const pending_resolution = await fetchPendingResolution(client, taskId);
   return { ...data, pending_resolution };
 }
+var BRIEF_HISTORY_COLS = `${BRIEF_COLS}, lineage_id, iterate_feedback`;
+var HISTORY_EXCHANGE_COLS = "id, task_id, brief_id, trigger, gate, status, rounds, created_at";
+var isMissingBriefHistorySubstrate = (err) => {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42703" || code === "42P01" || code === "PGRST204" || code === "PGRST205") return true;
+  const msg = err.message ?? "";
+  if (/(lineage_id|iterate_feedback|brief_revision_lineages)/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg)) return true;
+  return false;
+};
+async function listBriefs(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  let revision_columns = "present";
+  let rows = [];
+  {
+    const { data, error: error2 } = await client.from("briefs").select(BRIEF_HISTORY_COLS).eq("task_id", taskId).order("created_at", { ascending: false });
+    if (error2) {
+      if (!isMissingBriefHistorySubstrate(error2)) throw new Error(error2.message);
+      revision_columns = "absent";
+      const fallback = await client.from("briefs").select(BRIEF_COLS).eq("task_id", taskId).order("created_at", { ascending: false });
+      if (fallback.error) throw new Error(fallback.error.message);
+      rows = fallback.data ?? [];
+    } else {
+      rows = data ?? [];
+    }
+  }
+  let exchanges = [];
+  let exchangesPresence = "present";
+  {
+    const { data, error: error2 } = await client.from("elicitation_exchanges").select(HISTORY_EXCHANGE_COLS).eq("task_id", taskId);
+    if (error2) {
+      if (!isMissingBriefHistorySubstrate(error2)) throw new Error(error2.message);
+      exchangesPresence = "absent";
+    } else {
+      exchanges = data ?? [];
+    }
+  }
+  const counts = /* @__PURE__ */ new Map();
+  let lineage_view = "present";
+  {
+    const { data, error: error2 } = await client.from("brief_revision_lineages").select("*").eq("task_id", taskId);
+    if (error2) {
+      if (!isMissingBriefHistorySubstrate(error2)) throw new Error(error2.message);
+      lineage_view = "absent";
+    } else {
+      for (const row of data ?? []) {
+        const key = row.lineage_id;
+        if (typeof key === "string") counts.set(key, row);
+      }
+    }
+  }
+  const anchored = exchanges.filter((e) => !!e.brief_id);
+  const preDraft = exchanges.filter((e) => !e.brief_id);
+  const grouped = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const key = typeof row.lineage_id === "string" ? row.lineage_id : String(row.id);
+    const bucket = grouped.get(key);
+    if (bucket) bucket.push(row);
+    else grouped.set(key, [row]);
+  }
+  const entries = [...grouped.entries()];
+  const lineages = entries.map(([lineage_id, revisions], index) => {
+    const latest = revisions[0] ?? {};
+    const countRow = counts.get(lineage_id);
+    const num = (v, fallback) => typeof v === "number" ? v : fallback;
+    return {
+      lineage_id,
+      reason: latest.reason ?? null,
+      status: latest.status ?? null,
+      resolved_command: latest.resolved_command ?? null,
+      resolved_detail: latest.resolved_detail ?? null,
+      retained_revisions: num(countRow?.retained_revisions, revisions.length),
+      unretained_revisions: num(countRow?.unretained_revisions, 0),
+      has_unretained_revisions: countRow?.has_unretained_revisions === true,
+      revisions: revisions.map((row) => ({
+        id: row.id,
+        iteration: row.iteration ?? null,
+        reason: row.reason ?? null,
+        doc: row.doc ?? null,
+        content: row.content ?? null,
+        iterate_feedback: row.iterate_feedback ?? null,
+        status: row.status ?? null,
+        resolved_command: row.resolved_command ?? null,
+        resolved_detail: row.resolved_detail ?? null,
+        resolved_at: row.resolved_at ?? null,
+        created_at: row.created_at ?? null,
+        exchanges: anchored.filter((e) => e.brief_id === row.id)
+      })),
+      // A pre-draft exchange preceded a lineage's FIRST draft: match it by gate when the gate says
+      // which lineage it belongs to, else it belongs to the OLDEST lineage (the first ask on the
+      // ticket) — the only lineage a gate-less pre-draft conversation can have preceded.
+      pre_draft_exchanges: preDraft.filter((e) => {
+        const gate = e.gate;
+        if (typeof gate === "string" && gate) {
+          if (revisions.some((r) => r.pending_activity === gate)) return true;
+          if (rows.some((r) => r.pending_activity === gate)) return false;
+        }
+        return index === entries.length - 1;
+      })
+    };
+  });
+  return {
+    task_id: taskId,
+    lineages,
+    substrate: { revision_columns, lineage_view, exchanges: exchangesPresence }
+  };
+}
 var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
 var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
 var PROVENANCE_WEB_ONLY = "human-in-browser";
@@ -38320,6 +38428,15 @@ var getBriefTool = {
   inputSchema: {
     type: "object",
     properties: { task_id: { type: "string", description: "The task whose active brief to fetch \u2014 UUID, task number, or visual ID (e.g., B-43)" } },
+    required: ["task_id"]
+  }
+};
+var listBriefsTool = {
+  name: "list_briefs",
+  description: "Read the FULL brief history of a task: every gate ask (a lineage), every RETAINED revision of it at every status, newest first \u2014 the record `get_brief` cannot show you, because get_brief answers only 'what is awaiting the human right now' (status='active') and is unchanged by this tool. Each lineage carries its reason (the gate), how it stands or ended (status + resolved_command + resolved_detail), the retained revision count, and \u2014 from the brief_revision_lineages view \u2014 how many earlier revisions were NOT retained because they predate revision retention (B-843): a real count of briefs whose text is gone, never a claim that there were none. Each revision carries `doc`, `content`, `reason`, `iteration`, `iterate_feedback` (the send-back feedback that PRODUCED this revision \u2014 stored on the successor, not on the version it rejected), `status`, `resolved_command`, `resolved_detail`, `resolved_at`, plus the elicitation exchanges attached to that specific revision (elicitation_exchanges.brief_id match). Exchanges with a NULL brief_id are pre-draft conversations and are reported at LINEAGE level as `pre_draft_exchanges` \u2014 what preceded the first draft. Degrades rather than failing against a database that predates the substrate (B-383's merge-before-promote window): the `substrate` block reports which of the revision columns / the counts view / the exchange table were actually present, so a partial answer is visible as partial and never mistaken for 'there is no history'.",
+  inputSchema: {
+    type: "object",
+    properties: { task_id: { type: "string", description: "The task whose brief history to read \u2014 UUID, task number, or visual ID (e.g., B-43)" } },
     required: ["task_id"]
   }
 };
@@ -42327,6 +42444,7 @@ function registerTools(disabledFeatures) {
     reconcileEntityTool,
     composeBriefTool,
     getBriefTool,
+    listBriefsTool,
     resolveBriefTool,
     reshapeBriefTool,
     consumeAcceptRemarkTool,
@@ -42527,6 +42645,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "get_brief":
         result = await getBrief(client, projectId, args);
+        break;
+      case "list_briefs":
+        result = await listBriefs(client, projectId, args);
         break;
       case "resolve_brief":
         result = await resolveBrief(client, projectId, args);

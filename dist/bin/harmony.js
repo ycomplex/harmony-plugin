@@ -29367,6 +29367,7 @@ function renderEntry(doc, ctx) {
   if (changes.length) out.push("**Changed in the final round:**", ...markAll(changes), "");
   return out.join("\n").trimEnd();
 }
+var BRIEF_COLS = "id, task_id, reason, doc, content, expand_sections, related, pending_activity, decision_ref, status, iteration, resolved_command, resolved_detail, resolved_at, created_by, created_at, updated_at";
 async function fetchPendingResolution(client, taskId) {
   try {
     const { data, error } = await client.from("briefs").select("pending_resolution").eq("task_id", taskId).eq("status", "active").maybeSingle();
@@ -29447,6 +29448,114 @@ async function fetchPendingRemark(client, taskId) {
   } catch {
     return null;
   }
+}
+var BRIEF_HISTORY_COLS = `${BRIEF_COLS}, lineage_id, iterate_feedback`;
+var HISTORY_EXCHANGE_COLS = "id, task_id, brief_id, trigger, gate, status, rounds, created_at";
+var isMissingBriefHistorySubstrate = (err) => {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42703" || code === "42P01" || code === "PGRST204" || code === "PGRST205") return true;
+  const msg = err.message ?? "";
+  if (/(lineage_id|iterate_feedback|brief_revision_lineages)/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg)) return true;
+  return false;
+};
+async function listBriefs(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  let revision_columns = "present";
+  let rows = [];
+  {
+    const { data, error } = await client.from("briefs").select(BRIEF_HISTORY_COLS).eq("task_id", taskId).order("created_at", { ascending: false });
+    if (error) {
+      if (!isMissingBriefHistorySubstrate(error)) throw new Error(error.message);
+      revision_columns = "absent";
+      const fallback = await client.from("briefs").select(BRIEF_COLS).eq("task_id", taskId).order("created_at", { ascending: false });
+      if (fallback.error) throw new Error(fallback.error.message);
+      rows = fallback.data ?? [];
+    } else {
+      rows = data ?? [];
+    }
+  }
+  let exchanges = [];
+  let exchangesPresence = "present";
+  {
+    const { data, error } = await client.from("elicitation_exchanges").select(HISTORY_EXCHANGE_COLS).eq("task_id", taskId);
+    if (error) {
+      if (!isMissingBriefHistorySubstrate(error)) throw new Error(error.message);
+      exchangesPresence = "absent";
+    } else {
+      exchanges = data ?? [];
+    }
+  }
+  const counts = /* @__PURE__ */ new Map();
+  let lineage_view = "present";
+  {
+    const { data, error } = await client.from("brief_revision_lineages").select("*").eq("task_id", taskId);
+    if (error) {
+      if (!isMissingBriefHistorySubstrate(error)) throw new Error(error.message);
+      lineage_view = "absent";
+    } else {
+      for (const row of data ?? []) {
+        const key = row.lineage_id;
+        if (typeof key === "string") counts.set(key, row);
+      }
+    }
+  }
+  const anchored = exchanges.filter((e) => !!e.brief_id);
+  const preDraft = exchanges.filter((e) => !e.brief_id);
+  const grouped = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const key = typeof row.lineage_id === "string" ? row.lineage_id : String(row.id);
+    const bucket = grouped.get(key);
+    if (bucket) bucket.push(row);
+    else grouped.set(key, [row]);
+  }
+  const entries = [...grouped.entries()];
+  const lineages = entries.map(([lineage_id, revisions], index) => {
+    const latest = revisions[0] ?? {};
+    const countRow = counts.get(lineage_id);
+    const num = (v, fallback) => typeof v === "number" ? v : fallback;
+    return {
+      lineage_id,
+      reason: latest.reason ?? null,
+      status: latest.status ?? null,
+      resolved_command: latest.resolved_command ?? null,
+      resolved_detail: latest.resolved_detail ?? null,
+      retained_revisions: num(countRow?.retained_revisions, revisions.length),
+      unretained_revisions: num(countRow?.unretained_revisions, 0),
+      has_unretained_revisions: countRow?.has_unretained_revisions === true,
+      revisions: revisions.map((row) => ({
+        id: row.id,
+        iteration: row.iteration ?? null,
+        reason: row.reason ?? null,
+        doc: row.doc ?? null,
+        content: row.content ?? null,
+        iterate_feedback: row.iterate_feedback ?? null,
+        status: row.status ?? null,
+        resolved_command: row.resolved_command ?? null,
+        resolved_detail: row.resolved_detail ?? null,
+        resolved_at: row.resolved_at ?? null,
+        created_at: row.created_at ?? null,
+        exchanges: anchored.filter((e) => e.brief_id === row.id)
+      })),
+      // A pre-draft exchange preceded a lineage's FIRST draft: match it by gate when the gate says
+      // which lineage it belongs to, else it belongs to the OLDEST lineage (the first ask on the
+      // ticket) — the only lineage a gate-less pre-draft conversation can have preceded.
+      pre_draft_exchanges: preDraft.filter((e) => {
+        const gate = e.gate;
+        if (typeof gate === "string" && gate) {
+          if (revisions.some((r) => r.pending_activity === gate)) return true;
+          if (rows.some((r) => r.pending_activity === gate)) return false;
+        }
+        return index === entries.length - 1;
+      })
+    };
+  });
+  return {
+    task_id: taskId,
+    lineages,
+    substrate: { revision_columns, lineage_view, exchanges: exchangesPresence }
+  };
 }
 var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
 var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
@@ -31568,6 +31677,34 @@ function registerSubtaskCommands(program3) {
   });
 }
 
+// src/cli/commands/briefs.ts
+function registerBriefCommands(program3) {
+  const briefs = program3.command("briefs").description("Read a task's brief history");
+  briefs.command("list").description("List every gate ask on a task (lineages) and its retained revisions").argument("<task-id>", "Task ID (UUID, number, or B-123)").action(async (taskId) => {
+    await runCommand(
+      program3.opts(),
+      async (ctx) => listBriefs(ctx.client, ctx.projectId, { task_id: taskId }),
+      (data) => {
+        if (!data.lineages.length) return "(no briefs on this task)";
+        return formatTable(data.lineages.map((l) => ({
+          lineage_id: l.lineage_id,
+          reason: l.reason ?? "",
+          status: l.status ?? "",
+          revisions: String(l.retained_revisions),
+          // The count of revisions whose TEXT is gone — reported, never rounded away.
+          unretained: l.has_unretained_revisions ? String(l.unretained_revisions) : ""
+        })), [
+          { key: "lineage_id", header: "Lineage", width: 38 },
+          { key: "reason", header: "Gate", width: 26 },
+          { key: "status", header: "Status" },
+          { key: "revisions", header: "Revisions" },
+          { key: "unretained", header: "Not retained" }
+        ]);
+      }
+    );
+  });
+}
+
 // src/cli/commands/conduct.ts
 function registerConductCommand(program3) {
   program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor daemon picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").action(async (ticket) => {
@@ -31743,6 +31880,7 @@ registerTestCaseCommands(program2);
 registerBulkCommands(program2);
 registerKnowledgeCommands(program2);
 registerSubtaskCommands(program2);
+registerBriefCommands(program2);
 registerConductCommand(program2);
 registerConfigCommands(program2);
 registerModelCommands(program2);
