@@ -176,6 +176,32 @@ export class ActiveConductionExistsError extends Error {
 const isUniqueViolation = (error: { code?: string; message?: string }): boolean =>
   error.code === '23505' || /duplicate key value violates unique constraint/i.test(error.message ?? '');
 
+/** B-894: the `conductions` INSERT policy refusing the row. `created_by = auth.uid()` is the whole
+ *  of that policy's condition, so in practice a refusal means the insert carried no `created_by` at
+ *  all (a caller that never threaded its user id — the exact MCP-dispatch defect this ticket closes)
+ *  or one belonging to somebody else. Distinguishable from every other failure (instanceof / `code`)
+ *  because it is a CALLER-SIDE contract miss with a precise remedy, not an operational error: it must
+ *  name its cause rather than surface as a raw database error. */
+export class ConductionInsertDeniedError extends Error {
+  readonly code = 'conduction-insert-denied';
+  readonly task_id: string;
+  constructor(taskId: string, cause?: string) {
+    super(
+      `the conductions INSERT policy refused this row for task ${taskId} — the policy requires ` +
+        `created_by = auth.uid(), so the insert must carry the acting user's id` +
+        (cause ? ` (${cause})` : ''),
+    );
+    this.name = 'ConductionInsertDeniedError';
+    this.task_id = taskId;
+  }
+}
+
+/** Postgres insufficient_privilege (42501) — a row-level security policy refusing the write.
+ *  Message fallback covers a client that drops the code, for exactly the reason (and in exactly the
+ *  code-plus-fallback shape) isUniqueViolation's does. */
+const isRlsDenial = (error: { code?: string; message?: string }): boolean =>
+  error.code === '42501' || /violates row-level security policy/i.test(error.message ?? '');
+
 export interface CreateConductionArgs {
   /** The task the run conducts (UUID — the daemon deals in resolved ids). */
   task_id: string;
@@ -195,7 +221,8 @@ export interface CreateConductionArgs {
 
 /** Insert a new 'active' conduction — the ATOMIC lease-acquisition primitive (see module header).
  *  Throws the typed ActiveConductionExistsError when the task already has an active conduction
- *  (the unique-violation loss); any other failure throws a plain loud Error. When a lease_holder
+ *  (the unique-violation loss), or the typed ConductionInsertDeniedError (B-894) when the INSERT
+ *  policy refuses the row; any other failure throws a plain loud Error. When a lease_holder
  *  is named at create, lease_acquired_at is stamped in the same atomic write (client-side, house
  *  idiom — the row's updated_at trigger carries the authoritative DB clock). */
 export async function createConduction(
@@ -226,6 +253,8 @@ export async function createConduction(
     .single();
   if (error) {
     if (isUniqueViolation(error)) throw new ActiveConductionExistsError(args.task_id, error.message);
+    // B-894: an RLS refusal is a typed, caller-actionable refusal — never a raw database error.
+    if (isRlsDenial(error)) throw new ConductionInsertDeniedError(args.task_id, error.message);
     throw new Error(error.message);
   }
   return data as unknown as ConductionRecord;
@@ -377,11 +406,24 @@ export async function updateConduction(
 // listConductions
 // ---------------------------------------------------------------------------
 
-/** List conductions, oldest started first, optionally filtered to one status (the daemon's pass
- *  lists `{ status: 'active' }`). Throws on error. */
+/** List conductions, oldest started first by DEFAULT, optionally filtered to one status (the
+ *  daemon's pass lists `{ status: 'active' }`) and/or to one task. Throws on error.
+ *
+ *  B-894 added the `task_id` filter and the `order` option, both strictly additive: with neither
+ *  supplied the query is byte-for-byte the pre-B-894 one — no extra filter, and `started_at`
+ *  ASCENDING. That default is load-bearing, not cosmetic: the daemon's scheduler calls this every
+ *  pass and its queue discipline depends on the ascending started_at order (and on the B-717
+ *  `tasks(priority)` embed). Flipping the default would silently reorder the daemon's queue, so a
+ *  colocated pin test asserts it. */
 export async function listConductions(
   client: SupabaseClient,
-  args: { status?: ConductionStatus },
+  args: {
+    status?: ConductionStatus;
+    /** B-894: restrict to one task's conductions (resolved UUID). Omitted -> every task's. */
+    task_id?: string;
+    /** B-894: `started_at` direction. DEFAULTS to 'asc' — see the note above. */
+    order?: 'asc' | 'desc';
+  },
 ): Promise<ConductionRecord[]> {
   // B-717: embed the owning task's `priority` via the `conductions.task_id -> tasks.id` FK — the
   // scheduler's fire-ready-candidates phase (item 2, queue discipline) ranks ready rows by
@@ -389,7 +431,8 @@ export async function listConductions(
   // rather than a second per-row lookup. Nested under the FK table name per PostgREST embedding.
   let query = client.from('conductions').select(`${CONDUCTION_COLS}, tasks(priority)`);
   if (args.status) query = query.eq('status', args.status);
-  const { data, error } = await query.order('started_at', { ascending: true });
+  if (args.task_id) query = query.eq('task_id', args.task_id);
+  const { data, error } = await query.order('started_at', { ascending: args.order !== 'desc' });
   if (error) throw error;
   const rows = (data as unknown as Array<Record<string, unknown>>) ?? [];
   return rows.map((row) => {

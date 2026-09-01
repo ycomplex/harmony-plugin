@@ -53,6 +53,8 @@ const READ_TOOLS = [
   'get_elicitation',
   'list_ticket_knowledge',
   'get_build_evidence_status',
+  // B-894 — the per-ticket conduction read (lean ten-field rows); no record echo to strip.
+  'list_conductions',
   // download_attachment writes a LOCAL file but reads Harmony state — no record echo to strip.
   'download_attachment',
 ];

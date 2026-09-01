@@ -36400,6 +36400,18 @@ var ActiveConductionExistsError = class extends Error {
   }
 };
 var isUniqueViolation = (error2) => error2.code === "23505" || /duplicate key value violates unique constraint/i.test(error2.message ?? "");
+var ConductionInsertDeniedError = class extends Error {
+  code = "conduction-insert-denied";
+  task_id;
+  constructor(taskId, cause) {
+    super(
+      `the conductions INSERT policy refused this row for task ${taskId} \u2014 the policy requires created_by = auth.uid(), so the insert must carry the acting user's id` + (cause ? ` (${cause})` : "")
+    );
+    this.name = "ConductionInsertDeniedError";
+    this.task_id = taskId;
+  }
+};
+var isRlsDenial = (error2) => error2.code === "42501" || /violates row-level security policy/i.test(error2.message ?? "");
 async function createConduction(client, args) {
   if (!args.task_id) throw new Error("task_id is required");
   const row = {
@@ -36416,6 +36428,7 @@ async function createConduction(client, args) {
   const { data, error: error2 } = await client.from("conductions").insert(row).select(CONDUCTION_COLS).single();
   if (error2) {
     if (isUniqueViolation(error2)) throw new ActiveConductionExistsError(args.task_id, error2.message);
+    if (isRlsDenial(error2)) throw new ConductionInsertDeniedError(args.task_id, error2.message);
     throw new Error(error2.message);
   }
   return data;
@@ -36481,6 +36494,18 @@ async function updateConduction(client, id, patch) {
   const { data, error: error2 } = await client.from("conductions").update(patch).eq("id", id).select(CONDUCTION_COLS).single();
   if (error2) throw error2;
   return data;
+}
+async function listConductions(client, args) {
+  let query = client.from("conductions").select(`${CONDUCTION_COLS}, tasks(priority)`);
+  if (args.status) query = query.eq("status", args.status);
+  if (args.task_id) query = query.eq("task_id", args.task_id);
+  const { data, error: error2 } = await query.order("started_at", { ascending: args.order !== "desc" });
+  if (error2) throw error2;
+  const rows = data ?? [];
+  return rows.map((row) => {
+    const { tasks, ...rest } = row;
+    return { ...rest, task_priority: tasks?.priority ?? null };
+  });
 }
 
 // src/config/run-config.ts
@@ -41666,6 +41691,40 @@ var requestConductionReapTool = {
   }
 };
 
+// src/tools/list-conductions.ts
+var toSummary = (row) => ({
+  id: row.id,
+  status: row.status,
+  mode: row.mode,
+  started_at: row.started_at,
+  last_heartbeat_at: row.last_heartbeat_at,
+  reap_requested_at: row.reap_requested_at,
+  last_worker_exit_class: row.last_worker_exit_class,
+  updated_at: row.updated_at,
+  worker_ref: row.worker_ref,
+  retry_count: row.retry_count
+});
+async function listConductions2(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const rows = await listConductions(client, { task_id: taskId, order: "desc" });
+  return { conductions: rows.map(toSummary) };
+}
+var listConductionsTool = {
+  name: "list_conductions",
+  description: "B-894: list one ticket's conduction records \u2014 the durable per-run rows the conductor daemon drives \u2014 newest first. This is the ONLY way to obtain a `conduction_id`, so call it first whenever you need to pass one to `request_conduction_reap` (the early-reap request for a hung run). Use it to answer: is this ticket being conducted right now, and by which conduction? When did the run last heartbeat (a long-stale `last_heartbeat_at` on an `active` row is the signature of a hung leg)? Has a reap already been requested (`reap_requested_at` non-null \u2014 do not request another)? How did the last leg exit (`last_worker_exit_class`) and how many retries has it taken (`retry_count`)? Returns a lean ten-field row per conduction (id, status, mode, started_at, last_heartbeat_at, reap_requested_at, last_worker_exit_class, updated_at, worker_ref, retry_count) \u2014 daemon lease/CAS internals are deliberately not exposed. A ticket that has never been conducted returns an empty list, not an error.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)."
+      }
+    },
+    required: ["task_id"]
+  }
+};
+
 // src/tools/workflow.ts
 var UNIVERSAL = {
   parking: "Parked",
@@ -42027,7 +42086,7 @@ async function readCriteriaPresence(client, taskId, localPresence) {
 
 // src/tools/create-conduction.ts
 var HANDOFF_CONTRACT_NOTE = "the duplicate-guard can only detect an active conduction record \u2014 it can't see an in-progress terminal session, so make sure any in-session work on this ticket has stopped before handing it off.";
-async function createConduction2(client, projectId, args) {
+async function createConduction2(client, projectId, userId, args) {
   if (!args.task_id) throw new Error("task_id is required");
   const runConfig = args.run_config !== void 0 ? RunConfigSchema.parse(args.run_config) : void 0;
   const taskId = await resolveTaskId(client, projectId, args.task_id);
@@ -42036,6 +42095,11 @@ async function createConduction2(client, projectId, args) {
     const conduction = await createConduction(client, {
       task_id: taskId,
       mode: "controlled",
+      // B-894: the `conductions` INSERT policy is `created_by = auth.uid()`, so the acting user's
+      // id is NOT optional bookkeeping — omitting it is an RLS refusal at runtime. The web and the
+      // CLI both send it; this dispatch used to drop it, which is the defect B-894 closes. userId
+      // is threaded in from handleToolCall exactly as ~19 sibling write tools already do.
+      created_by: userId,
       ...runConfig !== void 0 ? { run_config: runConfig } : {}
     });
     return {
@@ -42055,12 +42119,18 @@ async function createConduction2(client, projectId, args) {
         { cause: err }
       );
     }
+    if (err instanceof ConductionInsertDeniedError) {
+      throw new Error(
+        `${args.task_id} could not be handed off \u2014 the conductions INSERT policy refused the record because it requires created_by = auth.uid(); this session's user id did not reach the insert, so re-authenticate (or report this \u2014 the tool must send created_by)`,
+        { cause: err }
+      );
+    }
     throw err;
   }
 }
 var createConductionTool = {
   name: "create_conduction",
-  description: `B-758: hand a ticket to the conductor daemon from ANY stage (Proposed through Deployed) \u2014 not just Proposed. Creates the durable conduction record (status 'active', mode 'controlled'); the conductor daemon notices it on its next pass and drives the run. Refuses cleanly (never a raw error) when the ticket is already being conducted (at most one active conduction per ticket) or when a human has explicitly taken this ticket away from the conductor (the web's "Take away from conductor" action) \u2014 in that case, Return it to the conductor first. IMPORTANT: the duplicate-guard can only detect an active conduction record \u2014 it cannot see an in-progress terminal session, so confirm any in-session work on this ticket has stopped before handing it off.`,
+  description: `B-758: hand a ticket to the conductor daemon from ANY stage (Proposed through Deployed) \u2014 not just Proposed. Creates the durable conduction record (status 'active', mode 'controlled'); the conductor daemon notices it on its next pass and drives the run. Refuses cleanly (never a raw error) when the ticket is already being conducted (at most one active conduction per ticket) or when a human has explicitly taken this ticket away from the conductor (the web's "Take away from conductor" action) \u2014 in that case, Return it to the conductor first. Refuses cleanly, naming the cause, when the database's row-level security policy rejects the record (that policy requires the acting user's id on the insert). IMPORTANT: the duplicate-guard can only detect an active conduction record \u2014 it cannot see an in-progress terminal session, so confirm any in-session work on this ticket has stopped before handing it off.`,
   inputSchema: {
     type: "object",
     properties: {
@@ -42774,6 +42844,7 @@ function registerTools(disabledFeatures) {
     listTicketKnowledgeTool,
     getBuildEvidenceStatusTool,
     createConductionTool,
+    listConductionsTool,
     requestConductionReapTool,
     consumePendingAcceptanceEventTool,
     consumeAcceptanceEventTool,
@@ -43014,7 +43085,10 @@ async function handleToolCall(name, args, client, projectId, userId) {
         result = await getBuildEvidenceStatus(client, projectId, args);
         break;
       case "create_conduction":
-        result = await createConduction2(client, projectId, args);
+        result = await createConduction2(client, projectId, userId, args);
+        break;
+      case "list_conductions":
+        result = await listConductions2(client, projectId, args);
         break;
       case "request_conduction_reap":
         result = await requestConductionReap(client, args);

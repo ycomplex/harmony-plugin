@@ -8,9 +8,12 @@
 // conductor" action must refuse a handoff here too, checked BEFORE the duplicate-conduction guard),
 // then calls createConduction({ mode: 'controlled' }) verbatim — exactly what conduct.ts does.
 //
-// Both typed refusals (ConductorExcludedError, ActiveConductionExistsError) are caught here and
-// turned into a clean message — never a raw error, never a raw postgres 23505 — mirroring the CLI's
-// refusal rendering.
+// All three typed refusals (ConductorExcludedError, ActiveConductionExistsError and — B-894 —
+// ConductionInsertDeniedError) are caught here and turned into a clean message that names its cause
+// — never a raw error, never a raw postgres 23505 or 42501 — mirroring the CLI's refusal rendering.
+//
+// B-894 also threads the acting `userId` into the insert as `created_by`: the `conductions` INSERT
+// policy is `created_by = auth.uid()`, so a dispatch that drops it is refused by RLS at runtime.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
@@ -18,6 +21,7 @@ import {
   createConduction as insertConduction,
   assertNotExcluded,
   ActiveConductionExistsError,
+  ConductionInsertDeniedError,
   ConductorExcludedError,
   type ConductionRecord,
 } from './conduction-record.js';
@@ -48,6 +52,7 @@ const HANDOFF_CONTRACT_NOTE =
 export async function createConduction(
   client: SupabaseClient,
   projectId: string,
+  userId: string,
   args: CreateConductionArgs,
 ): Promise<CreateConductionResult> {
   if (!args.task_id) throw new Error('task_id is required');
@@ -62,6 +67,11 @@ export async function createConduction(
     const conduction = await insertConduction(client, {
       task_id: taskId,
       mode: 'controlled',
+      // B-894: the `conductions` INSERT policy is `created_by = auth.uid()`, so the acting user's
+      // id is NOT optional bookkeeping — omitting it is an RLS refusal at runtime. The web and the
+      // CLI both send it; this dispatch used to drop it, which is the defect B-894 closes. userId
+      // is threaded in from handleToolCall exactly as ~19 sibling write tools already do.
+      created_by: userId,
       ...(runConfig !== undefined ? { run_config: runConfig } : {}),
     });
     return {
@@ -85,6 +95,17 @@ export async function createConduction(
         { cause: err },
       );
     }
+    // B-894: an RLS refusal of the insert is a THIRD documented refusal, rendered in the same clean
+    // style and NAMING ITS CAUSE — this ticket exists because such a denial surfaced as a raw
+    // database error that was "not among" the refusals this tool documents.
+    if (err instanceof ConductionInsertDeniedError) {
+      throw new Error(
+        `${args.task_id} could not be handed off — the conductions INSERT policy refused the ` +
+          `record because it requires created_by = auth.uid(); this session's user id did not ` +
+          `reach the insert, so re-authenticate (or report this — the tool must send created_by)`,
+        { cause: err },
+      );
+    }
     throw err;
   }
 }
@@ -92,7 +113,7 @@ export async function createConduction(
 export const createConductionTool = {
   name: 'create_conduction',
   description:
-    'B-758: hand a ticket to the conductor daemon from ANY stage (Proposed through Deployed) — not just Proposed. Creates the durable conduction record (status \'active\', mode \'controlled\'); the conductor daemon notices it on its next pass and drives the run. Refuses cleanly (never a raw error) when the ticket is already being conducted (at most one active conduction per ticket) or when a human has explicitly taken this ticket away from the conductor (the web\'s "Take away from conductor" action) — in that case, Return it to the conductor first. IMPORTANT: the duplicate-guard can only detect an active conduction record — it cannot see an in-progress terminal session, so confirm any in-session work on this ticket has stopped before handing it off.',
+    'B-758: hand a ticket to the conductor daemon from ANY stage (Proposed through Deployed) — not just Proposed. Creates the durable conduction record (status \'active\', mode \'controlled\'); the conductor daemon notices it on its next pass and drives the run. Refuses cleanly (never a raw error) when the ticket is already being conducted (at most one active conduction per ticket) or when a human has explicitly taken this ticket away from the conductor (the web\'s "Take away from conductor" action) — in that case, Return it to the conductor first. Refuses cleanly, naming the cause, when the database\'s row-level security policy rejects the record (that policy requires the acting user\'s id on the insert). IMPORTANT: the duplicate-guard can only detect an active conduction record — it cannot see an in-progress terminal session, so confirm any in-session work on this ticket has stopped before handing it off.',
   inputSchema: {
     type: 'object' as const,
     properties: {

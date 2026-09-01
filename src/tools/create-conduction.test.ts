@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createConduction, createConductionTool } from './create-conduction.js';
 import {
   ActiveConductionExistsError,
+  ConductionInsertDeniedError,
   ConductorExcludedError,
 } from './conduction-record.js';
 
@@ -48,13 +49,14 @@ beforeEach(() => {
 
 describe('createConduction (create_conduction MCP tool handler)', () => {
   it('resolves the ticket, checks it is not excluded BEFORE creating, and returns the conduction + the operator-contract note', async () => {
-    const result = await createConduction(client, 'proj-1', { task_id: 'B-758' });
+    const result = await createConduction(client, 'proj-1', 'user-7', { task_id: 'B-758' });
 
     expect(mocks.resolveTaskId).toHaveBeenCalledWith(client, 'proj-1', 'B-758');
     expect(mocks.assertNotExcluded).toHaveBeenCalledWith(client, 'uuid-1');
     expect(mocks.insertConduction).toHaveBeenCalledWith(client, {
       task_id: 'uuid-1',
       mode: 'controlled',
+      created_by: 'user-7',
     });
 
     // The excluded-check must run BEFORE the duplicate-guard create call.
@@ -71,7 +73,7 @@ describe('createConduction (create_conduction MCP tool handler)', () => {
   });
 
   it('B-743: passes run_config through to the insert, validated, when given', async () => {
-    await createConduction(client, 'proj-1', {
+    await createConduction(client, 'proj-1', 'user-7', {
       task_id: 'B-758',
       run_config: { note: "don't touch the migration file" },
     });
@@ -79,16 +81,18 @@ describe('createConduction (create_conduction MCP tool handler)', () => {
     expect(mocks.insertConduction).toHaveBeenCalledWith(client, {
       task_id: 'uuid-1',
       mode: 'controlled',
+      created_by: 'user-7',
       run_config: { note: "don't touch the migration file" },
     });
   });
 
   it('B-743: omits run_config from the insert entirely when not given — byte-for-byte unchanged for every pre-B-743 caller', async () => {
-    await createConduction(client, 'proj-1', { task_id: 'B-758' });
+    await createConduction(client, 'proj-1', 'user-7', { task_id: 'B-758' });
 
     expect(mocks.insertConduction).toHaveBeenCalledWith(client, {
       task_id: 'uuid-1',
       mode: 'controlled',
+      created_by: 'user-7',
     });
     const call = mocks.insertConduction.mock.calls[0][1];
     expect('run_config' in call).toBe(false);
@@ -96,7 +100,7 @@ describe('createConduction (create_conduction MCP tool handler)', () => {
 
   it('B-743: rejects a malformed run_config before ever resolving/creating', async () => {
     await expect(
-      createConduction(client, 'proj-1', {
+      createConduction(client, 'proj-1', 'user-7', {
         task_id: 'B-758',
         // @ts-expect-error -- deliberately malformed for the test
         run_config: { session_resume: { enabled: 'yes' } },
@@ -106,7 +110,7 @@ describe('createConduction (create_conduction MCP tool handler)', () => {
   });
 
   it('rejects a missing task_id before any resolution', async () => {
-    await expect(createConduction(client, 'proj-1', { task_id: '' })).rejects.toThrow(
+    await expect(createConduction(client, 'proj-1', 'user-7', { task_id: '' })).rejects.toThrow(
       /task_id is required/,
     );
     expect(mocks.resolveTaskId).not.toHaveBeenCalled();
@@ -115,7 +119,7 @@ describe('createConduction (create_conduction MCP tool handler)', () => {
   it('maps ConductorExcludedError to a clean "taken away from the conductor" refusal — never a raw error', async () => {
     mocks.assertNotExcluded.mockRejectedValue(new ConductorExcludedError('uuid-1'));
 
-    const err = await createConduction(client, 'proj-1', { task_id: 'B-758' }).catch((e) => e);
+    const err = await createConduction(client, 'proj-1', 'user-7', { task_id: 'B-758' }).catch((e) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toMatch(/taken away from the conductor/i);
     expect(err.message).toMatch(/Return it first/i);
@@ -127,7 +131,7 @@ describe('createConduction (create_conduction MCP tool handler)', () => {
   it('maps ActiveConductionExistsError to a clean "already being conducted" refusal — never a raw postgres error', async () => {
     mocks.insertConduction.mockRejectedValue(new ActiveConductionExistsError('uuid-1', 'duplicate key value violates unique constraint'));
 
-    const err = await createConduction(client, 'proj-1', { task_id: 'B-758' }).catch((e) => e);
+    const err = await createConduction(client, 'proj-1', 'user-7', { task_id: 'B-758' }).catch((e) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toMatch(/already being conducted/i);
     // The clean message, not the raw lease-primitive internals / postgres text.
@@ -135,9 +139,56 @@ describe('createConduction (create_conduction MCP tool handler)', () => {
     expect(err.message).not.toMatch(/duplicate key value/i);
   });
 
+  // -------------------------------------------------------------------------
+  // B-894 — the silent-null regression this ticket exists to close.
+  // -------------------------------------------------------------------------
+
+  it('B-894: sends a NON-NULL created_by (the acting user id) on the insert — the conductions INSERT policy requires created_by = auth.uid()', async () => {
+    await createConduction(client, 'proj-1', 'user-7', { task_id: 'B-894' });
+
+    expect(mocks.insertConduction).toHaveBeenCalledTimes(1);
+    const insertArgs = mocks.insertConduction.mock.calls[0][1] as Record<string, unknown>;
+    // Fail loudly if anyone drops the argument again: present, non-null, and the acting user.
+    expect('created_by' in insertArgs).toBe(true);
+    expect(insertArgs.created_by).not.toBeNull();
+    expect(insertArgs.created_by).not.toBeUndefined();
+    expect(insertArgs.created_by).toBe('user-7');
+  });
+
+  it('B-894: threads created_by on the run_config path too — no branch of this handler may drop it', async () => {
+    await createConduction(client, 'proj-1', 'user-7', {
+      task_id: 'B-894',
+      run_config: { note: 'keep the user id' },
+    });
+    const insertArgs = mocks.insertConduction.mock.calls[0][1] as Record<string, unknown>;
+    expect(insertArgs.created_by).toBe('user-7');
+  });
+
+  it('B-894: maps ConductionInsertDeniedError to a clean refusal that NAMES ITS CAUSE — never a raw database error', async () => {
+    mocks.insertConduction.mockRejectedValue(
+      new ConductionInsertDeniedError(
+        'uuid-1',
+        'new row violates row-level security policy for table "conductions"',
+      ),
+    );
+
+    const err = await createConduction(client, 'proj-1', 'user-7', { task_id: 'B-894' }).catch(
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(Error);
+    // Names the cause: the row-level security policy and its created_by = auth.uid() condition.
+    expect(err.message).toMatch(/created_by = auth\.uid\(\)/i);
+    expect(err.message).toMatch(/refused/i);
+    expect(err.message).toContain('B-894');
+    // Not the raw postgres text.
+    expect(err.message).not.toMatch(/new row violates row-level security policy for table/i);
+    // The typed refusal is preserved as the cause.
+    expect(err.cause).toBeInstanceOf(ConductionInsertDeniedError);
+  });
+
   it('re-throws any other operational error unchanged', async () => {
     mocks.insertConduction.mockRejectedValue(new Error('JWT expired'));
-    await expect(createConduction(client, 'proj-1', { task_id: 'B-758' })).rejects.toThrow(
+    await expect(createConduction(client, 'proj-1', 'user-7', { task_id: 'B-758' })).rejects.toThrow(
       'JWT expired',
     );
   });
@@ -150,5 +201,9 @@ describe('createConductionTool (MCP tool descriptor)', () => {
     expect(createConductionTool.description).toMatch(
       /duplicate-guard can only detect an active conduction record/i,
     );
+  });
+
+  it('B-894: documents the row-level-security refusal as a third clean refusal', () => {
+    expect(createConductionTool.description).toMatch(/row-level security policy/i);
   });
 });
