@@ -157,6 +157,25 @@ b772_finish_cross_conduction_resume() {
       return 0
     fi
   fi
+  # B-895: the CLI resolves `--resume <id>` purely by scanning $HOME/.claude/projects — which, for
+  # THIS conduction, is symlinked (above) onto $TRANSCRIPT_SUBTREE/projects, NOT onto the SIBLING
+  # conduction's own $TRANSCRIPT_SUBTREE/projects subtree the discovery above found the session
+  # file under. Injecting --resume with an id the CLI can never locally resolve is confirmed — twice,
+  # in production — to ALWAYS fail to attach. So before injecting, copy the sibling's session file
+  # into THIS conduction's own projects/<slug> tree (reusing the SAME slug directory name the
+  # sibling used — deterministic per-workdir, so it is exactly where the CLI will look for THIS
+  # conduction too). Best-effort, matching this function's own AC5 promise: any copy failure
+  # (permission error, disk error, a racing reap of the sibling directory, ...) must NOT inject a
+  # --resume already known to fail — decline and let the leg cold-start instead, logging why.
+  local sibling_slug dest_dir dest_file
+  sibling_slug="$(basename "$(dirname "$SIBLING_SESSION_PATH")")"
+  dest_dir="$TRANSCRIPT_SUBTREE/projects/$sibling_slug"
+  dest_file="$dest_dir/$(basename "$SIBLING_SESSION_PATH")"
+  if ! mkdir -p "$dest_dir" 2>/dev/null || ! cp "$SIBLING_SESSION_PATH" "$dest_file" 2>/dev/null; then
+    echo "entrypoint: B-895 failed to copy sibling session $SIBLING_SESSION_ID into this conduction's own projects tree ($dest_dir) — the CLI could never resolve it there, so declining to inject --resume and cold-starting instead" >&2
+    return 0
+  fi
+
   export CLAUDE_HEADLESS_FLAGS="${CLAUDE_HEADLESS_FLAGS:-} --resume $SIBLING_SESSION_ID"
   echo "entrypoint: B-718 cross-conduction resume — found a prior $TICKET session ($SIBLING_SESSION_ID) from another conduction, injecting --resume" >&2
 }

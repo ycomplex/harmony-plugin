@@ -263,6 +263,60 @@ case "$MODE" in
       done
     fi
 
+    # --- B-895: unify the guard for an EXTERNALLY-injected --resume with the same-conduction one. -
+    # entrypoint.sh's cross-conduction resume discovery (cloud profile) and
+    # scripts/resume-discovery.mjs's cross-conduction discovery (local-docker profile, delivered via
+    # the per-leg run.env's CLAUDE_HEADLESS_FLAGS line) both inject a bare `--resume <id>` into
+    # CLAUDE_HEADLESS_FLAGS themselves, upstream of this script — same channel, either source (see
+    # the B-718 block header comment above). Before this fix that injected flag rode straight through
+    # into EXTRA_HEADLESS_FLAGS untouched and reached the iteration-1 COLD-start dispatch below with
+    # NO guard at all: a failed attach there killed the whole leg instead of degrading to a genuine
+    # cold start. This extracts any such id, STRIPS the `--resume <id>` pair out of the flags (so a
+    # cold-start invocation never receives it unguarded), and — only when the same-conduction
+    # discovery above found nothing (RESUME_SESSION_ID is still empty here) — feeds it into that SAME
+    # variable, so it rides the SAME context-budget guard and the SAME captured-exit-code /
+    # cold-start-fallback / log line below. When BOTH a same-conduction session and an
+    # externally-injected id are present, the same-conduction one wins (more local/reliable) —
+    # mirroring entrypoint.sh's own "skip cross-conduction injection when the CURRENT conduction
+    # already has a session" rule, so in practice the two should never actually collide; this is a
+    # tie-break for defense in depth, not an expected case. Best-effort throughout, matching every
+    # other guard in this file: a malformed CLAUDE_HEADLESS_FLAGS degrades to "nothing extracted".
+    EXTERNAL_RESUME_ID=""
+    if [ -n "${CLAUDE_HEADLESS_FLAGS:-}" ]; then
+      # shellcheck disable=SC2206
+      B895_FLAGS=(${CLAUDE_HEADLESS_FLAGS})
+      B895_REMAINING=()
+      B895_I=0
+      B895_N=${#B895_FLAGS[@]}
+      while [ "$B895_I" -lt "$B895_N" ]; do
+        B895_TOK="${B895_FLAGS[$B895_I]}"
+        if [ "$B895_TOK" = "--resume" ] && [ "$((B895_I + 1))" -lt "$B895_N" ]; then
+          EXTERNAL_RESUME_ID="${B895_FLAGS[$((B895_I + 1))]}"
+          B895_I=$((B895_I + 2))
+          continue
+        fi
+        B895_REMAINING+=("$B895_TOK")
+        B895_I=$((B895_I + 1))
+      done
+      # shellcheck disable=SC2124
+      CLAUDE_HEADLESS_FLAGS="${B895_REMAINING[*]}"
+    fi
+
+    if [ -z "$RESUME_SESSION_ID" ] && [ -n "$EXTERNAL_RESUME_ID" ]; then
+      RESUME_SESSION_ID="$EXTERNAL_RESUME_ID"
+      # Locate the on-disk session file for this id so the B-772 context-budget guard right below
+      # can weigh it exactly like a same-conduction discovery — Fix 2 (entrypoint.sh) copies the
+      # sibling session file into THIS conduction's own projects/<slug> tree before ever injecting
+      # the flag, so this should always resolve for the cloud cross-conduction path; kept a
+      # best-effort glob (matching the same-conduction discovery above) so a still-missing file just
+      # degrades the context-budget guard to "allow the resume attempt" rather than blocking the leg.
+      for f in "$HOME/.claude/projects"/*/"$RESUME_SESSION_ID.jsonl"; do
+        [ -f "$f" ] || continue
+        RESUME_SESSION_FILE="$f"
+        break
+      done
+    fi
+
     # --- B-772: session-resume guard, narrowed to same-model context growth. --------------------
     # NOT the general model-switch case (a switch always cold-starts by construction — see the
     # bounded loop below); this is specifically "same model, but the resumable session has grown too
