@@ -901,18 +901,63 @@ export function entryProvenanceStamp(ctx?: EntryRenderContext): string {
   );
 }
 
+// B-902 — the entry-only decided form. `itemLines` (above) renders the STILL-OPEN ask — a live
+// checkbox with a "recommend:" label — because it is read by a human who has not decided yet. An
+// entry is read AFTER the decision was made, so showing that same open-ask framing misrepresents it:
+// a reader sees a settled question dressed as a pending one. This formatter is entry-ONLY; itemLines
+// itself, and every call site of it inside `renderBrief`, stay byte-identical — reusing this formatter
+// for the brief (or changing itemLines to always emit decided form) would show "Decided:" on an ask the
+// human has not yet ratified, which is worse than the defect this closes.
+//
+// A ticked line alone (`- [x] <text>`) covers a `content-input` ask (the human supplied it; there is no
+// "recommendation" to report) and a `decision` item with no adopted recommendation (deferred behind
+// research, or authored without one). A `decision` item that DID carry a recommendation gets it named —
+// `- [x] <text> — Decided: <recommendation>` — so the record states what was actually decided, not just
+// that *something* was.
+function decidedItemLine(item: BriefItem): string {
+  const decided = item.kind === 'decision' && !item.deferred && item.recommendation
+    ? ` — Decided: ${item.recommendation}`
+    : '';
+  return `- [x] ${item.text}${decided}`;
+}
+
+/** The entry's decided-form ask lines, PAIRED with the item each line came from — the ratification
+ *  check below needs the item (its text/recommendation), not the rendered line, because a decided-form
+ *  line never appears verbatim in the brief (the brief renders the same item as an open ask). Mirrors
+ *  `itemLines`' own kind filter: a `derived-constraint` item never renders (the lint rejects it first). */
+function decidedItems(doc: BriefDoc): Array<{ item: BriefItem; line: string }> {
+  const out: Array<{ item: BriefItem; line: string }> = [];
+  for (const item of doc.items ?? []) {
+    if (item.kind === 'content-input' || item.kind === 'decision') {
+      out.push({ item, line: decidedItemLine(item) });
+    }
+  }
+  return out;
+}
+
 /**
  * Project the ratified doc into the knowledge entry the accept promotes.
  *
  * NOT a second renderer: every element line below comes from the same formatter `renderBrief` uses, and
  * the ratification oracle is `renderBrief` itself. What differs is only the WRAPPING — an entry is read
  * later, by someone who was not at the gate, so it leads with the decision rather than the ask, drops
- * the command tail and the depth-pointer (a pointer back to its own source), and marks provenance.
+ * the command tail and the depth-pointer (a pointer back to its own source), and marks provenance. B-902
+ * additionally drops the whole promised-writes block (an entry describing its own filing has zero
+ * durable value once the write already landed) and renders the ratified asks in DECIDED form — ticked,
+ * or naming the recommendation actually adopted — never as a live, still-open checkbox.
  *
  * RATIFICATION IS ELEMENT-LEVEL, and it is measured, not declared: an element is ratified iff its text
  * appears in the blob the human actually read. That is why the recommendation of a `load_bearing_gap`
  * brief comes out marked — the brief showed "I don't know enough yet" in its place, so the human never
  * ratified it — and why research prompts authored without the gap flag come out marked too.
+ *
+ * B-902 — item ratification is CONTENT-level, not literal-line: a decided-form line never appears
+ * verbatim in the brief by construction (the brief renders the same item as an open ask), so checking
+ * for the rendered ENTRY line would mark every ratified item NOT RATIFIED. Instead each item's own text
+ * and (when the decided line shows one) its recommendation are checked against the brief separately —
+ * exactly what `itemLines` decided whether to render, so an item deferred behind research or authored
+ * without a shown recommendation is correctly unmarked, and an item whose recommendation the brief never
+ * displayed is correctly marked.
  */
 export function renderEntry(doc: BriefDoc, ctx?: EntryRenderContext): string {
   const briefContent = renderBrief(doc, ctx?.decisionRef ?? null, ctx);
@@ -920,6 +965,14 @@ export function renderEntry(doc: BriefDoc, ctx?: EntryRenderContext): string {
   const isRatified = (text: string): boolean => !text.trim() || briefContent.includes(text);
   const mark = (text: string): string => (isRatified(text) ? text : `${text} ${NOT_RATIFIED_MARK}`);
   const markAll = (lines: string[]): string[] => lines.map(mark);
+  // CONTENT-level match, not literal-line: an item is ratified iff its OWN CONTENT — text, and a
+  // recommendation when it carries one — appeared in the brief, independent of whether the decided-form
+  // line happens to display that recommendation. A deferred decision item (or a content-input item)
+  // that still carries a `recommendation` the brief never showed is correctly flagged even though its
+  // decided-form line displays no "Decided:" suffix to hang the mark on — the mark still names a real,
+  // unvetted claim the doc carries.
+  const isItemRatified = (item: BriefItem): boolean =>
+    isRatified(item.text) && isRatified(item.recommendation ?? '');
 
   const out: string[] = [entryProvenanceStamp(ctx), ''];
 
@@ -944,16 +997,24 @@ export function renderEntry(doc: BriefDoc, ctx?: EntryRenderContext): string {
     const criteria = proposedAcLines(doc.payload);
     if (criteria.length) out.push(PROPOSED_ACS_HEADING, ...markAll(criteria), '');
   }
-  const promised = promisedWriteLines(doc.payload, isClarify);
-  if (promised.length) out.push(PROMISED_WRITES_HEADING, ...markAll(promised), '');
+  // B-902 — the promised-writes block is DROPPED here, entirely (heading and lines both): it describes
+  // what THIS brief's accept files, which is self-referential furniture once the entry it produced is
+  // the thing being read. `renderBrief` keeps rendering it — the brief IS the still-open ask, and a
+  // human deciding whether to accept needs to see what accepting will do.
 
   if (doc.frame?.kind === 'plan') {
     const steps = planStepLines(doc.frame);
     if (steps.length) out.push('**Plan:**', ...markAll(steps), '');
   }
 
-  const items = itemLines(doc);
-  if (items.length) out.push('**Ratified asks:**', ...markAll(items), '');
+  const items = decidedItems(doc);
+  if (items.length) {
+    out.push(
+      '**Ratified asks:**',
+      ...items.map(({ item, line }) => (isItemRatified(item) ? line : `${line} ${NOT_RATIFIED_MARK}`)),
+      '',
+    );
+  }
 
   const changes = revisionLines(doc);
   if (changes.length) out.push('**Changed in the final round:**', ...markAll(changes), '');

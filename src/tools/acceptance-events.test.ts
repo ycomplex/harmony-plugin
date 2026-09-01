@@ -475,6 +475,37 @@ describe('consumePendingAcceptanceEvent — the leg-start-consume orchestrator',
     await expect(consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1')).rejects.toThrow(/insert violates a constraint/);
     expect(client.rpc).not.toHaveBeenCalledWith('consume_acceptance_event', expect.anything());
   });
+
+  // B-902 — closes 7d1bc014, B-866's one criterion deliberately left unchecked at verify: TEST #11 above
+  // proves consume_acceptance_event was never CALLED; it does not prove the event STAYED pending — a
+  // caller could still (wrongly) read it back as consumed via some OTHER path. This is the EXECUTED
+  // follow-up read TEST #11 was missing: after the blocked write, a direct re-read of the event row
+  // still returns status 'pending', not just an absent commit call.
+  it('TEST #11 follow-up — after a blocked write, a direct re-read of the event row still shows status "pending"', async () => {
+    const event = { id: 'event-1', task_id: 'task-1', brief_id: 'brief-1', reason: 'decomposition-proposal', payload: { items: [childItem('child-1')] }, pending_activity: 'decomposing', status: 'pending' };
+    const client = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [
+          { data: [], error: null },          // PROBE 3
+          { data: event },                    // getPendingAcceptanceEvent's event read
+          { data: { ...event, status: 'pending' } }, // the follow-up re-read below
+        ],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+      },
+      rpcResponses: {
+        consume_child_mint_write: [{ data: null, error: { message: 'insert violates a constraint' } }],
+      },
+    });
+    await expect(consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1')).rejects.toThrow(/insert violates a constraint/);
+    // EXECUTED follow-up read — a real query against the event row, not an inference from "the commit
+    // RPC was never called".
+    const reread = await client
+      .from('pending_acceptance_events')
+      .select('id, status')
+      .eq('id', 'event-1')
+      .maybeSingle();
+    expect(reread.data.status).toBe('pending');
+  });
 });
 
 
