@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -889,6 +889,72 @@ describe('composeBrief — B-843 retained revisions (compose_brief_revision)', (
     expect(patchOf(client)._iterate_feedback).toBeNull();
   });
 
+  // ── B-903: the feedback marks ONLY the revision a send-back caused ─────────────────────────────
+  //
+  // THE NO-SCRAPE NEGATIVE. `pending_resolution` sitting on the active brief is NOT an instruction to
+  // this function: the caller supplies the words or nobody does. Sourcing them here would be the scrape
+  // B-843 refused, and it is the mechanism by which one human's send-back got stamped onto revisions
+  // they never sent back.
+  it('never reads pending_resolution into _iterate_feedback — a marker on the active brief changes nothing', async () => {
+    const client = makeClient(
+      [
+        { data: { id: 'brief-1', iteration: 2, pending_resolution: { command: 'iterate', detail: 'lead with the tradeoff' } } },
+        { data: null },
+      ],
+      revisionOk,
+    );
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    });
+    expect(patchOf(client)._iterate_feedback).toBeNull();
+    const params = client.rpc.mock.calls.map((c: any[]) => JSON.stringify(c[1] ?? {}));
+    expect(params.join(' ')).not.toContain('lead with the tradeoff');
+  });
+
+  // THE POSITIVE HALF: when the caller DOES consume a marker, the marker's detail is what lands — once,
+  // verbatim, on this revision only.
+  it('writes exactly the supplied feedback, once, when the caller consumes a marker', async () => {
+    const client = makeClient(
+      [
+        { data: { id: 'brief-1', iteration: 2, pending_resolution: { command: 'iterate', detail: 'lead with the tradeoff' } } },
+        { data: null },
+      ],
+      revisionOk,
+    );
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      iterate_feedback: 'lead with the tradeoff',
+    });
+    const calls = client.rpc.mock.calls.filter((c: any[]) => c[0] === 'compose_brief_revision');
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]._iterate_feedback).toBe('lead with the tradeoff');
+  });
+
+  it('compose_brief tells the caller the marker-consumption rule, not "every round-2+ call"', () => {
+    const props = composeBriefTool.inputSchema.properties as any;
+    expect(props.iterate_feedback.description).toMatch(/pending_resolution/);
+    expect(props.iterate_feedback.description).toMatch(/self-redraft/);
+    expect(props.iterate_feedback.description).toMatch(/NEVER reads/);
+    expect(composeBriefTool.description).toMatch(/pending_resolution/);
+    expect(composeBriefTool.description).not.toMatch(/on every round-2\+ call/i);
+  });
+
+  // ── B-903 step 4: the remediation write plane ──────────────────────────────────────────────────
+  describe('clearRevisionIterateFeedback', () => {
+    it('nulls iterate_feedback on exactly the named revision, through the normal write plane', async () => {
+      const client = makeClient([{ data: null }]);
+      await clearRevisionIterateFeedback(client, 'brief-7');
+      expect(client.from).toHaveBeenCalledWith('briefs');
+      expect(client.update).toHaveBeenCalledWith({ iterate_feedback: null });
+      expect(client.eq).toHaveBeenCalledWith('id', 'brief-7');
+    });
+
+    it('throws on a write error — a failed remediation must be loud', async () => {
+      const client = makeClient([{ data: null, error: { message: 'permission denied for table briefs' } }]);
+      await expect(clearRevisionIterateFeedback(client, 'brief-7')).rejects.toThrow(/permission denied/);
+    });
+  });
+
   it('a FIRST compose never calls the revision RPC — there is no predecessor to supersede', async () => {
     // responses: [no active brief] -> [insert row] -> [task update]
     const client = makeClient([{ data: null }, { data: { id: 'brief-1' } }, { data: null }], revisionOk);
@@ -1002,6 +1068,19 @@ describe.each([
     const line = prose.split('\n').find((l) => l.includes('**edit** / **iterate**'));
     expect(line).toMatch(/CARRY FORWARD/);
     expect(line).toContain('decision_ref');
+  });
+
+  // B-903 — "on every round-2+ call" was the instruction that produced the defect: callers read it
+  // literally and re-stamped the last feedback they knew about. The corrected rule is mechanical, so the
+  // prose has to carry both halves: the marker that AUTHORIZES the field, and the recomposes that omit it.
+  it('states the marker-consumption rule and the omit-cases (B-903)', () => {
+    const line = prose.split('\n').find((l) => l.includes('**edit** / **iterate**'))!;
+    expect(line).toMatch(/pending_resolution/);
+    expect(line).toMatch(/self-redraft/);
+    expect(line).toMatch(/rebase/);
+    expect(line).toMatch(/accept-with-remark/);
+    expect(line).toMatch(/discuss/);
+    expect(line).not.toMatch(/on every round-2\+ (call|compose)/i);
   });
 });
 
@@ -2264,6 +2343,49 @@ describe('B-876 gate frame', () => {
       const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
       expect(r.errors).toEqual([]);
       expect(r.warnings.join(' ')).toContain("names no `step_ref`");
+    });
+
+    // B-903 — an out-of-enum disposition is doubly wrong on the page: the ledger renders the literal
+    // string "undefined" for the mark, and the headline (which counts only 'walk') under-reports.
+    it('warns on a disposition outside the enum, and never errors', () => {
+      const doc = baseDoc({
+        frame: verifyFrame(1, { criteria: [criterionRow(1, { disposition: 'verified' as unknown as CriterionRow['disposition'] })] }),
+      });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
+      expect(r.errors).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.warnings.join(' ')).toContain("carries disposition 'verified'");
+      // and the render really does emit the "undefined" the warning is about
+      expect(renderBrief(doc, null, { reason: 'verification-ack-pending' })).toContain('undefined');
+    });
+
+    it('stays silent on every legal disposition', () => {
+      for (const disposition of ['walk', 'blocked', 'test-proven', 'not-hand-checkable', 'carried', 'unproven'] as CriterionRow['disposition'][]) {
+        const doc = baseDoc({ frame: verifyFrame(1, { criteria: [criterionRow(1, { disposition })] }) });
+        const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
+        expect(r.warnings.join(' ')).not.toContain('is not one of');
+      }
+    });
+
+    // B-903 — a string `bounded_accept` renders "criteria left open — none. Closes when undefined": a
+    // finished-looking sentence that is a false statement about what stays open.
+    it('warns on a malformed bounded_accept, and never errors', () => {
+      const doc = baseDoc({
+        frame: verifyFrame(1, { bounded_accept: 'closes when the migration lands' as unknown as { open_ac_ids: string[]; closes_when: string } }),
+      });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
+      expect(r.errors).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.warnings.join(' ')).toContain('`frame.bounded_accept` is present but is not shaped');
+    });
+
+    it('stays silent on a well-formed bounded_accept, and on its absence', () => {
+      const good = baseDoc({ frame: verifyFrame(1, { bounded_accept: { open_ac_ids: ['ac-3'], closes_when: 'the migration is promoted' } }) });
+      expect(lintBrief(good, renderBrief(good), { reason: 'verification-ack-pending' }).warnings.join(' '))
+        .not.toContain('bounded_accept');
+      const absent = baseDoc({ frame: verifyFrame(1) });
+      expect(lintBrief(absent, renderBrief(absent), { reason: 'verification-ack-pending' }).warnings.join(' '))
+        .not.toContain('bounded_accept');
     });
 
     it("warns on an empty criteria ledger with no exempt_reason, and stays silent when one is given", () => {
