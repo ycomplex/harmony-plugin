@@ -498,10 +498,29 @@ function renderIrreversible(landing: LandingShape): string {
   return landing.irreversible?.length ? landing.irreversible.join('; ') : 'nothing — every step is revertable';
 }
 
+/** ONE `Unproven` entry, in the words every projection uses for it. B-867 lifted this OUT of the block
+ *  below (byte-for-byte — the block still adds the bullet) so `renderSlot` can land the same wording on
+ *  the ticket without restating it. That is technical decision f0d55b23 applied to the third
+ *  projection: structured once, rendered deterministically, no parallel rendering pipeline. */
+function unprovenText(entry: Unproven): string {
+  return `${entry.item} — ${entry.reason}`;
+}
+
 function renderUnprovenBlock(label: string, entries: Unproven[] | undefined): string[] {
   const list = entries ?? [];
   if (!list.length) return [`**${label}:** nothing`];
-  return [`**${label} — ${list.length}:**`, ...list.map((u) => `- ${u.item} — ${u.reason}`)];
+  return [`**${label} — ${list.length}:**`, ...list.map((u) => `- ${unprovenText(u)}`)];
+}
+
+/** The executed-aware evidence counts as ONE sentence — shared by the release frame's
+ *  **Evidence (mechanical):** line and (B-867) the release slot's `evidence_status`. Same reason as
+ *  `unprovenText`: one wording, two projections, never two copies. */
+function evidenceSummaryText(ev: EvidenceSummary): string {
+  return (
+    `${ev.proven_by_run}/${ev.total} proven by a test that RAN · ` +
+    `${ev.walk_at_verify} deferred to the verify runbook · ${ev.unproven} unproven` +
+    `${ev.detail ? ` — ${ev.detail}` : ''}`
+  );
 }
 
 const DISPOSITION_MARK: Record<CriterionRow['disposition'], string> = {
@@ -512,6 +531,17 @@ const DISPOSITION_MARK: Record<CriterionRow['disposition'], string> = {
   carried: '🔁 carried',
   unproven: '❌ unproven',
 };
+
+/** One criterion row's disposition — mark, blocked-reason and carried-target included. Shared by the
+ *  verify frame's ledger table and (B-867) the verify slot's `criteria[].disposition`: the durable
+ *  section must say what the brief said, in the brief's own words. */
+function dispositionLabel(row: CriterionRow): string {
+  return (
+    DISPOSITION_MARK[row.disposition] +
+    (row.disposition === 'blocked' && row.blocked_reason ? ` — ${row.blocked_reason}` : '') +
+    (row.disposition === 'carried' && row.carried_to ? ` to ${row.carried_to}` : '')
+  );
+}
 
 /** Escape a pipe so a criterion containing one cannot break the ledger's table row. */
 function cell(value: string | undefined): string {
@@ -599,13 +629,7 @@ function renderFrame(frame: GateFrame): string[] {
       const risk = frame.risk_classes ?? [];
       out.push(`**Risk (path-derived from the diff):** ${risk.length ? risk.join(', ') : 'none'}`);
       const ev = frame.evidence_status;
-      if (ev) {
-        out.push(
-          `**Evidence (mechanical):** ${ev.proven_by_run}/${ev.total} proven by a test that RAN · ` +
-            `${ev.walk_at_verify} deferred to the verify runbook · ${ev.unproven} unproven` +
-            `${ev.detail ? ` — ${ev.detail}` : ''}`,
-        );
-      }
+      if (ev) out.push(`**Evidence (mechanical):** ${evidenceSummaryText(ev)}`);
       if (frame.pr_review_state) out.push(`**PR review state:** ${frame.pr_review_state}`);
       break;
     }
@@ -619,10 +643,7 @@ function renderFrame(frame: GateFrame): string[] {
       if (rows.length) {
         out.push('| # | Criterion (as filed) | Disposition | Step | Backed by |', '|---|---|---|---|---|');
         rows.forEach((r, i) => {
-          const disposition =
-            DISPOSITION_MARK[r.disposition] +
-            (r.disposition === 'blocked' && r.blocked_reason ? ` — ${r.blocked_reason}` : '') +
-            (r.disposition === 'carried' && r.carried_to ? ` to ${r.carried_to}` : '');
+          const disposition = dispositionLabel(r);
           out.push(`| ${i + 1} | ${cell(r.text)} | ${cell(disposition)} | ${cell(r.step_ref)} | ${cell(r.backed_by)} |`);
         });
         out.push('');
@@ -738,6 +759,12 @@ function promisedWriteLine(item: AcceptanceEventPayloadItem): string | null {
       return `- label — ${text(item.label_name) ?? 'decision-only'}`;
     case 'knowledge_entry_content':
       return '- the linked decision entry, written from THIS brief (derived, never separately authored)';
+    case 'gate_slot':
+      // B-867 — CONTENT-FREE on purpose, exactly like the entry line above. `withDerivedGateSlot`
+      // derives the slot from this same doc, so a promise that embedded the slot's content would
+      // change the render that the content is derived from. Naming the section is the promise; the
+      // section's own words are already on the page, in the frame this line points at.
+      return `- the ${text(item.gate) ?? 'gate'} section on the ticket — this brief's ratified content, kept visible after the gate closes`;
     default:
       return null;
   }
@@ -1020,6 +1047,126 @@ export function renderEntry(doc: BriefDoc, ctx?: EntryRenderContext): string {
   if (changes.length) out.push('**Changed in the final round:**', ...markAll(changes), '');
 
   return out.join('\n').trimEnd();
+}
+
+// ——— B-867: the THIRD projection — what the TICKET keeps ————————————————————————————————————————
+//
+// `renderBrief` is what the human READS. `renderEntry` is what the accept PROMOTES. `renderSlot` is
+// what the ticket KEEPS: the gate's ratified content, landed on the ticket's own face and still legible
+// months later, when the brief that carried it has long since scrolled out of the history.
+//
+// Canonicity was settled by B-866 — the structured `doc` the human ratifies is the single authored
+// source and every downstream artefact is a mechanical projection of it. This CONSUMES that decision
+// and never re-opens it. So the slot is derived from the same doc (its typed `frame` above all) through
+// the SAME element formatters the other two projections call — `renderLanding`, `unprovenText`,
+// `evidenceSummaryText`, `dispositionLabel`. Wording produced by a second bit of code would be exactly
+// the duplication B-866 removed, moved one surface along (technical decision f0d55b23).
+//
+// BORN WITHOUT three things `renderEntry` carries, deliberately — a slot must not inherit them:
+//   * NO ratification oracle and no NOT-RATIFIED marks. A slot is only ever written BY an accept, so
+//     every word in it is ratified by construction; re-deriving that per element would be theatre.
+//   * NO `itemLines` and no **Ratified asks:** block (B-902 is removing that shape from entries too).
+//     The asks are the gate's transaction, not the ticket's durable answer, and an unticked `- [ ]` on
+//     a permanent section reads as open work forever.
+//   * NO promised-writes heading and NO provenance stamp. The promised writes have already landed by
+//     the time a slot exists, and provenance (`ratified_by` / `ratified_at`) belongs to the WRITE, not
+//     to the projection — it is stamped by the write path (see gate-slots.ts), never authored here.
+//
+// KEY PRESENCE IS THE SEMANTIC, and it is preserved at both levels. A gate that never ratified gets no
+// slot at all; a gate that ratified an EMPTY answer gets a slot whose field is `[]`. So a key is
+// emitted below IFF the frame actually carries it: an absent frame key stays absent, an empty list
+// stays an empty list. Collapsing the two would turn "we decided nothing is excluded" back into
+// "nobody ever asked" — the one failure this whole ticket exists to prevent.
+
+/** The gates that land a durable section on the ticket. Three today; the storage key is open (the DB
+ *  puts no enum CHECK on it) so a fourth gate stores and displays without a web deploy. */
+export type GateSlotName = 'clarify' | 'release' | 'verify';
+export const GATE_SLOT_NAMES: readonly GateSlotName[] = ['clarify', 'release', 'verify'];
+
+/** Which gate reason's brief carries each slot's content — the brief `renderSlot` must be given. */
+export const REASON_FOR_GATE_SLOT: Record<GateSlotName, string> = {
+  clarify: 'clarification-draft',
+  release: 'release-decision-pending',
+  verify: 'verification-ack-pending',
+};
+
+/** A slot's `content` — the per-gate field map the ticket lays out. Deliberately an open record: the
+ *  displaying surface renders a field it does not recognise under a generic label rather than dropping
+ *  it (B-875's rule one layer down), so a key added here degrades legibly instead of vanishing. */
+export type GateSlotContent = Record<string, unknown>;
+
+/** One criteria-ledger row in the shape the durable section lays out. `how` composes the two backing
+ *  facts the frame keeps in separate columns — the runbook step that discharges the criterion, and
+ *  whatever already proves it — because the ticket's section is one line per criterion, not a
+ *  four-column table. Omitted entirely when the row states neither: an absent key renders nothing,
+ *  which is the honest answer, where an empty string would render an empty dash. */
+function criterionSlotRow(row: CriterionRow): Record<string, unknown> {
+  const how = [row.step_ref ? `runbook step ${row.step_ref}` : null, row.backed_by ?? null]
+    .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+    .join(' · ');
+  const out: Record<string, unknown> = { text: row.text, disposition: dispositionLabel(row) };
+  if (row.ac_id !== undefined) out.ac_id = row.ac_id;
+  if (how) out.how = how;
+  return out;
+}
+
+/**
+ * Project the ratified doc into ONE gate's durable ticket section.
+ *
+ * Returns `null` when this doc carries no frame of the gate's own kind — there is nothing ratified in a
+ * shape the section can lay out, and writing an empty slot would CLAIM the gate ratified an empty
+ * answer. `null` means "do not write a slot"; `{}` (a frame present but answering nothing) means "the
+ * gate ratified, and its answer is empty". Those are different, and every caller must keep them so.
+ */
+export function renderSlot(doc: BriefDoc, gate: GateSlotName): GateSlotContent | null {
+  const frame = doc.frame;
+  if (!frame) return null;
+  const out: GateSlotContent = {};
+
+  switch (gate) {
+    case 'clarify': {
+      if (frame.kind !== 'clarify') return null;
+      if (frame.solving !== undefined) out.solving = frame.solving;
+      if (frame.in_scope !== undefined) out.in_scope = [...frame.in_scope];
+      if (frame.not_solving !== undefined) {
+        out.not_solving = frame.not_solving.map((e) => ({ item: e.item, lands: e.lands }));
+      }
+      return out;
+    }
+    case 'release': {
+      if (frame.kind !== 'release') return null;
+      // `act` is lint-WARNED rather than refused, so a release doc can legitimately reach here without
+      // one. Omit both keys rather than inventing a landing — the section then shows what it has.
+      if (frame.act) {
+        out.shipped = renderLanding(frame.act);
+        out.lands_in = frame.act.lands_in;
+      }
+      if (frame.unproven !== undefined) out.unproven = frame.unproven.map(unprovenText);
+      if (frame.evidence_status !== undefined) {
+        out.evidence_status = evidenceSummaryText(frame.evidence_status);
+      }
+      // `prs` is NOT derivable from the doc — the PR references live on the task
+      // (`field_values.build_pr`, whose family gate-slots.ts pins). The write path adds that key; this
+      // projection never guesses it.
+      return out;
+    }
+    case 'verify': {
+      if (frame.kind !== 'verify') return null;
+      if (frame.environment !== undefined) out.environment = frame.environment;
+      if (frame.criteria !== undefined) out.criteria = frame.criteria.map(criterionSlotRow);
+      if (frame.evidence_status !== undefined) out.evidence_status = frame.evidence_status;
+      if (frame.exempt_reason !== undefined) out.exempt_reason = frame.exempt_reason;
+      if (frame.bounded_accept !== undefined) {
+        out.bounded_accept = {
+          open_ac_ids: [...(frame.bounded_accept.open_ac_ids ?? [])],
+          closes_when: frame.bounded_accept.closes_when,
+        };
+      }
+      return out;
+    }
+    default:
+      return null;
+  }
 }
 
 /** Task-derived context the lint needs but cannot see in the doc alone (B-732). */
@@ -1463,8 +1610,23 @@ export interface GateReasonFlow {
   derives_entry_content: boolean;
   /** Does this gate's brief carry promised structured writes in `doc.payload`? */
   carries_writes: boolean;
+  /** B-867 — does this gate land a DURABLE SECTION on the ticket (`tasks.field_values.gate_slots`)?
+   *  THREE reasons do: clarification-draft, release-decision-pending, verification-ack-pending.
+   *
+   *  A FOURTH FIELD BECAUSE IT IS A FOURTH FACT, and it deliberately does NOT line up with
+   *  `carries_writes` — the two disagree at FIVE of the eight rows. Clarify writes its slot THROUGH the
+   *  payload (its accept defers into an acceptance event, so a `gate_slot` item can ride it). Release
+   *  and verify carry no writes at all and never will: their accept creates NO acceptance event
+   *  (`resolve_brief` defers only the four agent-owned-payload reasons), so there is nothing for a
+   *  payload item to hang on — they reach the same `writeGateSlot` helper through the `write_gate_slot`
+   *  MCP tool at the accept instead. Giving the two hard-floor gates payload semantics purely to make
+   *  this column agree with the one above it was considered and REJECTED at design: it would invent an
+   *  event whose only purpose is uniformity. Reading `writes_slot` off `carries_writes` would therefore
+   *  be wrong in BOTH directions — decompose/design/plan carry writes and land no section, while
+   *  release/verify land a section and carry no writes. */
+  writes_slot: boolean;
   /** Why. Present on EVERY row, including the flowed ones — an exemption nobody wrote down is
-   *  indistinguishable from an oversight. */
+   *  indistinguishable from an oversight. Covers all four facts above, not just the interesting one. */
   note: string;
 }
 
@@ -1473,49 +1635,57 @@ export const GATE_REASON_FLOW: Record<string, GateReasonFlow> = {
     carries_decision_ref: true,
     derives_entry_content: true,
     carries_writes: true,
-    note: "Promotes the clarified-intent specification entry, whose body this gate records as a PLACEHOLDER moments before composing — so deriving it replaces a seat, never ratified prose. Promises the happy-path acceptance criteria (and any de-scope re-tickets).",
+    writes_slot: true,
+    note: "Promotes the clarified-intent specification entry, whose body this gate records as a PLACEHOLDER moments before composing — so deriving it replaces a seat, never ratified prose. Promises the happy-path acceptance criteria (and any de-scope re-tickets). WRITES THE `clarify` SLOT (B-867) — through its own accept payload, since this reason defers into an acceptance event; the item is derived at compose from the doc's clarify frame, never hand-authored.",
   },
   'decomposition-proposal': {
     carries_decision_ref: true,
     derives_entry_content: true,
     carries_writes: true,
-    note: "Promotes the decomposition rationale entry, recorded as a placeholder by this same gate. Promises the child tickets and any AC transfers.",
+    writes_slot: false,
+    note: "Promotes the decomposition rationale entry, recorded as a placeholder by this same gate. Promises the child tickets and any AC transfers. Writes NO slot: the ticket's durable face carries what this ticket is solving, what shipped and what was verified — a decomposition's answer is the child tickets themselves, which are already on the board and need no second copy.",
   },
   'design-decision-draft': {
     carries_decision_ref: true,
     derives_entry_content: true,
     carries_writes: true,
-    note: "Promotes the design decision entry (technical / product / ux-ui track), recorded as a placeholder by this same gate; its `madr` block keeps its own authored value, only the body is projected. Promises the product track's AC manifest and the decision-only label.",
+    writes_slot: false,
+    note: "Promotes the design decision entry (technical / product / ux-ui track), recorded as a placeholder by this same gate; its `madr` block keeps its own authored value, only the body is projected. Promises the product track's AC manifest and the decision-only label. Writes NO slot: its durable record is the design decision ENTRY it promotes (and the AC manifest it files); a section restating that on the ticket would be a third copy of one decision.",
   },
   'stale-patch-review': {
     carries_decision_ref: true,
     derives_entry_content: false,
     carries_writes: false,
-    note: "POINTER-ONLY, BY CONSTRUCTION — a NAMED, PRINCIPLED EXEMPTION, not a gap. It DOES carry a decision_ref, so the depth-pointer still renders and the accept still promotes the entry; today's stale-patch behaviour is unchanged, which is the point. But its decision_ref names `stale_ref.superseded_by`: ANOTHER GATE'S ALREADY-RATIFIED ENTRY, not a placeholder this gate recorded. Projecting the patch-review brief onto it would DESTROY ratified content — the inverse of this ticket's guarantee, aimed at an artefact the human ratified elsewhere. So content derivation stops here. (A null-successor brief omits decision_ref entirely and carries neither half.) Promises no structured writes.",
+    writes_slot: false,
+    note: "POINTER-ONLY, BY CONSTRUCTION — a NAMED, PRINCIPLED EXEMPTION, not a gap. It DOES carry a decision_ref, so the depth-pointer still renders and the accept still promotes the entry; today's stale-patch behaviour is unchanged, which is the point. But its decision_ref names `stale_ref.superseded_by`: ANOTHER GATE'S ALREADY-RATIFIED ENTRY, not a placeholder this gate recorded. Projecting the patch-review brief onto it would DESTROY ratified content — the inverse of this ticket's guarantee, aimed at an artefact the human ratified elsewhere. So content derivation stops here. (A null-successor brief omits decision_ref entirely and carries neither half.) Promises no structured writes. Writes NO slot, for the same reason it derives no content: everything it ratifies belongs to the gate whose entry it points at, and a durable section here would be that borrowed ratification wearing this ticket's face.",
   },
   'revise-scope-review': {
     carries_decision_ref: true,
     derives_entry_content: true,
     carries_writes: false,
-    note: "Promotes the B-763 rationale record, recorded as a placeholder by this same gate; its trigger / supersede-list / keep-list / broadened-scope / AC-axis content now rides the brief's `doc.context`, where the human ratifies it. Promises no structured writes.",
+    writes_slot: false,
+    note: "Promotes the B-763 rationale record, recorded as a placeholder by this same gate; its trigger / supersede-list / keep-list / broadened-scope / AC-axis content now rides the brief's `doc.context`, where the human ratifies it. Promises no structured writes. Writes NO slot today: a re-scope changes what the CLARIFY slot should say, and the honest fix is for the re-clarify to rewrite that slot (latest-accepted-per-gate) rather than for this gate to open a competing section.",
   },
   'plan-draft': {
     carries_decision_ref: false,
     derives_entry_content: false,
     carries_writes: true,
-    note: "WRITES HALF ONLY — composes no decision_ref, so its accept promotes no knowledge entry and there is no entry prose to derive. It does promise the plan-step checklist.",
+    writes_slot: false,
+    note: "WRITES HALF ONLY — composes no decision_ref, so its accept promotes no knowledge entry and there is no entry prose to derive. It does promise the plan-step checklist. Writes NO slot — note it DOES carry writes, so this column is not a restatement of the one before it: a plan is superseded by what actually shipped, and the release slot is where that lands.",
   },
   'release-decision-pending': {
     carries_decision_ref: false,
     derives_entry_content: false,
     carries_writes: false,
-    note: "NEITHER HALF — the accept executes a landing (merge + deploy); it promotes no entry and promises no structured writes.",
+    writes_slot: true,
+    note: "NEITHER HALF — the accept executes a landing (merge + deploy); it promotes no entry and promises no structured writes. WRITES THE `release` SLOT (B-867) — what shipped, where it landed, the PRs it landed through, and what is live but unproven. NOT through a payload: this accept creates no acceptance event, so finish-work calls the `write_gate_slot` MCP tool at the accept, reaching the same helper the payload dispatch reaches.",
   },
   'verification-ack-pending': {
     carries_decision_ref: false,
     derives_entry_content: false,
     carries_writes: false,
-    note: "NEITHER HALF — the accept acknowledges observed reality against the criteria ledger; it promotes no entry and promises no structured writes.",
+    writes_slot: true,
+    note: "NEITHER HALF — the accept acknowledges observed reality against the criteria ledger; it promotes no entry and promises no structured writes. WRITES THE `verify` SLOT (B-867) — the criteria runbook, the environment it covers and the evidence behind it, kept for the reader who asks months later what 'Verified' actually meant here. Same route as release: no acceptance event exists, so the accept calls `write_gate_slot`.",
   },
 };
 
@@ -1529,6 +1699,61 @@ export function derivesEntryContent(reason: string | undefined): boolean {
 /** Does this gate's brief carry a decision_ref (the pointer fact)? */
 export function carriesDecisionRef(reason: string | undefined): boolean {
   return !!reason && GATE_REASON_FLOW[reason]?.carries_decision_ref === true;
+}
+
+/** B-867 — does this gate land a durable section on the ticket? Reads the ledger's OWN field, never
+ *  re-derived from `carries_writes`: that answer is wrong at five of the eight reasons (see the
+ *  `writes_slot` doc-comment). Says nothing about HOW the slot is written — clarify goes through its
+ *  accept payload, release and verify through the `write_gate_slot` tool. */
+export function writesGateSlot(reason: string | undefined): boolean {
+  return !!reason && GATE_REASON_FLOW[reason]?.writes_slot === true;
+}
+
+/** The gate slots reachable through a brief's ACCEPT PAYLOAD — clarify alone, and the ledger above is
+ *  why. Release and verify write slots too, but `resolve_brief` defers only the four agent-owned-payload
+ *  reasons, so their accept mints no acceptance event and a payload item would have nothing to ride.
+ *  Keyed by reason (not by gate) because that is what `composeBrief` actually holds. */
+const GATE_SLOT_FOR_PAYLOAD_REASON: Record<string, GateSlotName> = {
+  'clarification-draft': 'clarify',
+};
+
+/**
+ * B-867 — DERIVE the `gate_slot` payload item from the doc the human is about to ratify.
+ *
+ * Same discipline as `withDerivedEntryContent` below, and for the same reason: a hand-authored section
+ * would be a SECOND copy of prose the human only vetted once. The content is `renderSlot(doc, gate)` —
+ * a mechanical projection of the frame the brief itself renders — so the brief the human reads and the
+ * section the accept lands cannot disagree.
+ *
+ * Deriving it at COMPOSE (rather than at consume) is what makes the brief render its own promise: the
+ * item is in `doc.payload` before `renderBrief` runs, so the promised-writes block names the section
+ * this accept will land. A hand-authored item is REPLACED, never merged — one source, or none.
+ *
+ * The doc comes back UNCHANGED for a reason with no payload-borne slot, and for a doc whose frame does
+ * not match the gate (`renderSlot` returns null): nothing was ratified in a shape the section can lay
+ * out, and writing an empty slot would claim the gate ratified an empty answer.
+ *
+ * Runs BEFORE `withDerivedEntryContent` at the one call site, deliberately: that function projects the
+ * doc into the knowledge entry via a render of this same doc, so the slot item must already be present
+ * or the entry's embedded render would disagree with the brief actually stored.
+ */
+export function withDerivedGateSlot(doc: BriefDoc, reason: string): BriefDoc {
+  const gate = GATE_SLOT_FOR_PAYLOAD_REASON[reason];
+  if (!gate) return doc;
+  const content = renderSlot(doc, gate);
+  if (!content) return doc;
+
+  const others = (doc.payload ?? []).filter((p) => !(p.write_kind === 'gate_slot' && p.gate === gate));
+  // Ref derived from the GATE, not from the content: the content changes on every iterate, and an
+  // external_ref that moved with it would defeat the ledger's retry idempotency. One slot per gate is
+  // exactly the storage's own latest-accepted-per-gate semantic.
+  const item: AcceptanceEventPayloadItem = {
+    write_kind: 'gate_slot',
+    ref: slugRef('slot', gate),
+    gate,
+    slot_content: content,
+  };
+  return { ...doc, payload: [...others, item] };
 }
 
 /**
@@ -1767,8 +1992,11 @@ export async function composeBrief(
   // reasons whose accept promotes a knowledge entry — the entry prose is a projection of this same doc
   // (`renderEntry`), so the human ratifies and the accept promotes one authored source, not two.
   const renderCtx: BriefRenderContext = { reason: args.reason, accept };
+  // B-867: `withDerivedGateSlot` runs INSIDE the entry derivation, never after it — the entry's content
+  // is a render of this same doc, so the slot's promise line must already be on the page when that
+  // render happens or the promoted entry would disagree with the brief the human read.
   const doc = withDerivedEntryContent(
-    withDiffDerivedRiskClasses(args.doc, args.changed_paths),
+    withDerivedGateSlot(withDiffDerivedRiskClasses(args.doc, args.changed_paths), args.reason),
     args.reason,
     mergedDecisionRef,
     renderCtx,

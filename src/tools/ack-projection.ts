@@ -349,6 +349,8 @@ export const ACK_PASS_THROUGH: Record<string, string> = {
     'B-797: already a compact server-computed summary ({status, event_id?, reason?, applied?, skipped_already_done?, workflow_state?}) — the only caller arg is the task_id identifier, so there is no caller-sent body to strip.',
   consume_acceptance_event:
     'B-797: already a compact server-computed ack ({event_id, task_id, status, workflow_state, idempotent}) — the only caller arg is the event_id identifier, so there is no caller-sent body to strip.',
+  write_gate_slot:
+    'B-867: already a compact server-computed ack ({task_id, gate, written, applied?, keys?, brief_id?, reason?}). There is no caller-sent body to strip BY CONSTRUCTION — the tool takes only the task_id and gate identifiers and DERIVES the section content from the gate\'s own brief, so nothing the caller sent can be echoed back. `keys` names the content fields landed (never their values) and `reason` explains a written:false no-op; both are the ack, not an echo.',
 };
 
 /**

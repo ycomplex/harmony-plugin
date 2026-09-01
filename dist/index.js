@@ -37188,10 +37188,16 @@ function renderLanding(landing) {
 function renderIrreversible(landing) {
   return landing.irreversible?.length ? landing.irreversible.join("; ") : "nothing \u2014 every step is revertable";
 }
+function unprovenText(entry) {
+  return `${entry.item} \u2014 ${entry.reason}`;
+}
 function renderUnprovenBlock(label, entries) {
   const list = entries ?? [];
   if (!list.length) return [`**${label}:** nothing`];
-  return [`**${label} \u2014 ${list.length}:**`, ...list.map((u) => `- ${u.item} \u2014 ${u.reason}`)];
+  return [`**${label} \u2014 ${list.length}:**`, ...list.map((u) => `- ${unprovenText(u)}`)];
+}
+function evidenceSummaryText(ev) {
+  return `${ev.proven_by_run}/${ev.total} proven by a test that RAN \xB7 ${ev.walk_at_verify} deferred to the verify runbook \xB7 ${ev.unproven} unproven${ev.detail ? ` \u2014 ${ev.detail}` : ""}`;
 }
 var DISPOSITION_MARK = {
   walk: "\u2705 walk now",
@@ -37201,6 +37207,9 @@ var DISPOSITION_MARK = {
   carried: "\u{1F501} carried",
   unproven: "\u274C unproven"
 };
+function dispositionLabel(row) {
+  return DISPOSITION_MARK[row.disposition] + (row.disposition === "blocked" && row.blocked_reason ? ` \u2014 ${row.blocked_reason}` : "") + (row.disposition === "carried" && row.carried_to ? ` to ${row.carried_to}` : "");
+}
 function cell(value) {
   return (value ?? "\u2014").replace(/\|/g, "\\|").replace(/\n+/g, " ").trim() || "\u2014";
 }
@@ -37279,11 +37288,7 @@ function renderFrame(frame) {
       const risk = frame.risk_classes ?? [];
       out.push(`**Risk (path-derived from the diff):** ${risk.length ? risk.join(", ") : "none"}`);
       const ev = frame.evidence_status;
-      if (ev) {
-        out.push(
-          `**Evidence (mechanical):** ${ev.proven_by_run}/${ev.total} proven by a test that RAN \xB7 ${ev.walk_at_verify} deferred to the verify runbook \xB7 ${ev.unproven} unproven${ev.detail ? ` \u2014 ${ev.detail}` : ""}`
-        );
-      }
+      if (ev) out.push(`**Evidence (mechanical):** ${evidenceSummaryText(ev)}`);
       if (frame.pr_review_state) out.push(`**PR review state:** ${frame.pr_review_state}`);
       break;
     }
@@ -37297,7 +37302,7 @@ function renderFrame(frame) {
       if (rows.length) {
         out.push("| # | Criterion (as filed) | Disposition | Step | Backed by |", "|---|---|---|---|---|");
         rows.forEach((r, i) => {
-          const disposition = DISPOSITION_MARK[r.disposition] + (r.disposition === "blocked" && r.blocked_reason ? ` \u2014 ${r.blocked_reason}` : "") + (r.disposition === "carried" && r.carried_to ? ` to ${r.carried_to}` : "");
+          const disposition = dispositionLabel(r);
           out.push(`| ${i + 1} | ${cell(r.text)} | ${cell(disposition)} | ${cell(r.step_ref)} | ${cell(r.backed_by)} |`);
         });
         out.push("");
@@ -37380,6 +37385,8 @@ function promisedWriteLine(item) {
       return `- label \u2014 ${text(item.label_name) ?? "decision-only"}`;
     case "knowledge_entry_content":
       return "- the linked decision entry, written from THIS brief (derived, never separately authored)";
+    case "gate_slot":
+      return `- the ${text(item.gate) ?? "gate"} section on the ticket \u2014 this brief's ratified content, kept visible after the gate closes`;
     default:
       return null;
   }
@@ -37502,6 +37509,63 @@ function renderEntry(doc, ctx) {
   const changes = revisionLines(doc);
   if (changes.length) out.push("**Changed in the final round:**", ...markAll(changes), "");
   return out.join("\n").trimEnd();
+}
+var GATE_SLOT_NAMES = ["clarify", "release", "verify"];
+var REASON_FOR_GATE_SLOT = {
+  clarify: "clarification-draft",
+  release: "release-decision-pending",
+  verify: "verification-ack-pending"
+};
+function criterionSlotRow(row) {
+  const how = [row.step_ref ? `runbook step ${row.step_ref}` : null, row.backed_by ?? null].filter((part) => typeof part === "string" && part.trim().length > 0).join(" \xB7 ");
+  const out = { text: row.text, disposition: dispositionLabel(row) };
+  if (row.ac_id !== void 0) out.ac_id = row.ac_id;
+  if (how) out.how = how;
+  return out;
+}
+function renderSlot(doc, gate) {
+  const frame = doc.frame;
+  if (!frame) return null;
+  const out = {};
+  switch (gate) {
+    case "clarify": {
+      if (frame.kind !== "clarify") return null;
+      if (frame.solving !== void 0) out.solving = frame.solving;
+      if (frame.in_scope !== void 0) out.in_scope = [...frame.in_scope];
+      if (frame.not_solving !== void 0) {
+        out.not_solving = frame.not_solving.map((e) => ({ item: e.item, lands: e.lands }));
+      }
+      return out;
+    }
+    case "release": {
+      if (frame.kind !== "release") return null;
+      if (frame.act) {
+        out.shipped = renderLanding(frame.act);
+        out.lands_in = frame.act.lands_in;
+      }
+      if (frame.unproven !== void 0) out.unproven = frame.unproven.map(unprovenText);
+      if (frame.evidence_status !== void 0) {
+        out.evidence_status = evidenceSummaryText(frame.evidence_status);
+      }
+      return out;
+    }
+    case "verify": {
+      if (frame.kind !== "verify") return null;
+      if (frame.environment !== void 0) out.environment = frame.environment;
+      if (frame.criteria !== void 0) out.criteria = frame.criteria.map(criterionSlotRow);
+      if (frame.evidence_status !== void 0) out.evidence_status = frame.evidence_status;
+      if (frame.exempt_reason !== void 0) out.exempt_reason = frame.exempt_reason;
+      if (frame.bounded_accept !== void 0) {
+        out.bounded_accept = {
+          open_ac_ids: [...frame.bounded_accept.open_ac_ids ?? []],
+          closes_when: frame.bounded_accept.closes_when
+        };
+      }
+      return out;
+    }
+    default:
+      return null;
+  }
 }
 function isPrShaped(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -37770,53 +37834,78 @@ var GATE_REASON_FLOW = {
     carries_decision_ref: true,
     derives_entry_content: true,
     carries_writes: true,
-    note: "Promotes the clarified-intent specification entry, whose body this gate records as a PLACEHOLDER moments before composing \u2014 so deriving it replaces a seat, never ratified prose. Promises the happy-path acceptance criteria (and any de-scope re-tickets)."
+    writes_slot: true,
+    note: "Promotes the clarified-intent specification entry, whose body this gate records as a PLACEHOLDER moments before composing \u2014 so deriving it replaces a seat, never ratified prose. Promises the happy-path acceptance criteria (and any de-scope re-tickets). WRITES THE `clarify` SLOT (B-867) \u2014 through its own accept payload, since this reason defers into an acceptance event; the item is derived at compose from the doc's clarify frame, never hand-authored."
   },
   "decomposition-proposal": {
     carries_decision_ref: true,
     derives_entry_content: true,
     carries_writes: true,
-    note: "Promotes the decomposition rationale entry, recorded as a placeholder by this same gate. Promises the child tickets and any AC transfers."
+    writes_slot: false,
+    note: "Promotes the decomposition rationale entry, recorded as a placeholder by this same gate. Promises the child tickets and any AC transfers. Writes NO slot: the ticket's durable face carries what this ticket is solving, what shipped and what was verified \u2014 a decomposition's answer is the child tickets themselves, which are already on the board and need no second copy."
   },
   "design-decision-draft": {
     carries_decision_ref: true,
     derives_entry_content: true,
     carries_writes: true,
-    note: "Promotes the design decision entry (technical / product / ux-ui track), recorded as a placeholder by this same gate; its `madr` block keeps its own authored value, only the body is projected. Promises the product track's AC manifest and the decision-only label."
+    writes_slot: false,
+    note: "Promotes the design decision entry (technical / product / ux-ui track), recorded as a placeholder by this same gate; its `madr` block keeps its own authored value, only the body is projected. Promises the product track's AC manifest and the decision-only label. Writes NO slot: its durable record is the design decision ENTRY it promotes (and the AC manifest it files); a section restating that on the ticket would be a third copy of one decision."
   },
   "stale-patch-review": {
     carries_decision_ref: true,
     derives_entry_content: false,
     carries_writes: false,
-    note: "POINTER-ONLY, BY CONSTRUCTION \u2014 a NAMED, PRINCIPLED EXEMPTION, not a gap. It DOES carry a decision_ref, so the depth-pointer still renders and the accept still promotes the entry; today's stale-patch behaviour is unchanged, which is the point. But its decision_ref names `stale_ref.superseded_by`: ANOTHER GATE'S ALREADY-RATIFIED ENTRY, not a placeholder this gate recorded. Projecting the patch-review brief onto it would DESTROY ratified content \u2014 the inverse of this ticket's guarantee, aimed at an artefact the human ratified elsewhere. So content derivation stops here. (A null-successor brief omits decision_ref entirely and carries neither half.) Promises no structured writes."
+    writes_slot: false,
+    note: "POINTER-ONLY, BY CONSTRUCTION \u2014 a NAMED, PRINCIPLED EXEMPTION, not a gap. It DOES carry a decision_ref, so the depth-pointer still renders and the accept still promotes the entry; today's stale-patch behaviour is unchanged, which is the point. But its decision_ref names `stale_ref.superseded_by`: ANOTHER GATE'S ALREADY-RATIFIED ENTRY, not a placeholder this gate recorded. Projecting the patch-review brief onto it would DESTROY ratified content \u2014 the inverse of this ticket's guarantee, aimed at an artefact the human ratified elsewhere. So content derivation stops here. (A null-successor brief omits decision_ref entirely and carries neither half.) Promises no structured writes. Writes NO slot, for the same reason it derives no content: everything it ratifies belongs to the gate whose entry it points at, and a durable section here would be that borrowed ratification wearing this ticket's face."
   },
   "revise-scope-review": {
     carries_decision_ref: true,
     derives_entry_content: true,
     carries_writes: false,
-    note: "Promotes the B-763 rationale record, recorded as a placeholder by this same gate; its trigger / supersede-list / keep-list / broadened-scope / AC-axis content now rides the brief's `doc.context`, where the human ratifies it. Promises no structured writes."
+    writes_slot: false,
+    note: "Promotes the B-763 rationale record, recorded as a placeholder by this same gate; its trigger / supersede-list / keep-list / broadened-scope / AC-axis content now rides the brief's `doc.context`, where the human ratifies it. Promises no structured writes. Writes NO slot today: a re-scope changes what the CLARIFY slot should say, and the honest fix is for the re-clarify to rewrite that slot (latest-accepted-per-gate) rather than for this gate to open a competing section."
   },
   "plan-draft": {
     carries_decision_ref: false,
     derives_entry_content: false,
     carries_writes: true,
-    note: "WRITES HALF ONLY \u2014 composes no decision_ref, so its accept promotes no knowledge entry and there is no entry prose to derive. It does promise the plan-step checklist."
+    writes_slot: false,
+    note: "WRITES HALF ONLY \u2014 composes no decision_ref, so its accept promotes no knowledge entry and there is no entry prose to derive. It does promise the plan-step checklist. Writes NO slot \u2014 note it DOES carry writes, so this column is not a restatement of the one before it: a plan is superseded by what actually shipped, and the release slot is where that lands."
   },
   "release-decision-pending": {
     carries_decision_ref: false,
     derives_entry_content: false,
     carries_writes: false,
-    note: "NEITHER HALF \u2014 the accept executes a landing (merge + deploy); it promotes no entry and promises no structured writes."
+    writes_slot: true,
+    note: "NEITHER HALF \u2014 the accept executes a landing (merge + deploy); it promotes no entry and promises no structured writes. WRITES THE `release` SLOT (B-867) \u2014 what shipped, where it landed, the PRs it landed through, and what is live but unproven. NOT through a payload: this accept creates no acceptance event, so finish-work calls the `write_gate_slot` MCP tool at the accept, reaching the same helper the payload dispatch reaches."
   },
   "verification-ack-pending": {
     carries_decision_ref: false,
     derives_entry_content: false,
     carries_writes: false,
-    note: "NEITHER HALF \u2014 the accept acknowledges observed reality against the criteria ledger; it promotes no entry and promises no structured writes."
+    writes_slot: true,
+    note: "NEITHER HALF \u2014 the accept acknowledges observed reality against the criteria ledger; it promotes no entry and promises no structured writes. WRITES THE `verify` SLOT (B-867) \u2014 the criteria runbook, the environment it covers and the evidence behind it, kept for the reader who asks months later what 'Verified' actually meant here. Same route as release: no acceptance event exists, so the accept calls `write_gate_slot`."
   }
 };
 function derivesEntryContent(reason) {
   return !!reason && GATE_REASON_FLOW[reason]?.derives_entry_content === true;
+}
+var GATE_SLOT_FOR_PAYLOAD_REASON = {
+  "clarification-draft": "clarify"
+};
+function withDerivedGateSlot(doc, reason) {
+  const gate = GATE_SLOT_FOR_PAYLOAD_REASON[reason];
+  if (!gate) return doc;
+  const content = renderSlot(doc, gate);
+  if (!content) return doc;
+  const others = (doc.payload ?? []).filter((p) => !(p.write_kind === "gate_slot" && p.gate === gate));
+  const item = {
+    write_kind: "gate_slot",
+    ref: slugRef("slot", gate),
+    gate,
+    slot_content: content
+  };
+  return { ...doc, payload: [...others, item] };
 }
 function withDerivedEntryContent(doc, reason, decisionRef, ctx) {
   if (!derivesEntryContent(reason)) return doc;
@@ -37883,7 +37972,7 @@ async function composeBrief(client, projectId, userId, args) {
   const mergedDecisionRef = args.decision_ref !== void 0 ? args.decision_ref ?? null : existingRow?.decision_ref ?? null;
   const renderCtx = { reason: args.reason, accept };
   const doc = withDerivedEntryContent(
-    withDiffDerivedRiskClasses(args.doc, args.changed_paths),
+    withDerivedGateSlot(withDiffDerivedRiskClasses(args.doc, args.changed_paths), args.reason),
     args.reason,
     mergedDecisionRef,
     renderCtx
@@ -42208,6 +42297,179 @@ function projectAck(toolName, result, args) {
   return projection ? projection(result, args) : result;
 }
 
+// src/tools/gate-slots.ts
+var GATE_SLOT_FIELD_KEY = "gate_slots";
+var ExcludedSlotSchema = external_exports.object({
+  item: external_exports.string(),
+  lands: external_exports.string()
+}).passthrough();
+var PullRequestSlotSchema = external_exports.object({
+  repo: external_exports.string().optional(),
+  ref: external_exports.string().optional(),
+  url: external_exports.string().optional(),
+  title: external_exports.string().optional()
+}).passthrough();
+var CriterionSlotSchema = external_exports.object({
+  ac_id: external_exports.string().optional(),
+  text: external_exports.string().optional(),
+  how: external_exports.string().optional(),
+  disposition: external_exports.string().optional()
+}).passthrough();
+var ClarifySlotSchema = external_exports.object({
+  solving: external_exports.string().optional(),
+  in_scope: external_exports.array(external_exports.string()).optional(),
+  not_solving: external_exports.array(ExcludedSlotSchema).optional()
+}).passthrough();
+var ReleaseSlotSchema = external_exports.object({
+  shipped: external_exports.string().optional(),
+  lands_in: external_exports.string().optional(),
+  prs: external_exports.array(PullRequestSlotSchema).optional(),
+  unproven: external_exports.array(external_exports.string()).optional(),
+  evidence_status: external_exports.string().optional()
+}).passthrough();
+var VerifySlotSchema = external_exports.object({
+  environment: external_exports.string().optional(),
+  criteria: external_exports.array(CriterionSlotSchema).optional(),
+  evidence_status: external_exports.string().optional()
+}).passthrough();
+var UnknownGateSlotSchema = external_exports.record(external_exports.unknown());
+var GATE_SLOT_SCHEMAS = {
+  clarify: ClarifySlotSchema,
+  release: ReleaseSlotSchema,
+  verify: VerifySlotSchema
+};
+function isGateSlotName(gate) {
+  return GATE_SLOT_NAMES.includes(gate);
+}
+function parseGateSlotContent(gate, content) {
+  const schema = isGateSlotName(gate) ? GATE_SLOT_SCHEMAS[gate] : UnknownGateSlotSchema;
+  const parsed = schema.safeParse(content);
+  if (!parsed.success) {
+    const detail = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
+    throw new Error(`gate_slot content for gate '${gate}' does not match the pinned shape \u2014 ${detail}`);
+  }
+  return parsed.data;
+}
+function pinBuildPrs(fieldValues) {
+  const refs = readBuildPrReferences(fieldValues);
+  const out = [];
+  for (const ref of refs) {
+    const label = typeof ref.pr_number === "number" ? `#${ref.pr_number}` : ref.branch ?? ref.pr_url;
+    if (!ref.pr_url && !label) continue;
+    const pr = { repo: ref.key };
+    if (label) pr.ref = label;
+    if (ref.pr_url) pr.url = ref.pr_url;
+    out.push(pr);
+  }
+  return out;
+}
+var isPlainObject4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function isMissingGateSlotRpc(err) {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42P01" || code === "42883" || code === "PGRST202" || code === "PGRST205") return true;
+  const msg = err.message ?? "";
+  return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
+}
+function ratifiedAtStamp(now) {
+  return `${now.toISOString().slice(0, 19)}Z`;
+}
+async function writeGateSlot(client, args) {
+  const gate = (args.gate ?? "").trim();
+  if (!gate) throw new Error("gate_slot write names no gate \u2014 the slot is keyed by the gate that ratified it");
+  if (!isPlainObject4(args.content)) {
+    throw new Error(
+      `gate_slot write for gate '${gate}' must carry a content OBJECT (an EMPTY object is valid \u2014 it means the gate ratified an empty answer)`
+    );
+  }
+  const content = parseGateSlotContent(gate, args.content);
+  const keys = Object.keys(content);
+  if (args.target.via === "acceptance-event") {
+    const { data, error: error2 } = await client.rpc("consume_gate_slot_write", {
+      _event_id: args.target.event_id,
+      _external_ref: args.target.external_ref,
+      _gate: gate,
+      // ONLY the content. `ratified_by` / `ratified_at` are stamped INSIDE the function, from `_gate`
+      // and `now()` — sending them would let a replayed payload back-date a slot.
+      _content: content
+    });
+    if (error2) {
+      if (isMissingGateSlotRpc(error2)) return { gate, applied: false, keys, substrate_absent: true };
+      throw new Error(error2.message);
+    }
+    const row = data ?? {};
+    return { gate, applied: row.applied === true, keys, result_id: row.result_id };
+  }
+  const taskId = args.target.task_id;
+  const { data: taskRow, error: readErr } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
+  if (readErr) throw new Error(readErr.message);
+  if (!taskRow) throw new Error(`gate_slot write for gate '${gate}' targets task ${taskId}, which does not exist`);
+  const fieldValues = isPlainObject4(taskRow.field_values) ? taskRow.field_values : {};
+  const existingSlots = isPlainObject4(fieldValues[GATE_SLOT_FIELD_KEY]) ? fieldValues[GATE_SLOT_FIELD_KEY] : {};
+  const ratified_at = ratifiedAtStamp(/* @__PURE__ */ new Date());
+  const nextFieldValues = {
+    ...fieldValues,
+    [GATE_SLOT_FIELD_KEY]: {
+      ...existingSlots,
+      [gate]: { content, ratified_by: gate, ratified_at }
+    }
+  };
+  const { error: writeErr } = await client.from("tasks").update({ field_values: nextFieldValues }).eq("id", taskId);
+  if (writeErr) throw new Error(writeErr.message);
+  return { gate, applied: true, keys, result_id: taskId };
+}
+async function writeGateSlotToolHandler(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const gate = (args.gate ?? "").trim();
+  if (!gate) throw new Error("gate is required");
+  if (!isGateSlotName(gate)) {
+    throw new Error(`gate must be one of: ${GATE_SLOT_NAMES.join(", ")} \u2014 got '${gate}'`);
+  }
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const reason = REASON_FOR_GATE_SLOT[gate];
+  const { data: briefRows, error: briefErr } = await client.from("briefs").select("id, doc, reason, created_at").eq("task_id", taskId).eq("reason", reason).order("created_at", { ascending: false }).limit(1);
+  if (briefErr) throw new Error(briefErr.message);
+  const brief = (briefRows ?? [])[0];
+  if (!brief) {
+    return { task_id: taskId, gate, written: false, reason: `no ${reason} brief exists on this ticket \u2014 nothing was ratified at the ${gate} gate` };
+  }
+  const doc = brief.doc;
+  const projected = doc ? renderSlot(doc, gate) : null;
+  if (!projected) {
+    return {
+      task_id: taskId,
+      gate,
+      written: false,
+      brief_id: brief.id,
+      reason: `the ${reason} brief carries no ${gate} frame \u2014 there is nothing ratified in a shape the ticket's section can lay out`
+    };
+  }
+  const content = { ...projected };
+  if (gate === "release") {
+    const { data: taskRow } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
+    const prs = pinBuildPrs(taskRow?.field_values);
+    content.prs = prs;
+  }
+  const result = await writeGateSlot(client, { gate, content, target: { via: "task", task_id: taskId } });
+  return { task_id: taskId, gate, written: true, applied: result.applied, keys: result.keys, brief_id: brief.id };
+}
+var writeGateSlotTool = {
+  name: "write_gate_slot",
+  description: `B-867 \u2014 land a gate's ratified brief content on the ticket as a DURABLE section, visible forever after (stored in tasks.field_values.gate_slots, one sub-key per gate, latest-accepted-per-gate). Call it IMMEDIATELY AFTER the accept at the release gate (gate: "release") and the verify gate (gate: "verify") \u2014 those two accepts create no acceptance event, so their slot cannot ride a brief payload the way clarify's does; this tool is how they reach the same write. Clarify normally needs no call at all: its slot rides its accept payload automatically. The content is DERIVED, never passed in: this reads the gate's own brief and projects its ratified doc (the same projection the brief itself renders), so the section and the brief cannot disagree \u2014 there is deliberately no way to hand-author it. Requires the gate's brief to carry a \`doc.frame\` of the matching kind (B-876); a brief without one returns { written: false, reason } and changes nothing, rather than failing the accept. Idempotent: re-running replaces THIS gate's slot and touches no other gate's, and never any other field_values key (build_pr / work_branch are safe). Returns { written, applied, keys, reason? }.`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 867), or visual ID (e.g., B-867)" },
+      gate: {
+        type: "string",
+        enum: ["clarify", "release", "verify"],
+        description: "Which gate's section to land \u2014 'release' after the release accept, 'verify' after the verify accept."
+      }
+    },
+    required: ["task_id", "gate"]
+  }
+};
+
 // src/tools/acceptance-events.ts
 function isMissingRelationOrFunction(err) {
   if (!err) return false;
@@ -42238,7 +42500,7 @@ async function getPendingAcceptanceEvent(client, projectId, taskId) {
   }
   return event ?? null;
 }
-var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add", "knowledge_entry_content"]);
+var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add", "knowledge_entry_content", "gate_slot"]);
 function rawItemsOf(payload) {
   const withNestedPayload = payload;
   if (Array.isArray(withNestedPayload?.payload)) return withNestedPayload.payload;
@@ -42272,6 +42534,13 @@ async function applyAcceptanceEventPayload(client, event) {
     "acceptance_criterion",
     "ac_transfer",
     "label_add",
+    // B-867 sits HERE — after every concrete materialization, before the entry promotion. Same reasoning
+    // as the line below, one notch weaker: the slot is the ticket's DISPLAYED record of what this accept
+    // did, so a payload that fails partway must not leave a section on the ticket announcing writes that
+    // never landed. It stays AHEAD of the entry promotion because a slot is a projection of the brief,
+    // repaired by the next accept (latest-accepted-per-gate), whereas a wrongly-promoted entry has
+    // already superseded a real one.
+    "gate_slot",
     // B-843 LAST, on purpose: it promotes the gate's knowledge entry and supersedes the previous round's.
     // Running it after every AC/child/checklist write means a payload that fails partway leaves the
     // knowledge base untouched rather than promoting a decision whose materialization never landed.
@@ -42338,6 +42607,18 @@ async function applyAcceptanceEventPayload(client, event) {
           throw new Error(error2.message);
         }
         result = data;
+      } else if (item.write_kind === "gate_slot") {
+        if (!item.gate?.trim()) throw new Error(`gate_slot item '${item.ref}' names no gate \u2014 the slot is keyed by the gate that ratified it`);
+        if (!item.slot_content || typeof item.slot_content !== "object" || Array.isArray(item.slot_content)) {
+          throw new Error(`gate_slot item '${item.ref}' for gate '${item.gate}' carries no slot_content object \u2014 an EMPTY object is valid (the gate ratified an empty answer), an absent one is not`);
+        }
+        const slotResult = await writeGateSlot(client, {
+          gate: item.gate,
+          content: item.slot_content,
+          target: { via: "acceptance-event", event_id: event.id, external_ref: item.ref }
+        });
+        if (slotResult.substrate_absent) throw new WriteKindSubstrateAbsentError("gate_slot");
+        result = { applied: slotResult.applied };
       } else if (item.write_kind === "label_add") {
         if (item.label_name === "") throw new Error(`label_add item '${item.ref}' has an empty label_name`);
         const labelName = item.label_name ?? "decision-only";
@@ -42397,7 +42678,7 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId) {
 }
 var consumePendingAcceptanceEventTool = {
   name: "consume_pending_acceptance_event",
-  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals, B-843 knowledge-entry content + per-gate supersede) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
+  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ticket section) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
   inputSchema: {
     type: "object",
     properties: {
@@ -42479,7 +42760,8 @@ function registerTools(disabledFeatures) {
     createConductionTool,
     requestConductionReapTool,
     consumePendingAcceptanceEventTool,
-    consumeAcceptanceEventTool
+    consumeAcceptanceEventTool,
+    writeGateSlotTool
   ];
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
   if (!disabledFeatures?.labels) tools.push(listLabelsTool, createLabelTool, manageTaskLabelsTool);
@@ -42681,6 +42963,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "consume_acceptance_event":
         result = await consumeAcceptanceEventToolHandler(client, args);
+        break;
+      case "write_gate_slot":
+        result = await writeGateSlotToolHandler(client, projectId, args);
         break;
       case "flag_release_approval_pending":
         result = await flagReleaseApprovalPending(client, projectId, args);

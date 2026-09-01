@@ -23024,10 +23024,16 @@ function renderLanding(landing) {
 function renderIrreversible(landing) {
   return landing.irreversible?.length ? landing.irreversible.join("; ") : "nothing \u2014 every step is revertable";
 }
+function unprovenText(entry) {
+  return `${entry.item} \u2014 ${entry.reason}`;
+}
 function renderUnprovenBlock(label, entries) {
   const list = entries ?? [];
   if (!list.length) return [`**${label}:** nothing`];
-  return [`**${label} \u2014 ${list.length}:**`, ...list.map((u) => `- ${u.item} \u2014 ${u.reason}`)];
+  return [`**${label} \u2014 ${list.length}:**`, ...list.map((u) => `- ${unprovenText(u)}`)];
+}
+function evidenceSummaryText(ev) {
+  return `${ev.proven_by_run}/${ev.total} proven by a test that RAN \xB7 ${ev.walk_at_verify} deferred to the verify runbook \xB7 ${ev.unproven} unproven${ev.detail ? ` \u2014 ${ev.detail}` : ""}`;
 }
 var DISPOSITION_MARK = {
   walk: "\u2705 walk now",
@@ -23037,6 +23043,9 @@ var DISPOSITION_MARK = {
   carried: "\u{1F501} carried",
   unproven: "\u274C unproven"
 };
+function dispositionLabel(row) {
+  return DISPOSITION_MARK[row.disposition] + (row.disposition === "blocked" && row.blocked_reason ? ` \u2014 ${row.blocked_reason}` : "") + (row.disposition === "carried" && row.carried_to ? ` to ${row.carried_to}` : "");
+}
 function cell(value) {
   return (value ?? "\u2014").replace(/\|/g, "\\|").replace(/\n+/g, " ").trim() || "\u2014";
 }
@@ -23115,11 +23124,7 @@ function renderFrame(frame) {
       const risk = frame.risk_classes ?? [];
       out.push(`**Risk (path-derived from the diff):** ${risk.length ? risk.join(", ") : "none"}`);
       const ev = frame.evidence_status;
-      if (ev) {
-        out.push(
-          `**Evidence (mechanical):** ${ev.proven_by_run}/${ev.total} proven by a test that RAN \xB7 ${ev.walk_at_verify} deferred to the verify runbook \xB7 ${ev.unproven} unproven${ev.detail ? ` \u2014 ${ev.detail}` : ""}`
-        );
-      }
+      if (ev) out.push(`**Evidence (mechanical):** ${evidenceSummaryText(ev)}`);
       if (frame.pr_review_state) out.push(`**PR review state:** ${frame.pr_review_state}`);
       break;
     }
@@ -23133,7 +23138,7 @@ function renderFrame(frame) {
       if (rows.length) {
         out.push("| # | Criterion (as filed) | Disposition | Step | Backed by |", "|---|---|---|---|---|");
         rows.forEach((r, i) => {
-          const disposition = DISPOSITION_MARK[r.disposition] + (r.disposition === "blocked" && r.blocked_reason ? ` \u2014 ${r.blocked_reason}` : "") + (r.disposition === "carried" && r.carried_to ? ` to ${r.carried_to}` : "");
+          const disposition = dispositionLabel(r);
           out.push(`| ${i + 1} | ${cell(r.text)} | ${cell(disposition)} | ${cell(r.step_ref)} | ${cell(r.backed_by)} |`);
         });
         out.push("");
@@ -23216,6 +23221,8 @@ function promisedWriteLine(item) {
       return `- label \u2014 ${text(item.label_name) ?? "decision-only"}`;
     case "knowledge_entry_content":
       return "- the linked decision entry, written from THIS brief (derived, never separately authored)";
+    case "gate_slot":
+      return `- the ${text(item.gate) ?? "gate"} section on the ticket \u2014 this brief's ratified content, kept visible after the gate closes`;
     default:
       return null;
   }
