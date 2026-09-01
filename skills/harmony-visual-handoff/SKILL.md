@@ -105,6 +105,14 @@ const decision = mcp__harmony__record_decision({
 mcp__harmony__reference_knowledge({ task_id, decision_id: decision.id })
 ```
 
+> **B-866 — the entry's prose is DERIVED, not authored here.** `content` above is a **placeholder seat**,
+> not the entry's text. The brief's accept promotes `renderEntry(doc)` — a mechanical projection of the
+> very `doc` you compose below — so anything you would have written into the entry belongs in the doc
+> (`recommend` / `why` / `alternatives` / `context` / `frame`). Do not write the decision out twice, and
+> do not hand-author a `knowledge_entry_content` payload item: `compose_brief` derives it, sets its `ref`
+> and `entry_id`, and REPLACES anything you author there. See
+> `skills/harmony-shared/brief-authoring.md` §"The brief is the only authored copy".
+
 Then compose the brief. Author it per `skills/harmony-shared/brief-authoring.md` §Design — the question,
 must-haves, and engagement it owes the human, plus the legibility contract. Consult it; do not restate it. Ticket ids named in the brief's prose follow `skills/harmony-shared/brief-authoring.md` §Ticket identity — never assume the letter `B`.
 Set `pending_activity: "designing"` **only if this is the last required sub-track**

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, getBrief, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, DE_SCOPE_HEADING, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, getBrief, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -205,9 +205,15 @@ describe('renderBrief — compose-time context (B-874)', () => {
       );
     });
 
-    it('renders only acceptance_criterion items — other write kinds stay unrendered', () => {
+    // B-866 SUPERSEDES the original form of this pin ("other write kinds stay unrendered"). The clarify
+    // AC block is still ACs-only — byte-stable — but the other promised writes are no longer swallowed:
+    // they render under PROMISED_WRITES_HEADING, because a gate that promises a write the reader never
+    // sees is the same defect as prose that disagrees with the write.
+    it('keeps the AC block ACs-only; other write kinds render under the promise heading (B-866)', () => {
       const md = renderBrief(withAcs(), null, { reason: 'clarification-draft', accept: null });
-      expect(md).not.toContain('decision-only');
+      const acBlock = md.slice(md.indexOf(PROPOSED_ACS_HEADING), md.indexOf(PROMISED_WRITES_HEADING));
+      expect(acBlock).not.toContain('decision-only');
+      expect(md).toContain(`${PROMISED_WRITES_HEADING}\n- label — decision-only`);
       expect(md).not.toContain('label_add');
     });
 
@@ -220,10 +226,15 @@ describe('renderBrief — compose-time context (B-874)', () => {
     it.each([
       'decomposition-proposal', 'design-decision-draft', 'plan-draft',
       'release-decision-pending', 'verification-ack-pending', 'stale-patch-review', 'revise-scope-review',
-    ])('is emitted for NO other reason (%s) — payload stays unrendered', (reason) => {
+    ])('is emitted for NO other reason (%s) — the ACs move to the promise block (B-866)', (reason) => {
       const md = renderBrief(withAcs(), null, { reason, accept: null });
+      // The clarify heading stays clarify-only, byte-stable.
       expect(md).not.toContain(PROPOSED_ACS_HEADING);
-      expect(md).not.toContain('A saved filter persists per-user across sessions');
+      // B-866: the promise itself is no longer swallowed at the other seven gates — every payload-bearing
+      // reason renders its promise FROM THE PAYLOAD ITS ACCEPT WILL EXECUTE. Before this, a decompose
+      // brief promised three children in the payload and showed the human none of them.
+      expect(md).toContain(PROMISED_WRITES_HEADING);
+      expect(md).toContain('- acceptance criterion — A saved filter persists per-user across sessions');
     });
 
     it('emits nothing when the payload carries no acceptance_criterion items', () => {
@@ -742,6 +753,53 @@ describe('composeBrief', () => {
 //     migration does, so an absent RPC must degrade to today's in-place iterate, and ONLY an absent RPC:
 //     a permission error or a transient blip must be loud.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// ——— B-866 step 5: the depth-pointer survives a PARTIAL recompose ————————————————————————————————
+describe('composeBrief — the render takes decision_ref from the MERGED revision (B-866)', () => {
+  const briefRow = { id: 'brief-1', task_id: 'task-1', reason: 'clarification-draft', content: 'rendered', status: 'active', iteration: 2 };
+  const POINTER = '_This brief is a summary — fuller depth lives in the linked decision entry._';
+
+  it('CARRY-FORWARD: an iterate that omits decision_ref keeps the pointer in the rendered content', async () => {
+    // The defect: the B-843 revision patch is a PARTIAL, so an omitted decision_ref carries forward on
+    // the ROW — but the render read `args.decision_ref`, so the content silently lost the pointer.
+    const client = makeClient([
+      { data: { id: 'brief-1', iteration: 1, decision_ref: { type: 'specification', id: 'dec-1' } } },
+      { data: briefRow },
+      { data: null },
+    ]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, pending_activity: null as any,
+    });
+    expect(client.update).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining(POINTER),
+      decision_ref: { type: 'specification', id: 'dec-1' },
+    }));
+  });
+
+  it('an EXPLICIT null still clears the pointer — absent and null are different claims', async () => {
+    const client = makeClient([
+      { data: { id: 'brief-1', iteration: 1, decision_ref: { type: 'specification', id: 'dec-1' } } },
+      { data: briefRow },
+      { data: null },
+    ]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      pending_activity: null as any, decision_ref: null as any,
+    });
+    const written = client.update.mock.calls[0][0] as { content: string; decision_ref: unknown };
+    expect(written.content).not.toContain(POINTER);
+    expect(written.decision_ref).toBeNull();
+  });
+
+  it('a first compose with no prior revision is unchanged: the passed ref drives the pointer', async () => {
+    const client = makeClient([{ data: null }, { data: briefRow }, { data: null }]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      pending_activity: null as any, decision_ref: { type: 'specification', id: 'dec-1' },
+    });
+    expect(client.insert).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining(POINTER) }));
+  });
+});
+
 describe('composeBrief — B-843 retained revisions (compose_brief_revision)', () => {
   const revisionRow = { id: 'brief-1', task_id: 'task-1', reason: 'clarification-draft', content: 'rendered', status: 'active', iteration: 2, lineage_id: 'lin-1', iterate_feedback: 'lead with the tradeoff' };
   const revisionOk = { compose_brief_revision: { data: revisionRow, error: null } };
@@ -1154,10 +1212,65 @@ describe('fetchPendingRemark (B-503 — the accept-with-remark detector)', () =>
   it('returns { brief_id, reason, detail } for the most recent unconsumed remark', async () => {
     const client = makeClient([{ data: { id: 'brief-9', reason: 'decomposition-proposal', accept_remark: 'auto-accept decompose if no-split' } }]);
     const r = await fetchPendingRemark(client, 'task-1');
-    expect(r).toEqual({ brief_id: 'brief-9', reason: 'decomposition-proposal', detail: 'auto-accept decompose if no-split' });
+    expect(r).toMatchObject({ brief_id: 'brief-9', reason: 'decomposition-proposal', detail: 'auto-accept decompose if no-split' });
     // The filters that define "unconsumed": remark present AND consumed-stamp NULL.
     expect(client.not).toHaveBeenCalledWith('accept_remark', 'is', null);
     expect(client.is).toHaveBeenCalledWith('accept_remark_consumed_at', null);
+  });
+
+  // B-866 — the remark's REFERENT: what a light amendment is applied TO.
+  describe('the remark referent (B-866)', () => {
+    const briefRow = (over: Record<string, unknown> = {}) => ({
+      id: 'brief-9', reason: 'design-decision-draft', accept_remark: 'tighten the scope sentence', ...over,
+    });
+
+    it('resolves the promoted knowledge entry via decision_ref and hands back its LIVE content', async () => {
+      const client = makeClient([
+        { data: briefRow({ decision_ref: { type: 'technical-design', id: 'dec-7' } }) },
+        { data: { id: 'dec-7', title: 'B-1: the shape', content: 'the stored entry prose' } },
+      ]);
+      const r = await fetchPendingRemark(client, 'task-1');
+      expect(r?.decision_ref).toEqual({ type: 'technical-design', id: 'dec-7' });
+      expect(r?.referent).toEqual({ status: 'entry', entry_id: 'dec-7', title: 'B-1: the shape', content: 'the stored entry prose' });
+      expect(client.from).toHaveBeenCalledWith('knowledge_decisions');
+    });
+
+    it('DEGRADES VISIBLY when the entry cannot be read: a reconstruction, and it says so', async () => {
+      const client = makeClient([
+        { data: briefRow({ decision_ref: { type: 'technical-design', id: 'dec-7' }, doc: { decide: 'Pick the shape.', recommend: { text: 'Shape A.' }, items: [] } }) },
+        { data: null, error: { message: 'relation "knowledge_decisions" does not exist' } },
+      ]);
+      const referent = (await fetchPendingRemark(client, 'task-1'))!.referent;
+      expect(referent.status).toBe('reconstructed');
+      // The whole point: never silently pass a reconstruction off as the real thing.
+      expect(referent).toHaveProperty('warning');
+      expect((referent as { warning: string }).warning).toContain('LOCAL RECONSTRUCTION');
+      expect((referent as { warning: string }).warning).toContain('dec-7');
+      // ...and the reconstruction is the SAME projection the accept would have promoted.
+      expect((referent as { content: string }).content).toContain('**Decision:** Shape A.');
+      expect((referent as { content: string }).content).toContain(ENTRY_PROVENANCE_PREFIX);
+    });
+
+    it('states the degradation when the brief carried no decision_ref at all', async () => {
+      const client = makeClient([{ data: briefRow({ doc: { decide: 'Pick the shape.', items: [] } }) }]);
+      const referent = (await fetchPendingRemark(client, 'task-1'))!.referent;
+      expect(referent.status).toBe('reconstructed');
+      expect((referent as { warning: string }).warning).toContain('no decision_ref');
+      expect(referent.entry_id).toBeNull();
+    });
+
+    it('reports unavailable rather than guessing when even the doc cannot be read', async () => {
+      const client = makeClient([
+        { data: briefRow({ decision_ref: { type: 'technical-design', id: 'dec-7' } }) },
+        { data: null, error: { message: 'boom' } },
+      ]);
+      const referent = (await fetchPendingRemark(client, 'task-1'))!.referent;
+      expect(referent).toEqual({
+        status: 'unavailable',
+        entry_id: 'dec-7',
+        warning: expect.stringContaining('no reconstruction is possible'),
+      });
+    });
   });
 
   it('returns null when no brief carries an unconsumed remark', async () => {
@@ -1302,7 +1415,7 @@ describe('resolveBrief — accept-with-remark (B-883)', () => {
       p_provenance: 'human-in-session', p_remark: 'bump to 0.14.135, read the version from main',
     });
     // ...and read back through the SAME projection the conductor picks up on.
-    expect(await fetchPendingRemark(client, 'task-1')).toEqual({
+    expect(await fetchPendingRemark(client, 'task-1')).toMatchObject({
       brief_id: 'brief-1', reason: 'plan-draft', detail: 'bump to 0.14.135, read the version from main',
     });
   });

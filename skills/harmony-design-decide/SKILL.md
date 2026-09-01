@@ -203,7 +203,7 @@ Then, either way:
 const decision = mcp__harmony__record_decision({
   type: "technical-design",            // or product-design / ux-ui-design
   title: "<ticket>: <sub-track> — <decision>",
-  content: "<the decision + rationale>",
+  content: "<placeholder — one line: '<sub-track> decision for <ticket>; body derived from the ratified brief'>",
   madr: { context: "...", decision_drivers: ["..."], considered_options: ["..."], decision_outcome: "...", consequences: ["..."] },
   domain: ["engineering", "operations"],
   source_type: "manual",
@@ -212,6 +212,17 @@ const decision = mcp__harmony__record_decision({
 })
 mcp__harmony__reference_knowledge({ task_id, decision_id: decision.id })
 ```
+
+> **B-866 — the entry's prose is DERIVED, not authored here.** `content` above is a **placeholder seat**,
+> not the entry's text. The brief's accept promotes `renderEntry(doc)` — a mechanical projection of the
+> very `doc` you compose below — so anything you would have written into the entry belongs in the doc
+> (`recommend` / `why` / `alternatives` / `context` / `frame`). Do not write the decision out twice, and
+> do not hand-author a `knowledge_entry_content` payload item: `compose_brief` derives it, sets its `ref`
+> and `entry_id`, and REPLACES anything you author there. See
+> `skills/harmony-shared/brief-authoring.md` §"The brief is the only authored copy".
+
+> The `madr` block is NOT derived — it is structured metadata, not prose, and it keeps its own authored
+> value. Only the entry's `content` body is the projection.
 
 **Revising THIS ticket's own governing sub-track decision (B-715 defense in depth).** Before drafting a
 brand-new decision on a `revising-*` re-entry, check whether this same ticket already has an Accepted

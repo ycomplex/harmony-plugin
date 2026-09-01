@@ -112,6 +112,17 @@ mcp__harmony__compose_brief({
 })
 ```
 
+> **B-866 — this gate is POINTER-ONLY, and that is a settled exemption, not a hazard to work around.**
+> At the four gates that derive their entry's body from the ratified brief, `decision_ref` names an entry
+> that same gate recorded as a placeholder moments earlier. Here it names the SUCCESSOR decision —
+> authored at a *different* gate and already carrying its own ratified rationale. Projecting this
+> patch-review brief onto it would destroy ratified content, so `compose_brief` **does not derive a
+> `knowledge_entry_content` item for `stale-patch-review` at all**. Nothing about this gate's behaviour
+> changed: the `decision_ref` still renders the depth-pointer, the accept still promotes the entry, and
+> the entry's body is never overwritten. The exemption is a named row in `GATE_REASON_FLOW`
+> (`src/tools/briefs.ts`) pinned in both directions, so it can neither widen to another gate nor quietly
+> disappear. Author the brief exactly as before — there is nothing to avoid here.
+
 **The command tail is emitted mechanically — never supply `doc.tail` here (B-874).** The default
 tail ("Type `accept`, `edit`, `iterate <feedback>`, or `defer`.") MISINFORMS at this gate, because
 `defer` does not park a stale-patch review — it rejects the patch. So `compose_brief` renders this

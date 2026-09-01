@@ -197,7 +197,7 @@ couple to the brief they underwrite:
 const decision = mcp__harmony__record_decision({
   type: "specification",
   title: "<ticket>: clarified intent",
-  content: "<the clarified spec — what this is, in/out of scope>",
+  content: "<placeholder — one line: 'clarified intent for <ticket>; body derived from the ratified brief'>",
   domain: ["product"],
   source_type: "manual",
   source_activity: "clarify",
@@ -205,6 +205,14 @@ const decision = mcp__harmony__record_decision({
 })
 mcp__harmony__reference_knowledge({ task_id, decision_id: decision.id })
 ```
+
+> **B-866 — the entry's prose is DERIVED, not authored here.** `content` above is a **placeholder seat**,
+> not the entry's text. The brief's accept promotes `renderEntry(doc)` — a mechanical projection of the
+> very `doc` you compose below — so anything you would have written into the entry belongs in the doc
+> (`recommend` / `why` / `alternatives` / `context` / `frame`). Do not write the decision out twice, and
+> do not hand-author a `knowledge_entry_content` payload item: `compose_brief` derives it, sets its `ref`
+> and `entry_id`, and REPLACES anything you author there. See
+> `skills/harmony-shared/brief-authoring.md` §"The brief is the only authored copy".
 
 2. **Proposed ACs (B-648).** Derive the ticket's **happy-path acceptance criteria** from the
    clarification — on the exchange path, from the elicitation dialogue (stating them and having the

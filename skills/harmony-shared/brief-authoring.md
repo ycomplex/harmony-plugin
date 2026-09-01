@@ -105,6 +105,35 @@ what changes about how the system behaves, what that reaches into, what it forec
 name files, functions, or line numbers. Those belong to plan and to the code review; at design they
 are noise the human cannot judge.
 
+## The brief is the only authored copy (B-866)
+
+**Do not author the knowledge entry's prose.** At the four gates that RECORD their own entry — clarify,
+decompose, design (all three tracks), revise-scope — the entry's body is **DERIVED by `compose_brief`**
+from the very `doc` you are composing. (`stale-patch` also carries a `decision_ref`, but it is a named
+**pointer-only** exemption: its entry was ratified at another gate, so nothing is derived and nothing is
+overwritten. See `skills/harmony-stale-patch/SKILL.md` step 4.) The human reads
+`renderBrief(doc)`; the accept promotes `renderEntry(doc)`. One structured source, projected twice.
+
+What that changes in your hands:
+
+- **`record_decision` still runs first** — you need the entry's id for `decision_ref`, and the entry
+  still owns its `title`, `type`, `domain`, `source_activity` and `source_task_id`. Give `content` a
+  one-line placeholder naming the gate and the ticket. It is a seat, not prose: the accept overwrites it
+  with the projection of the brief the human ratified.
+- **Never re-state the decision in a second voice.** Anything you would have written into the entry
+  belongs in the `doc` — `recommend`, `why`, `alternatives`, `context`, the gate `frame`. If it is not
+  in the doc, the human never ratified it, and the entry will carry it marked **⚠️ [NOT RATIFIED]** or
+  not at all.
+- **Never hand-author a `knowledge_entry_content` payload item.** `compose_brief` derives it, sets its
+  `ref` and `entry_id`, and REPLACES any item you author. Authoring one is the second copy this rule
+  exists to remove.
+- **The derived entry is stamped** ("Derived from the ratified brief at the <gate> gate, <date>"), so a
+  reader can tell a projected entry from the pre-B-866 archive. Unmarked-means-ratified holds for
+  stamped entries only.
+
+The one place you still write entry prose by hand is an entry that is **not** a gate accept's promotion
+— a research finding, a `deferral` record, an amendment applied from an accept remark.
+
 ## Per-gate contracts
 
 ### Clarify (Proposed → Clarified — high-engagement)

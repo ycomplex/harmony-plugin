@@ -158,7 +158,7 @@ silently pick this one instead of clarify's:
 const noSplit = mcp__harmony__record_decision({
   type: "specification",
   title: "<ticket>: decomposition — no split",
-  content: "<why no decomposition is needed>",
+  content: "<placeholder — one line: 'decomposition rationale for <ticket>; body derived from the ratified brief'>",
   domain: ["product", "process"],
   source_type: "manual",
   source_activity: "decompose",
@@ -166,6 +166,18 @@ const noSplit = mcp__harmony__record_decision({
 })
 mcp__harmony__reference_knowledge({ task_id, decision_id: noSplit.id })
 ```
+
+Then pass `decision_ref: { type: "specification", id: noSplit.id }` on the `compose_brief` call above, so
+the accept promotes it.
+
+> **B-866 — the entry's prose is DERIVED, not authored here.** `content` above is a **placeholder seat**,
+> not the entry's text. The brief's accept promotes `renderEntry(doc)` — a mechanical projection of the
+> very `doc` you compose below — so anything you would have written into the entry belongs in the doc
+> (`recommend` / `why` / `alternatives` / `context` / `frame`). Do not write the decision out twice, and
+> do not hand-author a `knowledge_entry_content` payload item: `compose_brief` derives it, sets its `ref`
+> and `entry_id`, and REPLACES anything you author there. See
+> `skills/harmony-shared/brief-authoring.md` §"The brief is the only authored copy".
+
 
 ### 4. Display + resolve
 

@@ -23005,6 +23005,322 @@ function detectRiskClasses(input) {
 }
 
 // src/tools/briefs.ts
+var DEFAULT_TAIL = "Type `accept`, `edit`, `iterate <feedback>`, or `defer`.";
+var STALE_PATCH_TAIL = "`accept` applies this patch and clears the stale flag (state unchanged). `defer` REJECTS it \u2014 the flag clears anyway, the divergence is recorded, and the ticket proceeds on the retired decision; this is not a park and cannot be undone. Or `edit` / `iterate <feedback>`.";
+var PROPOSED_ACS_HEADING = "Proposed acceptance criteria (happy path) \u2014 filed on accept:";
+var PROMISED_WRITES_HEADING = "On accept, this brief files:";
+var NOT_RATIFIED_MARK = "\u26A0\uFE0F [NOT RATIFIED]";
+var RATIFICATION_CONVENTION = `Every element below appeared in that brief, except any marked ${NOT_RATIFIED_MARK}.`;
+var ENTRY_PROVENANCE_PREFIX = "Derived from the ratified brief";
+function tailForReason(reason) {
+  return reason === "stale-patch-review" ? STALE_PATCH_TAIL : void 0;
+}
+function renderLanding(landing) {
+  const repos = landing.repos?.length ? landing.repos.join(", ") : "no repo named";
+  const prs = `${landing.pr_count} pull request${landing.pr_count === 1 ? "" : "s"}`;
+  const atomicity = landing.atomicity === "ordered" ? `ordered${landing.ordering ? ` \u2014 ${landing.ordering}` : ""}` : landing.atomicity === "together" ? "landed together, not sequenced" : "a single landing";
+  return `${prs} across ${repos} \u2014 lands in ${landing.lands_in}, ${atomicity}`;
+}
+function renderIrreversible(landing) {
+  return landing.irreversible?.length ? landing.irreversible.join("; ") : "nothing \u2014 every step is revertable";
+}
+function renderUnprovenBlock(label, entries) {
+  const list = entries ?? [];
+  if (!list.length) return [`**${label}:** nothing`];
+  return [`**${label} \u2014 ${list.length}:**`, ...list.map((u) => `- ${u.item} \u2014 ${u.reason}`)];
+}
+var DISPOSITION_MARK = {
+  walk: "\u2705 walk now",
+  blocked: "\u26A0\uFE0F blocked",
+  "test-proven": "\u{1F9EA} test-proven",
+  "not-hand-checkable": "\u{1F6C8} not hand-checkable",
+  carried: "\u{1F501} carried",
+  unproven: "\u274C unproven"
+};
+function cell(value) {
+  return (value ?? "\u2014").replace(/\|/g, "\\|").replace(/\n+/g, " ").trim() || "\u2014";
+}
+function renderFrame(frame) {
+  const out = [];
+  switch (frame.kind) {
+    case "clarify": {
+      out.push(`## SOLVING: ${frame.solving}`, "");
+      if (frame.in_scope?.length) out.push("**In scope:**", ...frame.in_scope.map((e) => `- ${e}`), "");
+      const excluded = frame.not_solving ?? [];
+      out.push("**Not solving:**");
+      if (excluded.length) out.push(...excluded.map((e) => `- ${e.item} \u2014 ${e.lands}`));
+      else out.push("- nothing is being excluded \u2014 the whole problem is in scope");
+      break;
+    }
+    case "decompose": {
+      const elements = frame.elements ?? [];
+      out.push(`**The elements \u2014 ${elements.length}:**`);
+      for (const el of elements) {
+        const surface = el.surface ? ` \u2014 *${el.surface}*` : "";
+        const covers = el.covers ? ` \u2014 covers ${el.covers}` : "";
+        out.push(`- ${el.text}${surface}${covers}`);
+      }
+      if (!elements.length) out.push("- (none enumerated)");
+      out.push("", `**Coverage:** ${frame.coverage}`);
+      out.push(
+        `**Existing children checked:** ${frame.existing_children_checked ? "yes" : "no \u2014 an existing child set was NOT checked"}`
+      );
+      break;
+    }
+    case "design": {
+      const others = (frame.tracks ?? []).filter((t) => t.track !== frame.track).map((t) => `${t.track} ${t.status}${t.note ? ` (${t.note})` : ""}`);
+      out.push(`**Track:** ${[frame.track, ...others].join(" \xB7 ")}`);
+      const reach = frame.reach ?? [];
+      if (reach.length) out.push("**Reach beyond this ticket:**", ...reach.map((r) => `- ${r}`));
+      else out.push("**Reach beyond this ticket:** none \u2014 this decision reaches nothing outside the ticket");
+      if (frame.not_reopened?.length) {
+        out.push("**Not reopened here:**", ...frame.not_reopened.map((r) => `- ${r}`));
+      }
+      if (frame.derisk) {
+        const run = frame.derisk.run?.length ? frame.derisk.run.join("; ") : "nothing";
+        const notRun = frame.derisk.not_run?.length ? frame.derisk.not_run.join("; ") : "nothing load-bearing outstanding";
+        out.push(`**De-risked by running:** ${run}`, `**Not run:** ${notRun}`);
+      }
+      if (frame.files_on_accept?.length) {
+        out.push("**Files on accept:**", ...frame.files_on_accept.map((f) => `- ${f}`));
+      }
+      break;
+    }
+    case "plan": {
+      const scope = frame.scope ?? { repos: [], surfaces: [], has_migration: false };
+      const repos = scope.repos?.length ? scope.repos.join(", ") : "no repo named";
+      const surfaces = scope.surfaces?.length ? ` \u2014 ${scope.surfaces.join(", ")}` : "";
+      out.push(`**Touches:** ${repos}${surfaces}. Migration: ${scope.has_migration ? "yes" : "no"}.`);
+      out.push(`**Base verified:** ${frame.attestation?.base_verified ?? "(not attested)"}`);
+      if (frame.attestation?.derisked_by_running) {
+        out.push(`**De-risked by running:** ${frame.attestation.derisked_by_running}`);
+      }
+      out.push(...renderUnprovenBlock("Carried into build unproven", frame.carried_unproven));
+      out.push(`**Covers:** ${frame.ac_coverage}`);
+      if (frame.landing) {
+        out.push(`**Landing:** ${renderLanding(frame.landing)}`, `**One-way in this:** ${renderIrreversible(frame.landing)}`);
+      }
+      if (frame.design_delta) out.push(`**Design delta:** ${frame.design_delta}`);
+      break;
+    }
+    case "release": {
+      if (frame.act) {
+        out.push(`**This accept executes:** ${renderLanding(frame.act)}`);
+        out.push(`**Lands in:** ${frame.act.lands_in}`);
+        out.push(`**One-way in this:** ${renderIrreversible(frame.act)}`);
+      } else {
+        out.push("**This accept executes:** not stated \u2014 the landing sequence is missing from this brief.");
+      }
+      out.push(...renderUnprovenBlock("Live but unproven when this lands", frame.unproven));
+      const risk = frame.risk_classes ?? [];
+      out.push(`**Risk (path-derived from the diff):** ${risk.length ? risk.join(", ") : "none"}`);
+      const ev = frame.evidence_status;
+      if (ev) {
+        out.push(
+          `**Evidence (mechanical):** ${ev.proven_by_run}/${ev.total} proven by a test that RAN \xB7 ${ev.walk_at_verify} deferred to the verify runbook \xB7 ${ev.unproven} unproven${ev.detail ? ` \u2014 ${ev.detail}` : ""}`
+        );
+      }
+      if (frame.pr_review_state) out.push(`**PR review state:** ${frame.pr_review_state}`);
+      break;
+    }
+    case "verify": {
+      const rows = frame.criteria ?? [];
+      const confirmable = rows.filter((r) => r.disposition === "walk").length;
+      out.push(
+        `**Verifying against \u2014 ${rows.length} criteria on file \xB7 you can confirm ${confirmable} today**`,
+        ""
+      );
+      if (rows.length) {
+        out.push("| # | Criterion (as filed) | Disposition | Step | Backed by |", "|---|---|---|---|---|");
+        rows.forEach((r, i) => {
+          const disposition = DISPOSITION_MARK[r.disposition] + (r.disposition === "blocked" && r.blocked_reason ? ` \u2014 ${r.blocked_reason}` : "") + (r.disposition === "carried" && r.carried_to ? ` to ${r.carried_to}` : "");
+          out.push(`| ${i + 1} | ${cell(r.text)} | ${cell(disposition)} | ${cell(r.step_ref)} | ${cell(r.backed_by)} |`);
+        });
+        out.push("");
+      } else if (frame.exempt_reason) {
+        out.push(`This ticket carries no acceptance criteria of its own \u2014 ${frame.exempt_reason}`, "");
+      }
+      out.push(`**Covers:** ${frame.environment}`);
+      out.push(`**Evidence (mechanical):** ${frame.evidence_status}`);
+      if (frame.bounded_accept) {
+        const ids = frame.bounded_accept.open_ac_ids?.length ? frame.bounded_accept.open_ac_ids.join(", ") : "none";
+        out.push(`**Bounded accept:** criteria left open \u2014 ${ids}. Closes when ${frame.bounded_accept.closes_when}`);
+      }
+      break;
+    }
+  }
+  return out;
+}
+function whyLines(doc) {
+  return (doc.why ?? []).map((w) => `- ${w}`);
+}
+function alternativeLines(doc) {
+  return (doc.alternatives ?? []).map((a) => `- ${a.option} \u2014 ${a.rejection}`);
+}
+function contextLines(doc) {
+  return (doc.context ?? []).map((c) => `- ${c}`);
+}
+function revisionLines(doc) {
+  return (doc.revision?.changes ?? []).map((c) => `- ${c.change} \u2014 *answers: ${c.responds_to}*`);
+}
+function researchLines(doc) {
+  return (doc.research ?? []).map((p, i) => `${i + 1}. ${p}`);
+}
+function planStepLines(frame) {
+  return frame.kind === "plan" ? (frame.steps ?? []).map((step, i) => `${i + 1}. ${step}`) : [];
+}
+function recommendLine(doc) {
+  if (!doc.recommend) return void 0;
+  let suffix = "";
+  if (doc.recommend.cede) suffix = " (low confidence \u2014 this is a values call you should own)";
+  else if (doc.recommend.confidence === "low") suffix = " (low confidence \u2014 see below)";
+  else if (doc.recommend.confidence === "medium") suffix = " (moderate confidence)";
+  else if (doc.recommend.confidence === "high") suffix = " (high confidence)";
+  return `**Recommend${suffix}:** ${doc.recommend.text}`;
+}
+function itemLines(doc) {
+  const out = [];
+  for (const item of doc.items ?? []) {
+    if (item.kind === "content-input") {
+      out.push(`- [ ] ${item.text} *(your input needed)*`);
+    } else if (item.kind === "decision") {
+      const rec = !item.deferred && item.recommendation ? ` \u2014 *recommend: ${item.recommendation}*` : "";
+      out.push(`- [ ] ${item.text}${rec}`);
+    }
+  }
+  return out;
+}
+function proposedAcLines(payload) {
+  return (payload ?? []).filter((p) => p.write_kind === "acceptance_criterion" && typeof p.content === "string" && p.content.trim().length > 0).map((p) => `- ${p.content}`);
+}
+function promisedWriteLine(item) {
+  const text = (v) => typeof v === "string" && v.trim() ? v.trim() : null;
+  switch (item.write_kind) {
+    case "acceptance_criterion": {
+      const content = text(item.content);
+      return content ? `- acceptance criterion \u2014 ${content}` : null;
+    }
+    case "child_ticket": {
+      const title = text(item.title);
+      return title ? `- new child ticket \u2014 ${title}` : null;
+    }
+    case "checklist_item": {
+      const title = text(item.title);
+      return title ? `- checklist item \u2014 ${title}` : null;
+    }
+    case "ac_transfer": {
+      const content = text(item.content);
+      return content ? `- moves an acceptance criterion to ${text(item.target_child_ref) ?? "(unnamed child)"} \u2014 ${content}` : null;
+    }
+    case "label_add":
+      return `- label \u2014 ${text(item.label_name) ?? "decision-only"}`;
+    case "knowledge_entry_content":
+      return "- the linked decision entry, written from THIS brief (derived, never separately authored)";
+    default:
+      return null;
+  }
+}
+function promisedWriteLines(payload, skipAcceptanceCriteria) {
+  return (payload ?? []).filter((p) => !(skipAcceptanceCriteria && p.write_kind === "acceptance_criterion")).map(promisedWriteLine).filter((line) => line !== null);
+}
+function renderBrief(doc, decisionRef, ctx) {
+  const out = [];
+  const frame = doc.frame;
+  if (frame?.kind === "clarify") out.push(...renderFrame(frame), "");
+  out.push(`## DECIDE: ${doc.decide}`, "");
+  if (frame?.kind === "release") out.push(...renderFrame(frame), "");
+  if (doc.load_bearing_gap) {
+    out.push("**Recommend:** I don't know enough yet \u2014 run the research below before deciding.", "");
+    out.push("**Research first:**");
+    out.push(...researchLines(doc));
+    out.push("");
+  } else {
+    const recommend = recommendLine(doc);
+    if (recommend) out.push(recommend, "");
+  }
+  if (frame && frame.kind !== "clarify" && frame.kind !== "release") out.push(...renderFrame(frame), "");
+  if (ctx) {
+    if (ctx.accept) {
+      out.push(
+        ctx.accept.from ? `**On accept:** advances ${ctx.accept.from} \u2192 ${ctx.accept.to}` : `**On accept:** advances to ${ctx.accept.to}`,
+        ""
+      );
+    } else {
+      out.push("**On accept:** no state change", "");
+    }
+  }
+  if (doc.revision?.changes?.length) {
+    out.push("**Changed this round:**", ...revisionLines(doc), "");
+  }
+  if (doc.why?.length) {
+    out.push("**Why:**", ...whyLines(doc), "");
+  }
+  if (doc.alternatives?.length) {
+    out.push("**Alternatives:**", ...alternativeLines(doc), "");
+  }
+  if (doc.context?.length) {
+    out.push("**Context:**", ...contextLines(doc), "");
+  }
+  if (ctx) {
+    const isClarify = ctx.reason === "clarification-draft";
+    if (isClarify) {
+      const criteria = proposedAcLines(doc.payload);
+      if (criteria.length) out.push(PROPOSED_ACS_HEADING, ...criteria, "");
+    }
+    const promised = promisedWriteLines(doc.payload, isClarify);
+    if (promised.length) out.push(PROMISED_WRITES_HEADING, ...promised, "");
+  }
+  if (frame?.kind === "plan" && frame.steps?.length) {
+    out.push("**Plan:**", ...planStepLines(frame), "");
+  }
+  if (doc.items.length) {
+    out.push("**You need to:**", ...itemLines(doc), "");
+  }
+  if (decisionRef) {
+    out.push("_This brief is a summary \u2014 fuller depth lives in the linked decision entry._", "");
+  }
+  out.push(`> ${doc.tail ?? tailForReason(ctx?.reason) ?? DEFAULT_TAIL}`);
+  return out.join("\n");
+}
+function entryProvenanceStamp(ctx) {
+  const when = (ctx?.now ?? /* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const gate = ctx?.reason ? ` at the ${ctx.reason} gate` : "";
+  return `_${ENTRY_PROVENANCE_PREFIX}${gate}, ${when} \u2014 a mechanical projection of the brief the human approved, not separately authored prose. ${RATIFICATION_CONVENTION}_`;
+}
+function renderEntry(doc, ctx) {
+  const briefContent = renderBrief(doc, ctx?.decisionRef ?? null, ctx);
+  const isRatified = (text) => !text.trim() || briefContent.includes(text);
+  const mark = (text) => isRatified(text) ? text : `${text} ${NOT_RATIFIED_MARK}`;
+  const markAll = (lines) => lines.map(mark);
+  const out = [entryProvenanceStamp(ctx), ""];
+  out.push(`**Decision:** ${doc.recommend ? mark(doc.recommend.text) : "(the brief made no recommendation)"}`, "");
+  out.push(`**Question put to the human:** ${mark(doc.decide)}`, "");
+  if (doc.frame) out.push(...markAll(renderFrame(doc.frame)), "");
+  const research = researchLines(doc);
+  if (research.length) out.push("**Research first:**", ...markAll(research), "");
+  const why = whyLines(doc);
+  if (why.length) out.push("**Why:**", ...markAll(why), "");
+  const alternatives = alternativeLines(doc);
+  if (alternatives.length) out.push("**Alternatives:**", ...markAll(alternatives), "");
+  const context = contextLines(doc);
+  if (context.length) out.push("**Context:**", ...markAll(context), "");
+  const isClarify = ctx?.reason === "clarification-draft";
+  if (isClarify) {
+    const criteria = proposedAcLines(doc.payload);
+    if (criteria.length) out.push(PROPOSED_ACS_HEADING, ...markAll(criteria), "");
+  }
+  const promised = promisedWriteLines(doc.payload, isClarify);
+  if (promised.length) out.push(PROMISED_WRITES_HEADING, ...markAll(promised), "");
+  if (doc.frame?.kind === "plan") {
+    const steps = planStepLines(doc.frame);
+    if (steps.length) out.push("**Plan:**", ...markAll(steps), "");
+  }
+  const items = itemLines(doc);
+  if (items.length) out.push("**Ratified asks:**", ...markAll(items), "");
+  const changes = revisionLines(doc);
+  if (changes.length) out.push("**Changed in the final round:**", ...markAll(changes), "");
+  return out.join("\n").trimEnd();
+}
 async function fetchPendingResolution(client, taskId) {
   try {
     const { data, error } = await client.from("briefs").select("pending_resolution").eq("task_id", taskId).eq("status", "active").maybeSingle();
@@ -23015,14 +23331,73 @@ async function fetchPendingResolution(client, taskId) {
     return null;
   }
 }
+function reconstructReferent(doc, entryId, reason, warning) {
+  const isDoc = !!doc && typeof doc === "object" && !Array.isArray(doc) && typeof doc.decide === "string";
+  if (!isDoc) {
+    return { status: "unavailable", entry_id: entryId, warning: `${warning} The brief's stored doc could not be read either, so no reconstruction is possible.` };
+  }
+  return {
+    status: "reconstructed",
+    entry_id: entryId,
+    content: renderEntry(doc, { reason }),
+    warning
+  };
+}
+async function resolveRemarkReferent(client, row) {
+  const rawRef = row.decision_ref;
+  const decisionRef = rawRef && typeof rawRef === "object" && typeof rawRef.id === "string" ? rawRef : null;
+  if (!decisionRef) {
+    return {
+      decision_ref: null,
+      referent: reconstructReferent(
+        row.doc,
+        null,
+        row.reason,
+        `This brief carried no decision_ref, so its accept promoted no knowledge entry. What follows is a LOCAL RECONSTRUCTION of the brief's own entry projection \u2014 it was NOT read from the board, and no stored entry corresponds to it.`
+      )
+    };
+  }
+  try {
+    const { data, error } = await client.from("knowledge_decisions").select("id, title, content").eq("id", decisionRef.id).maybeSingle();
+    if (!error && data) {
+      const entry = data;
+      return {
+        decision_ref: decisionRef,
+        referent: { status: "entry", entry_id: entry.id, title: entry.title ?? null, content: entry.content ?? "" }
+      };
+    }
+    const why = error ? `Reading it failed: ${error.message}.` : "No such entry was returned.";
+    return {
+      decision_ref: decisionRef,
+      referent: reconstructReferent(
+        row.doc,
+        decisionRef.id,
+        row.reason,
+        `The promoted knowledge entry ${decisionRef.id} could NOT be read. ${why} What follows is a LOCAL RECONSTRUCTION of the brief's own entry projection \u2014 it was NOT read from the board, so it may differ from what is stored. Re-read the entry before amending it.`
+      )
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      decision_ref: decisionRef,
+      referent: reconstructReferent(
+        row.doc,
+        decisionRef.id,
+        row.reason,
+        `The promoted knowledge entry ${decisionRef.id} could NOT be read (${message}). What follows is a LOCAL RECONSTRUCTION of the brief's own entry projection \u2014 it was NOT read from the board. Re-read the entry before amending it.`
+      )
+    };
+  }
+}
 async function fetchPendingRemark(client, taskId) {
   try {
-    const { data, error } = await client.from("briefs").select("id, reason, accept_remark").eq("task_id", taskId).not("accept_remark", "is", null).is("accept_remark_consumed_at", null).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    const { data, error } = await client.from("briefs").select("id, reason, accept_remark, decision_ref, doc").eq("task_id", taskId).not("accept_remark", "is", null).is("accept_remark_consumed_at", null).order("created_at", { ascending: false }).limit(1).maybeSingle();
     if (error || !data) return null;
     const row = data;
     const detail = row.accept_remark;
     if (typeof detail !== "string" || detail.trim().length === 0) return null;
-    return { brief_id: row.id, reason: row.reason, detail };
+    const { decision_ref, referent } = await resolveRemarkReferent(client, row);
+    return { brief_id: row.id, reason: row.reason, detail, decision_ref, referent };
   } catch {
     return null;
   }
