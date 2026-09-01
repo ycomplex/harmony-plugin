@@ -54,10 +54,17 @@ const NAMED_PREFIXES = [
  *  renderEntry was still live. */
 const SWEEP_WINDOW_START = '2026-09-01T10:00:00Z';
 
-// Matches every stub variant seen in the wild ("technical-design decision for B-902...",
-// "Technical design decision for B-870..." — hyphenated or spaced, any leading type word): a short
-// placeholder body naming its own ticket instead of carrying the brief's actual projection.
-const STUB_CONTENT_RE = /decision for B-\d+; body derived from the ratified brief\.?$/i;
+// Matches every stub variant seen in the wild — a short placeholder body naming its own ticket instead of
+// carrying the brief's actual projection. B-904: widened from a design-gate-only pattern (it required the
+// literal word "decision" before "for B-<n>") to the tail EVERY gate's placeholder shares regardless of its
+// leading noun phrase — "clarified intent for B-904...", "decomposition rationale for B-904...",
+// "revise-scope rationale for B-902...", "technical design decision for B-902...". The narrower pattern is
+// exactly why B-902's own revise-scope stub (801d094c, "revise-scope rationale for B-902; body derived from
+// the ratified brief") evaded this script's --sweep: "rationale" never matched "decision". The tail phrase
+// "; body derived from the ratified brief" is distinctive enough on its own (a real renderEntry-derived
+// entry reads "Derived from the ratified brief at the <gate> gate..." — a different shape entirely, never
+// this trailing clause) that dropping the leading-noun requirement introduces no new false positives.
+const STUB_CONTENT_RE = /for B-\d+; body derived from the ratified brief\.?$/i;
 const STUB_MAX_LEN = 200;
 function isStubContent(content: string): boolean {
   const trimmed = content.trim();
