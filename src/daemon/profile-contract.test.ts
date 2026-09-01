@@ -15,6 +15,7 @@ import {
   existsSync,
   utimesSync,
   truncateSync,
+  chmodSync,
 } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -910,6 +911,99 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
       expect(explicitFalse).toContain('COLD_STARTED');
       expect(explicitFalse).not.toContain('RESUMED_UNEXPECTEDLY');
       expect(explicitFalse).not.toContain('WARNING');
+    });
+  });
+
+  // B-895: entrypoint.sh's cross-conduction resume discovery (cloud profile) and
+  // scripts/resume-discovery.mjs's cross-conduction discovery (local-docker profile) both inject a
+  // bare `--resume <id>` into CLAUDE_HEADLESS_FLAGS upstream of this script, before this ticket with
+  // NO guard at all -- a failed attach there killed the whole leg. This proves the extracted id now
+  // rides the SAME captured-exit-code cold-start-fallback and the SAME log line as a same-conduction
+  // resume.
+  describe('B-895: externally-injected --resume (as if entrypoint.sh already injected one) gets the SAME guard', () => {
+    it('falls back to a cold start and logs the SAME B-718 failure line when an externally-injected --resume fails to attach', () => {
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b895-fake-claude-'));
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        [
+          '#!/usr/bin/env bash',
+          'if printf \'%s\\n\' "$@" | grep -q -- --resume; then',
+          '  echo "some external-resume attach failure" >&2',
+          '  exit 5',
+          'fi',
+          'echo "COLD_STARTED args=$*"',
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      const dir = mkdtempSync(join(tmpdir(), 'b895-home-'));
+      // No same-conduction session anywhere under $HOME/.claude/projects -- the only resume
+      // candidate here is the externally-injected id below.
+
+      const block = extractResumeBlock();
+      const scriptFile = join(dir, 'harness.sh');
+      writeFileSync(
+        scriptFile,
+        [
+          '#!/usr/bin/env bash',
+          'set -euo pipefail',
+          'exec 2>&1',
+          'PLUGIN_DIR="/fake/plugin"',
+          'PROMPT="do it"',
+          block,
+          '',
+        ].join('\n'),
+        { mode: 0o700 },
+      );
+      const combined = execFileSync('bash', [scriptFile], {
+        env: {
+          HOME: dir,
+          PATH: `${claudeStub}:${process.env.PATH}`,
+          // Deliberately NO HARMONY_RUN_CONFIG_JSON at all -- proves this guard applies regardless
+          // of THIS script's own session_resume.enabled gate, since the upstream injector (an
+          // earlier stage) already vetted it before ever setting this flag.
+          CLAUDE_HEADLESS_FLAGS: '--resume ext-sess-id',
+        },
+      }).toString();
+
+      expect(combined).toContain('B-718: attempting to resume prior session ext-sess-id');
+      expect(combined).toContain('some external-resume attach failure');
+      expect(combined).toContain(
+        'B-718: --resume ext-sess-id failed to attach (exit 5; see stderr above) — falling back to a COLD start.',
+      );
+      const coldStartedLine = combined.split('\n').find((l) => l.startsWith('COLD_STARTED'));
+      expect(coldStartedLine).toBeDefined();
+      // The stripped --resume pair never reaches the cold-start invocation's own args a second time.
+      expect(coldStartedLine).not.toContain('--resume');
+    });
+
+    it('same-conduction session wins over an externally-injected id when both are present', () => {
+      const claudeStub = mkdtempSync(join(tmpdir(), 'b895-fake-claude-tiebreak-'));
+      writeFileSync(
+        join(claudeStub, 'claude'),
+        [
+          '#!/usr/bin/env bash',
+          'if printf \'%s\\n\' "$@" | grep -q -- --resume; then',
+          '  RESUME_ARG="$(printf \'%s\\n\' "$@" | grep -A1 -- --resume | tail -1)"',
+          '  echo "RESUMED_WITH=$RESUME_ARG"',
+          '  exit 0',
+          'fi',
+          'echo COLD_STARTED',
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      const dir = mkdtempSync(join(tmpdir(), 'b895-home-tiebreak-'));
+      writeSession(dir, 'same-conduction-id');
+      const result = runResumeBlock(
+        { ...enabledRunConfigEnv(), CLAUDE_HEADLESS_FLAGS: '--resume ext-sess-id' },
+        { fakeClaudeDir: claudeStub, homeDir: dir },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('RESUMED_WITH=same-conduction-id');
+      expect(result.stdout).not.toContain('ext-sess-id');
     });
   });
 });
@@ -2918,5 +3012,102 @@ describe('entrypoint.sh: B-718 cross-conduction resume discovery (cloud profile)
     );
     expect(result.status).toBe(0);
     expect(result.stderr).toContain('CLAUDE_HEADLESS_FLAGS=[]');
+  });
+
+  // B-895: the sibling session file must land INSIDE this conduction's own projects/<slug>
+  // subtree (the directory $HOME/.claude/projects is symlinked onto, above) BEFORE --resume is
+  // ever injected -- otherwise the CLI can never resolve the id locally, and injecting it is
+  // confirmed (twice, in production) to always fail to attach.
+  describe('B-895: sibling session file placement before --resume injection', () => {
+    /** Same harness as runTranscriptBlock above, but merges stderr into stdout (`exec 2>&1`) so a
+     *  logged failure reason is observable even on an otherwise-successful (exit 0) run —
+     *  runTranscriptBlock only captures stderr on the execFileSync error path, which a clean
+     *  best-effort decline (this describe's whole point) never takes. */
+    function runTranscriptBlockMerged(
+      env: NodeJS.ProcessEnv,
+      mountRoot: string,
+    ): { status: number | null; stderr: string; home: string } {
+      const dir = mkdtempSync(join(tmpdir(), 'b895-entrypoint-resume-merged-'));
+      const homeDir = join(dir, 'home');
+      mkdirSync(homeDir);
+      mkdirSync(join(homeDir, '.claude', 'projects'), { recursive: true });
+      mkdirSync(join(homeDir, '.claude', 'logs'), { recursive: true });
+
+      const block = extractTranscriptBlock();
+      const scriptFile = join(dir, 'harness.sh');
+      writeFileSync(
+        scriptFile,
+        [
+          '#!/usr/bin/env bash',
+          'set -euo pipefail',
+          'exec 2>&1',
+          block,
+          'b772_finish_cross_conduction_resume "/fake/plugin"',
+          'echo "CLAUDE_HEADLESS_FLAGS=[${CLAUDE_HEADLESS_FLAGS:-}]"',
+          '',
+        ].join('\n'),
+        { mode: 0o700 },
+      );
+
+      try {
+        const stdout = execFileSync('bash', [scriptFile], {
+          env: { ...env, HOME: homeDir, PATH: process.env.PATH, HARMONY_TRANSCRIPT_MOUNT_ROOT: mountRoot },
+        });
+        return { status: 0, stderr: stdout.toString(), home: homeDir };
+      } catch (err) {
+        const e = err as { status: number | null; stderr?: Buffer | string };
+        return { status: e.status, stderr: (e.stderr ?? '').toString(), home: homeDir };
+      }
+    }
+
+    it('copies the sibling session file into THIS conduction\'s own projects/<slug> subtree (content matches) before injecting --resume', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'b895-mount-root-'));
+      const oldSlug = join(dir, 'B-895', 'cond-old', 'projects', '-workspace-workspace');
+      mkdirSync(oldSlug, { recursive: true });
+      writeFileSync(join(oldSlug, 'sess-old.jsonl'), '{"hello":"sibling session content"}\n');
+
+      const runConfig = Buffer.from(JSON.stringify({ session_resume: { enabled: true } })).toString(
+        'base64',
+      );
+      const result = runTranscriptBlock(
+        { CONDUCTION_ID: 'cond-new', TICKET: 'B-895', HARMONY_RUN_CONFIG_JSON: runConfig },
+        dir,
+      );
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain('CLAUDE_HEADLESS_FLAGS=[ --resume sess-old]');
+
+      const copiedPath = join(dir, 'B-895', 'cond-new', 'projects', '-workspace-workspace', 'sess-old.jsonl');
+      expect(existsSync(copiedPath)).toBe(true);
+      expect(readFileSync(copiedPath, 'utf8')).toBe('{"hello":"sibling session content"}\n');
+    });
+
+    it('does NOT inject --resume when the sibling session file placement fails, and logs why', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'b895-mount-root-fail-'));
+      const oldSlug = join(dir, 'B-895', 'cond-old', 'projects', '-workspace-workspace');
+      mkdirSync(oldSlug, { recursive: true });
+      writeFileSync(join(oldSlug, 'sess-old.jsonl'), '{}\n');
+
+      // Pre-create the CURRENT conduction's own `projects` dir and make it unwritable, so the
+      // copy's `mkdir -p <projects>/<slug>` fails -- simulating a permission error at the
+      // destination.
+      const newProjectsDir = join(dir, 'B-895', 'cond-new', 'projects');
+      mkdirSync(newProjectsDir, { recursive: true });
+      chmodSync(newProjectsDir, 0o500);
+      try {
+        const runConfig = Buffer.from(JSON.stringify({ session_resume: { enabled: true } })).toString(
+          'base64',
+        );
+        const result = runTranscriptBlockMerged(
+          { CONDUCTION_ID: 'cond-new', TICKET: 'B-895', HARMONY_RUN_CONFIG_JSON: runConfig },
+          dir,
+        );
+        expect(result.status).toBe(0);
+        expect(result.stderr).toContain('CLAUDE_HEADLESS_FLAGS=[]');
+        expect(result.stderr).toContain('failed to copy sibling session sess-old');
+        expect(result.stderr).toContain('declining to inject --resume and cold-starting instead');
+      } finally {
+        chmodSync(newProjectsDir, 0o700);
+      }
+    });
   });
 });
