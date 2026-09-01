@@ -300,3 +300,86 @@ describe('worker-question pointers — the five resume-onto-own-brief surfaces (
     });
   }
 });
+
+// B-870: the shared docs' half of the prose rules. The elicitation engine gains the below-load-bearing
+// lane (decide + comment + continue) that the load-bearing-only worker-question round left homeless, and
+// the clean-exit contract's interactive half is upgraded from stated discipline to a NAMED mechanism —
+// so the interactive and daemon sides state ONE rule instead of two paraphrases.
+describe('elicitation-engine: below load-bearing, the session DECIDES (B-870)', () => {
+  const doc = readSharedDoc('elicitation-engine');
+
+  it('states the rule: decide it, record the decision AND rationale as a ticket comment, continue', () => {
+    expect(doc).toMatch(/Below load-bearing/i);
+    expect(doc).toMatch(/you do not ask\. You decide/i);
+    expect(doc).toMatch(/add_comment/);
+    expect(doc).toMatch(/rationale/i);
+    expect(doc).toMatch(/in the SAME turn/i);
+  });
+
+  it('explains WHY the lane was missing: the worker-question round mandates load-bearing stakes', () => {
+    expect(doc).toMatch(/worker-question round mandates `stakes: 'load-bearing'`/);
+    expect(doc).toMatch(/no home in this engine/i);
+    expect(doc).toMatch(/leaking\s*\n?straight to the terminal|leaking straight to the terminal/);
+  });
+
+  it('a comment is a progress write, not a pause — it does not set the awaiting flag', () => {
+    expect(doc).toMatch(/progress write, not a pause/);
+    expect(doc).toMatch(/does not set\s*\n?`awaiting_human_input`/);
+  });
+
+  it('the non-blocking "proceeding unless redirected" round is explicitly REJECTED, with the reason', () => {
+    expect(doc).toMatch(/proceeding unless redirected.*is REJECTED/is);
+    expect(doc).toMatch(/nothing can inject a redirect into a running daemon worker/i);
+    expect(doc).toMatch(/comment.*is the right vehicle/is);
+  });
+
+  it('AskUserQuestion is banned in governed sessions here too — one rule, stated in both places', () => {
+    expect(doc).toContain('AskUserQuestion');
+    expect(doc).toMatch(/never a pause vehicle in a governed \(ticket-driving\) session/);
+    expect(doc).toMatch(/no\*{0,2}\s*\n?rounds history/);
+    expect(doc).toMatch(/Outside ticket-driving sessions it stays a perfectly good tool/);
+  });
+
+  it('the backstop invariant now names the MECHANISM on both sides', () => {
+    expect(doc).toMatch(/enforced mechanically on both sides/i);
+    expect(doc).toMatch(/`Stop` hook turn-end gate/);
+    expect(doc).toMatch(/clean-exit-contract\.md/);
+  });
+});
+
+describe('clean-exit-contract: ONE rule, two surfaces (B-870)', () => {
+  const doc = readSharedDoc('clean-exit-contract');
+
+  it('names the shared predicate and lists its three clean shapes in order', () => {
+    expect(doc).toContain('isCleanRowShape');
+    expect(doc).toContain('src/daemon/classify.ts');
+    expect(doc).toMatch(/awaiting_human_input`?: `?true/);
+    for (const state of ['Verified', 'Cancelled', 'Parked']) expect(doc).toContain(state);
+    expect(doc).toMatch(/Decomposed` with ≥1 non-archived child/);
+  });
+
+  it('names the interactive MECHANISM — the Stop hook turn-end gate — not just a discipline', () => {
+    expect(doc).toMatch(/turn-end gate/i);
+    expect(doc).toMatch(/hooks\/stop-gate\.sh/);
+    expect(doc).toMatch(/conduct-sessions\/<session_id>\.json/);
+    expect(doc).toMatch(/exit 2/);
+    expect(doc).toMatch(/deliberately not\s*\n?`\.harmony-task\.json`/i);
+  });
+
+  it('states the gate bounds: capped, fail-open, and human-overridable', () => {
+    expect(doc).toMatch(/at most twice/);
+    expect(doc).toMatch(/fails \*\*open\*\*|fails open/);
+    expect(doc).toContain('HARMONY_STOP_GATE_OFF');
+    expect(doc).toMatch(/absent from every daemon profile/);
+  });
+
+  it('points at the no-drift contract test that fails if the two consumers disagree', () => {
+    expect(doc).toContain('src/hooks/stop-gate.contract.test.ts');
+    expect(doc).toMatch(/fails if they ever disagree/);
+  });
+
+  it('is honest about what remains a discipline (clauses (a) and (b), and the build subagent)', () => {
+    expect(doc).toMatch(/What is still discipline/);
+    expect(doc).toMatch(/WORKER-QUESTION:/);
+  });
+});

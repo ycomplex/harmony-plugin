@@ -506,3 +506,94 @@ describe('harmony-conduct skill contract', () => {
     expect(body).toMatch(/exactly once/);
   });
 });
+
+// B-870: the four prose rules that create the sanctioned alternatives to a silent turn-end, plus the
+// breadcrumb that arms the mechanical gate. These are prose-pinned deliberately — the mechanism is
+// tested in src/hooks/, and these assert the DOCTRINE the mechanism enforces is actually written down.
+describe('harmony-conduct: the turn-end gate and its sanctioned alternatives (B-870)', () => {
+  const skill = readSkill('harmony-conduct');
+
+  it('leg start writes a conduct-session breadcrumb under ~/.harmony, keyed by session id', () => {
+    const body = skill.body;
+    expect(body).toMatch(/conduct-sessions/);
+    expect(body).toMatch(/\$\{HARMONY_HOME:-\$HOME\/\.harmony\}/);
+    expect(body).toMatch(/<session_id>\.json/);
+    // It carries the ticket — that is the whole point of the file.
+    expect(body).toMatch(/"task_id"/);
+    expect(body).toMatch(/"ticket"/);
+  });
+
+  it('the breadcrumb is explicitly NOT .harmony-task.json, and says why', () => {
+    const body = skill.body;
+    expect(body).toContain('.harmony-task.json');
+    expect(body).toMatch(/NOT `\.harmony-task\.json`/);
+    // The two reasons: build-gate-only, and a stale copy in cwd can name a different ticket.
+    expect(body).toMatch(/build\*{0,2} gate/);
+    expect(body).toMatch(/stale copy/);
+    expect(body).toMatch(/different ticket/);
+  });
+
+  it('a missing breadcrumb is never a blocker — the gate is a backstop, not a precondition', () => {
+    expect(skill.body).toMatch(/If you cannot write it, continue anyway/);
+  });
+
+  it("SEAM RULE: the pause happens ON a composed brief or a filed round, never in the gap before it", () => {
+    const body = skill.body;
+    expect(body).toMatch(/seam rule/i);
+    expect(body).toMatch(/seam, not a pause point/);
+    // "want me to draft it?" is named as the bug it is.
+    expect(body).toMatch(/want me to draft/i);
+    expect(body).toMatch(/bugs?,\s*\n?not politeness/i);
+    // And the remedy: draft it, compose it, arm the watch, pause on the decision.
+    expect(body).toMatch(/Draft it,\s*\n?compose it, arm the watch/);
+  });
+
+  it('SEAM RULE at the hard floor: release/verify waits happen on a composed brief, not a bare verb-wait', () => {
+    const body = skill.body;
+    expect(body).toMatch(/The same rule at the release and verify hard floor/);
+    expect(body).toMatch(/does not\s*\n?license a bare verb-wait/);
+    expect(body).toMatch(/release-decision-pending/);
+    expect(body).toMatch(/verification-ack-pending/);
+    expect(body).toMatch(/A hard floor is a pause on a composed brief, never an absence of one/);
+  });
+
+  it('a milestone/finding comment mid-build never ends the turn — post it and continue in the same turn', () => {
+    const body = skill.body;
+    expect(body).toMatch(/milestone or finding comment mid-build is not a stopping point/i);
+    expect(body).toMatch(/progress\s*\n?write, not a pause/);
+    expect(body).toMatch(/continue in the same turn/i);
+    expect(body).toMatch(/does not set\s*\n?`awaiting_human_input`/);
+  });
+
+  it('AskUserQuestion is flatly banned as a pause vehicle in a ticket-driving session, with the three reasons', () => {
+    const body = skill.body;
+    expect(body).toContain('AskUserQuestion');
+    expect(body).toMatch(/never a pause vehicle/i);
+    expect(body).toMatch(/Flat ban/i);
+    // The three reasons it is unusable here.
+    expect(body).toMatch(/board never sees it/i);
+    expect(body).toMatch(/daemon worker\s*\n?cannot render it/);
+    expect(body).toMatch(/no rounds history/i);
+    // Not a blanket ban on the tool — only inside ticket-driving sessions.
+    expect(body).toMatch(/Outside ticket-driving sessions/);
+  });
+
+  it('the gate is described as mechanical, bounded, fail-open, and human-overridable', () => {
+    const body = skill.body;
+    expect(body).toMatch(/`Stop` hook/);
+    expect(body).toMatch(/hooks\/stop-gate\.sh/);
+    expect(body).toMatch(/isCleanRowShape/);
+    expect(body).toMatch(/at most \*\*twice\*\*|at most twice/);
+    expect(body).toMatch(/fails open|\*\*fails open\*\*/i);
+    expect(body).toContain('HARMONY_STOP_GATE_OFF');
+    expect(body).toMatch(/absent from every\s*\n?daemon\/container profile/);
+  });
+
+  it('the four shapes that let a turn end are listed, and match the shared predicate', () => {
+    const body = skill.body;
+    expect(body).toMatch(/awaiting_human_input`?: `?true/);
+    for (const state of ['Verified', 'Cancelled', 'Parked']) expect(body).toContain(state);
+    expect(body).toMatch(/`Decomposed` with ≥1 non-archived child/);
+    expect(body).toMatch(/no breadcrumb at all/);
+  });
+});

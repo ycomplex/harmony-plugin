@@ -1,5 +1,7 @@
 import { Command } from 'commander';
 import { listTasks, getTask, createTask, updateTask } from '../../tools/tasks.js';
+import { listSubtasks } from '../../tools/decomposition.js';
+import { classifyCleanRowShape } from '../../daemon/classify.js';
 import { runCommand } from '../run-command.js';
 import { formatTable, formatDetail, formatPriority, formatStatus, formatDate } from '../formatter.js';
 
@@ -54,6 +56,45 @@ export function registerTaskCommands(program: Command): void {
           { label: 'Due', value: formatDate(task.due_date) },
           { label: 'Description', value: task.description ?? '' },
         ]),
+      );
+    });
+
+  // B-870: the minimal read the interactive STOP GATE needs — the two clean-shape fields plus the
+  // non-archived child count, in ONE call, so the hook never reaches into the DB itself. The child
+  // count is fetched only when the state is Decomposed, mirroring the daemon's own settle path
+  // (src/bin/daemon.ts countNonArchivedChildren) exactly. `clean` is computed by the SHARED
+  // predicate — the hook consumes it, and src/hooks/stop-gate.contract.test.ts fails if this and
+  // the daemon's exit classifier ever disagree about a row shape.
+  tasks.command('clean-check')
+    .description('Report whether a task row is a clean place for a ticket-driving session to stop')
+    .argument('<id>', 'Task ID (UUID, number, or B-123)')
+    .action(async (id) => {
+      await runCommand(program.opts(), async (ctx) => {
+        const task = (await getTask(ctx.client, ctx.projectId, { task_id: id, view: 'meta' })) as {
+          id: string;
+          task_number?: number;
+          workflow_state?: string | null;
+          awaiting_human_input?: boolean | null;
+        };
+        let nonArchivedChildCount = 0;
+        if (task.workflow_state === 'Decomposed') {
+          const children = (await listSubtasks(ctx.client, ctx.projectId, { task_id: id })) as Array<{
+            archived?: boolean | null;
+          }>;
+          nonArchivedChildCount = children.filter((c) => !c.archived).length;
+        }
+        const kind = classifyCleanRowShape(task, nonArchivedChildCount);
+        return {
+          task_id: task.id,
+          task_number: task.task_number ?? null,
+          workflow_state: task.workflow_state ?? null,
+          awaiting_human_input: task.awaiting_human_input ?? null,
+          non_archived_child_count: nonArchivedChildCount,
+          clean: kind !== null,
+          clean_kind: kind,
+        };
+      },
+        (r) => (r.clean ? `clean (${r.clean_kind})` : 'NOT clean — nothing on the board for this leg'),
       );
     });
 
