@@ -532,6 +532,10 @@ const DISPOSITION_MARK: Record<CriterionRow['disposition'], string> = {
   unproven: '❌ unproven',
 };
 
+/** The legal `disposition` values, derived from the mark table itself so the lint can never drift from
+ *  what the render can actually index (B-903). */
+const CRITERION_DISPOSITIONS = Object.keys(DISPOSITION_MARK) as CriterionRow['disposition'][];
+
 /** One criterion row's disposition — mark, blocked-reason and carried-target included. Shared by the
  *  verify frame's ledger table and (B-867) the verify slot's `criteria[].disposition`: the durable
  *  section must say what the brief said, in the brief's own words. */
@@ -1310,6 +1314,14 @@ function mentionsApprovalRequirement(content: string): boolean {
 
 const blank = (value: unknown): boolean => typeof value !== 'string' || value.trim().length === 0;
 
+/** Is this a `bounded_accept` the verify render can actually walk? (B-903) The declared shape is
+ *  `{ open_ac_ids: string[]; closes_when: string }` — anything else renders a false sentence. */
+function isBoundedAcceptShaped(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return Array.isArray(v.open_ac_ids) && typeof v.closes_when === 'string';
+}
+
 /** Frame rules for the gate this brief is being composed for. Appends WARNINGS only — never errors. */
 function lintFrame(doc: BriefDoc, ctx: BriefLintContext, warnings: string[]): void {
   const expected = ctx.reason ? FRAME_KIND_FOR_REASON[ctx.reason] : undefined;
@@ -1413,6 +1425,23 @@ function lintFrame(doc: BriefDoc, ctx: BriefLintContext, warnings: string[]): vo
         if (row?.disposition === 'walk' && blank(row.step_ref)) {
           warnings.push(`Criterion "${row?.text ?? row?.ac_id ?? '(unnamed)'}" is dispositioned 'walk' but names no \`step_ref\`. A walk with no step is not a runbook step the human can follow.`);
         }
+        // B-903 — an out-of-enum disposition is invisible to the author and doubly wrong on the page: the
+        // ledger indexes `DISPOSITION_MARK` by this value, so a miss concatenates to the literal string
+        // "undefined" in the Disposition cell, AND the headline counts only `disposition === 'walk'`, so the
+        // brief under-reports what the human can confirm today. Warn-only, like every other frame rule.
+        if (!CRITERION_DISPOSITIONS.includes(row?.disposition as CriterionRow['disposition'])) {
+          warnings.push(
+            `Criterion "${row?.text ?? row?.ac_id ?? '(unnamed)'}" carries disposition '${String(row?.disposition)}', which is not one of ${CRITERION_DISPOSITIONS.join(' | ')}. The ledger looks its mark up by this value, so an unrecognised one renders the literal string "undefined"; and the headline counts only 'walk', so the brief also under-reports how much you can confirm today.`,
+          );
+        }
+      }
+      // B-903 — `bounded_accept` is only renderable in its declared shape. A bare string (the observed
+      // malformation) renders as "criteria left open — none. Closes when undefined", which reads as a
+      // finished sentence and is a false statement about what stays open.
+      if (frame.bounded_accept !== undefined && !isBoundedAcceptShaped(frame.bounded_accept)) {
+        warnings.push(
+          '`frame.bounded_accept` is present but is not shaped `{ open_ac_ids: string[], closes_when: string }`. The render walks those two keys, so a malformed value renders "criteria left open — none. Closes when undefined" — name the criteria this accept leaves open and what closes them.',
+        );
       }
       if (blank(frame.evidence_status)) {
         warnings.push('`frame.evidence_status` is blank. It is mechanical by construction and present on every verify brief — supporting confidence, never the thing being acked.');
@@ -1819,6 +1848,13 @@ export interface ComposeBriefArgs {
    *  from, since a same-session iterate writes no marker at all. Omitted on a first draft (nothing
    *  caused it); never fabricated.
    *
+   *  B-903 SCOPE: it marks ONLY the revision a send-back CAUSED. The caller passes it on the recompose
+   *  that CONSUMES a `pending_resolution` marker (the marker's `detail`) or on a terminal
+   *  `edit` / `iterate <feedback>`; it is OMITTED on a self-redraft, a rebase, an answer to an
+   *  accept-with-remark, and the single recompose after a concluded `discuss`. Nothing in this file
+   *  reads `pending_resolution` into this field — that scrape is exactly what B-843 refused, and
+   *  re-stamping the last known feedback is what stamped it onto revisions nobody sent back.
+   *
    *  B-896 NOTE: this parameter's rationale is unchanged, but one fact in its original phrasing is not.
    *  `pending_resolution` used to be written by exactly ONE thing (the browser's `submit_brief_command`);
    *  `reshapeBrief` below is now a second writer, so a marker's mere existence no longer implies a human
@@ -1876,6 +1912,26 @@ export const isMissingComposeBriefRevision = (
   const msg = err.message ?? '';
   return /compose_brief_revision/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg);
 };
+
+/**
+ * B-903 — clear ONE retained revision's `iterate_feedback`.
+ *
+ * The remediation half of the provenance fix: a revision that no send-back caused must not carry the
+ * words of one. Deliberately narrow — one row, one column, by id — so the only thing it can do is undo a
+ * re-stamp. It never reads, never derives, and never decides WHICH rows qualify; the sweep script
+ * (`scripts/sweep-restamped-iterate-feedback.ts`) plans from a snapshot and hands ids in.
+ *
+ * A direct table UPDATE under RLS with the board token — the SAME write plane `composeBrief`'s B-383
+ * fallback above already uses on this table. Not raw SQL, not a new RPC, no migration. Note the
+ * `update_briefs_updated_at` BEFORE UPDATE trigger moves `updated_at` on every row this touches.
+ */
+export async function clearRevisionIterateFeedback(
+  client: SupabaseClient,
+  briefId: string,
+): Promise<void> {
+  const { error } = await client.from('briefs').update({ iterate_feedback: null }).eq('id', briefId);
+  if (error) throw new Error(error.message);
+}
 
 export async function composeBrief(
   client: SupabaseClient,
@@ -2169,7 +2225,7 @@ export async function composeBrief(
 export const composeBriefTool = {
   name: 'compose_brief',
   description:
-    "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) on every round-2+ call. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one — so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref — do not hand-write it. " +
+    "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange — a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one — so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref — do not hand-write it. " +
     "B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately — put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. " +
     "B-876: also author `doc.frame` — the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING — no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) — compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates.",
   inputSchema: {
@@ -2250,7 +2306,7 @@ export const composeBriefTool = {
       iterate_feedback: {
         type: 'string',
         description:
-          "B-843 — the human's feedback that CAUSED this iterate, VERBATIM. Pass it on EVERY round-2+ compose (`edit` / `iterate <feedback>`, and the browser reshape's `pending_resolution.detail`); omit it only on a first draft, where nothing caused the brief. It is stored on the NEW revision, so the retained history reads as \"this is what they asked for, and this is what I changed\". Never guessed, never paraphrased into a summary, and never left out because `doc.revision` already names the changes — `doc.revision` records what YOU changed, this records what THEY said.",
+          "B-843 — the human's feedback that CAUSED this iterate, VERBATIM. A revision stores it ONLY when a send-back CAUSED that revision. The mechanical anchor: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail` here (as `edit` / `iterate <feedback>` and the browser reshape all do); EVERY other recompose omits the parameter and the field lands null. Omit it on a first draft (nothing caused the brief), a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange — a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to populate this field: the CALLER passes it, so the marker is never scraped (B-843) and the words are never stamped onto a revision nobody sent back (B-896/B-903). It is stored on the NEW revision, so the retained history reads as \"this is what they asked for, and this is what I changed\". Never guessed, never paraphrased into a summary, and never left out because `doc.revision` already names the changes — `doc.revision` records what YOU changed, this records what THEY said.",
       },
     },
     required: ['task_id', 'reason', 'doc'],

@@ -23180,6 +23180,7 @@ var DISPOSITION_MARK = {
   carried: "\u{1F501} carried",
   unproven: "\u274C unproven"
 };
+var CRITERION_DISPOSITIONS = Object.keys(DISPOSITION_MARK);
 function dispositionLabel(row) {
   return DISPOSITION_MARK[row.disposition] + (row.disposition === "blocked" && row.blocked_reason ? ` \u2014 ${row.blocked_reason}` : "") + (row.disposition === "carried" && row.carried_to ? ` to ${row.carried_to}` : "");
 }
