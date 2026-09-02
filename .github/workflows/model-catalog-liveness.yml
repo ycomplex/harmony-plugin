@@ -1,0 +1,89 @@
+name: Model Catalog Liveness
+
+# B-881: the model_catalog LIVENESS pipeline — "checked against reality" is not a one-time migration
+# claim, it is an ongoing guarantee this cron enforces. Runs
+# `scripts/model-catalog-liveness-check.mjs` on a cron against BOTH staging and prod: reads every
+# `active = true` row from `model_catalog` (via a service-role client), invokes the REAL `claude` CLI
+# against each alias, writes `verified_at = now()` on a confirmed success, and flips `active = false`
+# on a confirmed failure — the actual mechanism that stops a retired/renamed model name from
+# reaching a run, not just a doc claim that the table is maintained.
+#
+# REQUIRED before a job can actually run (a human must add these — see PR B-881):
+#   - repo secret            STAGING_SUPABASE_URL
+#   - repo secret            STAGING_SUPABASE_SERVICE_ROLE_KEY
+#   - production env secret  PROD_SUPABASE_URL                  (prod job, `production` environment)
+#   - production env secret  PROD_SUPABASE_SERVICE_ROLE_KEY     (prod job, `production` environment)
+#   - repo secret            ANTHROPIC_API_KEY                  (BOTH jobs — the `claude` CLI needs
+#                                                                 this to invoke a model at all; this
+#                                                                 secret could NOT be provisioned by
+#                                                                 the B-881 build — no access to add
+#                                                                 real GitHub secrets)
+# Until every secret a job needs exists, that job's run goes RED (scripts/model-catalog-liveness-
+# check.mjs's own decideGuard is FAIL-LOUD by default, mirroring scripts/reembed-guard.mjs's
+# philosophy — B-562) — there is no bootstrap/skip opt-out for this pipeline: an un-verified model
+# catalog is exactly the silent-drift failure mode this ticket exists to close, so staying green
+# without ever actually checking anything is never an acceptable resting state.
+
+on:
+  schedule:
+    # Daily, off-peak and off the top of the hour to avoid the cron stampede other scheduled
+    # workflows (e.g. harmony-web's reembed-knowledge.yml, hourly at :17) already occupy.
+    - cron: '43 6 * * *'
+  workflow_dispatch: {}
+
+# Don't pile up overlapping sweeps (a manual dispatch on top of the daily cron, or a slow run
+# bleeding into the next day). cancel-in-progress: false lets an in-flight sweep finish.
+concurrency:
+  group: model-catalog-liveness-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  staging:
+    name: Liveness check (staging)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Install claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Check model_catalog liveness (staging)
+        env:
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node scripts/model-catalog-liveness-check.mjs staging
+
+  prod:
+    name: Liveness check (production)
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Install claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Check model_catalog liveness (production)
+        env:
+          SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.PROD_SUPABASE_SERVICE_ROLE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node scripts/model-catalog-liveness-check.mjs production

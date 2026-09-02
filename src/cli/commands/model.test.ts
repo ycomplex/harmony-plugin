@@ -168,9 +168,9 @@ describe('harmony model request-switch / read-handoff / clear-handoff', () => {
   it('read-handoff prints the pending alias and exits 0 when a request is pending', async () => {
     const handoffPath = tempHandoffPath();
     vi.stubEnv('HARMONY_MODEL_HANDOFF_PATH', handoffPath);
-    await run(['model', 'request-switch', 'claude-haiku-5']);
+    await run(['model', 'request-switch', 'claude-haiku-4-5-20251001']);
     await run(['model', 'read-handoff']);
-    expect(logSpy).toHaveBeenCalledWith('claude-haiku-5');
+    expect(logSpy).toHaveBeenCalledWith('claude-haiku-4-5-20251001');
   });
 
   it('read-handoff exits 1 with no stdout when no request is pending', async () => {
@@ -247,16 +247,16 @@ function stubConductedEnv(): void {
 describe('B-892 harmony model resolve-gate — gate-boundary re-read of conductions.run_config', () => {
   it("prefers the LIVE row's model over the frozen launch env", async () => {
     stubConductedEnv();
-    stubAuthWith(conductionRow({ model: { per_gate: { build: 'claude-haiku-5' } } }));
+    stubAuthWith(conductionRow({ model: { per_gate: { build: 'claude-haiku-4-5-20251001' } } }));
     await run(['model', 'resolve-gate', 'Planned']);
-    expect(logSpy).toHaveBeenCalledWith('claude-haiku-5');
+    expect(logSpy).toHaveBeenCalledWith('claude-haiku-4-5-20251001');
   });
 
   it("honors a row-level run-wide default over the launch env's per-gate pin", async () => {
     stubConductedEnv();
-    stubAuthWith(conductionRow({ model: { default: 'claude-haiku-5' } }));
+    stubAuthWith(conductionRow({ model: { default: 'claude-haiku-4-5-20251001' } }));
     await run(['model', 'resolve-gate', 'Planned']);
-    expect(logSpy).toHaveBeenCalledWith('claude-haiku-5');
+    expect(logSpy).toHaveBeenCalledWith('claude-haiku-4-5-20251001');
   });
 
   it('falls back to the launch env when the row is missing', async () => {
@@ -304,9 +304,118 @@ describe('B-892 harmony model resolve-gate — gate-boundary re-read of conducti
   it('running-model still reports HARMONY_MODEL, never the row (the switch comparison baseline)', async () => {
     stubConductedEnv();
     vi.stubEnv('HARMONY_MODEL', 'claude-opus-5');
-    stubAuthWith(conductionRow({ model: { per_gate: { build: 'claude-haiku-5' } } }));
+    stubAuthWith(conductionRow({ model: { per_gate: { build: 'claude-haiku-4-5-20251001' } } }));
     await run(['model', 'running-model']);
     expect(logSpy).toHaveBeenCalledWith('claude-opus-5');
     expect(authMock.getAuthenticatedContext).not.toHaveBeenCalled();
+  });
+});
+
+// =================================================================================================
+// B-881: check-alias / context-budget / request-switch / list-aliases all now take a best-effort
+// live trip through the model_catalog table (via getAuthenticatedContext, mocked above) before
+// falling back to MODEL_CATALOG_FALLBACK. Once the catalog IS reachable it is ALWAYS authoritative
+// — never blended with the fallback list — so a live catalog that omits a fallback-only alias
+// (or includes one the fallback list has never heard of) must be reflected exactly.
+// =================================================================================================
+
+/** Stands in for the one call shape fetchModelCatalog makes:
+ *  `client.from('model_catalog').select(cols).eq('active', true)`. */
+function fakeCatalogClient(result: { data: unknown; error: unknown } | 'throws'): SupabaseClient {
+  const chain: Record<string, unknown> = {};
+  chain.select = () => chain;
+  chain.eq = () => {
+    if (result === 'throws') return Promise.reject(new Error('transport exploded'));
+    return Promise.resolve(result);
+  };
+  return { from: () => chain } as unknown as SupabaseClient;
+}
+
+function stubCatalogWith(result: { data: unknown; error: unknown } | 'throws'): void {
+  authMock.getAuthenticatedContext.mockResolvedValue({
+    client: fakeCatalogClient(result),
+    projectId: 'proj-1',
+    userId: 'user-1',
+  });
+}
+
+const liveOnlyRow = {
+  alias: 'live-only-alias',
+  label: 'Live Only Alias',
+  context_budget_bytes: 4242,
+  active: true,
+  verified_at: '2026-09-01T00:00:00Z',
+};
+
+describe('B-881 harmony model check-alias/context-budget/request-switch/list-aliases — live catalog', () => {
+  it('check-alias consults the LIVE catalog and accepts an alias absent from the embedded fallback', async () => {
+    stubCatalogWith({ data: [liveOnlyRow], error: null });
+    await expect(run(['model', 'check-alias', 'live-only-alias'])).rejects.toThrow(ExitSentinel);
+    expect(logSpy).toHaveBeenCalledWith('true');
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("check-alias rejects a FALLBACK-only alias once the live catalog is reachable — the catalog is ALWAYS authoritative when reachable", async () => {
+    stubCatalogWith({ data: [liveOnlyRow], error: null });
+    await expect(run(['model', 'check-alias', 'claude-sonnet-5'])).rejects.toThrow(ExitSentinel);
+    expect(logSpy).toHaveBeenCalledWith('false');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it('check-alias degrades to the embedded fallback (never throws) when the catalog is unreachable', async () => {
+    authMock.getAuthenticatedContext.mockRejectedValue(new Error('No active project.'));
+    await expect(run(['model', 'check-alias', 'claude-sonnet-5'])).rejects.toThrow(ExitSentinel);
+    expect(logSpy).toHaveBeenCalledWith('true');
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("B-881 TABLE-ABSENT TOLERANCE: check-alias degrades cleanly (never throws) when model_catalog does not exist yet on this environment", async () => {
+    stubCatalogWith({
+      data: null,
+      error: { message: 'relation "public.model_catalog" does not exist', code: '42P01' },
+    });
+    await expect(run(['model', 'check-alias', 'claude-sonnet-5'])).rejects.toThrow(ExitSentinel);
+    expect(logSpy).toHaveBeenCalledWith('true');
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("context-budget prints the LIVE budget for an alias absent from the embedded fallback", async () => {
+    stubCatalogWith({ data: [liveOnlyRow], error: null });
+    await run(['model', 'context-budget', 'live-only-alias']);
+    expect(logSpy).toHaveBeenCalledWith('4242');
+  });
+
+  it('request-switch succeeds for a LIVE-catalog-only alias', async () => {
+    const handoffPath = tempHandoffPath();
+    vi.stubEnv('HARMONY_MODEL_HANDOFF_PATH', handoffPath);
+    stubCatalogWith({ data: [liveOnlyRow], error: null });
+    await run(['model', 'request-switch', 'live-only-alias']);
+    expect(existsSync(handoffPath)).toBe(true);
+    expect(JSON.parse(readFileSync(handoffPath, 'utf8'))).toEqual({ requested_model: 'live-only-alias' });
+  });
+
+  it('request-switch refuses (exit 1, no file written) for a FALLBACK-only alias once the live catalog is reachable, naming the live catalog in its error', async () => {
+    const handoffPath = tempHandoffPath();
+    vi.stubEnv('HARMONY_MODEL_HANDOFF_PATH', handoffPath);
+    stubCatalogWith({ data: [liveOnlyRow], error: null });
+    await expect(run(['model', 'request-switch', 'claude-sonnet-5'])).rejects.toThrow(ExitSentinel);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(existsSync(handoffPath)).toBe(false);
+    expect(errSpy).toHaveBeenCalled();
+    expect(String(errSpy.mock.calls[0][0])).toContain('live-only-alias');
+  });
+
+  it('list-aliases prints the LIVE catalog aliases when reachable', async () => {
+    stubCatalogWith({ data: [liveOnlyRow, { ...liveOnlyRow, alias: 'another-live-alias' }], error: null });
+    await run(['model', 'list-aliases']);
+    expect(logSpy).toHaveBeenNthCalledWith(1, 'live-only-alias');
+    expect(logSpy).toHaveBeenNthCalledWith(2, 'another-live-alias');
+  });
+
+  it('list-aliases prints the embedded fallback aliases when the catalog is unreachable, and never throws', async () => {
+    authMock.getAuthenticatedContext.mockRejectedValue(new Error('No active project.'));
+    await run(['model', 'list-aliases']);
+    expect(logSpy).toHaveBeenCalledWith('claude-sonnet-5');
+    expect(exitSpy).not.toHaveBeenCalled();
   });
 });

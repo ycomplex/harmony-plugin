@@ -647,14 +647,25 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
       expect(combined).toContain('rejecting and NOT looping further');
     });
 
-    it('trips the 7-iteration bound when every turn keeps requesting a (valid) switch, and logs it', () => {
-      // Always requests a switch to claude-opus-5 (a real allowlisted alias) — every turn asks
-      // again, so the loop must stop itself at the bound rather than spinning forever.
-      const claudeStub = fakeSwitchingClaude({ requestSwitchTo: 'claude-opus-5' });
-      const combined = runLoopCombined({ HARMONY_MODEL: 'claude-sonnet-5' }, claudeStub);
-      expect(combined.split('INVOKED').length - 1).toBe(7); // exactly MAX_MODEL_SWITCH_ITERATIONS
-      expect(combined).toContain('model-switch loop hit its 7-iteration bound');
-    });
+    it(
+      'trips the 7-iteration bound when every turn keeps requesting a (valid) switch, and logs it',
+      () => {
+        // Always requests a switch to claude-opus-5 (a real allowlisted alias) — every turn asks
+        // again, so the loop must stop itself at the bound rather than spinning forever.
+        const claudeStub = fakeSwitchingClaude({ requestSwitchTo: 'claude-opus-5' });
+        const combined = runLoopCombined({ HARMONY_MODEL: 'claude-sonnet-5' }, claudeStub);
+        expect(combined.split('INVOKED').length - 1).toBe(7); // exactly MAX_MODEL_SWITCH_ITERATIONS
+        expect(combined).toContain('model-switch loop hit its 7-iteration bound');
+      },
+      // B-881: `model request-switch` (called once per iteration here, both by the fake claude AND
+      // by provision.sh's own defense-in-depth check-alias re-validation) now takes a best-effort
+      // live trip through getAuthenticatedContext before degrading — real subprocess Node startup
+      // + that best-effort attempt across 7 iterations comfortably exceeds vitest's 5000ms default
+      // test timeout even though every attempt itself resolves in well under a second (no
+      // HARMONY_API_TOKEN / active project in this test's isolated HOME, so it fails synchronously,
+      // fast — this is purely cumulative process-spawn overhead, not a hang).
+      20_000,
+    );
 
     it('the no-HARMONY_MODEL cold-start path is unaffected by the loop refactor (byte-for-byte, single invocation)', () => {
       const claudeStub = fakeSwitchingClaude({ requestSwitchTo: null });
@@ -693,10 +704,10 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
     it('cold-starts instead of resuming when the resumable session exceeds the model\'s context budget', () => {
       const claudeStub = fakeArgsEchoClaude();
       const dir = mkdtempSync(join(tmpdir(), 'b772-budget-home-'));
-      // claude-haiku-5's tabled budget is 60MB (src/config/run-config.ts) — one byte over trips the guard.
+      // claude-haiku-4-5-20251001's tabled budget is 60MB (src/config/run-config.ts) — one byte over trips the guard.
       writeSizedSession(dir, 'fake-id', 60 * 1024 * 1024 + 1);
       const result = runResumeBlock(
-        { ...enabledRunConfigEnv(), HARMONY_MODEL: 'claude-haiku-5' },
+        { ...enabledRunConfigEnv(), HARMONY_MODEL: 'claude-haiku-4-5-20251001' },
         { fakeClaudeDir: claudeStub, homeDir: dir, pluginDir: REAL_PLUGIN_DIR },
       );
       expect(result.status).toBe(0);
@@ -733,12 +744,12 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
       const combined = execFileSync('bash', [scriptFile], {
         env: {
           ...enabledRunConfigEnv(),
-          HARMONY_MODEL: 'claude-haiku-5',
+          HARMONY_MODEL: 'claude-haiku-4-5-20251001',
           HOME: homeDir,
           PATH: `${claudeStub}:${process.env.PATH}`,
         },
       }).toString();
-      expect(combined).toContain('over model \'claude-haiku-5\'\'s');
+      expect(combined).toContain('over model \'claude-haiku-4-5-20251001\'\'s');
       expect(combined).toContain('cold-starting instead of resuming (session-resume guard)');
     });
 
@@ -761,7 +772,7 @@ describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fall
       const dir = mkdtempSync(join(tmpdir(), 'b772-budget-home-small-'));
       writeSession(dir, 'fake-id'); // tiny ('{}\n') — nowhere near any tabled budget
       const result = runResumeBlock(
-        { ...enabledRunConfigEnv(), HARMONY_MODEL: 'claude-haiku-5' },
+        { ...enabledRunConfigEnv(), HARMONY_MODEL: 'claude-haiku-4-5-20251001' },
         { fakeClaudeDir: claudeStub, homeDir: dir, pluginDir: REAL_PLUGIN_DIR },
       );
       expect(result.status).toBe(0);
@@ -2942,7 +2953,7 @@ describe('entrypoint.sh: B-718 cross-conduction resume discovery (cloud profile)
       mkdirSync(oldSlug, { recursive: true });
       const sessionFile = join(oldSlug, 'sess-old.jsonl');
       writeFileSync(sessionFile, '');
-      truncateSync(sessionFile, 60 * 1024 * 1024 + 1); // over claude-haiku-5's 60MB budget
+      truncateSync(sessionFile, 60 * 1024 * 1024 + 1); // over claude-haiku-4-5-20251001's 60MB budget
 
       const runConfig = Buffer.from(JSON.stringify({ session_resume: { enabled: true } })).toString(
         'base64',
@@ -2952,7 +2963,7 @@ describe('entrypoint.sh: B-718 cross-conduction resume discovery (cloud profile)
           CONDUCTION_ID: 'cond-new',
           TICKET: 'B-772',
           HARMONY_RUN_CONFIG_JSON: runConfig,
-          HARMONY_MODEL: 'claude-haiku-5',
+          HARMONY_MODEL: 'claude-haiku-4-5-20251001',
         },
         dir,
       );
@@ -2976,7 +2987,7 @@ describe('entrypoint.sh: B-718 cross-conduction resume discovery (cloud profile)
           CONDUCTION_ID: 'cond-new',
           TICKET: 'B-772',
           HARMONY_RUN_CONFIG_JSON: runConfig,
-          HARMONY_MODEL: 'claude-haiku-5',
+          HARMONY_MODEL: 'claude-haiku-4-5-20251001',
         },
         dir,
       );

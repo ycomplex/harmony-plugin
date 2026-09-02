@@ -28349,29 +28349,81 @@ function getModelForGate(runConfig, gate, env2 = process.env) {
   const profile = resolveDeploymentProfile(env2);
   return PINNED_DEFAULT_MODEL_BY_PROFILE[profile] ?? PINNED_DEFAULT_MODEL_BY_PROFILE.prod;
 }
-var MODEL_ALIAS_ALLOWLIST = [
-  "claude-sonnet-5",
-  "claude-opus-5",
-  "claude-haiku-5"
+var MODEL_CATALOG_FALLBACK = [
+  {
+    alias: "claude-sonnet-5",
+    label: "Claude Sonnet 5",
+    context_budget_bytes: 150 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  },
+  {
+    alias: "claude-opus-5",
+    label: "Claude Opus 5",
+    context_budget_bytes: 150 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  },
+  {
+    alias: "claude-haiku-4-5-20251001",
+    label: "Claude Haiku 4.5",
+    context_budget_bytes: 60 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  },
+  {
+    alias: "claude-fable-5",
+    label: "Claude Fable 5",
+    context_budget_bytes: 60 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  }
 ];
 for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
-  if (!MODEL_ALIAS_ALLOWLIST.includes(pinned)) {
+  if (!MODEL_CATALOG_FALLBACK.some((entry) => entry.alias === pinned)) {
     throw new Error(
-      `B-772 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_ALIAS_ALLOWLIST`
+      `B-881 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_CATALOG_FALLBACK`
     );
   }
 }
-function isAllowedModelAlias(alias) {
-  return MODEL_ALIAS_ALLOWLIST.includes(alias);
-}
-var MODEL_CONTEXT_BUDGET_BYTES = {
-  "claude-sonnet-5": 150 * 1024 * 1024,
-  "claude-opus-5": 150 * 1024 * 1024,
-  "claude-haiku-5": 60 * 1024 * 1024
-};
 var DEFAULT_MODEL_CONTEXT_BUDGET_BYTES = 60 * 1024 * 1024;
-function getModelContextBudgetBytes(alias) {
-  return MODEL_CONTEXT_BUDGET_BYTES[alias] ?? DEFAULT_MODEL_CONTEXT_BUDGET_BYTES;
+async function fetchModelCatalog(client) {
+  if (!client) return null;
+  try {
+    const { data, error } = await client.from("model_catalog").select("alias, label, context_budget_bytes, active, verified_at").eq("active", true);
+    if (error) {
+      console.error(
+        `harmony model_catalog: WARNING \u2014 the live catalog was unreachable (${error.message ?? String(error)}); degrading to the embedded MODEL_CATALOG_FALLBACK list. This is the EXPECTED shape while harmony-web's model_catalog migration has not yet landed on this environment's Supabase project (B-383 prod-before-promote) \u2014 never treat this as a bug on its own.`
+      );
+      return null;
+    }
+    if (!data) return null;
+    return data;
+  } catch (err) {
+    console.error(
+      `harmony model_catalog: WARNING \u2014 reading the live catalog threw (${err?.message ?? String(err)}); degrading to the embedded MODEL_CATALOG_FALLBACK list.`
+    );
+    return null;
+  }
+}
+async function resolveModelCatalog(client) {
+  const live = await fetchModelCatalog(client);
+  if (live && live.length > 0) return { entries: live, source: "live" };
+  if (live && live.length === 0) {
+    console.error(
+      "harmony model_catalog: WARNING \u2014 the live catalog is reachable but has zero active rows; degrading to the embedded MODEL_CATALOG_FALLBACK list."
+    );
+  }
+  return { entries: MODEL_CATALOG_FALLBACK, source: "fallback" };
+}
+async function isAllowedModelAlias(alias, client) {
+  const { entries } = await resolveModelCatalog(client);
+  return entries.some((entry) => entry.alias === alias);
+}
+async function getModelContextBudgetBytes(alias, client) {
+  const { entries } = await resolveModelCatalog(client);
+  const found = entries.find((entry) => entry.alias === alias);
+  return found?.context_budget_bytes ?? DEFAULT_MODEL_CONTEXT_BUDGET_BYTES;
 }
 var DEFAULT_MODEL_HANDOFF_FILENAME = "model-handoff-request.json";
 function getModelHandoffPath(env2 = process.env) {
@@ -31888,21 +31940,38 @@ async function resolveGateRunConfig() {
     return {};
   }
 }
+async function getCatalogClient() {
+  try {
+    const { client } = await getAuthenticatedContext();
+    return client;
+  } catch {
+    return null;
+  }
+}
 function registerModelCommands(program3) {
   const model = program3.command("model").description(
-    "B-772 model-switch-loop node accessor \u2014 the ONE place bash (container/provision.sh, container/entrypoint.sh) reads the alias allowlist / context-budget table / handoff-file contract src/config/run-config.ts owns. Never hand-duplicate these tables in bash."
+    "B-881 live-model-catalog node accessor \u2014 the ONE place bash (container/provision.sh, container/entrypoint.sh) reads the model catalog / context-budget data / handoff-file contract src/config/run-config.ts owns. Never hand-duplicate this data in bash."
   );
   model.command("check-alias").description(
-    'Print "true" and exit 0 if <alias> is in the canonical allowlist; print "false" and exit 1 otherwise.'
-  ).argument("<alias>").action((alias) => {
-    const ok = isAllowedModelAlias(alias);
+    'Print "true" and exit 0 if <alias> is in the live model catalog (falling back to the embedded degrade-only list when the catalog is unreachable); print "false" and exit 1 otherwise.'
+  ).argument("<alias>").action(async (alias) => {
+    const client = await getCatalogClient();
+    const ok = await isAllowedModelAlias(alias, client);
     console.log(ok ? "true" : "false");
     process.exit(ok ? 0 : 1);
   });
   model.command("context-budget").description(
-    "Print <alias>'s resumable-session-size budget in bytes (falls back to a conservative default for an alias absent from the table \u2014 always exits 0)."
-  ).argument("<alias>").action((alias) => {
-    console.log(String(getModelContextBudgetBytes(alias)));
+    "Print <alias>'s resumable-session-size budget in bytes, from the live catalog (falling back to the embedded degrade-only list, then a conservative default for an alias absent from either \u2014 always exits 0)."
+  ).argument("<alias>").action(async (alias) => {
+    const client = await getCatalogClient();
+    console.log(String(await getModelContextBudgetBytes(alias, client)));
+  });
+  model.command("list-aliases").description(
+    "Print every currently-active model-catalog alias, one per line \u2014 live when the catalog is reachable, else the embedded degrade-only list. Always exits 0. Consumed by skills/harmony-conduct/SKILL.md step 1d's park-on-refusal comment (B-881), so a human reviewing the park sees exactly which aliases were selectable at the time."
+  ).action(async () => {
+    const client = await getCatalogClient();
+    const { entries } = await resolveModelCatalog(client);
+    for (const entry of entries) console.log(entry.alias);
   });
   model.command("running-model").description(
     "Print this process's own HARMONY_MODEL env var (the model the currently-running `claude` invocation was actually launched with, set by container/provision.sh's switch loop, re-exported fresh on every re-invocation), or an empty line when unset (this deployment profile does not render {model} at all, round-1's opt-out path). Always exits 0 -- an empty result is a legitimate answer, never an error."
@@ -31917,11 +31986,14 @@ function registerModelCommands(program3) {
     console.log(getModelForGate(runConfig, gate));
   });
   model.command("request-switch").description(
-    "Write a model-switch handoff request for container/provision.sh's switch loop to pick up. Validates <alias> against the allowlist FIRST \u2014 refuses (exit 1, no file written) on an unrecognized alias."
-  ).argument("<alias>").action((alias) => {
-    if (!isAllowedModelAlias(alias)) {
+    "Write a model-switch handoff request for container/provision.sh's switch loop to pick up. Validates <alias> against the live model catalog FIRST \u2014 refuses (exit 1, no file written) on an alias that is not active in the catalog (nor in the embedded fallback list when the catalog itself is unreachable)."
+  ).argument("<alias>").action(async (alias) => {
+    const client = await getCatalogClient();
+    const ok = await isAllowedModelAlias(alias, client);
+    if (!ok) {
+      const { entries } = await resolveModelCatalog(client);
       console.error(
-        `harmony model request-switch: '${alias}' is not in the allowlist (${MODEL_ALIAS_ALLOWLIST.join(", ")})`
+        `harmony model request-switch: '${alias}' is not in the live model catalog (${entries.map((entry) => entry.alias).join(", ")})`
       );
       process.exit(1);
       return;

@@ -400,28 +400,41 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    default, never throws, on a malformed run_config (see the CLI command's own doc comment).
 
    - **`WANTED_MODEL === RUNNING_MODEL` → nothing to do.** Proceed to step 2 as normal.
-   - **`WANTED_MODEL !== RUNNING_MODEL` → request the switch and END THE TURN, doing NONE of this gate's
-     work.** Write the handoff request:
+   - **`WANTED_MODEL !== RUNNING_MODEL` → request the switch, capturing its exit code:**
 
      ```
      node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" model request-switch "<WANTED_MODEL>"
      ```
 
-     then end the turn immediately — **compose no brief, run no delegation test, make no MCP write of any
-     kind**. `container/provision.sh`'s bounded switch loop (the ONLY reader of this handoff file) picks the
-     request up right after this turn's `claude` invocation exits, validates `<WANTED_MODEL>` against the
-     canonical allowlist itself (`src/config/run-config.ts`'s `MODEL_ALIAS_ALLOWLIST` — never trust this
-     turn's own request blindly), and — if valid — cold-starts a fresh `claude -p --model <WANTED_MODEL>`
-     invocation of this SAME prompt in the SAME container, which re-enters this loop at step 1 and finds
-     `RUNNING_MODEL` now matching. Bounded at 7 iterations (one per `GATES` entry,
-     `src/daemon/gate-phase.ts`) — a tripped bound is logged by `provision.sh`, never silently retried
-     forever. `request-switch` itself refuses (exits non-zero, writes no file) if `<WANTED_MODEL>` is not on
-     the allowlist — that refusal is not this turn's problem to handle; just end the turn regardless of the
-     command's exit code, since either way this turn must not proceed on the wrong model.
+     - **Exit 0 (the switch was accepted) → END THE TURN, doing NONE of this gate's work** — compose no
+       brief, run no delegation test, make no MCP write of any kind. `container/provision.sh`'s bounded
+       switch loop (the ONLY reader of this handoff file) picks the request up right after this turn's
+       `claude` invocation exits, validates `<WANTED_MODEL>` against the LIVE model catalog itself
+       (`src/config/run-config.ts`'s `resolveModelCatalog`/`isAllowedModelAlias`, B-881 — never trust this
+       turn's own request blindly), and — if still valid at that point — cold-starts a fresh
+       `claude -p --model <WANTED_MODEL>` invocation of this SAME prompt in the SAME container, which
+       re-enters this loop at step 1 and finds `RUNNING_MODEL` now matching. Bounded at 7 iterations (one
+       per `GATES` entry, `src/daemon/gate-phase.ts`) — a tripped bound is logged by `provision.sh`, never
+       silently retried forever.
+     - **Non-zero exit (REFUSED — `<WANTED_MODEL>` is not active in the live model catalog, B-881) → do
+       NOT silently end the turn.** This used to just end the turn regardless of the command's exit code —
+       on a refusal that left the daemon spinning with no authored reason until B-792's no-progress timeout
+       eventually caught it (the silent-spin defect). Instead, PARK — mirroring `start-work`'s own
+       build-failure park path (that SKILL.md's FAILURE PATH: comment the reason, THEN park, in that
+       order):
+       1. Read the currently-active catalog for the comment:
+          `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" model list-aliases`.
+       2. `mcp__harmony__add_comment({ task_id, body: "Model switch refused — '<WANTED_MODEL>' is not in the live model catalog. Currently active: <comma-joined list-aliases output>." })` —
+          name BOTH the offending alias and the current catalog, so a human can fix either side
+          (add the alias to `model_catalog`, or repoint `run_config.model` at one that's already active)
+          without forensics.
+       3. `mcp__harmony__advance_workflow({ task_id, activity: 'parking' })`.
+       Then end the turn. This is a genuine no-progress condition for THIS leg — re-running it changes
+       nothing until a human acts on one of the two sides named in the comment.
 
    *(This step is plumbing, not a gate, exactly like 1b/1c: it decides nothing a human didn't already decide
    via `run_config.model` — it only enforces that decision lands on the right leg. It composes no brief and
-   needs no pause of its own.)*
+   needs no pause of its own, EXCEPT on a switch refusal, which is a genuine park with an authored reason.)*
 
 2. **If the ticket is already awaiting a human decision → handle per mode.** First check the reason:
 
