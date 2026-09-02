@@ -38791,7 +38791,7 @@ var startElicitationTool = {
     type: "object",
     properties: {
       task_id: { type: "string", description: "The task the exchange belongs to \u2014 UUID, task number, or visual ID (e.g., B-43)" },
-      trigger: { type: "string", description: "What started the exchange: 'pre-draft-clarify' (questions before a clarification draft exists) | 'discuss' (attached to an active brief under discussion) | 'phase-split-probe' (probing whether/where to split phases)" },
+      trigger: { type: "string", description: "What started the exchange: 'pre-draft-clarify' (questions before a clarification draft exists) | 'discuss' (attached to an active brief under discussion) | 'phase-split-probe' (probing whether/where to split phases) | 'worker-question' (the running session itself hit a judgment call or capability denial mid-run \u2014 B-733; see skills/harmony-shared/elicitation-engine.md \xA7The worker-question trigger)" },
       gate: { type: "string", description: "The workflow activity the exchange serves (e.g. 'clarifying'). Optional." },
       brief_id: { type: "string", description: "The active brief a 'discuss' exchange attaches to. Omit for pre-draft triggers." }
     },
