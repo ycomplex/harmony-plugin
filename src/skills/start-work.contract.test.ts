@@ -70,6 +70,16 @@ describe('start-work skill contract (evolved)', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/record_decision/);
   });
 
+  // B-783: a cross-repo prerequisite PR (e.g. a plugin PR depending on a harmony-web migration PR
+  // landing first) must be recorded as a structured field, not just free-text, so finish-work's O2
+  // multi-PR shape guard can check its live merge status instead of refusing/ignoring it blindly.
+  it('B-783: step 6 records field_values.prerequisite_pr as a second, optional PR-shaped key alongside build_pr', () => {
+    const body = skill.body;
+    expect(body).toContain('field_values.prerequisite_pr');
+    expect(body).toContain('B-783');
+    expect(body).toContain('second, optional PR-shaped field key alongside `build_pr`');
+  });
+
   // B-554: the "design is wrong" recipe must route through the human-ratified revise-scope
   // flow (harmony-revise-scope --to design), NOT a raw advance_workflow(revising-designing) —
   // which both named the wrong activity (revising-designing re-opens PLAN, not design) and
