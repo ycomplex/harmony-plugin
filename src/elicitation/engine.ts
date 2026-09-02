@@ -99,6 +99,47 @@ export function validateRound(questions: ElicitationQuestion[]): string[] {
   return errors;
 }
 
+/**
+ * Heuristic used by warnRound: does `text` look like it enumerates two or more options — "(1)",
+ * "(2)", a numbered list ("1. ", "2) "), or a lettered list ("a) ", "b. ")? Requires AT LEAST TWO
+ * matches so an incidental single parenthetical ("the (only) option") never false-positives — only a
+ * repeated enumeration pattern reads as "this is a list of options".
+ */
+const ENUMERATED_OPTIONS_PATTERN = /\(\d+\)|\([a-zA-Z]\)|(?:^|\s)\d+[.)]\s|(?:^|\s)[a-zA-Z][.)]\s/g;
+
+function looksEnumerated(text: string | undefined): boolean {
+  if (!text) return false;
+  const matches = text.match(ENUMERATED_OPTIONS_PATTERN);
+  return !!matches && matches.length >= 2;
+}
+
+/**
+ * Non-blocking, belt-and-suspenders lint (B-785) — a SIBLING to `validateRound`, never merged into
+ * it: `validateRound`'s violations REJECT a filing; this only warns, and never throws. Returns the
+ * warning strings (empty = nothing to flag).
+ *
+ * Flags a question when: `kind === 'open'` AND its `why` field looks like it enumerates concrete
+ * options (see `looksEnumerated`) AND its `text` field does NOT — i.e. the worker prepared options
+ * but tucked them into the collapsed "why I'm asking" expander instead of the question body, where
+ * they're unmissable (B-757's incident: the human never saw the redrive candidates because they lived
+ * only in `why`). Steers the worker to put enumerated options in `text`; it is deliberately a
+ * heuristic regex check, not a semantic one — keep it simple.
+ */
+export function warnRound(questions: ElicitationQuestion[]): string[] {
+  const warnings: string[] = [];
+  if (!Array.isArray(questions)) return warnings;
+  for (const q of questions) {
+    if (q.kind !== 'open') continue;
+    if (!looksEnumerated(q.why)) continue;
+    if (looksEnumerated(q.text)) continue;
+    const label = q.id?.trim() ? `question "${q.id}"` : 'a question';
+    warnings.push(
+      `${label}'s why field looks like it enumerates options (e.g. "(1)…(2)…") but text does not — options a worker prepares should live in text, where they're unmissable (a why expander can go unread); consider moving the enumerated options into text.`,
+    );
+  }
+  return warnings;
+}
+
 /** The next round number: last round's n + 1 (rounds are append-only), or 1 on a fresh exchange. */
 export function nextRoundNumber(rounds: ElicitationRound[]): number {
   return currentRoundNumber(rounds) + 1;

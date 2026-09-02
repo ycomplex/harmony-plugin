@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   validateRound,
+  warnRound,
   nextRoundNumber,
   currentRoundNumber,
   appendRound,
@@ -76,6 +77,93 @@ describe('validateRound (the anti-rubber-stamp lints)', () => {
     const errors = validateRound([openQ({ id: '' }), openQ({ id: 'q2', text: '' })]);
     expect(errors.join(' ')).toMatch(/needs an id/i);
     expect(errors.join(' ')).toMatch(/no text/i);
+  });
+});
+
+describe('warnRound (B-785 — non-blocking why-vs-text enumerated-options lint)', () => {
+  it('returns no warnings for a round with no questions carrying why', () => {
+    expect(warnRound([openQ(), openQ({ id: 'q2' })])).toEqual([]);
+  });
+
+  it('returns no warnings when why has no enumerated-options pattern', () => {
+    const q = openQ({ why: 'This affects the billing cycle, so getting it right matters.' });
+    expect(warnRound([q])).toEqual([]);
+  });
+
+  it("returns no warnings when a SINGLE parenthetical in why is not a list (avoids false positives)", () => {
+    const q = openQ({ why: 'This is the (only) viable driver we found.' });
+    expect(warnRound([q])).toEqual([]);
+  });
+
+  it("skips a kind='validate' question even if its why enumerates options", () => {
+    const q = validateQ({ why: 'Candidates: (1) A (2) B (3) C.' });
+    expect(warnRound([q])).toEqual([]);
+  });
+
+  it("flags an OPEN question whose why enumerates options but text does not", () => {
+    const q = openQ({
+      text: 'How would you like to proceed?',
+      why: 'Concrete redirect options: (1) retry now (2) retry later (3) drop it.',
+    });
+    const warnings = warnRound([q]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/why field looks like it enumerates options/i);
+    expect(warnings[0]).toMatch(/question "q1"/);
+  });
+
+  it('does NOT flag when the options are embedded directly in text itself', () => {
+    const q = openQ({
+      id: 'q2',
+      text: 'How would you like to proceed — (1) retry now, (2) retry later, or (3) drop it?',
+      why: 'Concrete redirect options: (1) retry now (2) retry later (3) drop it.',
+    });
+    expect(warnRound([q])).toEqual([]);
+  });
+
+  it('flags numbered-list and lettered-list why patterns too, not just "(n)"', () => {
+    const numbered = openQ({ id: 'qn', text: 'What next?', why: '1. Ship it. 2. Hold it.' });
+    const lettered = openQ({ id: 'ql', text: 'What next?', why: 'a) Ship it. b) Hold it.' });
+    expect(warnRound([numbered])[0]).toMatch(/question "qn"/);
+    expect(warnRound([lettered])[0]).toMatch(/question "ql"/);
+  });
+
+  it('lists one warning per flagged question, skipping clean ones', () => {
+    const bad = openQ({ id: 'q1', text: 'Proceed how?', why: 'Options: (1) X (2) Y.' });
+    const clean = openQ({ id: 'q2', text: 'What is the driver here?' });
+    const warnings = warnRound([bad, clean]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/question "q1"/);
+  });
+
+  it('never throws on malformed input — returns an empty array', () => {
+    expect(warnRound(undefined as unknown as ElicitationQuestion[])).toEqual([]);
+    expect(warnRound(null as unknown as ElicitationQuestion[])).toEqual([]);
+  });
+
+  it('sanity check: approximates B-757\'s actual incident (exchange 64efcbe3)', () => {
+    // Rounds 1 and 3: why carried the concrete redirect options, text ended on a bare "how would you
+    // like to proceed" with no options at all — exactly the burial this lint exists to catch.
+    const round1Q = openQ({
+      id: 'q1',
+      text: 'The prerequisite PR is still open — how would you like to proceed?',
+      why: 'Concrete redirect options: (1) wait for the prerequisite to merge, (2) proceed anyway and flag the risk, (3) split this ticket to unblock the independent part.',
+    });
+    const round3Q = openQ({
+      id: 'q1',
+      text: 'Given where things stand now, how would you like to proceed?',
+      why: 'Concrete redirect options: (1) redrive once more, (2) hand off to a human, (3) close as blocked.',
+    });
+    // Round 2: the worker embedded the options directly in text — the desired shape — so it must NOT
+    // be flagged even though its why also happens to restate them.
+    const round2Q = openQ({
+      id: 'q1',
+      text: 'How would you like to proceed — (1) wait for the prerequisite, (2) proceed and flag the risk, or (3) split the ticket?',
+      why: 'Concrete redirect options: (1) wait for the prerequisite, (2) proceed and flag the risk, (3) split the ticket.',
+    });
+
+    expect(warnRound([round1Q])).toHaveLength(1);
+    expect(warnRound([round3Q])).toHaveLength(1);
+    expect(warnRound([round2Q])).toEqual([]);
   });
 });
 

@@ -98,7 +98,7 @@ describe('fileElicitationRound', () => {
     const result = await fileElicitationRound(client, PROJECT_ID, {
       task_id: 'task-1', context_line: 'Settling the drivers.', questions: [openQ('q1'), openQ('q2')],
     });
-    expect(result).toEqual(withRound);
+    expect(result).toEqual({ ...withRound, warnings: [] });
 
     // The exchange update appends n=2 and consumes any prior answers marker.
     expect(client.update).toHaveBeenCalledWith(expect.objectContaining({
@@ -121,6 +121,22 @@ describe('fileElicitationRound', () => {
       awaiting_human_reason: 'elicitation-round',
       awaiting_human_ref: { kind: 'elicitation', exchange_id: 'ex-1', round: 2, gate: 'clarifying' },
     });
+  });
+
+  it("surfaces warnRound's non-blocking warnings on the return value, keyed to the round being filed (B-785)", async () => {
+    const withRound = { ...exchangeRow, rounds: [{ n: 1, context_line: 'c', questions: [openQ()], answers: {} }] };
+    const client = makeClient([{ data: withRound }, { data: withRound }, { data: null }]);
+
+    const burriedQ = {
+      id: 'q1', stakes: 'load-bearing' as const, kind: 'open' as const,
+      text: 'How would you like to proceed?',
+      why: 'Concrete redirect options: (1) redrive now (2) redrive later (3) drop it.',
+    };
+    const result = await fileElicitationRound(client, PROJECT_ID, {
+      task_id: 'task-1', context_line: 'ctx', questions: [burriedQ],
+    });
+    expect((result as { warnings: string[] }).warnings).toHaveLength(1);
+    expect((result as { warnings: string[] }).warnings[0]).toMatch(/why field looks like it enumerates options/i);
   });
 
   it('echoes terminal-given prior_answers into the consumed round in the same write (B-462)', async () => {
@@ -274,7 +290,7 @@ describe('fileElicitationRound', () => {
     // no-op; the round still files and the ball still moves.
     await expect(
       fileElicitationRound(client, PROJECT_ID, { task_id: 'task-1', context_line: 'ctx', questions: [openQ()] }),
-    ).resolves.toEqual(discussExchange);
+    ).resolves.toEqual({ ...discussExchange, warnings: [] });
     expect(client.from).toHaveBeenCalledWith('tasks');
   });
 
