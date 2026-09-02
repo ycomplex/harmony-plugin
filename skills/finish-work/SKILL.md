@@ -238,6 +238,22 @@ release brief, right alongside the risk-class signal, e.g.: *"ℹ Auto-approved 
 **plan** — see their `OVERRIDE-GATE-EXECUTED` comments for what each executed."* If none are found, show
 nothing extra.
 
+**Prerequisite-PR attention line (B-783).** When `field_values.prerequisite_pr` is present, show its LIVE
+merge status as its own attention line, framed against the environment THIS release actually reaches —
+**prod** for a daemon-driven run (the standing `PLUGIN_REF=main` + prod-board posture, workspace
+CLAUDE.md → "Sharpest case"), not staging:
+
+1. `gh pr view <prerequisite_pr.pr_number> --repo <prerequisite_pr.repo> --json state,url`.
+2. **Not confirmed `MERGED`** (open, closed-unmerged, or the fetch errored) → add an attention line above
+   the decision, e.g.: *"⚠ Prerequisite PR `<pr_url>` in `<repo>` is not yet merged (state: `<state>`) —
+   this release runs against **prod**, and code depending on the prerequisite may not be safe to run there
+   until it lands."* The SAME live check governs O2's refusal below (§"Fail-closed conditional branch for
+   `field_values.prerequisite_pr`") — this is where the human first sees it, not a surprise at merge time.
+3. **Confirmed `MERGED`** → render it informationally in `doc.context`, e.g. `"Prerequisite: <pr_url>
+   (merged)."` — nothing to act on.
+4. **The fetch itself errored** → state the error explicitly in the attention line, never silently omit
+   it (same discipline as the CI-evidence fetch failure below).
+
 **One `gh pr view` call, two uses: bot-approval + CI evidence (B-732, B-765 AC4).** Before showing the
 brief, make a single call for the `build_pr` PR, extended with `statusCheckRollup` so the brief's CI
 evidence is FETCHED from the PR's checks rather than asserted from local/partial evidence:
@@ -375,6 +391,33 @@ This is a pure defensive shape check for the common single-`build_pr` case (unaf
 deferred multi-PR merge loop; decompose-per-repo remains the accepted interim for cross-repo work (B-734
 showed a deliberately-unsplit cross-repo ticket can still reach this guard, which is exactly why it must
 not depend on that interim holding).
+
+**Fail-closed conditional branch for `field_values.prerequisite_pr` (B-783) — checked BEFORE the catch-all
+refusal above.** `prerequisite_pr` is a RECOGNIZED PR-shaped key (unlike `companion_pr` /
+`build_pr_phase_a_merged`, which remain unconditional worker-question refusals above) — it names a
+genuinely cross-repo dependency the build leg could not merge itself. When `field_values.prerequisite_pr`
+is present, do NOT fold it into the catch-all "additional PR-shaped key found" refusal above. Instead, run
+a LIVE merge-status check before deciding:
+
+```
+gh pr view <prerequisite_pr.pr_number> --repo <prerequisite_pr.repo> --json state
+```
+
+- **`state === 'MERGED'` (positively confirmed by a successful fetch)** → the dependency is satisfied.
+  Proceed with `build_pr`'s merge normally; render the prerequisite informationally on the release brief
+  (see O1's prerequisite-PR attention line) rather than blocking.
+- **Anything else — `OPEN`, `CLOSED` (unmerged), an errored fetch (network/auth/rate-limit), or the PR
+  not found** → FAIL CLOSED: do NOT merge `build_pr` either.
+  1. `mcp__harmony__add_comment({ task_id, content: "Release guard: prerequisite PR <prerequisite_pr.pr_url> is not confirmed merged (<state, or the fetch error>) — refusing to merge <build_pr.pr_url> ahead of it." })`
+  2. Open a `worker-question` elicitation round (`start_elicitation` + `file_elicitation_round`) naming
+     the prerequisite PR, its live (or unreadable) state, and asking the human to confirm before
+     proceeding — the same routing the catch-all guard above uses, not a new mechanism.
+  3. End the leg. Do not advance `workflow_state`.
+
+  **A fetch error is never treated as equivalent to `MERGED`.** An implementation keyed on
+  `state === 'OPEN' ? refuse : proceed` fails OPEN on any fetch error and silently defeats the whole
+  guard — exactly the loophole this check exists to close (B-761: a prerequisite PR was still open when
+  the dependent PR merged, with no gate having read its live status at all).
 
 **Branch on `field_values.build_pr`** (B-722's recorded pushed-PR reference — shape `{ branch, head_sha,
 pr_number, pr_url, base: "main", opened_at }`) to decide how to land the code. This is what makes O2 work

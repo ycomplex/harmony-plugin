@@ -307,6 +307,21 @@ advance past a failed sub-step:
    `complete`) on this reference, so a ticket with no verified PR mechanically reads incomplete at the
    verify gate. `update_task` merges `field_values` — other keys are preserved.
 5. **Comment the PR URL** for the human trail: `mcp__harmony__add_comment(task_id, "PR created: <url>")`.
+6. **When this build depends on a cross-repo prerequisite PR that must land first, record it under
+   `field_values.prerequisite_pr` (B-783)** — a second, optional PR-shaped field key alongside `build_pr`,
+   mirroring its shape. This is a RECOGNIZED key: finish-work's O2 multi-PR shape guard (B-726) treats it
+   as a live dependency to check, not an anomaly to refuse on sight. Written from the same just-verified
+   `gh pr view` outputs, never from intent:
+   ```
+   mcp__harmony__update_task({ task_id, field_values: { prerequisite_pr: {
+     repo, branch, head_sha, pr_number, pr_url, base: "main", opened_at,
+     author_login, author_is_bot
+   } } })
+   ```
+   Include `repo` (`owner/name`) — unlike `build_pr`, the prerequisite PR is by definition in a DIFFERENT
+   repository from the one this build's own worktree lives in, and finish-work's live merge-status check
+   (O2) needs it to target the right repo. Only record this for a genuinely cross-repo dependency; a
+   same-repo ordering dependency is ordinary PR-stacking, out of this ticket's scope.
 
 **FAILURE PATH — preserve the work, then park; NEVER a PR-less release brief (B-722).** On ANY failure
 of commit / push / PR-create (permission denial, network, auth, `gh` outage), run this IN THE WORKER,

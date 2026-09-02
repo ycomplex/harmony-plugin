@@ -480,4 +480,43 @@ describe('finish-work skill contract (evolved)', () => {
     expect(o2.toLowerCase()).toMatch(/leaving `surface:x` untouched/);
   });
 
+
+  // B-783: a cross-repo prerequisite PR must be a live-checked, fail-closed dependency in O2 (never
+  // folded into the catch-all "additional PR-shaped key" refusal, and never treated as satisfied by
+  // anything short of a confirmed MERGED state).
+  it('B-783: O2 fail-closed conditional branch on field_values.prerequisite_pr — MERGED proceeds, everything else (incl. fetch errors) fails closed', () => {
+    const o2 = o2Section2(skill.body);
+    expect(o2).toContain('field_values.prerequisite_pr');
+    expect(o2).toContain('B-783');
+    expect(o2).toContain('FAIL CLOSED');
+    expect(o2).toMatch(/state === 'MERGED'/);
+    // The guard explicitly covers the errored-fetch case, not just the OPEN case — an implementation
+    // that only checks `state === 'OPEN'` fails open on a fetch error, defeating the whole point.
+    expect(o2.toLowerCase()).toMatch(/errored fetch/);
+    expect(o2.toLowerCase()).toMatch(/fetch error is never treated as equivalent to `merged`/);
+    // The guard prose explicitly names (and warns against) the OPEN-only anti-pattern as a
+    // counter-example — it must appear framed as the failure mode being closed, not as the guard's
+    // own logic.
+    expect(o2.toLowerCase()).toMatch(/an implementation keyed on\s+`state === 'open' \? refuse/);
+    expect(referencedHarmonyTools(o2)).toContain('add_comment');
+    expect(referencedHarmonyTools(o2)).toContain('start_elicitation');
+    expect(referencedHarmonyTools(o2)).toContain('file_elicitation_round');
+  });
+
+  // B-783: the O1 release brief must surface the prerequisite PR's live merge status as its own
+  // attention line, framed against the environment the release actually reaches — prod for a
+  // daemon-driven run, never staging (workspace CLAUDE.md "Sharpest case").
+  it('B-783: O1 renders a prerequisite-PR attention line framed against prod, not staging', () => {
+    const body = skill.body;
+    const o1Idx = body.indexOf('### O1.');
+    const o2Idx = body.indexOf('### O2.');
+    expect(o1Idx).toBeGreaterThan(-1);
+    expect(o2Idx).toBeGreaterThan(o1Idx);
+    const o1 = body.slice(o1Idx, o2Idx);
+    expect(o1).toContain('field_values.prerequisite_pr');
+    expect(o1).toContain('B-783');
+    expect(o1).toMatch(/\*\*prod\*\*/);
+    expect(o1).not.toMatch(/this release runs against \*\*staging\*\*/);
+  });
+
 });
