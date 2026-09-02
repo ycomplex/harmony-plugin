@@ -167,8 +167,11 @@ Rounds follow the engine contract (≤5 questions, stakes-split — a load-beari
   terminal. Never leave a filed round without an armed watch in a conducted run.
 - **In a direct terminal session:** render the round as prose — the SAME anatomy as the web surface
   (fbcdb1e0 terminal parity): the context line, the questions in order (a validate question shows its
-  statement to confirm/correct; a load-bearing question is asked openly), and the force-quit phrase
-  ("Enough — draft with what you have") — then take the answers in-conversation.
+  statement to confirm/correct; a load-bearing question is asked openly), a question's `why` field (its
+  "why I'm asking" expander) rendered inline after the question when present (B-785 — parity with the
+  web surface, which now shows it too; never omit it just because the terminal has no collapse/expand
+  affordance), and the force-quit phrase ("Enough — draft with what you have") — then take the answers
+  in-conversation.
 - **Echo terminal-given answers into the record (B-462):** answers that arrive in the terminal are
   echoed via the NEXT engine write's `prior_answers` — on `file_elicitation_round` when filing the
   following round, or on `conclude_elicitation` at convergence. The exchange history stays complete

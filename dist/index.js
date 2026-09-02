@@ -38660,6 +38660,26 @@ function validateRound(questions) {
   }
   return errors;
 }
+var ENUMERATED_OPTIONS_PATTERN = /\(\d+\)|\([a-zA-Z]\)|(?:^|\s)\d+[.)]\s|(?:^|\s)[a-zA-Z][.)]\s/g;
+function looksEnumerated(text) {
+  if (!text) return false;
+  const matches = text.match(ENUMERATED_OPTIONS_PATTERN);
+  return !!matches && matches.length >= 2;
+}
+function warnRound(questions) {
+  const warnings = [];
+  if (!Array.isArray(questions)) return warnings;
+  for (const q of questions) {
+    if (q.kind !== "open") continue;
+    if (!looksEnumerated(q.why)) continue;
+    if (looksEnumerated(q.text)) continue;
+    const label = q.id?.trim() ? `question "${q.id}"` : "a question";
+    warnings.push(
+      `${label}'s why field looks like it enumerates options (e.g. "(1)\u2026(2)\u2026") but text does not \u2014 options a worker prepares should live in text, where they're unmissable (a why expander can go unread); consider moving the enumerated options into text.`
+    );
+  }
+  return warnings;
+}
 function nextRoundNumber(rounds) {
   return currentRoundNumber(rounds) + 1;
 }
@@ -38819,11 +38839,12 @@ async function fileElicitationRound(client, projectId, args) {
     awaiting_human_ref: { kind: "elicitation", exchange_id: exchange.id, round: n, gate: exchange.gate ?? null }
   }).eq("id", exchange.task_id);
   if (taskErr) throw new Error(taskErr.message);
-  return data;
+  const warnings = warnRound(round.questions);
+  return { ...data, warnings };
 }
 var fileElicitationRoundTool = {
   name: "file_elicitation_round",
-  description: `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld \u2014 load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) \u2014 read the previous round's answers via get_elicitation before filing the next. For a brief-attached ('discuss') exchange, filing ROUND 1 also clears the attached brief's pending_resolution discuss marker (B-461 \u2014 the filing IS the consume). If the exchange was mechanically cancelled ('abandoned'), returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel).`,
+  description: `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld \u2014 load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) \u2014 read the previous round's answers via get_elicitation before filing the next. For a brief-attached ('discuss') exchange, filing ROUND 1 also clears the attached brief's pending_resolution discuss marker (B-461 \u2014 the filing IS the consume). On success, the returned row carries a non-blocking warnings: string[] field (B-785) \u2014 e.g. an OPEN question whose why reads like it enumerates concrete options while text does not, steering enumerated options into text where they're unmissable; never throws, never blocks the filing. If the exchange was mechanically cancelled ('abandoned'), returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel).`,
   inputSchema: {
     type: "object",
     properties: {
