@@ -1,24 +1,25 @@
-// B-772 round 2: `harmony model ...` — the node subprocess accessor bash (container/provision.sh,
-// container/entrypoint.sh) uses to read the model-switch loop's TypeScript-owned tables (the alias
-// allowlist, the per-model context-budget table) and to read/write/clear the handoff-file contract
-// — all three live in src/config/run-config.ts, ONE source of truth. Mirrors the EXISTING
-// `harmony config get` precedent (src/cli/commands/config.ts, invoked from bash exactly this way at
-// container/cloud-worker-launch.sh:70) — a node accessor, never a hand-duplicated bash copy of
-// either table (the addendum's explicit ask; see the ticket's own WorkflowPrimaryAction.tsx
-// cautionary tale).
+// B-772 round 2 / B-881: `harmony model ...` — the node subprocess accessor bash
+// (container/provision.sh, container/entrypoint.sh) uses to read the model-switch loop's
+// TypeScript-owned data (the live model catalog, the handoff-file contract) — all of it lives in
+// src/config/run-config.ts, ONE source of truth. Mirrors the EXISTING `harmony config get`
+// precedent (src/cli/commands/config.ts, invoked from bash exactly this way at
+// container/cloud-worker-launch.sh:70) — a node accessor, never a hand-duplicated bash copy.
 //
 // Deliberately NOT wired through runCommand (src/cli/run-command.ts): every subcommand here
-// reads/writes a local file or a pure in-memory table, and none of them wants runCommand's
-// error-to-exit-1 shape. Same reasoning as config.ts's own header note.
+// reads/writes a local file or does its own best-effort catalog read, and none of them wants
+// runCommand's error-to-exit-1 shape. Same reasoning as config.ts's own header note.
 //
-// B-892 exception: `resolve-gate` now takes an OPTIONAL, best-effort trip through
-// getAuthenticatedContext to re-read `conductions.run_config` from the DB at the gate boundary (the
-// launch env is a frozen snapshot that a mid-conduction operator edit can never reach). It is still
-// not wired through runCommand, and login is still not REQUIRED — every failure on that path
-// (no conduction id, no login, no network, an unreadable row) falls back to the launch env, so the
-// subcommand's never-throws contract is unchanged. Every OTHER subcommand remains offline.
+// B-892 exception (extended by B-881 to the catalog-reading subcommands too): `resolve-gate`,
+// `check-alias`, `context-budget`, `request-switch`, and `list-aliases` each take an OPTIONAL,
+// best-effort trip through getAuthenticatedContext (`resolve-gate` to re-read
+// `conductions.run_config`; the other four to read the live `model_catalog` table). None of these
+// trips is REQUIRED — every failure on that path (no login, no network, an unreadable/missing row
+// or table) degrades to that accessor's own documented fallback (the frozen launch env for
+// resolve-gate; MODEL_CATALOG_FALLBACK for the catalog reads), so every subcommand's never-throws
+// contract is unchanged. `running-model`, `read-handoff`, and `clear-handoff` remain fully offline.
 
 import { Command } from 'commander';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   clearModelHandoffRequest,
   getConductionId,
@@ -26,8 +27,8 @@ import {
   getRunConfig,
   getModelForGate,
   isAllowedModelAlias,
-  MODEL_ALIAS_ALLOWLIST,
   readModelHandoffRequest,
+  resolveModelCatalog,
   resolveRunConfigFromConduction,
   writeModelHandoffRequest,
   type RunConfig,
@@ -71,23 +72,42 @@ async function resolveGateRunConfig(): Promise<RunConfig> {
   }
 }
 
+/** B-881: best-effort authenticated client for a live `model_catalog` read, or `null` when this
+ *  process has no login/config to authenticate with. NOT itself a WARNING-worthy event — an
+ *  unauthenticated environment running `harmony model ...` offline is an ordinary, expected shape
+ *  (mirrors resolve-gate's own "no conductionId -> no attempt" branch above): `isAllowedModelAlias`
+ *  / `getModelContextBudgetBytes` / `resolveModelCatalog` (src/config/run-config.ts) already treat a
+ *  `null` client as a silent degrade to MODEL_CATALOG_FALLBACK, and log their OWN warning only when
+ *  an actual live attempt against a real client fails (the table-absent / network-failure case this
+ *  ticket's tolerance requirement is about). */
+async function getCatalogClient(): Promise<SupabaseClient | null> {
+  try {
+    const { client } = await getAuthenticatedContext();
+    return client;
+  } catch {
+    return null;
+  }
+}
+
 export function registerModelCommands(program: Command): void {
   const model = program
     .command('model')
     .description(
-      'B-772 model-switch-loop node accessor — the ONE place bash (container/provision.sh, ' +
-        'container/entrypoint.sh) reads the alias allowlist / context-budget table / handoff-file ' +
-        'contract src/config/run-config.ts owns. Never hand-duplicate these tables in bash.',
+      'B-881 live-model-catalog node accessor — the ONE place bash (container/provision.sh, ' +
+        'container/entrypoint.sh) reads the model catalog / context-budget data / handoff-file ' +
+        'contract src/config/run-config.ts owns. Never hand-duplicate this data in bash.',
     );
 
   model
     .command('check-alias')
     .description(
-      'Print "true" and exit 0 if <alias> is in the canonical allowlist; print "false" and exit 1 otherwise.',
+      'Print "true" and exit 0 if <alias> is in the live model catalog (falling back to the ' +
+        'embedded degrade-only list when the catalog is unreachable); print "false" and exit 1 otherwise.',
     )
     .argument('<alias>')
-    .action((alias: string) => {
-      const ok = isAllowedModelAlias(alias);
+    .action(async (alias: string) => {
+      const client = await getCatalogClient();
+      const ok = await isAllowedModelAlias(alias, client);
       console.log(ok ? 'true' : 'false');
       process.exit(ok ? 0 : 1);
     });
@@ -95,12 +115,28 @@ export function registerModelCommands(program: Command): void {
   model
     .command('context-budget')
     .description(
-      "Print <alias>'s resumable-session-size budget in bytes (falls back to a conservative " +
-        'default for an alias absent from the table — always exits 0).',
+      "Print <alias>'s resumable-session-size budget in bytes, from the live catalog (falling " +
+        'back to the embedded degrade-only list, then a conservative default for an alias absent ' +
+        'from either — always exits 0).',
     )
     .argument('<alias>')
-    .action((alias: string) => {
-      console.log(String(getModelContextBudgetBytes(alias)));
+    .action(async (alias: string) => {
+      const client = await getCatalogClient();
+      console.log(String(await getModelContextBudgetBytes(alias, client)));
+    });
+
+  model
+    .command('list-aliases')
+    .description(
+      'Print every currently-active model-catalog alias, one per line — live when the catalog is ' +
+        'reachable, else the embedded degrade-only list. Always exits 0. Consumed by ' +
+        "skills/harmony-conduct/SKILL.md step 1d's park-on-refusal comment (B-881), so a human " +
+        'reviewing the park sees exactly which aliases were selectable at the time.',
+    )
+    .action(async () => {
+      const client = await getCatalogClient();
+      const { entries } = await resolveModelCatalog(client);
+      for (const entry of entries) console.log(entry.alias);
     });
 
   model
@@ -142,14 +178,20 @@ export function registerModelCommands(program: Command): void {
     .command('request-switch')
     .description(
       'Write a model-switch handoff request for container/provision.sh\'s switch loop to pick up. ' +
-        'Validates <alias> against the allowlist FIRST — refuses (exit 1, no file written) on an ' +
-        'unrecognized alias.',
+        'Validates <alias> against the live model catalog FIRST — refuses (exit 1, no file ' +
+        'written) on an alias that is not active in the catalog (nor in the embedded fallback list ' +
+        'when the catalog itself is unreachable).',
     )
     .argument('<alias>')
-    .action((alias: string) => {
-      if (!isAllowedModelAlias(alias)) {
+    .action(async (alias: string) => {
+      const client = await getCatalogClient();
+      const ok = await isAllowedModelAlias(alias, client);
+      if (!ok) {
+        const { entries } = await resolveModelCatalog(client);
         console.error(
-          `harmony model request-switch: '${alias}' is not in the allowlist (${MODEL_ALIAS_ALLOWLIST.join(', ')})`,
+          `harmony model request-switch: '${alias}' is not in the live model catalog (${entries
+            .map((entry) => entry.alias)
+            .join(', ')})`,
         );
         process.exit(1);
         return;

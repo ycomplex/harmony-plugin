@@ -326,85 +326,208 @@ export function getModelForGate(
 }
 
 // =================================================================================================
-// B-772 round 2: the in-worker model-switch loop's plumbing — the alias allowlist, the per-model
-// context-budget table, and the handoff-file contract. See the accepted technical design (revised)
-// on the ticket: the WORKER (skills/harmony-conduct/SKILL.md step 1d), not the daemon, enforces
-// which model a gate actually runs on. Both tables below are consumed by BASH
-// (container/provision.sh, container/entrypoint.sh) via a node subprocess accessor
-// (src/cli/commands/model.ts's `harmony model ...` subcommands) — mirroring the existing
-// `harmony config get` precedent (container/cloud-worker-launch.sh:70) — never hand-duplicated as
-// an independent bash copy. Per the ticket's addendum, this is a SMALL, EXPLICIT,
-// container-local allowlist, not a general-purpose model registry (that is B-881's later job).
+// B-881: the LIVE model catalog. Replaces the B-772-round-2 hand-maintained MODEL_ALIAS_ALLOWLIST /
+// MODEL_CONTEXT_BUDGET_BYTES tables (which had drifted from harmony-web's own hand-maintained
+// MODEL_OPTIONS list, and — worse — carried `claude-haiku-5`, a model that has never existed, right
+// through three test files' assertions). The single source of truth is now the `model_catalog`
+// Supabase table (harmony-web migration: `alias TEXT PRIMARY KEY, label TEXT NOT NULL,
+// context_budget_bytes BIGINT NOT NULL, active BOOLEAN NOT NULL DEFAULT true, verified_at
+// TIMESTAMPTZ`), read live via `fetchModelCatalog`/`resolveModelCatalog` below, filtered to
+// `active = true`. Both `isAllowedModelAlias` and `getModelContextBudgetBytes` are now ASYNC — they
+// take a live trip through the catalog (client-injected, mirroring resolveRunConfigFromConduction's
+// own `(client, ...)` shape rather than reaching for a client themselves) before ever falling back.
+//
+// TABLE-ABSENT TOLERANCE (B-383 prod-before-promote — load-bearing, not incidental): harmony-web's
+// migration that creates `model_catalog` merges and promotes on its OWN schedule, independent of
+// this repo's. Until it has actually landed on whichever Supabase project this code is running
+// against (prod lags staging lags a fresh migration), every read here must see the table as simply
+// ABSENT and degrade exactly the same way it would for a network failure — never throw, never treat
+// "relation does not exist" as a bug. See fetchModelCatalog below.
+//
+// Consumed by BASH (container/provision.sh, container/entrypoint.sh) via the node subprocess
+// accessor (src/cli/commands/model.ts's `harmony model ...` subcommands) — mirroring the existing
+// `harmony config get` precedent (container/cloud-worker-launch.sh:70) — never hand-duplicated as an
+// independent bash copy.
 // =================================================================================================
 
-/** B-772: the canonical set of model aliases a handoff request may name. Deliberately small and
- *  explicit (never derived by scanning some external registry) — a handoff-file alias is about to
- *  be interpolated into a shell `--model "$X"` argument (container/provision.sh), so this allowlist
- *  is the ONE gate standing between an arbitrary string an agent turn might write and a real
- *  argv-injection surface. Includes every value `PINNED_DEFAULT_MODEL_BY_PROFILE` can produce (see
- *  the compile-time-flavored runtime assertion below) — the pinned fallback tier must always itself
- *  be a valid switch target, or a leg that starts on the pinned default could never be *requested*
- *  again after a switch away from it. Placeholder alias values, same caveat as
- *  PINNED_DEFAULT_MODEL_BY_PROFILE's own doc comment — update when this deployment settles on real
- *  per-environment picks. */
-export const MODEL_ALIAS_ALLOWLIST: readonly string[] = [
-  'claude-sonnet-5',
-  'claude-opus-5',
-  'claude-haiku-5',
+/** One live row of the `model_catalog` table (or a fallback entry shaped identically — see
+ *  MODEL_CATALOG_FALLBACK below). `verified_at` is carried through for completeness (the liveness
+ *  script's own bookkeeping column) but nothing in this file reads it — it plays no role in
+ *  allow/deny or budget decisions. */
+export interface ModelCatalogEntry {
+  alias: string;
+  label: string;
+  context_budget_bytes: number;
+  active: boolean;
+  verified_at: string | null;
+}
+
+/** B-881: the embedded, DEGRADE-ONLY safety net — consulted ONLY when `model_catalog` is
+ *  unreachable (a network failure, or the table-absent case: the harmony-web migration that creates
+ *  it hasn't landed on this environment's Supabase project yet). Once the catalog is reachable it is
+ *  ALWAYS authoritative and this list is never consulted again for that call — catalog-vs-fallback
+ *  drift only matters during an outage/pre-migration window, never otherwise.
+ *
+ *  Deliberately minimal: today's known-real aliases only, cross-checked against
+ *  PINNED_DEFAULT_MODEL_BY_PROFILE's existing values and this repo's own attested names (this build
+ *  has no access to harmony-web's MODEL_OPTIONS list to diff against directly). THIS MUST NEVER
+ *  BECOME A SECOND PLACE TO ADD A NEW MODEL — the only edits it should ever need are removing a
+ *  retired model, or, in an emergency, keeping the pinned-default invariant below satisfiable.
+ *  Context budgets follow the same conservative-bias convention as
+ *  DEFAULT_MODEL_CONTEXT_BUDGET_BYTES: the smallest tabled tier for anything not certain (here,
+ *  every tier except the two flagship models this repo has long pinned defaults for). */
+export const MODEL_CATALOG_FALLBACK: readonly ModelCatalogEntry[] = [
+  {
+    alias: 'claude-sonnet-5',
+    label: 'Claude Sonnet 5',
+    context_budget_bytes: 150 * 1024 * 1024,
+    active: true,
+    verified_at: null,
+  },
+  {
+    alias: 'claude-opus-5',
+    label: 'Claude Opus 5',
+    context_budget_bytes: 150 * 1024 * 1024,
+    active: true,
+    verified_at: null,
+  },
+  {
+    alias: 'claude-haiku-4-5-20251001',
+    label: 'Claude Haiku 4.5',
+    context_budget_bytes: 60 * 1024 * 1024,
+    active: true,
+    verified_at: null,
+  },
+  {
+    alias: 'claude-fable-5',
+    label: 'Claude Fable 5',
+    context_budget_bytes: 60 * 1024 * 1024,
+    active: true,
+    verified_at: null,
+  },
 ];
 
 // Runtime guard (not just a doc claim): every PINNED_DEFAULT_MODEL_BY_PROFILE value must be a
-// member of MODEL_ALIAS_ALLOWLIST — thrown at import time (module init), so a future edit to either
-// table that lets them drift apart fails LOUD (an import-time throw a test/build catches
-// immediately) rather than surfacing later as a silently-unrequestable pinned default.
+// member of MODEL_CATALOG_FALLBACK — thrown at import time (module init), so a future edit to
+// either table that lets them drift apart fails LOUD (an import-time throw a test/build catches
+// immediately) rather than surfacing later as a silently-unrequestable pinned default WHILE THE
+// CATALOG IS UNREACHABLE (the only window the fallback is ever consulted at all — see this ticket's
+// module header). This is the B-772 round-2 invariant, re-homed against the fallback list now that
+// there is no synchronous, always-available MODEL_ALIAS_ALLOWLIST to check it against.
 for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
-  if (!MODEL_ALIAS_ALLOWLIST.includes(pinned)) {
+  if (!MODEL_CATALOG_FALLBACK.some((entry) => entry.alias === pinned)) {
     throw new Error(
-      `B-772 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_ALIAS_ALLOWLIST`,
+      `B-881 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_CATALOG_FALLBACK`,
     );
   }
 }
 
-/** B-772: is `alias` one this deployment allows a model-switch handoff to request? Never throws —
- *  a bare string-membership check. Consumed directly by src/cli/commands/model.ts's `check-alias`
- *  and `request-switch` subcommands (the ONLY two places that ever gate a handoff write/consume on
- *  this), and by the invariant loop above at import time. */
-export function isAllowedModelAlias(alias: string): boolean {
-  return MODEL_ALIAS_ALLOWLIST.includes(alias);
+/** Conservative default budget for an alias absent from the resolved catalog (an allowed but
+ *  not-yet-tabled alias, or a caller that passes something outside the catalog entirely) — never
+ *  throws, mirrors getModelForGate's own "always something explicit, never silence" discipline.
+ *  Deliberately the SMALLEST tabled budget across the fallback list rather than the largest — an
+ *  unrecognized alias should bias the guard toward cold-starting, not toward assuming it can afford
+ *  the biggest window on file. */
+const DEFAULT_MODEL_CONTEXT_BUDGET_BYTES = 60 * 1024 * 1024;
+
+/** B-881: best-effort live read of `model_catalog`'s active rows, or `null` on ANY failure — no
+ *  client (silent — mirrors resolveRunConfigFromConduction's own "no client -> null, no log"
+ *  convention: an unauthenticated caller is an ordinary, expected shape), or a REAL attempt against
+ *  a real client that failed: a network/transport error, an auth/permission error, or — the
+ *  load-bearing case — the table not existing yet on this environment (harmony-web's migration
+ *  hasn't landed here). That second class ALWAYS logs a WARNING to stderr before returning `null` —
+ *  this is the one accepted plan-gate pin this ticket must prove with an EXECUTED test (a mocked
+ *  "relation does not exist" error must degrade exactly like any other unreachable-catalog failure,
+ *  never throw). NEVER THROWS: a `null` return means "no answer", which every caller reads as "fall
+ *  back to MODEL_CATALOG_FALLBACK", never as "the catalog is legitimately empty" (an
+ *  empty-but-reachable catalog also degrades to the fallback — see resolveModelCatalog below —
+ *  since a reachable-but-empty catalog can never satisfy the pinned-default invariant either). */
+export async function fetchModelCatalog(
+  client: SupabaseClient | null | undefined,
+): Promise<ModelCatalogEntry[] | null> {
+  if (!client) return null;
+  try {
+    const { data, error } = await client
+      .from('model_catalog')
+      .select('alias, label, context_budget_bytes, active, verified_at')
+      .eq('active', true);
+    if (error) {
+      console.error(
+        `harmony model_catalog: WARNING — the live catalog was unreachable (${error.message ?? String(error)}); ` +
+          'degrading to the embedded MODEL_CATALOG_FALLBACK list. This is the EXPECTED shape while ' +
+          "harmony-web's model_catalog migration has not yet landed on this environment's Supabase " +
+          'project (B-383 prod-before-promote) — never treat this as a bug on its own.',
+      );
+      return null;
+    }
+    if (!data) return null;
+    return data as unknown as ModelCatalogEntry[];
+  } catch (err: unknown) {
+    console.error(
+      `harmony model_catalog: WARNING — reading the live catalog threw (${(err as Error)?.message ?? String(err)}); ` +
+        'degrading to the embedded MODEL_CATALOG_FALLBACK list.',
+    );
+    return null;
+  }
 }
 
-/** B-772: per-model resumable-session-SIZE budget, in BYTES — the narrowed session-resume guard's
+/** B-881: the ONE catalog-resolution function every caller (isAllowedModelAlias,
+ *  getModelContextBudgetBytes, and src/cli/commands/model.ts's `list-aliases`) goes through — live
+ *  catalog when reachable and non-empty, else MODEL_CATALOG_FALLBACK. Never throws. The WARNING for
+ *  an actual reachability failure is logged inside fetchModelCatalog above (it knows WHY); this
+ *  function only adds its own warning for the reachable-but-EMPTY case, which fetchModelCatalog
+ *  cannot distinguish from "no rows yet" on its own. */
+export async function resolveModelCatalog(
+  client: SupabaseClient | null | undefined,
+): Promise<{ entries: readonly ModelCatalogEntry[]; source: 'live' | 'fallback' }> {
+  const live = await fetchModelCatalog(client);
+  if (live && live.length > 0) return { entries: live, source: 'live' };
+  if (live && live.length === 0) {
+    console.error(
+      'harmony model_catalog: WARNING — the live catalog is reachable but has zero active rows; ' +
+        'degrading to the embedded MODEL_CATALOG_FALLBACK list.',
+    );
+  }
+  return { entries: MODEL_CATALOG_FALLBACK, source: 'fallback' };
+}
+
+/** B-881: is `alias` one this deployment allows a model-switch handoff to request? Never throws —
+ *  resolves the live catalog (falling back to MODEL_CATALOG_FALLBACK when unreachable) and checks
+ *  membership. `client` is OPTIONAL/nullable: pass `null`/`undefined` (or omit it) to check against
+ *  the fallback list only, exactly as every call site does when it could not authenticate. Consumed
+ *  directly by src/cli/commands/model.ts's `check-alias` and `request-switch` subcommands (the ONLY
+ *  two places that ever gate a handoff write/consume on this), and by the invariant loop above at
+ *  import time (which checks the FALLBACK list directly, not through this function, since it runs
+ *  before any client can exist). */
+export async function isAllowedModelAlias(
+  alias: string,
+  client?: SupabaseClient | null,
+): Promise<boolean> {
+  const { entries } = await resolveModelCatalog(client);
+  return entries.some((entry) => entry.alias === alias);
+}
+
+/** B-881: per-model resumable-session-SIZE budget, in BYTES — the narrowed session-resume guard's
  *  threshold (container/provision.sh same-conduction, container/entrypoint.sh cross-conduction) for
  *  "would resuming THIS model on THIS session likely blow its context window". Bytes, not tokens:
  *  both guard sites compare directly against a JSONL transcript's `stat`/`ls`-reported file SIZE —
  *  converting that to a token count would need the transcript's actual tokenizer, unavailable to a
  *  bash guard — so this is a deliberately ROUGH, CONSERVATIVE estimate (JSONL's per-message
- *  protocol overhead skews any fixed bytes-per-token ratio, so this is not exact accounting).  A
+ *  protocol overhead skews any fixed bytes-per-token ratio, so this is not exact accounting). A
  *  conservative UNDER-estimate is the accepted failure mode (erring toward cold-starting more often
  *  than strictly necessary costs a bit of redundant context-gathering) — an incorrectly ALLOWED
  *  resume that then blows the context window mid-leg is far more expensive. Exposed to bash via
  *  `harmony model context-budget <alias>` (src/cli/commands/model.ts) — NEVER hand-duplicate this
- *  table in provision.sh/entrypoint.sh. Placeholder values, same caveat as
- *  PINNED_DEFAULT_MODEL_BY_PROFILE's own doc comment. */
-export const MODEL_CONTEXT_BUDGET_BYTES: Record<string, number> = {
-  'claude-sonnet-5': 150 * 1024 * 1024,
-  'claude-opus-5': 150 * 1024 * 1024,
-  'claude-haiku-5': 60 * 1024 * 1024,
-};
-
-/** Conservative default budget for an alias absent from `MODEL_CONTEXT_BUDGET_BYTES` (an allowed
- *  but not-yet-tabled alias, or a caller that passes something outside the allowlist entirely) —
- *  never throws, mirrors getModelForGate's own "always something explicit, never silence"
- *  discipline. Deliberately the SMALLEST tabled budget (haiku's) rather than the largest — an
- *  unrecognized alias should bias the guard toward cold-starting, not toward assuming it can afford
- *  the biggest window on file. */
-const DEFAULT_MODEL_CONTEXT_BUDGET_BYTES = 60 * 1024 * 1024;
-
-/** B-772: `alias`'s resumable-session-size budget in bytes — always returns a number, never
- *  `undefined`/throws (see DEFAULT_MODEL_CONTEXT_BUDGET_BYTES's own doc comment for the fallback's
- *  direction). */
-export function getModelContextBudgetBytes(alias: string): number {
-  return MODEL_CONTEXT_BUDGET_BYTES[alias] ?? DEFAULT_MODEL_CONTEXT_BUDGET_BYTES;
+ *  table in provision.sh/entrypoint.sh. Never throws; always returns a number (see
+ *  DEFAULT_MODEL_CONTEXT_BUDGET_BYTES's own doc comment for the fallback's direction). `client` is
+ *  OPTIONAL/nullable, same convention as isAllowedModelAlias. */
+export async function getModelContextBudgetBytes(
+  alias: string,
+  client?: SupabaseClient | null,
+): Promise<number> {
+  const { entries } = await resolveModelCatalog(client);
+  const found = entries.find((entry) => entry.alias === alias);
+  return found?.context_budget_bytes ?? DEFAULT_MODEL_CONTEXT_BUDGET_BYTES;
 }
 
 /** B-772: the model-switch handoff-file contract. A gate-owning agent turn (step 1d,

@@ -11,11 +11,11 @@ import { join } from 'node:path';
 import {
   EMPTY_RUN_CONFIG,
   resolveRunConfigFromConduction,
-  MODEL_ALIAS_ALLOWLIST,
-  MODEL_CONTEXT_BUDGET_BYTES,
+  MODEL_CATALOG_FALLBACK,
   PINNED_DEFAULT_MODEL_BY_PROFILE,
   RunConfigSchema,
   clearModelHandoffRequest,
+  fetchModelCatalog,
   getAutoApproveGates,
   getConductionId,
   getModelContextBudgetBytes,
@@ -26,8 +26,10 @@ import {
   isAllowedModelAlias,
   isSessionResumeEnabled,
   readModelHandoffRequest,
+  resolveModelCatalog,
   writeModelHandoffRequest,
 } from './run-config.js';
+import type { ModelCatalogEntry } from './run-config.js';
 import type { RunConfig } from './run-config.js';
 
 describe('RunConfigSchema', () => {
@@ -396,51 +398,155 @@ describe('PINNED_DEFAULT_MODEL_BY_PROFILE', () => {
   });
 });
 
-describe('B-772 round 2: MODEL_ALIAS_ALLOWLIST / isAllowedModelAlias', () => {
-  it('accepts every value PINNED_DEFAULT_MODEL_BY_PROFILE can produce (the pinned tier must always be a valid switch target)', () => {
+// =================================================================================================
+// B-881: the LIVE model catalog. Every check below runs with NO client (client omitted/null) unless
+// a describe block says otherwise — that exercises isAllowedModelAlias/getModelContextBudgetBytes's
+// documented "no client -> silent degrade to MODEL_CATALOG_FALLBACK" contract, mirroring the OLD
+// MODEL_ALIAS_ALLOWLIST/MODEL_CONTEXT_BUDGET_BYTES tests' offline shape one-for-one.
+// =================================================================================================
+
+describe('B-881: isAllowedModelAlias (no client — degrade-only fallback)', () => {
+  it('accepts every value PINNED_DEFAULT_MODEL_BY_PROFILE can produce (the pinned tier must always be a valid switch target, even with no client)', async () => {
     for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
-      expect(isAllowedModelAlias(pinned)).toBe(true);
+      await expect(isAllowedModelAlias(pinned)).resolves.toBe(true);
     }
   });
 
-  it('accepts every value in MODEL_ALIAS_ALLOWLIST itself', () => {
-    for (const alias of MODEL_ALIAS_ALLOWLIST) {
-      expect(isAllowedModelAlias(alias)).toBe(true);
+  it('accepts every alias in MODEL_CATALOG_FALLBACK itself', async () => {
+    for (const entry of MODEL_CATALOG_FALLBACK) {
+      await expect(isAllowedModelAlias(entry.alias)).resolves.toBe(true);
     }
   });
 
-  it('rejects an arbitrary/unrecognized string', () => {
-    expect(isAllowedModelAlias('not-a-real-model')).toBe(false);
+  it('rejects an arbitrary/unrecognized string', async () => {
+    await expect(isAllowedModelAlias('not-a-real-model')).resolves.toBe(false);
   });
 
-  it('rejects an empty string', () => {
-    expect(isAllowedModelAlias('')).toBe(false);
+  it('rejects an empty string', async () => {
+    await expect(isAllowedModelAlias('')).resolves.toBe(false);
   });
 
-  it('rejects a shell-metacharacter-laden string (the argv-injection surface this allowlist exists to close)', () => {
-    expect(isAllowedModelAlias('claude-sonnet-5"; rm -rf / #')).toBe(false);
+  it('rejects a shell-metacharacter-laden string (the argv-injection surface this check exists to close)', async () => {
+    await expect(isAllowedModelAlias('claude-sonnet-5"; rm -rf / #')).resolves.toBe(false);
+  });
+
+  it('never contains claude-haiku-5 — a model that has never existed (the defect this ticket purges)', () => {
+    expect(MODEL_CATALOG_FALLBACK.some((entry) => entry.alias === 'claude-haiku-5')).toBe(false);
   });
 });
 
-describe('B-772 round 2: MODEL_CONTEXT_BUDGET_BYTES / getModelContextBudgetBytes', () => {
-  it('returns a positive byte budget for every tabled alias', () => {
-    for (const alias of Object.keys(MODEL_CONTEXT_BUDGET_BYTES)) {
-      expect(getModelContextBudgetBytes(alias)).toBeGreaterThan(0);
+describe('B-881: getModelContextBudgetBytes (no client — degrade-only fallback)', () => {
+  it('returns a positive byte budget for every fallback-tabled alias', async () => {
+    for (const entry of MODEL_CATALOG_FALLBACK) {
+      await expect(getModelContextBudgetBytes(entry.alias)).resolves.toBeGreaterThan(0);
     }
   });
 
-  it('returns a positive conservative default for an alias absent from the table', () => {
-    const fallback = getModelContextBudgetBytes('some-future-alias');
+  it('returns a positive conservative default for an alias absent from the fallback table', async () => {
+    const fallback = await getModelContextBudgetBytes('some-future-alias');
     expect(fallback).toBeGreaterThan(0);
     // The fallback is the SMALLEST tabled budget (biases toward cold-starting, never toward
-    // assuming the largest window on file) — never larger than every tabled entry.
-    for (const alias of Object.keys(MODEL_CONTEXT_BUDGET_BYTES)) {
-      expect(fallback).toBeLessThanOrEqual(MODEL_CONTEXT_BUDGET_BYTES[alias]);
+    // assuming the largest window on file) — never larger than every fallback entry.
+    for (const entry of MODEL_CATALOG_FALLBACK) {
+      expect(fallback).toBeLessThanOrEqual(entry.context_budget_bytes);
     }
   });
 
-  it('never throws on an empty-string alias', () => {
-    expect(() => getModelContextBudgetBytes('')).not.toThrow();
+  it('never throws (resolves to a number) on an empty-string alias', async () => {
+    await expect(getModelContextBudgetBytes('')).resolves.toEqual(expect.any(Number));
+  });
+});
+
+/** Stands in for the one call shape fetchModelCatalog makes:
+ *  `client.from('model_catalog').select(cols).eq('active', true)` — awaited directly (no
+ *  `.maybeSingle()`/`.single()` terminator, since this is a multi-row select). */
+function fakeCatalogClient(result: { data: unknown; error: unknown } | 'throws'): SupabaseClient {
+  const chain: Record<string, unknown> = {};
+  chain.select = () => chain;
+  chain.eq = () => {
+    if (result === 'throws') throw new Error('transport exploded');
+    return Promise.resolve(result);
+  };
+  return { from: () => chain } as unknown as SupabaseClient;
+}
+
+const liveCatalogRow = (overrides: Partial<ModelCatalogEntry> = {}): ModelCatalogEntry => ({
+  alias: 'claude-opus-5',
+  label: 'Claude Opus 5 (live)',
+  context_budget_bytes: 999,
+  active: true,
+  verified_at: '2026-09-01T00:00:00Z',
+  ...overrides,
+});
+
+describe('B-881 fetchModelCatalog / resolveModelCatalog — live reachability, including the TABLE-ABSENT tolerance', () => {
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    errSpy.mockRestore();
+  });
+
+  it('returns the live rows when the catalog is reachable and non-empty, and resolveModelCatalog reports source "live"', async () => {
+    const client = fakeCatalogClient({ data: [liveCatalogRow()], error: null });
+    await expect(fetchModelCatalog(client)).resolves.toEqual([liveCatalogRow()]);
+    const { entries, source } = await resolveModelCatalog(client);
+    expect(source).toBe('live');
+    expect(entries).toEqual([liveCatalogRow()]);
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns null (no client) — silent, no warning logged (an unauthenticated caller is an ordinary, expected shape)', async () => {
+    await expect(fetchModelCatalog(null)).resolves.toBeNull();
+    await expect(fetchModelCatalog(undefined)).resolves.toBeNull();
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
+  it("B-881 TABLE-ABSENT TOLERANCE (B-383 prod-before-promote, load-bearing): a 'relation does not exist' error degrades to MODEL_CATALOG_FALLBACK, logs a WARNING to stderr, and NEVER throws", async () => {
+    const client = fakeCatalogClient({
+      data: null,
+      error: { message: 'relation "public.model_catalog" does not exist', code: '42P01' },
+    });
+    await expect(fetchModelCatalog(client)).resolves.toBeNull();
+    const { entries, source } = await resolveModelCatalog(client);
+    expect(source).toBe('fallback');
+    expect(entries).toEqual(MODEL_CATALOG_FALLBACK);
+    expect(errSpy).toHaveBeenCalled();
+    expect(String(errSpy.mock.calls[0][0])).toMatch(/model_catalog/i);
+    expect(String(errSpy.mock.calls[0][0])).toMatch(/unreachable/i);
+  });
+
+  it('degrades to MODEL_CATALOG_FALLBACK (never throws) when the transport blows up', async () => {
+    const client = fakeCatalogClient('throws');
+    await expect(fetchModelCatalog(client)).resolves.toBeNull();
+    const { entries, source } = await resolveModelCatalog(client);
+    expect(source).toBe('fallback');
+    expect(entries).toEqual(MODEL_CATALOG_FALLBACK);
+    expect(errSpy).toHaveBeenCalled();
+  });
+
+  it('degrades to MODEL_CATALOG_FALLBACK and logs a warning when the catalog is reachable but has zero active rows', async () => {
+    const client = fakeCatalogClient({ data: [], error: null });
+    const { entries, source } = await resolveModelCatalog(client);
+    expect(source).toBe('fallback');
+    expect(entries).toEqual(MODEL_CATALOG_FALLBACK);
+    expect(errSpy).toHaveBeenCalled();
+  });
+
+  it('isAllowedModelAlias / getModelContextBudgetBytes both consult the LIVE catalog (never the fallback) once a client is reachable', async () => {
+    const client = fakeCatalogClient({
+      data: [liveCatalogRow({ alias: 'live-only-alias', context_budget_bytes: 42 })],
+      error: null,
+    });
+    await expect(isAllowedModelAlias('live-only-alias', client)).resolves.toBe(true);
+    // Not in THIS live catalog, even though it IS in the fallback — once reachable, the catalog is
+    // ALWAYS authoritative and the fallback is never consulted (this ticket's own drift-only-during-
+    // outage contract).
+    await expect(isAllowedModelAlias('claude-sonnet-5', client)).resolves.toBe(false);
+    await expect(getModelContextBudgetBytes('live-only-alias', client)).resolves.toBe(42);
   });
 });
 
@@ -486,8 +592,8 @@ describe('B-772 round 2: model handoff-file contract', () => {
 
   it('writeModelHandoffRequest overwrites a prior pending request — only the latest matters', () => {
     writeModelHandoffRequest('claude-sonnet-5', env);
-    writeModelHandoffRequest('claude-haiku-5', env);
-    expect(readModelHandoffRequest(env)).toEqual({ requested_model: 'claude-haiku-5' });
+    writeModelHandoffRequest('claude-haiku-4-5-20251001', env);
+    expect(readModelHandoffRequest(env)).toEqual({ requested_model: 'claude-haiku-4-5-20251001' });
   });
 
   it('readModelHandoffRequest returns null on malformed JSON (best-effort, never throws)', () => {

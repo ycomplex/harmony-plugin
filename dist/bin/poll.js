@@ -22621,23 +22621,43 @@ var PINNED_DEFAULT_MODEL_BY_PROFILE = {
   prod: "claude-sonnet-5",
   staging: "claude-sonnet-5"
 };
-var MODEL_ALIAS_ALLOWLIST = [
-  "claude-sonnet-5",
-  "claude-opus-5",
-  "claude-haiku-5"
+var MODEL_CATALOG_FALLBACK = [
+  {
+    alias: "claude-sonnet-5",
+    label: "Claude Sonnet 5",
+    context_budget_bytes: 150 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  },
+  {
+    alias: "claude-opus-5",
+    label: "Claude Opus 5",
+    context_budget_bytes: 150 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  },
+  {
+    alias: "claude-haiku-4-5-20251001",
+    label: "Claude Haiku 4.5",
+    context_budget_bytes: 60 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  },
+  {
+    alias: "claude-fable-5",
+    label: "Claude Fable 5",
+    context_budget_bytes: 60 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  }
 ];
 for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
-  if (!MODEL_ALIAS_ALLOWLIST.includes(pinned)) {
+  if (!MODEL_CATALOG_FALLBACK.some((entry) => entry.alias === pinned)) {
     throw new Error(
-      `B-772 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_ALIAS_ALLOWLIST`
+      `B-881 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_CATALOG_FALLBACK`
     );
   }
 }
-var MODEL_CONTEXT_BUDGET_BYTES = {
-  "claude-sonnet-5": 150 * 1024 * 1024,
-  "claude-opus-5": 150 * 1024 * 1024,
-  "claude-haiku-5": 60 * 1024 * 1024
-};
 var DEFAULT_MODEL_CONTEXT_BUDGET_BYTES = 60 * 1024 * 1024;
 
 // src/tools/environment.ts
