@@ -35,7 +35,12 @@ back through MCP. It never edits code (discovery role).
 
 First call `mcp__harmony__get_project`; if `mode !== 'opinionated'`, stop — the discovery gates are an
 opinionated-mode activity (manual-mode projects use the normal board, not the clarify→decompose→design
-lifecycle). Then `mcp__harmony__get_task({ task_id })`. Confirm `workflow_state === 'Proposed'` (or near it).
+lifecycle). Then `mcp__harmony__get_task({ task_id })`. Confirm `workflow_state === 'Proposed'` — this
+gate REQUIRES it. A ticket still at `Captured` hard-fails later: the transition table only allows
+`('Captured','proposing','Proposed')` then `('Proposed','clarifying','Clarified')`, so step 4's `compose_brief` with `pending_activity: 'clarifying'`
+raises from `Captured` (B-796). A conducted run never hits this — harmony-conduct's loop step 4
+self-advances `proposing` as plumbing — but a DIRECT invocation on a freshly-created ticket can, so
+promote it first (`advance_workflow({ activity: 'proposing' })`) rather than composing from `Captured`.
 
 **Resume check — exchanges survive session death, like briefs.** `mcp__harmony__get_elicitation({
 task_id })` and branch:
@@ -46,8 +51,19 @@ task_id })` and branch:
   and draft best-efforts (step 3).
 - **Active exchange, no marker** → the round is still awaiting the human. Re-render the last round as
   prose and re-enter the wait (step 2c) — never re-ask what is already on the table.
-- **Concluded exchange (converged/force-quit) with no clarification spec recorded yet** → the session
-  died mid-emission. Proceed to the convergence handoff (step 3) using the exchange's recorded answers.
+- **Concluded CLARIFY-OWNED exchange (converged/force-quit) with no clarification spec recorded yet**
+  → the session died mid-emission between concluding the exchange and recording the spec. Proceed to
+  the convergence handoff (step 3) using the exchange's recorded answers. **This branch is the reason
+  the predicate must test `exchange.trigger`, not just (concluded, no-spec) (B-796):** `get_elicitation`
+  returns the active exchange *or the most recent one if none is active*, so a concluded exchange some
+  OTHER gate opened — inception's `inception-semantics` S0 exchange anchored on the proposition-root, a
+  `discuss` exchange on a brief, a `worker-question` — matches (concluded, no-spec) just as well, and a
+  trigger-blind test drafts the clarification from another gate's answers. A gate may only resume an
+  exchange it OPENED. The clarify-owned set is `pre-draft-clarify` and `phase-split-probe` — the
+  allowlist is DERIVED in code as `CLARIFY_OWNED_TRIGGERS` (`src/tools/elicitation.ts`, from the
+  `TRIGGER_OWNERS` registration table), and a contract test fails if a trigger declared clarify-owned
+  there is not named here. Any other trigger → skip this branch and treat the ticket as having no
+  resumable exchange.
 
 If a brief is already active (`mcp__harmony__get_brief` returns one with `reason:
 'clarification-draft'`), you're iterating — load it and skip to step 4. (A brief iterate does NOT

@@ -35,8 +35,24 @@ const EXCHANGE_COLS =
 
 // The DB column is free text (documented values); the plugin validates the known triggers at
 // point-of-use so a typo'd trigger fails loudly here rather than silently minting a novel kind.
-// A new trigger class ships with the skill that uses it, so extending this list is a plugin change.
-export const VALID_TRIGGERS = ['pre-draft-clarify', 'discuss', 'phase-split-probe', 'worker-question', 'inception-semantics'];
+// A new trigger class ships with the skill that uses it, so extending this list is a plugin change —
+// and registering one means DECLARING ITS OWNER here (B-796). Ownership is what keeps a gate's resume
+// predicate honest: a gate may only resume an exchange it opened, and `CLARIFY_OWNED_TRIGGERS` below is
+// DERIVED from this table rather than hand-maintained, so it can never drift from VALID_TRIGGERS.
+// Adding a clarify-owned trigger without naming it in harmony-clarify's resume allowlist prose fails
+// the contract test in src/skills/harmony-clarify.contract.test.ts.
+export const TRIGGER_OWNERS: Record<string, string> = {
+  'pre-draft-clarify': 'clarify',
+  'discuss': 'any-gate',
+  'phase-split-probe': 'clarify',
+  'worker-question': 'any-gate',
+  'inception-semantics': 'inception',
+};
+
+export const VALID_TRIGGERS = Object.keys(TRIGGER_OWNERS);
+
+/** The triggers clarify itself opens — the ONLY exchanges its resume branch may adopt (B-796). */
+export const CLARIFY_OWNED_TRIGGERS = VALID_TRIGGERS.filter((t) => TRIGGER_OWNERS[t] === 'clarify');
 
 const VALID_OUTCOMES = ['converged', 'force-quit', 'abandoned'];
 

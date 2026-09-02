@@ -8,11 +8,15 @@ disallowed-tools: Bash(git commit *) Bash(git push *) Bash(git merge *)
 # Harmony Inception (Day-1 genesis — B-397)
 
 Inception is a **graph-seeder, not a decision-maker** (product-design `e340b661`; technical-design
-`826c5088`). One run performs, in order: **S0** configure Harmony for this project + elicit its per-gate
+`826c5088`). One run performs **S0** configure Harmony for this project + elicit its per-gate
 semantics; **S1** capture the founding proposition by running the `clarify` gate on a bounded
-proposition-root ticket; then **stamp the fixed genesis scaffold** — the portable foundational-spine
+proposition-root ticket; and **stamps the fixed genesis scaffold** — the portable foundational-spine
 decision tickets, the bootstrap umbrellas, the dependency edges, and the founding persona + feature
-entity nodes. It makes **zero technical decisions** — those happen later, by *conducting* the seeded
+entity nodes. **The scaffold stamp is order-independent (B-796):** it is proposition-independent and
+idempotent, so it may run before or independently of S1 — a run that stamps first is correct, not out of
+order. The ONE ordering dependency that still holds is §2c's entity-node lifecycle rule: the persona +
+feature nodes are seeded only AFTER the founding proposition is Accepted, because they are born from its
+content. It makes **zero technical decisions** — those happen later, by *conducting* the seeded
 decision tickets. Almost nothing here is bespoke; the skill **composes** mechanisms the board + knowledge
 layer already have (skills are stateless executors — the board + KB are the memory).
 
@@ -134,6 +138,19 @@ bespoke capture logic.
 described as the Day-1 capture of purpose / personas / features. Stamp it with the inception label (step
 3a) so a resumed run finds it by lookup. **Lookup-before-create** — `search_tasks` for the deterministic
 title first; reuse the existing one if present.
+
+**Promote it to `Proposed` immediately, in the same step (B-796).** `create_task` lands the ticket at
+`Captured` (the `tasks_default_workflow_state` insert trigger), and the clarify gate REQUIRES `Proposed`
+— composing a `clarifying` brief from `Captured` raises, because the transition table only allows
+`('Captured','proposing','Proposed')` first. So mirror the conductor's own Captured self-advance:
+
+```
+mcp__harmony__advance_workflow({ task_id: <proposition-root>, activity: 'proposing' })
+```
+
+Do this **before** the decision-only label stamp (§2c) and before invoking clarify. It is idempotent on a
+root that a resumed run already promoted — an already-`Proposed` root needs no second advance, so the
+lookup-before-create path above stays a clean no-op.
 
 ### 2b. Run clarify — at genesis the KB is empty, so it degrades to PURE COLD-START elicitation (AC A7)
 Invoke `/harmony-plugin:harmony-clarify <proposition-root>` — always the real gate skill, never an inline
