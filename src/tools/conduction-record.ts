@@ -120,6 +120,24 @@ export interface ConductionRecord {
   last_worker_exit_code: number | null;
   last_worker_exit_class: string | null;
   current_pr_ref: string | null;
+  /** B-720: a bounded (64 KB) tail of the MOST RECENT worker leg's combined stdout/stderr, written
+   *  by the daemon at settlement. CAPTURE FOR DISPLAY, NEVER PARSE FOR CONTROL — this is opaque
+   *  operator-facing text; `last_worker_exit_code`/`last_worker_exit_class` above remain the ONLY
+   *  control signals read out of a worker (the agent-portability guardrail). Null when the leg
+   *  produced no captured output.
+   *
+   *  Deliberately ABSENT from CONDUCTION_COLS below (hence optional here): the daemon runs plugin
+   *  `main` against the PROD board, so selecting a column that only exists once harmony-web's B-720
+   *  migration has been promoted would break every read in the window between the two — the exact
+   *  B-846 precedent. This is a WRITE-ONLY field for the plugin today; the web reads it. */
+  last_worker_output?: string | null;
+  /** B-720: when `last_worker_output` was captured — its own event time, never the row's
+   *  updated_at. Write-only for the plugin; see the CONDUCTION_COLS note above. */
+  last_worker_output_at?: string | null;
+  /** B-720: the TOTAL bytes the leg emitted, which may exceed the stored tail — that difference is
+   *  the "you are seeing only the last N of M" signal the web states explicitly. Write-only for the
+   *  plugin; see the CONDUCTION_COLS note above. */
+  last_worker_output_bytes?: number | null;
   started_at: string;
   created_by: string | null;
   created_at: string;
@@ -353,6 +371,13 @@ export const CONDUCTION_PATCHABLE_FIELDS = [
   'last_worker_exit_code',
   'last_worker_exit_class',
   'current_pr_ref',
+  // B-720: the captured worker-output tail + its capture time + the leg's total byte count. Patched
+  // by the daemon's SEPARATE, never-throwing settlement write (scheduler.ts's flushWorkerOutput) —
+  // never folded into the terminal status patch, so a pre-migration prod board fails as "no output
+  // captured" instead of losing the settlement itself.
+  'last_worker_output',
+  'last_worker_output_at',
+  'last_worker_output_bytes',
 ] as const;
 
 export type ConductionPatch = Partial<

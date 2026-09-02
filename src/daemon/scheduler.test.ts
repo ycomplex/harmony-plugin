@@ -101,6 +101,15 @@ interface HarnessOpts {
    *  `h.setProbeRefSha` — mirrors probeDefaultExitCode's shape. Defaults to null (no repo
    *  configured / ref not found), matching the real implementation's feature-detect fallback. */
   probeRefDefault?: string | null;
+  /** B-720: what a LAUNCH's runCommand returns for the captured worker-output tail + the total
+   *  bytes the leg emitted. Omitted ⇒ the fake returns only an exit code, exactly like a
+   *  pre-B-720 runCommand implementation (which must read as "nothing captured", never as an
+   *  empty capture). */
+  launchOutput?: { tail: string; bytes: number };
+  /** B-720: make the SEPARATE worker-output write blow up (any patch naming last_worker_output),
+   *  simulating the pre-migration prod board rejecting a column it does not have yet. Every other
+   *  write — crucially the terminal status patch — is untouched. */
+  throwOnWorkerOutputWrite?: boolean;
 }
 
 // A stateful fake world: conduction rows mutate through updateConduction/takeoverConduction/
@@ -129,7 +138,10 @@ function makeHarness(opts: HarnessOpts) {
 
   // Pending BLOCKED launches, keyed by the conduction id parsed out of the rendered command (the
   // fixture templates always render "launch <conduction_id> <ticket>").
-  const pendingLaunches = new Map<string, (result: { exitCode: number | null }) => void>();
+  const pendingLaunches = new Map<
+    string,
+    (result: { exitCode: number | null; outputTail?: string; outputBytes?: number }) => void
+  >();
   const probeExitCodes = new Map<string, number>();
   const launchExitCodesQueue = opts.launchExitCodes ? [...opts.launchExitCodes] : undefined;
   // B-792: per-ref SHA overrides for deps.probeRef + every call recorded in order (ref, result).
@@ -171,6 +183,10 @@ function makeHarness(opts: HarnessOpts) {
     // lease, returns null when it does not (row/null/throw, mirroring takeoverConduction).
     updateConductionIfHeld: vi.fn(
       async (id: string, expectedLeaseHolder: string, patch: Record<string, unknown>) => {
+        // B-720: the pre-migration prod board rejecting the three columns it does not have yet.
+        if (opts.throwOnWorkerOutputWrite && 'last_worker_output' in patch) {
+          throw new Error("column conductions.last_worker_output does not exist");
+        }
         const row = conductions.find((c) => c.id === id);
         if (!row || (row.lease_holder ?? null) !== expectedLeaseHolder) return null;
         Object.assign(row, patch);
@@ -224,14 +240,20 @@ function makeHarness(opts: HarnessOpts) {
       if (cmd.startsWith('launch')) {
         hooks.onLaunch?.(cmd);
         if (opts.blockLaunch || opts.blockLaunchIds?.includes(id)) {
-          return new Promise<{ exitCode: number | null }>((resolve) => {
-            pendingLaunches.set(id, resolve);
-          });
+          return new Promise<{ exitCode: number | null; outputTail?: string; outputBytes?: number }>(
+            (resolve) => {
+              pendingLaunches.set(id, resolve);
+            },
+          );
         }
+        // B-720: `launchOutput` omitted ⇒ exit code ONLY, mirroring a pre-B-720 runCommand.
+        const captured = opts.launchOutput
+          ? { outputTail: opts.launchOutput.tail, outputBytes: opts.launchOutput.bytes }
+          : {};
         if (launchExitCodesQueue && launchExitCodesQueue.length > 0) {
-          return { exitCode: launchExitCodesQueue.shift()! };
+          return { exitCode: launchExitCodesQueue.shift()!, ...captured };
         }
-        return { exitCode: opts.launchExitCode === undefined ? 0 : opts.launchExitCode };
+        return { exitCode: opts.launchExitCode === undefined ? 0 : opts.launchExitCode, ...captured };
       }
       if (cmd.startsWith('probe')) {
         const code = probeExitCodes.has(id) ? probeExitCodes.get(id)! : (opts.probeDefaultExitCode ?? 1);
@@ -356,6 +378,11 @@ function makeHarness(opts: HarnessOpts) {
       (deps.updateConductionIfHeld as unknown as { mock: { calls: unknown[][] } }).mock.calls
         .filter((c) => c[0] === id && Object.keys(c[2] as object).join() === 'leg_started_at')
         .map((c) => (c[2] as Record<string, unknown>).leg_started_at as string | null),
+    /** B-720: worker-output write ATTEMPTS (patches naming last_worker_output), in call order. */
+    workerOutputWrites: () =>
+      (deps.updateConductionIfHeld as unknown as { mock: { calls: unknown[][] } }).mock.calls
+        .map((c) => c[2] as Record<string, unknown>)
+        .filter((p) => 'last_worker_output' in p),
     /** Status-write ATTEMPTS (the guarded call is still made when the lease is gone — it just
      *  returns null and lands nothing). Assert on the row itself to prove what actually landed. */
     statusWrites: () =>
@@ -2636,5 +2663,162 @@ describe('B-827: {ticket} template substitution carries the visual id, never the
     await h.pass();
 
     expect(h.launches()).toEqual([`launch cond-1 ${ROW_UUID}`]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-720 captured worker output — the bounded tail the operator reads in the browser instead of
+// shelling into the daemon host. Three properties matter here, and only these three:
+//   (a) it LANDS on a normal settle, with its own capture time + the leg's total byte count;
+//   (b) a THROWING tail write leaves the terminal status write intact — the recorded build gate
+//       from the technical design (the daemon runs plugin `main` against the PROD board, so this
+//       write genuinely fails for every settlement between the plugin merging and harmony-web's
+//       migration being promoted);
+//   (c) a re-attached (reconciled) launch writes NO tail — this daemon never held that stream.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('B-720 captured worker output', () => {
+  it('(a) writes the tail, its own capture time and the total byte count on a normal settle', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      launchOutput: { tail: 'building…\nERROR: boom\n', bytes: 4096 },
+    });
+
+    await wakeAndFire(h);
+    await h.pass(); // settle → classify → terminal write → SEPARATE output write
+
+    expect(h.workerOutputWrites()).toEqual([
+      {
+        last_worker_output: 'building…\nERROR: boom\n',
+        last_worker_output_at: iso(T0),
+        last_worker_output_bytes: 4096,
+      },
+    ]);
+    expect(h.getConduction('cond-1').last_worker_output).toBe('building…\nERROR: boom\n');
+    expect(h.getConduction('cond-1').last_worker_output_bytes).toBe(4096);
+  });
+
+  it('(a) the output write is SEPARATE from — and lands after — the terminal status patch', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      launchOutput: { tail: 'tail', bytes: 4 },
+    });
+
+    await wakeAndFire(h);
+    await h.pass();
+
+    // The terminal patch names exactly the three status fields it always has — the output columns
+    // are never folded into it.
+    expect(h.statusWrites()).toEqual([
+      { status: 'parked', last_worker_exit_code: 0, last_worker_exit_class: 'no-progress' },
+    ]);
+    const patches = (h.deps.updateConductionIfHeld as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
+      (c) => c[2] as Record<string, unknown>,
+    );
+    const statusIdx = patches.findIndex((p) => 'status' in p);
+    const outputIdx = patches.findIndex((p) => 'last_worker_output' in p);
+    expect(statusIdx).toBeGreaterThanOrEqual(0);
+    expect(outputIdx).toBeGreaterThan(statusIdx);
+  });
+
+  it('(a) a leg that settles here having written NOTHING records a null tail with a real capture time', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      launchOutput: { tail: '', bytes: 0 },
+    });
+
+    await wakeAndFire(h);
+    await h.pass();
+
+    expect(h.workerOutputWrites()).toEqual([
+      { last_worker_output: null, last_worker_output_at: iso(T0), last_worker_output_bytes: 0 },
+    ]);
+  });
+
+  it('(a) a CLEAN completion carries its output too, not only a park', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      childCount: 2,
+      launchOutput: { tail: 'split the umbrella', bytes: 18 },
+    });
+    await h.pass();
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    h.hooks.onLaunch = () => {
+      const task = h.tasks['task-1'] as DaemonTask;
+      task.workflow_state = 'Decomposed';
+      task.awaiting_human_input = false;
+    };
+    await h.pass(); // fire
+    await h.pass(); // settle → complete
+
+    expect(h.getConduction('cond-1').status).toBe('completed');
+    expect(h.getConduction('cond-1').last_worker_output).toBe('split the umbrella');
+  });
+
+  it('(b) BUILD GATE: a THROWING output write leaves the terminal status write intact', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      launchOutput: { tail: 'boom', bytes: 4 },
+      // The pre-migration prod board: the three columns do not exist yet, so the write throws.
+      throwOnWorkerOutputWrite: true,
+    });
+
+    await wakeAndFire(h);
+    await expect(h.pass()).resolves.toBeDefined(); // the pass itself must not blow up
+
+    // The settlement landed in full, exactly as it does with no output write at all.
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_code).toBe(0);
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress');
+    expect(h.getConduction('cond-1').leg_started_at).toBeNull();
+    // The failure was attempted, swallowed, and NAMED in the log — never silent.
+    expect(h.workerOutputWrites()).toHaveLength(1);
+    expect(h.getConduction('cond-1').last_worker_output).toBeUndefined();
+    expect(h.logs.some((l) => /worker output not captured/.test(l))).toBe(true);
+    expect(h.logs.some((l) => /the settlement above is unaffected/.test(l))).toBe(true);
+  });
+
+  it('(c) a re-attached (reconciled) launch writes NO tail — this daemon never held that stream', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'dead-host:9:zzzz9999',
+          last_heartbeat_at: iso(T0 - 600_000),
+          leg_started_at: iso(T0 - 300_000),
+        }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+      config: reconcilableConfig,
+      probeDefaultExitCode: 0,
+      // Even with a tail available from the fake, a reconciled launch never calls runCommand(launch)
+      // at all — there is nothing to capture.
+      launchOutput: { tail: 'should never be written', bytes: 23 },
+    });
+
+    await h.pass(); // takeover → probe found → RE-ATTACH (exitCode stays null)
+    expect(h.running()).toEqual(['cond-1']);
+
+    h.setProbe('cond-1', 1);
+    await h.pass(); // probe no longer finds it → settle with a null exit code
+
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.workerOutputWrites()).toEqual([]);
+    expect(h.getConduction('cond-1').last_worker_output).toBeUndefined();
+  });
+
+  it('a pre-B-720 runCommand (exit code only) reads as "nothing captured", never as an empty capture', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+
+    await wakeAndFire(h);
+    await h.pass();
+
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.workerOutputWrites()).toEqual([]);
   });
 });

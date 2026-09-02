@@ -22592,7 +22592,14 @@ var CONDUCTION_PATCHABLE_FIELDS = [
   "worker_ref",
   "last_worker_exit_code",
   "last_worker_exit_class",
-  "current_pr_ref"
+  "current_pr_ref",
+  // B-720: the captured worker-output tail + its capture time + the leg's total byte count. Patched
+  // by the daemon's SEPARATE, never-throwing settlement write (scheduler.ts's flushWorkerOutput) —
+  // never folded into the terminal status patch, so a pre-migration prod board fails as "no output
+  // captured" instead of losing the settlement itself.
+  "last_worker_output",
+  "last_worker_output_at",
+  "last_worker_output_bytes"
 ];
 function assertPatchable(patch) {
   const keys = Object.keys(patch ?? {});
@@ -24195,6 +24202,7 @@ function exitClass(outcome, args) {
 }
 
 // src/daemon/scheduler.ts
+var WORKER_OUTPUT_TAIL_BYTES = 64 * 1024;
 var iso = (ms) => new Date(ms).toISOString();
 var exclusionMemory = /* @__PURE__ */ new WeakMap();
 function exclusionSetFor(state) {
@@ -24522,7 +24530,13 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
         // B-792: no real fire happened on THIS daemon for a reconciled re-attach — there is no
         // genuine fire-time probe to anchor against, so repoProgressed reads false at this launch's
         // eventual settlement (conservative: never a false positive from an un-anchored comparison).
-        preFireHeadSha: null
+        preFireHeadSha: null,
+        // B-720: a re-attached launch's stdout belongs to a process this daemon never spawned —
+        // there is no stream to buffer, so nothing is ever captured and no tail is written at its
+        // settlement (leaving the columns exactly as they were rather than stamping an empty
+        // capture over them).
+        outputTail: null,
+        outputBytes: 0
       });
       return false;
     }
@@ -24599,6 +24613,21 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
     last_worker_exit_code: tracked.exitCode,
     last_worker_exit_class: cls
   });
+  await flushWorkerOutput(deps, row, tracked);
+}
+async function flushWorkerOutput(deps, row, tracked) {
+  if (tracked.outputTail === null) return;
+  try {
+    await deps.updateConductionIfHeld(row.id, deps.leaseHolder, {
+      last_worker_output: tracked.outputTail.length > 0 ? tracked.outputTail : null,
+      last_worker_output_at: iso(deps.now()),
+      last_worker_output_bytes: tracked.outputBytes
+    });
+  } catch (err) {
+    deps.log(
+      `conduction ${row.id}: worker output not captured (${err instanceof Error ? err.message : String(err)}) \u2014 the settlement above is unaffected`
+    );
+  }
 }
 async function fireReadyCandidates(deps, state, keeper, runtime, byId) {
   let authShapedFailures = 0;
@@ -24687,7 +24716,11 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
     reconciled: false,
     operatorReaped: false,
     reaping: false,
-    preFireHeadSha
+    preFireHeadSha,
+    // B-720: filled in when this launch's runCommand resolves (see the .then below) — null until
+    // then, which is also the terminal value for a launch that never settles here.
+    outputTail: null,
+    outputBytes: 0
   };
   runtime.running.set(row.id, tracked);
   if (Object.keys(row.run_config ?? {}).length > 0 && !deps.config.profile.launch.includes("{run_config_json}")) {
@@ -24698,6 +24731,8 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
   const launch = deps.runCommand(renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey))).then((result) => {
     tracked.settled = true;
     tracked.exitCode = result.exitCode;
+    tracked.outputTail = result.outputTail ?? null;
+    tracked.outputBytes = result.outputBytes ?? 0;
   });
   const cancelDeadline = deps.startTimeout(deps.config.workerTimeoutMs, () => {
     deps.log(
@@ -24812,23 +24847,44 @@ ${err instanceof Error ? err.message : String(err)}
   };
   const runCommand = (cmd, opts) => new Promise((resolve) => {
     const child = exec(cmd);
+    const chunks = [];
+    let tailBytes = 0;
+    let outputBytes = 0;
+    const capture = (chunk) => {
+      const size = Buffer.byteLength(chunk, "utf8");
+      outputBytes += size;
+      chunks.push(chunk);
+      tailBytes += size;
+      while (chunks.length > 1 && tailBytes > WORKER_OUTPUT_TAIL_BYTES) {
+        tailBytes -= Buffer.byteLength(chunks[0], "utf8");
+        chunks.shift();
+      }
+      if (chunks.length === 1 && tailBytes > WORKER_OUTPUT_TAIL_BYTES) {
+        chunks[0] = chunks[0].slice(-WORKER_OUTPUT_TAIL_BYTES);
+        tailBytes = Buffer.byteLength(chunks[0], "utf8");
+      }
+    };
     if (opts?.quiet) {
-      child.stdout?.on("data", () => {
-      });
-      child.stderr?.on("data", () => {
-      });
+      child.stdout?.on("data", (d) => capture(String(d)));
+      child.stderr?.on("data", (d) => capture(String(d)));
     } else {
-      child.stdout?.on("data", (d) => log(`[worker] ${String(d).trimEnd()}`));
-      child.stderr?.on("data", (d) => log(`[worker!] ${String(d).trimEnd()}`));
+      child.stdout?.on("data", (d) => {
+        capture(String(d));
+        log(`[worker] ${String(d).trimEnd()}`);
+      });
+      child.stderr?.on("data", (d) => {
+        capture(String(d));
+        log(`[worker!] ${String(d).trimEnd()}`);
+      });
     }
     child.on("error", (err) => {
       log(`command failed to spawn: ${err.message}`);
-      resolve({ exitCode: null });
+      resolve({ exitCode: null, outputTail: chunks.join(""), outputBytes });
     });
     child.on("close", (code) => {
       const line = quietLogLine(code, opts);
       if (line !== null) log(line);
-      resolve({ exitCode: code });
+      resolve({ exitCode: code, outputTail: chunks.join(""), outputBytes });
     });
   });
   const probeOneRepo = (url, ref) => new Promise((resolve) => {
