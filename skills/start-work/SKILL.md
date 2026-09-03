@@ -376,10 +376,11 @@ The release brief must reference the recorded PR — the human's "ship it" point
 artefact (read `branch` / `pr_url` back from `field_values.build_pr`):
 
 **Query the PR's identity and review state at COMPOSE time — never assume (B-732).** Before composing,
-read both signals off the PR you just recorded:
+read both signals off the PR you just recorded, extended with `statusCheckRollup` so the release brief's
+CI evidence is FETCHED from the PR's own checks, not asserted from local/partial evidence:
 
 ```
-gh pr view <pr_number> --json author,reviewDecision
+gh pr view <pr_number> --json author,reviewDecision,statusCheckRollup
 ```
 
 **If `author.is_bot` is true** (a daemon-built PR authored by the `harmony-daemon` App), the brief MUST
@@ -390,6 +391,31 @@ proceed. **`compose_brief` enforces this**: a bot-authored `build_pr` whose brie
 approval requirement is REJECTED by the lint, so this is not optional and cannot be forgotten.
 (B-738 shipped exactly that brief — its whole ask was "Release B-738 … to production?" — and the run
 only went smoothly because the founder had been told out-of-band to approve first.)
+
+**CI evidence + earlier-red-run line (B-765 AC4, B-857) — the SAME guarantee finish-work O1 owes, owed
+here too.** This is the brief a human most often accepts directly, with no finish-work reshape — so it
+cannot skip the requirement finish-work O1 carries. Pointer, not a restated copy: the contract lives in
+`skills/harmony-shared/brief-authoring.md` §Release → the CI-evidence must-have. Cite the run backing
+this PR (id + conclusion) from `statusCheckRollup` above, and disclose any earlier run on this branch
+that concluded failure before this commit went green:
+
+```
+gh run list --branch <branch> --json databaseId,conclusion,headSha,createdAt
+```
+
+Sorted by `createdAt` ascending. Compare each entry's `headSha` against `field_values.build_pr.head_sha`
+you already recorded above; any entry with an earlier `createdAt` and a `conclusion` other than
+`SUCCESS` is an earlier red run — name it, e.g. *"Earlier run <id> failed (<conclusion>) before this
+commit went green."* None found → say so plainly, e.g. *"No earlier run on this branch failed."*
+
+**Capability denial.** If either call 403s (a capability denial — e.g. a repo-scoped `403 Resource not
+accessible by integration`), the check surface is unreadable: add a legible attention line to the brief
+instead, verbatim in shape — *"⚠ Unable to fetch CI status — <error>. Reviewing without check
+confirmation."* Never assert local/partial evidence (a local test/lint/type-check run, a partial `gh`
+read) in its place, and never silently omit the line — the same capability-denial doctrine finish-work
+O1 and O2 apply (`skills/finish-work/SKILL.md` O2 § "Capability-denial doctrine (B-765)"), applied here
+at brief-compose time: a proceed-worthy read failure, since branch protection independently backs
+whatever the checks would have shown.
 
 **Say "to staging", not "to production".** Merging to `main` deploys to **staging**; production is a
 separate, deliberate `./promote-prod.sh` step (workspace CLAUDE.md → Deploy & Environments). The old
@@ -455,6 +481,8 @@ mcp__harmony__compose_brief({
       "Not proven by this build: <e.g. no functional run against a live board; the <X> path is covered by unit tests only>.",
       // THE MECHANICAL EVIDENCE LINE — from get_build_evidence_status, verbatim:
       "Evidence: <ev — acceptance criteria checked, test cases recorded, pushed PR>",
+      // THE CI EVIDENCE + EARLIER-RED-RUN LINE — from statusCheckRollup + gh run list above (B-765 AC4, B-857):
+      "CI: run <id> — <conclusion>. <Earlier run <id> failed <conclusion> before this commit went green. | No earlier run on this branch failed.>",
     ],
     context: [
       "PR: <pr_url> (branch <branch>, head <head_sha>)",

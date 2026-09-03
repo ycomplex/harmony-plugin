@@ -245,6 +245,15 @@ attestation stay enforced underneath as system requirements; terse prose never w
 - **The mechanical evidence line** — from `get_build_evidence_status`, carried verbatim. It is the
   machine's account of the ACs checked, the test cases recorded, and the pushed PR; never a prose
   paraphrase of it, and never a stand-in for the residue above.
+- **The CI-evidence line, and any earlier red run on the branch (B-765 AC4, B-857).** Local test, lint,
+  and type-check results are necessary but not sufficient — only the run backing the actual merge
+  decision gates the merge. Cite that run's id and its conclusion, sourced from the same check-read
+  behind "What the repository's checks reported" below, never asserted from local-only evidence. When an
+  earlier run on this same branch concluded failure before a later commit went green, say so — silence
+  reads as "first try, clean," which the human cannot tell apart from "failed once, then fixed." **This
+  applies at every gate that composes this brief** — the common path composes it once, immediately after
+  the build finishes, and a human who accepts that first brief must still see this line, regardless of
+  which gate did the composing.
 - **What the repository's checks reported** — named, per pull request, and NEVER omitted. Nobody is
   asked to authorise a merge blind. For **each** pull request this release would merge, report exactly
   one of four dispositions, and stamp every one of them with **the commit the checks were read for**
@@ -298,6 +307,16 @@ attestation stay enforced underneath as system requirements; terse prose never w
 >
 > Any element whose conclusion is not `SUCCESS` (`FAILURE`, `TIMED_OUT`, `CANCELLED`,
 > `ACTION_REQUIRED`, `STARTUP_FAILURE`, …) triggers the attention line.
+>
+> **The CI-evidence line's concrete read (B-857).** The run id + conclusion cited above come from the
+> same `statusCheckRollup` payload read above. The earlier-red-run disclosure is a second, explicit
+> fetch — `gh run list --branch <branch> --json databaseId,conclusion,headSha,createdAt`, sorted by
+> `createdAt` ascending — read once per pull request alongside the call above. Any entry whose
+> `conclusion` is not `SUCCESS` and whose `createdAt` precedes the run that backs the current head is an
+> earlier red run: name its `databaseId`, `conclusion`, and how long before the green run it failed. No
+> such entry → say plainly that no earlier run on the branch failed. The fetch itself failing folds into
+> the same **unreadable** disposition as the check-status read above — name the error, never silently
+> omit the line.
 <!-- deployment-specific: end -->
 
 **The footer** (hygiene, demoted below the headline):

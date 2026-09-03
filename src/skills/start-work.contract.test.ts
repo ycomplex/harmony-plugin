@@ -66,6 +66,36 @@ describe('start-work skill contract (evolved)', () => {
     expect(body).toContain('needs your approval on GitHub before it can merge');
     expect(body).toMatch(/recommend:\s*\{\s*text:\s*"Ship it/);
   });
+
+  // B-857: this O3-composed release brief is the one a human most often accepts directly, with no
+  // finish-work reshape — so B-765 AC4's CI-evidence requirement (which used to live only in
+  // finish-work O1) must be owed HERE too, or the common one-brief path ships on local-only evidence.
+  it('B-857: O3 fetches statusCheckRollup on the PR query and adds the gh run list earlier-red-run fetch, CI-evidence why-line, and capability-denial fallback', () => {
+    const body = skill.body;
+    // The existing author/reviewDecision PR query is extended with statusCheckRollup, not duplicated.
+    expect(body).toContain('gh pr view <pr_number> --json author,reviewDecision,statusCheckRollup');
+    // The earlier-red-run fetch: a second, explicit gh call.
+    expect(body).toContain('gh run list --branch <branch> --json databaseId,conclusion,headSha,createdAt');
+    expect(body.toLowerCase()).toMatch(/sorted by `createdat` ascending/);
+    // Compared against the build's own recorded head, not a fresh PR read.
+    expect(body).toContain('field_values.build_pr.head_sha');
+    // Disclosure: an earlier red run is named; none found is stated plainly, never left silent.
+    expect(body.toLowerCase()).toMatch(/earlier red run — name it/);
+    expect(body.toLowerCase()).toMatch(/none found → say so plainly/);
+    // The why[] array carries the fetched CI-evidence + earlier-red-run line, not a local-only stand-in.
+    expect(body).toContain('CI: run <id> — <conclusion>');
+    // Capability-denial fallback: pointer to the same doctrine finish-work O1/O2 apply, not a
+    // second, drifted copy of it.
+    expect(body).toContain('⚠ Unable to fetch CI status');
+    expect(body.toLowerCase()).toMatch(/never assert local\/partial evidence/);
+    expect(body.toLowerCase()).toMatch(/never silently omit the line/);
+    expect(body.toLowerCase()).toMatch(/capability-denial doctrine/);
+    // Pointer, not a restated copy — same shared contract finish-work O1 points at.
+    expect(body).toContain('brief-authoring.md` §Release');
+    expect(body).toContain('B-765');
+    expect(body).toContain('B-857');
+  });
+
   it('carries the build role profile (can commit; cannot author design knowledge)', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/record_decision/);
   });
