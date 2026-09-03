@@ -37985,11 +37985,23 @@ function withDerivedEntryContent(doc, reason, decisionRef, ctx) {
   const content = renderEntry(staged, { ...ctx, decisionRef });
   return { ...staged, payload: [...others, { ...stub, content }] };
 }
-function withDiffDerivedRiskClasses(doc, changedPaths) {
+function withDiffDerivedRiskClasses(doc, changedPaths, priorRiskClasses) {
   if (doc.frame?.kind !== "release") return doc;
+  if (changedPaths === void 0 && priorRiskClasses !== void 0) {
+    return { ...doc, frame: { ...doc.frame, risk_classes: [...priorRiskClasses] } };
+  }
   const paths = Array.isArray(changedPaths) ? changedPaths.filter((x) => typeof x === "string") : [];
   const risk_classes = paths.length > 0 ? detectRiskClasses({ changedPaths: paths }) : [];
   return { ...doc, frame: { ...doc.frame, risk_classes } };
+}
+function mergeBriefDoc(prior, patch) {
+  if (!prior || typeof prior !== "object") return patch;
+  const merged = { ...prior };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === void 0) continue;
+    merged[key] = value;
+  }
+  return merged;
 }
 var isMissingComposeBriefRevision = (err) => {
   if (!err) return false;
@@ -38013,9 +38025,17 @@ async function composeBrief(client, projectId, userId, args) {
     buildPr = readBuildPr(fv);
     buildPrRefs = readBuildPrReferences(fv);
   }
+  const { data: existing, error: lookupErr } = await client.from("briefs").select("id, iteration, decision_ref, doc, pending_activity").eq("task_id", taskId).eq("status", "active").maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+  const existingRow = existing;
+  const mergedDecisionRef = args.decision_ref !== void 0 ? args.decision_ref ?? null : existingRow?.decision_ref ?? null;
+  const priorDoc = existingRow?.doc ?? null;
+  const mergedDoc = mergeBriefDoc(priorDoc, args.doc);
+  const priorRiskClasses = priorDoc?.frame?.kind === "release" ? priorDoc.frame.risk_classes : void 0;
   const pendingActivity = typeof args.pending_activity === "string" && args.pending_activity.trim().toLowerCase() === "null" ? null : args.pending_activity;
+  const mergedPendingActivity = args.pending_activity !== void 0 ? pendingActivity ?? null : existingRow?.pending_activity ?? null;
   let accept = null;
-  if (pendingActivity) {
+  if (mergedPendingActivity) {
     const { data: task, error: tErr } = await client.from("tasks").select("workflow_state, stale").eq("id", taskId).single();
     if (tErr) throw new Error(tErr.message);
     const taskRow = task;
@@ -38025,22 +38045,21 @@ async function composeBrief(client, projectId, userId, args) {
         `Task is stale (tasks.stale=true) \u2014 cannot compose a state-advancing brief (reason '${args.reason}'). Route through harmony-stale-patch (files a 'stale-patch-review' brief) or harmony-revise-scope first.`
       );
     }
-    let q = client.from("workflow_transitions").select("to_state").eq("activity", pendingActivity);
+    let q = client.from("workflow_transitions").select("to_state").eq("activity", mergedPendingActivity);
     q = fromState === null ? q.is("from_state", null) : q.eq("from_state", fromState);
     const { data: tr, error: trErr } = await q.maybeSingle();
     if (trErr) throw new Error(trErr.message);
     if (!tr) {
-      throw new Error(`pending_activity '${pendingActivity}' has no valid transition from state '${fromState ?? "NULL"}'`);
+      throw new Error(`pending_activity '${mergedPendingActivity}' has no valid transition from state '${fromState ?? "NULL"}'`);
     }
     accept = { from: fromState, to: tr.to_state };
   }
-  const { data: existing, error: lookupErr } = await client.from("briefs").select("id, iteration, decision_ref").eq("task_id", taskId).eq("status", "active").maybeSingle();
-  if (lookupErr) throw new Error(lookupErr.message);
-  const existingRow = existing;
-  const mergedDecisionRef = args.decision_ref !== void 0 ? args.decision_ref ?? null : existingRow?.decision_ref ?? null;
   const renderCtx = { reason: args.reason, accept };
   const doc = withDerivedEntryContent(
-    withDerivedGateSlot(withDiffDerivedRiskClasses(args.doc, args.changed_paths), args.reason),
+    withDerivedGateSlot(
+      withDiffDerivedRiskClasses(mergedDoc, args.changed_paths, priorRiskClasses),
+      args.reason
+    ),
     args.reason,
     mergedDecisionRef,
     renderCtx
@@ -38064,7 +38083,11 @@ async function composeBrief(client, projectId, userId, args) {
     content,
     expand_sections: args.expand_sections ?? {},
     related: args.related ?? [],
-    pending_activity: pendingActivity ?? null,
+    // B-901: the MERGED activity (see above). The non-RPC fallback below is a wholesale UPDATE, so
+    // writing this call's own argument would NULL an activity the row carries forward — the same
+    // destructive-write shape B-866 closed for `decision_ref` — and would contradict the **On accept:**
+    // line rendered just above from the merged value.
+    pending_activity: mergedPendingActivity,
     // B-866: the MERGED ref (see above), so the non-RPC fallback UPDATE below no longer nulls a
     // carried-forward pointer that the rendered content still advertises. On the INSERT path there is no
     // prior revision, so this is exactly `args.decision_ref ?? null` — unchanged.

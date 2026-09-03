@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, mergeBriefDoc, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -504,11 +505,13 @@ describe('composeBrief', () => {
   const briefRow = { id: 'brief-1', task_id: 'task-1', reason: 'clarification-draft', content: 'rendered', status: 'active', iteration: 1 };
 
   it('renders + lints, validates pending_activity, inserts, then sets awaiting_human_input', async () => {
-    // responses: [task state] -> [transition exists] -> [no active brief] -> [insert row] -> [task update]
+    // responses: [no active brief] -> [task state] -> [transition exists] -> [insert row] -> [task update].
+    // B-901 moved the active-brief lookup AHEAD of the transition guard (the guard must resolve the MERGED
+    // pending_activity), so the mock's call-ordered queue leads with the lookup.
     const client = makeClient([
+      { data: null },
       { data: { workflow_state: 'Proposed' } },
       { data: { to_state: 'Clarified' } },
-      { data: null },
       { data: briefRow },
       { data: null },
     ]);
@@ -532,11 +535,11 @@ describe('composeBrief', () => {
   // B-874 — the compose-time seam: the transition lookup is hoisted ABOVE the render, so the persisted
   // content states what the accept actually does. The lookup itself is unchanged (same reads, same order).
   it('persists the resolved transition as the On accept: line (B-874)', async () => {
-    // responses: [task state] -> [transition exists] -> [no active brief] -> [insert row] -> [task update]
+    // responses: [no active brief] -> [task state] -> [transition exists] -> [insert row] -> [task update]
     const client = makeClient([
+      { data: null },
       { data: { workflow_state: 'Proposed' } },
       { data: { to_state: 'Clarified' } },
-      { data: null },
       { data: briefRow },
       { data: null },
     ]);
@@ -647,8 +650,8 @@ describe('composeBrief', () => {
   });
 
   it('throws when pending_activity has no transition from the current state', async () => {
-    // responses: [task state] -> [transition lookup returns null]
-    const client = makeClient([{ data: { workflow_state: 'Built' } }, { data: null }]);
+    // responses: [no active brief] -> [task state] -> [transition lookup returns null]
+    const client = makeClient([{ data: null }, { data: { workflow_state: 'Built' } }, { data: null }]);
     await expect(
       composeBrief(client, PROJECT_ID, USER_ID, {
         task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, pending_activity: 'clarifying',
@@ -712,11 +715,11 @@ describe('composeBrief', () => {
 
   // B-625 over-reach guard: a REAL activity must still validate against workflow_transitions and write through.
   it('still validates a real pending_activity — the "null" normalization does not over-reach (B-625)', async () => {
-    // responses: [task state] -> [transition exists] -> [no active brief] -> [insert row] -> [task update]
+    // responses: [no active brief] -> [task state] -> [transition exists] -> [insert row] -> [task update]
     const client = makeClient([
+      { data: null },
       { data: { workflow_state: 'Proposed' } },
       { data: { to_state: 'Clarified' } },
-      { data: null },
       { data: briefRow },
       { data: null },
     ]);
@@ -730,8 +733,8 @@ describe('composeBrief', () => {
 
   // B-625 over-reach guard: a genuine typo is NOT "null" — it must still hit the guard and throw.
   it('still throws on a typo\'d unknown activity — only the exact "null" token is normalized (B-625)', async () => {
-    // responses: [task state] -> [transition lookup returns null]
-    const client = makeClient([{ data: { workflow_state: 'Built' } }, { data: null }]);
+    // responses: [no active brief] -> [task state] -> [transition lookup returns null]
+    const client = makeClient([{ data: null }, { data: { workflow_state: 'Built' } }, { data: null }]);
     await expect(
       composeBrief(client, PROJECT_ID, USER_ID, {
         task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, pending_activity: 'buildng',
@@ -797,6 +800,445 @@ describe('composeBrief — the render takes decision_ref from the MERGED revisio
       pending_activity: null as any, decision_ref: { type: 'specification', id: 'dec-1' },
     });
     expect(client.insert).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining(POINTER) }));
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// B-901 — a PARTIAL revision is MERGED over the prior one BEFORE anything reads it.
+//
+// The bug had six faces and ONE cause: the DB merged `prior || patch` while the plugin rendered, linted
+// and derived from `args.doc` — the un-merged patch. So the `content` blob BOTH surfaces display was a
+// render of the patch alone, and it silently lost the recommendation, frame, reasoning and alternatives
+// the merged row still carried. The fix merges once, in the plugin, and SENDS the merged doc, which makes
+// the database's own merge an idempotent no-op.
+//
+// The tests below are split deliberately:
+//   * `mergeBriefDoc` — the rule itself, as a pure function (absent ≠ null, top-level only).
+//   * `composeBrief` — that every consumer (render, lint, risk classes, On-accept line) reads the merged
+//     value, which is the part that was actually broken; a correct merge nobody consumes fixes nothing.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+describe('mergeBriefDoc (B-901) — the plugin-side mirror of the DB D2 rule', () => {
+  it('carries a prior-only key FORWARD when the patch never mentions it', () => {
+    const merged = mergeBriefDoc(
+      { decide: 'd', recommend: { text: 'keep me' }, items: [] } as any,
+      { decide: 'd2' } as any,
+    );
+    expect(merged.recommend).toEqual({ text: 'keep me' });
+    expect(merged.decide).toBe('d2');
+  });
+
+  it('REPLACES a key the patch restates', () => {
+    const merged = mergeBriefDoc({ why: ['old'] } as any, { decide: 'd', why: ['new'] } as any);
+    expect(merged.why).toEqual(['new']);
+  });
+
+  it('CLEARS a key the patch sets to an explicit null — the key survives, holding null', () => {
+    const merged = mergeBriefDoc({ recommend: { text: 'keep me' } } as any, { recommend: null } as any) as any;
+    expect(Object.prototype.hasOwnProperty.call(merged, 'recommend')).toBe(true);
+    expect(merged.recommend).toBeNull();
+  });
+
+  // THE JS-SPREAD TRAP, pinned: `{...prior, ...patch}` treats a key present with value `undefined` as
+  // present-and-overwriting, which DELETES the section. jsonb has no `undefined`; absent must carry forward.
+  it('treats a key present with value undefined as ABSENT — where a plain spread would delete it', () => {
+    const prior = { recommend: { text: 'keep me' } } as any;
+    const patch = { decide: 'd', recommend: undefined } as any;
+    expect(mergeBriefDoc(prior, patch).recommend).toEqual({ text: 'keep me' });
+    expect(({ ...prior, ...patch } as any).recommend).toBeUndefined(); // the control: the trap is real
+  });
+
+  // jsonb `||` is a TOP-LEVEL concatenation. Deep-merging here would make the mirror disagree with the DB.
+  it('is TOP-LEVEL only — a restated nested object is replaced wholesale, never deep-merged', () => {
+    const merged = mergeBriefDoc(
+      { frame: { kind: 'release', risk_classes: ['auth'], pr_review_state: 'APPROVED' } } as any,
+      { frame: { kind: 'release' } } as any,
+    );
+    expect(merged.frame).toEqual({ kind: 'release' });
+  });
+
+  it('returns the patch UNCHANGED when there is no prior revision (round 1 is untouched)', () => {
+    const patch = { decide: 'd', items: [] } as any;
+    expect(mergeBriefDoc(null, patch)).toBe(patch);
+    expect(mergeBriefDoc(undefined, patch)).toBe(patch);
+  });
+
+  it('never mutates the prior doc or the patch', () => {
+    const prior = { decide: 'd', why: ['old'] } as any;
+    const patch = { decide: 'd2' } as any;
+    mergeBriefDoc(prior, patch);
+    expect(prior).toEqual({ decide: 'd', why: ['old'] });
+    expect(patch).toEqual({ decide: 'd2' });
+  });
+});
+
+// ── B-901 step 6: THE CONTRACT TEST ───────────────────────────────────────────────────────────────
+//
+// `mergeBriefDoc` is a MIRROR of a rule that lives in another repo's migration. A mirror that drifts is
+// worse than no mirror, so the rule is read out of the migration FILE and the mirror is asserted against
+// what that file says — never against a copy of the rule restated here.
+//
+// harmony-web is a separate repo, so the SQL half runs only when it sits beside this checkout; when it
+// does not, the suite SKIPS that half with the reason in the suite name and the mirror-side assertions
+// (plus both positive controls) still run. It never silently passes.
+const MIGRATION_FILE = '20260831120000_b843_brief_revisions.sql';
+
+/** Walk up from this checkout looking for `web/supabase/migrations/<file>` — this repo may be a
+ *  worktree (`plugin/.worktrees/B-901`) or a plain sibling of `web/`, and both must resolve. */
+function findMigration(): string | null {
+  let dir = fileURLToPath(new URL('../../', import.meta.url));
+  for (let i = 0; i < 8; i += 1) {
+    const candidate = join(dir, 'web', 'supabase', 'migrations', MIGRATION_FILE);
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+/** The D2 rule AS STATED BY the migration, extracted from its own text — each flag is a claim the SQL
+ *  makes about itself, in the header comment block and (for `doc`) in the body that implements it. */
+function statedRule(sql: string) {
+  return {
+    absentCarriesForward: /key ABSENT from _patch\s*->\s*the prior revision's value CARRIES FORWARD/.test(sql),
+    explicitNullClears: /key present, JSON null\s*->\s*the value is CLEARED/.test(sql),
+    presentReplaces: /key present, non-null\s*->\s*the value is REPLACED/.test(sql),
+    docMergesKeyLevel: /`doc`[\s\S]{0,400}?MERGED key-level/.test(sql) && /`prior \|\| patch`/.test(sql),
+    docImplementedAsConcat: /v_doc\s*:=\s*COALESCE\(prev\.doc,\s*'\{\}'::jsonb\)\s*\|\|\s*\(v_patch->'doc'\)/.test(sql),
+  };
+}
+
+type DocMerge = (prior: any, patch: any) => any;
+
+/** The three D2 clauses, expressed as assertions over ANY candidate merge. Shared by the contract test
+ *  and by the positive control, so the control provably exercises the same assertions. */
+function assertMirrorsD2(merge: DocMerge): void {
+  // absent ⇒ CARRIES FORWARD (and `undefined` is how a JS caller spells absent)
+  expect(merge({ decide: 'd', recommend: { text: 'keep me' } }, { decide: 'd2' }))
+    .toEqual({ decide: 'd2', recommend: { text: 'keep me' } });
+  expect(merge({ recommend: { text: 'keep me' } }, { recommend: undefined }))
+    .toEqual({ recommend: { text: 'keep me' } });
+  // present + JSON null ⇒ CLEARED (key present, holding null — exactly what `prior || {"k":null}` yields)
+  const cleared = merge({ recommend: { text: 'keep me' } }, { recommend: null });
+  expect(Object.prototype.hasOwnProperty.call(cleared, 'recommend')).toBe(true);
+  expect(cleared.recommend).toBeNull();
+  // present + non-null ⇒ REPLACED, key-level only (jsonb `||` is not a deep merge)
+  expect(merge({ frame: { kind: 'release', risk_classes: ['auth'] } }, { frame: { kind: 'release' } }))
+    .toEqual({ frame: { kind: 'release' } });
+}
+
+const migrationPath = findMigration();
+const migrationSql = migrationPath ? readFileSync(migrationPath, 'utf8') : null;
+
+describe('mergeBriefDoc ⇄ the migration that DEFINES the rule (B-901 contract)', () => {
+  // ── the positive controls: proof the assertions above can actually FAIL ────────────────────────
+  it('POSITIVE CONTROL: a plain-spread mirror FAILS the same D2 assertions mergeBriefDoc passes', () => {
+    const spreadMerge: DocMerge = (prior, patch) => ({ ...prior, ...patch });
+    expect(() => assertMirrorsD2(spreadMerge)).toThrow(); // undefined-valued key deletes the section
+    expect(() => assertMirrorsD2(mergeBriefDoc as DocMerge)).not.toThrow();
+  });
+
+  it('POSITIVE CONTROL: a DEEP-merging mirror also fails — the DB concatenates top-level keys only', () => {
+    const deepMerge: DocMerge = (prior, patch) => {
+      const out: any = { ...prior };
+      for (const [k, v] of Object.entries(patch)) {
+        if (v === undefined) continue;
+        out[k] = v && typeof v === 'object' && !Array.isArray(v) && out[k] && typeof out[k] === 'object'
+          ? { ...out[k], ...(v as object) }
+          : v;
+      }
+      return out;
+    };
+    expect(() => assertMirrorsD2(deepMerge)).toThrow();
+  });
+
+  it('POSITIVE CONTROL: the rule extractor finds NOTHING in SQL that states the opposite rule', () => {
+    const inverted = [
+      "--       * key ABSENT from _patch  -> the value is CLEARED",
+      "--       * key present, JSON null  -> the prior value CARRIES FORWARD",
+      "  v_doc := (v_patch->'doc');",
+    ].join('\n');
+    expect(statedRule(inverted)).toEqual({
+      absentCarriesForward: false,
+      explicitNullClears: false,
+      presentReplaces: false,
+      docMergesKeyLevel: false,
+      docImplementedAsConcat: false,
+    });
+  });
+
+  // ── the SQL half ──────────────────────────────────────────────────────────────────────────────
+  const sqlSuiteName = migrationSql
+    ? `the rule as stated by ${MIGRATION_FILE}`
+    : `SKIPPED — ${MIGRATION_FILE} was not found beside this checkout (harmony-web is a separate repo and ` +
+      `harmony-plugin can be checked out standalone). The mirror-side assertions and both positive ` +
+      `controls above still ran; only the SQL-side half is skipped.`;
+  const describeSql = migrationSql ? describe : describe.skip;
+
+  describeSql(sqlSuiteName, () => {
+    it('the migration still STATES all five clauses of the D2 rule (a silent rewrite fails here)', () => {
+      expect(statedRule(migrationSql as string)).toEqual({
+        absentCarriesForward: true,
+        explicitNullClears: true,
+        presentReplaces: true,
+        docMergesKeyLevel: true,
+        docImplementedAsConcat: true,
+      });
+    });
+
+    it('mergeBriefDoc implements exactly the clauses the migration states', () => {
+      const rule = statedRule(migrationSql as string);
+      // Driven by the FILE, not by a restated copy: each clause is asserted only because the SQL claims it.
+      if (rule.absentCarriesForward) {
+        expect(mergeBriefDoc({ recommend: { text: 'keep me' } } as any, { decide: 'd' } as any).recommend)
+          .toEqual({ text: 'keep me' });
+      }
+      if (rule.explicitNullClears) {
+        expect((mergeBriefDoc({ recommend: { text: 'keep me' } } as any, { recommend: null } as any) as any).recommend)
+          .toBeNull();
+      }
+      if (rule.presentReplaces) {
+        expect(mergeBriefDoc({ why: ['old'] } as any, { why: ['new'] } as any).why).toEqual(['new']);
+      }
+      if (rule.docMergesKeyLevel && rule.docImplementedAsConcat) {
+        expect(mergeBriefDoc({ frame: { kind: 'release', risk_classes: ['auth'] } } as any, { frame: { kind: 'release' } } as any).frame)
+          .toEqual({ kind: 'release' }); // top-level concat, never deep
+      }
+      assertMirrorsD2(mergeBriefDoc as DocMerge);
+    });
+  });
+});
+
+// ── B-901 step 7: the four acceptance criteria, at the composeBrief seam ───────────────────────────
+describe('composeBrief — a PARTIAL revision renders/lints/derives from the MERGED doc (B-901)', () => {
+  const revisionRow = { id: 'brief-1', task_id: 'task-1', reason: 'clarification-draft', content: 'rendered', status: 'active', iteration: 2 };
+  const revisionOk = { compose_brief_revision: { data: revisionRow, error: null } };
+  const patchOf = (client: any): any =>
+    client.rpc.mock.calls.find((c: any[]) => c[0] === 'compose_brief_revision')?.[1]?._patch;
+
+  const RECOMMENDATION = 'Merge in the plugin and send the merged doc.';
+  const ALTERNATIVE = 'Render after the database merges';
+  const PRIOR = {
+    decide: 'Where should the revision merge live?',
+    recommend: { text: RECOMMENDATION, confidence: 'high' },
+    why: ['The row already carries the merged doc'],
+    alternatives: [{ option: ALTERNATIVE, rejection: 'It demotes the pre-send lint from a gate to a report' }],
+    items: [{ kind: 'decision', text: 'Where the merge lives', recommendation: 'In the plugin' }],
+  };
+  /** An active round-1 row carrying PRIOR and no pending activity. */
+  const priorRow = (over: Record<string, unknown> = {}) =>
+    ({ data: { id: 'brief-1', iteration: 1, doc: PRIOR, pending_activity: null, ...over } });
+
+  // ── AC1: a prior-only section SURVIVES a partial revision ───────────────────────────────────────
+  it('AC1 — the recommendation, alternatives and items the patch never mentions stay on the rendered page', async () => {
+    // responses: [active brief found, WITH its doc] -> (rpc) -> [task update]
+    const client = makeClient([priorRow(), { data: null }], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft',
+      doc: { decide: PRIOR.decide, why: ['Now with the merge in the plugin'] } as any,
+    });
+    const patch = patchOf(client);
+    // the stored doc is the MERGE, so the DB's own `prior || patch` is a no-op
+    expect(patch.doc.recommend).toEqual(PRIOR.recommend);
+    expect(patch.doc.alternatives).toEqual(PRIOR.alternatives);
+    expect(patch.doc.items).toEqual(PRIOR.items);
+    expect(patch.doc.why).toEqual(['Now with the merge in the plugin']); // the patch's own key still wins
+    // and the CONTENT — the page both surfaces display — carries them too. This is the face of the bug.
+    expect(patch.content).toContain(RECOMMENDATION);
+    expect(patch.content).toContain(ALTERNATIVE);
+  });
+
+  it('AC1 — the B-383 in-place fallback writes the merged doc too, not the bare patch', async () => {
+    // responses: [active found] -> [in-place update row] -> [task update]; the RPC is absent on this DB.
+    const client = makeClient(
+      [priorRow(), { data: { ...revisionRow } }, { data: null }],
+      { compose_brief_revision: { data: null, error: { code: '42883', message: 'does not exist' } } },
+    );
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: { decide: PRIOR.decide } as any,
+    });
+    const written = client.update.mock.calls[0][0] as { doc: any; content: string };
+    expect(written.doc.recommend).toEqual(PRIOR.recommend);
+    expect(written.content).toContain(RECOMMENDATION);
+  });
+
+  it('a FIRST compose is unchanged — with no prior revision the doc is exactly what the caller passed', async () => {
+    // responses: [no active brief] -> [insert row] -> [task update]
+    const client = makeClient([{ data: null }, { data: revisionRow }, { data: null }], revisionOk);
+    const doc = { decide: 'Round one', recommend: { text: 'Go' }, items: [] } as any;
+    await composeBrief(client, PROJECT_ID, USER_ID, { task_id: 'task-1', reason: 'clarification-draft', doc });
+    expect((client.insert.mock.calls[0][0] as { doc: unknown }).doc).toEqual(doc);
+  });
+
+  // ── AC2: the On-accept line states the ROW's true consequence ───────────────────────────────────
+  it('AC2 — a partial that OMITS pending_activity renders the transition the accept will really apply', async () => {
+    // The observed live defect (B-903 clarify iteration 2): the row carried `clarifying` forward and the
+    // accept WOULD advance state, while the page the human ratified said "no state change".
+    // responses: [active found, activity carries forward] -> [task state] -> [transition] -> (rpc) -> [task update]
+    const client = makeClient([
+      priorRow({ pending_activity: 'clarifying' }),
+      { data: { workflow_state: 'Proposed', stale: false } },
+      { data: { to_state: 'Clarified' } },
+      { data: null },
+    ], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: { decide: PRIOR.decide } as any,
+    });
+    expect(patchOf(client).content).toContain('**On accept:** advances Proposed → Clarified');
+    // still ABSENT from the patch — the DB carries the column forward; re-sending it is not the fix.
+    expect(patchOf(client)).not.toHaveProperty('pending_activity');
+  });
+
+  it('AC2 — with nothing carried forward it still says "no state change", and reads no task row', async () => {
+    const client = makeClient([priorRow(), { data: null }], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: { decide: PRIOR.decide } as any,
+    });
+    expect(patchOf(client).content).toContain('**On accept:** no state change');
+    expect(client.from).not.toHaveBeenCalledWith('workflow_transitions');
+  });
+
+  it('AC2 — an EXPLICIT null clears the carried activity: the page says "no state change" and the patch clears it', async () => {
+    const client = makeClient([priorRow({ pending_activity: 'clarifying' }), { data: null }], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: { decide: PRIOR.decide } as any,
+      pending_activity: null as any,
+    });
+    expect(patchOf(client).content).toContain('**On accept:** no state change');
+    expect(patchOf(client).pending_activity).toBeNull();
+    expect(client.from).not.toHaveBeenCalledWith('workflow_transitions');
+  });
+
+  // THE RATIFIED CONSEQUENCE, pinned as behaviour rather than left as a surprise: because the guard now
+  // runs on the MERGED activity, a partial that omits it is checked — and can be REFUSED where it used to
+  // compose in silence. That silence was itself a bypass of the B-715 stale backstop.
+  it('AC2 — the merged activity is now CHECKED: a stale ticket refuses the partial that used to slip through', async () => {
+    const client = makeClient([
+      priorRow({ pending_activity: 'planning' }),
+      { data: { workflow_state: 'Designed', stale: true } },
+    ], revisionOk);
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'plan-draft', doc: { decide: PRIOR.decide } as any,
+    })).rejects.toThrow(/stale/i);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  // ── AC3: a release partial keeps its risk-class line ────────────────────────────────────────────
+  const RELEASE_PRIOR = {
+    decide: 'Release B-901?',
+    recommend: { text: 'Ship it.' },
+    items: [{ kind: 'decision', text: 'Ship', recommendation: 'release' }],
+    frame: {
+      kind: 'release',
+      act: { repos: ['plugin'], pr_count: 1, lands_in: 'staging', atomicity: 'single', irreversible: [] },
+      unproven: [],
+      evidence_status: { proven_by_run: 1, walk_at_verify: 0, unproven: 0, total: 1 },
+      risk_classes: ['data-migration'],
+    },
+  };
+  /** A release compose reads `field_values` FIRST (B-732), then the active brief. */
+  const releaseClient = (extra: Array<{ data: unknown; error?: unknown }> = [{ data: null }]) =>
+    makeClient([
+      { data: { field_values: {} } },
+      { data: { id: 'brief-1', iteration: 1, doc: RELEASE_PRIOR, pending_activity: null } },
+      ...extra,
+    ], revisionOk);
+
+  it('AC3 — a release partial that omits changed_paths KEEPS the risk-class line the floor reads', async () => {
+    const client = releaseClient();
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'release-decision-pending',
+      doc: { decide: RELEASE_PRIOR.decide, why: ['rebased on main'] } as any,
+    });
+    expect(patchOf(client).doc.frame.risk_classes).toEqual(['data-migration']);
+    expect(patchOf(client).content).toContain('**Risk (path-derived from the diff):** data-migration');
+  });
+
+  it('AC3 — it keeps them even when the partial RESTATES the frame (the frame key is replaced wholesale)', async () => {
+    const client = releaseClient();
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'release-decision-pending',
+      doc: { decide: RELEASE_PRIOR.decide, frame: { ...RELEASE_PRIOR.frame, risk_classes: [] } } as any,
+    });
+    expect(patchOf(client).doc.frame.risk_classes).toEqual(['data-migration']);
+  });
+
+  it('AC3 — an EXPLICIT empty changed_paths still CLEARS them: "no risk surface" stays sayable', async () => {
+    const client = releaseClient();
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'release-decision-pending',
+      doc: { decide: RELEASE_PRIOR.decide } as any, changed_paths: [],
+    });
+    expect(patchOf(client).doc.frame.risk_classes).toEqual([]);
+    expect(patchOf(client).content).toContain('**Risk (path-derived from the diff):** none');
+  });
+
+  it('AC3 — a FRESH diff still overwrites the carried value (compose stays authoritative, B-876)', async () => {
+    const client = releaseClient();
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'release-decision-pending',
+      doc: { decide: RELEASE_PRIOR.decide } as any,
+      changed_paths: ['plugin/skills/finish-work/SKILL.md'],
+    });
+    expect(patchOf(client).doc.frame.risk_classes).toEqual([]);
+  });
+
+  // ── AC4: the lint judges the MERGED doc ────────────────────────────────────────────────────────
+  const GAP_PRIOR = {
+    decide: 'Which store?',
+    recommend: { text: 'Defer until the spike returns.' },
+    research: ['Spike A measured 40ms on the candidate store'],
+    items: [{ kind: 'decision', text: 'Which store', recommendation: 'defer', deferred: true }],
+  };
+
+  it('AC4 — the lint no longer reports a section missing that the brief demonstrably has', async () => {
+    // Un-merged, this partial declares a load-bearing gap with "no research supplied" — a false refusal,
+    // since the research is on the row. Judged against the merged doc it passes.
+    const client = makeClient([
+      { data: { id: 'brief-1', iteration: 1, doc: GAP_PRIOR, pending_activity: null } },
+      { data: null },
+    ], revisionOk);
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft',
+      doc: { decide: GAP_PRIOR.decide, load_bearing_gap: true } as any,
+    });
+    expect(result.lint.ok).toBe(true);
+    expect(patchOf(client).doc.research).toEqual(GAP_PRIOR.research);
+  });
+
+  it('AC4 — and it still REFUSES on the merged doc: an explicit null clears the research and the lint fires', async () => {
+    const client = makeClient([
+      { data: { id: 'brief-1', iteration: 1, doc: GAP_PRIOR, pending_activity: null } },
+      { data: null },
+    ], revisionOk);
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft',
+      doc: { decide: GAP_PRIOR.decide, load_bearing_gap: true, research: null } as any,
+    })).rejects.toThrow(/no research supplied/i);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('AC4 — a naked fork INTRODUCED by the patch is still refused: merging is not laundering', async () => {
+    const client = makeClient([priorRow(), { data: null }], revisionOk);
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft',
+      doc: { decide: PRIOR.decide, items: [{ kind: 'decision', text: 'Pick one' }] } as any,
+    })).rejects.toThrow(/naked fork/i);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  // ── the derived payloads (B-866 / B-867) read the merged doc too ────────────────────────────────
+  it('the DERIVED knowledge-entry content is a projection of the MERGED doc, not the patch', async () => {
+    const client = makeClient([
+      { data: { id: 'brief-1', iteration: 1, doc: PRIOR, pending_activity: null, decision_ref: { type: 'specification', id: 'dec-1' } } },
+      { data: null },
+    ], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: { decide: PRIOR.decide } as any,
+    });
+    const entry = (patchOf(client).doc.payload as Array<Record<string, any>>)
+      .find((p) => p.write_kind === 'knowledge_entry_content');
+    expect(entry?.content).toContain(RECOMMENDATION);
   });
 });
 
@@ -1088,7 +1530,8 @@ describe('composeBrief — B-715 stale gate (substrate guard)', () => {
   const briefRow = { id: 'brief-1', task_id: 'task-1', reason: 'clarification-draft', content: 'rendered', status: 'active', iteration: 1 };
 
   it('refuses to compose a state-advancing brief on a stale ticket', async () => {
-    const client = makeClient([{ data: { workflow_state: 'Designed', stale: true } }]);
+    // responses: [no active brief] -> [task state: stale]  (B-901 hoist — lookup first)
+    const client = makeClient([{ data: null }, { data: { workflow_state: 'Designed', stale: true } }]);
     await expect(
       composeBrief(client, PROJECT_ID, USER_ID, {
         task_id: 'task-1', reason: 'plan-draft', doc: okDoc as any, pending_activity: 'planning',
@@ -1118,11 +1561,11 @@ describe('composeBrief — B-715 stale gate (substrate guard)', () => {
   });
 
   it('still allows a normal compose when stale is false', async () => {
-    // responses: [task state] -> [transition exists] -> [no active brief] -> [insert row] -> [task update]
+    // responses: [no active brief] -> [task state] -> [transition exists] -> [insert row] -> [task update]
     const client = makeClient([
+      { data: null },
       { data: { workflow_state: 'Proposed', stale: false } },
       { data: { to_state: 'Clarified' } },
-      { data: null },
       { data: briefRow },
       { data: null },
     ]);
