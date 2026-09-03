@@ -67,6 +67,7 @@ import {
   PersistentAuthFailure,
   PersistentReapFailure,
   runScheduler,
+  WORKER_OUTPUT_TAIL_BYTES,
   type DaemonTask,
   type SchedulerDeps,
 } from '../daemon/scheduler.js';
@@ -212,24 +213,56 @@ async function main(): Promise<void> {
   const runCommand = (
     cmd: string,
     opts?: { quiet?: boolean; quietRender?: (code: number | null) => string },
-  ): Promise<{ exitCode: number | null }> =>
+  ): Promise<{ exitCode: number | null; outputTail: string; outputBytes: number }> =>
     new Promise((resolve) => {
       const child = exec(cmd);
+      // B-720: a BOUNDED ring buffer over the same data events the log already sees. Chunks are
+      // appended and dropped from the FRONT while the retained bytes exceed WORKER_OUTPUT_TAIL_BYTES,
+      // so memory is capped regardless of how chatty the worker is (a single oversized chunk is
+      // sliced by characters, which can never split a codepoint mid-way). `outputBytes` counts the
+      // TOTAL the command emitted, not the retained tail — their difference is exactly the
+      // "showing the last N of M" signal the board states to the operator.
+      const chunks: string[] = [];
+      let tailBytes = 0;
+      let outputBytes = 0;
+      const capture = (chunk: string): void => {
+        const size = Buffer.byteLength(chunk, 'utf8');
+        outputBytes += size;
+        chunks.push(chunk);
+        tailBytes += size;
+        while (chunks.length > 1 && tailBytes > WORKER_OUTPUT_TAIL_BYTES) {
+          tailBytes -= Buffer.byteLength(chunks[0], 'utf8');
+          chunks.shift();
+        }
+        if (chunks.length === 1 && tailBytes > WORKER_OUTPUT_TAIL_BYTES) {
+          chunks[0] = chunks[0].slice(-WORKER_OUTPUT_TAIL_BYTES);
+          tailBytes = Buffer.byteLength(chunks[0], 'utf8');
+        }
+      };
       if (opts?.quiet) {
-        child.stdout?.on('data', () => {});
-        child.stderr?.on('data', () => {});
+        // Quiet suppresses the LOG lines, not the capture: it still drains both pipes (a chatty
+        // command must never backpressure), and the tail it accumulates is simply unused by the
+        // reap/probe/preflight call sites that pass `quiet`.
+        child.stdout?.on('data', (d: unknown) => capture(String(d)));
+        child.stderr?.on('data', (d: unknown) => capture(String(d)));
       } else {
-        child.stdout?.on('data', (d: unknown) => log(`[worker] ${String(d).trimEnd()}`));
-        child.stderr?.on('data', (d: unknown) => log(`[worker!] ${String(d).trimEnd()}`));
+        child.stdout?.on('data', (d: unknown) => {
+          capture(String(d));
+          log(`[worker] ${String(d).trimEnd()}`);
+        });
+        child.stderr?.on('data', (d: unknown) => {
+          capture(String(d));
+          log(`[worker!] ${String(d).trimEnd()}`);
+        });
       }
       child.on('error', (err) => {
         log(`command failed to spawn: ${err.message}`);
-        resolve({ exitCode: null });
+        resolve({ exitCode: null, outputTail: chunks.join(''), outputBytes });
       });
       child.on('close', (code) => {
         const line = quietLogLine(code, opts);
         if (line !== null) log(line);
-        resolve({ exitCode: code });
+        resolve({ exitCode: code, outputTail: chunks.join(''), outputBytes });
       });
     });
 

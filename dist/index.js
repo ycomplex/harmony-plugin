@@ -36469,7 +36469,14 @@ var CONDUCTION_PATCHABLE_FIELDS = [
   "worker_ref",
   "last_worker_exit_code",
   "last_worker_exit_class",
-  "current_pr_ref"
+  "current_pr_ref",
+  // B-720: the captured worker-output tail + its capture time + the leg's total byte count. Patched
+  // by the daemon's SEPARATE, never-throwing settlement write (scheduler.ts's flushWorkerOutput) —
+  // never folded into the terminal status patch, so a pre-migration prod board fails as "no output
+  // captured" instead of losing the settlement itself.
+  "last_worker_output",
+  "last_worker_output_at",
+  "last_worker_output_bytes"
 ];
 function assertPatchable(patch) {
   const keys = Object.keys(patch ?? {});

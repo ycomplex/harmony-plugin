@@ -190,8 +190,20 @@ export interface SchedulerDeps {
   startInterval(ms: number, fn: () => void): () => void;
   /** B-739: start a one-shot timer; returns a cancel function. Same dependency-injection rule. */
   startTimeout(ms: number, fn: () => void): () => void;
-  /** Run a rendered launch/reap/probe command to completion; the daemon consumes ONLY the exit
-   *  code (never stdout — the agent-portability guardrail). `opts.quiet` suppresses raw stdout/
+  /** Run a rendered launch/reap/probe command to completion.
+   *
+   *  CONTROL vs DISPLAY (amended by B-720). The exit code remains the ONLY control input: no
+   *  scheduling, classification, retry or park decision has ever read, or may ever read, a single
+   *  byte of what the worker wrote — that is the agent-portability guardrail, and it is unchanged.
+   *  What B-720 adds is `outputTail`/`outputBytes`: a bounded (64 KB) tail of the command's combined
+   *  stdout/stderr plus the TOTAL bytes it emitted, carried purely so an operator can READ the
+   *  worker's own account in the browser. That text is OPAQUE DISPLAY DATA — it is never parsed,
+   *  matched, or branched on for a decision anywhere in this module; the one thing this module does
+   *  with it is hand it, verbatim, to a separate never-throwing write at settlement
+   *  (`flushWorkerOutput`). A future reader tempted to grep it for a signal is looking at the wrong
+   *  field: use the exit code.
+   *
+   *  `opts.quiet` suppresses raw stdout/
    *  stderr; `opts.quietRender` (B-740, generalized from the old quiet-only shape) is an OPTIONAL
    *  renderer this module supplies to get exactly ONE calm log line instead of silence — `quiet`
    *  ALONE (no `quietRender`) means "suppress noise, log nothing", which is what src/daemon/
@@ -204,7 +216,7 @@ export interface SchedulerDeps {
   runCommand(
     cmd: string,
     opts?: { quiet?: boolean; quietRender?: (code: number | null) => string },
-  ): Promise<{ exitCode: number | null }>;
+  ): Promise<{ exitCode: number | null; outputTail?: string; outputBytes?: number }>;
   /** B-792: a LIVE `git ls-remote <ref>` head-SHA probe — narrow, structured-output read, distinct
    *  from `runCommand`'s exit-code-only discipline (this reads one CLI's stdout, never the LLM
    *  worker's — the agent-portability guardrail is unaffected). Returns null when the ref cannot be
@@ -220,6 +232,14 @@ export interface SchedulerDeps {
    *  from config, never a baked constant (the per-deployment-config architecture entry). */
   projectKey: string;
 }
+
+/** B-720: the hard cap on how much of a worker leg's combined stdout/stderr is retained for
+ *  display. 64 KB — enough to hold the end of a run (the stack trace / the last few tool calls /
+ *  the "I'm parking because…" line an operator actually needs) without turning a conduction row
+ *  into a log store. The capture site (src/bin/daemon.ts's runCommand) enforces it as a ring
+ *  buffer, so a chatty worker costs bounded memory, and the TOTAL byte count is reported alongside
+ *  so the board can say when what it shows is only the tail. */
+export const WORKER_OUTPUT_TAIL_BYTES = 64 * 1024;
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 
@@ -536,6 +556,18 @@ export interface TrackedLaunch {
    *  (settleTrackedLaunch) to compute `repoProgressed` — a LIVE repo-progress signal, independent of
    *  whatever `field_values` says (the B-758 rebase-push blind spot). */
   preFireHeadSha: string | null;
+  /** B-720: the bounded tail of what THIS launch's worker wrote, captured by `runCommand` and
+   *  parked here rather than in a local — launches are fire-and-track (fireLaunch never awaits the
+   *  promise), so a local would not survive to the settling pass that eventually writes it.
+   *
+   *  null means NOTHING was captured by this daemon for this launch: a re-attached (reconciled)
+   *  launch, whose stream belongs to a process that is gone, or a launch that has not settled yet.
+   *  An empty string means the launch DID settle here and genuinely wrote nothing. Opaque display
+   *  text — never parsed for a decision (see SchedulerDeps.runCommand). */
+  outputTail: string | null;
+  /** B-720: the TOTAL bytes this launch's worker emitted (may exceed `outputTail`'s length — that
+   *  difference is what the board renders as "showing the last N of M"). */
+  outputBytes: number;
 }
 
 export interface SchedulerRuntime {
@@ -965,6 +997,12 @@ async function handleWonTakeover(
         // genuine fire-time probe to anchor against, so repoProgressed reads false at this launch's
         // eventual settlement (conservative: never a false positive from an un-anchored comparison).
         preFireHeadSha: null,
+        // B-720: a re-attached launch's stdout belongs to a process this daemon never spawned —
+        // there is no stream to buffer, so nothing is ever captured and no tail is written at its
+        // settlement (leaving the columns exactly as they were rather than stamping an empty
+        // capture over them).
+        outputTail: null,
+        outputBytes: 0,
       });
       return false;
     }
@@ -1115,6 +1153,48 @@ async function settleTrackedLaunch(
     last_worker_exit_code: tracked.exitCode,
     last_worker_exit_class: cls,
   });
+
+  // B-720: the captured worker output goes out as a SEPARATE, never-throwing write, AFTER the
+  // terminal status patch above and never folded into it. See flushWorkerOutput.
+  await flushWorkerOutput(deps, row, tracked);
+}
+
+/** B-720: write the settled leg's captured output tail — its own write, its own failure domain.
+ *
+ *  WHY SEPARATE, and why this must not be "simplified" back into the terminal patch above: this
+ *  daemon runs plugin `main` against the PROD board, but the three columns only exist there once
+ *  harmony-web's B-720 migration has been PROMOTED to production. Between the plugin merging and
+ *  that promotion, a patch naming them is rejected by PostgREST. Folded into the terminal patch,
+ *  that rejection would take the park/complete write down with it and strand every settling
+ *  conduction. Split out and swallowed, the entire pre-migration failure mode is "no output was
+ *  captured" — a state the board is required to state honestly anyway.
+ *
+ *  It therefore NEVER throws: any failure is logged and dropped. A diagnostic nicety must not be
+ *  able to break a settlement, before or after the migration lands.
+ *
+ *  Skipped entirely when this daemon captured nothing (`outputTail === null` — a reconciled
+ *  re-attach, or a launch that never settled here): stamping an empty capture over a previous
+ *  leg's tail would be a lie about what was observed. When the launch DID settle here and the
+ *  worker wrote nothing, the tail is written as NULL with a real capture time — which clears any
+ *  stale earlier-leg output and lets the board say "no output was captured for this leg". */
+async function flushWorkerOutput(
+  deps: SchedulerDeps,
+  row: ConductionRecord,
+  tracked: TrackedLaunch,
+): Promise<void> {
+  if (tracked.outputTail === null) return;
+  try {
+    await deps.updateConductionIfHeld(row.id, deps.leaseHolder, {
+      last_worker_output: tracked.outputTail.length > 0 ? tracked.outputTail : null,
+      last_worker_output_at: iso(deps.now()),
+      last_worker_output_bytes: tracked.outputBytes,
+    });
+  } catch (err) {
+    deps.log(
+      `conduction ${row.id}: worker output not captured (${err instanceof Error ? err.message : String(err)}) ` +
+        `— the settlement above is unaffected`,
+    );
+  }
 }
 
 /** B-717 item 1/2: fire whatever the free running slots allow, ranked by aged priority (item 2)
@@ -1291,6 +1371,10 @@ async function fireLaunch(
     operatorReaped: false,
     reaping: false,
     preFireHeadSha,
+    // B-720: filled in when this launch's runCommand resolves (see the .then below) — null until
+    // then, which is also the terminal value for a launch that never settles here.
+    outputTail: null,
+    outputBytes: 0,
   };
   runtime.running.set(row.id, tracked);
 
@@ -1323,6 +1407,12 @@ async function fireLaunch(
     .then((result) => {
       tracked.settled = true;
       tracked.exitCode = result.exitCode;
+      // B-720: park the captured tail on the TRACKED entry (not a local) — see TrackedLaunch's
+      // outputTail. `?? null` keeps a runCommand implementation that predates B-720 (or a test
+      // fake that returns only an exit code) reading as "nothing captured", never as an empty
+      // capture.
+      tracked.outputTail = result.outputTail ?? null;
+      tracked.outputBytes = result.outputBytes ?? 0;
     });
 
   const cancelDeadline = deps.startTimeout(deps.config.workerTimeoutMs, () => {
