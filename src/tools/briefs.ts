@@ -1883,11 +1883,78 @@ export interface ComposeBriefArgs {
  *
  * Returns a doc CLONE when it rewrites anything; the caller's object is never mutated.
  */
-function withDiffDerivedRiskClasses(doc: BriefDoc, changedPaths?: string[]): BriefDoc {
+function withDiffDerivedRiskClasses(
+  doc: BriefDoc,
+  changedPaths: string[] | undefined,
+  priorRiskClasses?: string[],
+): BriefDoc {
   if (doc.frame?.kind !== 'release') return doc;
+  // B-901 — OMITTED ≠ EMPTY on the revision path. `changed_paths` absent and `changed_paths: []` were
+  // indistinguishable here (both fell through to `[]`), so a PARTIAL re-compose of a release brief that
+  // simply did not restate the diff silently BLANKED the risk-class attention signal the release floor
+  // reads — a signal the human had already been shown on the previous round. An omitted key now carries
+  // the PRIOR revision's release frame forward (the same absent-vs-null rule the DB's D2 merge applies to
+  // the doc's top-level keys), while an explicit `[]` still CLEARS: "the diff touches no risk surface" is
+  // a real answer and must stay sayable.
+  //
+  // `priorRiskClasses` is supplied ONLY on the revision path — it is `undefined` on a first compose — so
+  // round 1 with no diff still yields `[]` and never the doc's own authored guess. B-876's rule
+  // (path-derived or nothing; the skill's value is overwritten) is untouched: the only new input is a
+  // value THIS function computed on an earlier round from an earlier diff.
+  if (changedPaths === undefined && priorRiskClasses !== undefined) {
+    return { ...doc, frame: { ...doc.frame, risk_classes: [...priorRiskClasses] } };
+  }
   const paths = Array.isArray(changedPaths) ? changedPaths.filter((x) => typeof x === 'string') : [];
   const risk_classes = paths.length > 0 ? (detectRiskClasses({ changedPaths: paths }) as string[]) : [];
   return { ...doc, frame: { ...doc.frame, risk_classes } };
+}
+
+/**
+ * B-901 — THE PLUGIN-SIDE MIRROR of the database's D2 doc merge.
+ *
+ * The authority is harmony-web's migration `20260831120000_b843_brief_revisions.sql`, whose header states
+ * the rule ("D2 / THE MERGE RULE: absent ≠ null") and whose body implements it for `doc` as
+ * `COALESCE(prev.doc,'{}') || (_patch->'doc')`. Per key of the patch:
+ *
+ *   * key ABSENT from the patch      -> the prior revision's value CARRIES FORWARD
+ *   * key present, value JSON null   -> the section is CLEARED (the key survives, holding null)
+ *   * key present, value non-null    -> the section is REPLACED
+ *
+ * WHY THIS EXISTS IN THE PLUGIN AT ALL. `composeBrief` renders, lints and derives from the doc BEFORE the
+ * write, and it sends the rendered `content` in the same patch. So the doc the DB will store and the doc
+ * the plugin rendered must be the same value, or the stored page is a render of the patch alone — which
+ * is exactly B-901: a partial revision whose page silently lost the recommendation, the frame, the
+ * reasoning and the alternatives the row still held. Merging HERE and sending the merged doc makes the
+ * database's own `prior || patch` an idempotent no-op; the DB stays the authority, the plugin just stops
+ * disagreeing with it. (The alternative — render after the DB merges — would demote the §3.2 pre-send
+ * lint from a gate to a report, so it was rejected.)
+ *
+ * TWO THINGS THIS DELIBERATELY IS NOT:
+ *
+ *   1. NOT `{ ...prior, ...patch }`. A JS spread treats a key present with value `undefined` as
+ *      present-and-overwriting, so `{...{a:1}, ...{a: undefined}}` is `{a: undefined}` — the section
+ *      DELETED. jsonb has no `undefined`: an absent key must carry forward. Hence the explicit skip.
+ *   2. NOT a deep merge. jsonb `||` is a TOP-LEVEL, key-level concatenation, so a patch that restates
+ *      `frame` replaces the whole frame object rather than merging into it. Deep-merging nested objects
+ *      here would make the mirror disagree with the DB — the precise failure this function exists to
+ *      prevent — so nested values are replaced wholesale, exactly as the SQL does.
+ *
+ * `mergeBriefDoc` is pure and exported so `briefs.merge-contract.test.ts` can assert it against the rule
+ * the migration file itself states.
+ */
+export function mergeBriefDoc(prior: BriefDoc | null | undefined, patch: BriefDoc): BriefDoc {
+  // No prior revision ⇒ this is round 1 and there is nothing to merge over: the patch IS the doc,
+  // returned by identity so a first compose is byte-for-byte the pre-B-901 behaviour.
+  if (!prior || typeof prior !== 'object') return patch;
+  const merged: Record<string, unknown> = { ...(prior as unknown as Record<string, unknown>) };
+  for (const [key, value] of Object.entries(patch as unknown as Record<string, unknown>)) {
+    // `undefined` is how a JS caller spells "I did not send this key" (JSON.stringify drops it, so it
+    // never reaches the DB either). Skipping it is the carry-forward half of absent ≠ null.
+    if (value === undefined) continue;
+    // Everything else — including an explicit `null` — is a claim about this section, so it lands.
+    merged[key] = value;
+  }
+  return merged as unknown as BriefDoc;
 }
 
 /**
@@ -1971,6 +2038,66 @@ export async function composeBrief(
     buildPrRefs = readBuildPrReferences(fv);
   }
 
+  // B-877 — the active-brief lookup is HOISTED above the render/lint pair because the lint needs the
+  // iteration this compose will land on (a round-2+ brief owes a `doc.revision`). It depends only on the
+  // client and the resolved task id — nothing derived from `doc`, `content` or `payload` — so the hoist is
+  // safe; its one consequence is an extra SELECT on a compose that then fails the lint, a read not a write.
+  // `existing` is still what the upsert below branches on; nothing about that use changed.
+  //
+  // B-866: it also reads `decision_ref`, because the render must use the MERGED value rather than the
+  // one THIS call happened to pass (below).
+  //
+  // B-901: hoisted AGAIN — now above the accept-transition guard — and widened to read `doc` and
+  // `pending_activity`. Both moves are forced by the same fact: on a revision the caller may send a
+  // PARTIAL, so the row's post-compose value is a MERGE of prior and patch, and every downstream
+  // consumer (the render, the §3.2 lint, the derived gate slot, the derived entry content, the
+  // diff-derived risk classes, and the **On accept:** transition) owes its answer to that merged value
+  // rather than to whatever this one call happened to pass. The guard in particular CANNOT see a merged
+  // `pending_activity` from below it, which is why the read moves ahead of it. The cost is one SELECT
+  // earlier in the call — a read, on a path that already performed it.
+  const { data: existing, error: lookupErr } = await client
+    .from('briefs').select('id, iteration, decision_ref, doc, pending_activity')
+    .eq('task_id', taskId).eq('status', 'active').maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+
+  const existingRow = existing as {
+    id: string;
+    iteration?: number;
+    decision_ref?: DecisionRef | null;
+    doc?: BriefDoc | null;
+    pending_activity?: string | null;
+  } | null;
+
+  // B-866 — THE MERGED decision_ref: what the row will actually carry after this compose, not what this
+  // call passed. The B-843 revision patch is a PARTIAL — an omitted `decision_ref` CARRIES FORWARD — so
+  // rendering from `args.decision_ref` made a partial recompose keep the pointer on the row while
+  // silently dropping the depth-pointer line from the content the human reads. Absent ≠ null here, and
+  // that distinction is the whole fix: omitted means "keep whatever is there", explicit null means clear.
+  const mergedDecisionRef: DecisionRef | null =
+    args.decision_ref !== undefined ? (args.decision_ref ?? null) : (existingRow?.decision_ref ?? null);
+
+  // B-901 — THE MERGED DOC, computed ONCE, here, and used by everything below: the risk-class derivation,
+  // the gate slot, the entry content, the render, the lint AND the patch that is written. Before this the
+  // plugin rendered/linted/derived from `args.doc` — the un-merged patch — while the database merged the
+  // patch over the prior revision, so a partial revision stored a `content` blob rendered from the patch
+  // alone: the recommendation, frame, reasoning and alternatives the merged row still carried vanished
+  // from the page BOTH surfaces display, and the lint reported sections missing from a brief that
+  // demonstrably had them. `mergeBriefDoc` is the plugin-side mirror of the DB's D2 rule (see its header);
+  // sending the merged value in the patch makes the database's own `prior || patch` an idempotent no-op.
+  //
+  // On a FIRST compose `existingRow` is null, `mergeBriefDoc` returns `args.doc` by identity, and every
+  // consumer below sees exactly what it saw before this change.
+  //
+  // NOTE the surviving `args.doc.decide` precondition at the top of this function: a partial that omits
+  // `decide` is still refused LOUDLY rather than merged in silence. That is deliberate — B-901 is about
+  // never losing prose silently, and a loud refusal loses nothing.
+  const priorDoc: BriefDoc | null = existingRow?.doc ?? null;
+  const mergedDoc = mergeBriefDoc(priorDoc, args.doc);
+  // The prior round's diff-derived classes, and ONLY on the revision path — `undefined` on a first
+  // compose, which is what keeps "no diff ⇒ []" true for round 1. See `withDiffDerivedRiskClasses`.
+  const priorRiskClasses: string[] | undefined =
+    priorDoc?.frame?.kind === 'release' ? priorDoc.frame.risk_classes : undefined;
+
   // B-625: a literal-string "null" (case-insensitive, trimmed) is the string-serialized form of JSON null
   // — treat it as omitted (parity with B-466's null≡omitted), advancing no state. Narrow: ONLY the exact
   // "null" token; any other unknown activity still hits the transition guard below (a typo'd "buildng" must
@@ -1980,6 +2107,21 @@ export async function composeBrief(
       ? null
       : args.pending_activity;
 
+  // B-901 — THE MERGED pending_activity, by the same absent-vs-null rule: this call's argument when it
+  // passed one (including an explicit null, which clears), otherwise the value the row carries forward.
+  //
+  // This is the fourth face of the same bug. The **On accept:** line is rendered from the transition this
+  // guard resolves, so a partial that omitted `pending_activity` rendered "no state change" onto a brief
+  // whose row still carried the prior activity — and whose accept WILL therefore advance state. The human
+  // ratified a page that misstated its own consequence (observed live on B-903, clarify iteration 2).
+  //
+  // RATIFIED CONSEQUENCE, accepted rather than worked around: because the guard now runs on the merged
+  // value, a partial revision that omits `pending_activity` is checked against the transition table and
+  // the B-715 stale backstop, so it can now be REFUSED where it previously composed in silence. That
+  // silent skip was itself a bypass of the stale backstop. There is deliberately no escape hatch.
+  const mergedPendingActivity: string | null =
+    args.pending_activity !== undefined ? (pendingActivity ?? null) : (existingRow?.pending_activity ?? null);
+
   // Compose-time guard (fail-fast): a pending_activity must yield a real transition from the current state.
   // Invariant: P1's seed has (from_state, activity) unique, so maybeSingle is exact; if a future seed adds
   // a second to_state for the same (from_state, activity), maybeSingle errors loudly (a safe fail).
@@ -1987,9 +2129,10 @@ export async function composeBrief(
   // B-874: this runs BEFORE the render (it used to sit after it) so the resolved transition can be handed
   // to renderBrief as the **On accept:** line — the brief states what accepting it actually does. Nothing
   // else moves: the same reads, the same guards, the same messages, and STILL no task read at all on the
-  // `pending_activity: null` path.
+  // `pending_activity: null` path (B-901: nor when the merged value is null — a brief that advances
+  // nothing, on either round, still reads no task row).
   let accept: BriefRenderContext['accept'] = null;
-  if (pendingActivity) {
+  if (mergedPendingActivity) {
     const { data: task, error: tErr } = await client
       .from('tasks').select('workflow_state, stale').eq('id', taskId).single();
     if (tErr) throw new Error(tErr.message);
@@ -2006,37 +2149,15 @@ export async function composeBrief(
         `Route through harmony-stale-patch (files a 'stale-patch-review' brief) or harmony-revise-scope first.`,
       );
     }
-    let q = client.from('workflow_transitions').select('to_state').eq('activity', pendingActivity);
+    let q = client.from('workflow_transitions').select('to_state').eq('activity', mergedPendingActivity);
     q = fromState === null ? q.is('from_state', null) : q.eq('from_state', fromState);
     const { data: tr, error: trErr } = await q.maybeSingle();
     if (trErr) throw new Error(trErr.message);
     if (!tr) {
-      throw new Error(`pending_activity '${pendingActivity}' has no valid transition from state '${fromState ?? 'NULL'}'`);
+      throw new Error(`pending_activity '${mergedPendingActivity}' has no valid transition from state '${fromState ?? 'NULL'}'`);
     }
     accept = { from: fromState, to: (tr as { to_state: string }).to_state };
   }
-
-  // B-877 — the active-brief lookup is HOISTED above the render/lint pair because the lint needs the
-  // iteration this compose will land on (a round-2+ brief owes a `doc.revision`). It depends only on the
-  // client and the resolved task id — nothing derived from `doc`, `content` or `payload` — so the hoist is
-  // safe; its one consequence is an extra SELECT on a compose that then fails the lint, a read not a write.
-  // `existing` is still what the upsert below branches on; nothing about that use changed.
-  //
-  // B-866: it also reads `decision_ref`, because the render must use the MERGED value rather than the
-  // one THIS call happened to pass (below).
-  const { data: existing, error: lookupErr } = await client
-    .from('briefs').select('id, iteration, decision_ref')
-    .eq('task_id', taskId).eq('status', 'active').maybeSingle();
-  if (lookupErr) throw new Error(lookupErr.message);
-
-  // B-866 — THE MERGED decision_ref: what the row will actually carry after this compose, not what this
-  // call passed. The B-843 revision patch is a PARTIAL — an omitted `decision_ref` CARRIES FORWARD — so
-  // rendering from `args.decision_ref` made a partial recompose keep the pointer on the row while
-  // silently dropping the depth-pointer line from the content the human reads. Absent ≠ null here, and
-  // that distinction is the whole fix: omitted means "keep whatever is there", explicit null means clear.
-  const existingRow = existing as { id: string; iteration?: number; decision_ref?: DecisionRef | null } | null;
-  const mergedDecisionRef: DecisionRef | null =
-    args.decision_ref !== undefined ? (args.decision_ref ?? null) : (existingRow?.decision_ref ?? null);
 
   // Render the canonical doc to the blob, then lint the doc (what's checked is what's rendered).
   // The third argument (B-874) carries the compose-time facts the doc cannot know — the gate reason and
@@ -2051,8 +2172,15 @@ export async function composeBrief(
   // B-867: `withDerivedGateSlot` runs INSIDE the entry derivation, never after it — the entry's content
   // is a render of this same doc, so the slot's promise line must already be on the page when that
   // render happens or the promoted entry would disagree with the brief the human read.
+  // B-901: the chain starts from `mergedDoc`, never `args.doc` — all four derivations, the render and
+  // the lint now judge the doc the ROW will hold. The ORDER is load-bearing: the risk-class derivation
+  // runs first (it is the one that needs the prior release frame), the gate slot next, and the entry
+  // content LAST and outermost, preserving the B-867 nesting above.
   const doc = withDerivedEntryContent(
-    withDerivedGateSlot(withDiffDerivedRiskClasses(args.doc, args.changed_paths), args.reason),
+    withDerivedGateSlot(
+      withDiffDerivedRiskClasses(mergedDoc, args.changed_paths, priorRiskClasses),
+      args.reason,
+    ),
     args.reason,
     mergedDecisionRef,
     renderCtx,
@@ -2076,7 +2204,11 @@ export async function composeBrief(
     content,
     expand_sections: args.expand_sections ?? {},
     related: args.related ?? [],
-    pending_activity: pendingActivity ?? null,
+    // B-901: the MERGED activity (see above). The non-RPC fallback below is a wholesale UPDATE, so
+    // writing this call's own argument would NULL an activity the row carries forward — the same
+    // destructive-write shape B-866 closed for `decision_ref` — and would contradict the **On accept:**
+    // line rendered just above from the merged value.
+    pending_activity: mergedPendingActivity,
     // B-866: the MERGED ref (see above), so the non-RPC fallback UPDATE below no longer nulls a
     // carried-forward pointer that the rendered content still advertises. On the INSERT path there is no
     // prior revision, so this is exactly `args.decision_ref ?? null` — unchanged.
@@ -2113,6 +2245,12 @@ export async function composeBrief(
   // silently nulling it — the exact data loss the old `decision_ref: args.decision_ref ?? null` write
   // caused. An explicit null still clears (absent ≠ null). `pending_resolution` is not in the patch: the
   // successor row starts with the column at its NULL default, which IS the B-485 marker-consume.
+  //
+  // B-901: `doc` here is the MERGED doc (prior || patch, computed above), not this call's partial. That is
+  // the whole shape of the fix — the database applies `prior || merged`, which is an IDEMPOTENT NO-OP, so
+  // the row's doc, the `content` rendered from it, and the doc the §3.2 lint judged are one value. The
+  // absent-vs-null discipline for the OTHER keys below is unchanged: a key the caller did not pass stays
+  // absent from the patch and the DB carries it forward.
   const revisionPatch: Record<string, unknown> = { reason: args.reason, doc, content };
   if (args.expand_sections !== undefined) revisionPatch.expand_sections = args.expand_sections;
   if (args.related !== undefined) revisionPatch.related = args.related;
@@ -2225,7 +2363,7 @@ export async function composeBrief(
 export const composeBriefTool = {
   name: 'compose_brief',
   description:
-    "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange — a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one — so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref — do not hand-write it. " +
+    "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange — a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one — so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref — do not hand-write it. " +
     "B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately — put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. " +
     "B-876: also author `doc.frame` — the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING — no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) — compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates.",
   inputSchema: {
@@ -2294,7 +2432,7 @@ export const composeBriefTool = {
       },
       expand_sections: { type: 'object', description: 'Pre-generated expand content keyed by section: reasoning/alternatives/history' },
       related: { type: 'array', description: 'Pre-generated related decisions/tickets/knowledge' },
-      pending_activity: { type: ['string', 'null'], description: 'The workflow activity `accept` applies (e.g. clarifying, decomposing, deploying, verifying). A real activity is validated against the transition table; null or omitted ⇒ accept advances no state.' },
+      pending_activity: { type: ['string', 'null'], description: 'The workflow activity `accept` applies (e.g. clarifying, decomposing, deploying, verifying). A real activity is validated against the transition table; explicit null ⇒ accept advances no state. B-901 — on a REVISION, OMITTING this CARRIES FORWARD the prior revision\'s activity (it does not mean "no state change"), and the carried value is validated too: a partial recompose of a stale ticket can now be REFUSED where it previously composed in silence. Pass explicit null to actually clear it.' },
       decision_ref: { type: 'object', description: 'The Asserted knowledge entry to promote on accept: { type: "decision", id: "<uuid>" }' },
       changed_paths: {
         type: 'array',

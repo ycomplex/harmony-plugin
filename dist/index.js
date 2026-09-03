@@ -37985,11 +37985,23 @@ function withDerivedEntryContent(doc, reason, decisionRef, ctx) {
   const content = renderEntry(staged, { ...ctx, decisionRef });
   return { ...staged, payload: [...others, { ...stub, content }] };
 }
-function withDiffDerivedRiskClasses(doc, changedPaths) {
+function withDiffDerivedRiskClasses(doc, changedPaths, priorRiskClasses) {
   if (doc.frame?.kind !== "release") return doc;
+  if (changedPaths === void 0 && priorRiskClasses !== void 0) {
+    return { ...doc, frame: { ...doc.frame, risk_classes: [...priorRiskClasses] } };
+  }
   const paths = Array.isArray(changedPaths) ? changedPaths.filter((x) => typeof x === "string") : [];
   const risk_classes = paths.length > 0 ? detectRiskClasses({ changedPaths: paths }) : [];
   return { ...doc, frame: { ...doc.frame, risk_classes } };
+}
+function mergeBriefDoc(prior, patch) {
+  if (!prior || typeof prior !== "object") return patch;
+  const merged = { ...prior };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === void 0) continue;
+    merged[key] = value;
+  }
+  return merged;
 }
 var isMissingComposeBriefRevision = (err) => {
   if (!err) return false;
@@ -38013,9 +38025,17 @@ async function composeBrief(client, projectId, userId, args) {
     buildPr = readBuildPr(fv);
     buildPrRefs = readBuildPrReferences(fv);
   }
+  const { data: existing, error: lookupErr } = await client.from("briefs").select("id, iteration, decision_ref, doc, pending_activity").eq("task_id", taskId).eq("status", "active").maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+  const existingRow = existing;
+  const mergedDecisionRef = args.decision_ref !== void 0 ? args.decision_ref ?? null : existingRow?.decision_ref ?? null;
+  const priorDoc = existingRow?.doc ?? null;
+  const mergedDoc = mergeBriefDoc(priorDoc, args.doc);
+  const priorRiskClasses = priorDoc?.frame?.kind === "release" ? priorDoc.frame.risk_classes : void 0;
   const pendingActivity = typeof args.pending_activity === "string" && args.pending_activity.trim().toLowerCase() === "null" ? null : args.pending_activity;
+  const mergedPendingActivity = args.pending_activity !== void 0 ? pendingActivity ?? null : existingRow?.pending_activity ?? null;
   let accept = null;
-  if (pendingActivity) {
+  if (mergedPendingActivity) {
     const { data: task, error: tErr } = await client.from("tasks").select("workflow_state, stale").eq("id", taskId).single();
     if (tErr) throw new Error(tErr.message);
     const taskRow = task;
@@ -38025,22 +38045,21 @@ async function composeBrief(client, projectId, userId, args) {
         `Task is stale (tasks.stale=true) \u2014 cannot compose a state-advancing brief (reason '${args.reason}'). Route through harmony-stale-patch (files a 'stale-patch-review' brief) or harmony-revise-scope first.`
       );
     }
-    let q = client.from("workflow_transitions").select("to_state").eq("activity", pendingActivity);
+    let q = client.from("workflow_transitions").select("to_state").eq("activity", mergedPendingActivity);
     q = fromState === null ? q.is("from_state", null) : q.eq("from_state", fromState);
     const { data: tr, error: trErr } = await q.maybeSingle();
     if (trErr) throw new Error(trErr.message);
     if (!tr) {
-      throw new Error(`pending_activity '${pendingActivity}' has no valid transition from state '${fromState ?? "NULL"}'`);
+      throw new Error(`pending_activity '${mergedPendingActivity}' has no valid transition from state '${fromState ?? "NULL"}'`);
     }
     accept = { from: fromState, to: tr.to_state };
   }
-  const { data: existing, error: lookupErr } = await client.from("briefs").select("id, iteration, decision_ref").eq("task_id", taskId).eq("status", "active").maybeSingle();
-  if (lookupErr) throw new Error(lookupErr.message);
-  const existingRow = existing;
-  const mergedDecisionRef = args.decision_ref !== void 0 ? args.decision_ref ?? null : existingRow?.decision_ref ?? null;
   const renderCtx = { reason: args.reason, accept };
   const doc = withDerivedEntryContent(
-    withDerivedGateSlot(withDiffDerivedRiskClasses(args.doc, args.changed_paths), args.reason),
+    withDerivedGateSlot(
+      withDiffDerivedRiskClasses(mergedDoc, args.changed_paths, priorRiskClasses),
+      args.reason
+    ),
     args.reason,
     mergedDecisionRef,
     renderCtx
@@ -38064,7 +38083,11 @@ async function composeBrief(client, projectId, userId, args) {
     content,
     expand_sections: args.expand_sections ?? {},
     related: args.related ?? [],
-    pending_activity: pendingActivity ?? null,
+    // B-901: the MERGED activity (see above). The non-RPC fallback below is a wholesale UPDATE, so
+    // writing this call's own argument would NULL an activity the row carries forward — the same
+    // destructive-write shape B-866 closed for `decision_ref` — and would contradict the **On accept:**
+    // line rendered just above from the merged value.
+    pending_activity: mergedPendingActivity,
     // B-866: the MERGED ref (see above), so the non-RPC fallback UPDATE below no longer nulls a
     // carried-forward pointer that the rendered content still advertises. On the INSERT path there is no
     // prior revision, so this is exactly `args.decision_ref ?? null` — unchanged.
@@ -38148,7 +38171,7 @@ async function composeBrief(client, projectId, userId, args) {
 }
 var composeBriefTool = {
   name: "compose_brief",
-  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING \u2014 no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates.",
+  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING \u2014 no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates.",
   inputSchema: {
     type: "object",
     properties: {
@@ -38212,7 +38235,7 @@ var composeBriefTool = {
       },
       expand_sections: { type: "object", description: "Pre-generated expand content keyed by section: reasoning/alternatives/history" },
       related: { type: "array", description: "Pre-generated related decisions/tickets/knowledge" },
-      pending_activity: { type: ["string", "null"], description: "The workflow activity `accept` applies (e.g. clarifying, decomposing, deploying, verifying). A real activity is validated against the transition table; null or omitted \u21D2 accept advances no state." },
+      pending_activity: { type: ["string", "null"], description: 'The workflow activity `accept` applies (e.g. clarifying, decomposing, deploying, verifying). A real activity is validated against the transition table; explicit null \u21D2 accept advances no state. B-901 \u2014 on a REVISION, OMITTING this CARRIES FORWARD the prior revision\'s activity (it does not mean "no state change"), and the carried value is validated too: a partial recompose of a stale ticket can now be REFUSED where it previously composed in silence. Pass explicit null to actually clear it.' },
       decision_ref: { type: "object", description: 'The Asserted knowledge entry to promote on accept: { type: "decision", id: "<uuid>" }' },
       changed_paths: {
         type: "array",
