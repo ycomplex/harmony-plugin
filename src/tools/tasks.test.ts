@@ -635,6 +635,7 @@ describe('getTask', () => {
                     awaiting_human_input: false,
                     awaiting_human_reason: null,
                     awaiting_human_ref: null,
+                    pending_acceptance_event_id: null,
                     stale: false,
                     stale_ref: null,
                     parent_task_id: null,
@@ -692,13 +693,14 @@ describe('getTask', () => {
     }),
   });
 
-  it("B-684/B-792: view:'meta' returns EXACTLY the 22-key loop-control projection", async () => {
+  it("B-684/B-792/B-818: view:'meta' returns EXACTLY the 23-key loop-control projection", async () => {
     const client = makeFullClient({ title: 'T', description: 'A long payload description.' });
     const result = await getTask(client, 'proj-1', { task_id: 'B-1', view: 'meta' });
 
     const expectedKeys = [
       'id', 'task_number', 'title', 'workflow_state', 'workflow_activity',
       'awaiting_human_input', 'awaiting_human_reason', 'awaiting_human_ref',
+      'pending_acceptance_event_id',
       'stale', 'stale_ref', 'parent_task_id', 'archived', 'subsumed_by_task_id',
       'conductor_excluded_at',
       'pending_resolution', 'active_exchange', 'pending_remark', 'risk_classes',

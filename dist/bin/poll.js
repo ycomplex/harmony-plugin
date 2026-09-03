@@ -23604,6 +23604,7 @@ async function getTask(client, projectId, args) {
       awaiting_human_input: t.awaiting_human_input,
       awaiting_human_reason: t.awaiting_human_reason,
       awaiting_human_ref: t.awaiting_human_ref,
+      pending_acceptance_event_id: t.pending_acceptance_event_id,
       stale: t.stale,
       stale_ref: t.stale_ref,
       parent_task_id: t.parent_task_id,

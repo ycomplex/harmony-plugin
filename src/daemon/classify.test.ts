@@ -416,3 +416,83 @@ describe('isCleanRowShape / classifyCleanRowShape (B-870) — the shared clean-r
     }
   });
 });
+
+describe('classifyCleanRowShape / classifyWorkerExit — B-818: an outstanding B-797 acceptance event gates all three clean shapes', () => {
+  it("defeats branch 1 (clean-pause): awaiting_human_input=true is NOT clean when pending_acceptance_event_id is set", () => {
+    expect(
+      classifyCleanRowShape(
+        { workflow_state: 'Built', awaiting_human_input: true, pending_acceptance_event_id: 'evt-1' },
+        0,
+      ),
+    ).toBeNull();
+    expect(
+      isCleanRowShape(
+        { workflow_state: 'Built', awaiting_human_input: true, pending_acceptance_event_id: 'evt-1' },
+        0,
+      ),
+    ).toBe(false);
+  });
+
+  it("defeats branch 2 (terminal): workflow_state='Verified' is NOT clean when pending_acceptance_event_id is set", () => {
+    expect(
+      classifyCleanRowShape(
+        { workflow_state: 'Verified', awaiting_human_input: false, pending_acceptance_event_id: 'evt-1' },
+        0,
+      ),
+    ).toBeNull();
+    expect(
+      isCleanRowShape(
+        { workflow_state: 'Verified', awaiting_human_input: false, pending_acceptance_event_id: 'evt-1' },
+        0,
+      ),
+    ).toBe(false);
+  });
+
+  it("defeats branch 3 (split-umbrella): Decomposed + ≥1 non-archived child + flag false is NOT clean when pending_acceptance_event_id is set", () => {
+    expect(
+      classifyCleanRowShape(
+        { workflow_state: 'Decomposed', awaiting_human_input: false, pending_acceptance_event_id: 'evt-1' },
+        1,
+      ),
+    ).toBeNull();
+    expect(
+      isCleanRowShape(
+        { workflow_state: 'Decomposed', awaiting_human_input: false, pending_acceptance_event_id: 'evt-1' },
+        1,
+      ),
+    ).toBe(false);
+  });
+
+  it('a NULL pending_acceptance_event_id is not an outstanding event — the three clean shapes are unaffected', () => {
+    expect(
+      classifyCleanRowShape(
+        { workflow_state: 'Built', awaiting_human_input: true, pending_acceptance_event_id: null },
+        0,
+      ),
+    ).toBe('clean-pause');
+  });
+
+  it("classifyWorkerExit: WITHOUT the B-818 gate, a stale+awaiting row short-circuits to wait via branch 1 (clean-pause) — WITH the gate it falls through to branch 4 (stale) and parks", () => {
+    const a = args({
+      row: {
+        workflow_state: 'Built',
+        awaiting_human_input: true,
+        stale: true,
+        pending_acceptance_event_id: 'evt-1',
+      },
+    });
+    // Sanity: without pending_acceptance_event_id, this exact row shape IS a clean-pause (branch 1
+    // wins over branch 4 — see "order is the contract" above).
+    const withoutGate = args({
+      row: { workflow_state: 'Built', awaiting_human_input: true, stale: true },
+    });
+    expect(classifyWorkerExit(withoutGate)).toEqual({ action: 'wait' });
+
+    // With an outstanding acceptance event, branch 0 defeats the clean-pause shape entirely, so the
+    // row falls through to branch 4 (stale) instead — an observable classification change, not just
+    // a boolean flip.
+    const outcome = classifyWorkerExit(a);
+    expect(outcome).toEqual({ action: 'park', reason: 'stale' });
+    expect(exitClass(outcome, a)).toBe('stale');
+  });
+});
