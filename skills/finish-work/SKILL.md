@@ -274,16 +274,32 @@ author approving its own PR — so the merge cannot happen on the human's Harmon
 > *"⚠ This PR is authored by `harmony-daemon[bot]` and needs your approval on GitHub before it can merge:
 > `<pr_url>`. Accepting here is your go-ahead; the merge runs once the approval lands."*
 
-**CI evidence line (B-765 AC4).** Cite `statusCheckRollup`'s run id + conclusion as the brief's CI evidence
-line, e.g. *"CI: run <id> — <conclusion>."* This read is informational only, at brief-compose time — time
-passes between accept and the actual merge, so a FRESH read at O2 governs the actual merge decision; this
-line does not itself gate anything. If the call 403s (a capability denial — e.g. a repo-scoped `403
-Resource not accessible by integration`), the check surface is unreadable: add a legible attention line to
-the brief instead, verbatim in shape — *"⚠ Unable to fetch CI status — <error>. Reviewing without check
-confirmation."* Never assert local/partial evidence (a local typecheck/lint run, a partial `gh` read) in
-its place, and never silently omit the line. This is the capability-denial doctrine (stated in full at O2
-below, where it also governs the merge-time CI wait) applied at brief-compose time: a proceed-worthy read
-failure, since branch protection independently backs whatever the checks would have shown.
+**CI evidence + earlier-red-run line (B-765 AC4, B-857) — pointer, not a restated copy.** The contract
+lives in `skills/harmony-shared/brief-authoring.md` §Release → the CI-evidence must-have: cite the run
+id + conclusion (from `statusCheckRollup` above, e.g. *"CI: run <id> — <conclusion>."*), and disclose
+any earlier run on this branch that concluded failure before a later commit went green. This read is
+informational only, at brief-compose time — time passes between accept and the actual merge, so a FRESH
+read at O2 governs the actual merge decision; this line does not itself gate anything.
+
+**The earlier-red-run fetch.** Once per pull request, alongside the call above:
+
+```
+gh run list --branch <branch> --json databaseId,conclusion,headSha,createdAt
+```
+
+Sorted by `createdAt` ascending. Any entry whose `conclusion` is not `SUCCESS` and whose `createdAt`
+precedes the run behind `headRefOid` is an earlier red run — name it, e.g. *"Earlier run <id> failed
+(<conclusion>) before this commit went green."* None found → say so plainly, e.g. *"No earlier run on
+this branch failed."*
+
+**Capability denial.** If either call 403s (a capability denial — e.g. a repo-scoped `403 Resource not
+accessible by integration`), the check surface is unreadable: add a legible attention line to the brief
+instead, verbatim in shape — *"⚠ Unable to fetch CI status — <error>. Reviewing without check
+confirmation."* Never assert local/partial evidence (a local test/lint/type-check run, a partial `gh`
+read) in its place, and never silently omit the line. This is the capability-denial doctrine (stated in
+full at O2 below, where it also governs the merge-time CI wait) applied at brief-compose time: a
+proceed-worthy read failure, since branch protection independently backs whatever the checks would have
+shown.
 
 **The release frame (B-876) — author `doc.frame` on every release brief you compose or re-compose.**
 Release is the one gate with a measured wrong accept, and it had no field at all for the act it

@@ -238,3 +238,62 @@ describe("brief-authoring.md §Release check-status must-have (B-861)", () => {
     expect(normative.toLowerCase()).toMatch(/exactly one entry/);
   });
 });
+
+// B-857: the release brief a human accepts directly after the build finishes (start-work O3, no reshape)
+// must carry the SAME CI-evidence + earlier-red-run guarantee as the reshaped brief finish-work O1 draws
+// on (B-765 AC4). Before this ticket the requirement lived only in O1's prose, so the common one-brief
+// path (Planned -> Built -> accept, no finish-work reshape) let a human accept on local-only evidence.
+// Pinned here, in the SHARED contract, so the two compose sites (start-work O3 / finish-work O1) cannot
+// drift apart again — the same limit as the B-861 describe block above applies: this pins the PROSE, not
+// a rendered brief.
+describe("brief-authoring.md §Release CI-evidence + earlier-red-run must-have (B-765 AC4, B-857)", () => {
+  const doc = readSharedDoc("brief-authoring");
+
+  const releaseSection = (): string => {
+    const start = doc.indexOf("### Release (");
+    const end = doc.indexOf("### Verify (");
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return doc.slice(start, end);
+  };
+
+  const FENCE =
+    /<!-- deployment-specific: begin -->[\s\S]*?<!-- deployment-specific: end -->/g;
+  const normativeRelease = (): string => releaseSection().replace(FENCE, "");
+
+  it("names the CI-evidence + earlier-red-run must-have as a headline must-have, host-neutrally", () => {
+    const normative = normativeRelease();
+    expect(normative).toContain("The CI-evidence line, and any earlier red run on the branch");
+    expect(normative.toLowerCase()).toMatch(/necessary but not sufficient/);
+    expect(normative.toLowerCase()).toMatch(/cite that run's id and its conclusion/);
+    expect(normative.toLowerCase()).toMatch(/never asserted from local-only evidence/);
+    // The earlier-red-run disclosure: an earlier failing run before a later commit went green.
+    expect(normative.toLowerCase()).toMatch(/earlier run on this same branch concluded failure/);
+    expect(normative.toLowerCase()).toMatch(/before a later commit went green/);
+  });
+
+  it("applies at every gate that composes the release brief, not only the reshaped one (B-857's actual bug)", () => {
+    const normative = normativeRelease();
+    expect(normative.toLowerCase()).toMatch(/applies at every gate that composes this brief/);
+    expect(normative.toLowerCase()).toMatch(/the common path composes it once, immediately after/);
+  });
+
+  it("carries the concrete CI-evidence + earlier-red-run fetch spec INSIDE the deployment-specific fence, never in the normative text", () => {
+    const release = releaseSection();
+    const fenced = release.match(FENCE)?.join("\n") ?? "";
+    expect(fenced).toContain("gh run list --branch <branch> --json databaseId,conclusion,headSha,createdAt");
+    expect(fenced.toLowerCase()).toMatch(/sorted by[\s>]+`createdat` ascending/);
+    expect(fenced.toLowerCase()).toMatch(/earlier red run: name its `databaseid`, `conclusion`/);
+    expect(fenced.toLowerCase()).toMatch(/no[\s>]+such entry → say plainly that no earlier run on the branch failed/);
+    // A failed fetch folds into the SAME unreadable disposition as the check-status read — no second
+    // disposition vocabulary invented for this must-have.
+    expect(fenced.toLowerCase()).toMatch(/folds into[\s>]+the same \*\*unreadable\*\* disposition/);
+
+    // And the normative text stays clean of these same host-specific tokens (belt-and-suspenders on
+    // top of the general host-neutrality sweep above, scoped to the tokens THIS must-have introduces).
+    const normative = normativeRelease();
+    expect(normative.toLowerCase()).not.toMatch(/\bgh run list\b/);
+    expect(normative).not.toContain("databaseId");
+    expect(normative).not.toContain("createdAt");
+  });
+});

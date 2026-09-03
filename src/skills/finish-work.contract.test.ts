@@ -436,6 +436,28 @@ describe('finish-work skill contract (evolved)', () => {
     expect(o1.toLowerCase()).toMatch(/capability-denial doctrine/);
   });
 
+  // B-857: the paragraph above was trimmed to a POINTER at the shared CI-evidence must-have
+  // (skills/harmony-shared/brief-authoring.md §Release) rather than a restated copy, and gained the
+  // earlier-red-run fetch/disclosure it previously lacked entirely — the same guarantee start-work O3
+  // now also carries, so the common one-brief path (no finish-work reshape) is no longer the only path
+  // missing it.
+  it('B-857: O1 points at the shared CI-evidence must-have (pointer, not a restated copy) and adds the earlier-red-run gh run list fetch + disclosure', () => {
+    const o1 = o1Section(skill.body);
+    expect(o1).toContain('B-857');
+    // Pointer, not a restated copy.
+    expect(o1.toLowerCase()).toMatch(/pointer, not a restated copy/);
+    expect(o1).toContain('brief-authoring.md` §Release');
+    // The earlier-red-run fetch: a second gh call, once per pull request, alongside the existing one.
+    expect(o1).toContain('gh run list --branch <branch> --json databaseId,conclusion,headSha,createdAt');
+    expect(o1.toLowerCase()).toMatch(/sorted by `createdat` ascending/);
+    expect(o1.toLowerCase()).toMatch(/once per pull request, alongside the call above/);
+    // Disclosure: an earlier run whose conclusion was not SUCCESS, before the current head's run.
+    expect(o1.toLowerCase()).toMatch(/earlier red run — name it/);
+    expect(o1.toLowerCase()).toMatch(/none found → say so plainly/);
+    // The SAME capability-denial handling now explicitly covers either call, not just the first.
+    expect(o1.toLowerCase()).toMatch(/if either call 403s/);
+  });
+
   // B-836: O2 writes a per-surface convention knowledge entry for each qualifying changed path.
   it('B-836: O2 authors a per-changed-surface convention entry, keyed on surface:<path>, never per-ticket', () => {
     const o2 = o2Section2(skill.body);
