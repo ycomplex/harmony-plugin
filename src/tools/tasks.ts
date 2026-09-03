@@ -186,7 +186,7 @@ export async function listTasks(
 
 export const getTaskTool = {
   name: 'get_task',
-  description: "Get full details of a specific task. Returns `pending_resolution` — the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Returns `pending_remark` (B-503/B-866) — the task's most recent UNCONSUMED accept-with-remark as {brief_id, reason, detail, decision_ref, referent}, or null; `referent` is the knowledge entry the accept promoted (status 'entry', with its live content), or a STATED degradation (status 'reconstructed'/'unavailable' carrying a `warning`) when that entry could not be read — apply a light amendment to the referent, and never treat a reconstruction as the stored entry: a browser accept that carried a remark BOTH advanced state AND left this marker; the conductor applies the remark then calls consume_accept_remark. Returns `active_exchange` (B-645) — the task's active elicitation exchange as {exchange_id, status, round, answers_submitted_at, force_quit_requested_at}, or null when none; a non-null answers_submitted_at/force_quit_requested_at is an unconsumed web→agent marker the watch classifies as 'answers-landed' (read the answers via get_elicitation; filing the next round or concluding consumes it). Also returns `risk_classes` — a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run — the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate). Returns `active_brief_iteration` (B-792) — the active brief's `iteration`, or null when none, and `knowledge_reference_count` (B-792) — the count of knowledge decisions this task references: two board-progress signals the daemon's exit classifier reads so an in-place brief iterate or a recorded/referenced knowledge decision, with no state-advancing write, is not misclassified as a no-op spin. Pass `view:'meta'` (B-684) for a lean loop-control projection on repeated re-reads.",
+  description: "Get full details of a specific task. Returns `pending_resolution` — the active brief's browser-submitted reshape marker ({command:'iterate', detail:<feedback>}) the running conductor polls for and consumes on auto-pickup (null when there's no active brief or no pending reshape). Returns `pending_remark` (B-503/B-866) — the task's most recent UNCONSUMED accept-with-remark as {brief_id, reason, detail, decision_ref, referent}, or null; `referent` is the knowledge entry the accept promoted (status 'entry', with its live content), or a STATED degradation (status 'reconstructed'/'unavailable' carrying a `warning`) when that entry could not be read — apply a light amendment to the referent, and never treat a reconstruction as the stored entry: a browser accept that carried a remark BOTH advanced state AND left this marker; the conductor applies the remark then calls consume_accept_remark. Returns `active_exchange` (B-645) — the task's active elicitation exchange as {exchange_id, status, round, answers_submitted_at, force_quit_requested_at}, or null when none; a non-null answers_submitted_at/force_quit_requested_at is an unconsumed web→agent marker the watch classifies as 'answers-landed' (read the answers via get_elicitation; filing the next round or concluding consumes it). Also returns `risk_classes` — a deterministic, conservative set of high-consequence classes the work touches (auth, data-migration, irreversible-destructive, shared-core), computed from the ticket text + active brief (and any `changed_paths` you pass); the conductor uses this as a non-discretionary FLOOR: a non-empty `risk_classes` PAUSES a delegated gate for a human only in --escalate; under --unattended/--pause-at it does NOT pause mid-run — the risk is recorded and surfaced as an attention signal on the release brief (the human still sees it at the always-controlled release gate). Returns `active_brief_iteration` (B-792) — the active brief's `iteration`, or null when none, and `knowledge_reference_count` (B-792) — the count of knowledge decisions this task references: two board-progress signals the daemon's exit classifier reads so an in-place brief iterate or a recorded/referenced knowledge decision, with no state-advancing write, is not misclassified as a no-op spin. Pass `view:'meta'` (B-684) for a lean loop-control projection on repeated re-reads; meta also surfaces `pending_acceptance_event_id` (B-818) — a non-null id means a B-797 two-step accept's payload-apply landed but its deferred workflow_state commit has not, so the ticket is stranded even if it otherwise looks clean.",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -199,7 +199,7 @@ export const getTaskTool = {
       view: {
         type: 'string',
         enum: ['full', 'meta'],
-        description: "Payload shape. Absent ⇒ 'full' (today's full payload). 'meta' (B-684) = lean loop-control projection for repeated re-reads (conduct loop step-1 re-reads / post-mutation confirms): keeps `risk_classes` + the poll markers (`pending_resolution`, `active_exchange`, `pending_remark`, `awaiting_human_*`) + the B-792 board-progress signals (`active_brief_iteration`, `knowledge_reference_count`); omits description, acceptance criteria, test cases, attachments, labels, checklist.",
+        description: "Payload shape. Absent ⇒ 'full' (today's full payload). 'meta' (B-684) = lean loop-control projection for repeated re-reads (conduct loop step-1 re-reads / post-mutation confirms): keeps `risk_classes` + the poll markers (`pending_resolution`, `active_exchange`, `pending_remark`, `awaiting_human_*`, `pending_acceptance_event_id` (B-818)) + the B-792 board-progress signals (`active_brief_iteration`, `knowledge_reference_count`); omits description, acceptance criteria, test cases, attachments, labels, checklist.",
       },
     },
     required: ['task_id'],
@@ -215,8 +215,9 @@ export async function getTask(
   // select, labels extraction, pending_resolution/active_exchange/pending_remark reads, and the
   // detectRiskClasses call with IDENTICAL inputs (title + description + brief text, changed_paths,
   // label names) — it skips ONLY the pure return-payload selects (acceptance_criteria / test_cases /
-  // attachments, which feed no computation) and returns a pinned 22-key loop-control projection
-  // (B-792 widened it from 20 to 22 — see active_brief_iteration/knowledge_reference_count below).
+  // attachments, which feed no computation) and returns a pinned 23-key loop-control projection
+  // (B-792 widened it from 20 to 22 — see active_brief_iteration/knowledge_reference_count below;
+  // B-818 widened it again to 23 — see pending_acceptance_event_id below).
   const meta = args.view === 'meta';
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error } = await client
@@ -327,13 +328,19 @@ export async function getTask(
     labels: labels.map((l: any) => l?.name).filter((n: unknown): n is string => typeof n === 'string'),
   });
 
-  // B-684: the lean 'meta' projection — a pinned 22-key loop-control shape (nothing more, nothing
+  // B-684: the lean 'meta' projection — a pinned 23-key loop-control shape (nothing more, nothing
   // less; tasks.test.ts deep-equals the key set — widened from 20 to 22 by B-792's
-  // active_brief_iteration/knowledge_reference_count). risk_classes above was computed exactly as in
-  // full mode (trim the return, never the computation); the omitted fields (description, acceptance
-  // criteria, test cases, attachments, labels, checklist) are pure payload with no loop-control role.
+  // active_brief_iteration/knowledge_reference_count, then to 23 by B-818's
+  // pending_acceptance_event_id). risk_classes above was computed exactly as in full mode (trim the
+  // return, never the computation); the omitted fields (description, acceptance criteria, test
+  // cases, attachments, labels, checklist) are pure payload with no loop-control role.
   // pending_remark (B-503) is a poll marker — the conduct loop's poll read classifies on it — so it
-  // rides in meta like pending_resolution/active_exchange.
+  // rides in meta like pending_resolution/active_exchange. pending_acceptance_event_id (B-818) is
+  // another loop-control marker: a non-null value means a B-797 two-step accept's payload-apply
+  // landed but its deferred workflow_state commit (consume_acceptance_event) has not, so the ticket
+  // is stranded even though awaiting_human_input/workflow_state may already look clean — see
+  // src/daemon/classify.ts's classifyCleanRowShape, which gates on this field before its three
+  // existing clean-shape branches.
   if (meta) {
     const t = data as any;
     return {
@@ -345,6 +352,7 @@ export async function getTask(
       awaiting_human_input: t.awaiting_human_input,
       awaiting_human_reason: t.awaiting_human_reason,
       awaiting_human_ref: t.awaiting_human_ref,
+      pending_acceptance_event_id: t.pending_acceptance_event_id,
       stale: t.stale,
       stale_ref: t.stale_ref,
       parent_task_id: t.parent_task_id,

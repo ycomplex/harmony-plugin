@@ -84,7 +84,8 @@ function describeRow(ticket: string, row: StopGateRow): string {
   return (
     `${ticket}: workflow_state=${row.workflow_state ?? 'null'}, ` +
     `awaiting_human_input=${row.awaiting_human_input ?? 'null'}, ` +
-    `non_archived_children=${row.non_archived_child_count ?? 0}`
+    `non_archived_children=${row.non_archived_child_count ?? 0}, ` +
+    `pending_acceptance_event=${row.pending_acceptance_event_id ?? 'none'}`
   );
 }
 

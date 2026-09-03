@@ -23749,6 +23749,7 @@ async function getTask(client, projectId, args) {
       awaiting_human_input: t.awaiting_human_input,
       awaiting_human_reason: t.awaiting_human_reason,
       awaiting_human_ref: t.awaiting_human_ref,
+      pending_acceptance_event_id: t.pending_acceptance_event_id,
       stale: t.stale,
       stale_ref: t.stale_ref,
       parent_task_id: t.parent_task_id,
@@ -24168,6 +24169,9 @@ function detectWake(baseline, current) {
 // src/daemon/classify.ts
 var TICKET_TERMINAL_STATES = ["Verified", "Cancelled", "Parked"];
 function classifyCleanRowShape(row, nonArchivedChildCount) {
+  if (row.pending_acceptance_event_id !== null && row.pending_acceptance_event_id !== void 0) {
+    return null;
+  }
   if (row.awaiting_human_input === true) return "clean-pause";
   const state = row.workflow_state ?? null;
   if (state !== null && TICKET_TERMINAL_STATES.includes(state)) {

@@ -57,6 +57,7 @@ export const TICKET_TERMINAL_STATES = ['Verified', 'Cancelled', 'Parked'] as con
 export interface CleanRowShape {
   workflow_state?: string | null;
   awaiting_human_input?: boolean | null;
+  pending_acceptance_event_id?: string | null;
 }
 
 /** Which of the three clean shapes a row is, or null when it is none of them. Named after the
@@ -74,6 +75,17 @@ export function classifyCleanRowShape(
   row: CleanRowShape,
   nonArchivedChildCount: number,
 ): CleanRowKind | null {
+  // 0. B-818: an outstanding B-797 two-step accept. B-797 splits an accept into (1) apply the
+  //    payload writes, (2) commit the deferred workflow_state advance via consume_acceptance_event,
+  //    which creates a pending_acceptance_events row (exposed here as pending_acceptance_event_id)
+  //    while step 2 is outstanding. A row with this set can look like any of branches 1-3 below
+  //    (awaiting_human_input already false, workflow_state already looking terminal/Decomposed) even
+  //    though the accept has NOT actually landed — so this check comes FIRST and beats all three:
+  //    an outstanding acceptance event is NEVER a clean place to stop.
+  if (row.pending_acceptance_event_id !== null && row.pending_acceptance_event_id !== undefined) {
+    return null;
+  }
+
   // 1. The session paused for a human (brief filed / exchange open) — the clean one-shot exit.
   if (row.awaiting_human_input === true) return 'clean-pause';
 

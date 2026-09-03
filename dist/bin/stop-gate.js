@@ -10,6 +10,9 @@ import { fileURLToPath } from "node:url";
 // src/daemon/classify.ts
 var TICKET_TERMINAL_STATES = ["Verified", "Cancelled", "Parked"];
 function classifyCleanRowShape(row, nonArchivedChildCount) {
+  if (row.pending_acceptance_event_id !== null && row.pending_acceptance_event_id !== void 0) {
+    return null;
+  }
   if (row.awaiting_human_input === true) return "clean-pause";
   const state = row.workflow_state ?? null;
   if (state !== null && TICKET_TERMINAL_STATES.includes(state)) {
@@ -28,7 +31,7 @@ function isCleanRowShape(row, nonArchivedChildCount) {
 var STOP_GATE_ESCAPE_ENV = "HARMONY_STOP_GATE_OFF";
 var MAX_BLOCKS_PER_TURN_END = 2;
 function describeRow(ticket, row) {
-  return `${ticket}: workflow_state=${row.workflow_state ?? "null"}, awaiting_human_input=${row.awaiting_human_input ?? "null"}, non_archived_children=${row.non_archived_child_count ?? 0}`;
+  return `${ticket}: workflow_state=${row.workflow_state ?? "null"}, awaiting_human_input=${row.awaiting_human_input ?? "null"}, non_archived_children=${row.non_archived_child_count ?? 0}, pending_acceptance_event=${row.pending_acceptance_event_id ?? "none"}`;
 }
 function decideStop(args) {
   const { ticket, row, stopHookActive } = args;

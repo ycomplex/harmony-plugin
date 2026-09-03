@@ -75,6 +75,7 @@ export function registerTaskCommands(program: Command): void {
           task_number?: number;
           workflow_state?: string | null;
           awaiting_human_input?: boolean | null;
+          pending_acceptance_event_id?: string | null;
         };
         let nonArchivedChildCount = 0;
         if (task.workflow_state === 'Decomposed') {
@@ -89,6 +90,9 @@ export function registerTaskCommands(program: Command): void {
           task_number: task.task_number ?? null,
           workflow_state: task.workflow_state ?? null,
           awaiting_human_input: task.awaiting_human_input ?? null,
+          // B-818: surfaced so --json output and classifyCleanRowShape both see an outstanding
+          // B-797 two-step accept — the gate this field defeats even when the row otherwise looks clean.
+          pending_acceptance_event_id: task.pending_acceptance_event_id ?? null,
           non_archived_child_count: nonArchivedChildCount,
           clean: kind !== null,
           clean_kind: kind,
