@@ -348,6 +348,14 @@ describe('finish-work skill contract (evolved)', () => {
 
   // B-765: a daemon worker releasing via finish-work sometimes cannot read CI/deploy status (repo-scoped
   // 403). These pin the four accepted ACs mechanically so a future edit cannot silently regress them.
+  const o1Section = (body: string): string => {
+    const start = body.indexOf('### O1.');
+    const end = body.indexOf('### O2.');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return body.slice(start, end);
+  };
+
   const o2Section2 = (body: string): string => {
     const start = body.indexOf('### O2.');
     const end = body.indexOf('### O3.');
@@ -501,6 +509,74 @@ describe('finish-work skill contract (evolved)', () => {
     expect(referencedHarmonyTools(o2)).toContain('add_comment');
     expect(referencedHarmonyTools(o2)).toContain('start_elicitation');
     expect(referencedHarmonyTools(o2)).toContain('file_elicitation_round');
+  });
+
+  // B-861: a release brief must state what the repository's checks reported for EVERY pull request it
+  // would merge — the observed failure was drift to silence, not absence (one brief named the run +
+  // conclusion + head commit; another, hours later, said nothing while both its PRs were still running).
+  //
+  // LIMIT OF THESE TESTS, stated plainly: they pin the PROSE of the release gate, not a rendered
+  // artefact. A release brief is composed by an LLM from this prose; there is no TypeScript renderer to
+  // assert a brief against. Prose is where the drift-to-silence happens, so prose is what is pinned —
+  // a pass means the skill still SAYS this, not that a given brief obeyed it.
+  it('B-861: O1 points at the shared check-status must-have and renders one entry per pull request off the defensive build_pr read', () => {
+    const o1 = o1Section(skill.body);
+    expect(o1).toContain('B-861');
+    // Pointer, not a restated copy — the contract lives in the shared doc.
+    expect(o1).toContain('brief-authoring.md` §Release');
+    expect(o1.toLowerCase()).toMatch(/do not restate that contract\s+here — render it/);
+    // All four dispositions are named at the pointer so a reader knows what they are pointing at.
+    for (const disposition of ['concluded', 'still in flight', 'none reported', 'unreadable']) {
+      expect(o1.toLowerCase(), `O1 must name the "${disposition}" disposition`).toContain(disposition);
+    }
+    // Per PR, off the EXISTING defensive build_pr read (B-876) — no new enumeration mechanism.
+    expect(o1.toLowerCase()).toMatch(/same defensive `build_pr` read above/);
+    expect(o1.toLowerCase()).toMatch(/every pr reference you were able to name there gets/);
+    // A single-PR release is the same code path, not a special case; two PRs render two entries.
+    expect(o1.toLowerCase()).toMatch(/exactly one entry\*\* — that is the same code path, not a special case/);
+    expect(o1.toLowerCase()).toMatch(/never one merged summary/);
+    // Never omitted, and never blocking.
+    expect(o1.toLowerCase()).toMatch(/omitting the section is never an option/);
+    expect(o1.toLowerCase()).toMatch(/informational and non-blocking/);
+  });
+
+  it('B-861: O1\'s fenced local read carries headRefOid, and the disposition resolves from the parsed payload, never an exit status', () => {
+    const o1 = o1Section(skill.body);
+    // The ONE gh pr view call now also fetches the commit the checks were read for.
+    expect(o1).toContain('gh pr view <pr_number> --json author,statusCheckRollup,headRefOid');
+    expect(o1.toLowerCase()).toMatch(/once per pull request/);
+    // Host detail is fenced off as deployment-specific, not stated as a general truth.
+    expect(o1).toContain('<!-- deployment-specific: begin -->');
+    expect(o1).toContain('<!-- deployment-specific: end -->');
+    expect(o1).toContain('On this deployment, the concrete read is');
+    // Disposition comes from the PARSED PAYLOAD — a watch command here has exited zero on a failure.
+    expect(o1).toContain('PARSED PAYLOAD');
+    expect(o1.toLowerCase()).toMatch(/never from a command's exit status/);
+    expect(o1.toLowerCase()).toMatch(/exited zero here on a run that concluded `failure`/);
+    // The four payload shapes map onto the four dispositions, and empty != unreadable.
+    expect(o1.toLowerCase()).toMatch(/not an array.{0,140}→ \*\*unreadable\*\*/s);
+    expect(o1.toLowerCase()).toMatch(/an empty array → \*\*none reported\*\*/);
+    expect(o1.toLowerCase()).toMatch(/a just-pushed head is[\s>]+not a repository without ci/);
+    // headRefOid is what the entry is stamped with, alongside the read time.
+    expect(o1.toLowerCase()).toMatch(/`headrefoid` is the commit the checks were read for/);
+    // Any non-success conclusion escalates to an attention line above the section.
+    expect(o1.toLowerCase()).toMatch(/is not `success`.{0,160}triggers the attention line/s);
+  });
+
+  it('B-861: O2 step 1c reads headRefOid and states a divergence from the head the brief named IN WORDS', () => {
+    const o2 = o2Section2(skill.body);
+    expect(o2).toContain('B-861');
+    // The existing fresh pre-merge read is extended, not duplicated.
+    expect(o2).toContain('gh pr view <pr_number> --json mergeable,mergeStateStatus,statusCheckRollup,headRefOid');
+    // This is the one place a divergence is actually observable.
+    expect(o2.toLowerCase()).toMatch(/the one\s+place a divergence is actually observable/);
+    // Stated in words — never two hashes left side by side for the human to diff.
+    expect(o2).toContain('IN WORDS');
+    expect(o2.toLowerCase()).toMatch(/never leave two commit ids side by\s+side/);
+    expect(o2.toLowerCase()).toMatch(/read for an \*\*earlier commit\*\*/);
+    // Non-blocking: the mergeable/mergeStateStatus branches remain the only merge stopper here.
+    expect(o2.toLowerCase()).toMatch(/a \*\*statement, not a new block\*\*/);
+    expect(o2.toLowerCase()).toMatch(/the only thing that stops a merge here/);
   });
 
   // B-783: the O1 release brief must surface the prerequisite PR's live merge status as its own

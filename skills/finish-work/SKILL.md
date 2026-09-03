@@ -254,13 +254,18 @@ CLAUDE.md → "Sharpest case"), not staging:
 4. **The fetch itself errored** → state the error explicitly in the attention line, never silently omit
    it (same discipline as the CI-evidence fetch failure below).
 
-**One `gh pr view` call, two uses: bot-approval + CI evidence (B-732, B-765 AC4).** Before showing the
-brief, make a single call for the `build_pr` PR, extended with `statusCheckRollup` so the brief's CI
-evidence is FETCHED from the PR's checks rather than asserted from local/partial evidence:
+**One `gh pr view` call, three uses: bot-approval + CI evidence + per-PR check status (B-732, B-765 AC4,
+B-861).** Before showing the brief, make a single call for the `build_pr` PR, extended with
+`statusCheckRollup` so the brief's CI evidence is FETCHED from the PR's checks rather than asserted from
+local/partial evidence, and with `headRefOid` so the check-status section below can stamp each entry with
+the commit its checks were read for:
 
 ```
-gh pr view <pr_number> --json author,statusCheckRollup
+gh pr view <pr_number> --json author,statusCheckRollup,headRefOid
 ```
+
+Make this call **once per pull request** the defensive `field_values.build_pr` read below names — the
+check-status section renders one entry per PR off exactly that list.
 
 **Bot-approval line.** A daemon-built PR is authored by the `harmony-daemon` App, and GitHub forbids a PR
 author approving its own PR — so the merge cannot happen on the human's Harmony accept alone. If
@@ -325,6 +330,46 @@ board — sibling keys (`build_pr` + `build_pr_plugin`, B-740), nesting (`build_
 omit what you cannot**; never fail the compose over an unfamiliar key. (The multi-PR *merge* guard is a
 separate thing and still applies at O2 below — naming extra PRs on the brief is not permission to merge
 them.)
+
+**The check-status section — one entry per pull request, never omitted (B-861).** Nobody is asked to
+authorise a merge blind, so the brief must say what each repository's own checks reported. The contract is
+`skills/harmony-shared/brief-authoring.md` §Release → the "What the repository's checks reported"
+must-have: four dispositions (**concluded** / **still in flight** / **none reported** / **unreadable**),
+each stamped with the commit the checks were read for and the read time, a head mismatch stated in words,
+and an attention line above the section for any non-success conclusion. **Do not restate that contract
+here — render it.**
+
+Iterate the **same defensive `build_pr` read above**: every PR reference you were able to name there gets
+its own entry, in the order you named them, from that PR's own `gh pr view` call. A single-PR release
+therefore renders as **exactly one entry** — that is the same code path, not a special case — and a
+release naming two PRs renders two, never one merged summary. Omitting the section is never an option:
+if there is nothing to report for a PR, the disposition itself says so.
+
+This section is **informational and non-blocking**. It never gates the accept; the human decides with the
+checks in view. (The merge-time behaviour is O2's, and a failing check is already the action side's
+concern — this gate's job is to make sure the human was told.)
+
+<!-- deployment-specific: begin -->
+> **On this deployment, the concrete read is…** — a fact about this deployment, not part of the contract
+> above. Resolve the disposition from the **PARSED PAYLOAD** of the `gh pr view <pr_number> --json
+> author,statusCheckRollup,headRefOid` call above, **never from a command's exit status**: `gh run watch
+> --exit-status` has exited zero here on a run that concluded `failure` (workspace CLAUDE.md → "Deploy
+> gotchas"), so an exit status proves nothing.
+>
+> - `statusCheckRollup` absent, `null`, or not an array — including the `403 Resource not accessible by
+>   integration` denial the CI-evidence line above already handles → **unreadable**; name the error.
+> - an empty array → **none reported**, scoped to that `headRefOid` and read time (a just-pushed head is
+>   not a repository without CI).
+> - a non-empty array whose every element carries a terminal conclusion → **concluded**; name each check
+>   and its conclusion.
+> - a non-empty array with any element still queued or in progress → **still in flight**, while still
+>   naming each already-concluded check and its conclusion.
+>
+> `headRefOid` is the commit the checks were read for — stamp the entry with it and with the time you
+> read it. Any element whose conclusion is not `SUCCESS` (`FAILURE`, `TIMED_OUT`, `CANCELLED`,
+> `ACTION_REQUIRED`, `STARTUP_FAILURE`, …) triggers the attention line above the section, alongside the
+> bot-approval and prerequisite-PR lines.
+<!-- deployment-specific: end -->
 
 Say the approval line on the brief rather than only at the merge, so the human can approve while they are
 already looking at the release decision instead of being stopped afterwards. On the human's **accept**:
@@ -529,8 +574,19 @@ paths:
      call:
 
      ```
-     gh pr view <pr_number> --json mergeable,mergeStateStatus,statusCheckRollup
+     gh pr view <pr_number> --json mergeable,mergeStateStatus,statusCheckRollup,headRefOid
      ```
+
+     **`headRefOid`: state a divergence from the head the brief named IN WORDS (B-861).** This is the one
+     place a divergence is actually observable — the release brief's check-status section was stamped with
+     the commit its checks were read for, and time passes between the human's accept and this merge. If
+     `headRefOid` here differs from the head that section named for this PR, the checks the human approved
+     against were read for an **earlier commit**. Say that in prose — never leave two commit ids side by
+     side for the human to diff — in the release trail comment (step 2 below) and in any `worker-question`
+     round filed from this step, e.g.: *"the checks shown on the release brief were read for an earlier
+     commit; this pull request has since moved to a new head, so those results do not describe what is
+     being merged."* This is a **statement, not a new block**: the `mergeable` / `mergeStateStatus`
+     branches below are unchanged and remain the only thing that stops a merge here.
 
      **If step 1 above hit a capability denial reading CI** (never a genuine CI failure — that already
      ended the leg), resolve it here via `mergeStateStatus`, per the capability-denial doctrine above:

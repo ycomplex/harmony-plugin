@@ -245,6 +245,60 @@ attestation stay enforced underneath as system requirements; terse prose never w
 - **The mechanical evidence line** — from `get_build_evidence_status`, carried verbatim. It is the
   machine's account of the ACs checked, the test cases recorded, and the pushed PR; never a prose
   paraphrase of it, and never a stand-in for the residue above.
+- **What the repository's checks reported** — named, per pull request, and NEVER omitted. Nobody is
+  asked to authorise a merge blind. For **each** pull request this release would merge, report exactly
+  one of four dispositions, and stamp every one of them with **the commit the checks were read for**
+  and **when the read was taken**:
+  1. **Concluded** — name each check and the conclusion it reported.
+  2. **Still in flight** — say the checks had not finished, and tell the human to confirm they
+     concluded before approving. This never blocks the approval; it is a statement, not a gate. A
+     **mixed** read — some checks concluded, others not — reports as still in flight, while still
+     naming each already-concluded check and its conclusion.
+  3. **None reported** — say plainly that the repository reported no checks, scoped to that commit at
+     that read time, so a just-pushed head is never mislabelled as a repository that has no checks at
+     all. Omitting the section is not an option: silence must never be left ambiguous.
+  4. **Unreadable** — the check surface could not be read: say exactly that, and name the error. An
+     unreadable surface and an empty one are **never** conflated — a failed read is never reported as
+     "no checks".
+
+  Three rules bind all four dispositions:
+  - **One entry per pull request.** A release covering more than one pull request reports each
+    separately; a release covering one reads as exactly one entry, with no special-casing either way.
+  - **A head mismatch is stated in words.** When the commit the checks were read for is not the pull
+    request's current head, say so in prose — never leave the human two commit ids to compare.
+  - **A non-success conclusion gets its own attention line ABOVE this section.** Any conclusion other
+    than success is called out there, never left as one line item inside a list of results.
+
+  This must-have is host-neutral by construction. It assumes no particular version-control host, no
+  particular kind of automation, no particular check name, and not even that the repository has any
+  checks at all — a deployment with one repository and no automation composes a correct brief from this
+  same prose, via disposition 3.
+
+<!-- deployment-specific: begin -->
+> **On this deployment, the concrete read is…** — everything from here to the end marker is a fact
+> about *this* deployment, NOT part of the contract above. Nothing above may be read as depending on
+> it, and a different deployment replaces this block wholesale without touching a word of the
+> must-have.
+>
+> The version-control host is GitHub and the checks are GitHub Actions. The read is one
+> `gh pr view <pr_number> --json author,statusCheckRollup,headRefOid` per pull request;
+> `headRefOid` is the commit the checks were read for. A release here can span two repositories
+> (harmony-web and harmony-plugin), and merging lands on staging — `promote-prod.sh` is the separate
+> production step.
+>
+> **Resolve the disposition from the PARSED PAYLOAD, never from an exit status.** A watch command here
+> has exited zero on a run that concluded `failure`, so an exit status is not evidence of anything.
+> Read `statusCheckRollup` itself:
+> - absent, `null`, or not an array — including any error or permission denial reading it →
+>   **unreadable**; name the error.
+> - an empty array → **none reported**, scoped to that `headRefOid` and read time.
+> - a non-empty array whose every element carries a terminal conclusion → **concluded**.
+> - a non-empty array with any element still queued or in progress → **still in flight**, naming the
+>   concluded ones.
+>
+> Any element whose conclusion is not `SUCCESS` (`FAILURE`, `TIMED_OUT`, `CANCELLED`,
+> `ACTION_REQUIRED`, `STARTUP_FAILURE`, …) triggers the attention line.
+<!-- deployment-specific: end -->
 
 **The footer** (hygiene, demoted below the headline):
 - The drained follow-ups rollup, for the human to veto.
