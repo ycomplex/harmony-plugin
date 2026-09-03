@@ -332,8 +332,25 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
      not-yet-promoted schema, B-383). Do nothing — proceed exactly as before this ticket existed.
    - **`none`** → no outstanding event. Proceed to step 2.
    - **`consumed`** → every promised write landed (idempotently) and the deferred advance committed —
-     `workflow_state` reflects the new value. Go back to **step 1** (re-read) so the rest of the loop sees
-     the post-advance state.
+     `workflow_state` reflects the new value. **B-888: when the just-settled `reason === 'clarification-draft'`,
+     this consume IS the clarification's AC-filing pass** — write its `AC-FILING-PASS` marker HERE, now,
+     before looping back. Skipping this is the exact B-888 defect: the design gate's §2b self-heal checks
+     for the marker to decide whether filing already ran; finding none (because a browser accept with no
+     `harmony-conduct` session watching landed here, at the leg-start consume, and never wrote it), it
+     concludes filing never ran and re-files the SAME acceptance criteria via `manage_acceptance_criteria`
+     (unledgered) — producing visible duplicates (this happened 4 times in production: B-876, B-878, B-796,
+     B-847/B-918). The result now surfaces `reason` and `brief_id` DIRECTLY (B-888) — no `list_activity`
+     lookup needed here, unlike 1b's own leg-start consume and harmony-design-decide §2b's self-heal, which
+     lack the event object and must recover the id from a `brief_resolved` activity entry:
+     ```
+     mcp__harmony__add_comment({ task_id, content: `AC-FILING-PASS brief_id=${brief_id} filed=${by_write_kind.acceptance_criterion ?? 0}` })
+     ```
+     Write it **unconditionally — including when the filed count is `0`** — a silent zero is exactly the
+     original B-744 bug's failure mode, so zero must be exactly as loud as N; this mirrors
+     `harmony-clarify` §5 branch B's own established `AC-FILING-PASS` convention exactly (same marker
+     format, same zero-is-loud rule). For every OTHER `reason` value, no marker is owed at this branch.
+     Then, in every case, go back to **step 1** (re-read) so the rest of the loop sees the post-advance
+     state.
    - **`payload-unrecognized`** → the event exists but its snapshotted payload is not (yet) in the
      structured shape `consume_pending_acceptance_event` applies (a not-yet-migrated `compose_brief` call
      site — see the ticket for which reasons still owe this wiring). **NEVER treat this as "nothing to

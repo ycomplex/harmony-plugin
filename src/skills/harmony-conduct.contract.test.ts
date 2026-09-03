@@ -458,6 +458,39 @@ describe('harmony-conduct skill contract', () => {
     expect(tools).toContain('list_activity');
   });
 
+  it("§1c's consumed branch writes AC-FILING-PASS for a clarification-draft consume, keyed on the surfaced brief_id, including a zero count (B-888)", () => {
+    const body = skill.body; // raw: AC-FILING-PASS is case-sensitive
+    // Scope assertions to the `1c.` section only — a stray AC-FILING-PASS mention elsewhere (e.g. 1b's
+    // own doc comment) must not satisfy this test.
+    const c1Idx = body.indexOf('1c. **On EVERY leg pickup');
+    const c1dIdx = body.indexOf('1d. **On EVERY iteration');
+    expect(c1Idx, 'missing §1c').toBeGreaterThan(-1);
+    expect(c1dIdx, 'missing §1d').toBeGreaterThan(c1Idx);
+    const seg = body.slice(c1Idx, c1dIdx);
+    // Scoped further to the `consumed` branch bullet within §1c.
+    const consumedIdx = seg.indexOf('**`consumed`**');
+    const unrecognizedIdx = seg.indexOf('**`payload-unrecognized`**');
+    expect(consumedIdx, 'missing the consumed branch bullet').toBeGreaterThan(-1);
+    expect(unrecognizedIdx, 'missing the payload-unrecognized branch bullet').toBeGreaterThan(consumedIdx);
+    const consumedSeg = seg.slice(consumedIdx, unrecognizedIdx);
+    // The marker write, inside the consumed branch specifically.
+    expect(consumedSeg).toMatch(/AC-FILING-PASS/);
+    expect(consumedSeg).toMatch(/add_comment/);
+    // Gated on the just-settled reason being clarification-draft.
+    expect(consumedSeg).toMatch(/reason === 'clarification-draft'/);
+    // The filed count comes from by_write_kind.acceptance_criterion ?? 0 — never re-derived.
+    expect(consumedSeg).toMatch(/by_write_kind\.acceptance_criterion \?\? 0/);
+    // Written unconditionally, including a zero count — the original B-744 failure mode.
+    expect(consumedSeg).toMatch(/unconditionally/);
+    expect(consumedSeg).toMatch(/filed count is `0`|zero count/);
+    // B-888 named as the ticket this closes.
+    expect(consumedSeg).toContain('B-888');
+    // No list_activity round-trip needed here (unlike 1b and design-decide §2b).
+    expect(consumedSeg).toMatch(/no `list_activity`\s+lookup needed/);
+    const tools = referencedHarmonyTools(consumedSeg);
+    expect(tools).toContain('add_comment');
+  });
+
   it('B-743: delivers the operator note as a scoped comment AFTER the Captured->Proposed auto-advance (step 4) and BEFORE the next forward gate drafts its brief (step 6)', () => {
     const body = skill.body;
     const step4Idx = body.indexOf("4. **If `workflow_state === 'Captured'`");
