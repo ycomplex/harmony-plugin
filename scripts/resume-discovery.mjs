@@ -27,8 +27,8 @@
 // `docker run` from proceeding. Omitting `--resume` (this script's silent no-op default) is always
 // safe; that is exactly the existing cold-start path.
 
-import { existsSync, readdirSync, statSync, readFileSync, appendFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readdirSync, statSync, readFileSync, appendFileSync, mkdirSync, copyFileSync } from 'node:fs';
+import { join, basename, dirname } from 'node:path';
 
 /** Mirrors src/config/run-config.ts's isSessionResumeEnabled — duplicated, not imported, for the
  *  same zero-dependency/no-build reason mint-installation-token.mjs's own header documents (this
@@ -68,10 +68,12 @@ export function currentConductionHasSession(currentProjectsDir, { existsImpl = e
 }
 
 /** Walk `<conductionsRoot>/<ticket>/*\/projects/*\/*.jsonl`, excluding `excludeConductionId`'s own
- *  subtree, and return the newest-by-mtime session id (the .jsonl basename, minus extension) — or
- *  null when none is found. Never throws: any per-entry stat/readdir failure is skipped, not fatal
- *  (a sibling conduction directory racing a concurrent reap, permissions, etc.). */
-export function findNewestSiblingSessionId(
+ *  subtree, and return the newest-by-mtime sibling session as `{ sessionId, filePath }` — or null
+ *  when none is found. Never throws: any per-entry stat/readdir failure is skipped, not fatal (a
+ *  sibling conduction directory racing a concurrent reap, permissions, etc.). Returns the full
+ *  `filePath` (not just the bare id) so callers can copy the sibling's session file into the
+ *  current conduction's own projects tree before injecting `--resume` (B-910). */
+export function findNewestSiblingSession(
   conductionsRoot,
   ticket,
   excludeConductionId,
@@ -80,7 +82,7 @@ export function findNewestSiblingSessionId(
   const ticketDir = join(conductionsRoot, ticket);
   if (!existsImpl(ticketDir)) return null;
 
-  let newest = null; // { sessionId, mtimeMs }
+  let newest = null; // { sessionId, filePath, mtimeMs }
   let conductionDirs;
   try {
     conductionDirs = readdirImpl(ticketDir);
@@ -115,12 +117,47 @@ export function findNewestSiblingSessionId(
           continue;
         }
         if (!newest || mtimeMs > newest.mtimeMs) {
-          newest = { sessionId: file.slice(0, -'.jsonl'.length), mtimeMs };
+          newest = { sessionId: file.slice(0, -'.jsonl'.length), filePath, mtimeMs };
         }
       }
     }
   }
-  return newest?.sessionId ?? null;
+  if (!newest) return null;
+  return { sessionId: newest.sessionId, filePath: newest.filePath };
+}
+
+/** Backward-compatible thin wrapper around findNewestSiblingSession, kept for existing callers/tests
+ *  that only need the bare id. */
+export function findNewestSiblingSessionId(conductionsRoot, ticket, excludeConductionId, opts = {}) {
+  return findNewestSiblingSession(conductionsRoot, ticket, excludeConductionId, opts)?.sessionId ?? null;
+}
+
+/** B-910: mirrors container/entrypoint.sh's b772_finish_cross_conduction_resume copy shape for the
+ *  LOCAL DOCKER launch profile. The CLI resolves `--resume <id>` purely by scanning
+ *  $HOME/.claude/projects, which for THIS conduction only ever contains ITS OWN projects tree —
+ *  never a sibling conduction's. Injecting --resume with an id the CLI can never locally resolve is
+ *  confirmed (B-895, in the cloud profile) to always fail to attach. So before injecting, copy the
+ *  sibling's session file into the current conduction's own `<currentProjectsDir>/<slug>` tree,
+ *  reusing the SAME slug directory name the sibling used (deterministic per-workdir, so it lands
+ *  exactly where the CLI will look for THIS conduction too). Never throws (best-effort, matching
+ *  every other helper in this module): any failure (permission error, disk error, a racing reap of
+ *  the sibling directory, ...) returns false so the caller can decline to inject `--resume` and let
+ *  the leg cold-start instead. */
+export function copySiblingSessionIntoCurrentProjectsDir(
+  currentProjectsDir,
+  siblingFilePath,
+  { mkdirImpl = mkdirSync, copyImpl = copyFileSync } = {},
+) {
+  try {
+    const siblingSlug = basename(dirname(siblingFilePath));
+    const destDir = join(currentProjectsDir, siblingSlug);
+    const destFile = join(destDir, basename(siblingFilePath));
+    mkdirImpl(destDir, { recursive: true });
+    copyImpl(siblingFilePath, destFile);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** The env-file line this script's whole purpose is to produce — appended (never replacing any
@@ -172,8 +209,22 @@ export async function main(argv = process.argv.slice(2)) {
       return;
     }
 
-    const sessionId = findNewestSiblingSessionId(conductionsRoot, ticket, conductionId);
-    const line = composeResumeFlagsLine(sessionId);
+    const sibling = findNewestSiblingSession(conductionsRoot, ticket, conductionId);
+    if (!sibling) return;
+
+    // B-910: never inject a --resume the CLI can't locally resolve — copy the sibling's session
+    // file into this conduction's own projects tree FIRST, and only append the resume flags line
+    // when that copy actually succeeded.
+    if (!copySiblingSessionIntoCurrentProjectsDir(currentProjectsDir, sibling.filePath)) {
+      process.stderr.write(
+        `resume-discovery: B-910 failed to copy sibling session ${sibling.sessionId} into this ` +
+          `conduction's own projects tree (${currentProjectsDir}) — the CLI could never resolve it ` +
+          'there, so declining to inject --resume and cold-starting instead\n',
+      );
+      return;
+    }
+
+    const line = composeResumeFlagsLine(sibling.sessionId);
     if (line) appendFileSync(envFile, line);
   } catch (err) {
     process.stderr.write(
