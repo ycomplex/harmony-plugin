@@ -11,6 +11,8 @@ import {
   isSessionResumeEnabledFromFile,
   currentConductionHasSession,
   findNewestSiblingSessionId,
+  findNewestSiblingSession,
+  copySiblingSessionIntoCurrentProjectsDir,
   composeResumeFlagsLine,
 } from '../scripts/resume-discovery.mjs';
 
@@ -140,6 +142,75 @@ describe('composeResumeFlagsLine', () => {
   });
 });
 
+describe('copySiblingSessionIntoCurrentProjectsDir', () => {
+  it('copies the sibling session file into <currentProjectsDir>/<siblingSlug>/<basename>', () => {
+    const dir = scratchDir();
+    const siblingSlug = join(dir, 'B-718', 'cond-old', 'projects', '-workspace-workspace');
+    mkdirSync(siblingSlug, { recursive: true });
+    const siblingFile = join(siblingSlug, 'sess-old.jsonl');
+    writeFileSync(siblingFile, '{"hello":"world"}\n');
+
+    const currentProjectsDir = join(dir, 'B-718', 'cond-new', 'projects');
+    const ok = copySiblingSessionIntoCurrentProjectsDir(currentProjectsDir, siblingFile);
+
+    expect(ok).toBe(true);
+    const destFile = join(currentProjectsDir, '-workspace-workspace', 'sess-old.jsonl');
+    expect(readFileSync(destFile, 'utf8')).toBe('{"hello":"world"}\n');
+  });
+
+  it('returns false (never throws) when the copy fails', () => {
+    const dir = scratchDir();
+    const siblingSlug = join(dir, 'B-718', 'cond-old', 'projects', '-workspace-workspace');
+    mkdirSync(siblingSlug, { recursive: true });
+    const siblingFile = join(siblingSlug, 'sess-old.jsonl');
+    writeFileSync(siblingFile, '{}\n');
+
+    const currentProjectsDir = join(dir, 'B-718', 'cond-new', 'projects');
+    const ok = copySiblingSessionIntoCurrentProjectsDir(currentProjectsDir, siblingFile, {
+      mkdirImpl: () => {
+        throw new Error('injected mkdir failure');
+      },
+    });
+
+    expect(ok).toBe(false);
+  });
+
+  it('returns false (never throws) when the copy step itself fails', () => {
+    const dir = scratchDir();
+    const siblingSlug = join(dir, 'B-718', 'cond-old', 'projects', '-workspace-workspace');
+    mkdirSync(siblingSlug, { recursive: true });
+    const siblingFile = join(siblingSlug, 'sess-old.jsonl');
+    writeFileSync(siblingFile, '{}\n');
+
+    const currentProjectsDir = join(dir, 'B-718', 'cond-new', 'projects');
+    const ok = copySiblingSessionIntoCurrentProjectsDir(currentProjectsDir, siblingFile, {
+      copyImpl: () => {
+        throw new Error('injected copy failure');
+      },
+    });
+
+    expect(ok).toBe(false);
+  });
+});
+
+describe('findNewestSiblingSession', () => {
+  it('returns { sessionId, filePath } for the newest sibling session', () => {
+    const dir = scratchDir();
+    const siblingSlug = join(dir, 'B-718', 'cond-old', 'projects', '-workspace-workspace');
+    mkdirSync(siblingSlug, { recursive: true });
+    const siblingFile = join(siblingSlug, 'sess-old.jsonl');
+    writeFileSync(siblingFile, '{}\n');
+
+    const result = findNewestSiblingSession(dir, 'B-718', 'cond-current');
+    expect(result).toEqual({ sessionId: 'sess-old', filePath: siblingFile });
+  });
+
+  it('returns null when there is no sibling session (matching findNewestSiblingSessionId)', () => {
+    const dir = scratchDir();
+    expect(findNewestSiblingSession(dir, 'B-999', 'cond-current')).toBeNull();
+  });
+});
+
 describe('end-to-end: main() appends the resume flag line to a real env-file', () => {
   it('appends CLAUDE_HEADLESS_FLAGS when enabled + a sibling session exists + the current conduction has none yet', async () => {
     const { main } = await import('../scripts/resume-discovery.mjs');
@@ -168,6 +239,70 @@ describe('end-to-end: main() appends the resume flag line to a real env-file', (
     const written = readFileSync(envFile, 'utf8');
     expect(written).toContain('GIT_TOKEN=dummy');
     expect(written).toContain('CLAUDE_HEADLESS_FLAGS=--resume sess-old');
+  });
+
+  it('copies the sibling session file into the current conduction projects dir AND appends --resume', async () => {
+    const { main } = await import('../scripts/resume-discovery.mjs');
+    const root = scratchDir();
+    const runConfigFile = join(root, 'run-config.json');
+    writeFileSync(runConfigFile, JSON.stringify({ session_resume: { enabled: true } }));
+    const siblingSlug = join(root, 'B-718', 'cond-old', 'projects', '-workspace-workspace');
+    mkdirSync(siblingSlug, { recursive: true });
+    writeFileSync(join(siblingSlug, 'sess-old.jsonl'), '{"sibling":true}\n');
+    const envFile = join(root, 'run.env');
+    writeFileSync(envFile, 'GIT_TOKEN=dummy\n');
+
+    await main([
+      '--conductions-root',
+      root,
+      '--ticket',
+      'B-718',
+      '--conduction-id',
+      'cond-new',
+      '--run-config-file',
+      runConfigFile,
+      '--env-file',
+      envFile,
+    ]);
+
+    const destFile = join(root, 'B-718', 'cond-new', 'projects', '-workspace-workspace', 'sess-old.jsonl');
+    expect(readFileSync(destFile, 'utf8')).toBe('{"sibling":true}\n');
+    expect(readFileSync(envFile, 'utf8')).toContain('CLAUDE_HEADLESS_FLAGS=--resume sess-old');
+  });
+
+  it('does NOT inject --resume when the sibling session file cannot be copied into place (B-910 AC2)', async () => {
+    const { main } = await import('../scripts/resume-discovery.mjs');
+    const root = scratchDir();
+    const runConfigFile = join(root, 'run-config.json');
+    writeFileSync(runConfigFile, JSON.stringify({ session_resume: { enabled: true } }));
+    const siblingSlug = join(root, 'B-718', 'cond-old', 'projects', '-workspace-workspace');
+    mkdirSync(siblingSlug, { recursive: true });
+    writeFileSync(join(siblingSlug, 'sess-old.jsonl'), '{}\n');
+
+    // Make the CURRENT conduction's own "projects" path a FILE instead of a directory, so
+    // mkdirSync(recursive: true) for the copy destination fails with a real ENOTDIR — the
+    // real-fs analog of a permission/disk error blocking the copy.
+    const currentConductionDir = join(root, 'B-718', 'cond-new');
+    mkdirSync(currentConductionDir, { recursive: true });
+    writeFileSync(join(currentConductionDir, 'projects'), 'not a directory');
+
+    const envFile = join(root, 'run.env');
+    writeFileSync(envFile, 'GIT_TOKEN=dummy\n');
+
+    await main([
+      '--conductions-root',
+      root,
+      '--ticket',
+      'B-718',
+      '--conduction-id',
+      'cond-new',
+      '--run-config-file',
+      runConfigFile,
+      '--env-file',
+      envFile,
+    ]);
+
+    expect(readFileSync(envFile, 'utf8')).toBe('GIT_TOKEN=dummy\n');
   });
 
   it('is a no-op (env-file untouched) when session_resume is disabled', async () => {
