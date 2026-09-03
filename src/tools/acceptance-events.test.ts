@@ -458,6 +458,59 @@ describe('consumePendingAcceptanceEvent — the leg-start-consume orchestrator',
     expect(client.rpc).toHaveBeenCalledWith('consume_acceptance_event', { _event_id: 'event-1' });
   });
 
+  // B-888 — the consumed result must surface `reason` and `brief_id` directly, so harmony-conduct §1c can
+  // write the clarification's AC-FILING-PASS marker at consume time without a second list_activity lookup.
+  it('B-888: the consumed result carries reason and brief_id from the pending event row', async () => {
+    const event = {
+      id: 'event-1', task_id: 'task-1', brief_id: 'clar-brief-1', reason: 'clarification-draft',
+      payload: { items: [acItem('ac-1')] }, pending_activity: 'clarifying', status: 'pending',
+    };
+    const client = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+      },
+      rpcResponses: {
+        consume_ac_add_write: [{ data: { applied: true, result_id: 'ac-1' } }],
+        consume_acceptance_event: [{ data: { event_id: 'event-1', task_id: 'task-1', status: 'consumed', workflow_state: 'Clarified', idempotent: false } }],
+      },
+    });
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
+    expect(result.status).toBe('consumed');
+    expect(result.reason).toBe('clarification-draft');
+    expect(result.brief_id).toBe('clar-brief-1');
+    expect(result.by_write_kind).toEqual({ acceptance_criterion: 1 });
+  });
+
+  // B-888 — the zero-count case: a clarification-draft consume that applies zero acceptance_criterion
+  // writes (e.g. every write was already landed on a prior attempt) must still report `status: 'consumed'`
+  // with the correct reason/brief_id, and by_write_kind.acceptance_criterion must be absent/undefined so
+  // the CALLER's `by_write_kind.acceptance_criterion ?? 0` correctly computes 0. This tool itself never
+  // calls add_comment — that happens in the SKILL.md-driven caller (harmony-conduct §1c).
+  it('B-888: zero-count clarification-draft consume still reports consumed/reason/brief_id, with acceptance_criterion absent from by_write_kind', async () => {
+    const event = {
+      id: 'event-1', task_id: 'task-1', brief_id: 'clar-brief-1', reason: 'clarification-draft',
+      payload: { items: [acItem('ac-1')] }, pending_activity: 'clarifying', status: 'pending',
+    };
+    const client = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+      },
+      rpcResponses: {
+        // Already-applied on a prior attempt — this call's RPC reports `applied: false` (skipped).
+        consume_ac_add_write: [{ data: { applied: false, result_id: 'ac-1' } }],
+        consume_acceptance_event: [{ data: { event_id: 'event-1', task_id: 'task-1', status: 'consumed', workflow_state: 'Clarified', idempotent: false } }],
+      },
+    });
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
+    expect(result.status).toBe('consumed');
+    expect(result.reason).toBe('clarification-draft');
+    expect(result.brief_id).toBe('clar-brief-1');
+    expect(result.by_write_kind?.acceptance_criterion).toBeUndefined();
+    expect(result.by_write_kind?.acceptance_criterion ?? 0).toBe(0);
+  });
+
   // TEST #11 — a payload-write failure must leave the event visibly pending: consume_acceptance_event
   // must NEVER be called when applyAcceptanceEventPayload throws, and the throw must propagate (not be
   // swallowed) so the caller/human/daemon retry loop sees it.

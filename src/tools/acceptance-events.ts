@@ -436,6 +436,13 @@ export interface ConsumePendingAcceptanceResult {
    *  (title/content per item) as a confirm-or-adjust ask — never a re-read via `get_task` /
    *  `get_pending_acceptance_event`, and never an open "what did you accept?" re-dictation question. */
   items?: unknown[];
+  /** B-888 — ALSO set on the `consumed` branch (not just `payload-unrecognized`): the same event's
+   *  `brief_id`, surfaced directly from the pending event row. Lets a `reason === 'clarification-draft'`
+   *  caller (harmony-conduct §1c) write the clarification's own `AC-FILING-PASS brief_id=... filed=...`
+   *  idempotency marker right here, at consume time, without a second `list_activity` round-trip to
+   *  recover the brief id from a `brief_resolved` event — the gap whose absence let B-888's design-gate
+   *  self-heal (§2b) find no marker and re-file the same acceptance criteria a second time. */
+  brief_id?: string;
 }
 
 /**
@@ -492,6 +499,8 @@ export async function consumePendingAcceptanceEvent(
     skipped_already_done: applyResult.skipped_already_done,
     by_write_kind: applyResult.by_write_kind,
     workflow_state: consumeResult.workflow_state,
+    reason: event.reason,
+    brief_id: event.brief_id,
   };
 }
 
@@ -508,7 +517,13 @@ export const consumePendingAcceptanceEventTool = {
     '{ status: "consumed" } = every promised write landed (idempotently — a retry after a partial failure ' +
     'only applies what is still missing) and the deferred workflow-state advance committed; ' +
     '`workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind ' +
-    '(e.g. how many NEW acceptance_criterion writes this call itself filed). ' +
+    '(e.g. how many NEW acceptance_criterion writes this call itself filed). B-888: the consumed result ' +
+    'ALSO carries `reason` and `brief_id`, surfaced directly from the pending event row (no second ' +
+    '`list_activity` round-trip needed) — when `reason === "clarification-draft"` this consume IS the ' +
+    'clarification\'s AC-filing pass, and the caller (harmony-conduct §1c) MUST write the ' +
+    '`AC-FILING-PASS brief_id=<brief_id> filed=<by_write_kind.acceptance_criterion ?? 0>` marker right here ' +
+    '— its absence is what let the design gate\'s §2b self-heal conclude filing never ran and re-file the ' +
+    'same acceptance criteria a second time. ' +
     '{ status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload ' +
     'is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s ' +
     'own RPC is not yet deployed on this DB (a pre-migration window) — both degrade to the SAME status/ ' +
