@@ -342,6 +342,30 @@ case "$MODE" in
     # shellcheck disable=SC2206
     EXTRA_HEADLESS_FLAGS_BASE=(${CLAUDE_HEADLESS_FLAGS:-})
 
+    # --- B-916: per-invocation cost capture, wired into the SAME flag base. ----------------------
+    # `--output-format json` makes each invocation emit ONE JSON line at the END of its stdout,
+    # carrying THAT invocation's usage / total_cost_usd / num_turns / duration. It is added here (to
+    # the base, not per-iteration) so every invocation of the leg is measured identically — the
+    # B-718 resume attempt, its cold fallback, and every B-772 model-switch iteration.
+    #
+    # This flag is why the loop below captures each invocation's stdout to a file and RE-ECHOES its
+    # `.result` verbatim afterwards: the entire stdout becomes that one JSON line, so wiring the
+    # flag WITHOUT the re-echo would silently replace B-720's readable operator tail (the last few
+    # tool calls, the "I'm parking because..." line) with a machine blob.
+    #
+    # Skipped when an upstream caller already chose an output format via CLAUDE_HEADLESS_FLAGS —
+    # their choice wins, and the capture simply degrades to "no measurements recorded" rather than
+    # fighting it (the re-echo's verbatim-passthrough fallback keeps their output intact).
+    B916_OUTPUT_FORMAT_SET=0
+    for b916_flag in "${EXTRA_HEADLESS_FLAGS_BASE[@]}"; do
+      if [ "$b916_flag" = "--output-format" ]; then
+        B916_OUTPUT_FORMAT_SET=1
+      fi
+    done
+    if [ "$B916_OUTPUT_FORMAT_SET" -eq 0 ]; then
+      EXTRA_HEADLESS_FLAGS_BASE+=(--output-format json)
+    fi
+
     # B-772: HARMONY_MODEL is the daemon's already-resolved per-gate/per-run/pinned-default model
     # choice (src/config/run-config.ts's getModelForGate, delivered via the minted run.env file —
     # see scripts/mint-installation-token.mjs's composeModelLine). Guarded exactly like the
@@ -394,6 +418,62 @@ case "$MODE" in
       return $status
     }
 
+    # --- B-916: one leg_key per LEG, minted HERE. -----------------------------------------------
+    # The worker is the only thing that knows where one leg's invocations begin and end, so it — not
+    # the DB, not the daemon — mints the key that groups them back together. Generated ONCE, before
+    # the first invocation, and reused by every invocation of this leg. Nothing downstream parses
+    # it; it is an opaque grouping key.
+    LEG_KEY="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}"
+    INVOCATION_INDEX=0
+    LEG_GATE=""
+
+    # Re-echo one captured invocation's `.result` to stdout, VERBATIM — B-720's captured operator
+    # tail must read exactly as it did before --output-format json was wired in. A capture that is
+    # NOT a result envelope (an older CLI that ignored the flag, a wrapper/stub, a crash before the
+    # line was emitted, or simply no jq on this image) is passed through byte-for-byte instead, so
+    # nothing a claude invocation wrote to stdout can ever be swallowed by this feature.
+    _b916_echo_result() {
+      [ -s "$1" ] || return 0
+      if jq -e 'type == "object" and has("result")' "$1" >/dev/null 2>&1; then
+        jq -r '.result // ""' "$1"
+      else
+        cat "$1"
+      fi
+    }
+
+    # Stamp the gate for the invocation ABOUT TO RUN. Deliberately resolved BEFORE the invocation,
+    # never at write time: by the time an invocation returns, the gate whose work it just did has
+    # already advanced, so a write-time read would attribute this invocation's spend to the NEXT
+    # activity. Best-effort — an empty result (no login, an unreadable row, a terminal state) is a
+    # legitimate answer and the row is still written, with a null gate.
+    _b916_stamp_gate() {
+      if [ -z "${HARMONY_CONDUCTION_ID:-}" ]; then
+        LEG_GATE=""
+        return 0
+      fi
+      LEG_GATE="$(node "$PLUGIN_DIR/dist/bin/harmony.js" leg-cost resolve-gate 2>/dev/null || true)"
+    }
+
+    # Hand one captured invocation to the cost recorder, then drop the capture. Best-effort in the
+    # strongest sense: the accessor already exits 0 on every failure it can have (see
+    # src/cli/commands/leg-cost.ts), and this call is additionally `|| true`-guarded so not even a
+    # missing node/dist can trip `set -e`. Skipped entirely outside a conducted run (no
+    # HARMONY_CONDUCTION_ID — a manual/dogfood container), where there is no conduction for the row
+    # to belong to and therefore nothing to record. $1 = the capture file.
+    _b916_record_invocation() {
+      if [ -n "${HARMONY_CONDUCTION_ID:-}" ]; then
+        local model_args=()
+        if [ -n "$CURRENT_MODEL" ]; then
+          model_args=(--model "$CURRENT_MODEL")
+        fi
+        node "$PLUGIN_DIR/dist/bin/harmony.js" leg-cost record \
+          --file "$1" --gate "$LEG_GATE" --leg-key "$LEG_KEY" \
+          --invocation-index "$INVOCATION_INDEX" "${model_args[@]}" >/dev/null 2>&1 || true
+      fi
+      INVOCATION_INDEX=$((INVOCATION_INDEX + 1))
+      rm -f "$1"
+    }
+
     MAX_MODEL_SWITCH_ITERATIONS=7
     ITERATION=1
     LEG_EXIT=0
@@ -416,6 +496,11 @@ case "$MODE" in
         EXTRA_HEADLESS_FLAGS+=(--model "$CURRENT_MODEL")
       fi
 
+      # B-916: stamp the gate ONCE per iteration, before this iteration's invocation(s). One stamp
+      # covers both halves of the resume/cold-fallback pair below because nothing can advance the
+      # gate between them (the resume attempt failed to ATTACH — it never ran a turn).
+      _b916_stamp_gate
+
       if [ "$ITERATION" -eq 1 ] && [ -n "$RESUME_SESSION_ID" ]; then
         # B-718 AC5: --resume is BEST-EFFORT. A resumed invocation that fails to even ATTACH
         # (corrupt/truncated session file, a session id the CLI rejects, a stale id left over from
@@ -425,37 +510,68 @@ case "$MODE" in
         # absorbed. The gate is a bare nonzero exit code, deliberately NOT keyed to any specific
         # stderr signature: discovery here is deterministic, so a session that fails with an error
         # string this gate doesn't recognize would otherwise re-fail identically on every
-        # re-conduct, bricking the ticket with a park reason that never mentions sessions. Only
-        # stderr is captured to a file here (stdout keeps streaming live to the daemon's log exactly
-        # as before); the captured stderr is dumped verbatim right after the attempt concludes
-        # either way, so nothing is lost — only its live interleaving with stdout during the
-        # (expected-brief) resume-attach window. Dumping it verbatim is what keeps an unfamiliar
-        # failure visible even though the fallback no longer requires recognizing it.
+        # re-conduct, bricking the ticket with a park reason that never mentions sessions. Both
+        # stderr AND (as of B-916) stdout are captured to files here; each is emitted verbatim right
+        # after the attempt concludes either way, so nothing is lost — only its live interleaving
+        # during the (expected-brief) resume-attach window. Dumping stderr verbatim is what keeps an
+        # unfamiliar failure visible even though the fallback no longer requires recognizing it.
         echo "B-718: attempting to resume prior session $RESUME_SESSION_ID (run_config.session_resume.enabled=true)." >&2
         RESUME_STDERR_FILE="$(mktemp)"
+        RESUME_STDOUT_FILE="$(mktemp)"
         set +e
-        _b772_run claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" --resume "$RESUME_SESSION_ID" "${EXTRA_HEADLESS_FLAGS[@]}" 2>"$RESUME_STDERR_FILE"
+        _b772_run claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" --resume "$RESUME_SESSION_ID" "${EXTRA_HEADLESS_FLAGS[@]}" >"$RESUME_STDOUT_FILE" 2>"$RESUME_STDERR_FILE"
         RESUME_EXIT=$?
         set -e
         cat "$RESUME_STDERR_FILE" >&2
         rm -f "$RESUME_STDERR_FILE"
+        # B-916: the resume ATTEMPT is an invocation like any other — re-echoed and recorded even
+        # when it failed to attach (a failed attach still burns wall-clock, and a leg whose cost
+        # excludes it under-reports what the run actually took).
+        _b916_echo_result "$RESUME_STDOUT_FILE"
+        _b916_record_invocation "$RESUME_STDOUT_FILE"
         if [ "$RESUME_EXIT" -ne 0 ]; then
           echo "B-718: --resume $RESUME_SESSION_ID failed to attach (exit $RESUME_EXIT; see stderr above) — falling back to a COLD start. Resume was attempted and degraded gracefully; this is expected to be rare — investigate the persisted transcript mount if it recurs." >&2
-          _b772_run claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" "${EXTRA_HEADLESS_FLAGS[@]}"
-          LEG_EXIT=$?
+          FALLBACK_STDOUT_FILE="$(mktemp)"
+          set +e
+          _b772_run claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" "${EXTRA_HEADLESS_FLAGS[@]}" >"$FALLBACK_STDOUT_FILE"
+          INVOCATION_EXIT=$?
+          set -e
+          _b916_echo_result "$FALLBACK_STDOUT_FILE"
+          _b916_record_invocation "$FALLBACK_STDOUT_FILE"
+          LEG_EXIT=$INVOCATION_EXIT
+          # B-916: before this ticket a nonzero exit here ended the script on the spot, via `set -e`.
+          # That is preserved EXACTLY — as an explicit exit taken only AFTER the capture above has
+          # been re-echoed and recorded, so the failing invocation (the one an operator most wants
+          # the duration and cost of) is no longer the single invocation that goes unrecorded.
+          # It exits $INVOCATION_EXIT, NOT $LEG_EXIT, on purpose: two contract tests extract this
+          # whole block by slicing to the FIRST occurrence of the branch's final exit-LEG_EXIT line
+          # (src/daemon/profile-contract.test.ts and src/tools/leg-cost-capture-contract.test.ts),
+          # so that exact text must occur EXACTLY ONCE in this file — as the block's last line. A
+          # colocated test in the latter file pins that uniqueness.
+          [ "$INVOCATION_EXIT" -eq 0 ] || exit "$INVOCATION_EXIT"
         else
           LEG_EXIT=$RESUME_EXIT
         fi
       else
         # No prior session to resume (disabled, first leg ever, nothing resumable, or the
         # session-resume guard above just cleared it) on iteration 1 — the existing cold-start path,
-        # byte-for-byte unchanged from before this ticket when CURRENT_MODEL is also empty.
+        # unchanged from before B-772 when CURRENT_MODEL is also empty, other than B-916's stdout
+        # capture + verbatim re-echo (which is byte-for-byte transparent to stdout by design).
         # CLAUDE_HEADLESS_FLAGS may still carry a CROSS-conduction --resume an upstream script
         # injected — passed through untouched here, exactly as it always has been. Every iteration
         # PAST the first is ALWAYS a cold start regardless — a model switch is itself a session
         # boundary (this ticket's accepted design), so there is never a `--resume` on iteration 2+.
-        _b772_run claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" "${EXTRA_HEADLESS_FLAGS[@]}"
-        LEG_EXIT=$?
+        COLD_STDOUT_FILE="$(mktemp)"
+        set +e
+        _b772_run claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" "${EXTRA_HEADLESS_FLAGS[@]}" >"$COLD_STDOUT_FILE"
+        INVOCATION_EXIT=$?
+        set -e
+        _b916_echo_result "$COLD_STDOUT_FILE"
+        _b916_record_invocation "$COLD_STDOUT_FILE"
+        LEG_EXIT=$INVOCATION_EXIT
+        # B-916: same preserved-`set -e` exit as the resume-fallback branch above — see its comment
+        # (including why it names $INVOCATION_EXIT rather than $LEG_EXIT).
+        [ "$INVOCATION_EXIT" -eq 0 ] || exit "$INVOCATION_EXIT"
       fi
 
       # --- did that turn ask to switch models? -----------------------------------------------

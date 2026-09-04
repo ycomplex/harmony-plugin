@@ -117,6 +117,30 @@ export {
   type CreateConductionArgs,
 } from './conduction-record.js';
 
+// B-916: the per-INVOCATION leg-cost record's shared-core accessors + the claude-specific result
+// parse. Same convention as conduction-record.js above — NOT registered as MCP tools, barrel export
+// only. Their one consumer today is the CLI accessor (src/cli/commands/leg-cost.ts), which
+// container/provision.sh calls between claude invocations; nothing in src/daemon/ imports either
+// module, and nothing ever may (the B-718 agent-neutrality seam — see leg-cost-record.ts's header).
+export {
+  recordLegCost,
+  listLegCosts,
+  resolveLegCostContext,
+  type LegCostRecord,
+  type LegCostSource,
+  type RecordLegCostArgs,
+} from './leg-cost-record.js';
+export {
+  parseClaudeResultJson,
+  deriveCostUsd,
+  resolveCost,
+  resolvePricing,
+  MODEL_PRICING,
+  type ClaudeResultUsage,
+  type ModelPricing,
+  type ParsedClaudeResult,
+} from './claude-result-parse.js';
+
 export function registerTools(disabledFeatures?: Record<string, boolean>) {
   const tools = [
     // Core tools (always visible)
