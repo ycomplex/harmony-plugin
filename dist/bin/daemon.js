@@ -22593,10 +22593,11 @@ var CONDUCTION_PATCHABLE_FIELDS = [
   "last_worker_exit_code",
   "last_worker_exit_class",
   "current_pr_ref",
-  // B-720: the captured worker-output tail + its capture time + the leg's total byte count. Patched
-  // by the daemon's SEPARATE, never-throwing settlement write (scheduler.ts's flushWorkerOutput) —
-  // never folded into the terminal status patch, so a pre-migration prod board fails as "no output
-  // captured" instead of losing the settlement itself.
+  // B-720, RETIRED: the old captured-output columns. NOTHING WRITES THESE ANY MORE — the daemon's
+  // settlement write now inserts a `source='launcher'` row into `conduction_leg_output` instead
+  // (scheduler.ts's flushLaunchOutput), and the worker writes its own `source='worker'` row from
+  // inside the container. The allowlist entries stay so an older daemon build's patch is still
+  // accepted; removing them (and the columns) is a separate tracked follow-up.
   "last_worker_output",
   "last_worker_output_at",
   "last_worker_output_bytes"
@@ -23803,6 +23804,42 @@ async function listSubtasks(client, projectId, args) {
   return all;
 }
 
+// src/tools/leg-output-record.ts
+var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
+function warn(message) {
+  console.error(`harmony leg-output: WARNING \u2014 ${message}`);
+}
+var errText = (err) => err?.message ?? String(err);
+async function recordLegOutput(client, args) {
+  if (!client) return false;
+  if (!args.conduction_id) return false;
+  if (!args.source) return false;
+  try {
+    const tail = args.tail ?? null;
+    const row = {
+      conduction_id: args.conduction_id,
+      task_id: args.task_id ?? null,
+      leg_key: args.leg_key ?? null,
+      source: args.source,
+      tail: tail !== null && tail.length > 0 ? tail : null,
+      total_bytes: args.total_bytes ?? null,
+      gate: args.gate ?? null
+    };
+    if (args.captured_at) row.captured_at = args.captured_at;
+    const { error } = await client.from("conduction_leg_output").insert(row);
+    if (error) {
+      warn(
+        `the ${args.source} output row was not written (${errText(error)}). This is the EXPECTED shape while harmony-web's conduction_leg_output migration has not yet landed on this environment's Supabase project (B-383 prod-before-promote) \u2014 the leg itself is unaffected.`
+      );
+      return false;
+    }
+    return true;
+  } catch (err) {
+    warn(`writing the ${args.source} output row threw (${errText(err)}) \u2014 the leg itself is unaffected`);
+    return false;
+  }
+}
+
 // src/daemon/error-format.ts
 function isHttpShapedError(err) {
   return typeof err === "object" && err !== null && "status" in err && typeof err.status === "number" && "body" in err;
@@ -24536,11 +24573,11 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
         // eventual settlement (conservative: never a false positive from an un-anchored comparison).
         preFireHeadSha: null,
         // B-720: a re-attached launch's stdout belongs to a process this daemon never spawned —
-        // there is no stream to buffer, so nothing is ever captured and no tail is written at its
-        // settlement (leaving the columns exactly as they were rather than stamping an empty
-        // capture over them).
-        outputTail: null,
-        outputBytes: 0
+        // there is no stream to buffer, so nothing is ever captured and NO ROW is written at its
+        // settlement (recording an empty capture would be a claim about a launch this daemon never
+        // watched).
+        launchOutputTail: null,
+        launchOutputBytes: 0
       });
       return false;
     }
@@ -24617,19 +24654,27 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
     last_worker_exit_code: tracked.exitCode,
     last_worker_exit_class: cls
   });
-  await flushWorkerOutput(deps, row, tracked);
+  await flushLaunchOutput(deps, row, tracked);
 }
-async function flushWorkerOutput(deps, row, tracked) {
-  if (tracked.outputTail === null) return;
+async function flushLaunchOutput(deps, row, tracked) {
+  if (tracked.launchOutputTail === null) return;
   try {
-    await deps.updateConductionIfHeld(row.id, deps.leaseHolder, {
-      last_worker_output: tracked.outputTail.length > 0 ? tracked.outputTail : null,
-      last_worker_output_at: iso(deps.now()),
-      last_worker_output_bytes: tracked.outputBytes
+    await deps.recordLegOutput({
+      conduction_id: row.id,
+      source: "launcher",
+      // Denormalized convenience only — RLS resolves through the parent conduction, never this.
+      task_id: row.task_id ?? null,
+      leg_key: null,
+      // The daemon does not resolve gates for display; the worker's own rows carry that.
+      gate: null,
+      tail: tracked.launchOutputTail,
+      total_bytes: tracked.launchOutputBytes,
+      // The INJECTED clock, not the DB default: this module's whole test world runs on a fake one.
+      captured_at: iso(deps.now())
     });
   } catch (err) {
     deps.log(
-      `conduction ${row.id}: worker output not captured (${err instanceof Error ? err.message : String(err)}) \u2014 the settlement above is unaffected`
+      `conduction ${row.id}: launcher output not captured (${err instanceof Error ? err.message : String(err)}) \u2014 the settlement above is unaffected`
     );
   }
 }
@@ -24723,8 +24768,8 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
     preFireHeadSha,
     // B-720: filled in when this launch's runCommand resolves (see the .then below) — null until
     // then, which is also the terminal value for a launch that never settles here.
-    outputTail: null,
-    outputBytes: 0
+    launchOutputTail: null,
+    launchOutputBytes: 0
   };
   runtime.running.set(row.id, tracked);
   if (Object.keys(row.run_config ?? {}).length > 0 && !deps.config.profile.launch.includes("{run_config_json}")) {
@@ -24735,8 +24780,8 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
   const launch = deps.runCommand(renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey))).then((result) => {
     tracked.settled = true;
     tracked.exitCode = result.exitCode;
-    tracked.outputTail = result.outputTail ?? null;
-    tracked.outputBytes = result.outputBytes ?? 0;
+    tracked.launchOutputTail = result.outputTail ?? null;
+    tracked.launchOutputBytes = result.outputBytes ?? 0;
   });
   const cancelDeadline = deps.startTimeout(deps.config.workerTimeoutMs, () => {
     deps.log(
@@ -24964,6 +25009,10 @@ ${err instanceof Error ? err.message : String(err)}
     // B-717 item 3: the multi-daemon steal CAS.
     stealConduction: (args) => stealConduction(client, args),
     runCommand,
+    // B-720 (replacement capture): the launcher-diagnostics write. Never throws (see
+    // src/tools/leg-output-record.ts) — a settlement must never depend on it, before or after
+    // harmony-web's conduction_leg_output migration is promoted.
+    recordLegOutput: (args) => recordLegOutput(client, args),
     probeRef,
     log,
     leaseHolder,

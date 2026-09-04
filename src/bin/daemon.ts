@@ -52,6 +52,9 @@ import {
   updateConductionIfHeld,
   markCleanShutdown,
 } from '../tools/conduction-record.js';
+// B-720 (replacement capture): the launcher half of the per-leg output record — the daemon WRITES
+// `source='launcher'` rows and never reads one back (the agent-neutrality seam).
+import { recordLegOutput } from '../tools/leg-output-record.js';
 import { createHeartbeatKeeper } from '../daemon/heartbeat.js';
 import { formatDaemonError } from '../daemon/error-format.js';
 import { loadDaemonConfig, selectNamedProfile } from '../daemon/config.js';
@@ -218,10 +221,19 @@ async function main(): Promise<void> {
       const child = exec(cmd);
       // B-720: a BOUNDED ring buffer over the same data events the log already sees. Chunks are
       // appended and dropped from the FRONT while the retained bytes exceed WORKER_OUTPUT_TAIL_BYTES,
-      // so memory is capped regardless of how chatty the worker is (a single oversized chunk is
+      // so memory is capped regardless of how chatty the command is (a single oversized chunk is
       // sliced by characters, which can never split a codepoint mid-way). `outputBytes` counts the
       // TOTAL the command emitted, not the retained tail — their difference is exactly the
       // "showing the last N of M" signal the board states to the operator.
+      //
+      // WHOSE BYTES THESE ARE (B-720's replacement capture — say it plainly): this captures the
+      // LAUNCH COMMAND's output. That is the WORKER's output only on the docker profile, whose
+      // launch template ends in an attached `docker run`. On the cloud profile — the one production
+      // runs — the launch command is a Cloud Run control-plane client (container/
+      // cloud-worker-launch.sh) and the worker's stdout goes to Cloud Logging, never through this
+      // process. So this buffer is stored as `source='launcher'` and shown under its own
+      // "Launcher diagnostics" label (src/daemon/scheduler.ts's flushLaunchOutput); the worker
+      // records its OWN output from inside the container, via `harmony leg-output record`.
       const chunks: string[] = [];
       let tailBytes = 0;
       let outputBytes = 0;
@@ -372,6 +384,10 @@ async function main(): Promise<void> {
     // B-717 item 3: the multi-daemon steal CAS.
     stealConduction: (args) => stealConduction(client, args),
     runCommand,
+    // B-720 (replacement capture): the launcher-diagnostics write. Never throws (see
+    // src/tools/leg-output-record.ts) — a settlement must never depend on it, before or after
+    // harmony-web's conduction_leg_output migration is promoted.
+    recordLegOutput: (args) => recordLegOutput(client, args),
     probeRef,
     log,
     leaseHolder,

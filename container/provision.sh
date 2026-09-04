@@ -427,11 +427,18 @@ case "$MODE" in
     INVOCATION_INDEX=0
     LEG_GATE=""
 
-    # Re-echo one captured invocation's `.result` to stdout, VERBATIM — B-720's captured operator
-    # tail must read exactly as it did before --output-format json was wired in. A capture that is
-    # NOT a result envelope (an older CLI that ignored the flag, a wrapper/stub, a crash before the
-    # line was emitted, or simply no jq on this image) is passed through byte-for-byte instead, so
-    # nothing a claude invocation wrote to stdout can ever be swallowed by this feature.
+    # Re-echo one captured invocation's `.result` to stdout, VERBATIM.
+    #
+    # WHY THIS STILL EXISTS, now that B-720's tail no longer comes from stdout (it is recorded from
+    # the capture files below, by `_b720_record_output`): because THIS SCRIPT'S STDOUT IS STILL READ.
+    # `--output-format json` turns a whole invocation into one machine line; without the re-echo,
+    # everything attached to this container's stdout — Cloud Logging on the cloud profile, the
+    # daemon's `[worker]` log lines on the docker profile, and anyone running the container by hand
+    # — would see a JSON blob where the agent's prose used to be. Keeping stdout FAITHFUL is the
+    # reason; feeding B-720's capture is no longer it. A capture that is NOT a result envelope (an
+    # older CLI that ignored the flag, a wrapper/stub, a crash before the line was emitted, or
+    # simply no jq on this image) is passed through byte-for-byte instead, so nothing a claude
+    # invocation wrote to stdout can ever be swallowed by this feature.
     _b916_echo_result() {
       [ -s "$1" ] || return 0
       if jq -e 'type == "object" and has("result")' "$1" >/dev/null 2>&1; then
@@ -472,6 +479,38 @@ case "$MODE" in
       fi
       INVOCATION_INDEX=$((INVOCATION_INDEX + 1))
       rm -f "$1"
+    }
+
+    # B-720 (replacement capture): record what THIS invocation actually wrote, as the WORKER's own
+    # output row (`source=worker`).
+    #
+    # Why here and not in the daemon: the daemon captures the LAUNCH COMMAND's stdout, which is the
+    # worker's only on the docker profile. On the cloud profile — the one production runs — the
+    # launch command is a Cloud Run control-plane client and this container's stdout goes to Cloud
+    # Logging, never through the daemon, so what the daemon captured there was launcher chatter
+    # wearing the name "worker output". Captured HERE it is the worker's output on every profile.
+    #
+    # Reuses the SAME LEG_KEY as `_b916_record_invocation`, so a leg's output rows and its cost rows
+    # join. The accessor itself bounds the tail at 64 KB and records the TOTAL byte count alongside
+    # it, so the board's "showing the last N of M bytes" signal survives.
+    #
+    # Best-effort in the strongest sense, exactly like the cost recorder: the accessor already exits
+    # 0 on every failure it can have and writes diagnostics to stderr ONLY (a stray stdout line
+    # would corrupt the very capture it describes), and this call is additionally `|| true`-guarded
+    # so not even a missing node/dist can trip `set -e`. Skipped entirely outside a conducted run
+    # (no HARMONY_CONDUCTION_ID — a manual/dogfood container), where there is no conduction for the
+    # row to belong to. $1 = the stdout capture file; $2 = the stderr capture file, when the branch
+    # kept one (only the B-718 resume attempt does).
+    _b720_record_output() {
+      if [ -n "${HARMONY_CONDUCTION_ID:-}" ]; then
+        local stderr_args=()
+        if [ -n "${2:-}" ] && [ -f "${2:-}" ]; then
+          stderr_args=(--stderr-file "$2")
+        fi
+        node "$PLUGIN_DIR/dist/bin/harmony.js" leg-output record \
+          --file "$1" --source worker --leg-key "$LEG_KEY" --gate "$LEG_GATE" \
+          "${stderr_args[@]}" >/dev/null 2>&1 || true
+      fi
     }
 
     MAX_MODEL_SWITCH_ITERATIONS=7
@@ -523,11 +562,16 @@ case "$MODE" in
         RESUME_EXIT=$?
         set -e
         cat "$RESUME_STDERR_FILE" >&2
-        rm -f "$RESUME_STDERR_FILE"
         # B-916: the resume ATTEMPT is an invocation like any other — re-echoed and recorded even
         # when it failed to attach (a failed attach still burns wall-clock, and a leg whose cost
         # excludes it under-reports what the run actually took).
         _b916_echo_result "$RESUME_STDOUT_FILE"
+        # B-720: this is the ONE branch that captured stderr to its own file, so it is the one
+        # branch whose recorded output can carry both halves. The stderr file's `rm` moved BELOW
+        # this call for exactly that reason — an attach failure's stderr is the most useful text
+        # this leg will produce, and dropping it before the record would have thrown it away.
+        _b720_record_output "$RESUME_STDOUT_FILE" "$RESUME_STDERR_FILE"
+        rm -f "$RESUME_STDERR_FILE"
         _b916_record_invocation "$RESUME_STDOUT_FILE"
         if [ "$RESUME_EXIT" -ne 0 ]; then
           echo "B-718: --resume $RESUME_SESSION_ID failed to attach (exit $RESUME_EXIT; see stderr above) — falling back to a COLD start. Resume was attempted and degraded gracefully; this is expected to be rare — investigate the persisted transcript mount if it recurs." >&2
@@ -537,6 +581,7 @@ case "$MODE" in
           INVOCATION_EXIT=$?
           set -e
           _b916_echo_result "$FALLBACK_STDOUT_FILE"
+          _b720_record_output "$FALLBACK_STDOUT_FILE"
           _b916_record_invocation "$FALLBACK_STDOUT_FILE"
           LEG_EXIT=$INVOCATION_EXIT
           # B-916: before this ticket a nonzero exit here ended the script on the spot, via `set -e`.
@@ -567,6 +612,7 @@ case "$MODE" in
         INVOCATION_EXIT=$?
         set -e
         _b916_echo_result "$COLD_STDOUT_FILE"
+        _b720_record_output "$COLD_STDOUT_FILE"
         _b916_record_invocation "$COLD_STDOUT_FILE"
         LEG_EXIT=$INVOCATION_EXIT
         # B-916: same preserved-`set -e` exit as the resume-fallback branch above — see its comment

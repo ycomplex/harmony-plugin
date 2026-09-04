@@ -1,5 +1,12 @@
-// B-916 cross-file drift guard: container/provision.sh's headless branch must keep CAPTURING every
-// claude invocation's cost AND re-echoing its `.result` verbatim.
+// B-916 + B-720 cross-file drift guard: container/provision.sh's headless branch must keep CAPTURING
+// every claude invocation's cost AND its OUTPUT, and must keep re-echoing its `.result` verbatim.
+//
+// B-720's replacement capture is guarded here too, on the same extracted block and the same fake
+// accessor: the WORKER now records its own output (`harmony leg-output record --source worker`),
+// because the daemon's capture is the LAUNCH COMMAND's stdout — the worker's own only on the docker
+// profile. If that call ever falls out of provision.sh, the board silently goes back to showing
+// launcher chatter under the "Worker output" heading, which is the exact failure B-720 was reopened
+// to fix. See the second describe block at the bottom of this file.
 //
 // Two properties are pinned here, and they pull against each other — which is exactly why they need
 // an executed test rather than prose:
@@ -99,6 +106,9 @@ function fakePluginDir(dir: string, logFile: string, opts: { recordExitCode?: nu
       "if (argv[0] === 'model' && argv[1] === 'context-budget') { process.stdout.write('999999999\\n'); process.exit(0); }",
       "if (argv[0] === 'leg-cost' && argv[1] === 'resolve-gate') { process.stdout.write('build\\n'); process.exit(0); }",
       `if (argv[0] === 'leg-cost' && argv[1] === 'record') process.exit(${opts.recordExitCode ?? 0});`,
+      // B-720: the worker's own output recorder. Logged like every other accessor call so the
+      // contract tests below can see WHEN it ran and WITH WHAT.
+      `if (argv[0] === 'leg-output' && argv[1] === 'record') process.exit(${opts.recordExitCode ?? 0});`,
       'process.exit(0);',
       '',
     ].join('\n'),
@@ -326,5 +336,72 @@ describe('provision.sh: B-916 per-invocation cost capture', () => {
     });
     expect(h.status).toBe(0);
     expect(h.combined).toContain('done');
+  });
+});
+
+
+const outputCalls = (h: Harness) =>
+  h.accessorCalls.filter((argv) => argv[0] === 'leg-output' && argv[1] === 'record');
+
+describe('provision.sh: B-720 worker-side output capture', () => {
+  it('records EVERY invocation\'s output as a WORKER row, under the same leg key as its cost row', () => {
+    const h = runBlock({ claudeBody: [`echo '${resultEnvelope('done')}'`, 'exit 0'] });
+
+    const calls = outputCalls(h).map(flags);
+    expect(calls).toHaveLength(1);
+    // `--source worker` is the WHOLE fix: the web selects worker output by this label alone, so a
+    // row written under any other source would put these bytes under the wrong heading.
+    expect(calls[0].source).toBe('worker');
+    expect(calls[0].gate).toBe('build');
+    // ONE leg key across both features, so a leg's output row and its B-916 cost rows join.
+    expect(calls[0]['leg-key']).toBe(flags(recordCalls(h)[0])['leg-key']);
+    // The capture file is the invocation's own stdout capture — the one the re-echo also reads.
+    expect(calls[0].file).toBeTruthy();
+  });
+
+  it('records BOTH halves of the B-718 resume-fallback path, and carries the attempt\'s STDERR too', () => {
+    const h = runBlock({
+      session: 'sess-old',
+      env: {
+        HARMONY_RUN_CONFIG_JSON: Buffer.from(
+          JSON.stringify({ session_resume: { enabled: true } }),
+        ).toString('base64'),
+      },
+      claudeBody: [
+        'if printf \'%s\\n\' "$@" | grep -q -- --resume; then',
+        '  echo "attach failed" >&2',
+        '  exit 3',
+        'fi',
+        `echo '${resultEnvelope('cold fallback did the work')}'`,
+        'exit 0',
+      ],
+    });
+
+    const calls = outputCalls(h).map(flags);
+    expect(calls).toHaveLength(2);
+    expect(calls.map((f) => f.source)).toEqual(['worker', 'worker']);
+    expect(calls[0]['leg-key']).toBe(calls[1]['leg-key']);
+    // The resume attempt is the ONE branch that captured stderr to its own file — an attach
+    // failure's stderr is the most useful text the leg will produce, so the row must carry it.
+    expect(calls[0]['stderr-file']).toBeTruthy();
+    // The cold fallback writes stderr straight through (no file exists to hand over).
+    expect(calls[1]['stderr-file']).toBeUndefined();
+  });
+
+  it('records the FAILING invocation too, and still exits with its code', () => {
+    const h = runBlock({ claudeBody: ['echo "boom" >&2', 'exit 42'] });
+    expect(h.status).toBe(42);
+    expect(outputCalls(h)).toHaveLength(1);
+  });
+
+  it('NEVER fails the leg when the output accessor itself fails — and never writes to STDOUT', () => {
+    const tail = 'I am parking because the migration is not on prod yet.';
+    const h = runBlock({ claudeBody: [`echo '${resultEnvelope(tail)}'`, 'exit 0'], recordExitCode: 9 });
+    expect(h.status).toBe(0);
+    // The operator tail is still exactly the agent's prose — the accessor contributed nothing to
+    // the stdout it exists to capture (its diagnostics are stderr-only, and it is >/dev/null'd
+    // besides).
+    expect(h.combined).toContain(tail);
+    expect(h.combined).not.toContain('leg-output');
   });
 });
