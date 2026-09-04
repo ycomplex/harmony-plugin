@@ -434,7 +434,10 @@ the wait while the leg exits looking clean.
 > `Lint, Test & Build` takes **8–9.5 min** (one light pull request at 5m19s); the E2E job — which runs
 > only on migration pull requests — runs **in parallel** at 8.5–9.5 min and finishes within ~1 min of it.
 > So typical full-green is **~9–10 min** after a push, with an observed outlier at **~17 min**.
-> Plugin-repo checks conclude in **~30–60 s**. A **20-minute cap per individual wait** is therefore a
+> The plugin repository's own checks are NOT materially faster: its `Container base layer` check
+> concludes in well under a minute, but its `Lint, Test & Build` took **~8 min** on this very pull
+> request (measured 2026-09-04) — so treat both repositories as ~8–10 min to full green.
+> A **20-minute cap per individual wait** is therefore a
 > *calibrated* timeout — roughly twice the norm and just clear of the outlier — not arithmetic: **do not
 > tighten it below the observed outlier**. With real waits at ~10 min, the ~35-minute loop budget
 > genuinely affords both fix rounds.
