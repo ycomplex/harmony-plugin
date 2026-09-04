@@ -339,6 +339,114 @@ BEFORE the session or container exits — an ephemeral `--rm` worker that exits 
 5. **Park:** `mcp__harmony__advance_workflow({ task_id, activity: "parking" })`. The ticket NEVER
    advances to Built and NEVER composes a release brief without the recorded `build_pr` reference.
 
+**Then WAIT FOR THE PULL REQUEST'S CHECKS AND FIX WHAT THEY FIND — IN THIS LEG, BOUNDED (B-930).**
+A worker cannot run every suite a project defines: some need a container runtime, a browser, or a
+provisioned service the leg does not have. Those suites still run — in the pull request's own checks. So
+this gate treats the pull request's checks as the leg's **remote test runner**: push, wait, read what they
+report, fix, push again — rather than handing the release gate a pull request whose checks have not
+concluded. A failure discovered at the release gate comes back as an iterate and costs a whole second
+build leg: a cold start, a fresh clone and install, and another leg's tokens.
+
+**The bounds — BOTH of them, checked BEFORE each new wait.** The loop is bounded by **two fix rounds** and
+by a **~35-minute wall-clock budget for the whole wait-and-fix loop**, whichever binds first. Check both
+*before starting a new wait*, never after: a leg killed mid-wait by the worker deadline is a DIRTY exit
+the daemon parks, which is strictly worse than a clean exhaustion hand-back. Each individual poll command
+must return well inside the 600-second Bash cap, and **no part of this wait may be delegated to a
+background subagent** — background tasks are killed at 600 seconds (B-825), which would silently abandon
+the wait while the leg exits looking clean.
+
+1. **Read the checks for the head commit you just pushed.** Resolve each check's status and conclusion
+   from the **parsed payload** of the host's own API, never from a watcher command's exit status. Four
+   dispositions — the same four the release brief renders (B-861):
+   - **concluded** — every check reports a terminal conclusion. Go to step 2.
+   - **still in flight** — at least one check is queued or running. Keep waiting, within the bounds above.
+   - **none reported** — no checks at all. Allow a short grace (~3 minutes) for checks to register after a
+     push; if none appear, record the disposition as *none reported* and proceed. A repository without CI
+     is not a failure — and it is not a green either.
+   - **unreadable** — the check surface cannot be read (a permission denial, an API error). Record the
+     disposition with the error named verbatim and proceed. Never a silent green, and never a block.
+2. **Green comes from the run's own reported conclusion — never from a watcher's exit status.** Both
+   `gh pr checks --watch` and `gh run watch --exit-status` have documented false greens in this workspace.
+   Confirm the backing run's own conclusion before calling anything green.
+3. **A skipped check is NOT COVERED — never passed.** A check that its own `if:` condition skipped reports
+   a terminal, non-failing conclusion, so a naive "nothing failed" read silently counts it as a pass.
+   Record every skipped check **by name** in the evidence as *not covered*. Skipped never blocks the gate
+   and never counts as coverage.
+4. **On a failure, classify it before acting on it — infrastructure or code.**
+   - **Code** — the failing log references the change under test (a failing assertion, a type error, a
+     lint violation, a broken import). **Fix it**: re-delegate to the build subagent with the failing job
+     name and the relevant failing-log excerpt **inline**, then commit and push again. That is a fix round.
+   - **Infrastructure** — the failure is in the machinery, not the change (a dependency-registry outage, a
+     runner failure, a network timeout, a CDN blip). **Re-run that job at most once**, and name the log
+     line that classified it in the evidence. A re-run is not a fix round, but its wait still spends the
+     wall-clock budget. If it fails again, treat the job as red.
+   - **Ambiguous** — treat it as **code**. The tie-break is deliberate: a real bug re-run twice is worse
+     than a flake fixed once. State it explicitly so it can be revised once real failures accumulate.
+5. **Re-record the pull-request reference on every fix re-push.** Update `field_values.build_pr` with the
+   new `head_sha` (and the other PR fields) each time you push, so the checks the evidence cites were read
+   for the commit the release gate will actually merge.
+6. **A suite a project's own scripts refuse without a container runtime is delegated to CI, not
+   installed.** When a project's scripts decline to run a suite because no container runtime is present,
+   the leg does **not** attempt to install one — it records that suite as *delegated to CI* and relies on
+   the pull request's checks to cover it. `HARMONY_BUILD_CONTAINER` is the discriminator this step already
+   reads for the build-agent branch above.
+7. **Land the CI outcome as build evidence BEFORE the gate advances** — the conclusion is part of the
+   build's evidence, not a release-gate discovery:
+   ```
+   mcp__harmony__update_task({ task_id, field_values: { build_ci: {
+     run_id, conclusion, head_sha, checked_at,
+     skipped_checks: ["<check name>"],  // recorded as NOT COVERED — never as passed
+     rerun_of,                          // the run a re-run re-ran, else null
+     classified_by                      // the log line that classified an infra failure, else null
+   } } })
+   ```
+   `update_task` merges `field_values` — `build_pr` and the other keys are preserved. Then name the run id
+   and its conclusion in the B-560 trail comment below.
+8. **On exhaustion — write the record FIRST, then hand back as an answerable question.** When both bounds
+   are spent (or a job is still red after its single re-run) and the checks are not green, do **not**
+   advance to Built and do **not** compose a release brief. In this order:
+   1. **Write the red exhaustion record** — `build_ci` per step 7 carrying the failing conclusion, plus a
+      comment naming the failing job, the run id, and what was attempted across the fix rounds.
+   2. **File a worker-question elicitation round** — `mcp__harmony__start_elicitation({ task_id, trigger:
+      'worker-question', gate: 'building' })` then `mcp__harmony__file_elicitation_round` — carrying the
+      **failing job name, the run id, and the relevant failing-log excerpt INLINE**. A human must be able
+      to answer it without opening the CI themselves.
+   3. **End the leg.** A filed round is a clean human pause, not a build failure — never park silently,
+      and never advance to release with red or unresolved checks.
+
+<!-- deployment-specific: begin -->
+> **On this deployment, the concrete read is…** — facts about this deployment, not part of the contract
+> above.
+>
+> Read the checks with `gh pr view <pr_number> --json statusCheckRollup,headRefOid` and resolve the four
+> dispositions from the **parsed** `statusCheckRollup` payload: absent / `null` / not an array — including
+> a `403 Resource not accessible by integration` denial → **unreadable**, naming the error; an empty array
+> → **none reported**, scoped to that `headRefOid` and read time; every element terminal → **concluded**;
+> any element queued or in progress → **still in flight**. Each element carries `name`, `status`,
+> `conclusion`, and a `detailsUrl` with the backing run id embedded. `SKIPPED` arrives as a **terminal**
+> conclusion with `status: COMPLETED` — exactly the step-3 case, and routine here: harmony-web skips
+> several checks by design on every non-migration pull request.
+>
+> Confirm a conclusion authoritatively with `gh run view <run-id> --json conclusion`; read a failure with
+> `gh run view <run-id> --log-failed`; re-run a job once with `gh run rerun <run-id> --failed`.
+>
+> **Observed durations** (measured over the last 10 merged harmony-web pull requests, 2026-09-02..04):
+> `Lint, Test & Build` takes **8–9.5 min** (one light pull request at 5m19s); the E2E job — which runs
+> only on migration pull requests — runs **in parallel** at 8.5–9.5 min and finishes within ~1 min of it.
+> So typical full-green is **~9–10 min** after a push, with an observed outlier at **~17 min**.
+> The plugin repository's own checks are NOT materially faster: its `Container base layer` check
+> concludes in well under a minute, but its `Lint, Test & Build` took **~8 min** on this very pull
+> request (measured 2026-09-04) — so treat both repositories as ~8–10 min to full green.
+> A **20-minute cap per individual wait** is therefore a
+> *calibrated* timeout — roughly twice the norm and just clear of the outlier — not arithmetic: **do not
+> tighten it below the observed outlier**. With real waits at ~10 min, the ~35-minute loop budget
+> genuinely affords both fix rounds.
+>
+> The step-6 container-runtime refusal has a concrete form here: prospectery's `scripts/preflight.sh`
+> exits stating that a container runtime is required. Those suites are recorded as delegated to CI; the
+> leg does not install Docker.
+<!-- deployment-specific: end -->
+
 **Then LAND the build evidence on the ticket BEFORE advancing — ORDERED & NON-OPTIONAL (B-560).** Gates
 only advance `workflow_state`; a delegated/worktree build never touches the ticket, so the evidence must
 be recorded here or it is lost (B-551 reached Verified with zero build trail). By now the artefact step
