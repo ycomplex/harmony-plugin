@@ -1,0 +1,6 @@
+{
+  "name": "b929-fixture-no-pins",
+  "private": true,
+  "version": "0.0.0",
+  "description": "B-929 AC2 fixture: declares NO toolchain pin — activation must be a complete no-op."
+}

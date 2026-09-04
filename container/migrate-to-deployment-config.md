@@ -18,6 +18,7 @@ Today a live deployment's config is spread across up to four places:
 | A standalone launch-profile JSON (`~/harmony-daemon-profile.json`, a copy of `container/daemon-profile.example.json` or `daemon-profile.cloud.example.json`), named by `HARMONY_DAEMON_PROFILE` | the `profiles` section, keyed by a name you choose |
 | The launcher-host facts scattered across env vars (`HARMONY_APP_ID`/`HARMONY_APP_INSTALLATION_ID`/`HARMONY_APP_PRIVATE_KEY_PATH`, `HARMONY_PLUGIN_DIR`) and the hardcoded `KNOWN_REFS` map (`src/tools/environment.ts`) | the `launcher` section |
 | The fixed three-slot clone assumption baked into `container/entrypoint.sh` (`WEB_REPO`/`PLUGIN_REPO`/`WORKSPACE_REPO` env vars) — a team with a different topology (one repo, N repos, no meta-repo wrapper) can't express it | the `repos` section (B-814) — an ordered, arbitrary list; ABSENT `repos` falls back byte-for-byte to the old three-slot behavior, so this section is opt-in |
+| The worker image name, hardcoded as the literal `harmony-build-env` in the local-docker launch template and set once, out of band, on the Cloud Run job definition | the top-level `worker_image` key (B-929) — a plain string, defaulted in the schema to `harmony-build-env`; absent config ⇒ the local template renders that same literal and the cloud path passes no `--image` at all, so this too is opt-in |
 
 All four land in **one JSON file per deployment** — see `src/config/deployment-config.ts`'s header
 comment for the authoritative shape (zod is the single source of truth). One machine can run **N**
@@ -64,6 +65,43 @@ templates expand `$HARMONY_PLUGIN_DIR` via ordinary shell inheritance from the d
 the same values in `deployment.json`'s `launcher` section too — it's the going-forward documented
 source of truth other tooling can read — but don't remove them from the daemon's process env when
 you do.
+
+## `worker_image`: which container image this deployment's workers run (B-929)
+
+A **top-level** key — a sibling of `env` / `profiles` / `launcher` / `repos`, not a member of any
+one of them, because it is a property of the DEPLOYMENT rather than of a launch mechanism. Both
+launch paths read the same value.
+
+```jsonc
+{
+  "worker_image": "acme-build-env",
+  "env": { /* … */ },
+  "profiles": { /* … */ },
+  "launcher": { /* … */ },
+  "repos": [ /* … */ ]
+}
+```
+
+| | |
+|---|---|
+| **Default** | `harmony-build-env`, written in exactly one place: the zod schema in `src/config/deployment-config.ts`. Every consumer either gets it from a parsed config or imports `WORKER_IMAGE_DEFAULT`. |
+| **Local docker** | `container/daemon-profile.example.json`'s launch template says `{worker_image}`; the daemon substitutes it. With no deployment config the substitution falls back to the schema default, so the rendered command is byte-identical to the pre-B-929 literal. |
+| **Cloud Run** | `container/cloud-worker-launch.sh` reads it via `harmony config get worker_image` (same best-effort pattern as `profiles.cloud.gcloud_project`) and adds `--image` to the **existing** `gcloud run jobs update` call. No config ⇒ no `--image` flag ⇒ the job's image is untouched, exactly as before. |
+| **Bare name vs full ref** | A value containing `/` is a fully-qualified image ref used **verbatim** (another registry, or a pinned digest). A bare name resolves against `$HARMONY_WORKER_IMAGE_REGISTRY`, defaulting to `us-central1-docker.pkg.dev/$CLOUDSDK_CORE_PROJECT/harmony-workers`. |
+
+**When you need it:** only when a project needs something the *image itself* must carry — a system
+package, a browser, a compiler toolchain. A project that merely pins a Node version or a package
+manager (`.nvmrc`, `.node-version`, `engines.node`, `packageManager`) needs **no config change at
+all**: the shared image's toolchain manager honours those automatically, and a repo declaring none
+of them is left untouched. See `container/README.md` → "Running a second project's toolchain".
+
+**How to produce the image:** never by hand. Declare the binaries in a flat JSON requirements list
+and generate the layer — `container/worker-image/README.md`. Publish it with the documented
+`gcloud builds submit` path (not a per-image Cloud Build trigger), then set `worker_image`.
+
+**Rolling back** a bad worker image: editing this key back to the last good version tag and
+restarting the daemon is the **primary** rollback tier — see the three-tier table in
+`container/README.md`.
 
 ## Prerequisites
 

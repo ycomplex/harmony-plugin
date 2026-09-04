@@ -1,6 +1,8 @@
 # B-694: the Harmony build environment, layered for agent portability.
 #
-#   base  — agent-neutral: git + node toolchain + gh + the ONE baked file
+#   base  — agent-neutral: git + node toolchain (B-929: plus the fnm/corepack
+#           toolchain MANAGER, so a cloned repo can pin its own Node/package
+#           manager) + gh + the ONE baked file
 #           (entrypoint.sh). Repos are cloned at container start and
 #           provisioning runs FROM that clone, so nothing baked here can
 #           drift from the plugin ref it provisions. CI builds this target
@@ -16,9 +18,10 @@ FROM node:22-bookworm-slim AS base
 
 # Toolchain: git (clone/branch/push), gh (open PRs), curl + ca-certificates
 # (installers, Supabase HTTPS), python3 (the settings-triple merge writer in
-# scripts/setup-channel-env.sh), jq (provision.sh parses get_project output).
+# scripts/setup-channel-env.sh), jq (provision.sh parses get_project output),
+# unzip (B-929: fnm ships its release as a .zip, see the fnm layer below).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git curl ca-certificates bash python3 jq \
+      git curl ca-certificates bash python3 jq unzip \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
          -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
@@ -26,10 +29,50 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# B-929 lever 1: the toolchain MANAGER, agent-neutral and therefore base-layer.
+# A build leg for a project that pins a different Node (or a different package
+# manager) than Harmony's own used to die on this image's single baked Node 22.
+# fnm is the ONE new base binary — corepack already ships with the node:22 base
+# image (0.34.6, verified live) and is used as-is, never reinstalled.
+#
+# Installed SYSTEM-WIDE (/usr/local/bin) rather than through fnm's install
+# script's per-user default, so the non-root `worker` user below resolves it on
+# the stock PATH with no shell-rc dance. FNM_DIR (where fnm PUTS the Node
+# versions it downloads) is separately pointed at a worker-owned dir — the
+# binary is root-owned and read-only, the version store is the worker's.
+#
+# The version store stays EMPTY at build time: nothing is downloaded until a
+# cloned repo actually declares a pin (container/activate-toolchain.sh), so an
+# image build never bakes in a second Node.
+ARG FNM_RELEASE=latest
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) fnm_asset=fnm-linux.zip ;; \
+      arm64) fnm_asset=fnm-arm64.zip ;; \
+      *) echo "B-929: no fnm release asset for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    if [ "$FNM_RELEASE" = latest ]; then \
+      fnm_url="https://github.com/Schniz/fnm/releases/latest/download/$fnm_asset"; \
+    else \
+      fnm_url="https://github.com/Schniz/fnm/releases/download/$FNM_RELEASE/$fnm_asset"; \
+    fi; \
+    curl -fsSL -o /tmp/fnm.zip "$fnm_url"; \
+    unzip -q /tmp/fnm.zip -d /tmp/fnm; \
+    install -m 0755 /tmp/fnm/fnm /usr/local/bin/fnm; \
+    rm -rf /tmp/fnm /tmp/fnm.zip; \
+    fnm --version
+
 # Non-root worker; /workspace holds the runtime clones.
 RUN useradd -m -s /bin/bash worker \
     && mkdir -p /workspace \
     && chown worker:worker /workspace
+
+# B-929: fnm's version store, worker-owned (the binary above is root-owned).
+# Set as an ENV so every shell in the container — provision.sh, the leg's agent,
+# a dogfood `docker run ... shell` — agrees on one store without sourcing
+# anything.
+ENV FNM_DIR=/home/worker/.fnm
+RUN mkdir -p /home/worker/.fnm && chown -R worker:worker /home/worker/.fnm
 
 # Plain COPY + chmod (not COPY --chmod) so the build works on non-BuildKit
 # builders too.

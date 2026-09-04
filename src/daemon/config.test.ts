@@ -215,9 +215,23 @@ describe('renderTemplate', () => {
   });
 
   it('throws LOUDLY on an unknown {placeholder} — never silently leaves it in the command', () => {
+    // B-929: this example used to be {worker_image}, which is now a REAL placeholder — so the
+    // unknown-placeholder discipline is asserted with a name the renderer genuinely does not know.
     expect(() =>
-      renderTemplate('run {conduction_id} {worker_image}', { conduction_id: 'c', ticket: 't' }),
-    ).toThrow(/worker_image/);
+      renderTemplate('run {conduction_id} {not_a_placeholder}', { conduction_id: 'c', ticket: 't' }),
+    ).toThrow(/not_a_placeholder/);
+  });
+
+  it('names every supported placeholder in the unknown-placeholder error, so a template typo is self-diagnosing', () => {
+    let message = '';
+    try {
+      renderTemplate('run {nope}', { conduction_id: 'c', ticket: 't' });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    for (const name of ['conduction_id', 'ticket', 'run_config_json', 'model', 'worker_image']) {
+      expect(message).toContain(name);
+    }
   });
 
   it('leaves non-placeholder shell syntax (e.g. $HOME) untouched', () => {
@@ -254,6 +268,28 @@ describe('renderTemplate', () => {
 
   it('B-772: throws on {model} when the caller did not supply it (same unknown-placeholder discipline)', () => {
     expect(() => renderTemplate('run {model}', { conduction_id: 'c', ticket: 't' })).toThrow(/model/);
+  });
+
+  it('B-929: substitutes {worker_image} when supplied', () => {
+    expect(
+      renderTemplate('docker run --rm {worker_image} headless {ticket}', {
+        conduction_id: 'c',
+        ticket: 'B-929',
+        worker_image: 'acme-build-env',
+      }),
+    ).toBe('docker run --rm acme-build-env headless B-929');
+  });
+
+  it('B-929: throws on {worker_image} when the caller did not supply it (same unknown-placeholder discipline)', () => {
+    expect(() => renderTemplate('run {worker_image}', { conduction_id: 'c', ticket: 't' })).toThrow(
+      /worker_image/,
+    );
+  });
+
+  it('B-929: a reap/probe template that never mentions {worker_image} renders unchanged without it', () => {
+    expect(
+      renderTemplate('docker rm -f harmony-worker-{conduction_id}', { conduction_id: 'c-9', ticket: 't' }),
+    ).toBe('docker rm -f harmony-worker-c-9');
   });
 });
 

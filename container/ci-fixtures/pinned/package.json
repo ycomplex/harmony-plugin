@@ -1,0 +1,7 @@
+{
+  "name": "b929-fixture-pinned",
+  "private": true,
+  "version": "0.0.0",
+  "description": "B-929 AC1 fixture: pins both a Node version (.nvmrc) and a package manager.",
+  "packageManager": "pnpm@11.21.0"
+}

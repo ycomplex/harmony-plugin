@@ -87,14 +87,58 @@ jobs:
   # B-694: the build container's agent-portability guardrail, checked on every
   # run — the base target must stay agent-neutral (no claude in it). Light
   # image only; the heavy substrate (DinD/local Supabase) is B-708.
+  #
+  # B-929 extends this same job into the TOOLCHAIN CONTRACT: the base layer now
+  # carries a toolchain MANAGER (fnm + the base image's corepack), so a cloned
+  # repo can pin its own Node/package manager — and the properties that makes or
+  # breaks are proven here, pre-merge, against a real built image. The job name
+  # is deliberately UNCHANGED so an existing required-status-check rule keeps
+  # matching; the added work lives in committed scripts under container/, and
+  # this workflow is only their caller.
   container-base:
     name: Container base layer (agent-free)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+
+      # B-929: the toolchain-contract script runs `node dist/bin/worker-image.js`
+      # (the requirements-list generator) off the COMMITTED dist bundle — no
+      # `npm ci` needed, the esbuild output is self-contained.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
 
       - name: Build base target
         run: docker build -f container/Dockerfile --target base -t b694-base container
 
       - name: Assert no agent in base
         run: docker run --rm --entrypoint /bin/sh b694-base -c '! command -v claude'
+
+      # B-929: everything below is one committed script (container/toolchain-contract.sh)
+      # so the assertions are reviewable in the repo rather than buried in YAML.
+      # It proves, in order:
+      #   1. AC2 INERTNESS — a fixture repo (container/ci-fixtures/no-pins) that
+      #      declares no pin still lands on the image's Node 22, persists nothing
+      #      and downloads nothing. That is the shape of all three of Harmony's
+      #      own repos, so this is the "shipping this changed nothing for us"
+      #      assertion.
+      #   2. AC1 HONOUR — container/ci-fixtures/pinned (.nvmrc 24.14.1 +
+      #      packageManager pnpm@11.21.0) lands on node v24.14.1 and pnpm
+      #      11.21.0, and `pnpm install --frozen-lockfile` completes.
+      #   3. BUILD-GATE VERIFY (a) — container/ci-fixtures/engines-only declares
+      #      ONLY engines.node (no .nvmrc) and must still land on 24.14.1. fnm's
+      #      `--resolve-engines` was verified live during the B-929 build (fnm
+      #      1.39.0: present, default-on, resolved a bare engines.node fixture to
+      #      v24.14.1); container/activate-toolchain.sh additionally carries a
+      #      flag-independent fallback that resolves engines.node itself, so this
+      #      assertion holds either way.
+      #   4. BUILD-GATE VERIFY (c) — runs container/smoke.sh, the EXACT script
+      #      container/cloudbuild.yaml's publish gate runs between build and
+      #      push, so the smoke's assertion depth is settled here rather than
+      #      only on a real Cloud Build run.
+      #   5. AC4 — builds an image from the requirements-list GENERATOR's output
+      #      (no hand-written Dockerfile at any point) and asserts every declared
+      #      binary resolves in it and that the entrypoint still dispatches.
+      - name: Toolchain contract (B-929)
+        run: container/toolchain-contract.sh b694-base

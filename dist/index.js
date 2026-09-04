@@ -36302,6 +36302,7 @@ var ReposSchema = external_exports.array(RepoEntrySchema).refine((repos) => repo
 }).refine((repos) => repos.filter((r) => r.is_plugin).length <= 1, {
   message: "at most one repos[] entry may set is_plugin"
 });
+var WORKER_IMAGE_DEFAULT = "harmony-build-env";
 var GithubAppSchema = external_exports.object({
   app_id: external_exports.string(),
   installation_id: external_exports.string(),
@@ -36325,7 +36326,10 @@ var DeploymentConfigSchema = external_exports.object({
   profiles: external_exports.record(LaunchProfileSchema).optional(),
   launcher: LauncherSchema.optional(),
   /** B-814: the ordered repo set — see the RepoEntrySchema/ReposSchema header comment above. */
-  repos: ReposSchema.optional()
+  repos: ReposSchema.optional(),
+  /** B-929 lever 2: which container image this deployment's workers run. THE one place the default
+   *  is written — see the worker_image section comment above. */
+  worker_image: external_exports.string().min(1).default(WORKER_IMAGE_DEFAULT)
 });
 function resolveDeploymentConfigPath(opts) {
   const env = opts?.env ?? process.env;

@@ -22472,6 +22472,7 @@ var ReposSchema = external_exports.array(RepoEntrySchema).refine((repos) => repo
 }).refine((repos) => repos.filter((r) => r.is_plugin).length <= 1, {
   message: "at most one repos[] entry may set is_plugin"
 });
+var WORKER_IMAGE_DEFAULT = "harmony-build-env";
 var GithubAppSchema = external_exports.object({
   app_id: external_exports.string(),
   installation_id: external_exports.string(),
@@ -22495,7 +22496,10 @@ var DeploymentConfigSchema = external_exports.object({
   profiles: external_exports.record(LaunchProfileSchema).optional(),
   launcher: LauncherSchema.optional(),
   /** B-814: the ordered repo set — see the RepoEntrySchema/ReposSchema header comment above. */
-  repos: ReposSchema.optional()
+  repos: ReposSchema.optional(),
+  /** B-929 lever 2: which container image this deployment's workers run. THE one place the default
+   *  is written — see the worker_image section comment above. */
+  worker_image: external_exports.string().min(1).default(WORKER_IMAGE_DEFAULT)
 });
 function resolveDeploymentConfigPath(opts) {
   const env = opts?.env ?? process.env;
@@ -24059,8 +24063,9 @@ function renderTemplate(tpl, vars) {
     if (name === "ticket") return vars.ticket;
     if (name === "run_config_json" && vars.run_config_json !== void 0) return vars.run_config_json;
     if (name === "model" && vars.model !== void 0) return vars.model;
+    if (name === "worker_image" && vars.worker_image !== void 0) return vars.worker_image;
     throw new Error(
-      `unknown placeholder {${name}} in launch-profile template \u2014 supported: {conduction_id}, {ticket}, {run_config_json}, {model}`
+      `unknown placeholder {${name}} in launch-profile template \u2014 supported: {conduction_id}, {ticket}, {run_config_json}, {model}, {worker_image}`
     );
   });
 }
@@ -24318,7 +24323,7 @@ function modelFor(row, task) {
   const gate = resolveGatePhase(task?.workflow_state, task?.workflow_activity);
   return getModelForGate(row.run_config ?? {}, gate);
 }
-function templateVars(row, task, projectKey) {
+function templateVars(row, task, projectKey, workerImage) {
   return {
     conduction_id: row.id,
     ticket: resolveVisualId(task, projectKey, row.task_id),
@@ -24327,7 +24332,13 @@ function templateVars(row, task, projectKey) {
     run_config_json: runConfigJsonFor(row),
     // B-772: same "always computed, harmless when unreferenced" convention as run_config_json
     // above — only the launch template is expected to actually reference {model}.
-    model: modelFor(row, task)
+    model: modelFor(row, task),
+    // B-929: which container image this deployment's workers run (deployment config's top-level
+    // `worker_image`, resolved once at daemon boot in src/bin/daemon.ts and carried on
+    // SchedulerDeps). Optional there and defaulted HERE to the schema's own default, because most
+    // machines have no deployment config at all — loadDeploymentConfig returns null for them and
+    // this substitution must never throw. Same always-computed convention as the two above.
+    worker_image: workerImage ?? WORKER_IMAGE_DEFAULT
   };
 }
 var TITLE_MAX = 48;
@@ -24429,7 +24440,7 @@ async function handleHeldConduction(deps, state, keeper, excluded, runtime, row)
   if (tracked) {
     if (tracked.reconciled && !tracked.settled) {
       const probed = await deps.runCommand(
-        renderTemplate(deps.config.profile.probe, templateVars(row, tracked.current, deps.projectKey))
+        renderTemplate(deps.config.profile.probe, templateVars(row, tracked.current, deps.projectKey, deps.workerImage))
       );
       if (probed.exitCode !== 0) {
         tracked.settled = true;
@@ -24541,7 +24552,7 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
     } catch {
     }
     const probed = await deps.runCommand(
-      renderTemplate(deps.config.profile.probe, templateVars(row, probeTask, deps.projectKey))
+      renderTemplate(deps.config.profile.probe, templateVars(row, probeTask, deps.projectKey, deps.workerImage))
     );
     if (probed.exitCode === 0) {
       let current;
@@ -24591,7 +24602,7 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
   } catch {
   }
   await deps.runCommand(
-    renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey)),
+    renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey, deps.workerImage)),
     { quiet: true, quietRender: renderQuietReapOutcome }
   );
   if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: null })) return false;
@@ -24638,7 +24649,7 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
     deps.log(
       `${label(row, after, deps.projectKey)}: dirty exit \u2014 retrying (attempt ${retryCount}/${deps.config.retryCap}) after reap + ${backoffMs}ms backoff`
     );
-    await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey)));
+    await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage)));
     runtime.ready.set(row.id, {
       since: deps.now(),
       priority: row.task_priority ?? null,
@@ -24732,7 +24743,7 @@ function beginReapEscalation(deps, runtime, row, current, tracked, flag) {
   tracked[flag] = true;
   void (async () => {
     for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
-      void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, current, deps.projectKey)));
+      void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, current, deps.projectKey, deps.workerImage)));
       await new Promise((resolveGrace) => {
         deps.startTimeout(REAP_GRACE_MS, resolveGrace);
       });
@@ -24777,7 +24788,7 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
       `${label(row, current, deps.projectKey)}: \u26A0 run_config will NOT reach the worker: the active launch template has no {run_config_json} placeholder (conduction ${row.id})`
     );
   }
-  const launch = deps.runCommand(renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey))).then((result) => {
+  const launch = deps.runCommand(renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey, deps.workerImage))).then((result) => {
     tracked.settled = true;
     tracked.exitCode = result.exitCode;
     tracked.launchOutputTail = result.outputTail ?? null;
@@ -25017,7 +25028,12 @@ ${err instanceof Error ? err.message : String(err)}
     log,
     leaseHolder,
     config,
-    projectKey
+    projectKey,
+    // B-929 lever 2: the deployment's worker image, resolved ONCE here and carried for the daemon's
+    // lifetime (same pin-at-boot discipline as projectKey above). `deploymentConfig` is null on every
+    // machine with no ~/.harmony/deployment.json, which leaves this undefined and lets
+    // templateVars fall back to the schema default — never a throw, never a launch blocked.
+    workerImage: deploymentConfig?.worker_image
   };
   const keeper = createHeartbeatKeeper({
     now: Date.now,

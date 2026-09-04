@@ -138,6 +138,9 @@ import { exchangeWentInactive } from '../conductor/ball-axis.js';
 import { renderTemplate, type DaemonConfig } from './config.js';
 import { resolveGatePhase } from './gate-phase.js';
 import { getModelForGate, type RunConfig } from '../config/run-config.js';
+// B-929: the ONE place the worker-image default is written (src/config/deployment-config.ts's
+// zod schema) — imported rather than re-typed so this file can never drift from it.
+import { WORKER_IMAGE_DEFAULT } from '../config/deployment-config.js';
 import type { HeartbeatKeeper } from './heartbeat.js';
 import { formatDaemonError } from './error-format.js';
 import type {
@@ -253,6 +256,13 @@ export interface SchedulerDeps {
   /** B-723: the deployment's project key, pinned once at daemon launch — visual IDs are composed
    *  from config, never a baked constant (the per-deployment-config architecture entry). */
   projectKey: string;
+  /** B-929: which container image this deployment's workers run — the deployment config's top-level
+   *  `worker_image`, resolved once at daemon boot (src/bin/daemon.ts) and substituted into the
+   *  launch template's {worker_image} placeholder. OPTIONAL: most machines have no deployment config
+   *  at all (loadDeploymentConfig returns null), and templateVars then falls back to the schema
+   *  default WORKER_IMAGE_DEFAULT — so an existing deployment that never sets it renders exactly the
+   *  literal its template carried before this ticket. */
+  workerImage?: string;
 }
 
 /** B-720: the hard cap on how much of the LAUNCH COMMAND's combined stdout/stderr is retained for
@@ -443,7 +453,14 @@ function templateVars(
   row: ConductionRecord,
   task: DaemonTask | null,
   projectKey: string,
-): { conduction_id: string; ticket: string; run_config_json: string; model: string } {
+  workerImage?: string,
+): {
+  conduction_id: string;
+  ticket: string;
+  run_config_json: string;
+  model: string;
+  worker_image: string;
+} {
   // B-827: {ticket} now carries the ticket's VISUAL id (project key + task_number), never the row
   // UUID — everything downstream (the worker prompt, host-side RUN_DIR paths, and, since B-788, the
   // persisted cloud transcript path) must name the ticket the same way B-723's log lines already
@@ -459,6 +476,12 @@ function templateVars(
     // B-772: same "always computed, harmless when unreferenced" convention as run_config_json
     // above — only the launch template is expected to actually reference {model}.
     model: modelFor(row, task),
+    // B-929: which container image this deployment's workers run (deployment config's top-level
+    // `worker_image`, resolved once at daemon boot in src/bin/daemon.ts and carried on
+    // SchedulerDeps). Optional there and defaulted HERE to the schema's own default, because most
+    // machines have no deployment config at all — loadDeploymentConfig returns null for them and
+    // this substitution must never throw. Same always-computed convention as the two above.
+    worker_image: workerImage ?? WORKER_IMAGE_DEFAULT,
   };
 }
 
@@ -762,7 +785,7 @@ async function handleHeldConduction(
       // B-717 restart reconciliation: this daemon did not fire this launch itself, so there is no
       // local runCommand(launch) promise to settle — re-probe the SAME tracking surface each pass.
       const probed = await deps.runCommand(
-        renderTemplate(deps.config.profile.probe as string, templateVars(row, tracked.current, deps.projectKey)),
+        renderTemplate(deps.config.profile.probe as string, templateVars(row, tracked.current, deps.projectKey, deps.workerImage)),
       );
       if (probed.exitCode !== 0) {
         tracked.settled = true;
@@ -987,7 +1010,7 @@ async function handleWonTakeover(
       // best-effort — see above.
     }
     const probed = await deps.runCommand(
-      renderTemplate(deps.config.profile.probe, templateVars(row, probeTask, deps.projectKey)),
+      renderTemplate(deps.config.profile.probe, templateVars(row, probeTask, deps.projectKey, deps.workerImage)),
     );
     if (probed.exitCode === 0) {
       let current: DaemonTask;
@@ -1054,7 +1077,7 @@ async function handleWonTakeover(
     // best-effort — see above.
   }
   await deps.runCommand(
-    renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey)),
+    renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey, deps.workerImage)),
     { quiet: true, quietRender: renderQuietReapOutcome },
   );
   // B-742/B-717 point 4 (corrected): this clear is reached ONLY for a row with NO tracked in-flight
@@ -1159,7 +1182,7 @@ async function settleTrackedLaunch(
       `${label(row, after, deps.projectKey)}: dirty exit — retrying ` +
         `(attempt ${retryCount}/${deps.config.retryCap}) after reap + ${backoffMs}ms backoff`,
     );
-    await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey)));
+    await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage)));
     // B-717: no synchronous deps.sleep here — a blocked pass is exactly what fire-and-track
     // removes. Queue the retry as a ready candidate gated by `notBefore` so every OTHER row keeps
     // getting served while this one backs off.
@@ -1371,7 +1394,7 @@ function beginReapEscalation(
     for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
       // NEVER await the reap: a wedged container runtime can hang the reap command itself, and
       // the call we make to unblock ourselves must not be able to block us.
-      void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, current, deps.projectKey)));
+      void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, current, deps.projectKey, deps.workerImage)));
       await new Promise<void>((resolveGrace) => {
         deps.startTimeout(REAP_GRACE_MS, resolveGrace);
       });
@@ -1461,7 +1484,7 @@ async function fireLaunch(
   // Rejects ONLY when the reap cannot free us; otherwise `launch` always settles first — mirrors
   // the old inline Promise.race exactly, just no longer awaited by the pass itself.
   const launch = deps
-    .runCommand(renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey)))
+    .runCommand(renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey, deps.workerImage)))
     .then((result) => {
       tracked.settled = true;
       tracked.exitCode = result.exitCode;

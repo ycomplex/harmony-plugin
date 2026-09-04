@@ -66,12 +66,14 @@ not this interactive session.
 
 | Target | Contents | Swap cost |
 |---|---|---|
-| `base` | git, node 22, gh, python3/jq, the bootstrap entrypoint — agent-neutral | never changes |
+| `base` | git, node 22, gh, python3/jq, **fnm + corepack (the toolchain manager, B-929)**, the bootstrap entrypoint — agent-neutral | never changes |
 | `agent` | `FROM base` + Claude Code + `CLAUDE_HEADLESS_FLAGS` | replace to swap agents |
 
 The `container-base` CI job rebuilds `base` on every PR and **fails if any
 agent install is present in it** — the layering guardrail is continuously
-checked, not a one-shot.
+checked, not a one-shot. Since B-929 that same job also runs the **toolchain
+contract** (`container/toolchain-contract.sh`) against the freshly built base:
+see "Running a second project's toolchain" below.
 
 ## Design properties
 
@@ -92,6 +94,176 @@ checked, not a one-shot.
 Heavy builds (web E2E, local Supabase, Docker-in-Docker) are NOT covered by
 this image — that substrate is B-708, extending these same targets when the
 first heavy-build ticket needs it.
+
+## Running a second project's toolchain (B-929)
+
+A build leg for a project that is **not** Harmony used to fail before doing any
+work: the worker image carried Harmony's toolchain and only Harmony's. Two
+levers fix that, and the first one you should reach for depends entirely on what
+the project needs.
+
+| Lever | Reach for it when | What you do |
+|---|---|---|
+| **1. Base-layer toolchain manager** | the project pins a **Node version** or a **package manager** | nothing — the shared image already honours it |
+| **2. `worker_image` override** | the project needs something an **image** must carry (a system package, a browser, a compiler) | generate an image (`container/worker-image/`) and name it in the deployment config |
+
+### Lever 1 — the toolchain manager in the base image
+
+`base` carries **fnm** (the one new base binary) alongside the **corepack** the
+`node:22` base image already ships. At container start, after the clones exist,
+`container/provision.sh` runs `container/activate-toolchain.sh` **once per cloned
+repo**. That script activates a toolchain **only if that repo declares one**, from
+exactly four sources:
+
+| Source | Kind | Precedence |
+|---|---|---|
+| `.nvmrc` | Node version | 1 |
+| `.node-version` | Node version | 2 |
+| `package.json` → `engines.node` | Node version | 3 |
+| `package.json` → `packageManager` | package manager | independent |
+
+**A repo that declares none of them is left completely alone** — no fnm call, no
+corepack call, no shell-rc edit, no file created. It takes the image's Node 22
+path, byte for byte. This inertness is load-bearing (B-929 AC2), not a nicety:
+none of `harmony-workspace`, `harmony-web` or `harmony-plugin` declares any pin
+today, so shipping this lever had to be provably a no-op for Harmony itself. The
+CI toolchain contract asserts exactly that on every PR, with a fixture repo that
+declares nothing (`container/ci-fixtures/no-pins`).
+
+What "activate" means:
+
+- **Node** — `fnm use --install-if-missing --resolve-engines` from the repo
+  directory, letting fnm apply its own documented resolution (version files
+  first, then `engines.node`, honouring a semver range with the latest
+  satisfying version). If that does not settle — an older fnm without
+  `--resolve-engines` — the script falls back to a version it resolves itself:
+  the **first version-shaped token** in the declaration, i.e. **a range honoured
+  at its floor** (`">=20.11.0"` → 20.11.0, `"^22"` → 22). The version that
+  actually activated is then set as fnm's `default` alias, which is what every
+  later shell in the container starts on.
+- **Package manager** — `corepack enable --install-directory $HOME/bin <pm>`
+  (never the root-owned `/usr/local/bin`, which the non-root `worker` cannot
+  write; `$HOME/bin` is already first on PATH) plus
+  `corepack prepare <spec> --activate`, so the first `pnpm install` of the leg is
+  not also a download.
+
+Activation writes `$HOME/.harmony-toolchain.sh` and sources it from `~/.bashrc`
+and `~/.profile`; `provision.sh` sources it too, so the leg's own agent inherits
+it. That file also installs fnm's `--use-on-cd` hook, which is how **several
+repos pinning different Node versions** stay correct: `default` is a single
+global alias (the last activated repo's version), and per-repo correctness comes
+from entering the directory. One extra project with one pin — the case this
+exists for — needs none of that nuance.
+
+The leg log says which path was taken, always:
+
+```
+activate-toolchain[/workspace/acme]: .nvmrc declares Node '24.14.1' -> activating (fnm resolution first, floor 24.14.1 as fallback)
+activate-toolchain[/workspace/acme]: node is now v24.14.1
+activate-toolchain[/workspace/acme]: package.json declares packageManager 'pnpm@11.21.0' -> enabling pnpm
+activate-toolchain[/workspace/acme]: pnpm is now 11.21.0
+activate-toolchain[/workspace/workspace/plugin]: no toolchain pin declared (.nvmrc / .node-version / engines.node / packageManager) — leaving the image default untouched
+```
+
+Activation is **non-fatal**: a declared pin that cannot be honoured logs a
+warning and the leg continues on the image default. A toolchain convenience must
+never be able to kill a leg that would otherwise have run.
+
+### Lever 2 — which image a worker runs (`worker_image`)
+
+The deployment config (`~/.harmony/deployment.json`) carries a **top-level**
+`worker_image` key — a sibling of `env` / `profiles` / `launcher` / `repos`,
+because it is a property of the deployment, not of one launch profile. Its
+default lives in exactly one place, the zod schema in
+`src/config/deployment-config.ts`: **`harmony-build-env`**.
+
+```json
+{ "worker_image": "acme-build-env" }
+```
+
+Both launch paths read that one value:
+
+- **local docker** — `container/daemon-profile.example.json`'s launch template
+  now says `{worker_image}` where it used to say the literal `harmony-build-env`.
+  The daemon substitutes it (`src/daemon/config.ts`'s `renderTemplate`, fed by
+  `src/daemon/scheduler.ts`'s `templateVars`), falling back to the schema default
+  on the many machines that have no deployment config at all — so a deployment
+  that never sets it renders exactly the literal the template carried before.
+- **cloud** — `container/cloud-worker-launch.sh` reads it with the same
+  best-effort `harmony config get` pattern `profiles.cloud.gcloud_project` and
+  `repos` already use, and adds `--image` to the **existing**
+  `gcloud run jobs update` call (no new gcloud call, no new race — that call
+  already runs inside B-717's launch lock). The **cloud example profile carries
+  no image token at all**, deliberately: on that path the image reaches Cloud Run
+  through the launcher script, not through the template.
+
+**Resolution rule** (cloud path): a value containing `/` is a **fully-qualified
+image ref used verbatim** — that is how you point at another registry or pin a
+digest. A **bare name** (the default is one) is resolved against
+`$HARMONY_WORKER_IMAGE_REGISTRY`, itself defaulting to
+`us-central1-docker.pkg.dev/$CLOUDSDK_CORE_PROJECT/harmony-workers` — the same
+Artifact Registry path `container/cloudbuild.yaml` publishes to. With **no
+deployment config at all**, nothing resolves, **no `--image` flag is passed**,
+and the job's image is left exactly as `gcloud run jobs create` set it — byte
+identical to the behaviour before B-929.
+
+### Generating an image from a requirements LIST
+
+You never hand-write a worker Dockerfile. Declare the binaries the build needs in
+a flat JSON list and generate the layer — full contract and worked example in
+**`container/worker-image/README.md`**. The emitted layer is `FROM` the shared
+base and **ends in a `command -v` assertion per declared binary**, so an
+unresolved requirement fails the **image build** rather than a build **leg**.
+
+### Publishing an image
+
+The documented publish path is **`gcloud builds submit`**, not a per-image Cloud
+Build trigger. One trigger exists, and it publishes the **shared** image from
+`container/cloudbuild.yaml`; per-project images are published on demand by
+whoever owns that project. (Decided explicitly on B-929 — a trigger per image
+multiplies GCP-side state that nothing in this repo can see or verify.)
+
+```bash
+unset CLOUDSDK_CORE_ACCOUNT   # run as the human owner, not the daemon SA
+gcloud builds submit --tag us-central1-docker.pkg.dev/<project>/harmony-workers/<image> container/
+```
+
+Every publish through `container/cloudbuild.yaml` runs **`container/smoke.sh`
+between the build and the pushes**, so a failing image never becomes `:latest`
+and the fleet keeps running the last good image. The **same script** runs in CI
+on every PR, so its depth is settled before merge rather than only on a real
+Cloud Build run.
+
+**Smoke depth — exactly what it proves** (the entrypoint has no `--help` and no
+no-op mode; its first act is to require `GIT_TOKEN` and its next is to clone, so
+"runs clean" is not available at any depth):
+
+1. `git`, `gh`, `jq`, `python3`, `node`, `corepack`, `fnm` all resolve **as the
+   non-root worker**;
+2. `/usr/local/bin/harmony-entrypoint.sh` exists and is executable;
+3. the mode dispatch genuinely **runs**, credential-free, at three increasing
+   depths — it reaches the `GIT_TOKEN` guard; then (with a dummy token) the
+   `HARMONY_REPOS_JSON` decode guard; then, with a **well-formed** repo set that
+   declares no `is_plugin` entry, the repo-selection branch itself — meaning
+   `base64` and `jq` and that whole branch executed inside the image before the
+   deliberate rejection.
+
+A real clone or agent run needs a live GitHub credential and is out of scope for
+a publish gate.
+
+### Rolling back a bad worker image — three tiers
+
+| Tier | Move | Blast radius | Status |
+|---|---|---|---|
+| **(b) — PRIMARY** | edit `worker_image` in the deployment config to the last good tag (`harmony-build-env:0.14.170`), restart the daemon | that deployment only; explicit, greppable, and visible in the config file | **works by construction** — a different ref is a different `--image` value on the next launch, and the local template re-renders on the next launch too |
+| **(a)** | re-point `:latest` in Artifact Registry at the previous digest | the whole fleet, implicitly | **UNVERIFIED** — it depends on Cloud Run **re-resolving a moving tag** on `jobs update --image` rather than pinning the digest it resolved. Confirm live before relying on it |
+| **(c)** | re-publish a fixed image (`gcloud builds submit`, which re-runs the smoke gate) | the whole fleet, deliberately | works, but it is a fix-forward, not a rollback — slowest of the three |
+
+Tier (b) is ranked primary precisely because it is the one that cannot surprise
+you: it names an immutable version tag, it is per-deployment, and it leaves a
+written record of what the fleet is running. Tier (a)'s unverified assumption was
+**carried unproven** out of the B-929 build (no `gcloud` in that environment) —
+it is written down here so nobody discovers it mid-incident.
 
 ## Conductor daemon (B-696)
 

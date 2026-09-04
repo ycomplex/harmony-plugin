@@ -393,6 +393,11 @@ async function main(): Promise<void> {
     leaseHolder,
     config,
     projectKey,
+    // B-929 lever 2: the deployment's worker image, resolved ONCE here and carried for the daemon's
+    // lifetime (same pin-at-boot discipline as projectKey above). `deploymentConfig` is null on every
+    // machine with no ~/.harmony/deployment.json, which leaves this undefined and lets
+    // templateVars fall back to the schema default — never a throw, never a launch blocked.
+    workerImage: deploymentConfig?.worker_image,
   };
 
   const keeper = createHeartbeatKeeper({

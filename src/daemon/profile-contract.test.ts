@@ -21,21 +21,38 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
+// B-929: the drift guard now renders the template with the REAL renderer and the REAL schema
+// default, rather than only pattern-matching the raw text.
+import { renderTemplate } from './config.js';
+import { WORKER_IMAGE_DEFAULT } from '../config/deployment-config.js';
 
 const profilePath = fileURLToPath(
   new URL('../../container/daemon-profile.example.json', import.meta.url),
 );
 const provisionPath = fileURLToPath(new URL('../../container/provision.sh', import.meta.url));
 
-const IMAGE_NAME = 'harmony-build-env';
+// B-929: the launch template no longer carries a LITERAL image name — it carries the
+// {worker_image} placeholder, substituted per deployment from the deployment config's top-level
+// `worker_image` (src/config/deployment-config.ts, default 'harmony-build-env'). The guard is
+// re-keyed onto the placeholder so its ORIGINAL intent is intact: the token right after the image
+// must still be a real provision.sh mode. The RENDERED half is asserted separately below (render
+// the template and check both that the default image appears and that the mode still follows it) —
+// so a drift that breaks the substitution, not just the raw text, still fails CI.
+const IMAGE_TOKEN = '{worker_image}';
+const WORKER_IMAGE_DEFAULT_LITERAL = 'harmony-build-env';
 
 /** The token the container ENTRYPOINT receives as its first argument: the word immediately
- *  following the image name in the docker run command line. */
-function modeTokenAfterImage(launch: string): string | undefined {
+ *  following the image token in the docker run command line. */
+function modeTokenAfter(launch: string, imageToken: string): string | undefined {
   const words = launch.split(/\s+/);
-  const imageIndex = words.indexOf(IMAGE_NAME);
+  const imageIndex = words.indexOf(imageToken);
   expect(imageIndex).toBeGreaterThanOrEqual(0); // the template must still launch the known image
   return words[imageIndex + 1];
+}
+
+/** The RAW-template form: keyed on the {worker_image} placeholder. */
+function modeTokenAfterImage(launch: string): string | undefined {
+  return modeTokenAfter(launch, IMAGE_TOKEN);
 }
 
 /** provision.sh's REAL modes: the literal labels of its `case "$MODE" in` dispatch. */
@@ -1032,6 +1049,54 @@ describe('daemon-profile.example.json ↔ provision.sh mode contract', () => {
 
     const modeToken = modeTokenAfterImage(profile.launch);
     expect(modes).toContain(modeToken);
+  });
+
+  // B-929: the same contract, but through renderTemplate — the raw-text assertion above cannot see
+  // a substitution bug (an unknown placeholder throws; a missing default renders empty and shifts
+  // every following word). This renders the REAL template with the REAL renderer and asserts the
+  // schema default lands and the mode token still follows the image.
+  it('renders {worker_image} to the schema default and STILL puts a real provision.sh mode right after it', () => {
+    const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as { launch: string };
+    const script = readFileSync(provisionPath, 'utf8');
+    const modes = provisionModes(script);
+    expect(modes.length).toBeGreaterThan(0);
+
+    // No worker_image supplied — exactly the shape a deployment with no ~/.harmony/deployment.json
+    // produces (src/daemon/scheduler.ts's templateVars defaults it there).
+    const rendered = renderTemplate(profile.launch, {
+      conduction_id: 'c-1',
+      ticket: 'B-929',
+      run_config_json: 'e30=',
+      model: 'claude-sonnet-5',
+      worker_image: WORKER_IMAGE_DEFAULT,
+    });
+
+    expect(rendered).toContain(WORKER_IMAGE_DEFAULT_LITERAL);
+    expect(rendered).not.toContain('{worker_image}');
+    expect(modes).toContain(modeTokenAfter(rendered, WORKER_IMAGE_DEFAULT_LITERAL));
+  });
+
+  it('substitutes a deployment-configured override image in place of the default, mode token still intact', () => {
+    const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as { launch: string };
+    const modes = provisionModes(readFileSync(provisionPath, 'utf8'));
+    const override = 'us-central1-docker.pkg.dev/acme/workers/acme-build-env:v3';
+    const rendered = renderTemplate(profile.launch, {
+      conduction_id: 'c-1',
+      ticket: 'B-929',
+      run_config_json: 'e30=',
+      model: 'claude-sonnet-5',
+      worker_image: override,
+    });
+    expect(rendered).toContain(override);
+    expect(rendered).not.toContain(WORKER_IMAGE_DEFAULT_LITERAL);
+    expect(modes).toContain(modeTokenAfter(rendered, override));
+  });
+
+  // B-929: the WORKER_IMAGE_DEFAULT constant is the single source of the default — pin the test's
+  // own literal to it so a future change to the schema default cannot leave this file asserting a
+  // value that no longer exists.
+  it('the schema default IS the literal this file asserts against', () => {
+    expect(WORKER_IMAGE_DEFAULT).toBe(WORKER_IMAGE_DEFAULT_LITERAL);
   });
 });
 
@@ -2336,12 +2401,23 @@ function runEntrypoint(
     { mode: 0o700 },
   );
 
+  // B-929: this harness spreads process.env, which leaks the AMBIENT deployment's own
+  // HARMONY_REPOS_JSON / HARMONY_PLUGIN_POSTURE into the script under test whenever the suite runs
+  // INSIDE a Harmony worker container — which it does, that being how this repo builds itself. The
+  // AC3 cases below assert the fallback taken when those vars are ABSENT, so a leaked
+  // HARMONY_REPOS_JSON silently routed them down the repos[] branch instead (2 failures, seen live
+  // on a worker leg; CI never showed it because a GitHub runner has neither var). Scrub both here
+  // and let each test's own `env` put back whatever it actually means to set.
+  const ambient = { ...process.env };
+  delete ambient.HARMONY_REPOS_JSON;
+  delete ambient.HARMONY_PLUGIN_POSTURE;
+
   let stdout: string;
   let stderr = '';
   let exitCode = 0;
   try {
     stdout = execFileSync('bash', [scriptFile, ...(opts.args ?? ['shell'])], {
-      env: { ...process.env, ...env, PATH: `${binDir}:${process.env.PATH}`, GIT_CALL_LOG: gitCallLog },
+      env: { ...ambient, ...env, PATH: `${binDir}:${process.env.PATH}`, GIT_CALL_LOG: gitCallLog },
       encoding: 'utf8',
     });
   } catch (err) {
@@ -3120,5 +3196,129 @@ describe('entrypoint.sh: B-718 cross-conduction resume discovery (cloud profile)
         chmodSync(newProjectsDir, 0o700);
       }
     });
+  });
+});
+
+// B-929 lever 2 (cloud path): cloud-worker-launch.sh resolves the deployment's worker image and
+// hands it to the EXISTING `gcloud run jobs update` call as --image. The resolution block is
+// EXTRACTED VERBATIM from the real script and EXECUTED here (same discipline as the B-718 resume
+// block above — a prose-pinned assertion about a shell script is not trusted in this file), with a
+// stub `node` standing in for `harmony config get`.
+describe('cloud-worker-launch.sh: B-929 worker-image resolution', () => {
+  const launchScript = readFileSync(
+    fileURLToPath(new URL('../../container/cloud-worker-launch.sh', import.meta.url)),
+    'utf8',
+  );
+
+  function extractResolutionBlock(): string {
+    const start = launchScript.indexOf('# B-929 lever 2: which worker IMAGE');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const endMarker = '# --- end B-929 worker-image resolution';
+    const end = launchScript.indexOf(endMarker, start);
+    expect(end).toBeGreaterThan(start);
+    return launchScript.slice(start, end);
+  }
+
+  /** Runs the block with a fake `harmony config get` that prints `configured` (or nothing, when
+   *  null — the "no deployment config" case). Returns the resolved WORKER_IMAGE_REF. */
+  function resolve(configured: string | null, env: NodeJS.ProcessEnv = {}): string {
+    const dir = mkdtempSync(join(tmpdir(), 'b929-image-resolve-'));
+    const pluginDir = join(dir, 'plugin');
+    mkdirSync(join(pluginDir, 'dist', 'bin'), { recursive: true });
+    writeFileSync(join(pluginDir, 'dist', 'bin', 'harmony.js'), '// stub target\n');
+
+    const stubBin = join(dir, 'bin');
+    mkdirSync(stubBin, { recursive: true });
+    // The block calls `node <harmony.js> config get worker_image`; this stub answers it.
+    writeFileSync(
+      join(stubBin, 'node'),
+      configured === null
+        ? ['#!/usr/bin/env bash', 'exit 1', ''].join('\n')
+        : ['#!/usr/bin/env bash', `printf '%s' '${configured}'`, ''].join('\n'),
+      { mode: 0o755 },
+    );
+
+    const scriptFile = join(dir, 'harness.sh');
+    writeFileSync(
+      scriptFile,
+      [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        ': "${CLOUDSDK_CORE_PROJECT:=harmony-conductor}"',
+        extractResolutionBlock(),
+        'printf "%s" "$WORKER_IMAGE_REF"',
+        '',
+      ].join('\n'),
+      { mode: 0o700 },
+    );
+    return execFileSync('bash', [scriptFile], {
+      env: { ...env, HARMONY_PLUGIN_DIR: pluginDir, PATH: `${stubBin}:${process.env.PATH}` },
+    }).toString();
+  }
+
+  it('resolves a BARE name against the deployment registry', () => {
+    expect(resolve('harmony-build-env')).toBe(
+      'us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-build-env',
+    );
+  });
+
+  it('uses a FULLY-QUALIFIED ref verbatim (another registry, or a pinned tag)', () => {
+    const full = 'europe-west1-docker.pkg.dev/acme/images/acme-build-env:0.14.171';
+    expect(resolve(full)).toBe(full);
+  });
+
+  it('honours HARMONY_WORKER_IMAGE_REGISTRY for a bare name (config not constants)', () => {
+    expect(resolve('acme-build-env', { HARMONY_WORKER_IMAGE_REGISTRY: 'reg.example/acme' })).toBe(
+      'reg.example/acme/acme-build-env',
+    );
+  });
+
+  it('resolves NOTHING when no deployment config answers — so no --image flag is passed and the job is left exactly as it was', () => {
+    expect(resolve(null)).toBe('');
+  });
+
+  it('the update call passes --image ONLY through that resolved value, and only when it is non-empty', () => {
+    // The flag is built as an ARRAY that stays empty when nothing resolved, so the pre-B-929
+    // command line is reproduced byte-for-byte on a machine with no deployment config.
+    expect(launchScript).toContain('B929_IMAGE_FLAG=()');
+    expect(launchScript).toContain('B929_IMAGE_FLAG=(--image="$WORKER_IMAGE_REF")');
+    expect(launchScript).toContain('"${B929_IMAGE_FLAG[@]}" \\');
+    // And it rides the EXISTING update call — no second gcloud invocation was added. Counted on
+    // COMMAND lines only (a line starting with the command), so the two prose references to it in
+    // this script's comments do not inflate the count.
+    const updateInvocations = launchScript
+      .split('\n')
+      .filter((line) => line.startsWith('gcloud run jobs update'));
+    expect(updateInvocations).toHaveLength(1);
+  });
+});
+
+// B-929 lever 1 (wiring): provision.sh must actually CALL the activation, once per cloned repo,
+// non-fatally — the script itself is unit-tested in src/container/activate-toolchain.test.ts, but
+// nothing there proves it is ever invoked.
+describe('provision.sh: B-929 toolchain activation wiring', () => {
+  const provisionScript = readFileSync(provisionPath, 'utf8');
+
+  it('invokes container/activate-toolchain.sh from the CLONED plugin dir', () => {
+    expect(provisionScript).toContain('"$PLUGIN_DIR/container/activate-toolchain.sh" "$B929_REPO_PATH"');
+  });
+
+  it('iterates the SAME repo set entrypoint.sh cloned — HARMONY_REPOS_JSON, else the three-slot fallback', () => {
+    expect(provisionScript).toContain('HARMONY_REPOS_JSON');
+    expect(provisionScript).toContain("jq -r '.[].path'");
+    for (const path of ['/workspace/workspace', '/workspace/workspace/web', '/workspace/workspace/plugin']) {
+      expect(provisionScript).toContain(path);
+    }
+  });
+
+  it('is NON-FATAL: a failed activation warns and the leg continues on the image default', () => {
+    expect(provisionScript).toContain('WARNING — toolchain activation failed');
+  });
+
+  it('runs BEFORE the mode hand-off, so the agent it execs inherits the activated toolchain', () => {
+    const activationAt = provisionScript.indexOf('B-929: per-repo toolchain activation');
+    const handOffAt = provisionScript.indexOf('# --- Hand off.');
+    expect(activationAt).toBeGreaterThan(0);
+    expect(handOffAt).toBeGreaterThan(activationAt);
   });
 });
