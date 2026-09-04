@@ -238,6 +238,27 @@ release brief, right alongside the risk-class signal, e.g.: *"ℹ Auto-approved 
 **plan** — see their `OVERRIDE-GATE-EXECUTED` comments for what each executed."* If none are found, show
 nothing extra.
 
+**Dedup-degradation attention line (B-776).** Same rail, same call: from the SAME
+`mcp__harmony__list_comments({ task_id })` result above, also collect every
+`DEDUP-DEGRADED routes=<comma-joined route names> codes=<comma-joined SQLSTATEs>
+conduction_id=<id-or-"none">` marker (`harmony-clarify` §3c posts one when the dedup retrieval degraded —
+see its "Degraded retrieval" block). **Filter by `conduction_id`** when THIS run has one
+(`get_project`'s `environment.conduction_id`); when it is `null`, include **every** marker found on the
+ticket — the same deliberate best-effort imprecision the override block above states, acceptable for the
+same reason (an FYI attention line, not a safety floor). Render the matches as their own attention line,
+naming the routes and codes verbatim from the marker, e.g.: *"⚠ Dedup retrieval was degraded at clarify:
+**lexical-full** (`57014`), **intent** (`57014`) — the related-tickets check ran on the title alone, so a
+duplicate or overlapping ticket may not have surfaced. Worth a manual look before this lands."* If none
+are found, show nothing extra.
+
+**This is the UNATTENDED half of the ticket's surfacing requirement.** An attended run sees the
+degradation live on the clarify card; an unattended one has nobody watching, so the marker comment is the
+only thing that carries it forward — and this line is where a human finally reads it. It rides the
+existing B-516 record-and-carry rail exactly: **record at the gate, surface at the release brief**. It
+must **NEVER** introduce a pause, a block, or a refusal mid-run — degraded dedup is an FYI, and failing
+the run on it would be strictly worse than the silent drop it replaces. A missing marker is not evidence
+of anything: say nothing rather than asserting the dedup check was clean.
+
 **Prerequisite-PR attention line (B-783).** When `field_values.prerequisite_pr` is present, show its LIVE
 merge status as its own attention line, framed against the environment THIS release actually reaches —
 **prod** for a daemon-driven run (the standing `PLUGIN_REF=main` + prod-board posture, workspace
