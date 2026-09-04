@@ -152,6 +152,46 @@ if [ "$ACTUAL_TARGET" = "prod" ] && [ "$PLUGIN_REF" != "prod" ] && [ "$AHEAD_OF_
 fi
 echo "Environment confirmed: target=$ACTUAL_TARGET plugin_ref=$PLUGIN_REF plugin_version=$PLUGIN_VERSION workdir=$WORKDIR$AHEAD_OF_PROD_ACK"
 
+# --- B-929: per-repo toolchain activation (strictly conditional). ------------
+# A build leg for a project that pins a Node version or package manager other
+# than Harmony's own used to die on this image's single baked Node 22. The
+# clones exist by now (container/entrypoint.sh cloned them, either from
+# HARMONY_REPOS_JSON or the three-slot fallback), so this is the first point at
+# which a repo's OWN declaration can be read.
+#
+# STRICTLY CONDITIONAL (B-929 AC2): container/activate-toolchain.sh touches
+# nothing at all for a repo that declares no .nvmrc / .node-version /
+# engines.node / packageManager — which is every one of Harmony's own three
+# repos today, so this loop is a proven no-op for every existing deployment. It
+# is deliberately NON-FATAL: a repo whose declared pin cannot be honoured logs a
+# warning and the leg continues on the image default, because a toolchain
+# convenience must never be able to kill a leg that would otherwise have run.
+b929_repo_paths() {
+  if [ -n "${HARMONY_REPOS_JSON:-}" ]; then
+    # Same base64-JSON channel entrypoint.sh cloned from (B-814) — read the
+    # paths back rather than re-deriving them, so the two can never disagree.
+    printf '%s' "$HARMONY_REPOS_JSON" | base64 -d 2>/dev/null | jq -r '.[].path' 2>/dev/null || true
+  else
+    # The three-slot fallback shape entrypoint.sh clones when no repos[] is
+    # configured (AC3 there), listed here in the same order.
+    printf '%s\n' /workspace/workspace /workspace/workspace/web /workspace/workspace/plugin
+  fi
+}
+while IFS= read -r B929_REPO_PATH; do
+  [ -n "$B929_REPO_PATH" ] || continue
+  [ -d "$B929_REPO_PATH" ] || continue
+  "$PLUGIN_DIR/container/activate-toolchain.sh" "$B929_REPO_PATH" \
+    || echo "provision.sh: WARNING — toolchain activation failed for $B929_REPO_PATH; continuing on the image default Node $(node --version)" >&2
+done < <(b929_repo_paths)
+# Adopt whatever was persisted into THIS process too, so the leg's own agent
+# (exec'd below) inherits the activated toolchain. The file only exists when
+# something was actually activated — this line is a no-op otherwise.
+if [ -f "$HOME/.harmony-toolchain.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$HOME/.harmony-toolchain.sh"
+  echo "provision.sh: B-929 toolchain active — node $(node --version)"
+fi
+
 # --- Hand off. --------------------------------------------------------------
 if [ $# -eq 0 ] && [ ! -t 0 ]; then
   # A mis-provisioned non-interactive invocation (e.g. a Cloud Run job execution with no

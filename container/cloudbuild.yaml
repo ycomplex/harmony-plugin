@@ -13,6 +13,16 @@ steps:
     name: gcr.io/cloud-builders/docker
     args: ['build', '-t', '${_IMAGE}:latest', 'container/']
 
+  # B-929: the publish gate. Runs BETWEEN the build and the two pushes, so an image that fails the
+  # smoke NEVER becomes :latest and the fleet keeps running the last good image. The assertions live
+  # in container/smoke.sh — a committed script, invoked identically by the PR's toolchain-contract
+  # CI job, so the depth is settled pre-merge instead of only on a real Cloud Build run. See that
+  # script's header for exactly how deep the credential-free entrypoint probes go.
+  - id: smoke
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args: ['container/smoke.sh', '${_IMAGE}:latest']
+
   - id: read-version
     name: node:22-bookworm-slim
     entrypoint: bash

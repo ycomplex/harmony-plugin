@@ -279,7 +279,8 @@ export function loadDaemonConfig(
   };
 }
 
-/** Substitute {conduction_id} / {ticket} / {run_config_json} into a profile template. An unknown
+/** Substitute {conduction_id} / {ticket} / {run_config_json} / {model} / {worker_image} into a
+ *  profile template. An unknown
  *  {placeholder} throws LOUDLY — a template typo must never reach the shell as a literal brace
  *  token. Plain shell syntax ($HOME etc.) passes through untouched.
  *
@@ -290,10 +291,26 @@ export function loadDaemonConfig(
  *  src/daemon/scheduler.ts's runConfigJsonFor) — encoded upstream of every launch template so the
  *  single-quoted shell literal every profile wraps it in only ever sees the base64 alphabet, never
  *  raw JSON text. Optional in `vars`: a caller that never renders a template referencing
- *  {run_config_json} (e.g. the reap/probe templates) need not supply it. */
+ *  {run_config_json} (e.g. the reap/probe templates) need not supply it.
+ *
+ *  B-929: {worker_image} carries which container image this deployment's workers run — the
+ *  deployment config's top-level `worker_image` (src/config/deployment-config.ts), falling back to
+ *  its schema default on the many machines that have no deployment config at all (see
+ *  src/daemon/scheduler.ts's templateVars). Same "always computed upstream, harmless when
+ *  unreferenced" convention as {run_config_json} and {model} — a reap/probe template that never
+ *  mentions it is unaffected. It MUST be listed below: this function throws on any placeholder it
+ *  does not know, so the moment a launch template says {worker_image} (as
+ *  container/daemon-profile.example.json now does) an unlisted placeholder would kill every
+ *  launch. */
 export function renderTemplate(
   tpl: string,
-  vars: { conduction_id: string; ticket: string; run_config_json?: string; model?: string },
+  vars: {
+    conduction_id: string;
+    ticket: string;
+    run_config_json?: string;
+    model?: string;
+    worker_image?: string;
+  },
 ): string {
   return tpl.replace(/\{([A-Za-z0-9_]+)\}/g, (_match, name: string) => {
     if (name === 'conduction_id') return vars.conduction_id;
@@ -303,9 +320,11 @@ export function renderTemplate(
     // modelFor) — same "always computed upstream, only substituted where the template actually
     // references it" convention as {run_config_json} above.
     if (name === 'model' && vars.model !== undefined) return vars.model;
+    // B-929: which worker image this deployment runs — same convention as the two above.
+    if (name === 'worker_image' && vars.worker_image !== undefined) return vars.worker_image;
     throw new Error(
       `unknown placeholder {${name}} in launch-profile template — supported: {conduction_id}, ` +
-        `{ticket}, {run_config_json}, {model}`,
+        `{ticket}, {run_config_json}, {model}, {worker_image}`,
     );
   });
 }

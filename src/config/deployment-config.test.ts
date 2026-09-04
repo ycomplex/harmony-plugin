@@ -3,6 +3,7 @@ import {
   loadDeploymentConfig,
   resolveDeploymentConfigPath,
   resolveConfigPath,
+  WORKER_IMAGE_DEFAULT,
 } from './deployment-config.js';
 
 // Fakes a filesystem via an in-memory map — no real fs touched (B-800 injectable-IO requirement).
@@ -65,7 +66,7 @@ describe('loadDeploymentConfig', () => {
     };
     const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
     const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
-    expect(loaded).toEqual(config);
+    expect(loaded).toEqual({ ...config, worker_image: 'harmony-build-env' }); // B-929 default
   });
 
   it('throws a clear error for malformed JSON', () => {
@@ -91,7 +92,8 @@ describe('loadDeploymentConfig', () => {
       env: { HARMONY_DEPLOYMENT_CONFIG: '/env-configured.json' },
       ...io,
     });
-    expect(loaded).toEqual({ launcher: { plugin_dir: '/x' } });
+    // B-929: worker_image carries a schema default, so every successful parse materializes it.
+    expect(loaded).toEqual({ launcher: { plugin_dir: '/x' }, worker_image: 'harmony-build-env' });
   });
 
   // B-803: the single posture knob replaces the old PLUGIN_REF + HARMONY_ACK_PLUGIN_AHEAD_OF_PROD
@@ -100,7 +102,7 @@ describe('loadDeploymentConfig', () => {
     const config = { env: { HARMONY_TARGET: 'prod' as const, HARMONY_PLUGIN_POSTURE: 'ack:main' } };
     const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
     const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
-    expect(loaded).toEqual(config);
+    expect(loaded).toEqual({ ...config, worker_image: WORKER_IMAGE_DEFAULT });
   });
 
   it('the old PLUGIN_REF / HARMONY_ACK_PLUGIN_AHEAD_OF_PROD pair is no longer part of the schema — silently stripped, not rejected', () => {
@@ -115,7 +117,43 @@ describe('loadDeploymentConfig', () => {
     const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
     // Unknown keys are stripped by zod's default object behavior — neither key survives parsing,
     // confirming the schema no longer declares them (a passthrough schema would have kept them).
-    expect(loaded).toEqual({ env: { HARMONY_TARGET: 'prod' } });
+    expect(loaded).toEqual({ env: { HARMONY_TARGET: 'prod' }, worker_image: 'harmony-build-env' });
+  });
+
+  // B-929 lever 2: which container image this deployment's workers run. A TOP-LEVEL key (sibling of
+  // env/profiles/launcher/repos), carrying the ONE place the default is written.
+  describe('worker_image (B-929)', () => {
+    it('defaults to harmony-build-env when the config does not mention it', () => {
+      const io = fakeFs({ '/deployment.json': JSON.stringify({ env: { HARMONY_TARGET: 'prod' } }) });
+      const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
+      expect(loaded?.worker_image).toBe('harmony-build-env');
+    });
+
+    it('carries an override through verbatim, including a fully-qualified registry ref', () => {
+      const ref = 'us-central1-docker.pkg.dev/acme/workers/acme-build-env:0.14.171';
+      const io = fakeFs({ '/deployment.json': JSON.stringify({ worker_image: ref }) });
+      const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
+      expect(loaded?.worker_image).toBe(ref);
+    });
+
+    it('rejects an empty worker_image rather than silently launching a nameless image', () => {
+      const io = fakeFs({ '/deployment.json': JSON.stringify({ worker_image: '' }) });
+      expect(() => loadDeploymentConfig({ configPath: '/deployment.json', ...io })).toThrow(
+        /failed validation/,
+      );
+    });
+
+    it('is resolvable by `harmony config get worker_image`\'s dot-path primitive', () => {
+      const io = fakeFs({ '/deployment.json': JSON.stringify({ worker_image: 'acme-build-env' }) });
+      const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
+      expect(resolveConfigPath(loaded, 'worker_image')).toBe('acme-build-env');
+    });
+
+    it('the exported WORKER_IMAGE_DEFAULT IS the schema default — one literal, not two', () => {
+      const io = fakeFs({ '/deployment.json': '{}' });
+      const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
+      expect(loaded?.worker_image).toBe(WORKER_IMAGE_DEFAULT);
+    });
   });
 
   // B-814: the ordered repo-set list — replaces the fixed WEB_REPO/PLUGIN_REPO/WORKSPACE_REPO
@@ -132,7 +170,7 @@ describe('loadDeploymentConfig', () => {
       };
       const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
       const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
-      expect(loaded).toEqual(config);
+      expect(loaded).toEqual({ ...config, worker_image: WORKER_IMAGE_DEFAULT });
     });
 
     it('accepts an N=1 single-repo list where that one entry is both the whole topology and is_plugin (AC1 — e.g. Team Health)', () => {
@@ -141,13 +179,13 @@ describe('loadDeploymentConfig', () => {
       };
       const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
       const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
-      expect(loaded).toEqual(config);
+      expect(loaded).toEqual({ ...config, worker_image: WORKER_IMAGE_DEFAULT });
     });
 
     it('requires url and path on every entry, but ref/meta_repo_role/is_plugin all stay optional', () => {
       const config = { repos: [{ url: 'https://github.com/x/y.git', path: '/workspace/y' }] };
       const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
-      expect(loadDeploymentConfig({ configPath: '/deployment.json', ...io })).toEqual(config);
+      expect(loadDeploymentConfig({ configPath: '/deployment.json', ...io })).toEqual({ ...config, worker_image: WORKER_IMAGE_DEFAULT });
     });
 
     it('rejects a repos entry missing url or path', () => {
@@ -193,7 +231,7 @@ describe('loadDeploymentConfig', () => {
         ],
       };
       const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
-      expect(loadDeploymentConfig({ configPath: '/deployment.json', ...io })).toEqual(config);
+      expect(loadDeploymentConfig({ configPath: '/deployment.json', ...io })).toEqual({ ...config, worker_image: WORKER_IMAGE_DEFAULT });
     });
 
     // AC3: a deployment.json with no repos section at all must load exactly as it did before this
@@ -202,7 +240,7 @@ describe('loadDeploymentConfig', () => {
       const config = { env: { HARMONY_TARGET: 'prod' as const } };
       const io = fakeFs({ '/deployment.json': JSON.stringify(config) });
       const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
-      expect(loaded).toEqual(config);
+      expect(loaded).toEqual({ ...config, worker_image: WORKER_IMAGE_DEFAULT });
       expect(loaded && 'repos' in loaded).toBe(false);
     });
   });

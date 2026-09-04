@@ -1,0 +1,5 @@
+[
+  { "bin": "pnpm", "npm": "pnpm@11.21.0" },
+  { "bin": "rsync" },
+  { "bin": "ping", "apt": "iputils-ping" }
+]

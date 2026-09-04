@@ -7,6 +7,9 @@
 //   launcher — the launcher-host env contract (HARMONY_PLUGIN_DIR, the GitHub App id/installation
 //              id/key path, the Supabase env triple) plus supabase_refs (replaces
 //              src/tools/environment.ts's KNOWN_REFS).
+//   repos    — the ordered repo set this deployment clones into each worker (B-814).
+//   worker_image — B-929: which container image this deployment's workers run (lever 2). A plain
+//              scalar, defaulted here and nowhere else.
 //
 // The config file PATH is an instance parameter, not a fixed location — one machine can run N
 // daemon deployments bound to N boards, each with its own file. Resolution order: an explicit
@@ -135,6 +138,24 @@ const ReposSchema = z
     message: 'at most one repos[] entry may set is_plugin',
   });
 
+// --- worker_image: which image a worker runs (B-929 lever 2) -------------------------------------
+// The second of B-929's two levers. Lever 1 (container/activate-toolchain.sh) lets ONE image serve a
+// repo that pins its own Node/package manager; this lever is the escape hatch for everything lever 1
+// cannot express — a project needing system packages, a browser, a compiler toolchain. Point the
+// deployment at an image built FROM the shared base (container/worker-image/'s generator emits
+// exactly that) and its workers run there instead.
+//
+// A TOP-LEVEL key, sibling of env/profiles/launcher/repos, because it is a property of the
+// DEPLOYMENT, not of one launch profile: both the local-docker template (via the {worker_image}
+// placeholder, src/daemon/config.ts's renderTemplate) and the cloud path (via
+// container/cloud-worker-launch.sh's `gcloud run jobs update --image`) read this same value.
+//
+// The default lives HERE, exactly once — every other consumer either gets it from a parsed config
+// (zod materializes it) or imports WORKER_IMAGE_DEFAULT below. Two accepted resolution shapes,
+// documented in container/README.md: a value containing "/" is a fully-qualified image ref used
+// VERBATIM; a bare name is resolved against the deployment's own registry by the cloud launcher.
+export const WORKER_IMAGE_DEFAULT = 'harmony-build-env';
+
 // --- launcher: the launcher-host env contract ----------------------------------------------------
 const GithubAppSchema = z
   .object({
@@ -167,6 +188,9 @@ export const DeploymentConfigSchema = z.object({
   launcher: LauncherSchema.optional(),
   /** B-814: the ordered repo set — see the RepoEntrySchema/ReposSchema header comment above. */
   repos: ReposSchema.optional(),
+  /** B-929 lever 2: which container image this deployment's workers run. THE one place the default
+   *  is written — see the worker_image section comment above. */
+  worker_image: z.string().min(1).default(WORKER_IMAGE_DEFAULT),
 });
 
 export type DeploymentEnv = z.infer<typeof DeploymentEnvSchema>;

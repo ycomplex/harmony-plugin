@@ -84,6 +84,33 @@ _b814_repos_json=""
 if [ -n "${HARMONY_PLUGIN_DIR:-}" ] && [ -f "$HARMONY_PLUGIN_DIR/dist/bin/harmony.js" ]; then
   _b814_repos_json="$(node "$HARMONY_PLUGIN_DIR/dist/bin/harmony.js" config get repos 2>/dev/null || true)"
 fi
+
+# B-929 lever 2: which worker IMAGE this deployment's Cloud Run job runs — read the SAME best-effort
+# way as profiles.cloud.gcloud_project and repos above. A missing HARMONY_PLUGIN_DIR, a missing
+# deployment config, or an unset key all leave this EMPTY, and an empty value means the `gcloud run
+# jobs update` call below passes NO --image at all — byte-identical to this script's behavior before
+# this ticket, which never touched the job's image.
+#
+# Resolution rule (documented in container/README.md):
+#   * a value containing "/" is already a fully-qualified image ref (registry/path[:tag]) and is
+#     used VERBATIM — that is how you point at another project's registry, or pin a digest;
+#   * a BARE name (the schema default 'harmony-build-env' is one) is resolved against this
+#     deployment's own registry: $HARMONY_WORKER_IMAGE_REGISTRY, itself defaulting to the
+#     Artifact Registry path container/cloudbuild.yaml's _IMAGE substitution publishes to,
+#     with CLOUDSDK_CORE_PROJECT (resolved just above) as the project.
+: "${HARMONY_WORKER_IMAGE_REGISTRY:=us-central1-docker.pkg.dev/$CLOUDSDK_CORE_PROJECT/harmony-workers}"
+_b929_worker_image=""
+if [ -n "${HARMONY_PLUGIN_DIR:-}" ] && [ -f "$HARMONY_PLUGIN_DIR/dist/bin/harmony.js" ]; then
+  _b929_worker_image="$(node "$HARMONY_PLUGIN_DIR/dist/bin/harmony.js" config get worker_image 2>/dev/null || true)"
+fi
+WORKER_IMAGE_REF=""
+if [ -n "$_b929_worker_image" ]; then
+  case "$_b929_worker_image" in
+    */*) WORKER_IMAGE_REF="$_b929_worker_image" ;;
+    *)   WORKER_IMAGE_REF="$HARMONY_WORKER_IMAGE_REGISTRY/$_b929_worker_image" ;;
+  esac
+fi
+# --- end B-929 worker-image resolution ---------------------------------------------------------
 : "${CLOUDSDK_CORE_ACCOUNT:=harmony-daemon@harmony-conductor.iam.gserviceaccount.com}"
 : "${HARMONY_CLOUD_RUN_REGION:=us-central1}"
 : "${HARMONY_CLOUD_RUN_JOB:=harmony-build-worker}"
@@ -342,9 +369,28 @@ acquire_lock
 # shared job definition. B-717 resolves the race this created (once the daemon stopped being
 # strictly serial) with the mkdir-based lock acquired immediately above: both calls, and the
 # execution-id resolve after them, run inside its critical section — see acquire_lock/release_lock.
+#
+# B-929: this same call now also carries --image, when (and only when) a deployment config resolved
+# a worker_image (see WORKER_IMAGE_REF above). Deliberately NO new gcloud call and no new race: this
+# `update` already runs inside B-717's launch lock, already mutates the job definition, and the
+# `execute` immediately below already reads that same definition. A deployment with no config
+# resolves an empty ref and the flag is omitted entirely, leaving the job's image exactly as the
+# founder's one-time `gcloud run jobs create` set it.
+#
+# CARRIED UNPROVEN (B-929, no gcloud in the build environment): whether Cloud Run RE-RESOLVES a
+# moving TAG on `jobs update --image` or pins the digest it resolved at update time. It does not
+# matter for the config lever (a changed worker_image is a different ref, so update always moves the
+# job), but it IS what tier (a) of the rollback ladder in container/README.md rests on — hence that
+# tier being documented as unverified.
+B929_IMAGE_FLAG=()
+if [ -n "$WORKER_IMAGE_REF" ]; then
+  B929_IMAGE_FLAG=(--image="$WORKER_IMAGE_REF")
+  echo "cloud-worker-launch: worker image $WORKER_IMAGE_REF (deployment config worker_image=$_b929_worker_image)" >&2
+fi
 gcloud run jobs update "$HARMONY_CLOUD_RUN_JOB" \
   --region="$HARMONY_CLOUD_RUN_REGION" \
   --env-vars-file="$EXEC_ENV_FILE" \
+  "${B929_IMAGE_FLAG[@]}" \
   --update-labels="conduction-id=$CONDUCTION_ID"
 
 # 3b. Fire the job execution WITHOUT --wait (B-717 plan-gate correction 1) AND WITH --async (B-717
