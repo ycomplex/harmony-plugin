@@ -373,6 +373,10 @@ describe('findRelatedTickets', () => {
     expect(res.degraded).toBe(true);                 // marked degraded
     expect(res.candidates.map((c) => c.id)).toEqual(['lex-1']);  // route-1 results survive
     expect(res.candidates[0].routes).toEqual(['lexical']);
+    // B-776: the THROWN path is captured too — no SQLSTATE on a plain Error, so code is null.
+    expect(res.degraded_routes).toEqual([
+      { route: 'intent', code: null, error: 'route 2 down (522)' },
+    ]);
   });
 
   it('also degrades when route 2 returns an RPC error (not a throw)', async () => {
@@ -439,6 +443,218 @@ describe('findRelatedTickets', () => {
     expect(res.candidates[0].score).toBeCloseTo(3 * (1 / 11), 10);
   });
 
+
+  // --- B-776: per-route error capture + the call-site query bound -------------
+
+  const TIMEOUT_MSG = 'canceling statement due to statement timeout';
+  const timeoutErr = () => ({ data: null, error: { code: '57014', message: TIMEOUT_MSG } });
+  function enrichedRow(id: string, n: number) {
+    return { id, task_number: n, title: `T ${n}`, workflow_state: 'Proposed', milestone_id: 'm1', archived: false, projects: { key: 'B' } };
+  }
+
+  it('B-776 TC6a: captures a RETURNED error at route 2a (intent) with its SQLSTATE', async () => {
+    const client = makeClient({
+      tableResults: {
+        tasks: [...subjectRows(), { data: [enrichedRow('lex-1', 50)] }],
+        projects: projectRows(),
+        knowledge_decisions: intentEmbedRow(),
+      },
+      rpc: {
+        // PostgREST RETURNS the failure (it does not throw) — the path that actually fires on 57014.
+        search_ticket_intents: timeoutErr(),
+        search_tasks: { data: [{ task_id: 'lex-1', similarity: 0.7 }], error: null },
+      },
+    });
+    const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
+    expect(res.degraded_routes).toEqual([{ route: 'intent', code: '57014', error: TIMEOUT_MSG }]);
+    expect(res.degraded).toBe(true);
+    expect(res.candidates.map((c) => c.id)).toEqual(['lex-1']);   // surviving routes still deliver
+  });
+
+  it('B-776 TC6b: captures a RETURNED error at route 2b (lexical-full) — previously dropped silently', async () => {
+    const client = makeClient({
+      tableResults: {
+        tasks: [...subjectRows(), { data: [enrichedRow('t-title', 60)] }],
+        projects: projectRows(),
+        knowledge_decisions: intentEmbedRow(),
+      },
+      rpc: {
+        search_ticket_intents: { data: [], error: null },
+        // FIFO: call 1 = FULL framing (fails), call 2 = TITLE framing (succeeds).
+        search_tasks: [
+          timeoutErr(),
+          { data: [{ task_id: 't-title', similarity: 0.6 }], error: null },
+        ],
+      },
+    });
+    const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
+    expect(res.degraded_routes).toEqual([{ route: 'lexical-full', code: '57014', error: TIMEOUT_MSG }]);
+    expect(res.degraded).toBe(true);
+    expect(res.candidates.map((c) => c.id)).toEqual(['t-title']);
+  });
+
+  it('B-776 TC6c: captures a RETURNED error at route 2c (lexical-title) — previously dropped silently', async () => {
+    const client = makeClient({
+      tableResults: {
+        tasks: [...subjectRows(), { data: [enrichedRow('t-full', 61)] }],
+        projects: projectRows(),
+        knowledge_decisions: intentEmbedRow(),
+      },
+      rpc: {
+        search_ticket_intents: { data: [], error: null },
+        // FIFO: call 1 = FULL framing (succeeds), call 2 = TITLE framing (fails).
+        search_tasks: [
+          { data: [{ task_id: 't-full', similarity: 0.6 }], error: null },
+          { data: null, error: { code: '42883', message: 'function does not exist' } },
+        ],
+      },
+    });
+    const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
+    expect(res.degraded_routes).toEqual([
+      { route: 'lexical-title', code: '42883', error: 'function does not exist' },
+    ]);
+    expect(res.degraded).toBe(true);
+    expect(res.candidates.map((c) => c.id)).toEqual(['t-full']);
+  });
+
+  it('B-776 TC6d: degraded is FALSE (and degraded_routes empty) when all three routes succeed', async () => {
+    const client = makeClient({
+      tableResults: {
+        tasks: [...subjectRows(), { data: [enrichedRow('ok-1', 70)] }],
+        projects: projectRows(),
+        knowledge_decisions: intentEmbedRow(),
+      },
+      rpc: {
+        search_ticket_intents: { data: [{ source_task_id: 'ok-1', content: 'x', score: 0.5 }], error: null },
+        search_tasks: { data: [{ task_id: 'ok-1', similarity: 0.5 }], error: null },
+      },
+    });
+    const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
+    expect(res.degraded_routes).toEqual([]);
+    expect(res.degraded).toBe(false);
+  });
+
+  it('B-776 TC6e [AC2]: BOTH full-text routes time out → degraded:true and the failures are named — a title-only run is never reported as a full lexical scan', async () => {
+    // The measured prod-board failure: routes 2a and 2b both hit 57014, only 2c (title) survives.
+    // Under the old `degraded = route-2a-only` semantics, 2b's loss was invisible.
+    const client = makeClient({
+      tableResults: {
+        tasks: [...subjectRows(), { data: [enrichedRow('t-title', 80)] }],
+        projects: projectRows(),
+        knowledge_decisions: intentEmbedRow(),
+      },
+      rpc: {
+        search_ticket_intents: timeoutErr(),
+        search_tasks: [
+          timeoutErr(),
+          { data: [{ task_id: 't-title', similarity: 0.6 }], error: null },
+        ],
+      },
+    });
+    const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
+    expect(res.degraded).toBe(true);
+    expect(res.degraded_routes.map((d) => d.route)).toEqual(['intent', 'lexical-full']);
+    expect(res.degraded_routes.every((d) => d.code === '57014')).toBe(true);
+    // and the one surviving route's results still come back
+    expect(res.candidates.map((c) => c.id)).toEqual(['t-title']);
+  });
+
+  it('B-776 TC6f [AC6]: a 57014 that survives bounding is REPORTED with its code, never a silent empty result', async () => {
+    const client = makeClient({
+      tableResults: {
+        tasks: [...subjectRows()],     // no enrich call — every route failed, byTask is empty
+        projects: projectRows(),
+        knowledge_decisions: intentEmbedRow(),
+      },
+      rpc: {
+        search_ticket_intents: timeoutErr(),
+        search_tasks: [timeoutErr(), timeoutErr()],
+      },
+    });
+    const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
+    expect(res.candidates).toEqual([]);              // empty...
+    expect(res.degraded).toBe(true);                 // ...but NOT silently
+    expect(res.degraded_routes).toEqual([
+      { route: 'intent', code: '57014', error: TIMEOUT_MSG },
+      { route: 'lexical-full', code: '57014', error: TIMEOUT_MSG },
+      { route: 'lexical-title', code: '57014', error: TIMEOUT_MSG },
+    ]);
+  });
+
+  it('B-776 TC6g: captures a THROWN failure at a lexical route too (code: null)', async () => {
+    const client = makeClient({
+      tableResults: {
+        tasks: [...subjectRows()],
+        projects: projectRows(),
+        knowledge_decisions: intentEmbedRow(),
+      },
+      rpc: {
+        search_ticket_intents: { data: [], error: null },
+        search_tasks: [
+          () => { throw new Error('connection reset'); },
+          { data: [], error: null },
+        ],
+      },
+    });
+    const res = await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
+    expect(res.degraded_routes).toEqual([
+      { route: 'lexical-full', code: null, error: 'connection reset' },
+    ]);
+    expect(res.degraded).toBe(true);
+  });
+
+  it('B-776 TC6h: bounds the full-text query at 400 chars for routes 2a/2b, while route 2c sends the FULL title', async () => {
+    const longTitle = 'T'.repeat(600);
+    const longDesc = 'D'.repeat(3000);
+    const client = makeClient({
+      tableResults: {
+        tasks: [{ data: { id: SUBJECT_ID, title: longTitle, description: longDesc } }],
+        projects: projectRows(),
+        knowledge_decisions: intentEmbedRow(),
+      },
+      rpc: {
+        search_ticket_intents: { data: [], error: null },
+        search_tasks: { data: [], error: null },
+      },
+    });
+    await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
+    const calls = (client.rpc as any).mock.calls as Array<[string, any]>;
+    const intentCall = calls.find((c) => c[0] === 'search_ticket_intents')!;
+    const lexCalls = calls.filter((c) => c[0] === 'search_tasks');
+    const fullText = `${longTitle} ${longDesc}`;
+
+    // 2a (intent) and 2b (lexical, full framing) both get the BOUNDED text — 400 chars.
+    expect(intentCall[1]._query_text).toBe(fullText.slice(0, 400));
+    expect(intentCall[1]._query_text.length).toBe(400);
+    expect(lexCalls[0][1]._query_text).toBe(fullText.slice(0, 400));
+    expect(lexCalls[0][1]._query_text.length).toBe(400);
+
+    // 2c (lexical, title framing) is UNBOUNDED by design — the RPC-side cap backstops it.
+    expect(lexCalls).toHaveLength(2);
+    expect(lexCalls[1][1]._query_text).toBe(longTitle);
+    expect(lexCalls[1][1]._query_text.length).toBe(600);
+  });
+
+  it('B-776 TC6i: route 2c still SKIPS when the description is empty (guard compares the RAW full text, not the bounded copy)', async () => {
+    // A >400-char title with no description: bounded(full) !== full, so a guard rewritten
+    // against the bounded text would wrongly fire a second, identical lexical query.
+    const longTitle = 'T'.repeat(600);
+    const client = makeClient({
+      tableResults: {
+        tasks: [{ data: { id: SUBJECT_ID, title: longTitle, description: '' } }],
+        projects: projectRows(),
+        knowledge_decisions: intentEmbedRow(),
+      },
+      rpc: {
+        search_ticket_intents: { data: [], error: null },
+        search_tasks: { data: [], error: null },
+      },
+    });
+    await findRelatedTickets(client, PROJECT_ID, { task_id: SUBJECT_ID });
+    const calls = (client.rpc as any).mock.calls as Array<[string, any]>;
+    expect(calls.filter((c) => c[0] === 'search_tasks')).toHaveLength(1);   // full framing only
+  });
+
   it('throws when task_id is missing/blank', async () => {
     const client = makeClient({ tableResults: {}, rpc: {} });
     await expect(findRelatedTickets(client, PROJECT_ID, { task_id: '  ' })).rejects.toThrow('task_id is required');
@@ -452,5 +668,13 @@ describe('find_related_tickets tool schema', () => {
     const props = findRelatedTicketsTool.inputSchema.properties as Record<string, unknown>;
     expect(props.task_id).toBeDefined();
     expect(props.limit).toBeDefined();
+  });
+
+  it('B-776: the description documents degraded_routes and the derived degraded flag', () => {
+    const d = findRelatedTicketsTool.description;
+    expect(d).toContain('degraded_routes');
+    expect(d).toContain('lexical-full');
+    expect(d).toContain('lexical-title');
+    expect(d).toContain('57014');
   });
 });

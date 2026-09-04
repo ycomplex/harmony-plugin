@@ -300,9 +300,49 @@ reorder. One row per candidate, each row showing:
 - **badges** (salience only — they NEVER reorder the list; relevance order stays authoritative):
   - **"⚠ deferred — fold while you're here"** for any candidate with `unmilestoned: true`
 
-If `candidates` is empty, render **"Related tickets: none found"** explicitly. If the
-result has `degraded: true`, note that intent retrieval was unavailable and the list is
-lexical-only (so it may be incomplete) — never let this fail the clarify gate.
+If `candidates` is empty, render **"Related tickets: none found"** explicitly.
+
+#### Degraded retrieval — say WHICH routes were lost (B-776)
+
+When the result has `degraded: true`, render a **labelled block of its own directly under the card** —
+never a parenthetical tucked inside a row — naming the failed routes and their SQLSTATEs from
+`degraded_routes` (each entry is `{ route, code, error }`, `route` ∈ `intent` | `lexical-full` |
+`lexical-title`, `code` is the SQLSTATE or `null`):
+
+> **⚠ Dedup retrieval degraded — this list may be incomplete.** Failed routes: **lexical-full**
+> (`57014`), **intent** (`57014`). This search ran on the **ticket title alone**; the two full-text
+> routes timed out.
+
+**Never say "lexical-only" from the bare `degraded` flag.** `degraded` now means *some* route failed —
+the lexical routes can be the ones that failed, and the measured prod failure is exactly that (both
+full-text routes hit `57014`, only the title-framed lexical route survived). State what actually ran:
+
+- only `intent` failed → *"intent retrieval was unavailable; this list is lexical-only."*
+- `intent` + `lexical-full` failed → *"this search ran on the ticket title alone."*
+- any lexical route failed → name it; do **not** describe the run as a full lexical scan.
+- `code` is `null` → say *"no SQLSTATE reported"* rather than inventing one. A `57014` is a Postgres
+  statement timeout — worth naming as such in the block, since it is the recurring cause.
+
+**This NEVER fails the clarify gate** — it is an annotation on the card, not a blocker, exactly as before.
+
+**Also post a durable marker comment (unattended runs).** A degraded run's loss must survive past this
+session to the release gate, where a human sees it. When `degraded` is `true`, `add_comment` on the
+ticket ONE comment carrying BOTH the human-readable sentence AND the machine-parseable marker — the same
+one-comment-carries-both-facts convention as `OPERATOR-NOTE-DELIVERED` and `OVERRIDE-GATE-EXECUTED`
+(never a separate write that could desync):
+
+```
+Dedup retrieval degraded at clarify: routes <route>(<code>), <route>(<code>) failed — the related-tickets list may be incomplete.
+
+DEDUP-DEGRADED routes=<comma-joined route names> codes=<comma-joined SQLSTATEs> conduction_id=<id-or-"none">
+```
+
+`routes=` and `codes=` are comma-joined and **positionally aligned** (same order as `degraded_routes`),
+e.g. `routes=intent,lexical-full codes=57014,57014`; write `null` in the `codes=` slot for an entry whose
+`code` is `null`, so the two lists always have the same length. Use `get_project`'s
+`environment.conduction_id`, writing the literal string `none` when it is `null` — the field must always
+be present and grep-able, never empty. `finish-work`'s release-brief compose reads these markers back
+(`skills/finish-work/SKILL.md` → "Dedup-degradation attention line (B-776)").
 
 **This card is SURFACE-ONLY.** Surfacing it does not change any ticket's scope or status.
 Act on a disposition ONLY on the human's explicit command (step 5) — never auto-fold,

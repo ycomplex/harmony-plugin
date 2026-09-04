@@ -39816,6 +39816,7 @@ var searchTasksTool = {
 // src/tools/find-related-tickets.ts
 var DEFAULT_LIMIT = 5;
 var RRF_K = 10;
+var BOUNDED_QUERY_CHARS = 400;
 async function findRelatedTickets(client, projectId, args) {
   if (!args.task_id?.trim()) throw new Error("task_id is required");
   const limit = args.limit ?? DEFAULT_LIMIT;
@@ -39828,10 +39829,11 @@ async function findRelatedTickets(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
   const subjectEmbedding = await resolveIntentEmbedding(client, workspaceId, projectId, subjectId);
   const byTask = /* @__PURE__ */ new Map();
-  let degraded = false;
+  const degradedRoutes = [];
   const matchLimit = Math.max(limit * 4, 50);
   const fullText = queryText;
   const titleText = (subject.title ?? "").trim();
+  const boundedFullText = fullText.slice(0, BOUNDED_QUERY_CHARS);
   const ingest = (rows2, idKey, route) => {
     (rows2 ?? []).forEach((row, i) => {
       const tid = row[idKey];
@@ -39845,28 +39847,33 @@ async function findRelatedTickets(client, projectId, args) {
       _project_id: projectId,
       _query_embedding: subjectEmbedding,
       // may be null → trigram-only
-      _query_text: fullText || titleText || "",
+      _query_text: boundedFullText || titleText || "",
       // over-fetch so self-exclusion + archived-drop don't starve the top-N
       _match_limit: matchLimit
     });
     if (error2) {
-      degraded = true;
+      degradedRoutes.push(toDegradedRoute("intent", error2));
     } else {
       ingest(data ?? [], "source_task_id", "intent");
     }
-  } catch {
-    degraded = true;
+  } catch (e) {
+    degradedRoutes.push(toDegradedRoute("intent", e));
   }
   if (fullText) {
     try {
       const { data, error: error2 } = await client.rpc("search_tasks", {
         _project_id: projectId,
-        _query_text: fullText,
+        _query_text: boundedFullText,
         _match_limit: matchLimit,
         _include_archived: false
       });
-      if (!error2) ingest(data ?? [], "task_id", "lexical");
-    } catch {
+      if (error2) {
+        degradedRoutes.push(toDegradedRoute("lexical-full", error2));
+      } else {
+        ingest(data ?? [], "task_id", "lexical");
+      }
+    } catch (e) {
+      degradedRoutes.push(toDegradedRoute("lexical-full", e));
     }
   }
   if (titleText && titleText !== fullText) {
@@ -39874,16 +39881,27 @@ async function findRelatedTickets(client, projectId, args) {
       const { data, error: error2 } = await client.rpc("search_tasks", {
         _project_id: projectId,
         _query_text: titleText,
+        // UNBOUNDED by design (B-776) — the RPC-side cap backstops it
         _match_limit: matchLimit,
         _include_archived: false
       });
-      if (!error2) ingest(data ?? [], "task_id", "lexical");
-    } catch {
+      if (error2) {
+        degradedRoutes.push(toDegradedRoute("lexical-title", error2));
+      } else {
+        ingest(data ?? [], "task_id", "lexical");
+      }
+    } catch (e) {
+      degradedRoutes.push(toDegradedRoute("lexical-title", e));
     }
   }
   byTask.delete(subjectId);
   if (byTask.size === 0) {
-    return { subject_task_id: subjectId, candidates: [], degraded };
+    return {
+      subject_task_id: subjectId,
+      candidates: [],
+      degraded: degradedRoutes.length > 0,
+      degraded_routes: degradedRoutes
+    };
   }
   const candidateIds = [...byTask.keys()];
   const { data: rows, error: enrichErr } = await client.from("tasks").select("id, task_number, title, workflow_state, milestone_id, archived, projects(key)").eq("project_id", projectId).in("id", candidateIds);
@@ -39912,8 +39930,16 @@ async function findRelatedTickets(client, projectId, args) {
   return {
     subject_task_id: subjectId,
     candidates: candidates.slice(0, limit),
-    degraded
+    degraded: degradedRoutes.length > 0,
+    // DERIVED: some route failed (B-776)
+    degraded_routes: degradedRoutes
   };
+}
+function toDegradedRoute(route, err) {
+  const obj = err ?? {};
+  const code = typeof obj.code === "string" && obj.code ? obj.code : typeof obj.code === "number" ? String(obj.code) : null;
+  const message = typeof obj.message === "string" && obj.message ? obj.message : String(err ?? "unknown error");
+  return { route, code, error: message };
 }
 var EXCLUDED_WORKFLOW_STATES = /* @__PURE__ */ new Set(["Cancelled", "Parked", "Verified", "Deployed"]);
 function accumulateRrf(byTask, taskId, rank, route) {
@@ -39962,7 +39988,7 @@ async function resolveTaskId2(client, projectId, input) {
 }
 var findRelatedTicketsTool = {
   name: "find_related_tickets",
-  description: "Surface tickets related to / duplicating / overlapping a subject ticket \u2014 the dedup pipeline used at the clarify gate. MULTI-QUERY retrieval fused by Reciprocal Rank Fusion (RRF by rank, not a raw max, so the routes\u2019 incommensurable score scales can\u2019t dominate each other) over THREE ranked lists: lexical content match on title+description (route 1, full), a SECOND lexical match on the title ALONE (route 1, title \u2014 rescues siblings the full-text framing dilutes), and intent retrieval (route 2, semantic+lexical over ticket intents). Self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), and ranks PURELY by relevance (combined RRF score). Returns only OPEN / foldable candidates \u2014 excludes archived + Cancelled + Parked + Verified + Deployed (the clarify card folds/subsumes only open work; B-581 reversed B-574\u2019s keep-terminal decision). Unmilestoned candidates are FLAGGED (`unmilestoned: true`) for the renderer to badge \u2014 they are NOT reordered (relevance order is authoritative). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. Degrades gracefully (returns lexical-only results with degraded:true) if intent retrieval is unavailable.",
+  description: "Surface tickets related to / duplicating / overlapping a subject ticket \u2014 the dedup pipeline used at the clarify gate. MULTI-QUERY retrieval fused by Reciprocal Rank Fusion (RRF by rank, not a raw max, so the routes\u2019 incommensurable score scales can\u2019t dominate each other) over THREE ranked lists: lexical content match on title+description (route 1, full), a SECOND lexical match on the title ALONE (route 1, title \u2014 rescues siblings the full-text framing dilutes), and intent retrieval (route 2, semantic+lexical over ticket intents). Self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), and ranks PURELY by relevance (combined RRF score). Returns only OPEN / foldable candidates \u2014 excludes archived + Cancelled + Parked + Verified + Deployed (the clarify card folds/subsumes only open work; B-581 reversed B-574\u2019s keep-terminal decision). Unmilestoned candidates are FLAGGED (`unmilestoned: true`) for the renderer to badge \u2014 they are NOT reordered (relevance order is authoritative). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. RESILIENT: a failure at ANY route is captured, never thrown out of the clarify gate \u2014 `degraded_routes` lists one entry per FAILED route as `{ route: 'intent' | 'lexical-full' | 'lexical-title', code: <SQLSTATE string or null, e.g. '57014' for a statement timeout>, error: <message> }`, and `degraded` is DERIVED from it (`degraded_routes.length > 0` \u2014 \"some route failed\", NOT just intent retrieval). Callers MUST name the failed routes from `degraded_routes` rather than claiming \"lexical-only\": the lexical routes can be the ones that failed. The full-text query sent to the intent + lexical-full routes is bounded to 400 chars (B-776 \u2014 longer queries timed out at SQLSTATE 57014); the title-only route is unbounded.",
   inputSchema: {
     type: "object",
     properties: {

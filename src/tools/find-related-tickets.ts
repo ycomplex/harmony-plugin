@@ -36,10 +36,16 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 //   6. Flag unmilestoned = (milestone_id IS NULL) for the renderer to BADGE (not a
 //      filter and NOT a sort key — milestoned candidates are still returned in
 //      relevance order). NOT keyed on any 'Tech Debt' epic (project-specific, non-portable).
-//   7. Empty → explicit empty set (caller renders "none found"). Route-2 error/
-//      unavailable → degrade gracefully (return route-1 results, mark degraded:true;
-//      NEVER throw out of the clarify gate). Route-1 calls are best-effort and do NOT
-//      set degraded.
+//   7. Empty → explicit empty set (caller renders "none found"). EVERY route is
+//      best-effort and NEVER throws out of the clarify gate — but a failure at ANY of
+//      the three (intent / lexical-full / lexical-title) is now CAPTURED per route in
+//      `degraded_routes` (route name + SQLSTATE + message), from BOTH failure paths
+//      PostgREST can take: a returned `error` object AND a thrown exception (B-776).
+//      `degraded` is DERIVED — `degraded_routes.length > 0` — so it now means "some
+//      route failed", NOT "route 2 failed" as it did before. That old meaning silently
+//      dropped 2b's and 2c's failures, so a run that searched on the TITLE ALONE (both
+//      full-text routes timed out at SQLSTATE 57014) was reported to the clarify gate as
+//      a complete lexical scan. It must never be again.
 
 export interface FindRelatedTicketsArgs {
   task_id: string;
@@ -58,10 +64,25 @@ export interface RelatedTicketCandidate {
   routes: string[];                 // which route(s) surfaced it: 'intent' and/or 'lexical'
 }
 
+/** One retrieval route that FAILED this run (B-776). Captured from BOTH failure paths:
+ *  the `error` object PostgREST RETURNS (it does not throw for an RPC failure) and a
+ *  thrown exception. Surfaced so the clarify gate can name WHICH routes were lost and
+ *  WHY, instead of asserting an unqualified "lexical-only". */
+export interface DegradedRoute {
+  route: string;         // 'intent' (2a) | 'lexical-full' (2b) | 'lexical-title' (2c)
+  code: string | null;   // SQLSTATE when available (PostgREST carries `.code`, e.g. '57014' statement timeout); null otherwise
+  error: string;         // the error message
+}
+
 export interface FindRelatedTicketsResult {
   subject_task_id: string;
   candidates: RelatedTicketCandidate[];
-  degraded: boolean;                // true when route 2 was unavailable (route-1-only result)
+  /** DERIVED: `degraded_routes.length > 0` — "SOME retrieval route failed" (B-776).
+   *  It previously meant "route 2 (intent) failed" only; a lexical-route failure was
+   *  silently dropped. Kept as a boolean for backward compatibility. */
+  degraded: boolean;
+  /** Per-route failure detail — empty when all three routes succeeded (B-776). */
+  degraded_routes: DegradedRoute[];
 }
 
 const DEFAULT_LIMIT = 5;
@@ -74,15 +95,32 @@ const DEFAULT_LIMIT = 5;
 // flattened toward the long tail (B-574 follow-up: K=60 buried genuine siblings).
 const RRF_K = 10;
 
+// B-776: hard bound on the query text handed to the retrieval RPCs. Their lexical arm
+// calls word_similarity(_query_text, <doc>) TWICE per row, so cost scales with query
+// LENGTH — a multi-KB title+description blows Postgres' 5s statement timeout and comes
+// back as SQLSTATE 57014. Measured against the prod board: 1,500 chars → 57014;
+// 1,000 chars → 200 OK. 400 sits well inside that with headroom for a slower board, and
+// the leading chars of a ticket's title+description carry its retrievable substance.
+//
+// A companion harmony-web change caps the text AGAIN inside the RPCs (`left(_query_text,
+// N)`). That redundancy is deliberate belt-and-braces, not duplication to be cleaned up:
+// the effective bound is min(call-site, RPC) and the RPC signature is unchanged, so all
+// four merged/promoted combinations of the two halves are correct and NO release
+// ordering exists between them. Do NOT remove or weaken this call-site bound on the
+// grounds that the RPC also caps.
+const BOUNDED_QUERY_CHARS = 400;
+
 /**
  * B-475 P1: find tickets related to / duplicating / overlapping a subject ticket.
  * Surface-only — this NEVER mutates a ticket (no scope change, no closure). The
  * clarify skill renders the result as a card; fold/dedupe/subsume is an explicit
  * human action via subsume_task.
  *
- * Resilient by contract: route 2 (intent retrieval) being down degrades to route 1
- * (lexical) + `degraded: true` rather than throwing — the clarify gate must not
- * hard-fail on a dead retrieval surface (AC6).
+ * Resilient by contract: ANY route being down degrades — the surviving routes' results
+ * are returned, the failure is recorded in `degraded_routes` (route + SQLSTATE + message)
+ * and `degraded` derives from it — rather than throwing. The clarify gate must not
+ * hard-fail on a dead retrieval surface (AC6), and must never be told a title-only run
+ * was a full lexical scan (B-776).
  */
 export async function findRelatedTickets(
   client: SupabaseClient,
@@ -111,7 +149,8 @@ export async function findRelatedTickets(
 
   // accumulate combined multi-query RRF score + routes per candidate task id
   const byTask = new Map<string, { score: number; routes: Set<string> }>();
-  let degraded = false;
+  // Per-route failure log (B-776). `degraded` is DERIVED from this at every return.
+  const degradedRoutes: DegradedRoute[] = [];
 
   // Over-fetch per route so self-exclusion + archived/terminal-drop don't starve the
   // top-N AND so diluted-but-present siblings still contribute. The floor of 50 is the
@@ -120,8 +159,13 @@ export async function findRelatedTickets(
   // to add ANY RRF contribution. RRF down-weights deep ranks (1/(K+rank)), so a deeper
   // pool adds negligible noise but recovers recall (B-574 follow-up: floor 20 dropped B-551).
   const matchLimit = Math.max(limit * 4, 50);
-  const fullText = queryText;                                // title + description
-  const titleText = (subject.title ?? '').trim();            // title only
+  const fullText = queryText;                                // title + description (RAW — 2c's guard compares against THIS)
+  const titleText = (subject.title ?? '').trim();            // title only — deliberately UNBOUNDED (see below)
+  // The two FULL-text routes (2a, 2b) send a BOUNDED copy; route 2c's title does NOT get
+  // bounded here — titles are short by construction and the RPC-side cap backstops the
+  // pathological case (B-776's ratified plan). The 2c guard below still compares against
+  // the RAW `fullText`, so its "skip when the description is empty" behaviour is unchanged.
+  const boundedFullText = fullText.slice(0, BOUNDED_QUERY_CHARS);
 
   // Ingest one already-ranked RPC result list into the RRF accumulator. The array
   // index IS the rank (RPCs return ORDER BY score/similarity DESC), so row i → rank i+1.
@@ -134,41 +178,48 @@ export async function findRelatedTickets(
     });
   };
 
-  // 2a. Route 2 — intent semantic+lexical retrieval (best-effort; degrade on failure).
-  //     This is the ONLY call that sets `degraded` — its absence is the gate's risk.
+  // 2a. Route 2 — intent semantic+lexical retrieval (best-effort; record on failure).
   try {
     const { data, error } = await (client as any).rpc('search_ticket_intents', {
       _workspace_id: workspaceId,
       _project_id: projectId,
       _query_embedding: subjectEmbedding,   // may be null → trigram-only
-      _query_text: fullText || titleText || '',
+      _query_text: boundedFullText || titleText || '',
       // over-fetch so self-exclusion + archived-drop don't starve the top-N
       _match_limit: matchLimit,
     });
+    // PostgREST RETURNS an RPC failure here — it does not throw — so this branch is the
+    // one that actually fires on a 57014 statement timeout.
     if (error) {
-      degraded = true;
+      degradedRoutes.push(toDegradedRoute('intent', error));
     } else {
       ingest((data ?? []) as Array<Record<string, unknown>>, 'source_task_id', 'intent');
     }
-  } catch {
+  } catch (e) {
     // route 2 unavailable — degrade gracefully, never throw out of the clarify gate
-    degraded = true;
+    degradedRoutes.push(toDegradedRoute('intent', e));
   }
 
   // 2b. Route 1 (FULL framing) — lexical content match over tasks on title+description.
-  //     Best-effort: a failure keeps whatever the other lists gave us, but does NOT
-  //     set `degraded` (route-1 absence is not the gate's resilience contract).
+  //     Best-effort: a failure keeps whatever the other lists gave us, and is RECORDED
+  //     (B-776 — it used to be dropped silently, which is how a title-only run got
+  //     reported as a complete lexical scan).
   if (fullText) {
     try {
       const { data, error } = await (client as any).rpc('search_tasks', {
         _project_id: projectId,
-        _query_text: fullText,
+        _query_text: boundedFullText,
         _match_limit: matchLimit,
         _include_archived: false,
       });
-      if (!error) ingest((data ?? []) as Array<Record<string, unknown>>, 'task_id', 'lexical');
-    } catch {
+      if (error) {
+        degradedRoutes.push(toDegradedRoute('lexical-full', error));
+      } else {
+        ingest((data ?? []) as Array<Record<string, unknown>>, 'task_id', 'lexical');
+      }
+    } catch (e) {
       // route 1 (full) unavailable — keep the other lists' contributions
+      degradedRoutes.push(toDegradedRoute('lexical-full', e));
     }
   }
 
@@ -183,13 +234,18 @@ export async function findRelatedTickets(
     try {
       const { data, error } = await (client as any).rpc('search_tasks', {
         _project_id: projectId,
-        _query_text: titleText,
+        _query_text: titleText,           // UNBOUNDED by design (B-776) — the RPC-side cap backstops it
         _match_limit: matchLimit,
         _include_archived: false,
       });
-      if (!error) ingest((data ?? []) as Array<Record<string, unknown>>, 'task_id', 'lexical');
-    } catch {
+      if (error) {
+        degradedRoutes.push(toDegradedRoute('lexical-title', error));
+      } else {
+        ingest((data ?? []) as Array<Record<string, unknown>>, 'task_id', 'lexical');
+      }
+    } catch (e) {
       // route 1 (title) unavailable — keep the other lists' contributions
+      degradedRoutes.push(toDegradedRoute('lexical-title', e));
     }
   }
 
@@ -197,7 +253,12 @@ export async function findRelatedTickets(
   byTask.delete(subjectId);
 
   if (byTask.size === 0) {
-    return { subject_task_id: subjectId, candidates: [], degraded };
+    return {
+      subject_task_id: subjectId,
+      candidates: [],
+      degraded: degradedRoutes.length > 0,
+      degraded_routes: degradedRoutes,
+    };
   }
 
   // 4. Enrich each candidate via a tasks lookup. Drop archived AND every NON-FOLDABLE
@@ -239,11 +300,30 @@ export async function findRelatedTickets(
   return {
     subject_task_id: subjectId,
     candidates: candidates.slice(0, limit),
-    degraded,
+    degraded: degradedRoutes.length > 0,      // DERIVED: some route failed (B-776)
+    degraded_routes: degradedRoutes,
   };
 }
 
 // --- helpers ---------------------------------------------------------------
+
+/** Normalise EITHER a returned PostgREST error object OR a caught exception into a
+ *  `DegradedRoute` (B-776). BOTH paths matter and one helper covers both: PostgREST
+ *  reports an RPC failure in the DESTRUCTURED `error` object — it does not throw — so a
+ *  capture wired only to `catch` would silently miss the exact failure this exists to
+ *  surface (SQLSTATE 57014, statement timeout). PostgREST error objects carry `.code`;
+ *  a thrown Error normally does not, hence `code: null`. */
+function toDegradedRoute(route: string, err: unknown): DegradedRoute {
+  const obj = (err ?? {}) as { code?: unknown; message?: unknown };
+  const code =
+    typeof obj.code === 'string' && obj.code ? obj.code
+      : typeof obj.code === 'number' ? String(obj.code)
+        : null;
+  const message =
+    typeof obj.message === 'string' && obj.message ? obj.message
+      : String(err ?? 'unknown error');
+  return { route, code, error: message };
+}
 
 // Workflow states EXCLUDED from the fold list — every NON-FOLDABLE state. Two kinds:
 // terminal-dead (Cancelled / Parked — neither foldable nor a useful signal) AND done
@@ -352,7 +432,7 @@ async function resolveTaskId(
 export const findRelatedTicketsTool = {
   name: 'find_related_tickets',
   description:
-    'Surface tickets related to / duplicating / overlapping a subject ticket — the dedup pipeline used at the clarify gate. MULTI-QUERY retrieval fused by Reciprocal Rank Fusion (RRF by rank, not a raw max, so the routes’ incommensurable score scales can’t dominate each other) over THREE ranked lists: lexical content match on title+description (route 1, full), a SECOND lexical match on the title ALONE (route 1, title — rescues siblings the full-text framing dilutes), and intent retrieval (route 2, semantic+lexical over ticket intents). Self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), and ranks PURELY by relevance (combined RRF score). Returns only OPEN / foldable candidates — excludes archived + Cancelled + Parked + Verified + Deployed (the clarify card folds/subsumes only open work; B-581 reversed B-574’s keep-terminal decision). Unmilestoned candidates are FLAGGED (`unmilestoned: true`) for the renderer to badge — they are NOT reordered (relevance order is authoritative). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. Degrades gracefully (returns lexical-only results with degraded:true) if intent retrieval is unavailable.',
+    'Surface tickets related to / duplicating / overlapping a subject ticket — the dedup pipeline used at the clarify gate. MULTI-QUERY retrieval fused by Reciprocal Rank Fusion (RRF by rank, not a raw max, so the routes’ incommensurable score scales can’t dominate each other) over THREE ranked lists: lexical content match on title+description (route 1, full), a SECOND lexical match on the title ALONE (route 1, title — rescues siblings the full-text framing dilutes), and intent retrieval (route 2, semantic+lexical over ticket intents). Self-excludes the subject, enriches each candidate (visual id, title, workflow_state, milestone), and ranks PURELY by relevance (combined RRF score). Returns only OPEN / foldable candidates — excludes archived + Cancelled + Parked + Verified + Deployed (the clarify card folds/subsumes only open work; B-581 reversed B-574’s keep-terminal decision). Unmilestoned candidates are FLAGGED (`unmilestoned: true`) for the renderer to badge — they are NOT reordered (relevance order is authoritative). Returns the top ~5 (respect `limit`, default 5). SURFACE-ONLY: this never changes scope or closes a ticket. RESILIENT: a failure at ANY route is captured, never thrown out of the clarify gate — `degraded_routes` lists one entry per FAILED route as `{ route: \'intent\' | \'lexical-full\' | \'lexical-title\', code: <SQLSTATE string or null, e.g. \'57014\' for a statement timeout>, error: <message> }`, and `degraded` is DERIVED from it (`degraded_routes.length > 0` — "some route failed", NOT just intent retrieval). Callers MUST name the failed routes from `degraded_routes` rather than claiming "lexical-only": the lexical routes can be the ones that failed. The full-text query sent to the intent + lexical-full routes is bounded to 400 chars (B-776 — longer queries timed out at SQLSTATE 57014); the title-only route is unbounded.',
   inputSchema: {
     type: 'object' as const,
     properties: {
