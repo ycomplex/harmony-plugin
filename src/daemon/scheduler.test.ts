@@ -101,15 +101,16 @@ interface HarnessOpts {
    *  `h.setProbeRefSha` — mirrors probeDefaultExitCode's shape. Defaults to null (no repo
    *  configured / ref not found), matching the real implementation's feature-detect fallback. */
   probeRefDefault?: string | null;
-  /** B-720: what a LAUNCH's runCommand returns for the captured worker-output tail + the total
-   *  bytes the leg emitted. Omitted ⇒ the fake returns only an exit code, exactly like a
-   *  pre-B-720 runCommand implementation (which must read as "nothing captured", never as an
-   *  empty capture). */
+  /** B-720: what a LAUNCH's runCommand returns for the captured LAUNCH-COMMAND tail + the total
+   *  bytes it emitted. Omitted ⇒ the fake returns only an exit code, exactly like a pre-B-720
+   *  runCommand implementation (which must read as "nothing captured", never as an empty
+   *  capture). */
   launchOutput?: { tail: string; bytes: number };
-  /** B-720: make the SEPARATE worker-output write blow up (any patch naming last_worker_output),
-   *  simulating the pre-migration prod board rejecting a column it does not have yet. Every other
-   *  write — crucially the terminal status patch — is untouched. */
-  throwOnWorkerOutputWrite?: boolean;
+  /** B-720: make the SEPARATE leg-output write blow up, simulating the pre-migration prod board
+   *  rejecting a table it does not have yet. Every other write — crucially the terminal status
+   *  patch — is untouched. (The real dep never throws; this proves the scheduler survives even a
+   *  dep that breaks that contract.) */
+  throwOnLegOutputWrite?: boolean;
 }
 
 // A stateful fake world: conduction rows mutate through updateConduction/takeoverConduction/
@@ -123,6 +124,8 @@ function makeHarness(opts: HarnessOpts) {
   let t = T0;
   const commands: string[] = [];
   const logs: string[] = [];
+  // B-720: every conduction_leg_output row this daemon wrote, in call order.
+  const legOutputRows: Array<Record<string, unknown>> = [];
   const conductions = opts.conductions.map((c) => ({ ...c }));
   const tasks = opts.tasks;
   const hooks: { onLaunch?: (cmd: string) => void } = {};
@@ -183,16 +186,22 @@ function makeHarness(opts: HarnessOpts) {
     // lease, returns null when it does not (row/null/throw, mirroring takeoverConduction).
     updateConductionIfHeld: vi.fn(
       async (id: string, expectedLeaseHolder: string, patch: Record<string, unknown>) => {
-        // B-720: the pre-migration prod board rejecting the three columns it does not have yet.
-        if (opts.throwOnWorkerOutputWrite && 'last_worker_output' in patch) {
-          throw new Error("column conductions.last_worker_output does not exist");
-        }
         const row = conductions.find((c) => c.id === id);
         if (!row || (row.lease_holder ?? null) !== expectedLeaseHolder) return null;
         Object.assign(row, patch);
         return { ...row };
       },
     ) as SchedulerDeps['updateConductionIfHeld'],
+    // B-720: the launcher-diagnostics write. Records every call so a test can prove WHAT was
+    // written and, above all, WHICH SOURCE it was written under — the scheduler may only ever
+    // write 'launcher' rows.
+    recordLegOutput: vi.fn(async (args: Record<string, unknown>) => {
+      if (opts.throwOnLegOutputWrite) {
+        throw new Error('relation "public.conduction_leg_output" does not exist');
+      }
+      legOutputRows.push({ ...args });
+      return true;
+    }) as unknown as SchedulerDeps['recordLegOutput'],
     startInterval: (ms: number, fn: () => void) => {
       const timer: FakeTimer = { ms, fn, dead: false };
       intervals.push(timer);
@@ -378,11 +387,13 @@ function makeHarness(opts: HarnessOpts) {
       (deps.updateConductionIfHeld as unknown as { mock: { calls: unknown[][] } }).mock.calls
         .filter((c) => c[0] === id && Object.keys(c[2] as object).join() === 'leg_started_at')
         .map((c) => (c[2] as Record<string, unknown>).leg_started_at as string | null),
-    /** B-720: worker-output write ATTEMPTS (patches naming last_worker_output), in call order. */
-    workerOutputWrites: () =>
-      (deps.updateConductionIfHeld as unknown as { mock: { calls: unknown[][] } }).mock.calls
-        .map((c) => c[2] as Record<string, unknown>)
-        .filter((p) => 'last_worker_output' in p),
+    /** B-720: leg-output rows this daemon actually WROTE, in call order. */
+    legOutputRows: () => legOutputRows,
+    /** B-720: leg-output write ATTEMPTS (including ones that threw), in call order. */
+    legOutputWrites: () =>
+      (deps.recordLegOutput as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
+        (c) => c[0] as Record<string, unknown>,
+      ),
     /** Status-write ATTEMPTS (the guarded call is still made when the lease is gone — it just
      *  returns null and lands nothing). Assert on the row itself to prove what actually landed. */
     statusWrites: () =>
@@ -2667,36 +2678,74 @@ describe('B-827: {ticket} template substitution carries the visual id, never the
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// B-720 captured worker output — the bounded tail the operator reads in the browser instead of
-// shelling into the daemon host. Three properties matter here, and only these three:
-//   (a) it LANDS on a normal settle, with its own capture time + the leg's total byte count;
-//   (b) a THROWING tail write leaves the terminal status write intact — the recorded build gate
+// B-720 captured LAUNCH-COMMAND output — the bounded tail the operator reads in the browser instead
+// of shelling into the daemon host. What this daemon captures is the LAUNCH COMMAND's stdout, which
+// is the worker's own only on the docker profile; on the cloud profile (the one production runs) it
+// is Cloud Run client chatter. So it is written as a `source='launcher'` row and rendered under its
+// own "Launcher diagnostics" label — the worker writes its OWN output from inside the container.
+// Four properties matter here, and only these four:
+//   (a) it LANDS on a normal settle, as a LAUNCHER row, with its own capture time + the total bytes;
+//   (b) THE ANTI-MASQUERADE PROPERTY: this daemon may NEVER write a `source='worker'` row, and may
+//       never write the retired `conductions.last_worker_output*` columns;
+//   (c) a THROWING output write leaves the terminal status write intact — the recorded build gate
 //       from the technical design (the daemon runs plugin `main` against the PROD board, so this
 //       write genuinely fails for every settlement between the plugin merging and harmony-web's
 //       migration being promoted);
-//   (c) a re-attached (reconciled) launch writes NO tail — this daemon never held that stream.
+//   (d) a re-attached (reconciled) launch writes NOTHING — this daemon never held that stream.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-describe('B-720 captured worker output', () => {
-  it('(a) writes the tail, its own capture time and the total byte count on a normal settle', async () => {
+describe('B-720 captured launcher output', () => {
+  it('(a) writes ONE launcher row with the tail, its own capture time and the total byte count', async () => {
     const h = makeHarness({
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask() },
-      launchOutput: { tail: 'building…\nERROR: boom\n', bytes: 4096 },
+      launchOutput: { tail: 'launching…\ngcloud: PERMISSION_DENIED\n', bytes: 4096 },
     });
 
     await wakeAndFire(h);
     await h.pass(); // settle → classify → terminal write → SEPARATE output write
 
-    expect(h.workerOutputWrites()).toEqual([
+    expect(h.legOutputRows()).toEqual([
       {
-        last_worker_output: 'building…\nERROR: boom\n',
-        last_worker_output_at: iso(T0),
-        last_worker_output_bytes: 4096,
+        conduction_id: 'cond-1',
+        source: 'launcher',
+        task_id: 'task-1',
+        // The daemon CANNOT know the worker-minted leg key (the worker mints it inside the
+        // container, after this launch command was rendered) — null here is informative, not lost.
+        leg_key: null,
+        gate: null,
+        tail: 'launching…\ngcloud: PERMISSION_DENIED\n',
+        total_bytes: 4096,
+        captured_at: iso(T0),
       },
     ]);
-    expect(h.getConduction('cond-1').last_worker_output).toBe('building…\nERROR: boom\n');
-    expect(h.getConduction('cond-1').last_worker_output_bytes).toBe(4096);
+  });
+
+  it('(b) ANTI-MASQUERADE: never writes a worker row, and never writes the retired last_worker_output columns', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      launchOutput: { tail: 'gcloud chatter', bytes: 14 },
+    });
+
+    await wakeAndFire(h);
+    await h.pass();
+
+    // EVERY row this daemon writes is a launcher row. This is the whole fix: the UI selects worker
+    // output by source alone, so a daemon that could write source='worker' would put launcher bytes
+    // straight back under the "Worker output" heading.
+    expect(h.legOutputWrites().map((r) => r.source)).toEqual(['launcher']);
+    expect(h.legOutputWrites().some((r) => r.source === 'worker')).toBe(false);
+
+    // The three retired columns are LEFT IN THE SCHEMA and in CONDUCTION_PATCHABLE_FIELDS, but
+    // nothing here writes them any more.
+    const patches = (h.deps.updateConductionIfHeld as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
+      (c) => c[2] as Record<string, unknown>,
+    );
+    expect(patches.some((p) => 'last_worker_output' in p)).toBe(false);
+    expect(patches.some((p) => 'last_worker_output_at' in p)).toBe(false);
+    expect(patches.some((p) => 'last_worker_output_bytes' in p)).toBe(false);
+    expect(h.getConduction('cond-1').last_worker_output).toBeUndefined();
   });
 
   it('(a) the output write is SEPARATE from — and lands after — the terminal status patch', async () => {
@@ -2709,21 +2758,27 @@ describe('B-720 captured worker output', () => {
     await wakeAndFire(h);
     await h.pass();
 
-    // The terminal patch names exactly the three status fields it always has — the output columns
-    // are never folded into it.
+    // The terminal patch names exactly the three status fields it always has — the captured output
+    // is never folded into it, and now does not even travel on the same write path.
     expect(h.statusWrites()).toEqual([
       { status: 'parked', last_worker_exit_code: 0, last_worker_exit_class: 'no-progress' },
     ]);
-    const patches = (h.deps.updateConductionIfHeld as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
-      (c) => c[2] as Record<string, unknown>,
-    );
-    const statusIdx = patches.findIndex((p) => 'status' in p);
-    const outputIdx = patches.findIndex((p) => 'last_worker_output' in p);
+    expect(h.legOutputRows()).toHaveLength(1);
+
+    // ORDER, proven rather than assumed: the terminal status write is issued BEFORE the output
+    // write, so a rejected output write can never be the reason a settlement did not land.
+    const statusOrder = (h.deps.updateConductionIfHeld as unknown as {
+      mock: { calls: unknown[][]; invocationCallOrder: number[] };
+    });
+    const statusIdx = statusOrder.mock.calls.findIndex((c) => 'status' in (c[2] as object));
     expect(statusIdx).toBeGreaterThanOrEqual(0);
-    expect(outputIdx).toBeGreaterThan(statusIdx);
+    const outputOrder = (h.deps.recordLegOutput as unknown as {
+      mock: { invocationCallOrder: number[] };
+    }).mock.invocationCallOrder[0];
+    expect(outputOrder).toBeGreaterThan(statusOrder.mock.invocationCallOrder[statusIdx]);
   });
 
-  it('(a) a leg that settles here having written NOTHING records a null tail with a real capture time', async () => {
+  it('(a) a launch that settles here having written NOTHING records a null tail with a real capture time', async () => {
     const h = makeHarness({
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask() },
@@ -2733,17 +2788,29 @@ describe('B-720 captured worker output', () => {
     await wakeAndFire(h);
     await h.pass();
 
-    expect(h.workerOutputWrites()).toEqual([
-      { last_worker_output: null, last_worker_output_at: iso(T0), last_worker_output_bytes: 0 },
+    // A row IS written — "this launch said nothing" is a different, weaker claim than "nobody
+    // looked", and only the row can tell them apart. The empty tail becomes NULL in the record
+    // module (see recordLegOutput), so what is asserted here is what the scheduler HANDED it.
+    expect(h.legOutputRows()).toEqual([
+      {
+        conduction_id: 'cond-1',
+        source: 'launcher',
+        task_id: 'task-1',
+        leg_key: null,
+        gate: null,
+        tail: '',
+        total_bytes: 0,
+        captured_at: iso(T0),
+      },
     ]);
   });
 
-  it('(a) a CLEAN completion carries its output too, not only a park', async () => {
+  it('(a) a CLEAN completion carries its launcher output too, not only a park', async () => {
     const h = makeHarness({
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask() },
       childCount: 2,
-      launchOutput: { tail: 'split the umbrella', bytes: 18 },
+      launchOutput: { tail: 'container exited 0', bytes: 18 },
     });
     await h.pass();
 
@@ -2757,16 +2824,17 @@ describe('B-720 captured worker output', () => {
     await h.pass(); // settle → complete
 
     expect(h.getConduction('cond-1').status).toBe('completed');
-    expect(h.getConduction('cond-1').last_worker_output).toBe('split the umbrella');
+    expect(h.legOutputRows()).toHaveLength(1);
+    expect(h.legOutputRows()[0].tail).toBe('container exited 0');
   });
 
-  it('(b) BUILD GATE: a THROWING output write leaves the terminal status write intact', async () => {
+  it('(c) BUILD GATE: a THROWING output write leaves the terminal status write intact', async () => {
     const h = makeHarness({
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask() },
       launchOutput: { tail: 'boom', bytes: 4 },
-      // The pre-migration prod board: the three columns do not exist yet, so the write throws.
-      throwOnWorkerOutputWrite: true,
+      // The pre-migration prod board: conduction_leg_output does not exist yet.
+      throwOnLegOutputWrite: true,
     });
 
     await wakeAndFire(h);
@@ -2778,13 +2846,13 @@ describe('B-720 captured worker output', () => {
     expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress');
     expect(h.getConduction('cond-1').leg_started_at).toBeNull();
     // The failure was attempted, swallowed, and NAMED in the log — never silent.
-    expect(h.workerOutputWrites()).toHaveLength(1);
-    expect(h.getConduction('cond-1').last_worker_output).toBeUndefined();
-    expect(h.logs.some((l) => /worker output not captured/.test(l))).toBe(true);
+    expect(h.legOutputWrites()).toHaveLength(1);
+    expect(h.legOutputRows()).toEqual([]);
+    expect(h.logs.some((l) => /launcher output not captured/.test(l))).toBe(true);
     expect(h.logs.some((l) => /the settlement above is unaffected/.test(l))).toBe(true);
   });
 
-  it('(c) a re-attached (reconciled) launch writes NO tail — this daemon never held that stream', async () => {
+  it('(d) a re-attached (reconciled) launch writes NOTHING — this daemon never held that stream', async () => {
     const h = makeHarness({
       conductions: [
         conduction({
@@ -2808,8 +2876,8 @@ describe('B-720 captured worker output', () => {
     await h.pass(); // probe no longer finds it → settle with a null exit code
 
     expect(h.getConduction('cond-1').status).toBe('parked');
-    expect(h.workerOutputWrites()).toEqual([]);
-    expect(h.getConduction('cond-1').last_worker_output).toBeUndefined();
+    expect(h.legOutputWrites()).toEqual([]);
+    expect(h.legOutputRows()).toEqual([]);
   });
 
   it('a pre-B-720 runCommand (exit code only) reads as "nothing captured", never as an empty capture', async () => {
@@ -2819,6 +2887,6 @@ describe('B-720 captured worker output', () => {
     await h.pass();
 
     expect(h.getConduction('cond-1').status).toBe('parked');
-    expect(h.workerOutputWrites()).toEqual([]);
+    expect(h.legOutputWrites()).toEqual([]);
   });
 });

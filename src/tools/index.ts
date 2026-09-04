@@ -130,6 +130,23 @@ export {
   type LegCostSource,
   type RecordLegCostArgs,
 } from './leg-cost-record.js';
+
+// B-720 (replacement capture): the per-leg WORKER-OUTPUT record's shared-core accessors. Same
+// convention again — NOT registered as MCP tools, barrel export only. Two consumers: the CLI
+// accessor (src/cli/commands/leg-output.ts), which container/provision.sh calls after every claude
+// invocation to record `source='worker'` rows, and — for the launcher rows ONLY — src/daemon/
+// scheduler.ts through an injected SchedulerDeps write. The daemon WRITES here and never reads:
+// nothing it decides may depend on a byte of captured output (the B-718 agent-neutrality seam —
+// see leg-output-record.ts's header).
+export {
+  recordLegOutput,
+  listLegOutput,
+  boundedTail,
+  LEG_OUTPUT_TAIL_BYTES,
+  type LegOutputRecord,
+  type LegOutputSource,
+  type RecordLegOutputArgs,
+} from './leg-output-record.js';
 export {
   parseClaudeResultJson,
   deriveCostUsd,

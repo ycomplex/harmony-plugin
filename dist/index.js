@@ -36470,10 +36470,11 @@ var CONDUCTION_PATCHABLE_FIELDS = [
   "last_worker_exit_code",
   "last_worker_exit_class",
   "current_pr_ref",
-  // B-720: the captured worker-output tail + its capture time + the leg's total byte count. Patched
-  // by the daemon's SEPARATE, never-throwing settlement write (scheduler.ts's flushWorkerOutput) —
-  // never folded into the terminal status patch, so a pre-migration prod board fails as "no output
-  // captured" instead of losing the settlement itself.
+  // B-720, RETIRED: the old captured-output columns. NOTHING WRITES THESE ANY MORE — the daemon's
+  // settlement write now inserts a `source='launcher'` row into `conduction_leg_output` instead
+  // (scheduler.ts's flushLaunchOutput), and the worker writes its own `source='worker'` row from
+  // inside the container. The allowlist entries stay so an older daemon build's patch is still
+  // accepted; removing them (and the columns) is a separate tracked follow-up.
   "last_worker_output",
   "last_worker_output_at",
   "last_worker_output_bytes"
@@ -42900,6 +42901,9 @@ async function consumeAcceptanceEventToolHandler(client, args) {
   if (!args.event_id) throw new Error("event_id is required");
   return consumeAcceptanceEvent(client, args.event_id);
 }
+
+// src/tools/leg-output-record.ts
+var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
 
 // src/tools/index.ts
 function registerTools(disabledFeatures) {

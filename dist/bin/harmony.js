@@ -14826,7 +14826,7 @@ var require_cell = __commonJS({
 // node_modules/cli-table3/src/layout-manager.js
 var require_layout_manager = __commonJS({
   "node_modules/cli-table3/src/layout-manager.js"(exports, module) {
-    var { warn: warn2, debug } = require_debug();
+    var { warn: warn3, debug } = require_debug();
     var Cell = require_cell();
     var { ColSpanCell, RowSpanCell } = Cell;
     (function() {
@@ -14959,7 +14959,7 @@ var require_layout_manager = __commonJS({
               let cell2 = new Cell(opts);
               cell2.x = opts.x;
               cell2.y = opts.y;
-              warn2(`Missing cell at ${cell2.y}-${cell2.x}.`);
+              warn3(`Missing cell at ${cell2.y}-${cell2.x}.`);
               insertCell(cell2, table[y]);
             }
           }
@@ -32274,6 +32274,116 @@ function registerLegCostCommands(program3) {
   );
 }
 
+// src/cli/commands/leg-output.ts
+import { readFileSync as readFileSync4 } from "node:fs";
+
+// src/tools/leg-output-record.ts
+var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
+function warn2(message) {
+  console.error(`harmony leg-output: WARNING \u2014 ${message}`);
+}
+var errText2 = (err) => err?.message ?? String(err);
+function boundedTail(text, limitBytes = LEG_OUTPUT_TAIL_BYTES) {
+  if (Buffer.byteLength(text, "utf8") <= limitBytes) return text;
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = lo + hi >> 1;
+    if (Buffer.byteLength(text.slice(mid), "utf8") > limitBytes) lo = mid + 1;
+    else hi = mid;
+  }
+  return text.slice(lo);
+}
+async function recordLegOutput(client, args) {
+  if (!client) return false;
+  if (!args.conduction_id) return false;
+  if (!args.source) return false;
+  try {
+    const tail = args.tail ?? null;
+    const row = {
+      conduction_id: args.conduction_id,
+      task_id: args.task_id ?? null,
+      leg_key: args.leg_key ?? null,
+      source: args.source,
+      tail: tail !== null && tail.length > 0 ? tail : null,
+      total_bytes: args.total_bytes ?? null,
+      gate: args.gate ?? null
+    };
+    if (args.captured_at) row.captured_at = args.captured_at;
+    const { error } = await client.from("conduction_leg_output").insert(row);
+    if (error) {
+      warn2(
+        `the ${args.source} output row was not written (${errText2(error)}). This is the EXPECTED shape while harmony-web's conduction_leg_output migration has not yet landed on this environment's Supabase project (B-383 prod-before-promote) \u2014 the leg itself is unaffected.`
+      );
+      return false;
+    }
+    return true;
+  } catch (err) {
+    warn2(`writing the ${args.source} output row threw (${errText2(err)}) \u2014 the leg itself is unaffected`);
+    return false;
+  }
+}
+
+// src/cli/commands/leg-output.ts
+async function getClient2() {
+  try {
+    const { client } = await getAuthenticatedContext();
+    return client;
+  } catch {
+    return null;
+  }
+}
+var SOURCES = ["worker", "launcher"];
+function readCapture(path2) {
+  try {
+    return readFileSync4(path2, "utf8");
+  } catch (err) {
+    console.error(
+      `harmony leg-output record: WARNING \u2014 could not read the capture file ${path2} (${err?.message ?? String(err)}); it contributes nothing to this row`
+    );
+    return null;
+  }
+}
+function registerLegOutputCommands(program3) {
+  const legOutput = program3.command("leg-output").description(
+    "B-720 worker-output capture \u2014 the ONE place container/provision.sh records what a leg's `claude` invocation actually wrote, from inside the container where it is genuinely the WORKER's output on every launch profile. Capture for DISPLAY only: nothing the daemon decides ever reads these rows."
+  );
+  legOutput.command("record").description(
+    'Record ONE invocation\'s captured output as a conduction_leg_output row. Reads the given capture file(s), stores the LAST 64 KB as the tail and the TOTAL byte count alongside it (so the board can say "showing the last N of M"), and stamps the producer as `--source` (default: worker). Always exits 0 and NEVER throws: a missing conduction id, an unreadable capture, an unreachable board or a not-yet-migrated table all degrade to "nothing recorded" with one STDERR warning. Diagnostics never touch stdout \u2014 stdout is the thing being captured. The leg is never affected.'
+  ).requiredOption("--file <path>", "The file this invocation's stdout was captured to").option("--stderr-file <path>", "The file this invocation's stderr was captured to, appended after the stdout capture").requiredOption("--leg-key <key>", "The worker-generated key grouping this leg's invocations (the SAME key `leg-cost record` is given, so a leg's output and cost join)").option("--gate <gate>", "The gate that was running when the invocation STARTED (see `leg-cost resolve-gate`)").option("--source <source>", "Who wrote these bytes: 'worker' (default) or 'launcher'", "worker").option("--conduction-id <id>", "The conduction to record against; defaults to this worker's HARMONY_CONDUCTION_ID").action(
+    async (opts) => {
+      const conductionId = opts.conductionId ?? getConductionId();
+      if (!conductionId) {
+        return;
+      }
+      let source = "worker";
+      if (opts.source && SOURCES.includes(opts.source)) {
+        source = opts.source;
+      } else if (opts.source && opts.source !== "worker") {
+        console.error(
+          `harmony leg-output record: WARNING \u2014 unknown --source '${opts.source}' (expected ${SOURCES.join(" | ")}); recording as 'worker'`
+        );
+      }
+      const parts = [readCapture(opts.file)];
+      if (opts.stderrFile) parts.push(readCapture(opts.stderrFile));
+      const captured = parts.filter((p) => p !== null).join("");
+      const totalBytes = Buffer.byteLength(captured, "utf8");
+      const tail = boundedTail(captured, LEG_OUTPUT_TAIL_BYTES);
+      const client = await getClient2();
+      const context = await resolveLegCostContext(client, conductionId);
+      await recordLegOutput(client, {
+        conduction_id: conductionId,
+        source,
+        leg_key: opts.legKey || null,
+        task_id: context?.task_id ?? null,
+        gate: opts.gate || null,
+        tail,
+        total_bytes: totalBytes
+      });
+    }
+  );
+}
+
 // src/cli/index.ts
 var require2 = createRequire(import.meta.url);
 var { version: version3 } = require2("../../package.json");
@@ -32302,4 +32412,5 @@ registerConductCommand(program2);
 registerConfigCommands(program2);
 registerModelCommands(program2);
 registerLegCostCommands(program2);
+registerLegOutputCommands(program2);
 program2.parse();
