@@ -25,6 +25,7 @@ import { registerBriefCommands } from './commands/briefs.js';
 import { registerConductCommand } from './commands/conduct.js';
 import { registerConfigCommands } from './commands/config.js';
 import { registerModelCommands } from './commands/model.js';
+import { registerLegCostCommands } from './commands/leg-cost.js';
 
 const program = new Command();
 
@@ -56,5 +57,6 @@ registerBriefCommands(program);
 registerConductCommand(program);
 registerConfigCommands(program);
 registerModelCommands(program);
+registerLegCostCommands(program);
 
 program.parse();

@@ -14826,7 +14826,7 @@ var require_cell = __commonJS({
 // node_modules/cli-table3/src/layout-manager.js
 var require_layout_manager = __commonJS({
   "node_modules/cli-table3/src/layout-manager.js"(exports, module) {
-    var { warn, debug } = require_debug();
+    var { warn: warn2, debug } = require_debug();
     var Cell = require_cell();
     var { ColSpanCell, RowSpanCell } = Cell;
     (function() {
@@ -14959,7 +14959,7 @@ var require_layout_manager = __commonJS({
               let cell2 = new Cell(opts);
               cell2.x = opts.x;
               cell2.y = opts.y;
-              warn(`Missing cell at ${cell2.y}-${cell2.x}.`);
+              warn2(`Missing cell at ${cell2.y}-${cell2.x}.`);
               insertCell(cell2, table[y]);
             }
           }
@@ -32022,6 +32022,258 @@ function registerModelCommands(program3) {
   });
 }
 
+// src/cli/commands/leg-cost.ts
+import { readFileSync as readFileSync3 } from "node:fs";
+
+// src/tools/claude-result-parse.ts
+var MODEL_PRICING = {
+  opus: {
+    input_per_mtok: 5,
+    output_per_mtok: 25,
+    cache_write_1h_per_mtok: 10,
+    cache_write_5m_per_mtok: 6.25,
+    cache_read_per_mtok: 0.5
+  }
+};
+function resolvePricing(model) {
+  if (!model) return null;
+  const alias = model.toLowerCase();
+  for (const [family, pricing] of Object.entries(MODEL_PRICING)) {
+    if (alias.includes(family)) return pricing;
+  }
+  return null;
+}
+var MTOK = 1e6;
+function deriveCostUsd(parsed, pricing) {
+  if (!pricing) return null;
+  const measured = [
+    parsed.input_tokens,
+    parsed.output_tokens,
+    parsed.cache_read_input_tokens,
+    parsed.cache_creation_input_tokens,
+    parsed.cache_creation_1h_input_tokens,
+    parsed.cache_creation_5m_input_tokens
+  ].some((v) => typeof v === "number");
+  if (!measured) return null;
+  const hasBreakdown = typeof parsed.cache_creation_1h_input_tokens === "number" || typeof parsed.cache_creation_5m_input_tokens === "number";
+  const write1h = hasBreakdown ? parsed.cache_creation_1h_input_tokens ?? 0 : 0;
+  const write5m = hasBreakdown ? parsed.cache_creation_5m_input_tokens ?? 0 : parsed.cache_creation_input_tokens ?? 0;
+  const usd = ((parsed.input_tokens ?? 0) * pricing.input_per_mtok + (parsed.output_tokens ?? 0) * pricing.output_per_mtok + (parsed.cache_read_input_tokens ?? 0) * pricing.cache_read_per_mtok + write1h * pricing.cache_write_1h_per_mtok + write5m * pricing.cache_write_5m_per_mtok) / MTOK;
+  return usd;
+}
+function resolveCost(parsed, model) {
+  if (typeof parsed.cli_cost_usd === "number" && parsed.cli_cost_usd > 0) {
+    return { total_cost_usd: parsed.cli_cost_usd, cost_source: "cli" };
+  }
+  const derived = deriveCostUsd(parsed, resolvePricing(model));
+  if (derived !== null) return { total_cost_usd: derived, cost_source: "derived" };
+  return { total_cost_usd: null, cost_source: "unknown" };
+}
+var asNumber = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
+var asString = (v) => typeof v === "string" ? v : null;
+function parseEnvelope(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  try {
+    const whole = JSON.parse(trimmed);
+    if (whole && typeof whole === "object" && !Array.isArray(whole)) {
+      return whole;
+    }
+  } catch {
+  }
+  const lines = trimmed.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+function parseClaudeResultJson(text) {
+  const envelope = parseEnvelope(text);
+  if (!envelope) return null;
+  if (!("result" in envelope) && !("usage" in envelope)) return null;
+  const usage = envelope.usage ?? {};
+  const cacheCreation = usage.cache_creation ?? {};
+  return {
+    // The trap: `is_error`, never `subtype` — an errored run still reports subtype 'success'.
+    is_error: envelope.is_error === true,
+    result: asString(envelope.result),
+    session_id: asString(envelope.session_id),
+    num_turns: asNumber(envelope.num_turns),
+    duration_ms: asNumber(envelope.duration_ms),
+    duration_api_ms: asNumber(envelope.duration_api_ms),
+    service_tier: asString(envelope.service_tier) ?? asString(usage.service_tier),
+    input_tokens: asNumber(usage.input_tokens),
+    output_tokens: asNumber(usage.output_tokens),
+    cache_read_input_tokens: asNumber(usage.cache_read_input_tokens),
+    cache_creation_input_tokens: asNumber(usage.cache_creation_input_tokens),
+    cache_creation_1h_input_tokens: asNumber(cacheCreation.ephemeral_1h_input_tokens),
+    cache_creation_5m_input_tokens: asNumber(cacheCreation.ephemeral_5m_input_tokens),
+    thinking_tokens: asNumber(usage.output_tokens_details?.thinking_tokens),
+    cli_cost_usd: asNumber(envelope.total_cost_usd)
+  };
+}
+
+// src/tools/leg-cost-record.ts
+function warn(message) {
+  console.error(`harmony leg-cost: WARNING \u2014 ${message}`);
+}
+var errText = (err) => err?.message ?? String(err);
+async function resolveLegCostContext(client, conductionId) {
+  if (!client || !conductionId) return null;
+  try {
+    const { data, error } = await client.from("conductions").select("task_id, tasks(workflow_state, workflow_activity)").eq("id", conductionId).maybeSingle();
+    if (error) {
+      warn(`could not read conduction ${conductionId} for leg-cost context (${errText(error)})`);
+      return null;
+    }
+    if (!data) return null;
+    const row = data;
+    return {
+      task_id: row.task_id ?? null,
+      workflow_state: row.tasks?.workflow_state ?? null,
+      workflow_activity: row.tasks?.workflow_activity ?? null
+    };
+  } catch (err) {
+    warn(`reading conduction ${conductionId} for leg-cost context threw (${errText(err)})`);
+    return null;
+  }
+}
+async function resolveInvocationIndex(client, conductionId, legKey) {
+  try {
+    const { count, error } = await client.from("conduction_leg_costs").select("id", { count: "exact", head: true }).eq("conduction_id", conductionId).eq("leg_key", legKey);
+    if (error) return 0;
+    return count ?? 0;
+  } catch {
+    return 0;
+  }
+}
+async function recordLegCost(client, args) {
+  if (!client) return false;
+  if (!args.conduction_id) return false;
+  if (!args.leg_key) return false;
+  try {
+    const invocationIndex = args.invocation_index ?? await resolveInvocationIndex(client, args.conduction_id, args.leg_key);
+    const row = {
+      conduction_id: args.conduction_id,
+      task_id: args.task_id ?? null,
+      leg_key: args.leg_key,
+      gate: args.gate ?? null,
+      model: args.model ?? null,
+      invocation_index: invocationIndex,
+      input_tokens: args.input_tokens ?? null,
+      output_tokens: args.output_tokens ?? null,
+      cache_read_input_tokens: args.cache_read_input_tokens ?? null,
+      cache_creation_input_tokens: args.cache_creation_input_tokens ?? null,
+      cache_creation_1h_input_tokens: args.cache_creation_1h_input_tokens ?? null,
+      cache_creation_5m_input_tokens: args.cache_creation_5m_input_tokens ?? null,
+      thinking_tokens: args.thinking_tokens ?? null,
+      total_cost_usd: args.total_cost_usd ?? null,
+      cost_source: args.cost_source ?? "unknown",
+      num_turns: args.num_turns ?? null,
+      duration_ms: args.duration_ms ?? null,
+      duration_api_ms: args.duration_api_ms ?? null,
+      session_id: args.session_id ?? null,
+      is_error: args.is_error ?? false,
+      service_tier: args.service_tier ?? null
+    };
+    const { error } = await client.from("conduction_leg_costs").insert(row);
+    if (error) {
+      warn(
+        `the leg-cost row was not written (${errText(error)}). This is the EXPECTED shape while harmony-web's conduction_leg_costs migration has not yet landed on this environment's Supabase project (B-383 prod-before-promote) \u2014 the leg itself is unaffected.`
+      );
+      return false;
+    }
+    return true;
+  } catch (err) {
+    warn(`writing the leg-cost row threw (${errText(err)}) \u2014 the leg itself is unaffected`);
+    return false;
+  }
+}
+
+// src/cli/commands/leg-cost.ts
+async function getClient() {
+  try {
+    const { client } = await getAuthenticatedContext();
+    return client;
+  } catch {
+    return null;
+  }
+}
+function registerLegCostCommands(program3) {
+  const legCost = program3.command("leg-cost").description(
+    "B-916 per-invocation cost capture \u2014 the ONE place container/provision.sh records what each `claude` invocation of a leg cost, and resolves the gate to stamp on it. Capture for DISPLAY only: nothing the daemon decides ever reads these rows."
+  );
+  legCost.command("resolve-gate").description(
+    "Print the gate this worker's conduction is currently running (clarify|decompose|design|plan|build|release|verify), or an EMPTY line when it cannot be resolved (no HARMONY_CONDUCTION_ID, no login, an unreadable row, a terminal/unrecognized workflow_state). Always exits 0 \u2014 an empty result is a legitimate answer, never an error. Call this BEFORE the invocation it describes: by the time an invocation returns, the gate whose work it just did has already advanced, so resolving at write time would mis-name which activity spent the money."
+  ).option("--conduction-id <id>", "The conduction to resolve for; defaults to this worker's HARMONY_CONDUCTION_ID").action(async (opts) => {
+    const conductionId = opts.conductionId ?? getConductionId();
+    if (!conductionId) {
+      console.log("");
+      return;
+    }
+    const client = await getClient();
+    const context = await resolveLegCostContext(client, conductionId);
+    console.log(resolveGatePhase(context?.workflow_state, context?.workflow_activity) ?? "");
+  });
+  legCost.command("record").description(
+    "Record ONE claude invocation's cost from its captured `--output-format json` stdout. Parses the result envelope (keyed on `is_error`, NOT `subtype` \u2014 an errored run still reports subtype 'success'), resolves the cost (the CLI's own total_cost_usd, else the derived price-table figure, else 'unknown'), and inserts one conduction_leg_costs row. Always exits 0 and NEVER throws: a missing conduction id, an unparseable capture, an unreachable board or a not-yet-migrated table all degrade to \"nothing recorded\" with one stderr WARNING. The leg is never affected."
+  ).requiredOption("--file <path>", "The file this invocation's stdout was captured to").requiredOption("--gate <gate>", "The gate that was running when the invocation STARTED (see `resolve-gate`)").requiredOption("--leg-key <key>", "The worker-generated key grouping this leg's invocations").option("--model <alias>", "The model alias this invocation actually launched with").option("--invocation-index <n>", "This invocation's 0-based position within the leg").option("--conduction-id <id>", "The conduction to record against; defaults to this worker's HARMONY_CONDUCTION_ID").action(
+    async (opts) => {
+      const conductionId = opts.conductionId ?? getConductionId();
+      if (!conductionId) {
+        return;
+      }
+      let captured;
+      try {
+        captured = readFileSync3(opts.file, "utf8");
+      } catch (err) {
+        console.error(
+          `harmony leg-cost record: WARNING \u2014 could not read the capture file ${opts.file} (${err?.message ?? String(err)}); nothing recorded`
+        );
+        return;
+      }
+      const parsed = parseClaudeResultJson(captured);
+      const model = opts.model || null;
+      const cost = parsed ? resolveCost(parsed, model) : { total_cost_usd: null, cost_source: "unknown" };
+      const index = Number(opts.invocationIndex);
+      const client = await getClient();
+      const context = await resolveLegCostContext(client, conductionId);
+      await recordLegCost(client, {
+        conduction_id: conductionId,
+        leg_key: opts.legKey,
+        task_id: context?.task_id ?? null,
+        gate: opts.gate || null,
+        model,
+        invocation_index: Number.isFinite(index) ? index : null,
+        input_tokens: parsed?.input_tokens ?? null,
+        output_tokens: parsed?.output_tokens ?? null,
+        cache_read_input_tokens: parsed?.cache_read_input_tokens ?? null,
+        cache_creation_input_tokens: parsed?.cache_creation_input_tokens ?? null,
+        cache_creation_1h_input_tokens: parsed?.cache_creation_1h_input_tokens ?? null,
+        cache_creation_5m_input_tokens: parsed?.cache_creation_5m_input_tokens ?? null,
+        thinking_tokens: parsed?.thinking_tokens ?? null,
+        total_cost_usd: cost.total_cost_usd,
+        cost_source: cost.cost_source,
+        num_turns: parsed?.num_turns ?? null,
+        duration_ms: parsed?.duration_ms ?? null,
+        duration_api_ms: parsed?.duration_api_ms ?? null,
+        session_id: parsed?.session_id ?? null,
+        is_error: parsed?.is_error ?? false,
+        service_tier: parsed?.service_tier ?? null
+      });
+    }
+  );
+}
+
 // src/cli/index.ts
 var require2 = createRequire(import.meta.url);
 var { version: version3 } = require2("../../package.json");
@@ -32049,4 +32301,5 @@ registerBriefCommands(program2);
 registerConductCommand(program2);
 registerConfigCommands(program2);
 registerModelCommands(program2);
+registerLegCostCommands(program2);
 program2.parse();
