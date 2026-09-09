@@ -228,6 +228,11 @@ Implement, write tests, self-validate against acceptance criteria
 (`mcp__harmony__manage_acceptance_criteria`, `mcp__harmony__manage_test_cases`), and check off each
 checklist step as it lands (`mcp__harmony__manage_checklist_items({ task_id, update: [{ id, completed: true }] })`).
 
+**Pre-check the plan for a `.github/workflows/**` touch — BEFORE spawning any subagent (B-784).** Scan the checklist steps (`steps` above) and the accepted design/plan for any file path matching `.github/workflows/**`. This constraint holds regardless of `permissionMode` — a bypass-permissions build subagent is NOT exempt (B-757 confirmed the denial fires in both the main session and a fresh subagent alike).
+
+- **`harmony-build` path (container-provisioned)** → no extra injection needed: `container/agents/harmony-build.md` carries its own proactive per-write check for this exact glob and the agent applies it directly.
+- **Ad-hoc subagent path (human machines, no `harmony-build`)** → the ad-hoc subagent does NOT read `container/agents/harmony-build.md`, so inject the equivalent instruction directly into its prompt, inline, before spawning: "If your planned change touches `.github/workflows/**`, do NOT call Edit/Write on that path — it is denied by the harness regardless of permission mode. Instead: write the intended content to a scratch path, generate a labelled diff (`diff -u --label a/<path> --label b/<path> <real> <scratch>`), verify it with `git apply --stat --summary` (never `--check` alone — it returns 0 even on a patch that targets the wrong path), commit+push everything else, and end your report with a `WORKER-QUESTION: capability-denial` marker embedding the verified patch text and the pushed branch name."
+
 **Build delegation is CONDITIONAL on the declared build agent (B-719).** The implementation runs in a
 build subagent (context-thinning; worktree per B-628) — WHICH subagent depends on what the session has:
 
@@ -266,6 +271,15 @@ On seeing this literal string, do NOT treat the subagent's return as done or fai
 `mcp__harmony__file_elicitation_round` naming `harmony-build` as the source in the round's context line
 and quoting the marker's content as the question. Then end the turn — the round is a clean human pause
 (per `skills/harmony-shared/elicitation-engine.md` §The worker-question trigger), not a build failure.
+
+**A `capability-denial` WORKER-QUESTION naming a `.github/workflows/**` path is this ticket's OWN recovery path (B-784) — handle it as ONE round, not a second discovered stall.** Recognize it by the marker's body naming a repo-relative path under `.github/workflows/**` and carrying an embedded patch. On seeing it:
+
+1. **Push whatever else the build completed** on the given branch, if not already pushed (the subagent was instructed to push everything it could before reporting the marker — confirm with `git ls-remote origin <branch>`; push yourself if it didn't land).
+2. **Write the marker's embedded patch text to a local file** (e.g. `/tmp/<ticket>-workflow.patch`) and record it on the ticket via the MCP file-attachment tool (the same one the FAILURE PATH below calls) — the subagent has no MCP tools and could not attach it itself.
+3. **File exactly ONE elicitation round** — `mcp__harmony__start_elicitation({ task_id, trigger: 'worker-question', gate: 'building' })` then `mcp__harmony__file_elicitation_round` — naming: the target workflow file's repo-relative path, the attached patch, and **the branch the worker already pushed**. The round must ask the human to hand-apply the patch **onto that exact branch** — never a new human-created branch, which would reintroduce the B-732 merge-identity-floor stall (a human-originated branch yields a founder-authored PR that finish-work's merge-identity floor then refuses to let a worker leg merge).
+4. **End the leg.** A filed round is a clean human pause (per `skills/harmony-shared/elicitation-engine.md` §The worker-question trigger) — never a build failure, and never a second, separately-discovered stall.
+
+This holds **regardless of `permissionMode`** — `harmony-build`'s `bypassPermissions` does not unlock Edit/Write on `.github/workflows/**` (B-757/B-784), so a bypass-permissions build hits the same wall and takes the same one-round recovery path.
 
 **Verify the base before building (B-585) — NON-OPTIONAL for a redefine or a "relative-to-today" change.**
 Before a `CREATE OR REPLACE` of a DB function / trigger / view that has been redefined across migrations, find
