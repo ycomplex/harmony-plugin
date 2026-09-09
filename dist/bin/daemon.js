@@ -22434,8 +22434,14 @@ var LaunchProfileSchema = external_exports.object({
   launch: external_exports.string().min(1),
   /** Command template that force-removes a (possibly dead) worker. Same placeholders. */
   reap: external_exports.string().min(1),
-  /** Optional restart-reconciliation probe template — see src/daemon/config.ts's LaunchProfile. */
-  probe: external_exports.string().min(1).optional(),
+  /** Optional restart-reconciliation probe template — see src/daemon/config.ts's LaunchProfile.
+   *  B-842: a profile with NO probe silently lets a takeover reap-and-refire a genuinely LIVE
+   *  worker (SIGKILL, exit 137, in-progress work discarded) — src/daemon/preflight.ts's boot
+   *  preflight now HARD-refuses to boot such a profile unless the operator explicitly opts out with
+   *  `probe: false` (accepting reap-and-refire). `z.literal(false)` is that explicit opt-out; the
+   *  non-empty-string branch is unchanged — `z.string().min(1)` stays INSIDE the union, never widened
+   *  to a bare `z.string()`. */
+  probe: external_exports.union([external_exports.string().min(1), external_exports.literal(false)]).optional(),
   /** This profile's own concurrency ceiling. */
   maxConcurrentWorkers: external_exports.number().int().nonnegative().optional(),
   /** B-800: replaces the CLOUDSDK_CORE_PROJECT hardcoded default baked into cloud-worker-*.sh —
@@ -23991,8 +23997,12 @@ function loadDaemonConfig(env, readFile, opts = {}) {
     if (typeof profile.reap !== "string" || profile.reap.length === 0) {
       throw new Error(`launch profile ${profilePath} is missing the "reap" command template`);
     }
-    if (profile.probe !== void 0 && (typeof profile.probe !== "string" || profile.probe.length === 0)) {
-      throw new Error(`launch profile ${profilePath}'s "probe" template, when present, must be a non-empty string`);
+    if (profile.probe !== void 0 && profile.probe !== false) {
+      if (typeof profile.probe !== "string" || profile.probe.length === 0) {
+        throw new Error(
+          `launch profile ${profilePath}'s "probe" template, when present, must be a non-empty string or the literal \`false\` (explicit opt-out of mid-leg re-attach)`
+        );
+      }
     }
     if (profile.maxConcurrentWorkers !== void 0 && (!Number.isInteger(profile.maxConcurrentWorkers) || profile.maxConcurrentWorkers < 0)) {
       throw new Error(
@@ -24144,9 +24154,16 @@ ${LAUNCHD_PATH_HINT}`
       }
     }
   }
-  if (!profile.probe) {
+  if (profile.probe === void 0) {
+    throw new Error(
+      `Profile "${opts.profileName}" has no "probe" template \u2014 mid-leg re-attach capability is missing, so a takeover would SIGKILL any live worker for this profile and discard its in-progress work (reap-and-refire). Add a working probe template \u2014 see container/migrate-to-deployment-config.md step 3, e.g.:
+  "probe": "docker ps --filter name=harmony-worker-{conduction_id} --filter status=running --quiet | grep -q ."
+Or, if this profile's workers are genuinely safe to reap-and-refire on takeover, opt out explicitly with "probe": false.`
+    );
+  }
+  if (profile.probe === false) {
     opts.log(
-      `Note: profile "${opts.profileName}" has no "probe" template \u2014 mid-leg re-attach disabled; takeovers will reap-and-refire running workers.`
+      `Note: profile "${opts.profileName}" has "probe: false" \u2014 an explicit operator opt-out; mid-leg re-attach is disabled and takeovers will reap-and-refire running workers.`
     );
   }
   if (!profile.required_tools) {

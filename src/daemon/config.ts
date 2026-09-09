@@ -47,8 +47,12 @@ export interface LaunchProfile {
    *  {conduction_id} is still running (found), non-zero when it is not (settled/absent). A
    *  profile that omits it simply skips reconciliation — a newly-claimed row with a non-null
    *  `leg_started_at` falls back to today's REAP-THEN-FIRE exactly as before this ticket. Same
-   *  placeholders as launch/reap; never keys on stdout (the daemon consumes only the exit code). */
-  probe?: string;
+   *  placeholders as launch/reap; never keys on stdout (the daemon consumes only the exit code).
+   *  B-842: `undefined` here is now a BOOT-BLOCKING error at src/daemon/preflight.ts's boot
+   *  preflight (a takeover on a probe-less profile SIGKILLs any live worker) — `false` is the
+   *  explicit operator opt-out that accepts reap-and-refire and boots anyway. Mirrors
+   *  src/config/deployment-config.ts's LaunchProfileSchema field of the same name. */
+  probe?: string | false;
   /** B-717 item 2: this profile's OWN concurrency ceiling — read as a PER-PROFILE value (config not
    *  constants) because a sane cap differs by launch mechanism: local-docker is bounded by the host
    *  resource ceiling, cloud by the subscription/Cloud Run execution quota (item 4). Overridable by
@@ -197,8 +201,17 @@ export function loadDaemonConfig(
     if (typeof profile.reap !== 'string' || profile.reap.length === 0) {
       throw new Error(`launch profile ${profilePath} is missing the "reap" command template`);
     }
-    if (profile.probe !== undefined && (typeof profile.probe !== 'string' || profile.probe.length === 0)) {
-      throw new Error(`launch profile ${profilePath}'s "probe" template, when present, must be a non-empty string`);
+    // B-842: explicitly accept `false` (the operator opt-out), accept a non-empty string (a real
+    // probe template), and explicitly REJECT '' and any other type — never an incidental
+    // pass-through. Mirrors src/config/deployment-config.ts's LaunchProfileSchema
+    // z.union([z.string().min(1), z.literal(false)]).optional() for the same field.
+    if (profile.probe !== undefined && profile.probe !== false) {
+      if (typeof profile.probe !== 'string' || profile.probe.length === 0) {
+        throw new Error(
+          `launch profile ${profilePath}'s "probe" template, when present, must be a non-empty ` +
+            'string or the literal `false` (explicit opt-out of mid-leg re-attach)',
+        );
+      }
     }
     if (
       profile.maxConcurrentWorkers !== undefined &&

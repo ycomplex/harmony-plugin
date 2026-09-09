@@ -196,6 +196,69 @@ describe('loadDaemonConfig', () => {
     expect(() => loadDaemonConfig(envWith(), readBad)).toThrow(/probe/);
   });
 
+  // B-842: the legacy hand-validation route mirrors deployment-config.ts's LaunchProfileSchema
+  // z.union([z.string().min(1), z.literal(false)]).optional() for the same field.
+  describe('B-842: "probe" accepts false (explicit opt-out) at the legacy hand-validation route too', () => {
+    it('accepts probe: false', () => {
+      const probeFalseProfile = JSON.stringify({
+        launch: 'launch {conduction_id} {ticket}',
+        reap: 'reap {conduction_id}',
+        probe: false,
+      });
+      const cfg = loadDaemonConfig(envWith(), () => probeFalseProfile);
+      expect(cfg.profile.probe).toBe(false);
+    });
+
+    it('accepts a non-empty probe string', () => {
+      const probeProfile = JSON.stringify({
+        launch: 'launch {conduction_id} {ticket}',
+        reap: 'reap {conduction_id}',
+        probe: 'probe {conduction_id}',
+      });
+      const cfg = loadDaemonConfig(envWith(), () => probeProfile);
+      expect(cfg.profile.probe).toBe('probe {conduction_id}');
+    });
+
+    it('explicitly rejects probe: "" (empty string) — never an incidental pass-through', () => {
+      const badProfile = JSON.stringify({
+        launch: 'launch {conduction_id} {ticket}',
+        reap: 'reap {conduction_id}',
+        probe: '',
+      });
+      expect(() => loadDaemonConfig(envWith(), () => badProfile)).toThrow(/probe/);
+    });
+
+    it('explicitly rejects any other type (e.g. a number) — never an incidental pass-through', () => {
+      const badProfile = JSON.stringify({
+        launch: 'launch {conduction_id} {ticket}',
+        reap: 'reap {conduction_id}',
+        probe: 42,
+      });
+      expect(() => loadDaemonConfig(envWith(), () => badProfile)).toThrow(/probe/);
+    });
+
+    it('leaves required_tools.probe (the unrelated same-named tool-name ARRAY field) untouched', () => {
+      const profileWithBoth = JSON.stringify({
+        launch: 'launch {conduction_id} {ticket}',
+        reap: 'reap {conduction_id}',
+        probe: false,
+        required_tools: { probe: ['docker'] },
+      });
+      const cfg = loadDaemonConfig(envWith(), () => profileWithBoth);
+      expect(cfg.profile.required_tools).toEqual({ probe: ['docker'] });
+
+      // required_tools.probe still rejects a non-array (proves no cross-widening of the two
+      // same-named `probe` fields).
+      const badProfile = JSON.stringify({
+        launch: 'launch {conduction_id} {ticket}',
+        reap: 'reap {conduction_id}',
+        probe: false,
+        required_tools: { probe: false },
+      });
+      expect(() => loadDaemonConfig(envWith(), () => badProfile)).toThrow(/required_tools/);
+    });
+  });
+
   it('carries the optional log path from HARMONY_DAEMON_LOG', () => {
     expect(loadDaemonConfig(envWith(), readProfile).logPath).toBeUndefined();
     expect(

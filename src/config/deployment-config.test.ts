@@ -246,6 +246,71 @@ describe('loadDeploymentConfig', () => {
   });
 });
 
+describe('LaunchProfileSchema — probe: B-842 widened union (z.union([z.string().min(1), z.literal(false)]))', () => {
+  function withProfileProbe(probe: unknown) {
+    return fakeFs({
+      '/deployment.json': JSON.stringify({
+        profiles: { local: { launch: 'launch {conduction_id}', reap: 'reap {conduction_id}', probe } },
+      }),
+    });
+  }
+
+  it('accepts probe: false (the explicit opt-out)', () => {
+    const io = withProfileProbe(false);
+    const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
+    expect(loaded?.profiles?.local.probe).toBe(false);
+  });
+
+  it('accepts a non-empty probe string', () => {
+    const io = withProfileProbe('docker ps --filter name=harmony-worker-{conduction_id} --quiet | grep -q .');
+    const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
+    expect(loaded?.profiles?.local.probe).toBe(
+      'docker ps --filter name=harmony-worker-{conduction_id} --quiet | grep -q .',
+    );
+  });
+
+  it('explicitly REJECTS probe: "" (empty string) — never widened to a bare z.string()', () => {
+    const io = withProfileProbe('');
+    expect(() => loadDeploymentConfig({ configPath: '/deployment.json', ...io })).toThrow(
+      /failed validation/,
+    );
+  });
+
+  it('leaves required_tools.probe (the unrelated same-named tool-name ARRAY field) untouched — still an array of strings, never widened', () => {
+    const io = fakeFs({
+      '/deployment.json': JSON.stringify({
+        profiles: {
+          local: {
+            launch: 'launch {conduction_id}',
+            reap: 'reap {conduction_id}',
+            probe: 'probe {conduction_id}',
+            required_tools: { probe: ['docker'] },
+          },
+        },
+      }),
+    });
+    const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...io });
+    expect(loaded?.profiles?.local.required_tools).toEqual({ probe: ['docker'] });
+    // required_tools.probe rejects `false` (still a string array) — proves the two same-named
+    // `probe` fields were never accidentally cross-widened by this ticket's schema change.
+    const badIo = fakeFs({
+      '/deployment.json': JSON.stringify({
+        profiles: {
+          local: {
+            launch: 'launch {conduction_id}',
+            reap: 'reap {conduction_id}',
+            probe: 'probe {conduction_id}',
+            required_tools: { probe: false },
+          },
+        },
+      }),
+    });
+    expect(() => loadDeploymentConfig({ configPath: '/deployment.json', ...badIo })).toThrow(
+      /failed validation/,
+    );
+  });
+});
+
 describe('resolveConfigPath', () => {
   const config = {
     launcher: {

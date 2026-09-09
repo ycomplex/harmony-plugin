@@ -6,6 +6,13 @@
 // re-attach for two days with zero signal. Both are cases the daemon already HAD the data to catch
 // at boot — it just never looked at it closely enough.
 //
+// B-842: the missing-`probe` incident above was originally handled as a soft audit line (check 4
+// below) and the daemon booted anyway — but a takeover on such a profile SIGKILLs any genuinely
+// live worker (reap-and-refire) and discards its in-progress work, which is worse than refusing to
+// start. `probe === undefined` is now a HARD, boot-blocking miss (check 3 below); an operator who
+// genuinely wants reap-and-refire opts out explicitly with `probe: false`, which still boots (and
+// still gets the softer, honest note at check 4).
+//
 // Pure + injectable (runCommand/env/log), mirrors src/config/deployment-config.ts's
 // LoadDeploymentConfigOptions / src/daemon/config.ts's loadDaemonConfig style — no real PATH/fs
 // access happens in this module, so the whole thing is unit-testable with fakes. src/bin/daemon.ts's
@@ -13,7 +20,7 @@
 // profile and BEFORE HarmonyAuth/createAuthenticatedClient/runScheduler — nothing ticket-related
 // runs until the deployment surface has been validated.
 //
-// Three checks, all derived from data the daemon already loads — no new I/O surface added here:
+// Four checks, all derived from data the daemon already loads — no new I/O surface added here:
 //   1. Tool resolution (hard) — every binary a profile's `required_tools` names must resolve on
 //      PATH, checked via `command -v <tool>` through the SAME runCommand instance
 //      src/bin/daemon.ts wires into SchedulerDeps (reusing the scheduler's existing injectable exec
@@ -23,8 +30,15 @@
 //      config's `launcher.github_app`/`launcher.plugin_dir`, whichever the loader already wires —
 //      no NEW wiring is added by this check). HARMONY_API_TOKEN is already hard-checked earlier in
 //      src/bin/daemon.ts's main() — deliberately not duplicated here.
-//   3. Profile capability audit (soft, never throws) — one line per ABSENT optional capability,
-//      naming its concrete consequence, so a config gap is visible at boot instead of silent.
+//   3. Probe presence (hard, B-842) — `profile.probe === undefined` refuses to boot: names the
+//      missing capability and quotes the working probe template documented in
+//      container/migrate-to-deployment-config.md step 3, so the fix is one paste away. Explicit
+//      `probe: false` (recorded opt-out) and a real non-empty probe template both pass through
+//      untouched — this check only ever fires on the AMBIGUOUS "just never set it" case.
+//   4. Profile capability audit (soft, never throws) — one line per ABSENT optional capability,
+//      naming its concrete consequence, so a config gap is visible at boot instead of silent. The
+//      old ambiguous "no probe" note here is now reached ONLY via the explicit `probe: false`
+//      opt-out (check 3 above already hard-stops the undefined case).
 //
 // Hard misses THROW (mirrors loadDeploymentConfig/loadDaemonConfig's own "malformed config fails
 // loud, not silently" convention) — src/bin/daemon.ts's main() catches and process.exit(1)s, the
@@ -43,7 +57,12 @@ import type { DeploymentConfig } from '../config/deployment-config.js';
 export interface PreflightProfile {
   launch: string;
   reap: string;
-  probe?: string;
+  /** B-842: `undefined` is a HARD boot-blocking miss (check 3 below) — `false` is the operator's
+   *  explicit, recorded opt-out (boots, soft-audited); a non-empty string is a real probe template.
+   *  Declared `?:` (equivalent to `string | false | undefined`) so an object literal built by
+   *  spreading a LaunchProfile/LaunchProfileConfig that never SETS the key remains structurally
+   *  assignable here — see src/bin/daemon.ts's `preflightProfile` construction. */
+  probe?: string | false;
   maxConcurrentWorkers?: number;
   required_tools?: RequiredTools;
   requires_app_mint?: boolean;
@@ -188,11 +207,31 @@ export async function runBootPreflight(
     }
   }
 
-  // 3. Profile capability audit (soft, never throws) -----------------------------------------------
-  if (!profile.probe) {
+  // 3. Probe presence (hard, B-842) -----------------------------------------------------------------
+  // `undefined` is the ambiguous "operator never thought about it" case — a takeover on THIS
+  // profile SIGKILLs any genuinely live worker (reap-and-refire) and discards its in-progress work,
+  // which is worse than refusing to start. `false` (explicit, recorded opt-out) and a real non-empty
+  // probe template both pass through untouched; only `undefined` throws.
+  if (profile.probe === undefined) {
+    throw new Error(
+      `Profile "${opts.profileName}" has no "probe" template — mid-leg re-attach capability is ` +
+        'missing, so a takeover would SIGKILL any live worker for this profile and discard its ' +
+        'in-progress work (reap-and-refire). Add a working probe template — see ' +
+        'container/migrate-to-deployment-config.md step 3, e.g.:\n' +
+        '  "probe": "docker ps --filter name=harmony-worker-{conduction_id} --filter status=running ' +
+        '--quiet | grep -q ."\n' +
+        "Or, if this profile's workers are genuinely safe to reap-and-refire on takeover, opt out " +
+        'explicitly with "probe": false.',
+    );
+  }
+
+  // 4. Profile capability audit (soft, never throws) -----------------------------------------------
+  // B-842: only ever reached for the EXPLICIT `probe: false` opt-out — `undefined` is now a hard
+  // miss at check 3 above, so this note can no longer fire on an accidental omission.
+  if (profile.probe === false) {
     opts.log(
-      `Note: profile "${opts.profileName}" has no "probe" template — mid-leg re-attach disabled; ` +
-        'takeovers will reap-and-refire running workers.',
+      `Note: profile "${opts.profileName}" has "probe: false" — an explicit operator opt-out; ` +
+        'mid-leg re-attach is disabled and takeovers will reap-and-refire running workers.',
     );
   }
   if (!profile.required_tools) {

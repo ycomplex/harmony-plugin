@@ -150,6 +150,20 @@ anywhere.
    Paste your CURRENT live profile's fields byte-for-byte — this is a format migration, not a
    content change.
 
+   **`probe` is not really optional (B-842).** A profile with NO `probe` key at all is a
+   **boot-blocking error** — `src/daemon/preflight.ts`'s boot preflight refuses to start the daemon,
+   because without it a takeover on this profile SIGKILLs any genuinely still-running worker
+   (reap-and-refire) and silently discards its in-progress work. Two ways to satisfy the check:
+   - **The normal path:** include a working `probe` template, exactly like the `local` example
+     above — `"probe": "docker ps --filter name=harmony-worker-{conduction_id} --filter status=running --quiet | grep -q ."`.
+     Exits 0 when a worker for `{conduction_id}` is still running (found — the daemon re-attaches,
+     no reap, no re-fire), non-zero when it is not (settled/absent — safe to reap).
+   - **The explicit opt-out:** set `"probe": false` when this profile's workers are genuinely safe
+     to reap-and-refire on takeover (e.g. cheap, idempotent, or you've accepted the risk). This is a
+     RECORDED decision, not silence — the daemon boots and logs a note naming the opt-out on every
+     start, instead of the old ambiguous "Note: ... has no probe template" line that fired
+     identically whether you'd thought about it or simply forgot the key.
+
 4. **Fold in the `launcher` section** — the App identity + plugin dir facts, and (only if you've
    ever needed a `supabase_refs` override) that map:
    ```json
