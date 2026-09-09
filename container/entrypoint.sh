@@ -236,11 +236,14 @@ if [ -n "${HARMONY_REPOS_JSON:-}" ]; then
     clone "$META_URL" "$META_REF" "$META_PATH"
   fi
 
-  # NOTE: split on ASCII 0x01, not a tab (@tsv) — bash's `read` treats tab as "IFS whitespace" and
-  # SQUEEZES consecutive delimiters together regardless of what IFS is set to, silently dropping the
-  # empty `ref` field (and shifting every field after it) for any non-plugin entry that omits `ref`.
-  # 0x01 has no such special-casing, so an empty field reads back as empty, not absorbed.
-  while IFS=$'\x01' read -r url ref path is_plugin_flag meta_flag; do
+  # NOTE: split on ASCII 0x1f (unit separator), not a tab (@tsv) — bash's `read` treats tab as
+  # "IFS whitespace" and SQUEEZES consecutive delimiters together regardless of what IFS is set to,
+  # silently dropping the empty `ref` field (and shifting every field after it) for any non-plugin
+  # entry that omits `ref`. 0x1f has no such special-casing, so an empty field reads back as empty,
+  # not absorbed. (Originally 0x01/CTLESC — B-869/B-826: bash <4, e.g. stock macOS bash 3.2, uses
+  # byte 0x01 internally as its quote-removal escape marker, so IFS=$'\\x01' silently corrupts fields
+  # containing it on those shells. 0x1f has no such internal meaning to bash at any version.)
+  while IFS=$'\x1f' read -r url ref path is_plugin_flag meta_flag; do
     # The meta entry, if any, was already cloned above.
     [ "$meta_flag" = "true" ] && continue
     if [ "$is_plugin_flag" = "true" ]; then
@@ -252,7 +255,7 @@ if [ -n "${HARMONY_REPOS_JSON:-}" ]; then
       ref="main"
     fi
     clone "$url" "$ref" "$path"
-  done < <(printf '%s' "$repos_json" | jq -r '.[] | [(.url|tostring), ((.ref // "")|tostring), (.path|tostring), ((.is_plugin // false)|tostring), ((.meta_repo_role // false)|tostring)] | join("\u0001")')
+  done < <(printf '%s' "$repos_json" | jq -r '.[] | [(.url|tostring), ((.ref // "")|tostring), (.path|tostring), ((.is_plugin // false)|tostring), ((.meta_repo_role // false)|tostring)] | join("\u001f")')
 
   b772_finish_cross_conduction_resume "$PLUGIN_DIR"
   exec "$PLUGIN_DIR/container/provision.sh" "$@"

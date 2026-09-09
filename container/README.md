@@ -90,6 +90,14 @@ see "Running a second project's toolchain" below.
 - **Known v1 tradeoff:** every start pays a fresh clone of web + plugin.
   Accepted (see the B-694 design entry); mount a volume over `/workspace` to
   reuse clones across runs if it bothers you.
+- **Self-provisioning is deliberate, not a gap (B-869 AC2):** the image bakes
+  NO `node_modules/` for any cloned repo. `HARMONY_BUILD_CONTAINER=1` (set in
+  the `agent` layer, container/Dockerfile) is the signal a leg's own agent
+  keys on to know it must run `npm ci` itself, inside the cloned repo, before
+  running that repo's tests/build/lint -- `container/provision.sh` stops at
+  cloning + environment wiring + toolchain activation and never installs a
+  repo's JS dependencies for it. See provision.sh's own B-869 comment above
+  the hand-off section for the same note in code.
 
 Heavy builds (web E2E, local Supabase, Docker-in-Docker) are NOT covered by
 this image — that substrate is B-708, extending these same targets when the

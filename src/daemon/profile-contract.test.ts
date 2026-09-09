@@ -26,6 +26,57 @@ import { execFileSync } from 'node:child_process';
 import { renderTemplate } from './config.js';
 import { WORKER_IMAGE_DEFAULT } from '../config/deployment-config.js';
 
+// --- B-869/B-826: hermetic-test capability probe -----------------------------------------------
+// AC1 of B-869 requires that a clean checkout either goes GREEN or announces an environment-driven
+// skip LOUDLY, with a reason — never a silent false pass or an environment-dependent red. The ~14
+// describe blocks below that shell out to entrypoint.sh/provision.sh/cloud-worker-launch.sh/
+// docker-worker-reap.sh (via execFileSync('bash', ...), directly or through this file's own
+// runEntrypoint()) need a real bash interpreter plus `git` and `jq` on PATH — those scripts call
+// both. The predicates below key STRICTLY on capability (what's actually resolvable on this host),
+// NEVER on any individual test's own expected outcome — a probe keyed on "would this assertion
+// pass" could paper over a real regression by skipping past it; a probe keyed on capability can't.
+function detectBashVersion(): { major: number; minor: number } | undefined {
+  try {
+    const out = execFileSync(
+      'bash',
+      ['-c', 'printf "%s.%s" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim();
+    const [major, minor] = out.split('.').map((part) => Number.parseInt(part, 10));
+    if (Number.isNaN(major) || Number.isNaN(minor)) return undefined;
+    return { major, minor };
+  } catch {
+    return undefined;
+  }
+}
+
+function commandAvailable(cmd: string): boolean {
+  try {
+    execFileSync('bash', ['-lc', `command -v ${cmd}`], { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const BASH_VERSION = detectBashVersion();
+const GIT_AVAILABLE = commandAvailable('git');
+const JQ_AVAILABLE = commandAvailable('jq');
+
+/** Whether this host can run the subprocess-spawning describe blocks at all. Gating on this alone
+ *  (never on a symptom) means a host missing bash/git/jq skips loudly instead of failing red, and
+ *  a host that HAS them always actually exercises the scripts — this can't silently degrade into
+ *  testing nothing while still reporting green. */
+const SUBPROCESS_CAPABLE = BASH_VERSION !== undefined && GIT_AVAILABLE && JQ_AVAILABLE;
+
+/** B-826: stock macOS ships bash 3.2 (frozen there since 2007 at the GPLv3 license boundary) and
+ *  that version has a real, version-specific bug this ticket fixes around (bash <4 uses byte 0x01
+ *  internally as its own quote-removal escape marker, corrupting an IFS split on that byte — see
+ *  container/entrypoint.sh's B-869/B-826 comment). Proving the fix on a REAL bash <4 interpreter
+ *  needs one to be present; this sandbox's own `bash` may not be one (checked once, below), so the
+ *  case gated on this constant honestly SKIPS rather than claiming proof it cannot make good on. */
+const BASH_LT_4 = BASH_VERSION !== undefined && BASH_VERSION.major < 4;
+
 const profilePath = fileURLToPath(
   new URL('../../container/daemon-profile.example.json', import.meta.url),
 );
@@ -71,7 +122,7 @@ function provisionModes(script: string): string[] {
 // block EXECUTED here is extracted VERBATIM from provision.sh's real headless branch, never
 // hand-retyped, matching this file's own "prose-pinned tests alone are not trusted" discipline
 // (see the cloud-worker-launch.sh EXECUTED describe block's header comment for the same rationale).
-describe('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fallback', () => {
+describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5 best-effort cold-start fallback', () => {
   const provisionScriptForResume = readFileSync(provisionPath, 'utf8');
 
   /** Extract the B-718/B-772 block verbatim: from its own header comment through the closing
@@ -1428,7 +1479,7 @@ describe('daemon-profile.cloud.example.json shape', () => {
 // `docker` on PATH and asserts the real process exit code.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-describe('docker-worker-reap.sh: EXECUTED miss-vs-kill exit-code contract (B-761 reopen fix)', () => {
+describe.skipIf(!SUBPROCESS_CAPABLE)('docker-worker-reap.sh: EXECUTED miss-vs-kill exit-code contract (B-761 reopen fix)', () => {
   /** Run the REAL docker-worker-reap.sh with a stubbed `docker` on PATH whose body is `dockerFakeBody`
    *  (a fake docker binary, so no real container runtime is required to run this test). Returns the
    *  real process's exit status + captured stderr — never throws on a nonzero exit. */
@@ -1620,7 +1671,7 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: label-based execute/rea
   });
 });
 
-describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + credential handling (accepted design cf579f0f pt.3)', () => {
+describe.skipIf(!SUBPROCESS_CAPABLE)('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + credential handling (accepted design cf579f0f pt.3)', () => {
   const launchScript = readFileSync(cloudLaunchScriptPath, 'utf8');
   const reapScript = readFileSync(cloudReapScriptPath, 'utf8');
 
@@ -1982,7 +2033,7 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: per-run env-file + cred
 // EXECUTES the real acquisition line and the real MINT_MODEL_FLAG conditional-build block —
 // same "prose-pinned regex alone is not trusted for this wrapper" discipline as the
 // RUN_CONFIG_JSON / write_exec_env_file() EXECUTED blocks elsewhere in this file.
-describe('cloud-worker-launch.sh: B-772 MODEL positional arg + conditional --model forwarding to mint', () => {
+describe.skipIf(!SUBPROCESS_CAPABLE)('cloud-worker-launch.sh: B-772 MODEL positional arg + conditional --model forwarding to mint', () => {
   const launchScript = readFileSync(cloudLaunchScriptPath, 'utf8');
 
   describe('EXECUTED MODEL positional-arg resolution', () => {
@@ -2093,7 +2144,7 @@ describe('cloud-worker-launch.sh: B-772 MODEL positional arg + conditional --mod
   });
 });
 
-describe('cloud-worker-launch.sh: B-717 item 6 — the mkdir lock RESOLVES the update/execute race', () => {
+describe.skipIf(!SUBPROCESS_CAPABLE)('cloud-worker-launch.sh: B-717 item 6 — the mkdir lock RESOLVES the update/execute race', () => {
   const launchScript = readFileSync(cloudLaunchScriptPath, 'utf8');
 
   it('acquires the lock BEFORE `update` and releases it right after the execution is resolved — not after the build completes', () => {
@@ -2299,7 +2350,7 @@ describe('provision.sh: fails loud on no-arg + non-TTY instead of silently defau
 
 const entrypointPath = fileURLToPath(new URL('../../container/entrypoint.sh', import.meta.url));
 
-describe('entrypoint.sh: nested workspace-mirror clone layout (B-726 (a))', () => {
+describe.skipIf(!SUBPROCESS_CAPABLE)('entrypoint.sh: nested workspace-mirror clone layout (B-726 (a))', () => {
   const script = readFileSync(entrypointPath, 'utf8');
 
   it('clones harmony-workspace BEFORE web and plugin', () => {
@@ -2434,7 +2485,7 @@ function b64(value: unknown): string {
   return Buffer.from(JSON.stringify(value), 'utf8').toString('base64');
 }
 
-describe('entrypoint.sh: repos[] clone iteration (B-814)', () => {
+describe.skipIf(!SUBPROCESS_CAPABLE)('entrypoint.sh: repos[] clone iteration (B-814)', () => {
   it('AC1: a SINGLE-entry repos list with is_plugin:true clones it and hands off to ITS OWN path — no source edit needed (e.g. Team Health)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'b814-ac1-'));
     const pluginPath = join(dir, 'team-health');
@@ -2523,7 +2574,101 @@ describe('entrypoint.sh: repos[] clone iteration (B-814)', () => {
   });
 });
 
-describe('entrypoint.sh: AC3 — HARMONY_REPOS_JSON absent/empty falls back byte-for-byte to the three-slot clone', () => {
+// B-869/B-826: the repos[] clone loop's delimiter is expressed TWICE, independently, in two
+// different notations that must agree byte-for-byte -- jq's join() string escape on the
+// producing side, and bash's IFS ANSI-C quoting on the consuming `read` side. Nothing type-checks
+// that agreement; only running them together does. This block's whole purpose is to catch exactly
+// that drift (the B-826 fold: an EARLIER version of this delimiter was ASCII 0x01, which collides
+// with bash <4's internal CTLESC quote-removal marker on stock macOS bash 3.2 -- see
+// entrypoint.sh's own comment on the `while IFS=...` line). Both notations are extracted VERBATIM
+// from the real file below, never hand-retyped, so an edit to either side alone -- without the
+// other -- fails THIS test, not just a downstream one.
+describe.skipIf(!SUBPROCESS_CAPABLE)('entrypoint.sh: B-869/B-826 repos[] delimiter -- jq join and bash IFS read must agree', () => {
+  const entrypointScriptForDelimiter = readFileSync(entrypointPath, 'utf8');
+
+  function extractIfsAssignment(): string {
+    const m = /while IFS=(\$'[^']*') read -r url ref path is_plugin_flag meta_flag; do/.exec(
+      entrypointScriptForDelimiter,
+    );
+    expect(m).not.toBeNull();
+    return m![1];
+  }
+
+  function extractJqPipeline(): string {
+    const m = /done < <\((.+)\)$/m.exec(entrypointScriptForDelimiter);
+    expect(m).not.toBeNull();
+    return m![1];
+  }
+
+  function runJoinReadRoundtrip(ifsAssignment: string, jqPipeline: string, reposJson: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'b869-delim-'));
+    const scriptFile = join(dir, 'roundtrip.sh');
+    writeFileSync(
+      scriptFile,
+      [
+        '#!/usr/bin/env bash',
+        'repos_json="$1"',
+        `while IFS=${ifsAssignment} read -r url ref path is_plugin_flag meta_flag; do`,
+        '  printf "URL=[%s] REF=[%s] PATH=[%s] PLUGIN=[%s] META=[%s]\\n" "$url" "$ref" "$path" "$is_plugin_flag" "$meta_flag"',
+        `done < <(${jqPipeline})`,
+        '',
+      ].join('\n'),
+      { mode: 0o700 },
+    );
+    return execFileSync('bash', [scriptFile, reposJson], { encoding: 'utf8' });
+  }
+
+  it('an EMPTY middle field (ref) lands in the correct slot -- proves the two delimiter notations are the SAME byte, not just each individually well-formed', () => {
+    const ifsAssignment = extractIfsAssignment();
+    const jqPipeline = extractJqPipeline();
+    const reposEntry = {
+      url: 'https://github.com/example/repo.git',
+      ref: '',
+      path: '/tmp/repo',
+      is_plugin: false,
+      meta_repo_role: false,
+    };
+    const reposJson = JSON.stringify([reposEntry]);
+
+    const stdout = runJoinReadRoundtrip(ifsAssignment, jqPipeline, reposJson);
+
+    expect(stdout).toBe(
+      'URL=[https://github.com/example/repo.git] REF=[] PATH=[/tmp/repo] PLUGIN=[false] META=[false]\n',
+    );
+  });
+
+  // B-826: this is the ACTUAL live verification the fix exists to satisfy -- the historical bug
+  // (bash <4's internal 0x01/CTLESC quote-removal marker corrupting an IFS split on that same
+  // byte) is specific to bash BEFORE 4.0, so it can only be genuinely reproduced/disproven on a
+  // real bash <4 interpreter (e.g. stock macOS's bash 3.2). No such interpreter was available in
+  // the sandbox this test was authored in (checked via BASH_VERSION above) -- rather than claim
+  // proof this fix carries into bash <4 without ever running on one, this case honestly SKIPS
+  // there, following the same it.skipIf(!CLAUDE_CLI_AVAILABLE) precedent used elsewhere in this
+  // file for a live-environment-only check. Wherever this DOES run on a real bash <4, it is the
+  // genuine B-826 regression proof; everywhere else it is a declared, attributed skip, never a
+  // silent pass standing in for one.
+  it.skipIf(!BASH_LT_4)('on a REAL bash <4 interpreter (e.g. macOS system bash 3.2), the same join/read round-trip still lands the empty middle field correctly -- proves the 0x1f byte choice actually avoids the CTLESC collision 0x01 had', () => {
+    const ifsAssignment = extractIfsAssignment();
+    const jqPipeline = extractJqPipeline();
+    const reposJson = JSON.stringify([
+      {
+        url: 'https://github.com/example/repo.git',
+        ref: '',
+        path: '/tmp/repo',
+        is_plugin: false,
+        meta_repo_role: false,
+      },
+    ]);
+
+    const stdout = runJoinReadRoundtrip(ifsAssignment, jqPipeline, reposJson);
+
+    expect(stdout).toBe(
+      'URL=[https://github.com/example/repo.git] REF=[] PATH=[/tmp/repo] PLUGIN=[false] META=[false]\n',
+    );
+  });
+});
+
+describe.skipIf(!SUBPROCESS_CAPABLE)('entrypoint.sh: AC3 — HARMONY_REPOS_JSON absent/empty falls back byte-for-byte to the three-slot clone', () => {
   it('clones WORKSPACE_REPO, then WEB_REPO, then PLUGIN_REPO at the same relative layout as before B-814, with no HARMONY_REPOS_JSON set at all', () => {
     const dir = mkdtempSync(join(tmpdir(), 'b814-ac3-'));
 
@@ -2638,7 +2783,7 @@ describe('provision.sh: HARMONY_PLUGIN_POSTURE parsing + ref/target fidelity fai
   });
 });
 
-describe('provision.sh: EXECUTED HARMONY_PLUGIN_POSTURE parsing (B-803 — prose-pinned regex alone is not trusted for parsing logic)', () => {
+describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: EXECUTED HARMONY_PLUGIN_POSTURE parsing (B-803 — prose-pinned regex alone is not trusted for parsing logic)', () => {
   const script = readFileSync(provisionPath, 'utf8');
 
   /** Extract the real parsing block (assignment through the closing `esac`), verbatim. */
@@ -2757,7 +2902,7 @@ describe('cloud-worker-launch.sh: B-788 transcript-mount-root knob + uncondition
   });
 });
 
-describe('entrypoint.sh: B-788 EXECUTED transcript-mount symlink fallback', () => {
+describe.skipIf(!SUBPROCESS_CAPABLE)('entrypoint.sh: B-788 EXECUTED transcript-mount symlink fallback', () => {
   const entrypointScript = readFileSync(entrypointPath, 'utf8');
 
   /** Extract the `if [ -n "${HARMONY_TRANSCRIPT_MOUNT_ROOT:-}" ]; then ... fi` block verbatim. */
@@ -2854,7 +2999,7 @@ describe('entrypoint.sh: B-788 EXECUTED transcript-mount symlink fallback', () =
   });
 });
 
-describe('entrypoint.sh: B-718 cross-conduction resume discovery (cloud profile)', () => {
+describe.skipIf(!SUBPROCESS_CAPABLE)('entrypoint.sh: B-718 cross-conduction resume discovery (cloud profile)', () => {
   const entrypointScript = readFileSync(entrypointPath, 'utf8');
 
   /** Same block extraction as the B-788 describe block above, EXTENDED (B-772 round 2) to also
@@ -3204,7 +3349,7 @@ describe('entrypoint.sh: B-718 cross-conduction resume discovery (cloud profile)
 // EXTRACTED VERBATIM from the real script and EXECUTED here (same discipline as the B-718 resume
 // block above — a prose-pinned assertion about a shell script is not trusted in this file), with a
 // stub `node` standing in for `harmony config get`.
-describe('cloud-worker-launch.sh: B-929 worker-image resolution', () => {
+describe.skipIf(!SUBPROCESS_CAPABLE)('cloud-worker-launch.sh: B-929 worker-image resolution', () => {
   const launchScript = readFileSync(
     fileURLToPath(new URL('../../container/cloud-worker-launch.sh', import.meta.url)),
     'utf8',
