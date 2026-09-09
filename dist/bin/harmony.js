@@ -28047,8 +28047,14 @@ var LaunchProfileSchema = external_exports.object({
   launch: external_exports.string().min(1),
   /** Command template that force-removes a (possibly dead) worker. Same placeholders. */
   reap: external_exports.string().min(1),
-  /** Optional restart-reconciliation probe template — see src/daemon/config.ts's LaunchProfile. */
-  probe: external_exports.string().min(1).optional(),
+  /** Optional restart-reconciliation probe template — see src/daemon/config.ts's LaunchProfile.
+   *  B-842: a profile with NO probe silently lets a takeover reap-and-refire a genuinely LIVE
+   *  worker (SIGKILL, exit 137, in-progress work discarded) — src/daemon/preflight.ts's boot
+   *  preflight now HARD-refuses to boot such a profile unless the operator explicitly opts out with
+   *  `probe: false` (accepting reap-and-refire). `z.literal(false)` is that explicit opt-out; the
+   *  non-empty-string branch is unchanged — `z.string().min(1)` stays INSIDE the union, never widened
+   *  to a bare `z.string()`. */
+  probe: external_exports.union([external_exports.string().min(1), external_exports.literal(false)]).optional(),
   /** This profile's own concurrency ceiling. */
   maxConcurrentWorkers: external_exports.number().int().nonnegative().optional(),
   /** B-800: replaces the CLOUDSDK_CORE_PROJECT hardcoded default baked into cloud-worker-*.sh —

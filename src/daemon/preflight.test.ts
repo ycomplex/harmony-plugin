@@ -198,21 +198,82 @@ describe('runBootPreflight — hard env-contract check (check 2)', () => {
   });
 });
 
-describe('runBootPreflight — soft profile-capability audit (check 3, never throws)', () => {
-  it('logs the probe-absent consequence when the profile has no probe template', async () => {
+describe('runBootPreflight — hard probe-presence check (check 3, B-842)', () => {
+  it('THROWS when profile.probe is undefined, naming the missing capability and quoting the working probe template', async () => {
     const log = vi.fn();
-    await runBootPreflight(fakeConfig(), baseProfile({ probe: undefined }), {
+    await expect(
+      runBootPreflight(fakeConfig(), baseProfile({ probe: undefined }), {
+        runCommand: fakeRunCommand(),
+        env: {},
+        profileName: 'local',
+        log,
+      }),
+    ).rejects.toThrow(/Profile "local" has no "probe" template/);
+    // Names the missing capability's concrete consequence...
+    await expect(
+      runBootPreflight(fakeConfig(), baseProfile({ probe: undefined }), {
+        runCommand: fakeRunCommand(),
+        env: {},
+        profileName: 'local',
+        log,
+      }),
+    ).rejects.toThrow(/SIGKILL any live worker/);
+    // ...and quotes the EXACT working template documented in
+    // container/migrate-to-deployment-config.md step 3.
+    await expect(
+      runBootPreflight(fakeConfig(), baseProfile({ probe: undefined }), {
+        runCommand: fakeRunCommand(),
+        env: {},
+        profileName: 'local',
+        log,
+      }),
+    ).rejects.toThrow(
+      /"probe": "docker ps --filter name=harmony-worker-\{conduction_id\} --filter status=running --quiet \| grep -q \."/,
+    );
+    expect(log).not.toHaveBeenCalled(); // a hard miss never reaches the soft-audit log sink
+  });
+
+  it('does NOT throw when probe is explicitly false (the recorded opt-out)', async () => {
+    await expect(
+      runBootPreflight(fakeConfig(), baseProfile({ probe: false }), {
+        runCommand: fakeRunCommand(),
+        env: {},
+        profileName: 'local',
+        log: vi.fn(),
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('does NOT throw when probe is a valid non-empty template string', async () => {
+    await expect(
+      runBootPreflight(fakeConfig(), baseProfile({ probe: 'probe {conduction_id}' }), {
+        runCommand: fakeRunCommand(),
+        env: {},
+        profileName: 'local',
+        log: vi.fn(),
+      }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('runBootPreflight — soft profile-capability audit (check 4, never throws)', () => {
+  it('logs the explicit-opt-out consequence when the profile sets probe: false', async () => {
+    const log = vi.fn();
+    await runBootPreflight(fakeConfig(), baseProfile({ probe: false }), {
       runCommand: fakeRunCommand(),
       env: {},
       profileName: 'local',
       log,
     });
     expect(log).toHaveBeenCalledWith(
-      expect.stringContaining('mid-leg re-attach disabled; takeovers will reap-and-refire running workers'),
+      expect.stringContaining('"probe: false" — an explicit operator opt-out'),
+    );
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('mid-leg re-attach is disabled and takeovers will reap-and-refire running workers'),
     );
   });
 
-  it('does NOT log the probe line when a probe template is present', async () => {
+  it('does NOT log the probe-opt-out line when a real probe template is present', async () => {
     const log = vi.fn();
     await runBootPreflight(fakeConfig(), baseProfile({ probe: 'probe {conduction_id}' }), {
       runCommand: fakeRunCommand(),
@@ -220,7 +281,7 @@ describe('runBootPreflight — soft profile-capability audit (check 3, never thr
       profileName: 'local',
       log,
     });
-    expect(log).not.toHaveBeenCalledWith(expect.stringContaining('mid-leg re-attach disabled'));
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining('mid-leg re-attach'));
   });
 
   it('logs the required_tools-absent consequence when the whole block is missing', async () => {
@@ -331,7 +392,7 @@ describe('runBootPreflight — soft profile-capability audit (check 3, never thr
     expect(log).not.toHaveBeenCalled();
   });
 
-  it('never throws for any soft-audit condition, even when everything absent at once', async () => {
+  it('never throws for any soft-audit condition, even when everything else absent at once (probe explicitly opted out)', async () => {
     const log = vi.fn();
     await expect(
       runBootPreflight(
@@ -339,10 +400,11 @@ describe('runBootPreflight — soft profile-capability audit (check 3, never thr
         {
           launch: 'launch {conduction_id}',
           reap: 'reap {conduction_id}',
+          probe: false, // explicit opt-out — probe: undefined would THROW (see check 3 above)
         },
         { runCommand: fakeRunCommand(), env: {}, profileName: 'bare', log },
       ),
     ).resolves.toBeUndefined();
-    expect(log).toHaveBeenCalledTimes(2); // probe absent + required_tools absent (no gcloud named, schema_version defaults to current)
+    expect(log).toHaveBeenCalledTimes(2); // probe:false opt-out note + required_tools absent (no gcloud named, schema_version defaults to current)
   });
 });

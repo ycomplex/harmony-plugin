@@ -1980,6 +1980,80 @@ describe('B-717 restart reconciliation', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-842 — AC4: a REAPED live worker must be distinguishable from a NORMALLY-EXITED one by
+// OBSERVABLE STATE, never by exit code alone (exit 137 is ambiguous: a reap, an OOM kill, and a
+// peer's takeover-reap all produce it). This exercises the REAL takeover/reap code path
+// (runSchedulerPass -> handleWonTakeover's unconditional reap-then-fire branch, taken here because
+// the harness's base `config` carries no `probe` template — exactly the profile shape this
+// ticket's boot preflight now refuses to boot without an explicit `probe: false` opt-out) so a
+// regression in that logic fails this test, not a hand-built fixture comparison.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+describe('B-842: a takeover reap genuinely kills a live worker — distinguishable from a normal settle, never by exit code alone', () => {
+  it('the reap-then-fire path terminates a still-running worker: the reap template actually runs, and the killed worker is DISCARDED (never classified) — unlike a normal settle', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      blockLaunchIds: ['cond-1'],
+      // Deliberately the BASE config — no `probe` template (the exact profile shape B-842's boot
+      // preflight now hard-refuses to boot without an explicit `probe: false` opt-out).
+    });
+
+    await wakeAndFire(h); // this daemon's OWN worker is genuinely running: blocked on 'launch cond-1 task-1'
+    expect(h.running()).toEqual(['cond-1']);
+    expect(h.commands).toEqual(['launch cond-1 task-1']);
+    expect(h.getConduction('cond-1').leg_started_at).not.toBeNull(); // a leg is genuinely in flight
+
+    // Simulate this daemon's OWN process dying and a peer daemon — fresh in-memory state, exactly
+    // what a real second process starts with — taking over the SAME still-live container.
+    h.getConduction('cond-1').lease_holder = 'dead-host:9:zzzz9999';
+    h.getConduction('cond-1').last_heartbeat_at = iso(h.now() - 600_000);
+
+    const peerState = new Map<string, WatchBaseline>();
+    const peerRuntime = createSchedulerRuntime();
+    const peerKeeper = createHeartbeatKeeper({
+      now: h.now,
+      startInterval: h.deps.startInterval,
+      updateConductionIfHeld: (id, patch) => h.deps.updateConductionIfHeld(id, ME, patch),
+      log: h.deps.log,
+      heartbeatMs: config.heartbeatMs,
+    });
+
+    await runSchedulerPass(h.deps, peerState, peerKeeper, peerRuntime);
+    await h.settle();
+
+    // Observable evidence the worker was genuinely REAPED (killed), not that it merely happened to
+    // exit with code 137 on its own: (a) the reap template actually ran and (per the fake's
+    // live-verified reap contract) FREED the still-blocked launch, (b) the peer's OWN
+    // reap-after-takeover write — never a settle-time write — is what cleared leg_started_at, and
+    // (c) no exit classification is EVER recorded for this worker: a reaped worker is DISCARDED,
+    // not classified. That discarded/classified split is the distinguishing signal — see the
+    // contrast test below, which settles normally and DOES get a recorded exit class.
+    expect(h.reaps()).toEqual(['reap cond-1']);
+    expect(h.getConduction('cond-1').leg_started_at).toBeNull();
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBeNull();
+    expect(h.getConduction('cond-1').last_worker_exit_code).toBeNull();
+    expect(
+      h.logs.some((l) => l === 'conduction cond-1: took over stale lease from dead-host:9:zzzz9999 — reaped'),
+    ).toBe(true);
+  });
+
+  it('contrast: a normally-exited worker settles via classify and DOES get a recorded exit class — no reap ever runs', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      launchExitCode: 1, // any definite settle works; a dirty exit needs no task-state mutation
+    });
+    await wakeAndFire(h); // fire
+    await h.pass(); // settle → classify
+
+    expect(h.reaps()).toEqual([]); // never reaped — this worker exited entirely on its own
+    expect(h.getConduction('cond-1').leg_started_at).toBeNull(); // cleared, but via SETTLEMENT
+    expect(h.getConduction('cond-1').last_worker_exit_code).toBe(1);
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('dirty-exit'); // classified, never discarded
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // B-739 — liveness independent of pass progress, and a bounded per-launch deadline.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
