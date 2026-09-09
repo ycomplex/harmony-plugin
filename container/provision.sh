@@ -192,6 +192,17 @@ if [ -f "$HOME/.harmony-toolchain.sh" ]; then
   echo "provision.sh: B-929 toolchain active — node $(node --version)"
 fi
 
+# --- B-869: self-provisioning is a DELIBERATE contract, not a gap. ----------
+# This image (see container/Dockerfile) bakes NO `node_modules/` for any cloned
+# repo -- HARMONY_BUILD_CONTAINER=1 (the image-baked marker above) means "this
+# leg's own agent is expected to run `npm ci` itself", inside the cloned repo,
+# before it runs that repo's tests/build/lint. provision.sh deliberately stops
+# at cloning + environment wiring + toolchain activation (B-929, above) and
+# does NOT pre-install any repo's JS dependencies -- the agent's own build-gate
+# steps (this project's start-work / harmony-build agent) own that. A container
+# whose leg reports failures because dependencies were never installed is
+# working as designed; the fix is the leg running `npm ci`, not baking
+# `node_modules` into this image (B-869 AC2).
 # --- Hand off. --------------------------------------------------------------
 if [ $# -eq 0 ] && [ ! -t 0 ]; then
   # A mis-provisioned non-interactive invocation (e.g. a Cloud Run job execution with no
