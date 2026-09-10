@@ -23795,6 +23795,42 @@ async function getTask(client, projectId, args) {
   };
 }
 
+// src/tools/gate-slots.ts
+var ExcludedSlotSchema = external_exports.object({
+  item: external_exports.string(),
+  lands: external_exports.string()
+}).passthrough();
+var PullRequestSlotSchema = external_exports.object({
+  repo: external_exports.string().optional(),
+  ref: external_exports.string().optional(),
+  url: external_exports.string().optional(),
+  title: external_exports.string().optional()
+}).passthrough();
+var CriterionSlotSchema = external_exports.object({
+  ac_id: external_exports.string().optional(),
+  text: external_exports.string().optional(),
+  how: external_exports.string().optional(),
+  disposition: external_exports.string().optional()
+}).passthrough();
+var ClarifySlotSchema = external_exports.object({
+  solving: external_exports.string().optional(),
+  in_scope: external_exports.array(external_exports.string()).optional(),
+  not_solving: external_exports.array(ExcludedSlotSchema).optional()
+}).passthrough();
+var ReleaseSlotSchema = external_exports.object({
+  shipped: external_exports.string().optional(),
+  lands_in: external_exports.string().optional(),
+  prs: external_exports.array(PullRequestSlotSchema).optional(),
+  unproven: external_exports.array(external_exports.string()).optional(),
+  evidence_status: external_exports.string().optional()
+}).passthrough();
+var VerifySlotSchema = external_exports.object({
+  environment: external_exports.string().optional(),
+  criteria: external_exports.array(CriterionSlotSchema).optional(),
+  evidence_status: external_exports.string().optional()
+}).passthrough();
+var UnknownGateSlotSchema = external_exports.record(external_exports.unknown());
+
 // src/tools/decomposition.ts
 async function listSubtasks(client, projectId, args) {
   const rootId = await resolveTaskId(client, projectId, args.task_id);

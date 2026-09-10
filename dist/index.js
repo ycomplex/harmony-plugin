@@ -41594,6 +41594,433 @@ async function manageDependencies(client, projectId, userId, args) {
   return result;
 }
 
+// src/tools/gate-slots.ts
+var GATE_SLOT_FIELD_KEY = "gate_slots";
+var ExcludedSlotSchema = external_exports.object({
+  item: external_exports.string(),
+  lands: external_exports.string()
+}).passthrough();
+var PullRequestSlotSchema = external_exports.object({
+  repo: external_exports.string().optional(),
+  ref: external_exports.string().optional(),
+  url: external_exports.string().optional(),
+  title: external_exports.string().optional()
+}).passthrough();
+var CriterionSlotSchema = external_exports.object({
+  ac_id: external_exports.string().optional(),
+  text: external_exports.string().optional(),
+  how: external_exports.string().optional(),
+  disposition: external_exports.string().optional()
+}).passthrough();
+var ClarifySlotSchema = external_exports.object({
+  solving: external_exports.string().optional(),
+  in_scope: external_exports.array(external_exports.string()).optional(),
+  not_solving: external_exports.array(ExcludedSlotSchema).optional()
+}).passthrough();
+var ReleaseSlotSchema = external_exports.object({
+  shipped: external_exports.string().optional(),
+  lands_in: external_exports.string().optional(),
+  prs: external_exports.array(PullRequestSlotSchema).optional(),
+  unproven: external_exports.array(external_exports.string()).optional(),
+  evidence_status: external_exports.string().optional()
+}).passthrough();
+var VerifySlotSchema = external_exports.object({
+  environment: external_exports.string().optional(),
+  criteria: external_exports.array(CriterionSlotSchema).optional(),
+  evidence_status: external_exports.string().optional()
+}).passthrough();
+var UnknownGateSlotSchema = external_exports.record(external_exports.unknown());
+var GATE_SLOT_SCHEMAS = {
+  clarify: ClarifySlotSchema,
+  release: ReleaseSlotSchema,
+  verify: VerifySlotSchema
+};
+function isGateSlotName(gate) {
+  return GATE_SLOT_NAMES.includes(gate);
+}
+function parseGateSlotContent(gate, content) {
+  const schema = isGateSlotName(gate) ? GATE_SLOT_SCHEMAS[gate] : UnknownGateSlotSchema;
+  const parsed = schema.safeParse(content);
+  if (!parsed.success) {
+    const detail = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
+    throw new Error(`gate_slot content for gate '${gate}' does not match the pinned shape \u2014 ${detail}`);
+  }
+  return parsed.data;
+}
+function pinBuildPrs(fieldValues) {
+  const refs = readBuildPrReferences(fieldValues);
+  const out = [];
+  for (const ref of refs) {
+    const label = typeof ref.pr_number === "number" ? `#${ref.pr_number}` : ref.branch ?? ref.pr_url;
+    if (!ref.pr_url && !label) continue;
+    const pr = { repo: ref.key };
+    if (label) pr.ref = label;
+    if (ref.pr_url) pr.url = ref.pr_url;
+    out.push(pr);
+  }
+  return out;
+}
+var isPlainObject4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function isMissingGateSlotRpc(err) {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42P01" || code === "42883" || code === "PGRST202" || code === "PGRST205") return true;
+  const msg = err.message ?? "";
+  return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
+}
+function ratifiedAtStamp(now) {
+  return `${now.toISOString().slice(0, 19)}Z`;
+}
+async function writeGateSlot(client, args) {
+  const gate = (args.gate ?? "").trim();
+  if (!gate) throw new Error("gate_slot write names no gate \u2014 the slot is keyed by the gate that ratified it");
+  if (!isPlainObject4(args.content)) {
+    throw new Error(
+      `gate_slot write for gate '${gate}' must carry a content OBJECT (an EMPTY object is valid \u2014 it means the gate ratified an empty answer)`
+    );
+  }
+  const content = parseGateSlotContent(gate, args.content);
+  const keys = Object.keys(content);
+  if (args.target.via === "acceptance-event") {
+    const { data, error: error2 } = await client.rpc("consume_gate_slot_write", {
+      _event_id: args.target.event_id,
+      _external_ref: args.target.external_ref,
+      _gate: gate,
+      // ONLY the content. `ratified_by` / `ratified_at` are stamped INSIDE the function, from `_gate`
+      // and `now()` — sending them would let a replayed payload back-date a slot.
+      _content: content
+    });
+    if (error2) {
+      if (isMissingGateSlotRpc(error2)) return { gate, applied: false, keys, substrate_absent: true };
+      throw new Error(error2.message);
+    }
+    const row = data ?? {};
+    return { gate, applied: row.applied === true, keys, result_id: row.result_id };
+  }
+  const taskId = args.target.task_id;
+  const { data: taskRow, error: readErr } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
+  if (readErr) throw new Error(readErr.message);
+  if (!taskRow) throw new Error(`gate_slot write for gate '${gate}' targets task ${taskId}, which does not exist`);
+  const fieldValues = isPlainObject4(taskRow.field_values) ? taskRow.field_values : {};
+  const existingSlots = isPlainObject4(fieldValues[GATE_SLOT_FIELD_KEY]) ? fieldValues[GATE_SLOT_FIELD_KEY] : {};
+  const ratified_at = ratifiedAtStamp(/* @__PURE__ */ new Date());
+  const nextFieldValues = {
+    ...fieldValues,
+    [GATE_SLOT_FIELD_KEY]: {
+      ...existingSlots,
+      [gate]: { content, ratified_by: gate, ratified_at }
+    }
+  };
+  const { error: writeErr } = await client.from("tasks").update({ field_values: nextFieldValues }).eq("id", taskId);
+  if (writeErr) throw new Error(writeErr.message);
+  return { gate, applied: true, keys, result_id: taskId };
+}
+async function writeGateSlotToolHandler(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const gate = (args.gate ?? "").trim();
+  if (!gate) throw new Error("gate is required");
+  if (!isGateSlotName(gate)) {
+    throw new Error(`gate must be one of: ${GATE_SLOT_NAMES.join(", ")} \u2014 got '${gate}'`);
+  }
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const reason = REASON_FOR_GATE_SLOT[gate];
+  const { data: briefRows, error: briefErr } = await client.from("briefs").select("id, doc, reason, created_at").eq("task_id", taskId).eq("reason", reason).order("created_at", { ascending: false }).limit(1);
+  if (briefErr) throw new Error(briefErr.message);
+  const brief = (briefRows ?? [])[0];
+  if (!brief) {
+    return { task_id: taskId, gate, written: false, reason: `no ${reason} brief exists on this ticket \u2014 nothing was ratified at the ${gate} gate` };
+  }
+  const doc = brief.doc;
+  const projected = doc ? renderSlot(doc, gate) : null;
+  if (!projected) {
+    return {
+      task_id: taskId,
+      gate,
+      written: false,
+      brief_id: brief.id,
+      reason: `the ${reason} brief carries no ${gate} frame \u2014 there is nothing ratified in a shape the ticket's section can lay out`
+    };
+  }
+  const content = { ...projected };
+  if (gate === "release") {
+    const { data: taskRow } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
+    const prs = pinBuildPrs(taskRow?.field_values);
+    content.prs = prs;
+  }
+  const result = await writeGateSlot(client, { gate, content, target: { via: "task", task_id: taskId } });
+  return { task_id: taskId, gate, written: true, applied: result.applied, keys: result.keys, brief_id: brief.id };
+}
+var writeGateSlotTool = {
+  name: "write_gate_slot",
+  description: `B-867 \u2014 land a gate's ratified brief content on the ticket as a DURABLE section, visible forever after (stored in tasks.field_values.gate_slots, one sub-key per gate, latest-accepted-per-gate). Call it IMMEDIATELY AFTER the accept at the release gate (gate: "release") and the verify gate (gate: "verify") \u2014 those two accepts create no acceptance event, so their slot cannot ride a brief payload the way clarify's does; this tool is how they reach the same write. Clarify normally needs no call at all: its slot rides its accept payload automatically. The content is DERIVED, never passed in: this reads the gate's own brief and projects its ratified doc (the same projection the brief itself renders), so the section and the brief cannot disagree \u2014 there is deliberately no way to hand-author it. Requires the gate's brief to carry a \`doc.frame\` of the matching kind (B-876); a brief without one returns { written: false, reason } and changes nothing, rather than failing the accept. Idempotent: re-running replaces THIS gate's slot and touches no other gate's, and never any other field_values key (build_pr / work_branch are safe). Returns { written, applied, keys, reason? }.`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 867), or visual ID (e.g., B-867)" },
+      gate: {
+        type: "string",
+        enum: ["clarify", "release", "verify"],
+        description: "Which gate's section to land \u2014 'release' after the release accept, 'verify' after the verify accept."
+      }
+    },
+    required: ["task_id", "gate"]
+  }
+};
+
+// src/tools/acceptance-events.ts
+function isMissingRelationOrFunction(err) {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42P01" || code === "42883" || code === "PGRST202" || code === "PGRST205") return true;
+  const msg = err.message ?? "";
+  return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
+}
+function isShippedMilestoneGuardError(error2) {
+  if (!error2) return false;
+  if (error2.code !== "23514") return false;
+  const msg = error2.message ?? "";
+  return /was shipped/i.test(msg) && /cannot be assigned to it/i.test(msg);
+}
+var ShippedMilestoneGuardError = class extends Error {
+  constructor(guardMessage) {
+    super(guardMessage);
+    this.name = "ShippedMilestoneGuardError";
+  }
+};
+async function probeAcceptanceEventSubstrate(client) {
+  const { error: error2 } = await client.from("pending_acceptance_events").select("id").limit(0);
+  if (!error2) return "present";
+  if (isMissingRelationOrFunction(error2)) return "absent";
+  throw new Error(`acceptance-event substrate probe failed (not a schema-absence error \u2014 do not degrade): ${error2.message}`);
+}
+async function getPendingAcceptanceEvent(client, projectId, taskId) {
+  const resolvedId = await resolveTaskId(client, projectId, taskId);
+  const { data: task, error: taskErr } = await client.from("tasks").select("pending_acceptance_event_id").eq("id", resolvedId).maybeSingle();
+  if (taskErr) {
+    if (isMissingRelationOrFunction(taskErr)) return null;
+    throw new Error(taskErr.message);
+  }
+  const eventId = task?.pending_acceptance_event_id;
+  if (!eventId) return null;
+  const { data: event, error: eventErr } = await client.from("pending_acceptance_events").select("id, task_id, brief_id, reason, payload, pending_activity, status").eq("id", eventId).maybeSingle();
+  if (eventErr) {
+    if (isMissingRelationOrFunction(eventErr)) return null;
+    throw new Error(eventErr.message);
+  }
+  return event ?? null;
+}
+var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add", "knowledge_entry_content", "gate_slot"]);
+function rawItemsOf(payload) {
+  const withNestedPayload = payload;
+  if (Array.isArray(withNestedPayload?.payload)) return withNestedPayload.payload;
+  if (Array.isArray(payload)) return payload;
+  const withItems = payload;
+  return Array.isArray(withItems?.items) ? withItems.items : [];
+}
+function itemsOf(payload) {
+  return rawItemsOf(payload);
+}
+function classifyPayload(payload) {
+  const raw = rawItemsOf(payload);
+  if (raw.length === 0) return "empty";
+  const allStructured = raw.every(
+    (i) => typeof i === "object" && i !== null && KNOWN_WRITE_KINDS.has(i.write_kind)
+  );
+  return allStructured ? "structured" : "unrecognized";
+}
+var WriteKindSubstrateAbsentError = class extends Error {
+  constructor(writeKind) {
+    super(`substrate absent for write_kind '${writeKind}' (RPC not found \u2014 B-383 pre-migration window)`);
+    this.writeKind = writeKind;
+  }
+  writeKind;
+};
+async function applyAcceptanceEventPayload(client, event) {
+  const items = itemsOf(event.payload);
+  const order = [
+    "child_ticket",
+    "checklist_item",
+    "acceptance_criterion",
+    "ac_transfer",
+    "label_add",
+    // B-867 sits HERE — after every concrete materialization, before the entry promotion. Same reasoning
+    // as the line below, one notch weaker: the slot is the ticket's DISPLAYED record of what this accept
+    // did, so a payload that fails partway must not leave a section on the ticket announcing writes that
+    // never landed. It stays AHEAD of the entry promotion because a slot is a projection of the brief,
+    // repaired by the next accept (latest-accepted-per-gate), whereas a wrongly-promoted entry has
+    // already superseded a real one.
+    "gate_slot",
+    // B-843 LAST, on purpose: it promotes the gate's knowledge entry and supersedes the previous round's.
+    // Running it after every AC/child/checklist write means a payload that fails partway leaves the
+    // knowledge base untouched rather than promoting a decision whose materialization never landed.
+    "knowledge_entry_content"
+  ];
+  const ordered = order.flatMap((kind) => items.filter((i) => i.write_kind === kind));
+  let applied = 0;
+  let skipped = 0;
+  const byKind = {};
+  try {
+    for (const item of ordered) {
+      if (!item.ref) throw new Error(`payload item of write_kind '${item.write_kind}' is missing its stable 'ref' \u2014 cannot derive an idempotent external_ref`);
+      let result = null;
+      if (item.write_kind === "acceptance_criterion") {
+        if (!item.content) throw new Error(`acceptance_criterion item '${item.ref}' is missing content`);
+        const { data, error: error2 } = await client.rpc("consume_ac_add_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _content: item.content
+        });
+        if (error2) throw new Error(error2.message);
+        result = data;
+      } else if (item.write_kind === "child_ticket") {
+        if (!item.title) throw new Error(`child_ticket item '${item.ref}' is missing title`);
+        const { data, error: error2 } = await client.rpc("consume_child_mint_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _title: item.title,
+          _description: item.description ?? null
+        });
+        if (error2) {
+          if (isShippedMilestoneGuardError(error2)) throw new ShippedMilestoneGuardError(error2.message);
+          throw new Error(error2.message);
+        }
+        result = data;
+      } else if (item.write_kind === "checklist_item") {
+        if (!item.title) throw new Error(`checklist_item item '${item.ref}' is missing title`);
+        const { data, error: error2 } = await client.rpc("consume_checklist_item_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _title: item.title
+        });
+        if (error2) throw new Error(error2.message);
+        result = data;
+      } else if (item.write_kind === "ac_transfer") {
+        if (!item.content) throw new Error(`ac_transfer item '${item.ref}' is missing content`);
+        if (!item.target_child_ref) throw new Error(`ac_transfer item '${item.ref}' is missing target_child_ref`);
+        const { data, error: error2 } = await client.rpc("consume_ac_transfer_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _content: item.content,
+          _target_child_external_ref: item.target_child_ref,
+          _from_ac_id: item.from_ac_id ?? null
+        });
+        if (error2) throw new Error(error2.message);
+        result = data;
+      } else if (item.write_kind === "knowledge_entry_content") {
+        if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content \u2014 the payload CARRIES the entry text; it is never synthesized from doc fields`);
+        const { data, error: error2 } = await client.rpc("consume_knowledge_entry_content_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _content: item.content,
+          _entry_id: item.entry_id ?? null
+        });
+        if (error2) {
+          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("knowledge_entry_content");
+          throw new Error(error2.message);
+        }
+        result = data;
+      } else if (item.write_kind === "gate_slot") {
+        if (!item.gate?.trim()) throw new Error(`gate_slot item '${item.ref}' names no gate \u2014 the slot is keyed by the gate that ratified it`);
+        if (!item.slot_content || typeof item.slot_content !== "object" || Array.isArray(item.slot_content)) {
+          throw new Error(`gate_slot item '${item.ref}' for gate '${item.gate}' carries no slot_content object \u2014 an EMPTY object is valid (the gate ratified an empty answer), an absent one is not`);
+        }
+        const slotResult = await writeGateSlot(client, {
+          gate: item.gate,
+          content: item.slot_content,
+          target: { via: "acceptance-event", event_id: event.id, external_ref: item.ref }
+        });
+        if (slotResult.substrate_absent) throw new WriteKindSubstrateAbsentError("gate_slot");
+        result = { applied: slotResult.applied };
+      } else if (item.write_kind === "label_add") {
+        if (item.label_name === "") throw new Error(`label_add item '${item.ref}' has an empty label_name`);
+        const labelName = item.label_name ?? "decision-only";
+        const { data, error: error2 } = await client.rpc("consume_label_add_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _label_name: labelName
+        });
+        if (error2) {
+          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("label_add");
+          throw new Error(error2.message);
+        }
+        result = data;
+      }
+      if (result?.applied) {
+        applied += 1;
+        byKind[item.write_kind] = (byKind[item.write_kind] ?? 0) + 1;
+      } else {
+        skipped += 1;
+      }
+    }
+  } catch (err) {
+    if (err instanceof WriteKindSubstrateAbsentError) {
+      return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind, substrate_absent_for: err.writeKind };
+    }
+    throw err;
+  }
+  return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind };
+}
+async function consumeAcceptanceEvent(client, eventId) {
+  const { data, error: error2 } = await client.rpc("consume_acceptance_event", { _event_id: eventId });
+  if (error2) throw new Error(error2.message);
+  return data;
+}
+async function consumePendingAcceptanceEvent(client, projectId, taskId) {
+  const probe = await probeAcceptanceEventSubstrate(client);
+  if (probe === "absent") return { status: "substrate-absent" };
+  const event = await getPendingAcceptanceEvent(client, projectId, taskId);
+  if (!event) return { status: "none" };
+  if (event.status === "consumed") return { status: "none" };
+  if (classifyPayload(event.payload) === "unrecognized") {
+    return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
+  }
+  const applyResult = await applyAcceptanceEventPayload(client, event);
+  if (applyResult.substrate_absent_for) {
+    return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
+  }
+  const consumeResult = await consumeAcceptanceEvent(client, event.id);
+  return {
+    status: "consumed",
+    event_id: event.id,
+    applied: applyResult.applied,
+    skipped_already_done: applyResult.skipped_already_done,
+    by_write_kind: applyResult.by_write_kind,
+    workflow_state: consumeResult.workflow_state,
+    reason: event.reason,
+    brief_id: event.brief_id
+  };
+}
+var consumePendingAcceptanceEventTool = {
+  name: "consume_pending_acceptance_event",
+  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ticket section) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). B-888: the consumed result ALSO carries `reason` and `brief_id`, surfaced directly from the pending event row (no second `list_activity` round-trip needed) \u2014 when `reason === "clarification-draft"` this consume IS the clarification\'s AC-filing pass, and the caller (harmony-conduct \xA71c) MUST write the `AC-FILING-PASS brief_id=<brief_id> filed=<by_write_kind.acceptance_criterion ?? 0>` marker right here \u2014 its absence is what let the design gate\'s \xA72b self-heal conclude filing never ran and re-file the same acceptance criteria a second time. { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)" }
+    },
+    required: ["task_id"]
+  }
+};
+async function consumePendingAcceptanceEventToolHandler(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  return consumePendingAcceptanceEvent(client, projectId, args.task_id);
+}
+var consumeAcceptanceEventTool = {
+  name: "consume_acceptance_event",
+  description: "B-797 \u2014 the FINAL commit for a pending acceptance event: marks it consumed, clears tasks.pending_acceptance_event_id, and applies the brief's originally-deferred workflow-state advance (if any), atomically. Call this DIRECTLY (skipping consume_pending_acceptance_event's payload-apply step) in the SAME-SESSION accept path: the owning gate skill just finished its OWN materialization (e.g. clarify's manage_acceptance_criteria call, decompose's manage_subtasks call) as it always did before B-797, so there is nothing left to apply \u2014 only the deferred advance to commit. `resolve_brief`'s response carries `pending_acceptance_event_id`; when non-null, call this with it right after resolving. Idempotent \u2014 a second call on an already-consumed event is a safe no-op.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      event_id: { type: "string", description: "The pending acceptance event's id (from resolve_brief's pending_acceptance_event_id, or get task/get_pending_acceptance_event)." }
+    },
+    required: ["event_id"]
+  }
+};
+async function consumeAcceptanceEventToolHandler(client, args) {
+  if (!args.event_id) throw new Error("event_id is required");
+  return consumeAcceptanceEvent(client, args.event_id);
+}
+
 // src/tools/decomposition.ts
 var listSubtasksTool = {
   name: "list_subtasks",
@@ -41692,7 +42119,7 @@ async function manageSubtasks(client, projectId, userId, args) {
     created: [],
     detached: []
   };
-  const { data: parent, error: parentErr } = await client.from("tasks").select("project_id, epic_id").eq("id", parentId).single();
+  const { data: parent, error: parentErr } = await client.from("tasks").select("project_id, epic_id, milestone_id").eq("id", parentId).single();
   if (parentErr) throw parentErr;
   if (args.add && args.add.length > 0) {
     const childIds = await Promise.all(args.add.map((id) => resolveTaskId(client, projectId, id)));
@@ -41715,12 +42142,18 @@ async function manageSubtasks(client, projectId, userId, args) {
       project_id: input.project_id ?? parent.project_id,
       epic_id: input.epic_id ?? parent.epic_id,
       cycle_id: input.cycle_id,
-      milestone_id: input.milestone_id,
+      // B-975: inherit the parent's milestone_id unless the caller set one explicitly on this child.
+      // An unmilestoned parent yields (parent as any)!.milestone_id === null/undefined — an unmilestoned
+      // child, unchanged from today's behavior.
+      milestone_id: input.milestone_id ?? parent.milestone_id,
       parent_task_id: parentId,
       created_by: userId
     }));
     const { data, error: error2 } = await client.from("tasks").insert(rows).select("id, task_number, title, status, project_id, parent_task_id");
-    if (error2) throw error2;
+    if (error2) {
+      if (isShippedMilestoneGuardError(error2)) throw new ShippedMilestoneGuardError(error2.message);
+      throw error2;
+    }
     result.created = data ?? [];
   }
   if (args.remove && args.remove.length > 0) {
@@ -42498,418 +42931,6 @@ var ackProjections = {
 function projectAck(toolName, result, args) {
   const projection = ackProjections[toolName];
   return projection ? projection(result, args) : result;
-}
-
-// src/tools/gate-slots.ts
-var GATE_SLOT_FIELD_KEY = "gate_slots";
-var ExcludedSlotSchema = external_exports.object({
-  item: external_exports.string(),
-  lands: external_exports.string()
-}).passthrough();
-var PullRequestSlotSchema = external_exports.object({
-  repo: external_exports.string().optional(),
-  ref: external_exports.string().optional(),
-  url: external_exports.string().optional(),
-  title: external_exports.string().optional()
-}).passthrough();
-var CriterionSlotSchema = external_exports.object({
-  ac_id: external_exports.string().optional(),
-  text: external_exports.string().optional(),
-  how: external_exports.string().optional(),
-  disposition: external_exports.string().optional()
-}).passthrough();
-var ClarifySlotSchema = external_exports.object({
-  solving: external_exports.string().optional(),
-  in_scope: external_exports.array(external_exports.string()).optional(),
-  not_solving: external_exports.array(ExcludedSlotSchema).optional()
-}).passthrough();
-var ReleaseSlotSchema = external_exports.object({
-  shipped: external_exports.string().optional(),
-  lands_in: external_exports.string().optional(),
-  prs: external_exports.array(PullRequestSlotSchema).optional(),
-  unproven: external_exports.array(external_exports.string()).optional(),
-  evidence_status: external_exports.string().optional()
-}).passthrough();
-var VerifySlotSchema = external_exports.object({
-  environment: external_exports.string().optional(),
-  criteria: external_exports.array(CriterionSlotSchema).optional(),
-  evidence_status: external_exports.string().optional()
-}).passthrough();
-var UnknownGateSlotSchema = external_exports.record(external_exports.unknown());
-var GATE_SLOT_SCHEMAS = {
-  clarify: ClarifySlotSchema,
-  release: ReleaseSlotSchema,
-  verify: VerifySlotSchema
-};
-function isGateSlotName(gate) {
-  return GATE_SLOT_NAMES.includes(gate);
-}
-function parseGateSlotContent(gate, content) {
-  const schema = isGateSlotName(gate) ? GATE_SLOT_SCHEMAS[gate] : UnknownGateSlotSchema;
-  const parsed = schema.safeParse(content);
-  if (!parsed.success) {
-    const detail = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
-    throw new Error(`gate_slot content for gate '${gate}' does not match the pinned shape \u2014 ${detail}`);
-  }
-  return parsed.data;
-}
-function pinBuildPrs(fieldValues) {
-  const refs = readBuildPrReferences(fieldValues);
-  const out = [];
-  for (const ref of refs) {
-    const label = typeof ref.pr_number === "number" ? `#${ref.pr_number}` : ref.branch ?? ref.pr_url;
-    if (!ref.pr_url && !label) continue;
-    const pr = { repo: ref.key };
-    if (label) pr.ref = label;
-    if (ref.pr_url) pr.url = ref.pr_url;
-    out.push(pr);
-  }
-  return out;
-}
-var isPlainObject4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-function isMissingGateSlotRpc(err) {
-  if (!err) return false;
-  const code = err.code ?? "";
-  if (code === "42P01" || code === "42883" || code === "PGRST202" || code === "PGRST205") return true;
-  const msg = err.message ?? "";
-  return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
-}
-function ratifiedAtStamp(now) {
-  return `${now.toISOString().slice(0, 19)}Z`;
-}
-async function writeGateSlot(client, args) {
-  const gate = (args.gate ?? "").trim();
-  if (!gate) throw new Error("gate_slot write names no gate \u2014 the slot is keyed by the gate that ratified it");
-  if (!isPlainObject4(args.content)) {
-    throw new Error(
-      `gate_slot write for gate '${gate}' must carry a content OBJECT (an EMPTY object is valid \u2014 it means the gate ratified an empty answer)`
-    );
-  }
-  const content = parseGateSlotContent(gate, args.content);
-  const keys = Object.keys(content);
-  if (args.target.via === "acceptance-event") {
-    const { data, error: error2 } = await client.rpc("consume_gate_slot_write", {
-      _event_id: args.target.event_id,
-      _external_ref: args.target.external_ref,
-      _gate: gate,
-      // ONLY the content. `ratified_by` / `ratified_at` are stamped INSIDE the function, from `_gate`
-      // and `now()` — sending them would let a replayed payload back-date a slot.
-      _content: content
-    });
-    if (error2) {
-      if (isMissingGateSlotRpc(error2)) return { gate, applied: false, keys, substrate_absent: true };
-      throw new Error(error2.message);
-    }
-    const row = data ?? {};
-    return { gate, applied: row.applied === true, keys, result_id: row.result_id };
-  }
-  const taskId = args.target.task_id;
-  const { data: taskRow, error: readErr } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
-  if (readErr) throw new Error(readErr.message);
-  if (!taskRow) throw new Error(`gate_slot write for gate '${gate}' targets task ${taskId}, which does not exist`);
-  const fieldValues = isPlainObject4(taskRow.field_values) ? taskRow.field_values : {};
-  const existingSlots = isPlainObject4(fieldValues[GATE_SLOT_FIELD_KEY]) ? fieldValues[GATE_SLOT_FIELD_KEY] : {};
-  const ratified_at = ratifiedAtStamp(/* @__PURE__ */ new Date());
-  const nextFieldValues = {
-    ...fieldValues,
-    [GATE_SLOT_FIELD_KEY]: {
-      ...existingSlots,
-      [gate]: { content, ratified_by: gate, ratified_at }
-    }
-  };
-  const { error: writeErr } = await client.from("tasks").update({ field_values: nextFieldValues }).eq("id", taskId);
-  if (writeErr) throw new Error(writeErr.message);
-  return { gate, applied: true, keys, result_id: taskId };
-}
-async function writeGateSlotToolHandler(client, projectId, args) {
-  if (!args.task_id) throw new Error("task_id is required");
-  const gate = (args.gate ?? "").trim();
-  if (!gate) throw new Error("gate is required");
-  if (!isGateSlotName(gate)) {
-    throw new Error(`gate must be one of: ${GATE_SLOT_NAMES.join(", ")} \u2014 got '${gate}'`);
-  }
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
-  const reason = REASON_FOR_GATE_SLOT[gate];
-  const { data: briefRows, error: briefErr } = await client.from("briefs").select("id, doc, reason, created_at").eq("task_id", taskId).eq("reason", reason).order("created_at", { ascending: false }).limit(1);
-  if (briefErr) throw new Error(briefErr.message);
-  const brief = (briefRows ?? [])[0];
-  if (!brief) {
-    return { task_id: taskId, gate, written: false, reason: `no ${reason} brief exists on this ticket \u2014 nothing was ratified at the ${gate} gate` };
-  }
-  const doc = brief.doc;
-  const projected = doc ? renderSlot(doc, gate) : null;
-  if (!projected) {
-    return {
-      task_id: taskId,
-      gate,
-      written: false,
-      brief_id: brief.id,
-      reason: `the ${reason} brief carries no ${gate} frame \u2014 there is nothing ratified in a shape the ticket's section can lay out`
-    };
-  }
-  const content = { ...projected };
-  if (gate === "release") {
-    const { data: taskRow } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
-    const prs = pinBuildPrs(taskRow?.field_values);
-    content.prs = prs;
-  }
-  const result = await writeGateSlot(client, { gate, content, target: { via: "task", task_id: taskId } });
-  return { task_id: taskId, gate, written: true, applied: result.applied, keys: result.keys, brief_id: brief.id };
-}
-var writeGateSlotTool = {
-  name: "write_gate_slot",
-  description: `B-867 \u2014 land a gate's ratified brief content on the ticket as a DURABLE section, visible forever after (stored in tasks.field_values.gate_slots, one sub-key per gate, latest-accepted-per-gate). Call it IMMEDIATELY AFTER the accept at the release gate (gate: "release") and the verify gate (gate: "verify") \u2014 those two accepts create no acceptance event, so their slot cannot ride a brief payload the way clarify's does; this tool is how they reach the same write. Clarify normally needs no call at all: its slot rides its accept payload automatically. The content is DERIVED, never passed in: this reads the gate's own brief and projects its ratified doc (the same projection the brief itself renders), so the section and the brief cannot disagree \u2014 there is deliberately no way to hand-author it. Requires the gate's brief to carry a \`doc.frame\` of the matching kind (B-876); a brief without one returns { written: false, reason } and changes nothing, rather than failing the accept. Idempotent: re-running replaces THIS gate's slot and touches no other gate's, and never any other field_values key (build_pr / work_branch are safe). Returns { written, applied, keys, reason? }.`,
-  inputSchema: {
-    type: "object",
-    properties: {
-      task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 867), or visual ID (e.g., B-867)" },
-      gate: {
-        type: "string",
-        enum: ["clarify", "release", "verify"],
-        description: "Which gate's section to land \u2014 'release' after the release accept, 'verify' after the verify accept."
-      }
-    },
-    required: ["task_id", "gate"]
-  }
-};
-
-// src/tools/acceptance-events.ts
-function isMissingRelationOrFunction(err) {
-  if (!err) return false;
-  const code = err.code ?? "";
-  if (code === "42P01" || code === "42883" || code === "PGRST202" || code === "PGRST205") return true;
-  const msg = err.message ?? "";
-  return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
-}
-async function probeAcceptanceEventSubstrate(client) {
-  const { error: error2 } = await client.from("pending_acceptance_events").select("id").limit(0);
-  if (!error2) return "present";
-  if (isMissingRelationOrFunction(error2)) return "absent";
-  throw new Error(`acceptance-event substrate probe failed (not a schema-absence error \u2014 do not degrade): ${error2.message}`);
-}
-async function getPendingAcceptanceEvent(client, projectId, taskId) {
-  const resolvedId = await resolveTaskId(client, projectId, taskId);
-  const { data: task, error: taskErr } = await client.from("tasks").select("pending_acceptance_event_id").eq("id", resolvedId).maybeSingle();
-  if (taskErr) {
-    if (isMissingRelationOrFunction(taskErr)) return null;
-    throw new Error(taskErr.message);
-  }
-  const eventId = task?.pending_acceptance_event_id;
-  if (!eventId) return null;
-  const { data: event, error: eventErr } = await client.from("pending_acceptance_events").select("id, task_id, brief_id, reason, payload, pending_activity, status").eq("id", eventId).maybeSingle();
-  if (eventErr) {
-    if (isMissingRelationOrFunction(eventErr)) return null;
-    throw new Error(eventErr.message);
-  }
-  return event ?? null;
-}
-var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add", "knowledge_entry_content", "gate_slot"]);
-function rawItemsOf(payload) {
-  const withNestedPayload = payload;
-  if (Array.isArray(withNestedPayload?.payload)) return withNestedPayload.payload;
-  if (Array.isArray(payload)) return payload;
-  const withItems = payload;
-  return Array.isArray(withItems?.items) ? withItems.items : [];
-}
-function itemsOf(payload) {
-  return rawItemsOf(payload);
-}
-function classifyPayload(payload) {
-  const raw = rawItemsOf(payload);
-  if (raw.length === 0) return "empty";
-  const allStructured = raw.every(
-    (i) => typeof i === "object" && i !== null && KNOWN_WRITE_KINDS.has(i.write_kind)
-  );
-  return allStructured ? "structured" : "unrecognized";
-}
-var WriteKindSubstrateAbsentError = class extends Error {
-  constructor(writeKind) {
-    super(`substrate absent for write_kind '${writeKind}' (RPC not found \u2014 B-383 pre-migration window)`);
-    this.writeKind = writeKind;
-  }
-  writeKind;
-};
-async function applyAcceptanceEventPayload(client, event) {
-  const items = itemsOf(event.payload);
-  const order = [
-    "child_ticket",
-    "checklist_item",
-    "acceptance_criterion",
-    "ac_transfer",
-    "label_add",
-    // B-867 sits HERE — after every concrete materialization, before the entry promotion. Same reasoning
-    // as the line below, one notch weaker: the slot is the ticket's DISPLAYED record of what this accept
-    // did, so a payload that fails partway must not leave a section on the ticket announcing writes that
-    // never landed. It stays AHEAD of the entry promotion because a slot is a projection of the brief,
-    // repaired by the next accept (latest-accepted-per-gate), whereas a wrongly-promoted entry has
-    // already superseded a real one.
-    "gate_slot",
-    // B-843 LAST, on purpose: it promotes the gate's knowledge entry and supersedes the previous round's.
-    // Running it after every AC/child/checklist write means a payload that fails partway leaves the
-    // knowledge base untouched rather than promoting a decision whose materialization never landed.
-    "knowledge_entry_content"
-  ];
-  const ordered = order.flatMap((kind) => items.filter((i) => i.write_kind === kind));
-  let applied = 0;
-  let skipped = 0;
-  const byKind = {};
-  try {
-    for (const item of ordered) {
-      if (!item.ref) throw new Error(`payload item of write_kind '${item.write_kind}' is missing its stable 'ref' \u2014 cannot derive an idempotent external_ref`);
-      let result = null;
-      if (item.write_kind === "acceptance_criterion") {
-        if (!item.content) throw new Error(`acceptance_criterion item '${item.ref}' is missing content`);
-        const { data, error: error2 } = await client.rpc("consume_ac_add_write", {
-          _event_id: event.id,
-          _external_ref: item.ref,
-          _content: item.content
-        });
-        if (error2) throw new Error(error2.message);
-        result = data;
-      } else if (item.write_kind === "child_ticket") {
-        if (!item.title) throw new Error(`child_ticket item '${item.ref}' is missing title`);
-        const { data, error: error2 } = await client.rpc("consume_child_mint_write", {
-          _event_id: event.id,
-          _external_ref: item.ref,
-          _title: item.title,
-          _description: item.description ?? null
-        });
-        if (error2) throw new Error(error2.message);
-        result = data;
-      } else if (item.write_kind === "checklist_item") {
-        if (!item.title) throw new Error(`checklist_item item '${item.ref}' is missing title`);
-        const { data, error: error2 } = await client.rpc("consume_checklist_item_write", {
-          _event_id: event.id,
-          _external_ref: item.ref,
-          _title: item.title
-        });
-        if (error2) throw new Error(error2.message);
-        result = data;
-      } else if (item.write_kind === "ac_transfer") {
-        if (!item.content) throw new Error(`ac_transfer item '${item.ref}' is missing content`);
-        if (!item.target_child_ref) throw new Error(`ac_transfer item '${item.ref}' is missing target_child_ref`);
-        const { data, error: error2 } = await client.rpc("consume_ac_transfer_write", {
-          _event_id: event.id,
-          _external_ref: item.ref,
-          _content: item.content,
-          _target_child_external_ref: item.target_child_ref,
-          _from_ac_id: item.from_ac_id ?? null
-        });
-        if (error2) throw new Error(error2.message);
-        result = data;
-      } else if (item.write_kind === "knowledge_entry_content") {
-        if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content \u2014 the payload CARRIES the entry text; it is never synthesized from doc fields`);
-        const { data, error: error2 } = await client.rpc("consume_knowledge_entry_content_write", {
-          _event_id: event.id,
-          _external_ref: item.ref,
-          _content: item.content,
-          _entry_id: item.entry_id ?? null
-        });
-        if (error2) {
-          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("knowledge_entry_content");
-          throw new Error(error2.message);
-        }
-        result = data;
-      } else if (item.write_kind === "gate_slot") {
-        if (!item.gate?.trim()) throw new Error(`gate_slot item '${item.ref}' names no gate \u2014 the slot is keyed by the gate that ratified it`);
-        if (!item.slot_content || typeof item.slot_content !== "object" || Array.isArray(item.slot_content)) {
-          throw new Error(`gate_slot item '${item.ref}' for gate '${item.gate}' carries no slot_content object \u2014 an EMPTY object is valid (the gate ratified an empty answer), an absent one is not`);
-        }
-        const slotResult = await writeGateSlot(client, {
-          gate: item.gate,
-          content: item.slot_content,
-          target: { via: "acceptance-event", event_id: event.id, external_ref: item.ref }
-        });
-        if (slotResult.substrate_absent) throw new WriteKindSubstrateAbsentError("gate_slot");
-        result = { applied: slotResult.applied };
-      } else if (item.write_kind === "label_add") {
-        if (item.label_name === "") throw new Error(`label_add item '${item.ref}' has an empty label_name`);
-        const labelName = item.label_name ?? "decision-only";
-        const { data, error: error2 } = await client.rpc("consume_label_add_write", {
-          _event_id: event.id,
-          _external_ref: item.ref,
-          _label_name: labelName
-        });
-        if (error2) {
-          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("label_add");
-          throw new Error(error2.message);
-        }
-        result = data;
-      }
-      if (result?.applied) {
-        applied += 1;
-        byKind[item.write_kind] = (byKind[item.write_kind] ?? 0) + 1;
-      } else {
-        skipped += 1;
-      }
-    }
-  } catch (err) {
-    if (err instanceof WriteKindSubstrateAbsentError) {
-      return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind, substrate_absent_for: err.writeKind };
-    }
-    throw err;
-  }
-  return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind };
-}
-async function consumeAcceptanceEvent(client, eventId) {
-  const { data, error: error2 } = await client.rpc("consume_acceptance_event", { _event_id: eventId });
-  if (error2) throw new Error(error2.message);
-  return data;
-}
-async function consumePendingAcceptanceEvent(client, projectId, taskId) {
-  const probe = await probeAcceptanceEventSubstrate(client);
-  if (probe === "absent") return { status: "substrate-absent" };
-  const event = await getPendingAcceptanceEvent(client, projectId, taskId);
-  if (!event) return { status: "none" };
-  if (event.status === "consumed") return { status: "none" };
-  if (classifyPayload(event.payload) === "unrecognized") {
-    return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
-  }
-  const applyResult = await applyAcceptanceEventPayload(client, event);
-  if (applyResult.substrate_absent_for) {
-    return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
-  }
-  const consumeResult = await consumeAcceptanceEvent(client, event.id);
-  return {
-    status: "consumed",
-    event_id: event.id,
-    applied: applyResult.applied,
-    skipped_already_done: applyResult.skipped_already_done,
-    by_write_kind: applyResult.by_write_kind,
-    workflow_state: consumeResult.workflow_state,
-    reason: event.reason,
-    brief_id: event.brief_id
-  };
-}
-var consumePendingAcceptanceEventTool = {
-  name: "consume_pending_acceptance_event",
-  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ticket section) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). B-888: the consumed result ALSO carries `reason` and `brief_id`, surfaced directly from the pending event row (no second `list_activity` round-trip needed) \u2014 when `reason === "clarification-draft"` this consume IS the clarification\'s AC-filing pass, and the caller (harmony-conduct \xA71c) MUST write the `AC-FILING-PASS brief_id=<brief_id> filed=<by_write_kind.acceptance_criterion ?? 0>` marker right here \u2014 its absence is what let the design gate\'s \xA72b self-heal conclude filing never ran and re-file the same acceptance criteria a second time. { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
-  inputSchema: {
-    type: "object",
-    properties: {
-      task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)" }
-    },
-    required: ["task_id"]
-  }
-};
-async function consumePendingAcceptanceEventToolHandler(client, projectId, args) {
-  if (!args.task_id) throw new Error("task_id is required");
-  return consumePendingAcceptanceEvent(client, projectId, args.task_id);
-}
-var consumeAcceptanceEventTool = {
-  name: "consume_acceptance_event",
-  description: "B-797 \u2014 the FINAL commit for a pending acceptance event: marks it consumed, clears tasks.pending_acceptance_event_id, and applies the brief's originally-deferred workflow-state advance (if any), atomically. Call this DIRECTLY (skipping consume_pending_acceptance_event's payload-apply step) in the SAME-SESSION accept path: the owning gate skill just finished its OWN materialization (e.g. clarify's manage_acceptance_criteria call, decompose's manage_subtasks call) as it always did before B-797, so there is nothing left to apply \u2014 only the deferred advance to commit. `resolve_brief`'s response carries `pending_acceptance_event_id`; when non-null, call this with it right after resolving. Idempotent \u2014 a second call on an already-consumed event is a safe no-op.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      event_id: { type: "string", description: "The pending acceptance event's id (from resolve_brief's pending_acceptance_event_id, or get task/get_pending_acceptance_event)." }
-    },
-    required: ["event_id"]
-  }
-};
-async function consumeAcceptanceEventToolHandler(client, args) {
-  if (!args.event_id) throw new Error("event_id is required");
-  return consumeAcceptanceEvent(client, args.event_id);
 }
 
 // src/tools/leg-output-record.ts
