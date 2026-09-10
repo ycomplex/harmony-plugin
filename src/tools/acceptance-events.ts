@@ -144,6 +144,36 @@ function isMissingRelationOrFunction(err: { message?: string; code?: string } | 
   return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
 }
 
+/** B-975 — the b847 shipped-milestone guard trigger's refusal (`tasks_guard_shipped_milestone`,
+ *  migration `20260902145707_b847_shipped_milestone_guard.sql`): Postgres raises `check_violation`
+ *  (ERRCODE 23514) with a message that names the shipped milestone, when it shipped, and states the
+ *  close-time ejection is a one-shot that will not run again. This is the SAME class of error the
+ *  decompose accept-path can now hit on BOTH write paths (the in-process `manageSubtasks` insert, and
+ *  this module's `consume_child_mint_write` RPC call below) once a child inherits its parent's
+ *  milestone_id — a parent whose milestone has already shipped must never be silently created
+ *  unmilestoned and must never surface as an opaque insert/RPC failure. Matches on the Postgres code
+ *  PLUS message text (not code alone) so an unrelated 23514 from some other constraint is never
+ *  misclassified as this guard. */
+export function isShippedMilestoneGuardError(error: { message?: string; code?: string } | null | undefined): boolean {
+  if (!error) return false;
+  if (error.code !== '23514') return false;
+  const msg = error.message ?? '';
+  return /was shipped/i.test(msg) && /cannot be assigned to it/i.test(msg);
+}
+
+/** B-975 — typed rethrow of a b847 shipped-milestone guard refusal, carrying the guard's OWN message
+ *  (`error.message`, verbatim — already names the milestone, when it shipped, and the one-shot-ejection
+ *  caveat) rather than a generic wrapped Error. Detecting this BEFORE any `new Error(error.message)`
+ *  wrap matters only insofar as `.message` survives either way here — what a generic Error would NOT
+ *  preserve is the caller's ability to `instanceof`-detect this specific, expected refusal (vs. every
+ *  other RPC failure) and route it to a worker-question instead of an ordinary tool-failure report. */
+export class ShippedMilestoneGuardError extends Error {
+  constructor(guardMessage: string) {
+    super(guardMessage);
+    this.name = 'ShippedMilestoneGuardError';
+  }
+}
+
 export type SubstrateProbeResult = 'present' | 'absent';
 
 /** PROBE 3 — the absent-substrate probe. A cheap, side-effect-free read against `pending_acceptance_events`.
@@ -317,7 +347,17 @@ export async function applyAcceptanceEventPayload(
         const { data, error } = await client.rpc('consume_child_mint_write', {
           _event_id: event.id, _external_ref: item.ref, _title: item.title, _description: item.description ?? null,
         });
-        if (error) throw new Error(error.message);
+        if (error) {
+          // B-975: the shipped-milestone guard detector MUST run before the generic wrap below (which
+          // drops `.code`) — this is the only place in this branch a typed error can still be told apart
+          // from every other consume_child_mint_write failure once RLS-not-a-column-error `.message`
+          // wrapping happens. A guard refusal here means the RPC's INSERT (writing milestone_id from the
+          // parent, once the migration lands) hit a parent whose milestone has already shipped: no child
+          // is created (the RPC's write is all-or-nothing), and this event's writes-so-far already
+          // committed (per-write-kind ledger) stay applied — this item alone is the one left pending.
+          if (isShippedMilestoneGuardError(error)) throw new ShippedMilestoneGuardError(error.message);
+          throw new Error(error.message);
+        }
         result = data as { applied?: boolean };
       } else if (item.write_kind === 'checklist_item') {
         if (!item.title) throw new Error(`checklist_item item '${item.ref}' is missing title`);
