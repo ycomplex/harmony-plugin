@@ -28877,6 +28877,54 @@ async function resolveTaskIds(client, projectId, inputs) {
   return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
 }
 
+// src/tools/text-normalize.ts
+var ENTITY_MAP = {
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&quot;": '"',
+  "&#39;": "'"
+};
+var ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/g;
+var HAS_ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/;
+function splitCodeSpans(text) {
+  const segments = [];
+  let i = 0;
+  let plainStart = 0;
+  while (i < text.length) {
+    if (text.startsWith("```", i)) {
+      const close = text.indexOf("```", i + 3);
+      const codeEnd = close === -1 ? text.length : close + 3;
+      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
+      segments.push({ code: true, text: text.slice(i, codeEnd) });
+      i = codeEnd;
+      plainStart = i;
+      continue;
+    }
+    if (text[i] === "`") {
+      const close = text.indexOf("`", i + 1);
+      if (close === -1) {
+        i += 1;
+        continue;
+      }
+      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
+      segments.push({ code: true, text: text.slice(i, close + 1) });
+      i = close + 1;
+      plainStart = i;
+      continue;
+    }
+    i += 1;
+  }
+  if (plainStart < text.length) segments.push({ code: false, text: text.slice(plainStart) });
+  return segments;
+}
+function normalizeHtmlEntities(text) {
+  if (!text || !HAS_ENTITY_PATTERN.test(text)) return text;
+  return splitCodeSpans(text).map(
+    (seg) => seg.code ? seg.text : seg.text.replace(ENTITY_PATTERN, (m) => ENTITY_MAP[m] ?? m)
+  ).join("");
+}
+
 // src/tools/members.ts
 async function listMembers(client, projectId) {
   const { data: project, error: projError } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
@@ -29935,12 +29983,12 @@ async function createTask(client, projectId, userId, args) {
   const nextPosition = (existing?.[0]?.position ?? -1) + 1;
   const { data, error } = await client.from("tasks").insert({
     project_id: projectId,
-    title: args.title,
+    title: normalizeHtmlEntities(args.title),
     status,
     priority: args.priority ?? "medium",
     assignee_id: assigneeId,
     epic_id: epicId,
-    description: args.description?.replace(/\\n/g, "\n") ?? null,
+    description: args.description != null ? normalizeHtmlEntities(args.description.replace(/\\n/g, "\n")) : null,
     due_date: args.due_date ?? null,
     field_values: args.field_values ?? {},
     position: nextPosition,
@@ -29972,8 +30020,11 @@ async function updateTask(client, projectId, args) {
   if (updates.subsumed_by_task_id !== void 0) {
     updates.subsumed_by_task_id = updates.subsumed_by_task_id === null ? null : await resolveTaskId(client, projectId, updates.subsumed_by_task_id);
   }
+  if (typeof updates.title === "string") {
+    updates.title = normalizeHtmlEntities(updates.title);
+  }
   if (typeof updates.description === "string") {
-    updates.description = updates.description.replace(/\\n/g, "\n");
+    updates.description = normalizeHtmlEntities(updates.description.replace(/\\n/g, "\n"));
   }
   const payload = {};
   for (const [k, v] of Object.entries(updates)) {
@@ -30050,11 +30101,11 @@ async function bulkCreateTasks(client, projectId, userId, args) {
     const parent = parentTaskId ? parentMeta.get(parentTaskId) : void 0;
     return {
       project_id: projectId,
-      title: task.title,
+      title: normalizeHtmlEntities(task.title),
       status,
       priority: task.priority ?? "medium",
       epic_id: task.epic_id ?? (parent && parent.project_id === projectId ? parent.epic_id : null) ?? null,
-      description: task.description?.replace(/\\n/g, "\n") ?? null,
+      description: task.description != null ? normalizeHtmlEntities(task.description.replace(/\\n/g, "\n")) : null,
       due_date: task.due_date ?? null,
       field_values: task.field_values ?? {},
       position: pos,
@@ -30468,7 +30519,7 @@ async function addComment(client, projectId, userId, args) {
   const { data, error } = await client.from("task_comments").insert({
     task_id: taskId,
     user_id: userId,
-    content: args.content.replace(/\\n/g, "\n")
+    content: normalizeHtmlEntities(args.content.replace(/\\n/g, "\n"))
   }).select().single();
   if (error) throw error;
   return data;
@@ -31637,8 +31688,8 @@ async function createKnowledgeEntry(client, projectId, userId, args) {
   const record = {
     workspace_id: workspaceId,
     project_id: projectId,
-    title: args.title.trim(),
-    content: args.content ?? "",
+    title: normalizeHtmlEntities(args.title.trim()),
+    content: normalizeHtmlEntities(args.content ?? ""),
     type: args.type,
     status: args.status !== void 0 ? toLegacyStatus(args.status) : "draft",
     created_by: userId
@@ -31670,8 +31721,8 @@ async function updateKnowledgeEntry(client, projectId, args) {
   }
   const workspaceId = await getWorkspaceId(client, projectId);
   const updates = {};
-  if (args.new_title !== void 0) updates.title = args.new_title.trim();
-  if (args.content !== void 0) updates.content = args.content;
+  if (args.new_title !== void 0) updates.title = normalizeHtmlEntities(args.new_title.trim());
+  if (args.content !== void 0) updates.content = normalizeHtmlEntities(args.content);
   if (args.type !== void 0) updates.type = args.type;
   if (args.status !== void 0) updates.status = toBaseStatus(args.status);
   if (args.tags !== void 0) updates.tags = args.tags;
