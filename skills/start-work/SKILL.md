@@ -247,6 +247,12 @@ build subagent (context-thinning; worktree per B-628) — WHICH subagent depends
 - **Absent, no marker** (every human machine) → today's behavior, unchanged: the ordinary ad-hoc build
   subagent. The bypass agent never lands on a human machine (B-719 design: container-only).
 
+**Consult the project's declared build-isolation preconditions (B-991) — AFTER the worktree exists, BEFORE spawning the build subagent.** Check for `.harmony/project.yml` at the target repo's root (the same root the worktree was created inside, per this repo's own B-628 isolation rule). If it is absent, skip this step entirely — no manifest is today's floor, unchanged. If present, run:
+```bash
+harmony gates run build.before_pr
+```
+from inside the repo. This prints the manifest's `preconditions` list (declared data the project has written down for exactly this situation — worktree-isolation gotchas, env-file quirks, and the like — NEVER executed by the CLI itself) to stdout, then runs any `build.before_pr` `run:` steps the manifest declares. Fold the printed preconditions verbatim into the build subagent's prompt, ahead of the task itself, so it consults the project's own declared knowledge instead of relying on memory of hand-copied CLAUDE.md prose. A non-zero exit (a malformed manifest, or a declared step that failed) is worth a line in your own turn, but does not by itself block delegation — a manifest problem is the project's own declaration failing to parse, not a build precondition.
+
 **Spawn the build subagent FOREGROUND — `run_in_background: false` — ALWAYS (B-825).** This applies to
 BOTH branches above: the `harmony-build` named delegation and the ordinary ad-hoc subagent. The harness
 backgrounds subagents by default, and in a headless one-shot leg that default plus wait-for-notification

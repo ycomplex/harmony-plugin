@@ -454,6 +454,23 @@ not merge.)
 
 ### O2. Run the merge + deploy, THEN advance to Deployed
 
+**Release-prep lookup (B-991) — run FIRST, before the multi-PR shape guard below, before any merge.**
+The release-prep steps a repo needs before its PR merges (harmony-plugin's own: bump
+`.claude-plugin/plugin.json`'s version, `npm run build`, `npm run verify:dist`) are a project-declared
+concern, not hand-copied prose repeated at every gate that needs them. Check the repo the PR being
+merged lives in for `.harmony/project.yml`:
+
+- **Present** → run `harmony gates run release.before_merge` from inside that repo. This reads the
+  manifest's `release.before_merge` steps and runs them (for harmony-plugin today: `npm run build` then
+  `npm run verify:dist`), landing a `finish-work` evidence entry on the ticket when it actually runs
+  steps. A non-zero exit is a real release-readiness failure — surface it (a comment naming the failing
+  step) and do NOT proceed to merge; this is a genuine gate, not a formality.
+- **Absent, or present but declaring nothing for `release.before_merge`** → this is the AC4 floor:
+  fall back to the repo's own `CLAUDE.md` Versioning-section lookup EXACTLY as today (for
+  harmony-plugin, its `## Versioning` section; CI's own `verify:dist` job remains the backstop either
+  way — `ci.yml` is unmigrated and un-touched by this wiring). Do not invent a new check here; an
+  absent/empty manifest must behave identically to the pre-B-991 world.
+
 **Multi-PR shape guard (B-726 (c/c1)) — run BEFORE any merge, every time.** Read the ticket's
 `field_values` in full (not just `build_pr`) and scan every OTHER key for a PR-shaped value (an object
 carrying `pr_number` or `pr_url`) — this covers today's observed improvisations `companion_pr` (B-715)
