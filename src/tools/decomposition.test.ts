@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { listSubtasks, listParent, manageSubtasks } from './decomposition.js';
+import { ShippedMilestoneGuardError } from './acceptance-events.js';
 
 vi.mock('./resolve-task-id.js', () => ({
   resolveTaskId: vi.fn().mockResolvedValue('root-uuid'),
@@ -167,5 +168,113 @@ describe('manageSubtasks', () => {
     await expect(
       manageSubtasks(client, 'proj-1', 'user-1', { task_id: 'p1', add: ['p1'] }),
     ).rejects.toThrow(/own subtask/);
+  });
+
+  // B-975 — a child of a MILESTONED parent must inherit milestone_id (the decompose accept-path defect:
+  // children were created with milestone_id: null even when the parent had one, so they silently
+  // disappeared from wave-scoped milestone views).
+  it('B-975 — inherits milestone_id from the parent when add_new omits it', async () => {
+    const insertSpy = vi.fn(() => ({ select: vi.fn().mockResolvedValue({ data: [{ id: 'c1' }], error: null }) }));
+    const fromMock = vi.fn((table: string) => {
+      if (table !== 'tasks') return { from: vi.fn() };
+      return {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            single: vi.fn().mockResolvedValue({ data: { project_id: 'proj-1', epic_id: 'epic-1', milestone_id: 'milestone-1' }, error: null }),
+          })),
+        })),
+        insert: insertSpy,
+      };
+    });
+    const client: any = { from: fromMock };
+
+    await manageSubtasks(client, 'proj-1', 'user-1', {
+      task_id: 'parent-1',
+      add_new: [{ title: 'New child' }],
+    });
+
+    const insertedRows = insertSpy.mock.calls[0][0];
+    expect(insertedRows[0].milestone_id).toBe('milestone-1');
+  });
+
+  // B-975 — an EXPLICIT per-child milestone_id in the input still wins over inheritance.
+  it('B-975 — an explicit per-child milestone_id overrides inheritance from the parent', async () => {
+    const insertSpy = vi.fn(() => ({ select: vi.fn().mockResolvedValue({ data: [{ id: 'c1' }], error: null }) }));
+    const fromMock = vi.fn((table: string) => {
+      if (table !== 'tasks') return { from: vi.fn() };
+      return {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            single: vi.fn().mockResolvedValue({ data: { project_id: 'proj-1', epic_id: 'epic-1', milestone_id: 'milestone-1' }, error: null }),
+          })),
+        })),
+        insert: insertSpy,
+      };
+    });
+    const client: any = { from: fromMock };
+
+    await manageSubtasks(client, 'proj-1', 'user-1', {
+      task_id: 'parent-1',
+      add_new: [{ title: 'New child', milestone_id: 'milestone-explicit' }],
+    });
+
+    const insertedRows = insertSpy.mock.calls[0][0];
+    expect(insertedRows[0].milestone_id).toBe('milestone-explicit');
+  });
+
+  // B-975 regression — an UNMILESTONED parent yields an UNMILESTONED child (unchanged behavior).
+  it('B-975 — an unmilestoned parent yields an unmilestoned child (regression, unchanged behavior)', async () => {
+    const insertSpy = vi.fn(() => ({ select: vi.fn().mockResolvedValue({ data: [{ id: 'c1' }], error: null }) }));
+    const fromMock = vi.fn((table: string) => {
+      if (table !== 'tasks') return { from: vi.fn() };
+      return {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            single: vi.fn().mockResolvedValue({ data: { project_id: 'proj-1', epic_id: 'epic-1', milestone_id: null }, error: null }),
+          })),
+        })),
+        insert: insertSpy,
+      };
+    });
+    const client: any = { from: fromMock };
+
+    await manageSubtasks(client, 'proj-1', 'user-1', {
+      task_id: 'parent-1',
+      add_new: [{ title: 'New child' }],
+    });
+
+    const insertedRows = insertSpy.mock.calls[0][0];
+    expect(insertedRows[0].milestone_id).toBeNull();
+  });
+
+  // B-975 — the b847 shipped-milestone guard (23514 check_violation) fires when the inherited
+  // milestone_id names an already-shipped milestone. The raw insert error already preserves `.code`
+  // (this function does a plain `throw error`, not a wrapped Error) — this asserts the detector fires on
+  // THIS path and rethrows a typed ShippedMilestoneGuardError carrying the guard's own message, and that
+  // no children are created (the insert is all-or-nothing per call, so `result.created` is never reached).
+  it('B-975 — a shipped-milestone guard refusal on the manageSubtasks insert rethrows as ShippedMilestoneGuardError', async () => {
+    const guardMessage = 'Milestone "Wave 0 (closed)" was shipped 2026-01-15 12:00:00+00 — it is closed, so task (new) cannot be assigned to it. The close-time ejection of non-done tickets ran ONCE when the wave shipped and will not run again, so nothing downstream would catch this mis-file: the ticket would sit in a closed wave, invisible (not in the open wave, not unmilestoned). Assign it to a planning milestone, or leave it unmilestoned.';
+    const insertSpy = vi.fn(() => ({ select: vi.fn().mockResolvedValue({ data: null, error: { code: '23514', message: guardMessage } }) }));
+    const fromMock = vi.fn((table: string) => {
+      if (table !== 'tasks') return { from: vi.fn() };
+      return {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            single: vi.fn().mockResolvedValue({ data: { project_id: 'proj-1', epic_id: 'epic-1', milestone_id: 'milestone-shipped' }, error: null }),
+          })),
+        })),
+        insert: insertSpy,
+      };
+    });
+    const client: any = { from: fromMock };
+
+    let caught: unknown;
+    try {
+      await manageSubtasks(client, 'proj-1', 'user-1', { task_id: 'parent-1', add_new: [{ title: 'New child' }] });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ShippedMilestoneGuardError);
+    expect((caught as Error).message).toBe(guardMessage);
   });
 });

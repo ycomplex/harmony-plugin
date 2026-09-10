@@ -6,6 +6,8 @@ import {
   consumeAcceptanceEvent,
   consumePendingAcceptanceEvent,
   classifyPayload,
+  isShippedMilestoneGuardError,
+  ShippedMilestoneGuardError,
   type PendingAcceptanceEvent,
   type AcceptanceEventPayloadItem,
 } from './acceptance-events.js';
@@ -45,6 +47,34 @@ function makeClient(opts: {
 
   return { from, rpc, rpcCalls } as any;
 }
+
+describe('isShippedMilestoneGuardError (B-975)', () => {
+  it('matches the b847 guard shape: code 23514 + its distinctive message text', () => {
+    expect(isShippedMilestoneGuardError({
+      code: '23514',
+      message: 'Milestone "Wave 0 (closed)" was shipped 2026-01-15 12:00:00+00 — it is closed, so task abc cannot be assigned to it.',
+    })).toBe(true);
+  });
+
+  it('does NOT match a 23514 with unrelated message text', () => {
+    expect(isShippedMilestoneGuardError({
+      code: '23514',
+      message: 'new row for relation "tasks" violates check constraint "tasks_priority_check"',
+    })).toBe(false);
+  });
+
+  it('does NOT match the guard message text under a different code', () => {
+    expect(isShippedMilestoneGuardError({
+      code: '42501',
+      message: 'was shipped ... cannot be assigned to it',
+    })).toBe(false);
+  });
+
+  it('does NOT match null/undefined', () => {
+    expect(isShippedMilestoneGuardError(null)).toBe(false);
+    expect(isShippedMilestoneGuardError(undefined)).toBe(false);
+  });
+});
 
 describe('probeAcceptanceEventSubstrate (PROBE 3)', () => {
   it('returns "present" when the table read succeeds', async () => {
@@ -215,6 +245,48 @@ describe('applyAcceptanceEventPayload', () => {
     const client = makeClient();
     const event = makeEvent([{ write_kind: 'acceptance_criterion', content: 'no ref', ref: '' } as AcceptanceEventPayloadItem]);
     await expect(applyAcceptanceEventPayload(client, event)).rejects.toThrow(/missing its stable 'ref'/);
+  });
+
+  // B-975 — the b847 shipped-milestone guard (23514 check_violation) fires on consume_child_mint_write
+  // once its INSERT carries the inherited milestone_id. This is a REAL, expected refusal (a parent's
+  // milestone has already shipped) — it must propagate as a TYPED ShippedMilestoneGuardError, carrying
+  // the guard's own message verbatim, never a generic wrapped Error and never swallowed/degraded like the
+  // B-383 substrate-absent case.
+  it('B-975 — a shipped-milestone guard refusal on consume_child_mint_write rethrows as ShippedMilestoneGuardError', async () => {
+    const guardMessage = 'Milestone "Wave 0 (closed)" was shipped 2026-01-15 12:00:00+00 — it is closed, so task (new) cannot be assigned to it. The close-time ejection of non-done tickets ran ONCE when the wave shipped and will not run again, so nothing downstream would catch this mis-file: the ticket would sit in a closed wave, invisible (not in the open wave, not unmilestoned). Assign it to a planning milestone, or leave it unmilestoned.';
+    const client = makeClient({
+      rpcResponses: {
+        consume_child_mint_write: [{ data: null, error: { code: '23514', message: guardMessage } }],
+      },
+    });
+    const event = makeEvent([childItem('child-1')]);
+    let caught: unknown;
+    try {
+      await applyAcceptanceEventPayload(client, event);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ShippedMilestoneGuardError);
+    expect((caught as Error).message).toBe(guardMessage);
+  });
+
+  // A 23514 with unrelated message text (some OTHER check constraint) must NOT be misclassified as the
+  // shipped-milestone guard — it stays a plain Error, matching every other real RPC failure.
+  it('B-975 — a 23514 with unrelated message text on consume_child_mint_write is NOT misclassified as the shipped-milestone guard', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_child_mint_write: [{ data: null, error: { code: '23514', message: 'new row for relation "tasks" violates check constraint "tasks_priority_check"' } }],
+      },
+    });
+    const event = makeEvent([childItem('child-1')]);
+    let caught: unknown;
+    try {
+      await applyAcceptanceEventPayload(client, event);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).not.toBeInstanceOf(ShippedMilestoneGuardError);
+    expect((caught as Error).message).toMatch(/tasks_priority_check/);
   });
 
   // B-688 — label_add dispatch: calls consume_label_add_write with the right args, mirroring the

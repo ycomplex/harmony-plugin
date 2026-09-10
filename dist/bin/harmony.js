@@ -30055,6 +30055,56 @@ async function bulkCreateTasks(client, projectId, userId, args) {
   return data;
 }
 
+// src/tools/gate-slots.ts
+var ExcludedSlotSchema = external_exports.object({
+  item: external_exports.string(),
+  lands: external_exports.string()
+}).passthrough();
+var PullRequestSlotSchema = external_exports.object({
+  repo: external_exports.string().optional(),
+  ref: external_exports.string().optional(),
+  url: external_exports.string().optional(),
+  title: external_exports.string().optional()
+}).passthrough();
+var CriterionSlotSchema = external_exports.object({
+  ac_id: external_exports.string().optional(),
+  text: external_exports.string().optional(),
+  how: external_exports.string().optional(),
+  disposition: external_exports.string().optional()
+}).passthrough();
+var ClarifySlotSchema = external_exports.object({
+  solving: external_exports.string().optional(),
+  in_scope: external_exports.array(external_exports.string()).optional(),
+  not_solving: external_exports.array(ExcludedSlotSchema).optional()
+}).passthrough();
+var ReleaseSlotSchema = external_exports.object({
+  shipped: external_exports.string().optional(),
+  lands_in: external_exports.string().optional(),
+  prs: external_exports.array(PullRequestSlotSchema).optional(),
+  unproven: external_exports.array(external_exports.string()).optional(),
+  evidence_status: external_exports.string().optional()
+}).passthrough();
+var VerifySlotSchema = external_exports.object({
+  environment: external_exports.string().optional(),
+  criteria: external_exports.array(CriterionSlotSchema).optional(),
+  evidence_status: external_exports.string().optional()
+}).passthrough();
+var UnknownGateSlotSchema = external_exports.record(external_exports.unknown());
+
+// src/tools/acceptance-events.ts
+function isShippedMilestoneGuardError(error) {
+  if (!error) return false;
+  if (error.code !== "23514") return false;
+  const msg = error.message ?? "";
+  return /was shipped/i.test(msg) && /cannot be assigned to it/i.test(msg);
+}
+var ShippedMilestoneGuardError = class extends Error {
+  constructor(guardMessage) {
+    super(guardMessage);
+    this.name = "ShippedMilestoneGuardError";
+  }
+};
+
 // src/tools/decomposition.ts
 async function listSubtasks(client, projectId, args) {
   const rootId = await resolveTaskId(client, projectId, args.task_id);
@@ -30089,7 +30139,7 @@ async function manageSubtasks(client, projectId, userId, args) {
     created: [],
     detached: []
   };
-  const { data: parent, error: parentErr } = await client.from("tasks").select("project_id, epic_id").eq("id", parentId).single();
+  const { data: parent, error: parentErr } = await client.from("tasks").select("project_id, epic_id, milestone_id").eq("id", parentId).single();
   if (parentErr) throw parentErr;
   if (args.add && args.add.length > 0) {
     const childIds = await Promise.all(args.add.map((id) => resolveTaskId(client, projectId, id)));
@@ -30112,12 +30162,18 @@ async function manageSubtasks(client, projectId, userId, args) {
       project_id: input.project_id ?? parent.project_id,
       epic_id: input.epic_id ?? parent.epic_id,
       cycle_id: input.cycle_id,
-      milestone_id: input.milestone_id,
+      // B-975: inherit the parent's milestone_id unless the caller set one explicitly on this child.
+      // An unmilestoned parent yields (parent as any)!.milestone_id === null/undefined — an unmilestoned
+      // child, unchanged from today's behavior.
+      milestone_id: input.milestone_id ?? parent.milestone_id,
       parent_task_id: parentId,
       created_by: userId
     }));
     const { data, error } = await client.from("tasks").insert(rows).select("id, task_number, title, status, project_id, parent_task_id");
-    if (error) throw error;
+    if (error) {
+      if (isShippedMilestoneGuardError(error)) throw new ShippedMilestoneGuardError(error.message);
+      throw error;
+    }
     result.created = data ?? [];
   }
   if (args.remove && args.remove.length > 0) {

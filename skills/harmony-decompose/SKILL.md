@@ -192,6 +192,18 @@ Show the rendered `content`. On the human's command:
      hierarchy. Call `mcp__harmony__manage_subtasks({ task_id, add_new: [{ title: "...", description: "..." }, ...] })`
      ONLY for genuinely net-new children. Never `add_new` a fresh set that duplicates existing
      non-archived children (B-646).
+     **B-975 — a shipped-parent milestone refusal is NOT an ordinary tool failure.** Each new child
+     INHERITS the parent's `milestone_id` (an unmilestoned parent still yields an unmilestoned child —
+     no change there). If the parent's milestone has already **shipped**, this call throws a
+     `ShippedMilestoneGuardError` (surfaced from the b847 shipped-milestone guard trigger) instead of
+     creating anything — the insert is all-or-nothing, so on this error **no children exist yet** for
+     this call. Do not retry it, do not silently drop the milestone and re-attempt, and do not report it
+     as a generic build/tool error. Instead, **stop and file a `worker-question` round right here**
+     (per `skills/harmony-shared/elicitation-engine.md` §The worker-question trigger) with
+     `stakes: 'load-bearing'` / `kind: 'open'`, quoting the guard's own error message VERBATIM (it
+     already names the shipped milestone and when it shipped) and asking the human to decide: assign
+     the children to a different (open) milestone, leave them unmilestoned, or reassign the parent's
+     own milestone first. Only resume this step once that round concludes.
   2. Then bring EVERY still-**Captured** child — existing and newly created alike — to **Proposed**
      (state-machine §8.1). `manage_subtasks add_new` lands children at **Captured** (the
      `tasks_default_workflow_state` insert trigger), and existing children pre-filed at triage

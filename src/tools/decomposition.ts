@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+import { isShippedMilestoneGuardError, ShippedMilestoneGuardError } from './acceptance-events.js';
 
 export const listSubtasksTool = {
   name: 'list_subtasks',
@@ -148,9 +149,11 @@ export async function manageSubtasks(
     detached: [],
   };
 
+  // B-975: milestone_id is selected here so add_new rows below can INHERIT it from the parent — a
+  // child of a milestoned parent must not silently land unmilestoned (the decompose accept-path defect).
   const { data: parent, error: parentErr } = await client
     .from('tasks')
-    .select('project_id, epic_id')
+    .select('project_id, epic_id, milestone_id')
     .eq('id', parentId)
     .single();
   if (parentErr) throw parentErr;
@@ -179,7 +182,10 @@ export async function manageSubtasks(
       project_id: input.project_id ?? (parent as any)!.project_id,
       epic_id: input.epic_id ?? (parent as any)!.epic_id,
       cycle_id: input.cycle_id,
-      milestone_id: input.milestone_id,
+      // B-975: inherit the parent's milestone_id unless the caller set one explicitly on this child.
+      // An unmilestoned parent yields (parent as any)!.milestone_id === null/undefined — an unmilestoned
+      // child, unchanged from today's behavior.
+      milestone_id: input.milestone_id ?? (parent as any)!.milestone_id,
       parent_task_id: parentId,
       created_by: userId,
     }));
@@ -187,7 +193,15 @@ export async function manageSubtasks(
       .from('tasks')
       .insert(rows)
       .select('id, task_number, title, status, project_id, parent_task_id');
-    if (error) throw error;
+    if (error) {
+      // B-975: the b847 shipped-milestone guard trigger (23514 check_violation) fires when an inherited
+      // milestone_id names a milestone that has already shipped. This is a real, expected refusal — not
+      // an ordinary insert failure — so it gets a typed rethrow the caller (harmony-decompose's accept
+      // step) can detect and surface as a worker-question instead of an opaque tool error. The insert is
+      // all-or-nothing: no children are created when this fires.
+      if (isShippedMilestoneGuardError(error)) throw new ShippedMilestoneGuardError(error.message);
+      throw error;
+    }
     result.created = data ?? [];
   }
 
