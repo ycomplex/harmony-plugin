@@ -147,36 +147,90 @@ never `"create"`. Genuinely net-new children the decomposition introduces are se
 recommended `"create"`; a removal/restructure of an existing child is its own explicit decision item,
 never silent.
 
-For "no decomposition needed", file a single decision item recommending "no split", and (optionally)
-record a short `specification` decision documenting *why* — then `reference_knowledge` it. When you do
-record one, set `source_activity: "decompose"` so downstream readers (e.g. `harmony-design-decide`'s
-AC-filing self-heal, B-744) can tell this record apart from clarify's own Accepted `specification`
-decision — both share `type: "specification"`, and a selector that discriminates on `type` alone can
-silently pick this one instead of clarify's:
+For a split — this decompose creates (or confirms) at least one child — record the split's rationale
+as a `specification` decision attached to the **parent** ticket, once per accept, right here in §3
+before the `compose_brief` call below: the child set is already known at draft time (that's exactly what
+the items above just proposed), so the entry's id is ready to pass as `decision_ref`. Set
+`source_activity: "decompose"` so downstream readers (e.g. `harmony-design-decide`'s AC-filing self-heal,
+B-744) can tell this record apart from clarify's own Accepted `specification` decision — both share
+`type: "specification"`, and a selector that discriminates on `type` alone can silently pick this one
+instead of clarify's:
 
 ```
-const noSplit = mcp__harmony__record_decision({
+const split = mcp__harmony__record_decision({
   type: "specification",
-  title: "<ticket>: decomposition — no split",
-  content: "<placeholder — one line: 'decomposition rationale for <ticket>; body derived from the ratified brief'>",
+  title: "<parent ticket>: decomposition — split into <N> children",
+  content: "<placeholder — one line: 'decomposition rationale for <parent ticket>; body derived from the ratified brief'>",
   domain: ["product", "process"],
   source_type: "manual",
   source_activity: "decompose",
-  source_task_id: "<task uuid>",
+  source_task_id: "<parent task uuid>",
 })
-mcp__harmony__reference_knowledge({ task_id, decision_id: noSplit.id })
+mcp__harmony__reference_knowledge({ task_id, decision_id: split.id })
 ```
 
-Then pass `decision_ref: { type: "specification", id: noSplit.id }` on the `compose_brief` call above, so
-the accept promotes it.
+Then pass `decision_ref: { type: "specification", id: split.id }` on the `compose_brief` call above, so
+the accept promotes it (see the B-866 note below — `content` here is a placeholder seat, replaced by
+`renderEntry(doc)` at accept). This is a genuinely NEW recording: B-972 and B-979 (real split tickets)
+currently carry no decomposition entry at all. Never mint a second one for the same proposal — an
+edit/iterate re-compose on the SAME split (§4 "edit" / "iterate") reuses this same `split.id`, it does
+not record again.
 
-> **B-866 — the entry's prose is DERIVED, not authored here.** `content` above is a **placeholder seat**,
-> not the entry's text. The brief's accept promotes `renderEntry(doc)` — a mechanical projection of the
-> very `doc` you compose below — so anything you would have written into the entry belongs in the doc
-> (`recommend` / `why` / `alternatives` / `context` / `frame`). Do not write the decision out twice, and
-> do not hand-author a `knowledge_entry_content` payload item: `compose_brief` derives it, sets its `ref`
-> and `entry_id`, and REPLACES anything you author there. See
-> `skills/harmony-shared/brief-authoring.md` §"The brief is the only authored copy".
+For "no decomposition needed", **never** mint a per-ticket `specification` entry — 264 near-identical
+"<ticket>: decomposition — no split" entries crowded out load-bearing knowledge this way and were retired
+for it (B-849). Instead query-or-amend ONE shared `convention` entry, identity-keyed by the stable tag
+`decompose-no-split` (mirrors `skills/finish-work/SKILL.md`'s B-836 "Author procedural convention entries
+per changed surface" — read that section for the exact query/create/amend/couple shape this mirrors):
+
+```
+mcp__harmony__query_knowledge({ type: "convention", tags: ["decompose-no-split"], status: "Accepted" })
+```
+
+Judge the amend rule yourself, as PROSE — never defer it to a human — over exactly three states:
+- **No-op — the DEFAULT.** This ticket's no-split reasoning is already covered by the convention entry's
+  stated heuristic. Do nothing to the entry: the ticket's own retained decompose brief/decision trail
+  (list_briefs lineage) is the record. This is the path the ordinary run exercises.
+- **One dated section — a genuinely new pattern.** The reasoning introduces a pattern the entry doesn't
+  yet state. Amend in place — never `supersede_decision` (an amend is always in-place, matching B-836's
+  disallowed-tools convention):
+  ```
+  mcp__harmony__update_knowledge_entry({
+    entry_id,
+    content: "<prepend ONE newest-first dated section naming the pattern and this ticket as its
+      canonical example, onto the EXISTING content — never replace or drop history>",
+  })
+  ```
+- **Create-on-first-use — the entry does not exist yet.** Create it directly as Accepted (system-authored
+  procedural knowledge, not a proposal awaiting human promotion — mirrors B-836's finish-work pattern):
+  ```
+  mcp__harmony__record_decision({
+    type: "convention", title: "Decompose: when a ticket does not split",
+    content: "<the heuristic + the measured retired-count + AT MOST 5 canonical examples — never a full
+      id list; retired per-ticket entries stay reachable via include_superseded>",
+    tags: ["decompose-no-split"], domain: ["product", "process"],
+    status: "Accepted", source_task_id: "<task uuid>", source_activity: "decompose",
+  })
+  ```
+
+After whichever of the two non-default states fires (never after the no-op), couple the ticket to the
+entry exactly like B-836 does:
+
+```
+mcp__harmony__reference_knowledge({ task_id, decision_id: <entry.id> })
+```
+
+Then pass `decision_ref: null` on the `compose_brief` call above — `withDerivedEntryContent` returns the
+doc unchanged when `decisionRef` is falsy, so no other change is needed there.
+
+> **B-866 — the split entry's prose is DERIVED, not authored here.** `content` on the split's
+> `record_decision` above is a **placeholder seat**, not the entry's text. The brief's accept promotes
+> `renderEntry(doc)` — a mechanical projection of the very `doc` you compose above — so anything you would
+> have written into the entry belongs in the doc (`recommend` / `why` / `alternatives` / `context` /
+> `frame`). Do not write the decision out twice, and do not hand-author a `knowledge_entry_content`
+> payload item: `compose_brief` derives it, sets its `ref` and `entry_id`, and REPLACES anything you
+> author there. See `skills/harmony-shared/brief-authoring.md` §"The brief is the only authored copy".
+> (The no-split path's shared convention entry is never a `decision_ref` target, so it never receives
+> derived content — its prose is whatever the no-op/amend/create logic above wrote by hand.)
 
 
 ### 4. Display + resolve
@@ -221,7 +275,11 @@ Show the rendered `content`. On the human's command:
      tickets rather than losing it. Never reword the content in transit. Skip an item whose target
      child already carries that exact content (idempotent re-run after a crash mid-accept).
   4. `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })` →
-     records the decision. (For "no decomposition needed", skip 1–3 and just accept.)
+     records the decision. For a split, this is also where the `specification` entry recorded in §3
+     above is PROMOTED — its placeholder `content` replaced by `renderEntry(doc)`, the mechanical
+     projection of the ratified brief. (For "no decomposition needed", skip 1–3 and just accept —
+     `decision_ref` is `null` there, so nothing is promoted; any touch to the shared
+     `decompose-no-split` convention entry was already written directly, back in §3.)
   5. **B-797 — finalize the deferred advance NOW, same session.** The response carries
      `pending_acceptance_event_id`: since you just minted/confirmed the children (and moved any ACs)
      yourself above, there is nothing left to APPLY — only the deferred Clarified→Decomposed advance to

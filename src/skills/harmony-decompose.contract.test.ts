@@ -62,4 +62,29 @@ describe('harmony-decompose skill contract', () => {
     expect(skill.body).toContain('net-new');
     expect(skill.body).toContain('recommendation: "confirm"');
   });
+  it('never mints a per-ticket "no split" specification entry (B-849 regression guard)', () => {
+    // The exact literal string the old per-ticket entry used — 264 near-identical entries were
+    // retired for this; its return in a future edit would mean the regression came back.
+    expect(skill.body).not.toContain('title: "<ticket>: decomposition — no split"');
+  });
+  it('queries the shared no-split convention entry by its stable tag (B-849)', () => {
+    expect(skill.body).toContain('decompose-no-split');
+    expect(referencedHarmonyTools(skill.body)).toContain('query_knowledge');
+    // the tag appears specifically alongside the convention lookup, not just anywhere:
+    expect(skill.body).toMatch(/type: "convention", tags: \["decompose-no-split"\]/);
+  });
+  it('names the no-split amend rule\'s three states, with the no-op default exercised when nothing new (B-849)', () => {
+    expect(skill.body.toLowerCase()).toContain('no-op');
+    expect(skill.body.toLowerCase()).toContain('already covered');
+    expect(skill.body).toMatch(/never\s+`?supersede_decision`?/i);
+    expect(referencedHarmonyTools(skill.body)).toContain('update_knowledge_entry');
+  });
+  it('records the split rationale once per accept, attached to the parent, and names it in the compose call\'s decision_ref (B-849)', () => {
+    // record_decision is already referenced on the no-split-convention/deferral paths; assert the
+    // split branch specifically also drives it, via a distinguishing string from the split's own
+    // title template.
+    expect(referencedHarmonyTools(skill.body)).toContain('record_decision');
+    expect(skill.body).toContain('decomposition — split into');
+    expect(skill.body).toMatch(/decision_ref: \{ type: "specification", id: split\.id \}/);
+  });
 });
