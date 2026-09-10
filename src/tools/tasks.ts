@@ -45,6 +45,34 @@ async function fetchKnowledgeReferenceCount(client: SupabaseClient, taskId: stri
   }
 }
 
+/** B-977 (AC1): the entities this ticket IMPLEMENTS (ticket_implements_entity), each with its
+ *  name/kind — the "created by this ticket" half of the entity-edges read surface (the "affecting
+ *  decision" half lives on list_ticket_knowledge's `affected_entities`, decision_affects_entity).
+ *  Guarded read, same discipline as the other get_task enrichments above: absent table/column or
+ *  any error degrades to [] — get_task never regresses. Full view only (not meta — a payload field,
+ *  not a loop-control signal). */
+async function fetchImplementedEntities(
+  client: SupabaseClient,
+  taskId: string,
+): Promise<{ entity_id: string; name: string; kind: string }[]> {
+  try {
+    const { data, error } = await client
+      .from('ticket_implements_entity')
+      .select('entity_id, knowledge_entities(name, kind)')
+      .eq('task_id', taskId);
+    if (error || !data) return [];
+    return (data as Array<{ entity_id: string; knowledge_entities: { name?: string; kind?: string } | null }>)
+      .filter((row) => !!row.knowledge_entities?.name)
+      .map((row) => ({
+        entity_id: row.entity_id,
+        name: row.knowledge_entities!.name as string,
+        kind: row.knowledge_entities!.kind ?? '',
+      }));
+  } catch {
+    return [];
+  }
+}
+
 export const listTasksTool = {
   name: 'list_tasks',
   description:
@@ -272,6 +300,7 @@ export async function getTask(
     pending_remark,
     active_brief_iteration,
     knowledge_reference_count,
+    implements_entities,
   ] = await Promise.all([
     meta ? Promise.resolve({ data: null }) : client.from('acceptance_criteria').select('*').eq('task_id', resolvedId).order('position'),
     meta ? Promise.resolve({ data: null }) : client.from('test_cases').select('*').eq('task_id', resolvedId).order('position'),
@@ -297,6 +326,9 @@ export async function getTask(
     // above, since the daemon polls via view:'meta' and this is exactly what it needs to see.
     fetchActiveBriefIteration(client, resolvedId),
     fetchKnowledgeReferenceCount(client, resolvedId),
+    // B-977: payload-only (not a loop-control signal) — skip in meta like acceptance_criteria/
+    // test_cases/attachments above.
+    meta ? Promise.resolve([] as { entity_id: string; name: string; kind: string }[]) : fetchImplementedEntities(client, resolvedId),
   ]);
   const acceptanceCriteria = acceptanceCriteriaRes.data;
   const testCases = testCasesRes.data;
@@ -385,6 +417,9 @@ export async function getTask(
     risk_classes,
     active_brief_iteration,
     knowledge_reference_count,
+    // B-977 (AC1): entities this ticket implements (ticket_implements_entity), read-surface half
+    // of the write discipline — full view only (payload, not loop-control).
+    implements_entities,
   };
 }
 

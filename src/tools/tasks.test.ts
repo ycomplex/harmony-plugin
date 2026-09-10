@@ -739,6 +739,52 @@ describe('getTask', () => {
     expect((result as any).attachments).toHaveLength(1);
     expect((result as any).labels).toEqual([{ id: 'l1', name: 'backend', color: '#fff' }]);
     expect((result as any).checklist_items).toHaveLength(1);
+    // B-977 (AC1): the default fallback branch (no ticket_implements_entity table set up) degrades
+    // to an empty array — never regresses get_task.
+    expect((result as any).implements_entities).toEqual([]);
+  });
+
+  it('B-977: get_task surfaces ticket_implements_entity as implements_entities (full view only)', async () => {
+    const client: any = makeFullClient({ title: 'T' });
+    const baseFrom = client.from;
+    client.from = vi.fn((table: string) => {
+      if (table === 'ticket_implements_entity') {
+        return {
+          select: () => ({
+            eq: () => Promise.resolve({
+              data: [
+                { entity_id: 'ent-1', knowledge_entities: { name: 'Cloud library management', kind: 'feature' } },
+              ],
+              error: null,
+            }),
+          }),
+        };
+      }
+      return baseFrom(table);
+    });
+
+    const full = await getTask(client, 'proj-1', { task_id: 'B-1' });
+    expect((full as any).implements_entities).toEqual([
+      { entity_id: 'ent-1', name: 'Cloud library management', kind: 'feature' },
+    ]);
+
+    // meta view omits it — payload-only, not a loop-control signal (and would break the pinned
+    // 23-key set below if it leaked in).
+    const meta = await getTask(client, 'proj-1', { task_id: 'B-1', view: 'meta' });
+    expect(meta).not.toHaveProperty('implements_entities');
+  });
+
+  it('B-977: implements_entities degrades to [] when the read errors (older DB) — get_task does not regress', async () => {
+    const client: any = makeFullClient({ title: 'T' });
+    const baseFrom = client.from;
+    client.from = vi.fn((table: string) => {
+      if (table === 'ticket_implements_entity') {
+        return { select: () => ({ eq: () => Promise.reject(new Error('relation "ticket_implements_entity" does not exist')) }) };
+      }
+      return baseFrom(table);
+    });
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1' });
+    expect((result as any).implements_entities).toEqual([]);
   });
 
   // B-792: two board-progress signals get_task surfaces so the daemon's exit classifier can see

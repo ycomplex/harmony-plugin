@@ -23699,6 +23699,19 @@ async function fetchKnowledgeReferenceCount(client, taskId) {
     return 0;
   }
 }
+async function fetchImplementedEntities(client, taskId) {
+  try {
+    const { data, error } = await client.from("ticket_implements_entity").select("entity_id, knowledge_entities(name, kind)").eq("task_id", taskId);
+    if (error || !data) return [];
+    return data.filter((row) => !!row.knowledge_entities?.name).map((row) => ({
+      entity_id: row.entity_id,
+      name: row.knowledge_entities.name,
+      kind: row.knowledge_entities.kind ?? ""
+    }));
+  } catch {
+    return [];
+  }
+}
 async function getTask(client, projectId, args) {
   const meta = args.view === "meta";
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
@@ -23714,7 +23727,8 @@ async function getTask(client, projectId, args) {
     active_exchange,
     pending_remark,
     active_brief_iteration,
-    knowledge_reference_count
+    knowledge_reference_count,
+    implements_entities
   ] = await Promise.all([
     meta ? Promise.resolve({ data: null }) : client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
     meta ? Promise.resolve({ data: null }) : client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
@@ -23732,7 +23746,10 @@ async function getTask(client, projectId, args) {
     // B-792: board-progress signals — run in BOTH views (meta and full), like the poll markers
     // above, since the daemon polls via view:'meta' and this is exactly what it needs to see.
     fetchActiveBriefIteration(client, resolvedId),
-    fetchKnowledgeReferenceCount(client, resolvedId)
+    fetchKnowledgeReferenceCount(client, resolvedId),
+    // B-977: payload-only (not a loop-control signal) — skip in meta like acceptance_criteria/
+    // test_cases/attachments above.
+    meta ? Promise.resolve([]) : fetchImplementedEntities(client, resolvedId)
   ]);
   const acceptanceCriteria = acceptanceCriteriaRes.data;
   const testCases = testCasesRes.data;
@@ -23791,7 +23808,10 @@ async function getTask(client, projectId, args) {
     pending_remark,
     risk_classes,
     active_brief_iteration,
-    knowledge_reference_count
+    knowledge_reference_count,
+    // B-977 (AC1): entities this ticket implements (ticket_implements_entity), read-surface half
+    // of the write discipline — full view only (payload, not loop-control).
+    implements_entities
   };
 }
 

@@ -210,7 +210,7 @@ export const ackProjections: Record<string, AckProjection> = {
     // subject_entity_id is server-computed (the entity was resolved/created from a NAME).
     pick(result, ['id', 'subject_entity_id', 'status', 'valid_from']),
   invalidate_fact: (result) => pick(result, ['id', 'status', 'valid_to']),
-  create_entity: (result) => pick(result, ['id', 'created_at']),
+  create_entity: (result) => pick(result, ['id', 'created_at', 'collision_warning']),
   update_entity: (result, args) => {
     if (!isRecord(result)) return result;
     return {
@@ -341,6 +341,9 @@ export const ACK_PASS_THROUGH: Record<string, string> = {
     'Already a compact transition summary ({task_id, from_state, to_state, activity, task:{id, workflow_state, workflow_activity}}); skills read to_state / task.workflow_state.',
   reference_knowledge:
     'Already minimal: { task_id, decision_id, linked } — the link confirmation IS the ack.',
+  link_ticket_entities:
+    'B-977: already minimal — { task_id, decision_id, entity_ids, linked }. entity_ids are server-resolved ' +
+    'ids, never an echo of the caller-sent entity_names strings, so there is no record body to strip.',
   manage_labels:
     'Already id-lists only: { added: [label ids], removed: [label ids] } — no record echo to strip.',
   flag_release_approval_pending:

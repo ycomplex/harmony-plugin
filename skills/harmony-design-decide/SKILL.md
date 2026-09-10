@@ -389,8 +389,19 @@ Show the rendered `content`. On the human's command:
   `pending_activity: "designing"` was carried — the last required sub-track) is DEFERRED to this event,
   not applied yet. Since you already performed this track's AC add/update/delete writes above (step 2b) —
   there is nothing left to APPLY, only the deferred advance to COMMIT. Call
-  `mcp__harmony__consume_acceptance_event({ event_id: <that id> })` right away, in this same turn. Then
-  report whether the ticket is now Designed or still needs other sub-tracks.
+  `mcp__harmony__consume_acceptance_event({ event_id: <that id> })` right away, in this same turn.
+
+  **Link the ticket + decision to their implemented entities (B-977) — three-state handling.** Read
+  `field_values.implements_entities` off `get_task` (it may already be in context from step 1):
+  - **Present with one or more names** → `mcp__harmony__link_ticket_entities({ task_id, decision_id:
+    decision.id, entity_names: field_values.implements_entities.names })`.
+  - **Absent entirely** (the PERMANENT state for every ticket already past clarify before B-977
+    shipped — e.g. B-975, B-978, and every other open v1.5 ticket at Designed-or-later; not a
+    transition window that closes) → skip cleanly and silently. No throw, no warn, no empty-edge write.
+  - **Present but an empty list** (`names: []`) → treat the same as absent — a legitimate "no linkable
+    feature" answer, not an error. Skip cleanly, no edges written.
+
+  Then report whether the ticket is now Designed or still needs other sub-tracks.
   **Decision-only fast-forward (B-681):** if the ticket carries the `decision-only` label AND this was the
   LAST required sub-track (the brief carried the completion line), run the trailing mechanical completion
   the accept just authorized:
