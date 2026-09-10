@@ -62,4 +62,15 @@ describe('harmony-visual-handoff skill contract', () => {
     expect(skill.body.toLowerCase()).toMatch(/never\s+write\s+repo\s+source/);
     expect(skill.body.toLowerCase()).toContain('throwaway');
   });
+
+  // B-977: link_ticket_entities wiring at accept, with three-state field_values.implements_entities
+  // handling (present/absent/empty) — never a throw, never a warn, never an empty-edge write on the
+  // absent/empty paths (the permanent state for every pre-B-977 ticket).
+  it('B-977: calls link_ticket_entities at accept and documents all three implements_entities states', () => {
+    expect(referencedHarmonyTools(skill.body)).toContain('link_ticket_entities');
+    expect(skill.body).toContain('implements_entities');
+    expect(skill.body.toLowerCase()).toContain('absent entirely');
+    expect(skill.body).toMatch(/empty list.*no edges|no edges written/i);
+    expect(skill.body.toLowerCase()).toMatch(/no throw,\s+no warn,\s+no\s+empty-edge write/);
+  });
 });

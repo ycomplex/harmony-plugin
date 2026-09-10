@@ -95,3 +95,21 @@ describe('harmony-clarify skill contract', () => {
     }
   });
 });
+
+// B-977: proposes a confirm-or-adjust feature-entity item at compose, and records the human's
+// confirmed answer onto field_values.implements_entities on accept — the field design-decide /
+// visual-handoff read back to call link_ticket_entities.
+describe('harmony-clarify: B-977 confirm-or-adjust entity naming', () => {
+  const skill = readSkill('harmony-clarify');
+
+  it('proposes a confirm-or-adjust doc.items entry naming candidate feature entities', () => {
+    expect(skill.body).toContain('confirm-or-adjust');
+    expect(skill.body).toContain('implements_entities');
+  });
+
+  it('writes field_values.implements_entities via update_task on accept, mirroring build_pr\'s structured-field pattern', () => {
+    expect(referencedHarmonyTools(skill.body)).toContain('update_task');
+    expect(skill.body).toContain('field_values: { implements_entities:');
+    expect(skill.body.toLowerCase()).toContain('build_pr');
+  });
+});
