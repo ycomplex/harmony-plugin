@@ -83,6 +83,10 @@ const FACT_COLS =
 export interface KnowledgeEntityFull {
   id: string; workspace_id: string; project_id: string | null;
   kind: string; name: string; description: string | null; metadata: unknown; created_at: string;
+  // B-977: present ONLY when this create/resolve tripped a same-name-different-kind collision —
+  // a non-blocking warning, never populated on a plain read (queryEntities, getKnowledgeEntry-
+  // adjacent paths never set it).
+  collision_warning?: EntityCollisionWarning;
 }
 const ENTITY_COLS = 'id, workspace_id, project_id, kind, name, description, metadata, created_at';
 
@@ -238,7 +242,9 @@ export const supersedeKnowledgeEntryTool = {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-async function getWorkspaceId(client: SupabaseClient, projectId: string): Promise<string> {
+// Exported for workflow.ts's link_ticket_entities (B-977), which needs the same projectId ->
+// workspaceId resolution recordDecision/createEntity/etc. already rely on internally.
+export async function getWorkspaceId(client: SupabaseClient, projectId: string): Promise<string> {
   const { data, error } = await client
     .from('projects')
     .select('workspace_id')
@@ -707,6 +713,53 @@ export async function updateKnowledgeEntry(
 }
 
 // ---------------------------------------------------------------------------
+// Helper: findCrossKindCollision (B-977)
+// ---------------------------------------------------------------------------
+//
+// Same-name-different-kind detection: `knowledge_entities` is unique on
+// (workspace_id, kind, name), so two nodes named e.g. "Cloud library management" can
+// legally coexist as kind='feature' and kind='concept' — usually an accidental
+// duplicate (the same real thing re-minted under a second kind), not a deliberate
+// design. This is a WARNING surface only — createEntity/resolveOrCreateEntity's job is
+// still create-or-skip; collision is exceptional and worth flagging, never blocking.
+
+export interface EntityCollisionWarning {
+  entity_id: string;
+  kind: string;
+  message: string;
+}
+
+async function findCrossKindCollision(
+  client: SupabaseClient,
+  workspaceId: string,
+  name: string,
+  kind: string,
+): Promise<{ id: string; kind: string } | null> {
+  const { data, error } = await client
+    .from('knowledge_entities')
+    .select('id, kind')
+    .eq('workspace_id', workspaceId)
+    .eq('name', name)
+    .neq('kind', kind)
+    .limit(1)
+    .maybeSingle();
+  // Best-effort: a failed collision check never blocks the create it is only warning about.
+  if (error || !data) return null;
+  return data as { id: string; kind: string };
+}
+
+function collisionWarning(name: string, requestedKind: string, existing: { id: string; kind: string }): EntityCollisionWarning {
+  return {
+    entity_id: existing.id,
+    kind: existing.kind,
+    message:
+      `An entity named "${name}" already exists under kind "${existing.kind}" (id ${existing.id}). ` +
+      `This write created/resolved a SEPARATE node under kind "${requestedKind}" instead of merging. ` +
+      `If this was unintended, use reconcile_entity to merge them.`,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Helper: resolveOrCreateEntity
 // ---------------------------------------------------------------------------
 
@@ -726,6 +779,18 @@ export async function resolveOrCreateEntity(
     .maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   if (existing) return (existing as { id: string }).id;
+
+  // B-977: same-name-different-kind collision is a WARNING, never a block. This helper's return
+  // type (a plain string id) is relied on by many existing callers (recordDecision, assertFact,
+  // …), so widening it would ripple through every call site for a signal only the exceptional
+  // path needs. Surface it via a console side-channel instead — callers that want the structured
+  // warning inline should author through createEntity, which returns it on the result.
+  const collision = await findCrossKindCollision(client, workspaceId, name, kind);
+  if (collision) {
+    console.error(
+      `[knowledge] entity collision: ${collisionWarning(name, kind, collision).message}`,
+    );
+  }
 
   const { data, error } = await client
     .from('knowledge_entities')
@@ -765,6 +830,13 @@ export interface RecordDecisionArgs {
 // quarantined — they never promote at their own brief's accept and never feed inference until
 // validated (elicitation-engine contract).
 const CLAIM_PROVENANCES = ['human-stated', 'agent-inferred-human-validated', 'force-quit'];
+
+// B-977: a technical/product/ux-ui design decision that reaches Accepted through the design gate
+// is stamped realization='agreed' by default (decided-not-yet-built) — never left NULL, which
+// elsewhere means "live" (a claim about something already shipped, which a fresh design decision
+// is not). Every OTHER decision type keeps today's behavior: omit realization -> NULL, unchanged
+// (NULL is relied on by the B-551 intent-emit trigger — out of scope to touch that default).
+const DESIGN_DECISION_TYPES = new Set(['product-design', 'technical-design', 'ux-ui-design']);
 
 // B-645 guarded-write matcher (the pending_resolution fallback pattern, briefs.ts): the claim
 // columns are added by harmony-web's Phase-1 migration; on an older DB the insert 400s with a
@@ -814,7 +886,11 @@ export async function recordDecision(
   if (args.tags !== undefined) record.tags = args.tags;
   if (args.source_task_id !== undefined) record.source_task_id = args.source_task_id;
   if (args.review_by !== undefined) record.review_by = args.review_by;
-  if (args.realization !== undefined) record.realization = args.realization;
+  if (args.realization !== undefined) {
+    record.realization = args.realization;
+  } else if (DESIGN_DECISION_TYPES.has(args.type)) {
+    record.realization = 'agreed';
+  }
   // B-645 claim columns: included ONLY when provided (an ordinary decision writes neither, so the
   // insert stays valid on any schema and NULL keeps meaning "not an elicitation claim").
   if (args.claim_provenance !== undefined) record.claim_provenance = args.claim_provenance;
@@ -971,7 +1047,7 @@ export const recordDecisionTool = {
       domain: { type: 'array', items: { type: 'string' }, description: 'Domains: engineering, operations, data, product, customer, process' },
       affected_entity_names: { type: 'array', items: { type: 'string' }, description: 'Entity names this decision touches (resolved/created in knowledge_entities)' },
       status: { type: 'string', description: 'Override status (default "Asserted")' },
-      realization: { type: 'string', enum: ['agreed', 'live', 'deprecating', 'retired'], description: 'Implementation/realization state (orthogonal to status); omit ⇒ NULL ≡ live; "agreed" = decided-not-yet-built' },
+      realization: { type: 'string', enum: ['agreed', 'live', 'deprecating', 'retired'], description: 'Implementation/realization state (orthogonal to status). B-977: for type product-design/technical-design/ux-ui-design, omitting this defaults to "agreed" (decided-not-yet-built) rather than NULL — pass a value explicitly to override. For every other type, omit ⇒ NULL ≡ live, unchanged.' },
       source_type: { type: 'string', description: "ticket | adr | manual | inferred | research (default 'manual')" },
       source_id: { type: 'string', description: 'Pointer back to the producing ticket/source' },
       source_activity: { type: 'string', description: 'The gate/skill that authored it (e.g. design-decide, clarify)' },
@@ -1073,6 +1149,11 @@ export async function createEntity(
     return updated as unknown as KnowledgeEntityFull;
   }
 
+  // B-977: check for a same-name-different-kind collision BEFORE inserting — a WARNING, never a
+  // block. The lookup above already ruled out the same-kind case (that's the idempotent
+  // create-or-skip path above); this is the sibling check for a DIFFERENT kind under the same name.
+  const collision = await findCrossKindCollision(client, workspaceId, name, kind);
+
   const record: Record<string, unknown> = {
     workspace_id: workspaceId,
     project_id: projectId,
@@ -1098,11 +1179,15 @@ export async function createEntity(
         .eq('kind', kind)
         .eq('name', name)
         .maybeSingle();
-      if (raced) return raced as unknown as KnowledgeEntityFull;
+      if (raced) {
+        const racedRow = raced as unknown as KnowledgeEntityFull;
+        return collision ? { ...racedRow, collision_warning: collisionWarning(name, kind, collision) } : racedRow;
+      }
     }
     throw new Error(error.message);
   }
-  return data as unknown as KnowledgeEntityFull;
+  const created = data as unknown as KnowledgeEntityFull;
+  return collision ? { ...created, collision_warning: collisionWarning(name, kind, collision) } : created;
 }
 
 export const createEntityTool = {
@@ -1113,7 +1198,11 @@ export const createEntityTool = {
     'refreshes the description/metadata when supplied. A node description is a THIN, stable, one-line canonical ' +
     'identifier — the substance and lifecycle (Asserted→Accepted, realization) live in the decisions/facts ABOUT ' +
     "the entity, not on the node. Kinds are open-ended (e.g. 'persona', 'feature', 'component', 'integration', " +
-    "'concept'). To merge a low-typed stub into a richer node of the same name, use reconcile_entity.",
+    "'concept'). To merge a low-typed stub into a richer node of the same name, use reconcile_entity. " +
+    'B-977: creating a name that already exists under a DIFFERENT kind is never blocked — it proceeds and the ' +
+    'result carries a non-fatal `collision_warning` ({entity_id, kind, message}) pointing at the existing node; ' +
+    'use reconcile_entity to merge if the duplicate was unintended.',
+
   inputSchema: {
     type: 'object' as const,
     properties: {

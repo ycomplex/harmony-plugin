@@ -69,6 +69,7 @@ import {
   advanceWorkflowTool, advanceWorkflow,
   referenceKnowledgeTool, referenceKnowledge,
   listTicketKnowledgeTool, listTicketKnowledge,
+  linkTicketEntitiesTool, linkTicketEntities,
 } from './workflow.js';
 import {
   downloadAttachmentTool, downloadAttachment,
@@ -177,6 +178,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     advanceWorkflowTool,
     referenceKnowledgeTool,
     listTicketKnowledgeTool,
+    linkTicketEntitiesTool,
     getBuildEvidenceStatusTool,
     createConductionTool,
     listConductionsTool,
@@ -428,6 +430,9 @@ export async function handleToolCall(
         break;
       case 'list_ticket_knowledge':
         result = await listTicketKnowledge(client, projectId, args as any);
+        break;
+      case 'link_ticket_entities':
+        result = await linkTicketEntities(client, projectId, args as any);
         break;
       case 'get_build_evidence_status':
         result = await getBuildEvidenceStatus(client, projectId, args as any);

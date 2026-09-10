@@ -1094,16 +1094,47 @@ describe('resolveOrCreateEntity', () => {
     const lookup: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
     lookup.select.mockReturnValue(lookup); lookup.eq.mockReturnValue(lookup);
     lookup.maybeSingle.mockResolvedValue({ data: null, error: null });
+    // B-977: resolveOrCreateEntity now ALSO runs findCrossKindCollision (select/eq/eq/neq/limit/
+    // maybeSingle) between the same-kind lookup miss and the insert — no collision here.
+    const collision: any = { select: vi.fn(), eq: vi.fn(), neq: vi.fn(), limit: vi.fn(), maybeSingle: vi.fn() };
+    collision.select.mockReturnValue(collision); collision.eq.mockReturnValue(collision);
+    collision.neq.mockReturnValue(collision); collision.limit.mockReturnValue(collision);
+    collision.maybeSingle.mockResolvedValue({ data: null, error: null });
     const ins: any = { insert: vi.fn(), select: vi.fn(), single: vi.fn() };
     ins.insert.mockReturnValue(ins); ins.select.mockReturnValue(ins);
     ins.single.mockResolvedValue({ data: { id: 'ent-new' }, error: null });
-    const client: any = { from: vi.fn().mockImplementation(() => (call++ === 0 ? lookup : ins)) };
+    const chains = [lookup, collision, ins];
+    const client: any = { from: vi.fn().mockImplementation(() => chains[Math.min(call++, chains.length - 1)]) };
 
     const id = await resolveOrCreateEntity(client, WORKSPACE_ID, PROJECT_ID, 'OIDC', 'concept');
     expect(id).toBe('ent-new');
     expect(ins.insert).toHaveBeenCalledWith(
       expect.objectContaining({ workspace_id: WORKSPACE_ID, kind: 'concept', name: 'OIDC' }),
     );
+  });
+
+  it('B-977: logs a warning (never throws, never blocks the insert) on a same-name-different-kind collision', async () => {
+    let call = 0;
+    const lookup: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
+    lookup.select.mockReturnValue(lookup); lookup.eq.mockReturnValue(lookup);
+    lookup.maybeSingle.mockResolvedValue({ data: null, error: null });
+    const collision: any = { select: vi.fn(), eq: vi.fn(), neq: vi.fn(), limit: vi.fn(), maybeSingle: vi.fn() };
+    collision.select.mockReturnValue(collision); collision.eq.mockReturnValue(collision);
+    collision.neq.mockReturnValue(collision); collision.limit.mockReturnValue(collision);
+    collision.maybeSingle.mockResolvedValue({ data: { id: 'ent-existing', kind: 'concept' }, error: null });
+    const ins: any = { insert: vi.fn(), select: vi.fn(), single: vi.fn() };
+    ins.insert.mockReturnValue(ins); ins.select.mockReturnValue(ins);
+    ins.single.mockResolvedValue({ data: { id: 'ent-new' }, error: null });
+    const chains = [lookup, collision, ins];
+    const client: any = { from: vi.fn().mockImplementation(() => chains[Math.min(call++, chains.length - 1)]) };
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const id = await resolveOrCreateEntity(client, WORKSPACE_ID, PROJECT_ID, 'Cloud library management', 'feature');
+    expect(id).toBe('ent-new');   // never blocked — the create proceeds
+    expect(ins.insert).toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Cloud library management'));
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('ent-existing'));
+    errSpy.mockRestore();
   });
 });
 
@@ -1148,7 +1179,7 @@ function buildGraphClient(tables: Record<string, Array<{ data: any; error?: any 
   const chains: Record<string, any> = {};
   const makeChain = (table: string) => {
     const c: any = {};
-    for (const m of ['select', 'insert', 'update', 'delete', 'eq', 'contains', 'ilike', 'is', 'in', 'order', 'range', 'overlaps', 'lte', 'or', 'gte', 'not']) {
+    for (const m of ['select', 'insert', 'update', 'delete', 'eq', 'neq', 'limit', 'contains', 'ilike', 'is', 'in', 'order', 'range', 'overlaps', 'lte', 'or', 'gte', 'not']) {
       c[m] = vi.fn().mockReturnValue(c);
     }
     c.single = vi.fn().mockImplementation(() => Promise.resolve(take(table)));
@@ -1182,7 +1213,8 @@ describe('createEntity', () => {
   it('inserts a new typed node (kind + name + thin description) when none exists', async () => {
     const created = { ...sampleEntity };
     const { client, chains } = buildGraphClient({
-      knowledge_entities: [{ data: null }, { data: created }],   // lookup miss, then insert echo
+      // lookup miss (same-kind), then the B-977 collision check miss (no other-kind match), then insert echo
+      knowledge_entities: [{ data: null }, { data: null }, { data: created }],
     });
     const result = await createEntity(client, PROJECT_ID, {
       kind: 'persona', name: 'Busy PM', description: 'A time-poor product manager',
@@ -1221,7 +1253,7 @@ describe('createEntity', () => {
 
   it('seeds a persona node that is then queryable by kind=persona (AC4)', async () => {
     const created = { ...sampleEntity };
-    const { client } = buildGraphClient({ knowledge_entities: [{ data: null }, { data: created }] });
+    const { client } = buildGraphClient({ knowledge_entities: [{ data: null }, { data: null }, { data: created }] });
     const seeded = await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Busy PM', description: 'A time-poor product manager' });
     expect(seeded.kind).toBe('persona');
     // A queryEntities kind=persona over the same graph returns the seeded node (not []).
@@ -1229,6 +1261,32 @@ describe('createEntity', () => {
     secondChain.order = vi.fn().mockResolvedValue({ data: [created], error: null });
     const rows = await queryEntities(qClient, PROJECT_ID, { kind: 'persona' });
     expect(rows).toEqual([created]);
+  });
+
+  // B-977 (AC3): same-name-different-kind is a WARNING, never a block, and never a silent duplicate.
+  it('B-977: surfaces a non-blocking collision_warning when the name exists under a DIFFERENT kind', async () => {
+    const created = { ...sampleEntity, kind: 'feature', name: 'Cloud library management' };
+    const { client, chains } = buildGraphClient({
+      knowledge_entities: [
+        { data: null },                                             // same-kind ('feature') lookup: miss
+        { data: { id: 'ent-old-concept', kind: 'concept' } },       // B-977 collision check: a DIFFERENT-kind match
+        { data: created },                                           // insert echo
+      ],
+    });
+    const result = await createEntity(client, PROJECT_ID, { kind: 'feature', name: 'Cloud library management' });
+    expect(chains.knowledge_entities.insert).toHaveBeenCalled();   // never blocked — create proceeds
+    expect(result.id).toBe(created.id);
+    expect((result as any).collision_warning).toEqual({
+      entity_id: 'ent-old-concept',
+      kind: 'concept',
+      message: expect.stringContaining('reconcile_entity'),
+    });
+  });
+
+  it('B-977: same-KIND match (the ordinary create-or-skip path) carries no collision_warning', async () => {
+    const { client } = buildGraphClient({ knowledge_entities: [{ data: sampleEntity }] });
+    const result = await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Busy PM' });
+    expect((result as any).collision_warning).toBeUndefined();
   });
 });
 
@@ -1465,6 +1523,39 @@ describe('recordDecision', () => {
       type: 'business', title: 'no realization given',
     });
     expect(secondChain.insert.mock.calls[0][0]).not.toHaveProperty('realization');
+  });
+
+  // B-977 (AC2): a technical/product/ux-ui design decision defaults to realization='agreed'
+  // (decided-not-yet-built) instead of NULL, unless the caller passes an explicit override. Every
+  // OTHER type keeps the NULL≡live default untouched (B-551 relies on it).
+  describe('B-977: default realization for design-decision types', () => {
+    it.each(['technical-design', 'product-design', 'ux-ui-design'])(
+      "defaults realization='agreed' for type=%s when omitted",
+      async (type) => {
+        const { client, secondChain } = buildWorkspaceAndQueryClient({ data: { ...decisionRow, type, realization: 'agreed' } });
+        await recordDecision(client, PROJECT_ID, USER_ID, { type, title: `a ${type} decision` });
+        expect(secondChain.insert).toHaveBeenCalledWith(expect.objectContaining({ realization: 'agreed' }));
+      },
+    );
+
+    it('an explicit realization on a design-decision type ALWAYS wins over the default', async () => {
+      const { client, secondChain } = buildWorkspaceAndQueryClient({
+        data: { ...decisionRow, type: 'technical-design', realization: 'live' },
+      });
+      await recordDecision(client, PROJECT_ID, USER_ID, {
+        type: 'technical-design', title: 'already shipped', realization: 'live',
+      });
+      expect(secondChain.insert).toHaveBeenCalledWith(expect.objectContaining({ realization: 'live' }));
+    });
+
+    it.each(['business', 'architecture', 'convention', 'specification', 'deferral'])(
+      'every OTHER decision type (%s) keeps the NULL≡live default UNTOUCHED — no realization key inserted',
+      async (type) => {
+        const { client, secondChain } = buildWorkspaceAndQueryClient({ data: { ...decisionRow, type } });
+        await recordDecision(client, PROJECT_ID, USER_ID, { type, title: `a ${type} decision` });
+        expect(secondChain.insert.mock.calls[0][0]).not.toHaveProperty('realization');
+      },
+    );
   });
 
   // B-645: elicitation claims — provenance + brief coupling.

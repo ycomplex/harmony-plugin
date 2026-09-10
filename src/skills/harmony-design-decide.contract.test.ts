@@ -127,3 +127,21 @@ describe('harmony-design-decide skill contract', () => {
     expect(found?.content).toBe('CLARIFY-CONTENT: happy-path ACs');
   });
 });
+
+// B-977: link_ticket_entities wiring at accept, with three-state field_values.implements_entities
+// handling (present/absent/empty) — never a throw, never a warn, never an empty-edge write on the
+// absent/empty paths (the permanent state for every pre-B-977 ticket).
+describe('harmony-design-decide: B-977 entity-linking wiring', () => {
+  const skill = readSkill('harmony-design-decide');
+
+  it('calls link_ticket_entities (a real registered tool) at accept', () => {
+    expect(referencedHarmonyTools(skill.body)).toContain('link_ticket_entities');
+  });
+
+  it('documents all three states of field_values.implements_entities', () => {
+    expect(skill.body).toContain('implements_entities');
+    expect(skill.body.toLowerCase()).toContain('absent entirely');
+    expect(skill.body).toMatch(/empty list.*no edges|no edges written/i);
+    expect(skill.body.toLowerCase()).toMatch(/no throw,\s+no warn,\s+no\s+empty-edge write/);
+  });
+});

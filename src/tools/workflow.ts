@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+import { resolveOrCreateEntity, getWorkspaceId } from './knowledge.js';
 
 export interface WorkflowTransitionRow {
   from_state: string | null;
@@ -179,8 +180,106 @@ export async function listTicketKnowledge(
     decision_id: string;
     knowledge_decisions: Record<string, unknown> | null;
   }[];
+  // B-977 (AC1): surface each decision's affected entities (decision_affects_entity) alongside it —
+  // the "affecting decision" half of the entity-edges read surface. Fetched separately (rather than a
+  // doubly-nested embed) and merged in JS, one query for the whole batch.
+  const affectedByDecision = await fetchAffectedEntities(client, rows.map((r) => r.decision_id));
   return rows.map((r) => ({
     decision_id: r.decision_id,
     ...(r.knowledge_decisions ?? {}),
+    affected_entities: affectedByDecision[r.decision_id] ?? [],
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Helper: fetchAffectedEntities (B-977)
+// ---------------------------------------------------------------------------
+
+export interface AffectedEntityRow { entity_id: string; name: string; kind: string; }
+
+async function fetchAffectedEntities(
+  client: SupabaseClient,
+  decisionIds: string[],
+): Promise<Record<string, AffectedEntityRow[]>> {
+  if (decisionIds.length === 0) return {};
+  const { data, error } = await client
+    .from('decision_affects_entity')
+    .select('decision_id, entity_id, knowledge_entities(name, kind)')
+    .in('decision_id', decisionIds);
+  if (error) throw error;
+  const map: Record<string, AffectedEntityRow[]> = {};
+  for (const row of (data ?? []) as Array<{ decision_id: string; entity_id: string; knowledge_entities: { name?: string; kind?: string } | null }>) {
+    const entity = row.knowledge_entities;
+    if (!entity?.name) continue;
+    const list = map[row.decision_id] ?? (map[row.decision_id] = []);
+    list.push({ entity_id: row.entity_id, name: entity.name, kind: entity.kind ?? '' });
+  }
+  return map;
+}
+
+// ---------------------------------------------------------------------------
+// Handler: linkTicketEntities (B-977)
+// ---------------------------------------------------------------------------
+//
+// The AC1 write half: a just-promoted design/visual-handoff decision names the entity/entities it
+// implements/affects. For each name, resolve-or-create the entity (default kind 'feature' — the
+// pinned birth point for AC1/AC4's feature entities) then upsert BOTH edges in the same write:
+// ticket_implements_entity (the creating ticket) and decision_affects_entity (the affecting
+// decision) — mirroring referenceKnowledge's upsert-with-onConflict pattern. A genuine RLS/
+// permission denial throws (both tables' policies are confirmed live — no degrade path for a
+// problem that does not exist).
+
+export const linkTicketEntitiesTool = {
+  name: 'link_ticket_entities',
+  description:
+    "Link a task and a just-promoted design/visual-handoff decision to one or more knowledge entities " +
+    "(B-977) — writes BOTH ticket_implements_entity (task -> entity) and decision_affects_entity " +
+    "(decision -> entity) in the same call. Each name is resolved-or-created via the same path as " +
+    "record_decision's affected_entity_names, default kind 'feature'. Call this right after the " +
+    "design/visual-handoff gate's resolve_brief promotes the decision, passing the entity name(s) " +
+    "confirmed at clarify (field_values.implements_entities) — or any other entity names worth binding " +
+    "to this ticket/decision pair. Idempotent (upsert, ignore-duplicates).",
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      task_id: { type: 'string', description: 'Task identifier — UUID, number, or visual ID' },
+      decision_id: { type: 'string', description: 'knowledge_decisions.id — the just-promoted design/visual-handoff decision' },
+      entity_names: { type: 'array', items: { type: 'string' }, description: 'One or more entity names to resolve-or-create and link' },
+      entity_kind: { type: 'string', description: "Kind used ONLY for entities that don't already exist under any kind. Default 'feature'." },
+    },
+    required: ['task_id', 'decision_id', 'entity_names'],
+  },
+};
+
+export async function linkTicketEntities(
+  client: SupabaseClient,
+  projectId: string,
+  args: { task_id: string; decision_id: string; entity_names: string[]; entity_kind?: string },
+) {
+  if (!args.decision_id) throw new Error('decision_id is required');
+  const names = (args.entity_names ?? []).map((n) => n.trim()).filter(Boolean);
+  if (names.length === 0) throw new Error('entity_names must contain at least one non-empty name');
+
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const kind = args.entity_kind ?? 'feature';
+
+  const entityIds: string[] = [];
+  for (const name of names) {
+    entityIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name, kind));
+  }
+
+  for (const entityId of entityIds) {
+    const { error: implementsErr } = await client
+      .from('ticket_implements_entity')
+      .upsert({ task_id: id, entity_id: entityId }, { onConflict: 'task_id,entity_id', ignoreDuplicates: true });
+    if (implementsErr) throw implementsErr;
+
+    const { error: affectsErr } = await client
+      .from('decision_affects_entity')
+      .upsert({ decision_id: args.decision_id, entity_id: entityId }, { onConflict: 'decision_id,entity_id', ignoreDuplicates: true });
+    if (affectsErr) throw affectsErr;
+  }
+
+  return { task_id: id, decision_id: args.decision_id, entity_ids: entityIds, linked: true };
 }

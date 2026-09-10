@@ -39104,6 +39104,19 @@ async function fetchKnowledgeReferenceCount(client, taskId) {
     return 0;
   }
 }
+async function fetchImplementedEntities(client, taskId) {
+  try {
+    const { data, error: error2 } = await client.from("ticket_implements_entity").select("entity_id, knowledge_entities(name, kind)").eq("task_id", taskId);
+    if (error2 || !data) return [];
+    return data.filter((row) => !!row.knowledge_entities?.name).map((row) => ({
+      entity_id: row.entity_id,
+      name: row.knowledge_entities.name,
+      kind: row.knowledge_entities.kind ?? ""
+    }));
+  } catch {
+    return [];
+  }
+}
 var listTasksTool = {
   name: "list_tasks",
   description: "List tasks in the project with optional filters. Each row carries the real workflow_state + lifecycle fields (awaiting_human_input, awaiting_human_reason, stale) alongside the legacy status, plus milestone_id/cycle_id (B-686). Rows are LEAN by default \u2014 description is omitted (a list navigates; read bodies via get_task or pass view:'full'). Filter by workflow_state (opinionated-mode projects only \u2014 string or array, e.g. the non-terminal set; errors on a manual-mode project), milestone_id, cycle_id, or the legacy status.",
@@ -39220,7 +39233,8 @@ async function getTask(client, projectId, args) {
     active_exchange,
     pending_remark,
     active_brief_iteration,
-    knowledge_reference_count
+    knowledge_reference_count,
+    implements_entities
   ] = await Promise.all([
     meta ? Promise.resolve({ data: null }) : client.from("acceptance_criteria").select("*").eq("task_id", resolvedId).order("position"),
     meta ? Promise.resolve({ data: null }) : client.from("test_cases").select("*").eq("task_id", resolvedId).order("position"),
@@ -39238,7 +39252,10 @@ async function getTask(client, projectId, args) {
     // B-792: board-progress signals — run in BOTH views (meta and full), like the poll markers
     // above, since the daemon polls via view:'meta' and this is exactly what it needs to see.
     fetchActiveBriefIteration(client, resolvedId),
-    fetchKnowledgeReferenceCount(client, resolvedId)
+    fetchKnowledgeReferenceCount(client, resolvedId),
+    // B-977: payload-only (not a loop-control signal) — skip in meta like acceptance_criteria/
+    // test_cases/attachments above.
+    meta ? Promise.resolve([]) : fetchImplementedEntities(client, resolvedId)
   ]);
   const acceptanceCriteria = acceptanceCriteriaRes.data;
   const testCases = testCasesRes.data;
@@ -39297,7 +39314,10 @@ async function getTask(client, projectId, args) {
     pending_remark,
     risk_classes,
     active_brief_iteration,
-    knowledge_reference_count
+    knowledge_reference_count,
+    // B-977 (AC1): entities this ticket implements (ticket_implements_entity), read-surface half
+    // of the write discipline — full view only (payload, not loop-control).
+    implements_entities
   };
 }
 var createTaskTool = {
@@ -40648,15 +40668,34 @@ async function updateKnowledgeEntry(client, projectId, args) {
   }
   return updated;
 }
+async function findCrossKindCollision(client, workspaceId, name, kind) {
+  const { data, error: error2 } = await client.from("knowledge_entities").select("id, kind").eq("workspace_id", workspaceId).eq("name", name).neq("kind", kind).limit(1).maybeSingle();
+  if (error2 || !data) return null;
+  return data;
+}
+function collisionWarning(name, requestedKind, existing) {
+  return {
+    entity_id: existing.id,
+    kind: existing.kind,
+    message: `An entity named "${name}" already exists under kind "${existing.kind}" (id ${existing.id}). This write created/resolved a SEPARATE node under kind "${requestedKind}" instead of merging. If this was unintended, use reconcile_entity to merge them.`
+  };
+}
 async function resolveOrCreateEntity(client, workspaceId, projectId, name, kind = "concept") {
   const { data: existing, error: lookupErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).eq("kind", kind).eq("name", name).maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   if (existing) return existing.id;
+  const collision = await findCrossKindCollision(client, workspaceId, name, kind);
+  if (collision) {
+    console.error(
+      `[knowledge] entity collision: ${collisionWarning(name, kind, collision).message}`
+    );
+  }
   const { data, error: error2 } = await client.from("knowledge_entities").insert({ workspace_id: workspaceId, project_id: projectId, kind, name }).select("id").single();
   if (error2) throw new Error(error2.message);
   return data.id;
 }
 var CLAIM_PROVENANCES = ["human-stated", "agent-inferred-human-validated", "force-quit"];
+var DESIGN_DECISION_TYPES = /* @__PURE__ */ new Set(["product-design", "technical-design", "ux-ui-design"]);
 var isMissingClaimColumns = (msg) => !!msg && /(claim_provenance|underwriting_brief_id)/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
 async function recordDecision(client, projectId, userId, args) {
   if (!args.title?.trim()) throw new Error("title is required");
@@ -40690,7 +40729,11 @@ ${args.content ?? ""}`);
   if (args.tags !== void 0) record2.tags = args.tags;
   if (args.source_task_id !== void 0) record2.source_task_id = args.source_task_id;
   if (args.review_by !== void 0) record2.review_by = args.review_by;
-  if (args.realization !== void 0) record2.realization = args.realization;
+  if (args.realization !== void 0) {
+    record2.realization = args.realization;
+  } else if (DESIGN_DECISION_TYPES.has(args.type)) {
+    record2.realization = "agreed";
+  }
   if (args.claim_provenance !== void 0) record2.claim_provenance = args.claim_provenance;
   if (args.underwriting_brief_id !== void 0) record2.underwriting_brief_id = args.underwriting_brief_id;
   let { data, error: error2 } = await client.from("knowledge_decisions").insert(record2).select(DECISION_COLS).single();
@@ -40765,7 +40808,7 @@ var recordDecisionTool = {
       domain: { type: "array", items: { type: "string" }, description: "Domains: engineering, operations, data, product, customer, process" },
       affected_entity_names: { type: "array", items: { type: "string" }, description: "Entity names this decision touches (resolved/created in knowledge_entities)" },
       status: { type: "string", description: 'Override status (default "Asserted")' },
-      realization: { type: "string", enum: ["agreed", "live", "deprecating", "retired"], description: 'Implementation/realization state (orthogonal to status); omit \u21D2 NULL \u2261 live; "agreed" = decided-not-yet-built' },
+      realization: { type: "string", enum: ["agreed", "live", "deprecating", "retired"], description: 'Implementation/realization state (orthogonal to status). B-977: for type product-design/technical-design/ux-ui-design, omitting this defaults to "agreed" (decided-not-yet-built) rather than NULL \u2014 pass a value explicitly to override. For every other type, omit \u21D2 NULL \u2261 live, unchanged.' },
       source_type: { type: "string", description: "ticket | adr | manual | inferred | research (default 'manual')" },
       source_id: { type: "string", description: "Pointer back to the producing ticket/source" },
       source_activity: { type: "string", description: "The gate/skill that authored it (e.g. design-decide, clarify)" },
@@ -40815,6 +40858,7 @@ async function createEntity(client, projectId, args) {
     if (updErr) throw new Error(updErr.message);
     return updated;
   }
+  const collision = await findCrossKindCollision(client, workspaceId, name, kind);
   const record2 = {
     workspace_id: workspaceId,
     project_id: projectId,
@@ -40827,15 +40871,19 @@ async function createEntity(client, projectId, args) {
   if (error2) {
     if (error2.code === "23505") {
       const { data: raced } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", kind).eq("name", name).maybeSingle();
-      if (raced) return raced;
+      if (raced) {
+        const racedRow = raced;
+        return collision ? { ...racedRow, collision_warning: collisionWarning(name, kind, collision) } : racedRow;
+      }
     }
     throw new Error(error2.message);
   }
-  return data;
+  const created = data;
+  return collision ? { ...created, collision_warning: collisionWarning(name, kind, collision) } : created;
 }
 var createEntityTool = {
   name: "create_entity",
-  description: "Author a TYPED knowledge entity node (kind + name; optional description + metadata) directly in the graph. Idempotent upsert on the uniqueness key (workspace, kind, name): re-authoring the same node is a no-op, or refreshes the description/metadata when supplied. A node description is a THIN, stable, one-line canonical identifier \u2014 the substance and lifecycle (Asserted\u2192Accepted, realization) live in the decisions/facts ABOUT the entity, not on the node. Kinds are open-ended (e.g. 'persona', 'feature', 'component', 'integration', 'concept'). To merge a low-typed stub into a richer node of the same name, use reconcile_entity.",
+  description: "Author a TYPED knowledge entity node (kind + name; optional description + metadata) directly in the graph. Idempotent upsert on the uniqueness key (workspace, kind, name): re-authoring the same node is a no-op, or refreshes the description/metadata when supplied. A node description is a THIN, stable, one-line canonical identifier \u2014 the substance and lifecycle (Asserted\u2192Accepted, realization) live in the decisions/facts ABOUT the entity, not on the node. Kinds are open-ended (e.g. 'persona', 'feature', 'component', 'integration', 'concept'). To merge a low-typed stub into a richer node of the same name, use reconcile_entity. B-977: creating a name that already exists under a DIFFERENT kind is never blocked \u2014 it proceeds and the result carries a non-fatal `collision_warning` ({entity_id, kind, message}) pointing at the existing node; use reconcile_entity to merge if the duplicate was unintended.",
   inputSchema: {
     type: "object",
     properties: {
@@ -42366,10 +42414,58 @@ async function listTicketKnowledge(client, projectId, args) {
   const { data, error: error2 } = await client.from("ticket_references_knowledge").select("decision_id, knowledge_decisions(id, type, status, title, domain, source_activity)").eq("task_id", id);
   if (error2) throw error2;
   const rows = data ?? [];
+  const affectedByDecision = await fetchAffectedEntities(client, rows.map((r) => r.decision_id));
   return rows.map((r) => ({
     decision_id: r.decision_id,
-    ...r.knowledge_decisions ?? {}
+    ...r.knowledge_decisions ?? {},
+    affected_entities: affectedByDecision[r.decision_id] ?? []
   }));
+}
+async function fetchAffectedEntities(client, decisionIds) {
+  if (decisionIds.length === 0) return {};
+  const { data, error: error2 } = await client.from("decision_affects_entity").select("decision_id, entity_id, knowledge_entities(name, kind)").in("decision_id", decisionIds);
+  if (error2) throw error2;
+  const map = {};
+  for (const row of data ?? []) {
+    const entity = row.knowledge_entities;
+    if (!entity?.name) continue;
+    const list = map[row.decision_id] ?? (map[row.decision_id] = []);
+    list.push({ entity_id: row.entity_id, name: entity.name, kind: entity.kind ?? "" });
+  }
+  return map;
+}
+var linkTicketEntitiesTool = {
+  name: "link_ticket_entities",
+  description: "Link a task and a just-promoted design/visual-handoff decision to one or more knowledge entities (B-977) \u2014 writes BOTH ticket_implements_entity (task -> entity) and decision_affects_entity (decision -> entity) in the same call. Each name is resolved-or-created via the same path as record_decision's affected_entity_names, default kind 'feature'. Call this right after the design/visual-handoff gate's resolve_brief promotes the decision, passing the entity name(s) confirmed at clarify (field_values.implements_entities) \u2014 or any other entity names worth binding to this ticket/decision pair. Idempotent (upsert, ignore-duplicates).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, number, or visual ID" },
+      decision_id: { type: "string", description: "knowledge_decisions.id \u2014 the just-promoted design/visual-handoff decision" },
+      entity_names: { type: "array", items: { type: "string" }, description: "One or more entity names to resolve-or-create and link" },
+      entity_kind: { type: "string", description: "Kind used ONLY for entities that don't already exist under any kind. Default 'feature'." }
+    },
+    required: ["task_id", "decision_id", "entity_names"]
+  }
+};
+async function linkTicketEntities(client, projectId, args) {
+  if (!args.decision_id) throw new Error("decision_id is required");
+  const names = (args.entity_names ?? []).map((n) => n.trim()).filter(Boolean);
+  if (names.length === 0) throw new Error("entity_names must contain at least one non-empty name");
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const workspaceId = await getWorkspaceId2(client, projectId);
+  const kind = args.entity_kind ?? "feature";
+  const entityIds = [];
+  for (const name of names) {
+    entityIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name, kind));
+  }
+  for (const entityId of entityIds) {
+    const { error: implementsErr } = await client.from("ticket_implements_entity").upsert({ task_id: id, entity_id: entityId }, { onConflict: "task_id,entity_id", ignoreDuplicates: true });
+    if (implementsErr) throw implementsErr;
+    const { error: affectsErr } = await client.from("decision_affects_entity").upsert({ decision_id: args.decision_id, entity_id: entityId }, { onConflict: "decision_id,entity_id", ignoreDuplicates: true });
+    if (affectsErr) throw affectsErr;
+  }
+  return { task_id: id, decision_id: args.decision_id, entity_ids: entityIds, linked: true };
 }
 
 // src/tools/attachments.ts
@@ -42837,7 +42933,7 @@ var ackProjections = {
     pick2(result, ["id", "subject_entity_id", "status", "valid_from"])
   ),
   invalidate_fact: (result) => pick2(result, ["id", "status", "valid_to"]),
-  create_entity: (result) => pick2(result, ["id", "created_at"]),
+  create_entity: (result) => pick2(result, ["id", "created_at", "collision_warning"]),
   update_entity: (result, args) => {
     if (!isRecord(result)) return result;
     return {
@@ -42985,6 +43081,7 @@ function registerTools(disabledFeatures) {
     advanceWorkflowTool,
     referenceKnowledgeTool,
     listTicketKnowledgeTool,
+    linkTicketEntitiesTool,
     getBuildEvidenceStatusTool,
     createConductionTool,
     listConductionsTool,
@@ -43223,6 +43320,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "list_ticket_knowledge":
         result = await listTicketKnowledge(client, projectId, args);
+        break;
+      case "link_ticket_entities":
+        result = await linkTicketEntities(client, projectId, args);
         break;
       case "get_build_evidence_status":
         result = await getBuildEvidenceStatus(client, projectId, args);

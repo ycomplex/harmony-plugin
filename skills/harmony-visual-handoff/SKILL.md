@@ -151,8 +151,20 @@ mcp__harmony__compose_brief({
 - **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })`
   → promotes the decision
   Asserted→Accepted; if it carried `pending_activity: "designing"`, advances Decomposed→Designed. `accept`
-  binds to the **framed decision**, not every datum the surface depicted. Report whether the ticket is now
-  Designed or still needs other sub-tracks, then return to `harmony-design-decide`.
+  binds to the **framed decision**, not every datum the surface depicted.
+
+  **Link the ticket + decision to their implemented entities (B-977) — three-state handling.** Read
+  `field_values.implements_entities` off `get_task` (it may already be in context from earlier steps):
+  - **Present with one or more names** → `mcp__harmony__link_ticket_entities({ task_id, decision_id:
+    decision.id, entity_names: field_values.implements_entities.names })`.
+  - **Absent entirely** (the PERMANENT state for every ticket already past clarify before B-977
+    shipped — not a transition window that closes) → skip cleanly and silently. No throw, no warn, no
+    empty-edge write.
+  - **Present but an empty list** (`names: []`) → treat the same as absent — a legitimate "no linkable
+    feature" answer, not an error. Skip cleanly, no edges written.
+
+  Report whether the ticket is now Designed or still needs other sub-tracks, then return to
+  `harmony-design-decide`.
 - **defer** → **deferral is knowledge** (knowledge-discipline.md §"Deferral is knowledge" — the same
   discipline P4's gate skills follow). Author the deferral, then park:
   ```

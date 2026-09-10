@@ -458,6 +458,19 @@ mcp__harmony__compose_brief({
 })
 ```
 
+**Also propose candidate feature-entity name(s) for confirm-or-adjust (B-977).** Every clarify brief
+adds ONE MORE `doc.items` entry — a `kind: "confirm-or-adjust"` item — naming the feature-entity
+name(s) this ticket implements, derived from its title/description (a best-effort read, not a research
+task). The human accepts the proposed name(s) as-is or tells you the adjusted list when they accept; step
+5 below writes whatever the human actually confirmed, not necessarily this draft. An empty list
+(`proposed: { names: [] }`) is a legitimate answer for a ticket that implements no linkable feature (e.g.
+a pure bugfix or infra change) — never omit the item merely because you propose zero names; omitting it
+entirely is reserved for the field staying absent altogether (see step 5's three-state handling).
+```
+{ kind: "confirm-or-adjust", text: "Feature(s) this ticket implements — confirm or adjust", proposed: { names: ["Saved Filters"] } }
+```
+This rides in the SAME `items` array as the `decision`/`content-input` entries above.
+
 A **capture-only** ticket (step 3 derived zero happy-path ACs — e.g. "Decide the default export format")
 proposes `label_add` INSTEAD of any `acceptance_criterion` items, in the same `dedupeRefs(...)` call:
 ```
@@ -548,6 +561,23 @@ Show the rendered `content` verbatim. On the human's command:
   **mutually exclusive** with this branch: **do NOT ALSO run `manage_acceptance_criteria` here** — that
   would double-file the ACs (once directly, once via `consume_ac_add_write`'s own ledgered insert). Skip
   straight to `resolve_brief` below; the ledgered apply call that follows it files the ACs itself.
+
+  **Write the confirmed feature-entity name(s) (B-977) — before `resolve_brief`, both branches.** If
+  step 4 proposed a `confirm-or-adjust` item, write the human's confirmed list (the proposed names
+  as-is, or whatever adjustment the human stated when accepting) to the ticket's `field_values`,
+  mirroring `start-work/SKILL.md`'s `field_values.build_pr` / `field_values.work_branch` structured-
+  field pattern:
+  ```
+  mcp__harmony__update_task({ task_id, field_values: { implements_entities: {
+    names: ["Saved Filters"], confirmed_at: "<ISO timestamp>"
+  } } })
+  ```
+  An empty confirmed list (`names: []`) is written exactly like any other value — it is a real answer,
+  not an omission. `update_task` merges `field_values` — other keys are preserved. **If step 4 proposed
+  NO `confirm-or-adjust` item at all (a resumed/older brief predating B-977), skip this write entirely —
+  never invent a proposal at accept time that wasn't on the brief the human reviewed.** This write is
+  what `harmony-design-decide`/`harmony-visual-handoff`'s accept step reads back to call
+  `link_ticket_entities` (see those skills' step 5/6 — three-state handling: present/absent/empty).
 
   Then, if the brief carries a
   **"De-scope — re-ticketed on accept:"** block (branches A and B both reach this step), re-ticket each
