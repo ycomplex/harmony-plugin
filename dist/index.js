@@ -37584,16 +37584,27 @@ function collisionWarning(name, requestedKind, existing) {
   };
 }
 async function resolveOrCreateEntity(client, workspaceId, projectId, name, kind = "concept") {
-  const { data: existing, error: lookupErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).eq("kind", kind).eq("name", name).maybeSingle();
+  const rawName = name;
+  const normalizedName = normalizeHtmlEntities(rawName);
+  const { data: existing, error: lookupErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).eq("kind", kind).eq("name", normalizedName).maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   if (existing) return existing.id;
-  const collision = await findCrossKindCollision(client, workspaceId, name, kind);
+  if (normalizedName !== rawName) {
+    const { data: legacy, error: legacyErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).eq("kind", kind).eq("name", rawName).maybeSingle();
+    if (legacyErr) throw new Error(legacyErr.message);
+    if (legacy) {
+      const { data: renamed, error: renameErr } = await client.from("knowledge_entities").update({ name: normalizedName }).eq("workspace_id", workspaceId).eq("id", legacy.id).select("id").single();
+      if (renameErr) throw new Error(renameErr.message);
+      return renamed.id;
+    }
+  }
+  const collision = await findCrossKindCollision(client, workspaceId, normalizedName, kind);
   if (collision) {
     console.error(
-      `[knowledge] entity collision: ${collisionWarning(name, kind, collision).message}`
+      `[knowledge] entity collision: ${collisionWarning(normalizedName, kind, collision).message}`
     );
   }
-  const { data, error: error2 } = await client.from("knowledge_entities").insert({ workspace_id: workspaceId, project_id: projectId, kind, name }).select("id").single();
+  const { data, error: error2 } = await client.from("knowledge_entities").insert({ workspace_id: workspaceId, project_id: projectId, kind, name: normalizedName }).select("id").single();
   if (error2) throw new Error(error2.message);
   return data.id;
 }
@@ -37748,16 +37759,26 @@ async function createEntity(client, projectId, args) {
   if (!args.kind?.trim()) throw new Error("kind is required");
   if (!args.name?.trim()) throw new Error("name is required");
   const kind = args.kind.trim();
-  const name = args.name.trim();
+  const rawName = args.name.trim();
+  const name = normalizeHtmlEntities(rawName);
+  const description = args.description !== void 0 ? normalizeHtmlEntities(args.description) : void 0;
   const workspaceId = await getWorkspaceId(client, projectId);
   const { data: existing, error: lookupErr } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", kind).eq("name", name).maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
-  if (existing) {
+  let legacyMatch = null;
+  if (!existing && name !== rawName) {
+    const { data: legacy, error: legacyErr } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", kind).eq("name", rawName).maybeSingle();
+    if (legacyErr) throw new Error(legacyErr.message);
+    legacyMatch = legacy;
+  }
+  const matched = existing ?? legacyMatch;
+  if (matched) {
     const patch = {};
-    if (args.description !== void 0) patch.description = args.description;
+    if (legacyMatch && !existing) patch.name = name;
+    if (description !== void 0) patch.description = description;
     if (args.metadata !== void 0) patch.metadata = args.metadata;
-    if (Object.keys(patch).length === 0) return existing;
-    const { data: updated, error: updErr } = await client.from("knowledge_entities").update(patch).eq("workspace_id", workspaceId).eq("id", existing.id).select(ENTITY_COLS).single();
+    if (Object.keys(patch).length === 0) return matched;
+    const { data: updated, error: updErr } = await client.from("knowledge_entities").update(patch).eq("workspace_id", workspaceId).eq("id", matched.id).select(ENTITY_COLS).single();
     if (updErr) throw new Error(updErr.message);
     return updated;
   }
@@ -37768,7 +37789,7 @@ async function createEntity(client, projectId, args) {
     kind,
     name
   };
-  if (args.description !== void 0) record2.description = args.description;
+  if (description !== void 0) record2.description = description;
   if (args.metadata !== void 0) record2.metadata = args.metadata;
   const { data, error: error2 } = await client.from("knowledge_entities").insert(record2).select(ENTITY_COLS).single();
   if (error2) {
@@ -37809,7 +37830,7 @@ async function updateEntity(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
   const patch = {};
   if (args.new_kind !== void 0) patch.kind = args.new_kind;
-  if (args.description !== void 0) patch.description = args.description;
+  if (args.description !== void 0) patch.description = normalizeHtmlEntities(args.description);
   if (args.metadata !== void 0) patch.metadata = args.metadata;
   let query = client.from("knowledge_entities").update(patch).eq("workspace_id", workspaceId);
   if (args.entity_id) {
@@ -40925,7 +40946,7 @@ async function manageChecklistItems(client, projectId, userId, args) {
   if (args.add && args.add.length > 0) {
     const rows = args.add.map((item, i) => ({
       task_id: resolvedTaskId,
-      title: item.title,
+      title: normalizeHtmlEntities(item.title),
       position: maxPosition + 1 + i,
       created_by: userId
     }));
@@ -40937,7 +40958,7 @@ async function manageChecklistItems(client, projectId, userId, args) {
     for (const item of args.update) {
       const { id, ...updates } = item;
       const payload = {};
-      if (updates.title !== void 0) payload.title = updates.title;
+      if (updates.title !== void 0) payload.title = normalizeHtmlEntities(updates.title);
       if (updates.completed !== void 0) payload.completed = updates.completed;
       if (Object.keys(payload).length === 0) continue;
       const { data, error: error2 } = await client.from("checklist_items").update(payload).eq("id", id).eq("task_id", resolvedTaskId).select().single();
@@ -41809,7 +41830,7 @@ async function manageAcceptanceCriteria(client, projectId, userId, args) {
   if (args.add && args.add.length > 0) {
     const rows = args.add.map((item, i) => ({
       task_id: resolvedTaskId,
-      content: item.content,
+      content: normalizeHtmlEntities(item.content),
       checked: item.checked ?? false,
       position: maxPosition + 1 + i,
       created_by: userId
@@ -41822,7 +41843,7 @@ async function manageAcceptanceCriteria(client, projectId, userId, args) {
     for (const item of args.update) {
       const { id, ...updates } = item;
       const payload = {};
-      if (updates.content !== void 0) payload.content = updates.content;
+      if (updates.content !== void 0) payload.content = normalizeHtmlEntities(updates.content);
       if (updates.checked !== void 0) payload.checked = updates.checked;
       if (Object.keys(payload).length === 0) continue;
       const { data, error: error2 } = await client.from("acceptance_criteria").update(payload).eq("id", id).eq("task_id", resolvedTaskId).select().single();
@@ -41937,7 +41958,7 @@ async function manageTestCases(client, projectId, userId, args) {
   if (args.add && args.add.length > 0) {
     const rows = args.add.map((item, i) => ({
       task_id: resolvedTaskId,
-      name: item.name,
+      name: normalizeHtmlEntities(item.name),
       type: item.type,
       position: maxPosition + 1 + i,
       created_by: userId
@@ -41950,7 +41971,7 @@ async function manageTestCases(client, projectId, userId, args) {
     for (const item of args.update) {
       const { id, ...updates } = item;
       const payload = {};
-      if (updates.name !== void 0) payload.name = updates.name;
+      if (updates.name !== void 0) payload.name = normalizeHtmlEntities(updates.name);
       if (updates.type !== void 0) {
         assertValidType(updates.type);
         payload.type = updates.type;

@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+import { normalizeHtmlEntities } from './text-normalize.js';
 
 export const listChecklistItemsTool = {
   name: 'list_checklist_items',
@@ -109,7 +110,7 @@ export async function manageChecklistItems(
   if (args.add && args.add.length > 0) {
     const rows = args.add.map((item, i) => ({
       task_id: resolvedTaskId,
-      title: item.title,
+      title: normalizeHtmlEntities(item.title),
       position: maxPosition + 1 + i,
       created_by: userId,
     }));
@@ -126,7 +127,7 @@ export async function manageChecklistItems(
     for (const item of args.update) {
       const { id, ...updates } = item;
       const payload: Record<string, any> = {};
-      if (updates.title !== undefined) payload.title = updates.title;
+      if (updates.title !== undefined) payload.title = normalizeHtmlEntities(updates.title);
       if (updates.completed !== undefined) payload.completed = updates.completed;
       if (Object.keys(payload).length === 0) continue;
 

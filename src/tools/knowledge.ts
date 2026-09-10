@@ -771,31 +771,61 @@ export async function resolveOrCreateEntity(
   name: string,
   kind = 'concept',
 ): Promise<string> {
+  // B-993: normalize-before-lookup, so a normalized-name row and a raw-name write of the "same"
+  // entity resolve to one node instead of silently forking into two.
+  const rawName = name;
+  const normalizedName = normalizeHtmlEntities(rawName);
+
   const { data: existing, error: lookupErr } = await client
     .from('knowledge_entities')
     .select('id')
     .eq('workspace_id', workspaceId)
     .eq('kind', kind)
-    .eq('name', name)
+    .eq('name', normalizedName)
     .maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   if (existing) return (existing as { id: string }).id;
+
+  // B-993 repair-at-touch: the normalized name isn't found — check whether a legacy row still
+  // carries the raw (un-normalized, mangled-entity) name from before this write-site normalized.
+  // If so, RENAME it in place rather than minting a second node for the same real-world entity.
+  if (normalizedName !== rawName) {
+    const { data: legacy, error: legacyErr } = await client
+      .from('knowledge_entities')
+      .select('id')
+      .eq('workspace_id', workspaceId)
+      .eq('kind', kind)
+      .eq('name', rawName)
+      .maybeSingle();
+    if (legacyErr) throw new Error(legacyErr.message);
+    if (legacy) {
+      const { data: renamed, error: renameErr } = await client
+        .from('knowledge_entities')
+        .update({ name: normalizedName })
+        .eq('workspace_id', workspaceId)
+        .eq('id', (legacy as { id: string }).id)
+        .select('id')
+        .single();
+      if (renameErr) throw new Error(renameErr.message);
+      return (renamed as { id: string }).id;
+    }
+  }
 
   // B-977: same-name-different-kind collision is a WARNING, never a block. This helper's return
   // type (a plain string id) is relied on by many existing callers (recordDecision, assertFact,
   // …), so widening it would ripple through every call site for a signal only the exceptional
   // path needs. Surface it via a console side-channel instead — callers that want the structured
   // warning inline should author through createEntity, which returns it on the result.
-  const collision = await findCrossKindCollision(client, workspaceId, name, kind);
+  const collision = await findCrossKindCollision(client, workspaceId, normalizedName, kind);
   if (collision) {
     console.error(
-      `[knowledge] entity collision: ${collisionWarning(name, kind, collision).message}`,
+      `[knowledge] entity collision: ${collisionWarning(normalizedName, kind, collision).message}`,
     );
   }
 
   const { data, error } = await client
     .from('knowledge_entities')
-    .insert({ workspace_id: workspaceId, project_id: projectId, kind, name })
+    .insert({ workspace_id: workspaceId, project_id: projectId, kind, name: normalizedName })
     .select('id')
     .single();
   if (error) throw new Error(error.message);
@@ -1119,7 +1149,11 @@ export async function createEntity(
   if (!args.kind?.trim()) throw new Error('kind is required');
   if (!args.name?.trim()) throw new Error('name is required');
   const kind = args.kind.trim();
-  const name = args.name.trim();
+  // B-993: normalize-before-lookup, so a normalized-name row and a raw-name write of the "same"
+  // entity resolve to one node instead of silently forking into two.
+  const rawName = args.name.trim();
+  const name = normalizeHtmlEntities(rawName);
+  const description = args.description !== undefined ? normalizeHtmlEntities(args.description) : undefined;
 
   const workspaceId = await getWorkspaceId(client, projectId);
 
@@ -1134,16 +1168,35 @@ export async function createEntity(
     .maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
 
-  if (existing) {
+  // B-993 repair-at-touch: the normalized name isn't found — check whether a legacy row still
+  // carries the raw (un-normalized, mangled-entity) name from before this write-site normalized.
+  // If so, treat it as the match and RENAME it in place as part of this write, rather than
+  // minting a second node for the same real-world entity.
+  let legacyMatch: Record<string, unknown> | null = null;
+  if (!existing && name !== rawName) {
+    const { data: legacy, error: legacyErr } = await client
+      .from('knowledge_entities')
+      .select(ENTITY_COLS)
+      .eq('workspace_id', workspaceId)
+      .eq('kind', kind)
+      .eq('name', rawName)
+      .maybeSingle();
+    if (legacyErr) throw new Error(legacyErr.message);
+    legacyMatch = legacy;
+  }
+
+  const matched = existing ?? legacyMatch;
+  if (matched) {
     const patch: Record<string, unknown> = {};
-    if (args.description !== undefined) patch.description = args.description;
+    if (legacyMatch && !existing) patch.name = name;
+    if (description !== undefined) patch.description = description;
     if (args.metadata !== undefined) patch.metadata = args.metadata;
-    if (Object.keys(patch).length === 0) return existing as unknown as KnowledgeEntityFull;
+    if (Object.keys(patch).length === 0) return matched as unknown as KnowledgeEntityFull;
     const { data: updated, error: updErr } = await client
       .from('knowledge_entities')
       .update(patch)
       .eq('workspace_id', workspaceId)
-      .eq('id', (existing as { id: string }).id)
+      .eq('id', (matched as { id: string }).id)
       .select(ENTITY_COLS)
       .single();
     if (updErr) throw new Error(updErr.message);
@@ -1161,7 +1214,7 @@ export async function createEntity(
     kind,
     name,
   };
-  if (args.description !== undefined) record.description = args.description;
+  if (description !== undefined) record.description = description;
   if (args.metadata !== undefined) record.metadata = args.metadata;
 
   const { data, error } = await client
@@ -1247,7 +1300,7 @@ export async function updateEntity(
 
   const patch: Record<string, unknown> = {};
   if (args.new_kind !== undefined) patch.kind = args.new_kind;
-  if (args.description !== undefined) patch.description = args.description;
+  if (args.description !== undefined) patch.description = normalizeHtmlEntities(args.description);
   if (args.metadata !== undefined) patch.metadata = args.metadata;
 
   let query = client

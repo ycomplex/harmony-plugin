@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+import { normalizeHtmlEntities } from './text-normalize.js';
 
 export const listAcceptanceCriteriaTool = {
   name: 'list_acceptance_criteria',
@@ -110,7 +111,7 @@ export async function manageAcceptanceCriteria(
   if (args.add && args.add.length > 0) {
     const rows = args.add.map((item, i) => ({
       task_id: resolvedTaskId,
-      content: item.content,
+      content: normalizeHtmlEntities(item.content),
       checked: item.checked ?? false,
       position: maxPosition + 1 + i,
       created_by: userId,
@@ -128,7 +129,7 @@ export async function manageAcceptanceCriteria(
     for (const item of args.update) {
       const { id, ...updates } = item;
       const payload: Record<string, any> = {};
-      if (updates.content !== undefined) payload.content = updates.content;
+      if (updates.content !== undefined) payload.content = normalizeHtmlEntities(updates.content);
       if (updates.checked !== undefined) payload.checked = updates.checked;
       if (Object.keys(payload).length === 0) continue;
 

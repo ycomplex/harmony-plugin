@@ -38597,7 +38597,7 @@ async function manageChecklistItems(client, projectId, userId, args) {
   if (args.add && args.add.length > 0) {
     const rows = args.add.map((item, i) => ({
       task_id: resolvedTaskId,
-      title: item.title,
+      title: normalizeHtmlEntities(item.title),
       position: maxPosition + 1 + i,
       created_by: userId
     }));
@@ -38609,7 +38609,7 @@ async function manageChecklistItems(client, projectId, userId, args) {
     for (const item of args.update) {
       const { id, ...updates } = item;
       const payload = {};
-      if (updates.title !== void 0) payload.title = updates.title;
+      if (updates.title !== void 0) payload.title = normalizeHtmlEntities(updates.title);
       if (updates.completed !== void 0) payload.completed = updates.completed;
       if (Object.keys(payload).length === 0) continue;
       const { data, error } = await client.from("checklist_items").update(payload).eq("id", id).eq("task_id", resolvedTaskId).select().single();
@@ -38697,7 +38697,7 @@ async function manageAcceptanceCriteria(client, projectId, userId, args) {
   if (args.add && args.add.length > 0) {
     const rows = args.add.map((item, i) => ({
       task_id: resolvedTaskId,
-      content: item.content,
+      content: normalizeHtmlEntities(item.content),
       checked: item.checked ?? false,
       position: maxPosition + 1 + i,
       created_by: userId
@@ -38710,7 +38710,7 @@ async function manageAcceptanceCriteria(client, projectId, userId, args) {
     for (const item of args.update) {
       const { id, ...updates } = item;
       const payload = {};
-      if (updates.content !== void 0) payload.content = updates.content;
+      if (updates.content !== void 0) payload.content = normalizeHtmlEntities(updates.content);
       if (updates.checked !== void 0) payload.checked = updates.checked;
       if (Object.keys(payload).length === 0) continue;
       const { data, error } = await client.from("acceptance_criteria").update(payload).eq("id", id).eq("task_id", resolvedTaskId).select().single();
@@ -38962,7 +38962,7 @@ async function manageTestCases(client, projectId, userId, args) {
   if (args.add && args.add.length > 0) {
     const rows = args.add.map((item, i) => ({
       task_id: resolvedTaskId,
-      name: item.name,
+      name: normalizeHtmlEntities(item.name),
       type: item.type,
       position: maxPosition + 1 + i,
       created_by: userId
@@ -38975,7 +38975,7 @@ async function manageTestCases(client, projectId, userId, args) {
     for (const item of args.update) {
       const { id, ...updates } = item;
       const payload = {};
-      if (updates.name !== void 0) payload.name = updates.name;
+      if (updates.name !== void 0) payload.name = normalizeHtmlEntities(updates.name);
       if (updates.type !== void 0) {
         assertValidType(updates.type);
         payload.type = updates.type;

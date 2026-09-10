@@ -1288,6 +1288,70 @@ describe('createEntity', () => {
     const result = await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Busy PM' });
     expect((result as any).collision_warning).toBeUndefined();
   });
+
+  describe('B-993: HTML entity normalization + repair-at-touch', () => {
+    it('(normalized-exists) resolves directly to a row already under the normalized name, no insert/update', async () => {
+      const existing = { ...sampleEntity, name: 'Save & Continue' };
+      const { client, chains } = buildGraphClient({ knowledge_entities: [{ data: existing }] });
+      const result = await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Save &amp; Continue' });
+      expect(chains.knowledge_entities.eq).toHaveBeenCalledWith('name', 'Save & Continue');
+      expect(chains.knowledge_entities.insert).not.toHaveBeenCalled();
+      expect(chains.knowledge_entities.update).not.toHaveBeenCalled();
+      expect(result).toEqual(existing);
+    });
+
+    it('(raw-legacy-exists) renames a legacy mangled-name row in place instead of minting a duplicate', async () => {
+      const legacy = { ...sampleEntity, id: 'ent-legacy', name: 'Save &amp; Continue' };
+      const renamed = { ...legacy, name: 'Save & Continue' };
+      const { client, chains } = buildGraphClient({
+        // normalized-name lookup: miss, raw/legacy-name lookup: hit, rename update: echo
+        knowledge_entities: [{ data: null }, { data: legacy }, { data: renamed }],
+      });
+      const result = await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Save &amp; Continue' });
+      expect(chains.knowledge_entities.update).toHaveBeenCalledWith({ name: 'Save & Continue' });
+      expect(chains.knowledge_entities.insert).not.toHaveBeenCalled();
+      expect(result).toEqual(renamed);
+    });
+
+    it('(neither-exists) inserts a new row under the normalized name when no row matches either name', async () => {
+      const created = { ...sampleEntity, id: 'ent-new', name: 'Save & Continue' };
+      const { client, chains } = buildGraphClient({
+        // normalized-name lookup: miss, raw/legacy-name lookup: miss, B-977 collision check: miss, insert echo
+        knowledge_entities: [{ data: null }, { data: null }, { data: null }, { data: created }],
+      });
+      const result = await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Save &amp; Continue' });
+      expect(chains.knowledge_entities.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Save & Continue' }),
+      );
+      expect(result).toEqual(created);
+    });
+
+    it('(description normalization) decodes a mangled entity in description on insert', async () => {
+      const created = { ...sampleEntity, id: 'ent-new', name: 'Busy PM', description: 'Say "hi" & wave' };
+      const { client, chains } = buildGraphClient({
+        // name has no entities to normalize, so no legacy lookup: same-kind miss, collision miss, insert echo
+        knowledge_entities: [{ data: null }, { data: null }, { data: created }],
+      });
+      const result = await createEntity(client, PROJECT_ID, {
+        kind: 'persona', name: 'Busy PM', description: 'Say &quot;hi&quot; &amp; wave',
+      });
+      expect(chains.knowledge_entities.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ description: 'Say "hi" & wave' }),
+      );
+      expect(result).toEqual(created);
+    });
+
+    it('(description normalization) decodes a mangled entity in description on the existing-row patch', async () => {
+      const updated = { ...sampleEntity, description: 'Say "hi" & wave' };
+      const { client, chains } = buildGraphClient({ knowledge_entities: [{ data: sampleEntity }, { data: updated }] });
+      const result = await createEntity(client, PROJECT_ID, {
+        kind: 'persona', name: 'Busy PM', description: 'Say &quot;hi&quot; &amp; wave',
+      });
+      expect(chains.knowledge_entities.update).toHaveBeenCalledWith({ description: 'Say "hi" & wave' });
+      expect(result).toEqual(updated);
+    });
+  });
+
 });
 
 describe('updateEntity', () => {
@@ -1325,6 +1389,113 @@ describe('updateEntity', () => {
     await expect(
       updateEntity(client, PROJECT_ID, { kind: 'concept', name: 'Checkout', new_kind: 'feature' }),
     ).rejects.toThrow(/reconcile_entity to MERGE/);
+  });
+
+  it('B-993: normalizes a mangled entity in description', async () => {
+    const updated = { ...sampleEntity, description: 'Save & Continue' };
+    const { client, chains } = buildGraphClient({ knowledge_entities: [{ data: updated }] });
+    const result = await updateEntity(client, PROJECT_ID, { entity_id: 'ent-1', description: 'Save &amp; Continue' });
+    expect(chains.knowledge_entities.update).toHaveBeenCalledWith({ description: 'Save & Continue' });
+    expect(result).toEqual(updated);
+  });
+
+});
+
+
+// ---------------------------------------------------------------------------
+// resolveOrCreateEntity — B-993: normalize-before-lookup + two-step resolve +
+// rename-in-place, pinned through BOTH callers that share this helper (record_decision's
+// affected_entity_names path and assertFact), per the plan's de-risk note that both must
+// be pinned, not just one. (link_ticket_entities shares the exact same helper call, so
+// fixing resolveOrCreateEntity covers it too — no separate test needed for it.)
+// ---------------------------------------------------------------------------
+
+describe('resolveOrCreateEntity — B-993 HTML entity normalization + repair-at-touch', () => {
+  const decisionRow = {
+    id: 'dec-b993', workspace_id: WORKSPACE_ID, project_id: PROJECT_ID,
+    title: 'x', content: '', type: 'business', status: 'Asserted', domain: [], confidence: 1.0,
+    review_by: null, drift_risk: false, superseded_by: null, affected_entity_ids: [], madr: null,
+    source_type: 'manual', source_id: null, source_activity: null, tags: [], source_task_id: null,
+    created_by: USER_ID, created_at: '2026-09-10T00:00:00Z', updated_at: '2026-09-10T00:00:00Z',
+  };
+
+  it('(normalized-exists, via record_decision) resolves directly to the existing normalized-name entity', async () => {
+    const existing = { id: 'ent-1' };
+    const { client, chains } = buildGraphClient({
+      knowledge_entities: [{ data: existing }],
+      knowledge_decisions: [{ data: { ...decisionRow, affected_entity_ids: ['ent-1'] } }],
+    });
+    const result = await recordDecision(client, PROJECT_ID, USER_ID, {
+      type: 'business', title: 'x', affected_entity_names: ['Save &amp; Continue'],
+    });
+    expect(chains.knowledge_entities.eq).toHaveBeenCalledWith('name', 'Save & Continue');
+    expect(chains.knowledge_entities.insert).not.toHaveBeenCalled();
+    expect(result.affected_entity_ids).toEqual(['ent-1']);
+  });
+
+  it('(raw-legacy-exists, via record_decision) renames a legacy mangled-name row in place', async () => {
+    const legacy = { id: 'ent-legacy' };
+    const renamed = { id: 'ent-legacy' };
+    const { client, chains } = buildGraphClient({
+      // normalized-name lookup: miss, raw/legacy-name lookup: hit, rename update: echo
+      knowledge_entities: [{ data: null }, { data: legacy }, { data: renamed }],
+      knowledge_decisions: [{ data: { ...decisionRow, affected_entity_ids: ['ent-legacy'] } }],
+    });
+    const result = await recordDecision(client, PROJECT_ID, USER_ID, {
+      type: 'business', title: 'x', affected_entity_names: ['Save &amp; Continue'],
+    });
+    expect(chains.knowledge_entities.update).toHaveBeenCalledWith({ name: 'Save & Continue' });
+    expect(chains.knowledge_entities.insert).not.toHaveBeenCalled();
+    expect(result.affected_entity_ids).toEqual(['ent-legacy']);
+  });
+
+  it('(neither-exists, via record_decision) creates a new entity under the normalized name', async () => {
+    const { client, chains } = buildGraphClient({
+      // normalized-name lookup: miss, raw/legacy-name lookup: miss, B-977 collision check: miss, insert echo
+      knowledge_entities: [{ data: null }, { data: null }, { data: null }, { data: { id: 'ent-new' } }],
+      knowledge_decisions: [{ data: { ...decisionRow, affected_entity_ids: ['ent-new'] } }],
+    });
+    const result = await recordDecision(client, PROJECT_ID, USER_ID, {
+      type: 'business', title: 'x', affected_entity_names: ['Save &amp; Continue'],
+    });
+    expect(chains.knowledge_entities.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Save & Continue' }),
+    );
+    expect(result.affected_entity_ids).toEqual(['ent-new']);
+  });
+
+  it('(no entities in the name, via record_decision) skips the legacy lookup entirely — a single query resolves it', async () => {
+    const { client, chains } = buildGraphClient({
+      // no HTML entities in the name → normalized === raw, so only ONE lookup + the B-977
+      // collision check + insert; no second (legacy) query is ever issued.
+      knowledge_entities: [{ data: null }, { data: null }, { data: { id: 'ent-plain' } }],
+      knowledge_decisions: [{ data: { ...decisionRow, affected_entity_ids: ['ent-plain'] } }],
+    });
+    const result = await recordDecision(client, PROJECT_ID, USER_ID, {
+      type: 'business', title: 'x', affected_entity_names: ['Checkout flow'],
+    });
+    expect(chains.knowledge_entities.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Checkout flow' }),
+    );
+    expect(result.affected_entity_ids).toEqual(['ent-plain']);
+  });
+
+  it('(raw-legacy-exists, via assertFact) renames a legacy mangled-name row in place — pins the OTHER caller', async () => {
+    const legacy = { id: 'ent-legacy' };
+    const renamed = { id: 'ent-legacy' };
+    const factRow = { id: 'fact-b993', subject_entity_id: 'ent-legacy', predicate: 'uses', status: 'Asserted' };
+    const { client, chains } = buildGraphClient({
+      knowledge_entities: [{ data: null }, { data: legacy }, { data: renamed }],
+      knowledge_facts: [{ data: factRow }],
+    });
+    const result = await assertFact(client, PROJECT_ID, USER_ID, {
+      subject_entity: 'Save &amp; Continue button', predicate: 'uses', object: 'x', source_type: 'manual',
+    });
+    expect(chains.knowledge_entities.update).toHaveBeenCalledWith({ name: 'Save & Continue button' });
+    expect(chains.knowledge_facts.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ subject_entity_id: 'ent-legacy' }),
+    );
+    expect(result).toEqual(factRow);
   });
 });
 

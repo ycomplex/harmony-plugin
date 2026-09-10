@@ -24,9 +24,10 @@
 //      is the actual defect this ticket fixes.
 //
 // Field set (per the accepted design): task title+description, comment
-// content, knowledge entry title+content. Explicitly OUT of scope: acceptance
-// criteria content, test-case names, checklist-item titles, entity
-// name/description -- those are tracked separately.
+// content, knowledge entry title+content, acceptance-criteria content,
+// test-case names, checklist-item titles, and entity name+description
+// (B-993 -- the latter via createEntity and the shared resolveOrCreateEntity
+// helper used by record_decision/assert_fact/link_ticket_entities).
 
 const ENTITY_MAP: Record<string, string> = {
   '&amp;': '&',
