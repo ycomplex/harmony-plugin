@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { normalizeHtmlEntities } from './text-normalize.js';
 
 // ---------------------------------------------------------------------------
 // Interfaces
@@ -576,8 +577,8 @@ export async function createKnowledgeEntry(
   const record: Record<string, unknown> = {
     workspace_id: workspaceId,
     project_id: projectId,
-    title: args.title.trim(),
-    content: args.content ?? '',
+    title: normalizeHtmlEntities(args.title.trim()),
+    content: normalizeHtmlEntities(args.content ?? ''),
     type: args.type,
     status: args.status !== undefined ? toLegacyStatus(args.status) : 'draft',
     created_by: userId,
@@ -655,8 +656,8 @@ export async function updateKnowledgeEntry(
   const workspaceId = await getWorkspaceId(client, projectId);
 
   const updates: Record<string, unknown> = {};
-  if (args.new_title !== undefined) updates.title = args.new_title.trim();
-  if (args.content !== undefined) updates.content = args.content;
+  if (args.new_title !== undefined) updates.title = normalizeHtmlEntities(args.new_title.trim());
+  if (args.content !== undefined) updates.content = normalizeHtmlEntities(args.content);
   if (args.type !== undefined) updates.type = args.type;
   if (args.status !== undefined) updates.status = toBaseStatus(args.status);
   if (args.tags !== undefined) updates.tags = args.tags;
@@ -870,8 +871,8 @@ export async function recordDecision(
   const record: Record<string, unknown> = {
     workspace_id: workspaceId,
     project_id: projectId,
-    title: args.title.trim(),
-    content: args.content ?? '',
+    title: normalizeHtmlEntities(args.title.trim()),
+    content: normalizeHtmlEntities(args.content ?? ''),
     type: args.type,
     status: args.status ?? 'Asserted',
     domain: args.domain ?? [],

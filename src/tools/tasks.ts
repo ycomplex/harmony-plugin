@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId, resolveTaskIds } from './resolve-task-id.js';
+import { normalizeHtmlEntities } from './text-normalize.js';
 import { resolveAssignee } from './members.js';
 import { fetchPendingResolution, fetchPendingRemark } from './briefs.js';
 import { fetchActiveExchange } from './elicitation.js';
@@ -505,12 +506,12 @@ export async function createTask(
     .from('tasks')
     .insert({
       project_id: projectId,
-      title: args.title,
+      title: normalizeHtmlEntities(args.title),
       status,
       priority: args.priority ?? 'medium',
       assignee_id: assigneeId,
       epic_id: epicId,
-      description: args.description?.replace(/\\n/g, '\n') ?? null,
+      description: args.description != null ? normalizeHtmlEntities(args.description.replace(/\\n/g, '\n')) : null,
       due_date: args.due_date ?? null,
       field_values: args.field_values ?? {},
       position: nextPosition,
@@ -595,9 +596,12 @@ export async function updateTask(
       : await resolveTaskId(client, projectId, updates.subsumed_by_task_id);
   }
 
-  // Normalize escaped newlines in description
+  // Normalize escaped newlines, then HTML entities, in title/description.
+  if (typeof updates.title === 'string') {
+    updates.title = normalizeHtmlEntities(updates.title);
+  }
   if (typeof updates.description === 'string') {
-    updates.description = updates.description.replace(/\\n/g, '\n');
+    updates.description = normalizeHtmlEntities(updates.description.replace(/\\n/g, '\n'));
   }
 
   // If field_values provided, merge with existing
@@ -773,11 +777,11 @@ export async function bulkCreateTasks(
     const parent = parentTaskId ? parentMeta.get(parentTaskId) : undefined;
     return {
       project_id: projectId,
-      title: task.title,
+      title: normalizeHtmlEntities(task.title),
       status,
       priority: task.priority ?? 'medium',
       epic_id: task.epic_id ?? (parent && parent.project_id === projectId ? parent.epic_id : null) ?? null,
-      description: task.description?.replace(/\\n/g, '\n') ?? null,
+      description: task.description != null ? normalizeHtmlEntities(task.description.replace(/\\n/g, '\n')) : null,
       due_date: task.due_date ?? null,
       field_values: task.field_values ?? {},
       position: pos,

@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+import { normalizeHtmlEntities } from './text-normalize.js';
 
 export const listCommentsTool = {
   name: 'list_comments',
@@ -62,7 +63,7 @@ export async function addComment(
     .insert({
       task_id: taskId,
       user_id: userId,
-      content: args.content.replace(/\\n/g, '\n'),
+      content: normalizeHtmlEntities(args.content.replace(/\\n/g, '\n')),
     })
     .select()
     .single();
