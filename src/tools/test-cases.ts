@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+import { normalizeHtmlEntities } from './text-normalize.js';
 
 // Single source of truth for the DB constraint:
 //   type TEXT NOT NULL CHECK (type IN ('unit','e2e','integration'))
@@ -139,7 +140,7 @@ export async function manageTestCases(
   if (args.add && args.add.length > 0) {
     const rows = args.add.map((item, i) => ({
       task_id: resolvedTaskId,
-      name: item.name,
+      name: normalizeHtmlEntities(item.name),
       type: item.type,
       position: maxPosition + 1 + i,
       created_by: userId,
@@ -157,7 +158,7 @@ export async function manageTestCases(
     for (const item of args.update) {
       const { id, ...updates } = item;
       const payload: Record<string, any> = {};
-      if (updates.name !== undefined) payload.name = updates.name;
+      if (updates.name !== undefined) payload.name = normalizeHtmlEntities(updates.name);
       if (updates.type !== undefined) {
         assertValidType(updates.type);
         payload.type = updates.type;

@@ -178,3 +178,51 @@ describe('manageTestCases — type validation against the DB constraint', () => 
     expect(result.updated[0]).toMatchObject({ type: 'integration' });
   });
 });
+
+describe('manageTestCases — HTML entity normalization (B-993)', () => {
+  beforeEach(async () => {
+    const resolveMock = (await import('./resolve-task-id.js'))
+      .resolveTaskId as ReturnType<typeof vi.fn>;
+    resolveMock.mockReset();
+    resolveMock.mockResolvedValue('resolved-uuid');
+  });
+
+  it('decodes a mangled entity in an added test case name', async () => {
+    const insertSpy = vi.fn();
+    const client = makeClient({ insertSpy, maxPosition: -1 });
+
+    const result = await manageTestCases(client, 'proj-1', 'user-1', {
+      task_id: 'B-1',
+      add: [{ name: 'Save &amp; Continue works', type: 'unit' }],
+    });
+
+    expect(insertSpy).toHaveBeenCalledTimes(1);
+    expect(insertSpy.mock.calls[0][0][0].name).toBe('Save & Continue works');
+    expect(result.added[0].name).toBe('Save & Continue works');
+  });
+
+  it('decodes a mangled entity in an updated test case name', async () => {
+    const updateSpy = vi.fn();
+    const client = makeClient({ updateSpy });
+
+    await manageTestCases(client, 'proj-1', 'user-1', {
+      task_id: 'B-1',
+      update: [{ id: 'tc-1', name: 'A &lt; B check' }],
+    });
+
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(updateSpy.mock.calls[0][0].name).toBe('A < B check');
+  });
+
+  it('leaves a code-span entity untouched in an added test case name', async () => {
+    const insertSpy = vi.fn();
+    const client = makeClient({ insertSpy, maxPosition: -1 });
+
+    await manageTestCases(client, 'proj-1', 'user-1', {
+      task_id: 'B-1',
+      add: [{ name: 'renders `Tom &amp; Jerry` literally', type: 'unit' }],
+    });
+
+    expect(insertSpy.mock.calls[0][0][0].name).toBe('renders `Tom &amp; Jerry` literally');
+  });
+});
