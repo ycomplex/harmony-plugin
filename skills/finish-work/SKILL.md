@@ -259,6 +259,48 @@ must **NEVER** introduce a pause, a block, or a refusal mid-run — degraded ded
 the run on it would be strictly worse than the silent drop it replaces. A missing marker is not evidence
 of anything: say nothing rather than asserting the dedup check was clean.
 
+**Contradiction-signal attention block (B-838).** Same rail as the risk-class / override-gate /
+dedup-degradation lines above: a decision the system has since moved away from can still read
+`Accepted` — nothing fires supersession on its own when later work contradicts its recorded values.
+Before surfacing the brief:
+
+1. Get the build's bounded, REMOVED/REPLACED diff lines: from the worktree, `git diff
+   origin/main...HEAD` (the same PR diff the risk-class signal above reads, pre-merge, post-exclusion,
+   pre-cap — see `knowledge-contradiction.ts`'s exclusion list and line cap for exactly what "bounded"
+   means).
+2. **Pass it into `compose_brief` as `diff_content` (B-838).** `compose_brief` computes
+   `frame.contradiction_signal` from it and **overwrites whatever the doc authored** — compose is
+   authoritative for that field, exactly like `frame.risk_classes` is for `changed_paths`. Omit it
+   entirely and the field reads `{ status: 'not-computed', message: 'not computed — no diff supplied' }`
+   — never silently treated as "no contradictions".
+3. Render `contradiction_signal`'s three states as an attention block:
+   - **`not-computed`** (no `diff_content` was passed) — show nothing extra; this is the back-compat
+     default, not a finding.
+   - **`no-candidates`** (diff supplied, nothing extractable survived exclusion) — show nothing extra;
+     a diff with no code-span/quoted-literal/fenced-block content simply has nothing to check.
+   - **`computed`** — this is where the signal renders. `entries: []` here is the TICKET-LEVEL
+     does-not-fire ("nothing linked/matched was touched") — show nothing extra; it is **never** license
+     to say "no contradiction exists" (FLOOR/TIER are bounded reads, not a whole-KB scan). A non-empty
+     `entries[]` is the real finding: render **at most the first 5** (each entry's title + state +
+     matched values), plus `"+N more"` when the array is longer, and **post the FULL list as a ticket
+     comment** (`mcp__harmony__add_comment`) — that comment is this ticket's job, not `compose_brief`'s.
+     Distinguish the two states per entry:
+     - **`fires-and-contradicted`** — a recorded value was removed and not restated. Attention line
+       example: *"⚠ Contradiction: **`<title>`** (Accepted) records a value this diff removes —
+       `<matched_values, comma-joined>`. Amend it (dated banner) or supersede it before releasing."*
+     - **`fires-but-benign`** — the same value survives in both the removed and added lines (churn, not
+       contradiction — a rename or reformatting). Attention line example: *"ℹ `<title>` was touched but
+       its recorded value (`<matched_values>`) still holds — no action needed."*
+   - If `truncated` is present (the removed-line scan hit its cap), say so verbatim — e.g. *"⚠ `<the
+     truncated message>` — the scan may have missed a contradiction past the cap."* Never silently drop
+     it.
+
+Also, per `skills/harmony-shared/knowledge-discipline.md`'s FLOOR-set contradiction discipline: this
+gate (and every other forward gate) should already have read the ticket's FLOOR set and authored
+`doc.frame.floor_reviewed` before composing — the `compose_brief` lint warns (never refuses) when a
+non-empty FLOOR set was left unconfirmed. This attention block is the TIER-widened, diff-derived
+complement to that FLOOR read, not a replacement for it.
+
 **Prerequisite-PR attention line (B-783).** When `field_values.prerequisite_pr` is present, show its LIVE
 merge status as its own attention line, framed against the environment THIS release actually reaches —
 **prod** for a daemon-driven run (the standing `PLUGIN_REF=main` + prod-board posture, workspace
@@ -345,7 +387,9 @@ frame: {
   // An unexecuted test is ZERO evidence, not weak evidence (B-745 shipped an RPC that raised on every call).
   evidence_status: { proven_by_run: 7, walk_at_verify: 2, unproven: 0, total: 9, detail: "<the mechanical line, verbatim>" },
   risk_classes: [],                       // leave empty — compose OVERWRITES this from `changed_paths`
-  pr_review_state: "<the PR's reviewDecision, e.g. REVIEW_REQUIRED>"
+  pr_review_state: "<the PR's reviewDecision, e.g. REVIEW_REQUIRED>",
+  // contradiction_signal: leave UNSET — compose OVERWRITES it from `diff_content` (B-838, see above)
+  floor_reviewed: ["<ids of this ticket's FLOOR-set Accepted entries you confirmed reviewed>"]  // [] if none reviewed yet, omit only when the FLOOR set is empty
 }
 ```
 

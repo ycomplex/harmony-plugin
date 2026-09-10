@@ -36500,6 +36500,232 @@ function detectRiskClasses(input) {
   return RISK_CLASSES.filter((cls) => hits.has(cls));
 }
 
+// src/tools/knowledge.ts
+async function getWorkspaceId(client, projectId) {
+  const { data, error } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
+  if (error) throw new Error(`Could not resolve workspace: ${error.message}`);
+  return data.workspace_id;
+}
+async function embedText(client, text) {
+  try {
+    const { data, error } = await client.functions.invoke("embed-knowledge", { body: { text } });
+    if (error || !data?.embedding) return null;
+    return `[${data.embedding.join(",")}]`;
+  } catch {
+    return null;
+  }
+}
+async function embedDecisionById(client, workspaceId, projectId, id, title, content) {
+  const embedding = await embedText(client, `${title}
+${content ?? ""}`);
+  if (!embedding) return;
+  await client.from("knowledge_decisions").update({ embedding }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", id);
+}
+var LEGACY_STATUS_MAP = {
+  draft: "draft",
+  accepted: "accepted",
+  superseded: "superseded",
+  Asserted: "draft",
+  Accepted: "accepted",
+  Superseded: "superseded"
+};
+function toLegacyStatus(status) {
+  const legacy = LEGACY_STATUS_MAP[status];
+  if (legacy === void 0) {
+    throw new Error(
+      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, or Superseded/superseded \u2014 Archived cannot be set through this tool, which writes the legacy compat view (no Archived state).`
+    );
+  }
+  return legacy;
+}
+var BASE_STATUS_MAP = {
+  draft: "Asserted",
+  accepted: "Accepted",
+  superseded: "Superseded",
+  Asserted: "Asserted",
+  Accepted: "Accepted",
+  Superseded: "Superseded",
+  Archived: "Archived"
+};
+function toBaseStatus(status) {
+  const base = BASE_STATUS_MAP[status];
+  if (base === void 0) {
+    throw new Error(
+      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, Superseded/superseded, or Archived.`
+    );
+  }
+  return base;
+}
+async function queryKnowledge(client, projectId, args) {
+  const workspaceId = await getWorkspaceId(client, projectId);
+  if (args.search) {
+    const incompatible = [];
+    if (args.status) incompatible.push("status");
+    if (args.include_superseded) incompatible.push("include_superseded");
+    if (args.type) incompatible.push("type");
+    if (args.tags && args.tags.length > 0) incompatible.push("tags");
+    if (args.as_of) incompatible.push("as_of");
+    if (args.offset) incompatible.push("offset");
+    if (incompatible.length > 0) {
+      throw new Error(
+        `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(", ")}. Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". Omit "search" to use the structured filters.`
+      );
+    }
+    const queryEmbedding = await embedText(client, args.search);
+    const { data: data2, error: error2 } = await client.rpc("knowledge_search_rrf", {
+      _workspace_id: workspaceId,
+      _project_id: projectId,
+      _query_embedding: queryEmbedding,
+      _query_text: args.search,
+      _domain: args.domain && args.domain.length > 0 ? args.domain : null,
+      _match_limit: args.limit ?? 50
+    });
+    if (error2) throw new Error(error2.message);
+    return (data2 ?? []).map((d) => ({
+      id: d.id,
+      title: d.title,
+      type: d.type,
+      status: d.status,
+      domain: d.domain,
+      tags: d.tags,
+      project_id: d.project_id,
+      updated_at: d.updated_at
+    }));
+  }
+  let query = client.from("knowledge_decisions").select("id, title, type, status, domain, tags, project_id, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId);
+  if (args.status) {
+    query = query.eq("status", args.status);
+  } else if (!args.include_superseded) {
+    query = query.eq("status", "Accepted");
+  }
+  if (args.type) query = query.eq("type", args.type);
+  if (args.domain && args.domain.length > 0) query = query.overlaps("domain", args.domain);
+  if (args.as_of) query = query.lte("valid_from", args.as_of);
+  if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
+  query = query.order("type", { ascending: true });
+  const limit = args.limit ?? 50;
+  const offset = args.offset ?? 0;
+  const { data, error } = await query.range(offset, offset + limit - 1);
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+async function getKnowledgeEntry(client, projectId, args) {
+  if (!args.entry_id && !args.title) {
+    throw new Error("Either entry_id or title must be provided");
+  }
+  const workspaceId = await getWorkspaceId(client, projectId);
+  let query = client.from("knowledge_decisions").select(
+    "id, workspace_id, project_id, title, content, type, status, realization, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+  ).eq("workspace_id", workspaceId).eq("project_id", projectId);
+  if (args.entry_id) {
+    query = query.eq("id", args.entry_id);
+  } else {
+    query = query.eq("title", args.title);
+  }
+  const { data, error } = await query.single();
+  if (error) throw error;
+  return data;
+}
+async function createKnowledgeEntry(client, projectId, userId, args) {
+  if (!args.title?.trim()) {
+    throw new Error("title is required");
+  }
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const record = {
+    workspace_id: workspaceId,
+    project_id: projectId,
+    title: normalizeHtmlEntities(args.title.trim()),
+    content: normalizeHtmlEntities(args.content ?? ""),
+    type: args.type,
+    status: args.status !== void 0 ? toLegacyStatus(args.status) : "draft",
+    created_by: userId
+  };
+  if (args.tags !== void 0) record.tags = args.tags;
+  if (args.source_task_id !== void 0) record.source_task_id = args.source_task_id;
+  const { data, error } = await client.from("workspace_knowledge").insert(record).select(
+    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+  ).single();
+  if (error) {
+    if (error.code === "23505") {
+      throw new Error(
+        `A knowledge entry titled "${args.title.trim()}" already exists in this project`
+      );
+    }
+    throw error;
+  }
+  const created = data;
+  await embedDecisionById(client, workspaceId, projectId, created.id, created.title, created.content);
+  return getKnowledgeEntry(client, projectId, { entry_id: created.id });
+}
+async function updateKnowledgeEntry(client, projectId, args) {
+  if (!args.entry_id && !args.title) {
+    throw new Error("Either entry_id or title must be provided to identify the entry");
+  }
+  const hasUpdates = args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
+  if (!hasUpdates) {
+    throw new Error("At least one field to update must be provided");
+  }
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const updates = {};
+  if (args.new_title !== void 0) updates.title = normalizeHtmlEntities(args.new_title.trim());
+  if (args.content !== void 0) updates.content = normalizeHtmlEntities(args.content);
+  if (args.type !== void 0) updates.type = args.type;
+  if (args.status !== void 0) updates.status = toBaseStatus(args.status);
+  if (args.tags !== void 0) updates.tags = args.tags;
+  if (args.domain !== void 0) updates.domain = args.domain;
+  if (args.madr !== void 0) updates.madr = args.madr;
+  if (args.realization !== void 0) updates.realization = args.realization;
+  if (args.review_by !== void 0) updates.review_by = args.review_by;
+  let query = client.from("knowledge_decisions").update(updates).eq("workspace_id", workspaceId).eq("project_id", projectId);
+  if (args.entry_id) {
+    query = query.eq("id", args.entry_id);
+  } else {
+    query = query.eq("title", args.title);
+  }
+  const { data, error } = await query.select(
+    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at, domain, madr, realization, review_by"
+  ).single();
+  if (error) {
+    if (error.code === "23505") {
+      throw new Error(
+        `A knowledge entry titled "${updates.title}" already exists in this project`
+      );
+    }
+    throw error;
+  }
+  const updated = data;
+  if (args.new_title !== void 0 || args.content !== void 0) {
+    await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
+  }
+  return updated;
+}
+async function supersedeKnowledgeEntry(client, projectId, userId, args) {
+  if (!args.entry_id && !args.title) {
+    throw new Error("Either entry_id or title must be provided to identify the entry to supersede");
+  }
+  const existing = await getKnowledgeEntry(client, projectId, {
+    entry_id: args.entry_id,
+    title: args.title
+  });
+  const replacement = await createKnowledgeEntry(client, projectId, userId, {
+    title: args.new_title,
+    content: args.new_content,
+    type: args.type ?? existing.type,
+    status: "accepted",
+    tags: args.tags ?? existing.tags,
+    source_task_id: existing.source_task_id ?? void 0
+  });
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const { data: supersededData, error } = await client.from("knowledge_decisions").update({ status: "Superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", existing.id).select(
+    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+  ).single();
+  if (error) throw error;
+  return {
+    superseded: supersededData,
+    replacement
+  };
+}
+
 // src/tools/briefs.ts
 var DEFAULT_TAIL = "Type `accept`, `edit`, `iterate <feedback>`, or `defer`.";
 var STALE_PATCH_TAIL = "`accept` applies this patch and clears the stale flag (state unchanged). `defer` REJECTS it \u2014 the flag clears anyway, the divergence is recorded, and the ticket proceeds on the retired decision; this is not a park and cannot be undone. Or `edit` / `iterate <feedback>`.";
@@ -38879,232 +39105,6 @@ function registerBulkCommands(program3) {
       }
     );
   });
-}
-
-// src/tools/knowledge.ts
-async function getWorkspaceId(client, projectId) {
-  const { data, error } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
-  if (error) throw new Error(`Could not resolve workspace: ${error.message}`);
-  return data.workspace_id;
-}
-async function embedText(client, text) {
-  try {
-    const { data, error } = await client.functions.invoke("embed-knowledge", { body: { text } });
-    if (error || !data?.embedding) return null;
-    return `[${data.embedding.join(",")}]`;
-  } catch {
-    return null;
-  }
-}
-async function embedDecisionById(client, workspaceId, projectId, id, title, content) {
-  const embedding = await embedText(client, `${title}
-${content ?? ""}`);
-  if (!embedding) return;
-  await client.from("knowledge_decisions").update({ embedding }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", id);
-}
-var LEGACY_STATUS_MAP = {
-  draft: "draft",
-  accepted: "accepted",
-  superseded: "superseded",
-  Asserted: "draft",
-  Accepted: "accepted",
-  Superseded: "superseded"
-};
-function toLegacyStatus(status) {
-  const legacy = LEGACY_STATUS_MAP[status];
-  if (legacy === void 0) {
-    throw new Error(
-      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, or Superseded/superseded \u2014 Archived cannot be set through this tool, which writes the legacy compat view (no Archived state).`
-    );
-  }
-  return legacy;
-}
-var BASE_STATUS_MAP = {
-  draft: "Asserted",
-  accepted: "Accepted",
-  superseded: "Superseded",
-  Asserted: "Asserted",
-  Accepted: "Accepted",
-  Superseded: "Superseded",
-  Archived: "Archived"
-};
-function toBaseStatus(status) {
-  const base = BASE_STATUS_MAP[status];
-  if (base === void 0) {
-    throw new Error(
-      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, Superseded/superseded, or Archived.`
-    );
-  }
-  return base;
-}
-async function queryKnowledge(client, projectId, args) {
-  const workspaceId = await getWorkspaceId(client, projectId);
-  if (args.search) {
-    const incompatible = [];
-    if (args.status) incompatible.push("status");
-    if (args.include_superseded) incompatible.push("include_superseded");
-    if (args.type) incompatible.push("type");
-    if (args.tags && args.tags.length > 0) incompatible.push("tags");
-    if (args.as_of) incompatible.push("as_of");
-    if (args.offset) incompatible.push("offset");
-    if (incompatible.length > 0) {
-      throw new Error(
-        `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(", ")}. Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". Omit "search" to use the structured filters.`
-      );
-    }
-    const queryEmbedding = await embedText(client, args.search);
-    const { data: data2, error: error2 } = await client.rpc("knowledge_search_rrf", {
-      _workspace_id: workspaceId,
-      _project_id: projectId,
-      _query_embedding: queryEmbedding,
-      _query_text: args.search,
-      _domain: args.domain && args.domain.length > 0 ? args.domain : null,
-      _match_limit: args.limit ?? 50
-    });
-    if (error2) throw new Error(error2.message);
-    return (data2 ?? []).map((d) => ({
-      id: d.id,
-      title: d.title,
-      type: d.type,
-      status: d.status,
-      domain: d.domain,
-      tags: d.tags,
-      project_id: d.project_id,
-      updated_at: d.updated_at
-    }));
-  }
-  let query = client.from("knowledge_decisions").select("id, title, type, status, domain, tags, project_id, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId);
-  if (args.status) {
-    query = query.eq("status", args.status);
-  } else if (!args.include_superseded) {
-    query = query.eq("status", "Accepted");
-  }
-  if (args.type) query = query.eq("type", args.type);
-  if (args.domain && args.domain.length > 0) query = query.overlaps("domain", args.domain);
-  if (args.as_of) query = query.lte("valid_from", args.as_of);
-  if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
-  query = query.order("type", { ascending: true });
-  const limit = args.limit ?? 50;
-  const offset = args.offset ?? 0;
-  const { data, error } = await query.range(offset, offset + limit - 1);
-  if (error) throw new Error(error.message);
-  return data ?? [];
-}
-async function getKnowledgeEntry(client, projectId, args) {
-  if (!args.entry_id && !args.title) {
-    throw new Error("Either entry_id or title must be provided");
-  }
-  const workspaceId = await getWorkspaceId(client, projectId);
-  let query = client.from("knowledge_decisions").select(
-    "id, workspace_id, project_id, title, content, type, status, realization, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
-  ).eq("workspace_id", workspaceId).eq("project_id", projectId);
-  if (args.entry_id) {
-    query = query.eq("id", args.entry_id);
-  } else {
-    query = query.eq("title", args.title);
-  }
-  const { data, error } = await query.single();
-  if (error) throw error;
-  return data;
-}
-async function createKnowledgeEntry(client, projectId, userId, args) {
-  if (!args.title?.trim()) {
-    throw new Error("title is required");
-  }
-  const workspaceId = await getWorkspaceId(client, projectId);
-  const record = {
-    workspace_id: workspaceId,
-    project_id: projectId,
-    title: normalizeHtmlEntities(args.title.trim()),
-    content: normalizeHtmlEntities(args.content ?? ""),
-    type: args.type,
-    status: args.status !== void 0 ? toLegacyStatus(args.status) : "draft",
-    created_by: userId
-  };
-  if (args.tags !== void 0) record.tags = args.tags;
-  if (args.source_task_id !== void 0) record.source_task_id = args.source_task_id;
-  const { data, error } = await client.from("workspace_knowledge").insert(record).select(
-    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
-  ).single();
-  if (error) {
-    if (error.code === "23505") {
-      throw new Error(
-        `A knowledge entry titled "${args.title.trim()}" already exists in this project`
-      );
-    }
-    throw error;
-  }
-  const created = data;
-  await embedDecisionById(client, workspaceId, projectId, created.id, created.title, created.content);
-  return getKnowledgeEntry(client, projectId, { entry_id: created.id });
-}
-async function updateKnowledgeEntry(client, projectId, args) {
-  if (!args.entry_id && !args.title) {
-    throw new Error("Either entry_id or title must be provided to identify the entry");
-  }
-  const hasUpdates = args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
-  if (!hasUpdates) {
-    throw new Error("At least one field to update must be provided");
-  }
-  const workspaceId = await getWorkspaceId(client, projectId);
-  const updates = {};
-  if (args.new_title !== void 0) updates.title = normalizeHtmlEntities(args.new_title.trim());
-  if (args.content !== void 0) updates.content = normalizeHtmlEntities(args.content);
-  if (args.type !== void 0) updates.type = args.type;
-  if (args.status !== void 0) updates.status = toBaseStatus(args.status);
-  if (args.tags !== void 0) updates.tags = args.tags;
-  if (args.domain !== void 0) updates.domain = args.domain;
-  if (args.madr !== void 0) updates.madr = args.madr;
-  if (args.realization !== void 0) updates.realization = args.realization;
-  if (args.review_by !== void 0) updates.review_by = args.review_by;
-  let query = client.from("knowledge_decisions").update(updates).eq("workspace_id", workspaceId).eq("project_id", projectId);
-  if (args.entry_id) {
-    query = query.eq("id", args.entry_id);
-  } else {
-    query = query.eq("title", args.title);
-  }
-  const { data, error } = await query.select(
-    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at, domain, madr, realization, review_by"
-  ).single();
-  if (error) {
-    if (error.code === "23505") {
-      throw new Error(
-        `A knowledge entry titled "${updates.title}" already exists in this project`
-      );
-    }
-    throw error;
-  }
-  const updated = data;
-  if (args.new_title !== void 0 || args.content !== void 0) {
-    await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
-  }
-  return updated;
-}
-async function supersedeKnowledgeEntry(client, projectId, userId, args) {
-  if (!args.entry_id && !args.title) {
-    throw new Error("Either entry_id or title must be provided to identify the entry to supersede");
-  }
-  const existing = await getKnowledgeEntry(client, projectId, {
-    entry_id: args.entry_id,
-    title: args.title
-  });
-  const replacement = await createKnowledgeEntry(client, projectId, userId, {
-    title: args.new_title,
-    content: args.new_content,
-    type: args.type ?? existing.type,
-    status: "accepted",
-    tags: args.tags ?? existing.tags,
-    source_task_id: existing.source_task_id ?? void 0
-  });
-  const workspaceId = await getWorkspaceId(client, projectId);
-  const { data: supersededData, error } = await client.from("knowledge_decisions").update({ status: "Superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", existing.id).select(
-    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
-  ).single();
-  if (error) throw error;
-  return {
-    superseded: supersededData,
-    replacement
-  };
 }
 
 // src/cli/commands/knowledge.ts

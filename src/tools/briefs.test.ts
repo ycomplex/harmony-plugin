@@ -496,6 +496,19 @@ function makeClient(
   // written before B-843 keeps exercising the in-place fallback it was written against, byte for byte.
   chain.rpc = vi.fn(async (name: string) =>
     rpcResponses[name] ?? { data: null, error: { code: '42883', message: `function public.${name} does not exist` } });
+
+  // B-838 — `composeBrief` now ALSO reads the ticket's FLOOR set (`ticket_references_knowledge`, via
+  // `listTicketKnowledge`) on every forward-gate compose, to drive the warn-only "not confirmed
+  // reviewed" lint rule. TABLE-ROUTED (not the shared FIFO queue) so every test written before B-838
+  // — none of which sets up a floor set — keeps exercising exactly the response sequence it already
+  // queues: this always resolves to an EMPTY floor set (0 rows), which is precisely the "no warning"
+  // case the rule requires anyway. Tests that DO need a non-empty floor set use a dedicated
+  // table-routed mock instead of this generic helper (see `makeContradictionClient` below).
+  const emptyFloorChain: any = {};
+  emptyFloorChain.select = vi.fn(() => emptyFloorChain);
+  emptyFloorChain.eq = vi.fn(async () => ({ data: [], error: null }));
+  const realFrom = chain.from;
+  chain.from = vi.fn((table: string) => (table === 'ticket_references_knowledge' ? emptyFloorChain : realFrom(table)));
   return chain;
 }
 
@@ -3141,6 +3154,282 @@ describe('B-876 gate frame', () => {
       const docProps = (props.doc as { properties: Record<string, unknown> }).properties;
       expect(docProps.frame).toBeDefined();
       expect(docProps.revision).toBeDefined();
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // B-838 — floor_reviewed warn-only rule (lintFrame). Pure lintBrief calls, no client mocking:
+  // `ctx.floorCount` is exactly what `composeBrief` hands in after its own guarded FLOOR read.
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  describe('B-838 — floor_reviewed warn-only rule', () => {
+    const FLOOR_WARN = /Accepted entries linked to this ticket were not confirmed reviewed for contradiction/;
+
+    it('an EMPTY/absent FLOOR set warns on NOTHING, even with no floor_reviewed', () => {
+      const doc = baseDoc({ frame: clarifyFrame() });
+      const content = renderBrief(doc, null, { reason: 'clarification-draft' });
+      const r = lintBrief(doc, content, { reason: 'clarification-draft', floorCount: 0 });
+      expect(r.warnings.join(' ')).not.toMatch(FLOOR_WARN);
+      const r2 = lintBrief(doc, content, { reason: 'clarification-draft' }); // floorCount absent entirely
+      expect(r2.warnings.join(' ')).not.toMatch(FLOOR_WARN);
+    });
+
+    it('a NON-empty FLOOR set with no floor_reviewed WARNS, naming the count — never an error', () => {
+      const doc = baseDoc({ frame: clarifyFrame() });
+      const content = renderBrief(doc, null, { reason: 'clarification-draft' });
+      const r = lintBrief(doc, content, { reason: 'clarification-draft', floorCount: 3 });
+      expect(r.warnings.join(' ')).toMatch(FLOOR_WARN);
+      expect(r.warnings.join(' ')).toContain('3 Accepted entries');
+      expect(r.errors).toEqual([]);
+      expect(r.ok).toBe(true);
+    });
+
+    it('a NON-empty FLOOR set WITH floor_reviewed populated does not warn', () => {
+      const doc = baseDoc({ frame: clarifyFrame({ floor_reviewed: ['dec-1', 'dec-2'] }) });
+      const content = renderBrief(doc, null, { reason: 'clarification-draft' });
+      const r = lintBrief(doc, content, { reason: 'clarification-draft', floorCount: 2 });
+      expect(r.warnings.join(' ')).not.toMatch(FLOOR_WARN);
+    });
+
+    it('an EMPTY floor_reviewed array (explicitly authored) still WARNS — [] means nothing was reviewed', () => {
+      const doc = baseDoc({ frame: clarifyFrame({ floor_reviewed: [] }) });
+      const content = renderBrief(doc, null, { reason: 'clarification-draft' });
+      const r = lintBrief(doc, content, { reason: 'clarification-draft', floorCount: 1 });
+      expect(r.warnings.join(' ')).toMatch(FLOOR_WARN);
+    });
+
+    it('applies on all FIVE forward gates', () => {
+      const cases: Array<[string, GateFrame]> = [
+        ['clarification-draft', clarifyFrame()],
+        ['decomposition-proposal', decomposeFrame()],
+        ['design-decision-draft', designFrame()],
+        ['plan-draft', planFrame()],
+        ['release-decision-pending', releaseFrame()],
+      ];
+      for (const [reason, frame] of cases) {
+        const doc = baseDoc({ frame });
+        const content = renderBrief(doc, null, { reason });
+        const r = lintBrief(doc, content, { reason, floorCount: 1 });
+        expect(r.warnings.join(' ')).toMatch(FLOOR_WARN);
+      }
+    });
+
+    it('verify carries NO floor_reviewed field and never warns, even with a non-zero floorCount', () => {
+      const doc = baseDoc({ frame: verifyFrame(2) });
+      const content = renderBrief(doc, null, { reason: 'verification-ack-pending' });
+      const r = lintBrief(doc, content, { reason: 'verification-ack-pending', floorCount: 5 });
+      expect(r.warnings.join(' ')).not.toMatch(FLOOR_WARN);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // B-838 — compose is AUTHORITATIVE for a release frame's `contradiction_signal`, derived from
+  // `diff_content` exactly like `risk_classes` is derived from `changed_paths`. The three-state
+  // contract (diff_content absent / present-but-empty-after-exclusion-extraction / computed) is
+  // pinned here, alongside the B-901 risk_classes carry-forward tests above as the structural model.
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  describe('composeBrief computes frame.contradiction_signal from diff_content', () => {
+    const cBriefRow = { id: 'brief-1', task_id: 'task-1', reason: 'release-decision-pending', content: 'r', status: 'active', iteration: 1 };
+    const cReleaseDoc = (over: Record<string, unknown> = {}) => ({
+      decide: 'Release — merge the PR?',
+      recommend: { text: 'Ship.', confidence: 'high' },
+      items: [{ kind: 'decision', text: 'Ship it', recommendation: 'release' }],
+      frame: releaseFrame(over),
+    });
+    // responses: [field_values read] -> [no active brief] -> [insert] -> [task update]
+    const cClient4 = () => makeClient([{ data: { field_values: {} } }, { data: null }, { data: cBriefRow }, { data: null }]);
+    const cInsertedFrame = (client: any) =>
+      (client.insert.mock.calls[0][0] as { doc: { frame: Record<string, unknown> } }).doc.frame;
+
+    const B754 = 'docker buildx build --platform linux/amd64 -t harmony/plugin-build:latest --push';
+
+    // Table-routed mock (NOT the shared FIFO queue) for the FLOOR/TIER reads `withContradictionSignal`
+    // performs when diff_content actually yields search terms — mirrors the `buildEmbedAwareClient`
+    // pattern in knowledge.test.ts (route by table name), plus the same generic FIFO queue `makeClient`
+    // uses for the ordinary tasks/briefs reads (field_values, active-brief lookup, insert, task update).
+    function makeContradictionClient(opts: {
+      floorRows?: unknown[];
+      tierSummaryRows?: unknown[];
+      tierContentRows?: unknown[];
+    }) {
+      const genericQueue = [{ data: { field_values: {} } }, { data: null }, { data: cBriefRow }, { data: null }];
+      let gi = 0;
+      const nextGeneric = () => genericQueue[gi++] ?? { data: null, error: null };
+      const genericChain: any = {};
+      for (const m of ['select', 'insert', 'update', 'eq', 'is', 'not', 'order', 'limit']) genericChain[m] = vi.fn(() => genericChain);
+      genericChain.maybeSingle = vi.fn(async () => nextGeneric());
+      genericChain.single = vi.fn(async () => nextGeneric());
+      genericChain.then = (resolve: any) => resolve(nextGeneric());
+
+      const projectsChain: any = {};
+      projectsChain.select = vi.fn(() => projectsChain);
+      projectsChain.eq = vi.fn(() => projectsChain);
+      projectsChain.single = vi.fn(async () => ({ data: { workspace_id: 'ws-1' }, error: null }));
+
+      const floorChain: any = {};
+      floorChain.select = vi.fn(() => floorChain);
+      floorChain.eq = vi.fn(async () => ({ data: opts.floorRows ?? [], error: null }));
+
+      const affectsChain: any = {};
+      affectsChain.select = vi.fn(() => affectsChain);
+      affectsChain.in = vi.fn(async () => ({ data: [], error: null }));
+
+      const contentChain: any = {};
+      contentChain.select = vi.fn(() => contentChain);
+      contentChain.eq = vi.fn(() => contentChain);
+      contentChain.in = vi.fn(async () => ({ data: opts.tierContentRows ?? [], error: null }));
+
+      const client: any = {
+        from: vi.fn((table: string) => {
+          if (table === 'projects') return projectsChain;
+          if (table === 'ticket_references_knowledge') return floorChain;
+          if (table === 'decision_affects_entity') return affectsChain;
+          if (table === 'knowledge_decisions') return contentChain;
+          return genericChain;
+        }),
+        // Exposed on the client itself (not just the generic chain) so assertions like
+        // `client.insert.mock.calls` work exactly as they do against the plain `makeClient` mock.
+        insert: genericChain.insert,
+        update: genericChain.update,
+        functions: { invoke: vi.fn(async () => ({ data: null, error: { message: 'down' } })) },
+        rpc: vi.fn(async (name: string) => {
+          if (name === 'knowledge_search_rrf') return { data: opts.tierSummaryRows ?? [], error: null };
+          return { data: null, error: { code: '42883', message: `function public.${name} does not exist` } };
+        }),
+      };
+      return client;
+    }
+
+    it('diff_content ABSENT -> not-computed', async () => {
+      const client = cClient4();
+      await composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'release-decision-pending', pending_activity: null as any,
+        doc: cReleaseDoc() as any,
+      });
+      expect(cInsertedFrame(client).contradiction_signal).toEqual({
+        status: 'not-computed', message: 'not computed — no diff supplied', entries: [],
+      });
+    });
+
+    it('diff_content PRESENT but EMPTY after exclusion/extraction -> no-candidates', async () => {
+      const client = cClient4();
+      const diff = [
+        'diff --git a/README.md b/README.md',
+        '--- a/README.md',
+        '+++ b/README.md',
+        '@@ -1,1 +1,1 @@',
+        '-just plain prose, nothing extractable here',
+        '+more plain prose, still nothing extractable',
+      ].join('\n');
+      await composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'release-decision-pending', pending_activity: null as any,
+        doc: cReleaseDoc() as any, diff_content: diff,
+      });
+      expect(cInsertedFrame(client).contradiction_signal).toEqual({
+        status: 'no-candidates', message: 'no TIER candidates', entries: [],
+      });
+    });
+
+    it('diff_content PRESENT and COMPUTED — a FLOOR entry fires-and-contradicted (B-754/B-804 repro)', async () => {
+      const client = makeContradictionClient({
+        floorRows: [
+          {
+            decision_id: 'dec-1',
+            knowledge_decisions: { id: 'dec-1', status: 'Accepted', title: 'Container build invocation', content: `Run \`${B754}\`.` },
+          },
+        ],
+      });
+      const diff = [
+        'diff --git a/plugin/container/README.md b/plugin/container/README.md',
+        '--- a/plugin/container/README.md',
+        '+++ b/plugin/container/README.md',
+        '@@ -1,1 +1,1 @@',
+        `-\`${B754}\``,
+        '+`docker buildx build --platform linux/amd64,linux/arm64 -t harmony/plugin-build:latest --push`',
+      ].join('\n');
+      await composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'release-decision-pending', pending_activity: null as any,
+        doc: cReleaseDoc() as any, diff_content: diff,
+      });
+      const signal = cInsertedFrame(client).contradiction_signal as any;
+      expect(signal.status).toBe('computed');
+      expect(signal.entries).toEqual([
+        { entry_id: 'dec-1', title: 'Container build invocation', state: 'fires-and-contradicted', matched_values: [B754], source: 'floor' },
+      ]);
+    });
+
+    it('COMPUTED with nothing linked/matched -> the ticket-level does-not-fire ([], never "no contradiction exists")', async () => {
+      const client = makeContradictionClient({ floorRows: [] });
+      const diff = [
+        'diff --git a/a.txt b/a.txt',
+        '--- a/a.txt',
+        '+++ a/a.txt',
+        '@@ -1,1 +1,1 @@',
+        '-`some removed literal value`',
+        '+`some added literal value`',
+      ].join('\n');
+      await composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'release-decision-pending', pending_activity: null as any,
+        doc: cReleaseDoc() as any, diff_content: diff,
+      });
+      const signal = cInsertedFrame(client).contradiction_signal as any;
+      expect(signal.status).toBe('computed');
+      expect(signal.entries).toEqual([]);
+      expect(signal.message).toBe('does-not-fire — nothing linked/matched was touched');
+    });
+
+    it('TIER also considered — NOT restricted to FLOOR', async () => {
+      const client = makeContradictionClient({
+        floorRows: [],
+        tierSummaryRows: [{ id: 'dec-2', title: 'Unlinked but touched entry' }],
+        tierContentRows: [{ id: 'dec-2', content: `The command is \`${B754}\`.` }],
+      });
+      const diff = [
+        'diff --git a/plugin/container/README.md b/plugin/container/README.md',
+        '--- a/plugin/container/README.md',
+        '+++ b/plugin/container/README.md',
+        '@@ -1,1 +1,1 @@',
+        `-\`${B754}\``,
+      ].join('\n');
+      await composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'release-decision-pending', pending_activity: null as any,
+        doc: cReleaseDoc() as any, diff_content: diff,
+      });
+      const signal = cInsertedFrame(client).contradiction_signal as any;
+      expect(signal.entries).toEqual([
+        { entry_id: 'dec-2', title: 'Unlinked but touched entry', state: 'fires-and-contradicted', matched_values: [B754], source: 'tier' },
+      ]);
+      expect((client.rpc as any).mock.calls.some((c: any[]) => c[0] === 'knowledge_search_rrf')).toBe(true);
+    });
+
+    it('OVERWRITES whatever the doc authored on frame.contradiction_signal', async () => {
+      const client = cClient4();
+      const fake = {
+        status: 'computed', message: 'fake',
+        entries: [{ entry_id: 'x', title: 'x', state: 'fires-and-contradicted', matched_values: [], source: 'floor' }],
+      };
+      await composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'release-decision-pending', pending_activity: null as any,
+        doc: cReleaseDoc({ contradiction_signal: fake }) as any,
+      });
+      expect(cInsertedFrame(client).contradiction_signal).toEqual({
+        status: 'not-computed', message: 'not computed — no diff supplied', entries: [],
+      });
+    });
+
+    it('leaves a NON-release frame alone — the field only exists on the release variant', async () => {
+      const client = makeClient([{ data: null }, { data: cBriefRow }, { data: null }]);
+      await composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'plan-draft', pending_activity: null as any,
+        doc: { ...okDoc, frame: planFrame() } as any,
+        diff_content: 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-`some long enough value`\n+`some long enough value`',
+      });
+      const inserted = (client.insert.mock.calls[0][0] as { doc: { frame: Record<string, unknown> } }).doc.frame;
+      expect(inserted.contradiction_signal).toBeUndefined();
+    });
+
+    it('advertises diff_content on the tool schema', () => {
+      const props = composeBriefTool.inputSchema.properties as Record<string, unknown>;
+      expect(props.diff_content).toBeDefined();
     });
   });
 });

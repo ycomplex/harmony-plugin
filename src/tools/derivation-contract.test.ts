@@ -55,6 +55,16 @@ function makeClient(responses: Array<{ data: unknown; error?: unknown }>) {
   chain.single = vi.fn(async () => next());
   chain.then = (resolve: (v: unknown) => unknown) => resolve(next());
   chain.rpc = vi.fn(async (name: string) => ({ data: null, error: { code: '42883', message: `function public.${name} does not exist` } }));
+
+  // B-838 — see briefs.test.ts's makeClient for the full rationale: composeBrief now ALSO reads the
+  // ticket's FLOOR set (`ticket_references_knowledge`) on every forward-gate compose. Table-routed so
+  // this file's tests (none of which set up a floor set) keep exercising exactly the response sequence
+  // they already queue.
+  const emptyFloorChain: any = {};
+  emptyFloorChain.select = vi.fn(() => emptyFloorChain);
+  emptyFloorChain.eq = vi.fn(async () => ({ data: [], error: null }));
+  const realFrom = chain.from;
+  chain.from = vi.fn((table: string) => (table === 'ticket_references_knowledge' ? emptyFloorChain : realFrom(table)));
   return chain;
 }
 
