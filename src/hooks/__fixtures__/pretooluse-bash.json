@@ -1,0 +1,16 @@
+{
+  "session_id": "dfcb99d2-8c26-4749-92fe-0d3ea7added5",
+  "transcript_path": "/home/worker/.claude/projects/-workspace-workspace/dfcb99d2-8c26-4749-92fe-0d3ea7added5.jsonl",
+  "cwd": "/workspace/workspace",
+  "prompt_id": "41f4a5c3-4fb6-475a-86a9-dc14a63ed692",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+    "level": "high"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "echo capture-probe-456"
+  },
+  "tool_use_id": "toolu_01JRwPmkLfL7J78Ev4qf9YxF"
+}

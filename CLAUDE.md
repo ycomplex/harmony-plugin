@@ -83,6 +83,8 @@ steps directly, `npm run build` / `npm run verify:dist` still work exactly as be
 
 CI should run `npm run verify:dist` on every PR.
 
+**B-992:** any adopter of `.harmony/project.yml` (B-991) that also wants the PreToolUse gate's enforcement (`hooks/pretooluse-gate.sh` — denies a positively-identified daemon worker from opening/merging a PR or accepting a verify brief until the declared gate point has run) must also gitignore `.harmony/.gate-evidence/` — the local, best-effort evidence markers `harmony gates run <extension-point>` writes there are never meant to be committed. This repo's own `.gitignore` is the reference example.
+
 ## Staging channel (pre-prod functional verify)
 
 The sanctioned way to functionally verify plugin changes — **skills AND MCP code** — before promoting to prod: run the `main` (or branch) checkout against the **staging** Supabase project, so ahead-of-prod code talks to an ahead-of-prod DB.

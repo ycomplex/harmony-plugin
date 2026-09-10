@@ -20,7 +20,9 @@
 // point (a missing script, an `agent_task:` step — see project-manifest.ts's per-extension-point
 // `stepErrors`) never blocks any OTHER extension point's own invocation.
 
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { Command } from 'commander';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
@@ -37,6 +39,7 @@ import {
 import { getConductionId } from '../../config/run-config.js';
 import { resolveLegCostContext } from '../../tools/leg-cost-record.js';
 import { manageTestCases } from '../../tools/test-cases.js';
+import { gateEvidenceMarkerPath, type GateEvidenceMarker } from '../../hooks/pretooluse-gate.js';
 import { getAuthenticatedContext, type AuthenticatedContext } from '../auth.js';
 
 /** One `run:` step's execution outcome — `code` is the subprocess's real exit code (`null` only
@@ -80,6 +83,14 @@ export interface GatesRunDeps {
     extensionPoint: ExtensionPoint,
     stepCount: number,
   ) => Promise<void>;
+  /** B-992: writes the local gate-evidence marker for THIS extension point — best-effort, atomic
+   *  (write-temp-then-rename in production). MAY throw; a throw degrades to a WARNING, never a
+   *  failed command, mirroring `landEvidence`'s own best-effort discipline. Read back by the
+   *  PreToolUse hook (src/hooks/pretooluse-gate.ts) as its local-first evidence check. */
+  writeMarker: (marker: GateEvidenceMarker) => void;
+  /** `git rev-parse HEAD` in `projectRoot`, stamped onto the marker. Production wiring only; MAY
+   *  throw (a throw degrades the marker write to the same best-effort WARNING as above). */
+  resolveHeadSha: () => string;
   log: (line: string) => void;
   error: (line: string) => void;
 }
@@ -123,18 +134,17 @@ export async function runGatesCommand(deps: GatesRunDeps): Promise<number> {
     return 1;
   }
 
-  const steps = resolution.steps;
-  if (steps.length === 0) {
-    log(
-      `harmony gates run ${extensionPoint}: ${result.file} declares nothing for this extension point — ` +
-        'nothing to do; behavior is unchanged from today.',
-    );
-    return 0;
-  }
-
-  // build.before_pr additionally prints the manifest's declared preconditions — DATA ONLY, never
-  // executed (see project-manifest.ts's own header + its dedicated safety test) — BEFORE running
-  // its own run: steps.
+  // build.before_pr prints the manifest's declared preconditions — DATA ONLY, never executed (see
+  // project-manifest.ts's own header + its dedicated safety test) — REGARDLESS of whether this
+  // extension point declares any run: steps. Declared data prints whenever present; step-running is
+  // a separate concern below.
+  //
+  // B-992 fix: this block used to sit AFTER the `steps.length === 0` early return below, so a
+  // manifest declaring top-level `preconditions` but ZERO `build.before_pr` steps never printed
+  // them — confirmed live on this repo's own manifest (preconditions declared, no build.before_pr
+  // steps): `harmony gates run build.before_pr` printed only the no-op line, never the 5
+  // preconditions. Hoisted here so it always fires for build.before_pr on any successfully-parsed
+  // manifest; the steps.length === 0 check right below still governs step EXECUTION.
   if (extensionPoint === 'build.before_pr') {
     const preconditions = getPreconditions(result.manifest);
     if (preconditions.length > 0) {
@@ -143,6 +153,15 @@ export async function runGatesCommand(deps: GatesRunDeps): Promise<number> {
     } else {
       log(`harmony gates run ${extensionPoint}: ${result.file} declares no preconditions.`);
     }
+  }
+
+  const steps = resolution.steps;
+  if (steps.length === 0) {
+    log(
+      `harmony gates run ${extensionPoint}: ${result.file} declares nothing for this extension point — ` +
+        'nothing to do; behavior is unchanged from today.',
+    );
+    return 0;
   }
 
   // --- ONLY NOW, with at least one real step to run, acquire the authenticated context. ----------
@@ -174,6 +193,7 @@ export async function runGatesCommand(deps: GatesRunDeps): Promise<number> {
 
   // --- evidence landing: only after a fully successful run, only when auth + conduction/task ------
   // context all resolved. Best-effort — never turns a successful run into a failed command.
+  let evidenceLanded = false;
   if (ctx) {
     const conductionId = deps.getConductionId();
     const taskId = conductionId ? await deps.resolveTaskId(ctx.client, conductionId) : null;
@@ -181,6 +201,7 @@ export async function runGatesCommand(deps: GatesRunDeps): Promise<number> {
       try {
         await deps.landEvidence(ctx, taskId, extensionPoint, steps.length);
         log(`harmony gates run ${extensionPoint}: landed 1 integration test-case entry on the ticket.`);
+        evidenceLanded = true;
       } catch (err: unknown) {
         error(
           `harmony gates run ${extensionPoint}: WARNING — could not land evidence on the ticket ` +
@@ -192,6 +213,25 @@ export async function runGatesCommand(deps: GatesRunDeps): Promise<number> {
         `harmony gates run ${extensionPoint}: no conduction/task context available — evidence not landed.`,
       );
     }
+  }
+
+  // B-992: the local gate-evidence marker — lets the PreToolUse hook (src/hooks/pretooluse-gate.ts)
+  // confirm this extension point ran for the CURRENT HEAD/conduction without a network read on its
+  // common path. Best-effort, same WARNING-and-continue discipline as evidence landing above; never
+  // affects the exit code.
+  try {
+    deps.writeMarker({
+      extension_point: extensionPoint,
+      conduction_id: deps.getConductionId() ?? 'none',
+      head_sha: deps.resolveHeadSha(),
+      ran_at: new Date().toISOString(),
+      evidence_landed: evidenceLanded,
+    });
+  } catch (err: unknown) {
+    error(
+      `harmony gates run ${extensionPoint}: WARNING — could not write the local gate-evidence marker ` +
+        `(${(err as { message?: string })?.message ?? String(err)}).`,
+    );
   }
 
   return 0;
@@ -242,9 +282,23 @@ export function registerGatesCommands(program: Command): void {
             ],
           });
         },
+        writeMarker: (marker) => writeGateEvidenceMarker(process.cwd(), marker),
+        resolveHeadSha: () =>
+          execFileSync('git', ['rev-parse', 'HEAD'], { cwd: process.cwd(), encoding: 'utf8' }).trim(),
         log: (line) => console.log(line),
         error: (line) => console.error(line),
       });
       process.exit(exitCode);
     });
+}
+
+/** B-992: the real, atomic (write-temp-then-rename) marker write — production-only I/O, kept out of
+ *  `runGatesCommand` so the pure core stays testable without touching a real filesystem. Read back
+ *  by src/hooks/pretooluse-gate.ts via `gateEvidenceMarkerPath`. */
+function writeGateEvidenceMarker(projectRoot: string, marker: GateEvidenceMarker): void {
+  const filePath = gateEvidenceMarkerPath(projectRoot, marker.extension_point);
+  mkdirSync(dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  writeFileSync(tmpPath, `${JSON.stringify(marker, null, 2)}\n`, 'utf8');
+  renameSync(tmpPath, filePath);
 }

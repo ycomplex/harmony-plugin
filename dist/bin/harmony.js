@@ -39849,7 +39849,9 @@ function registerLegOutputCommands(program3) {
 }
 
 // src/cli/commands/gates.ts
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { dirname as dirname2 } from "node:path";
 
 // src/config/project-manifest.ts
 var import_yaml = __toESM(require_dist(), 1);
@@ -40011,6 +40013,12 @@ function getPreconditions(manifest) {
   return manifest.preconditions ?? [];
 }
 
+// src/hooks/pretooluse-gate.ts
+var GATE_EVIDENCE_DIR = ".harmony/.gate-evidence";
+function gateEvidenceMarkerPath(projectRoot, point) {
+  return `${projectRoot}/${GATE_EVIDENCE_DIR}/${point}.json`;
+}
+
 // src/cli/commands/gates.ts
 function stepCommand(step) {
   return isRunStep(step) ? step.run : "";
@@ -40040,13 +40048,6 @@ async function runGatesCommand(deps) {
     error(`harmony gates run ${extensionPoint}: MALFORMED \u2014 ${resolution.problem.message}`);
     return 1;
   }
-  const steps = resolution.steps;
-  if (steps.length === 0) {
-    log(
-      `harmony gates run ${extensionPoint}: ${result.file} declares nothing for this extension point \u2014 nothing to do; behavior is unchanged from today.`
-    );
-    return 0;
-  }
   if (extensionPoint === "build.before_pr") {
     const preconditions = getPreconditions(result.manifest);
     if (preconditions.length > 0) {
@@ -40055,6 +40056,13 @@ async function runGatesCommand(deps) {
     } else {
       log(`harmony gates run ${extensionPoint}: ${result.file} declares no preconditions.`);
     }
+  }
+  const steps = resolution.steps;
+  if (steps.length === 0) {
+    log(
+      `harmony gates run ${extensionPoint}: ${result.file} declares nothing for this extension point \u2014 nothing to do; behavior is unchanged from today.`
+    );
+    return 0;
   }
   let ctx = null;
   try {
@@ -40076,6 +40084,7 @@ async function runGatesCommand(deps) {
     }
   }
   log(`harmony gates run ${extensionPoint}: all ${steps.length} step(s) passed.`);
+  let evidenceLanded = false;
   if (ctx) {
     const conductionId = deps.getConductionId();
     const taskId = conductionId ? await deps.resolveTaskId(ctx.client, conductionId) : null;
@@ -40083,6 +40092,7 @@ async function runGatesCommand(deps) {
       try {
         await deps.landEvidence(ctx, taskId, extensionPoint, steps.length);
         log(`harmony gates run ${extensionPoint}: landed 1 integration test-case entry on the ticket.`);
+        evidenceLanded = true;
       } catch (err) {
         error(
           `harmony gates run ${extensionPoint}: WARNING \u2014 could not land evidence on the ticket (${err?.message ?? String(err)}).`
@@ -40093,6 +40103,19 @@ async function runGatesCommand(deps) {
         `harmony gates run ${extensionPoint}: no conduction/task context available \u2014 evidence not landed.`
       );
     }
+  }
+  try {
+    deps.writeMarker({
+      extension_point: extensionPoint,
+      conduction_id: deps.getConductionId() ?? "none",
+      head_sha: deps.resolveHeadSha(),
+      ran_at: (/* @__PURE__ */ new Date()).toISOString(),
+      evidence_landed: evidenceLanded
+    });
+  } catch (err) {
+    error(
+      `harmony gates run ${extensionPoint}: WARNING \u2014 could not write the local gate-evidence marker (${err?.message ?? String(err)}).`
+    );
   }
   return 0;
 }
@@ -40128,11 +40151,21 @@ function registerGatesCommands(program3) {
           ]
         });
       },
+      writeMarker: (marker) => writeGateEvidenceMarker(process.cwd(), marker),
+      resolveHeadSha: () => execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim(),
       log: (line) => console.log(line),
       error: (line) => console.error(line)
     });
     process.exit(exitCode);
   });
+}
+function writeGateEvidenceMarker(projectRoot, marker) {
+  const filePath = gateEvidenceMarkerPath(projectRoot, marker.extension_point);
+  mkdirSync(dirname2(filePath), { recursive: true });
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  writeFileSync(tmpPath, `${JSON.stringify(marker, null, 2)}
+`, "utf8");
+  renameSync(tmpPath, filePath);
 }
 
 // src/cli/index.ts
