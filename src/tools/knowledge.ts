@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { normalizeHtmlEntities } from './text-normalize.js';
+import { getConductionId } from '../config/run-config.js';
 
 // ---------------------------------------------------------------------------
 // Interfaces
@@ -64,11 +65,6 @@ export interface KnowledgeDecisionFull {
   created_at: string;
   updated_at: string;
 }
-
-const DECISION_COLS =
-  'id, workspace_id, project_id, title, content, type, status, realization, domain, confidence, review_by, drift_risk, ' +
-  'superseded_by, affected_entity_ids, madr, source_type, source_id, source_activity, tags, source_task_id, ' +
-  'created_by, created_at, updated_at';
 
 export interface KnowledgeFactFull {
   id: string; workspace_id: string; project_id: string | null;
@@ -213,6 +209,7 @@ export const updateKnowledgeEntryTool = {
         description: 'Implementation/realization state (orthogonal to status); NULL ≡ live; "agreed" = decided-not-yet-built',
       },
       review_by: { type: 'string', description: 'ISO timestamp; freshness/decay date (knowledge-model-v1 §3)' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
     },
   },
 };
@@ -234,6 +231,7 @@ export const supersedeKnowledgeEntryTool = {
         items: { type: 'string' },
         description: 'Tags for the replacement (defaults to tags of superseded entry)',
       },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
     },
     required: ['new_title', 'new_content'],
   },
@@ -627,8 +625,16 @@ export interface UpdateKnowledgeEntryArgs {
   madr?: Record<string, unknown>;
   realization?: string;
   review_by?: string;
+  provenance?: string;
 }
 
+// B-995: writes through knowledge_update_knowledge_entry (a partial COALESCE patch, same shape as
+// today's conditional `updates` object) instead of a plain `.from('knowledge_decisions').update()`,
+// so the write also lands a same-transaction 'rpc-typed' knowledge_events row carrying
+// provenance/conduction/leg. The re-embed step stays a SEPARATE follow-up write (embedDecisionById,
+// unchanged from before B-995): the RPC's own p_embedding param needs the MERGED post-update
+// title/content, which isn't known until this RETURNING row comes back, so folding it into the same
+// call would need an extra pre-read — not worth it for a best-effort refresh.
 export async function updateKnowledgeEntry(
   client: SupabaseClient,
   projectId: string,
@@ -655,58 +661,44 @@ export async function updateKnowledgeEntry(
 
   const workspaceId = await getWorkspaceId(client, projectId);
 
-  const updates: Record<string, unknown> = {};
-  if (args.new_title !== undefined) updates.title = normalizeHtmlEntities(args.new_title.trim());
-  if (args.content !== undefined) updates.content = normalizeHtmlEntities(args.content);
-  if (args.type !== undefined) updates.type = args.type;
-  if (args.status !== undefined) updates.status = toBaseStatus(args.status);
-  if (args.tags !== undefined) updates.tags = args.tags;
-  // Decision-axis columns recordDecision already writes but this path omitted (B-468).
-  // Pass-through only (mirrors recordDecision — no strict validation; the DB CHECK/FK
-  // constraints are the backstop). madr is a FULL-OBJECT replace, not a key-merge.
-  if (args.domain !== undefined) updates.domain = args.domain;
-  if (args.madr !== undefined) updates.madr = args.madr;
-  if (args.realization !== undefined) updates.realization = args.realization;
-  if (args.review_by !== undefined) updates.review_by = args.review_by;
+  const newTitle = args.new_title !== undefined ? normalizeHtmlEntities(args.new_title.trim()) : undefined;
 
-  // Update the knowledge_decisions BASE table, not the workspace_knowledge compat view:
-  // the view's INSTEAD-OF UPDATE never fires for rows outside its WHERE (the legacy four
-  // types), so next-gen-typed entries matched zero rows → "Cannot coerce" — making them
-  // un-editable in place (B-418). The base-table UPDATE … RETURNING is authoritative
-  // (no trigger echo), so the B-415 re-read is unnecessary on this path.
-  let query = client
-    .from('knowledge_decisions')
-    .update(updates)
-    .eq('workspace_id', workspaceId)
-    .eq('project_id', projectId);
-
-  if (args.entry_id) {
-    query = query.eq('id', args.entry_id);
-  } else {
-    query = query.eq('title', args.title!);
-  }
-
-  const { data, error } = await query
-    .select(
-      'id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at, domain, madr, realization, review_by',
-    )
-    .single();
+  const { data, error } = await client.rpc('knowledge_update_knowledge_entry', {
+    p_project_id: projectId,
+    p_entry_id: args.entry_id ?? null,
+    p_title: args.title ?? null,
+    p_new_title: newTitle ?? null,
+    p_content: args.content !== undefined ? normalizeHtmlEntities(args.content) : null,
+    p_type: args.type ?? null,
+    p_status: args.status !== undefined ? toBaseStatus(args.status) : null,
+    p_tags: args.tags ?? null,
+    // Decision-axis columns recordDecision already writes but this path historically omitted
+    // (B-468). Pass-through only (mirrors recordDecision — no strict validation; the DB CHECK/FK
+    // constraints are the backstop). madr is a FULL-OBJECT replace, not a key-merge.
+    p_domain: args.domain ?? null,
+    p_madr: args.madr ?? null,
+    p_realization: args.realization ?? null,
+    p_review_by: args.review_by ?? null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null,
+  });
 
   if (error) {
     if (error.code === '23505') {
       throw new Error(
-        `A knowledge entry titled "${updates.title as string}" already exists in this project`,
+        `A knowledge entry titled "${newTitle ?? ''}" already exists in this project`,
       );
     }
-    throw error;
+    throw new Error(error.message);
   }
 
   // Re-embed only when the embedded text (title\ncontent) actually changed. Nothing in
   // the DB maintains the embedding column on writes (architecture rule: every knowledge
   // writer self-embeds), so without this an edited row keeps a stale (or null) vector
   // and is invisible to knowledge_search_rrf. embedDecisionById writes the fresh vector
-  // by id, using the merged title/content returned by the update above.
-  const updated = data as KnowledgeEntryFull;
+  // by id, using the merged title/content returned by the RPC's RETURNING row.
+  const updated = data as unknown as KnowledgeEntryFull;
   if (args.new_title !== undefined || args.content !== undefined) {
     await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
   }
@@ -855,6 +847,9 @@ export interface RecordDecisionArgs {
   // an ordinary (non-claim) decision.
   claim_provenance?: string;      // human-stated | agent-inferred-human-validated | force-quit
   underwriting_brief_id?: string; // FK briefs — resolve_brief disposes coupled claims on accept/defer
+  // B-995: optional causation tag threaded to the knowledge_events row this write's RPC lands
+  // alongside the governed write, in the SAME transaction. Omit for NULL.
+  provenance?: string;
 }
 
 // B-645: the three claim-provenance grounds (mirrors the DB CHECK). force-quit claims are
@@ -869,14 +864,19 @@ const CLAIM_PROVENANCES = ['human-stated', 'agent-inferred-human-validated', 'fo
 // (NULL is relied on by the B-551 intent-emit trigger — out of scope to touch that default).
 const DESIGN_DECISION_TYPES = new Set(['product-design', 'technical-design', 'ux-ui-design']);
 
-// B-645 guarded-write matcher (the pending_resolution fallback pattern, briefs.ts): the claim
-// columns are added by harmony-web's Phase-1 migration; on an older DB the insert 400s with a
-// missing-column error. Detect that specific failure so the write can retry without the columns.
-const isMissingClaimColumns = (msg: string | undefined): boolean =>
-  !!msg &&
-  /(claim_provenance|underwriting_brief_id)/.test(msg) &&
-  /(does not exist|could not find|schema cache|column)/i.test(msg);
-
+// B-995: recordDecision now writes through knowledge_record_decision (governed insert + a
+// same-transaction 'rpc-typed' knowledge_events row) instead of a plain `.from().insert()`. Every
+// bit of pre-write logic the RPC does NOT itself do — affected_entity_names -> ids resolution
+// (resolveOrCreateEntity, carrying B-993 normalize/repair-at-touch), embedding generation
+// (embedText), HTML-entity normalization, the claim_provenance enum check, and the B-977
+// design-decision realization default — stays computed here in TS and is passed as RPC params.
+//
+// DROPPED as part of this move: the old guarded retry that stripped claim_provenance/
+// underwriting_brief_id on a "missing column" insert error (a DB predating the B-645 Phase-1
+// claim columns). knowledge_record_decision's own INSERT statement is fixed at CREATE FUNCTION
+// time and always references those columns — a DB missing them could never have had this RPC
+// created against it in the first place, so the specific drift scenario the retry guarded against
+// cannot occur once this RPC exists. A failure here now surfaces directly.
 export async function recordDecision(
   client: SupabaseClient,
   projectId: string,
@@ -898,57 +898,39 @@ export async function recordDecision(
 
   const embedding = await embedText(client, `${args.title}\n${args.content ?? ''}`);
 
-  const record: Record<string, unknown> = {
-    workspace_id: workspaceId,
-    project_id: projectId,
-    title: normalizeHtmlEntities(args.title.trim()),
-    content: normalizeHtmlEntities(args.content ?? ''),
-    type: args.type,
-    status: args.status ?? 'Asserted',
-    domain: args.domain ?? [],
-    madr: args.madr ?? null,
-    affected_entity_ids: affectedIds,
-    source_type: args.source_type ?? 'manual',
-    source_activity: args.source_activity ?? null,
-    created_by: userId,
-  };
-  if (embedding) record.embedding = embedding;
-  if (args.source_id !== undefined) record.source_id = args.source_id;
-  if (args.tags !== undefined) record.tags = args.tags;
-  if (args.source_task_id !== undefined) record.source_task_id = args.source_task_id;
-  if (args.review_by !== undefined) record.review_by = args.review_by;
-  if (args.realization !== undefined) {
-    record.realization = args.realization;
-  } else if (DESIGN_DECISION_TYPES.has(args.type)) {
-    record.realization = 'agreed';
+  let realization: string | undefined = args.realization;
+  if (realization === undefined && DESIGN_DECISION_TYPES.has(args.type)) {
+    realization = 'agreed';
   }
-  // B-645 claim columns: included ONLY when provided (an ordinary decision writes neither, so the
-  // insert stays valid on any schema and NULL keeps meaning "not an elicitation claim").
-  if (args.claim_provenance !== undefined) record.claim_provenance = args.claim_provenance;
-  if (args.underwriting_brief_id !== undefined) record.underwriting_brief_id = args.underwriting_brief_id;
 
-  let { data, error } = await client
-    .from('knowledge_decisions')
-    .insert(record)
-    .select(DECISION_COLS)
-    .single();
-  if (error && isMissingClaimColumns(error.message) &&
-      (args.claim_provenance !== undefined || args.underwriting_brief_id !== undefined)) {
-    // Guarded fallback (B-383 class, mirrors composeBrief's pending_resolution retry): on a DB that
-    // predates the Phase-1 claim columns, retry once without them. Degradation is faithful — that
-    // schema also lacks resolve_brief's claim disposal, so nothing could have consumed the coupling.
-    const { claim_provenance: _cp, underwriting_brief_id: _ub, ...fallback } = record;
-    ({ data, error } = await client
-      .from('knowledge_decisions')
-      .insert(fallback)
-      .select(DECISION_COLS)
-      .single());
-  }
+  const { data, error } = await client.rpc('knowledge_record_decision', {
+    p_project_id: projectId,
+    p_title: normalizeHtmlEntities(args.title.trim()),
+    p_type: args.type,
+    p_content: normalizeHtmlEntities(args.content ?? ''),
+    p_status: args.status ?? 'Asserted',
+    p_domain: args.domain ?? [],
+    p_madr: args.madr ?? null,
+    p_affected_entity_ids: affectedIds,
+    p_source_type: args.source_type ?? 'manual',
+    p_source_id: args.source_id ?? null,
+    p_source_activity: args.source_activity ?? null,
+    p_tags: args.tags ?? [],
+    p_source_task_id: args.source_task_id ?? null,
+    p_review_by: args.review_by ?? null,
+    p_realization: realization ?? null,
+    p_claim_provenance: args.claim_provenance ?? null,
+    p_underwriting_brief_id: args.underwriting_brief_id ?? null,
+    p_embedding: embedding,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null,
+  });
   if (error) {
     if (error.code === '23505') {
       throw new Error(`A decision titled "${args.title.trim()}" already exists in this project`);
     }
-    throw error;
+    throw new Error(error.message);
   }
   return data as unknown as KnowledgeDecisionFull;
 }
@@ -967,8 +949,19 @@ export interface SupersedeDecisionArgs {
   domain?: string[];
   affected_entity_names?: string[];
   reason?: string;
+  provenance?: string;
 }
 
+// B-995 judgment call (ticket B-995 point 1 / technical-design c60d1114): knowledge_supersede_decision
+// does its OWN internal replacement insert in successor-mode, taking only p_affected_entity_ids (already-
+// resolved uuids) — it does NOT call knowledge_record_decision internally, so the replacement it creates
+// gets NO embedding. Chosen option (c): resolve affected_entity_names -> ids here in TS (same
+// resolveOrCreateEntity call as before, preserving B-993 normalize/repair-at-touch), pass the ids to the
+// RPC, and accept the "no embedding for the replacement" behavior change as the one piece of drift. This
+// is the smallest change (one RPC call, single transaction) and matches the ticket's named intent; the
+// alternative (keep calling recordDecision for the replacement, a plain update for the old decision) would
+// forgo the RPC's atomicity for the sake of an embedding this decision doesn't otherwise need on its
+// replacement path.
 export async function supersedeDecision(
   client: SupabaseClient,
   projectId: string,
@@ -993,51 +986,35 @@ export async function supersedeDecision(
       'to retire the decision without a successor (retire-mode). Exactly one of type/title is ambiguous.',
     );
   }
-  const retire = !hasType;
 
   const workspaceId = await getWorkspaceId(client, projectId);
 
-  // Fetch-first guard (mirrors supersedeKnowledgeEntry): verify the target exists, scoped to this
-  // workspace+project, BEFORE creating the replacement — so a wrong/foreign/already-gone id can't
-  // leave an orphaned 'Accepted' decision with no superseded_by linkage.
-  const { data: existing, error: fetchErr } = await client
-    .from('knowledge_decisions')
-    .select('id')
-    .eq('workspace_id', workspaceId)
-    .eq('project_id', projectId)
-    .eq('id', args.old_decision_id)
-    .single();
-  if (fetchErr || !existing) {
-    throw new Error(`Decision ${args.old_decision_id} not found in this project`);
+  // Preserve today's affected_entity_names -> ids resolution (B-993 normalize-before-lookup +
+  // repair-at-touch) — the RPC's own successor insert takes only already-resolved uuids.
+  const affectedIds: string[] = [];
+  for (const name of args.affected_entity_names ?? []) {
+    affectedIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name));
   }
 
-  // 1) Create the replacement (Accepted — it is the new ruling decision) UNLESS this is a retire,
-  //    in which case there is no successor to author here.
-  const replacement = retire
-    ? null
-    : await recordDecision(client, projectId, userId, {
-        type: args.type!,
-        title: args.title!,
-        content: args.content,
-        madr: args.madr,
-        domain: args.domain,
-        affected_entity_names: args.affected_entity_names,
-        status: 'Accepted',
-      });
+  const { data, error } = await client.rpc('knowledge_supersede_decision', {
+    p_old_decision_id: args.old_decision_id,
+    p_project_id: projectId,
+    p_type: args.type ?? null,
+    p_title: hasTitle ? normalizeHtmlEntities(args.title!.trim()) : null,
+    p_content: args.content !== undefined ? normalizeHtmlEntities(args.content) : null,
+    p_madr: args.madr ?? null,
+    p_domain: args.domain ?? null,
+    p_affected_entity_ids: args.affected_entity_names !== undefined ? affectedIds : null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null,
+  });
+  if (error) throw new Error(error.message);
 
-  // 2) Mark the old decision Superseded + link it (superseded_by=null in retire-mode). The
-  //    AFTER-UPDATE trigger (A8) flags referencing tickets stale in BOTH modes.
-  const { data, error } = await client
-    .from('knowledge_decisions')
-    .update({ status: 'Superseded', superseded_by: replacement ? replacement.id : null })
-    .eq('workspace_id', workspaceId)
-    .eq('project_id', projectId)
-    .eq('id', args.old_decision_id)
-    .select(DECISION_COLS)
-    .single();
-  if (error) throw error;
-  return { superseded: data as unknown as KnowledgeDecisionFull, replacement };
+  const result = data as unknown as { superseded: KnowledgeDecisionFull; replacement: KnowledgeDecisionFull | null };
+  return { superseded: result.superseded, replacement: result.replacement ?? null };
 }
+
 
 export const supersedeDecisionTool = {
   name: 'supersede_decision',
@@ -1059,6 +1036,7 @@ export const supersedeDecisionTool = {
       domain: { type: 'array', items: { type: 'string' }, description: 'Domains for the replacement (successor-mode only)' },
       affected_entity_names: { type: 'array', items: { type: 'string' }, description: 'Entities the replacement touches (successor-mode only)' },
       reason: { type: 'string', description: 'Why the old decision is being superseded' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
     },
     required: ['old_decision_id'],
   },
@@ -1087,6 +1065,7 @@ export const recordDecisionTool = {
       review_by: { type: 'string', description: 'ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires.' },
       claim_provenance: { type: 'string', enum: ['human-stated', 'agent-inferred-human-validated', 'force-quit'], description: "B-645: how an elicitation claim was grounded. 'force-quit' claims are quarantined — never promoted on their brief's accept, never grounds for inference until validated. Omit for a non-claim decision." },
       underwriting_brief_id: { type: 'string', description: 'B-645: the brief (UUID) this Asserted claim underwrites — resolve_brief disposes coupled claims on accept/defer; compose_brief prunes dropped claims on iterate. Omit for a non-claim decision.' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
     },
     required: ['type', 'title'],
   },
@@ -1139,6 +1118,7 @@ export interface CreateEntityArgs {
   name: string;
   description?: string;
   metadata?: Record<string, unknown>;
+  provenance?: string;
 }
 
 export async function createEntity(
@@ -1203,43 +1183,28 @@ export async function createEntity(
     return updated as unknown as KnowledgeEntityFull;
   }
 
-  // B-977: check for a same-name-different-kind collision BEFORE inserting — a WARNING, never a
+  // B-977: check for a same-name-different-kind collision BEFORE authoring — a WARNING, never a
   // block. The lookup above already ruled out the same-kind case (that's the idempotent
   // create-or-skip path above); this is the sibling check for a DIFFERENT kind under the same name.
   const collision = await findCrossKindCollision(client, workspaceId, name, kind);
 
-  const record: Record<string, unknown> = {
-    workspace_id: workspaceId,
-    project_id: projectId,
-    kind,
-    name,
-  };
-  if (description !== undefined) record.description = description;
-  if (args.metadata !== undefined) record.metadata = args.metadata;
-
-  const { data, error } = await client
-    .from('knowledge_entities')
-    .insert(record)
-    .select(ENTITY_COLS)
-    .single();
-  if (error) {
-    // A racing create can still trip the uniqueness key after our lookup — treat as an idempotent
-    // success by re-reading the row the other writer landed (create-or-skip, not create-or-fail).
-    if (error.code === '23505') {
-      const { data: raced } = await client
-        .from('knowledge_entities')
-        .select(ENTITY_COLS)
-        .eq('workspace_id', workspaceId)
-        .eq('kind', kind)
-        .eq('name', name)
-        .maybeSingle();
-      if (raced) {
-        const racedRow = raced as unknown as KnowledgeEntityFull;
-        return collision ? { ...racedRow, collision_warning: collisionWarning(name, kind, collision) } : racedRow;
-      }
-    }
-    throw new Error(error.message);
-  }
+  // B-995: the genuinely-new-insert branch now writes through knowledge_create_entity (governed
+  // create-or-skip + a same-transaction 'rpc-typed' knowledge_events row on an actual insert) instead
+  // of a plain `.from().insert()`. This also DROPS the old client-side 23505-race-then-reread
+  // handling: the RPC's own `ON CONFLICT (workspace_id, kind, name) DO NOTHING` + re-select already
+  // resolves a racing create atomically inside the one transaction, so there is nothing left for a
+  // client-side retry to do.
+  const { data, error } = await client.rpc('knowledge_create_entity', {
+    p_project_id: projectId,
+    p_kind: kind,
+    p_name: name,
+    p_description: description ?? null,
+    p_metadata: args.metadata ?? null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null,
+  });
+  if (error) throw new Error(error.message);
   const created = data as unknown as KnowledgeEntityFull;
   return collision ? { ...created, collision_warning: collisionWarning(name, kind, collision) } : created;
 }
@@ -1264,6 +1229,7 @@ export const createEntityTool = {
       name: { type: 'string', description: 'Entity name (unique within the workspace per kind)' },
       description: { type: 'string', description: 'A THIN one-line canonical identifier — not a document; depth belongs in the claims about the entity' },
       metadata: { type: 'object', description: 'Optional structured metadata (JSON object)' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
     },
     required: ['kind', 'name'],
   },
@@ -1280,6 +1246,7 @@ export interface UpdateEntityArgs {
   new_kind?: string;
   description?: string;
   metadata?: Record<string, unknown>;
+  provenance?: string;
 }
 
 export async function updateEntity(
@@ -1296,30 +1263,26 @@ export async function updateEntity(
     throw new Error('At least one of new_kind, description, or metadata must be provided');
   }
 
-  const workspaceId = await getWorkspaceId(client, projectId);
+  const description = args.description !== undefined ? normalizeHtmlEntities(args.description) : undefined;
 
-  const patch: Record<string, unknown> = {};
-  if (args.new_kind !== undefined) patch.kind = args.new_kind;
-  if (args.description !== undefined) patch.description = normalizeHtmlEntities(args.description);
-  if (args.metadata !== undefined) patch.metadata = args.metadata;
-
-  let query = client
-    .from('knowledge_entities')
-    .update(patch)
-    .eq('workspace_id', workspaceId);
-  if (args.entity_id) {
-    query = query.eq('id', args.entity_id);
-  } else {
-    query = query.eq('kind', args.kind!).eq('name', args.name!);
-  }
-
-  const { data, error } = await query.select(ENTITY_COLS).single();
+  const { data, error } = await client.rpc('knowledge_update_entity', {
+    p_project_id: projectId,
+    p_entity_id: args.entity_id ?? null,
+    p_kind: args.kind ?? null,
+    p_name: args.name ?? null,
+    p_new_kind: args.new_kind ?? null,
+    p_description: description ?? null,
+    p_metadata: args.metadata ?? null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null,
+  });
   if (error) {
     if (error.code === '23505') {
       // Changing kind collided with an existing (workspace, new_kind, name) node — that is the MERGE
       // case, which repoints references. Route the caller there rather than silently failing.
       throw new Error(
-        `An entity named "${args.name ?? patch.name ?? ''}" already exists under kind "${args.new_kind}". ` +
+        `An entity named "${args.name ?? ''}" already exists under kind "${args.new_kind}". ` +
         `Use reconcile_entity to MERGE the two nodes (it repoints all references), not update_entity.`,
       );
     }
@@ -1344,6 +1307,7 @@ export const updateEntityTool = {
       new_kind: { type: 'string', description: 'New kind. For a stub→typed promotion that may collide, prefer reconcile_entity.' },
       description: { type: 'string', description: 'New thin one-line canonical description' },
       metadata: { type: 'object', description: 'New structured metadata (full-object replace)' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
     },
   },
 };
@@ -1365,6 +1329,7 @@ export interface ReconcileEntityArgs {
   to_kind: string;
   from_kind?: string;    // the stub's kind; defaults to 'concept'
   description?: string;  // optional refreshed description (upgrade-in-place only)
+  provenance?: string;
 }
 
 export interface ReconcileEntityResult {
@@ -1374,6 +1339,15 @@ export interface ReconcileEntityResult {
   repointed?: { facts: number; decisions: number; events: number };
 }
 
+// B-995: reconcileEntity is now a THIN WRAPPER around knowledge_reconcile_entity. Per the migration's
+// own note, this RPC is a genuine atomicity improvement, not just a typed-event wrapper — it carries
+// the WHOLE merge (repoint facts/decisions/events, delete the stub) in ONE transaction and RE-CHECKS
+// its own preconditions (the stub resolves to exactly one row; if a same-name to_kind node exists, it
+// too resolves to exactly one row) INSIDE the function, RAISEing on violation, rather than trusting
+// ids resolved by an earlier, separate client round-trip the way the old multi-request TS flow did.
+// The RPC's jsonb return shape ({mode, entity, merged_stub_id, repointed}) already matches
+// ReconcileEntityResult, so this is a direct pass-through plus one error-message translation to keep
+// the long-standing "No <kind> entity named ... to reconcile" message callers/tests depend on.
 export async function reconcileEntity(
   client: SupabaseClient,
   projectId: string,
@@ -1386,111 +1360,25 @@ export async function reconcileEntity(
   const fromKind = (args.from_kind ?? 'concept').trim();
   if (fromKind === toKind) throw new Error('from_kind and to_kind must differ (nothing to reconcile)');
 
-  const workspaceId = await getWorkspaceId(client, projectId);
-
-  // Find the stub (the lower-typed node — a 'concept' minted as a side effect by resolveOrCreateEntity).
-  const { data: stub, error: stubErr } = await client
-    .from('knowledge_entities')
-    .select(ENTITY_COLS)
-    .eq('workspace_id', workspaceId)
-    .eq('kind', fromKind)
-    .eq('name', name)
-    .maybeSingle();
-  if (stubErr) throw new Error(stubErr.message);
-  if (!stub) throw new Error(`No ${fromKind} entity named "${name}" to reconcile`);
-  const stubRow = stub as unknown as KnowledgeEntityFull;
-
-  // Does a typed node of the same name already exist under to_kind?
-  const { data: typed, error: typedErr } = await client
-    .from('knowledge_entities')
-    .select(ENTITY_COLS)
-    .eq('workspace_id', workspaceId)
-    .eq('kind', toKind)
-    .eq('name', name)
-    .maybeSingle();
-  if (typedErr) throw new Error(typedErr.message);
-
-  // --- Case (a): UPGRADE-IN-PLACE — no collision, no references move. ---
-  if (!typed) {
-    const patch: Record<string, unknown> = { kind: toKind };
-    if (args.description !== undefined) patch.description = args.description;
-    const { data: upgraded, error: upErr } = await client
-      .from('knowledge_entities')
-      .update(patch)
-      .eq('workspace_id', workspaceId)
-      .eq('id', stubRow.id)
-      .select(ENTITY_COLS)
-      .single();
-    if (upErr) throw new Error(upErr.message);
-    return { mode: 'upgrade-in-place', entity: upgraded as unknown as KnowledgeEntityFull };
+  const { data, error } = await client.rpc('knowledge_reconcile_entity', {
+    p_project_id: projectId,
+    p_name: name,
+    p_to_kind: toKind,
+    p_from_kind: fromKind,
+    p_description: args.description ?? null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null,
+  });
+  if (error) {
+    // The RPC's "expected exactly one ... found 0" precondition failure is this handler's long-
+    // standing "no stub to reconcile" case — translate it back to the message callers/tests expect.
+    if (/entity named/.test(error.message) && /found 0/.test(error.message)) {
+      throw new Error(`No ${fromKind} entity named "${name}" to reconcile`);
+    }
+    throw new Error(error.message);
   }
-
-  // --- Case (b): MERGE — repoint every reference stub→typed, then delete the stub. ---
-  const typedRow = typed as unknown as KnowledgeEntityFull;
-
-  // 1) Facts: bulk repoint subject_entity_id (RETURNING the moved rows gives the count).
-  const { data: movedFacts, error: factErr } = await client
-    .from('knowledge_facts')
-    .update({ subject_entity_id: typedRow.id })
-    .eq('workspace_id', workspaceId)
-    .eq('subject_entity_id', stubRow.id)
-    .select('id');
-  if (factErr) throw new Error(factErr.message);
-  const factCount = (movedFacts ?? []).length;
-
-  // 2) Decisions: affected_entity_ids is an array — rewrite stub→typed per row and DEDUP (a decision
-  //    already referencing BOTH the stub and the typed node would otherwise list the typed id twice —
-  //    the conflict case merge must handle).
-  const { data: decisionRows, error: decSelErr } = await client
-    .from('knowledge_decisions')
-    .select('id, affected_entity_ids')
-    .eq('workspace_id', workspaceId)
-    .contains('affected_entity_ids', [stubRow.id]);
-  if (decSelErr) throw new Error(decSelErr.message);
-  let decisionCount = 0;
-  for (const row of (decisionRows ?? []) as Array<{ id: string; affected_entity_ids: string[] }>) {
-    const current = row.affected_entity_ids ?? [];
-    const rewritten = Array.from(new Set(current.map((id) => (id === stubRow.id ? typedRow.id : id))));
-    const { error: decUpdErr } = await client
-      .from('knowledge_decisions')
-      .update({ affected_entity_ids: rewritten })
-      .eq('workspace_id', workspaceId)
-      .eq('id', row.id);
-    if (decUpdErr) throw new Error(decUpdErr.message);
-    decisionCount++;
-  }
-
-  // 3) Events: best-effort repoint of the append-only log. Under the user-JWT (authenticated) role the
-  //    events UPDATE is RLS-blocked and no-ops — but the FK's ON DELETE SET NULL cleans the reference
-  //    up on the stub deletion below, so a failed events repoint never dangles a reference and must
-  //    NEVER fail the merge (the log is thin/best-effort by design — knowledge-model-v1 §3).
-  let eventCount = 0;
-  try {
-    const { data: movedEvents } = await client
-      .from('knowledge_events')
-      .update({ entity_id: typedRow.id })
-      .eq('workspace_id', workspaceId)
-      .eq('entity_id', stubRow.id)
-      .select('id');
-    eventCount = (movedEvents ?? []).length;
-  } catch {
-    // never block the merge on the append-only event log
-  }
-
-  // 4) Delete the now-unreferenced stub.
-  const { error: delErr } = await client
-    .from('knowledge_entities')
-    .delete()
-    .eq('workspace_id', workspaceId)
-    .eq('id', stubRow.id);
-  if (delErr) throw new Error(delErr.message);
-
-  return {
-    mode: 'merge',
-    entity: typedRow,
-    merged_stub_id: stubRow.id,
-    repointed: { facts: factCount, decisions: decisionCount, events: eventCount },
-  };
+  return data as unknown as ReconcileEntityResult;
 }
 
 export const reconcileEntityTool = {
@@ -1509,6 +1397,7 @@ export const reconcileEntityTool = {
       to_kind: { type: 'string', description: 'The richer target kind (e.g. component, feature, persona)' },
       from_kind: { type: 'string', description: "The stub's kind. Default 'concept'." },
       description: { type: 'string', description: 'Optional refreshed one-line description (applied on upgrade-in-place)' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
     },
     required: ['name', 'to_kind'],
   },
@@ -1528,8 +1417,16 @@ export interface AssertFactArgs {
   confidence?: number;
   domain?: string[];
   review_by?: string;   // ISO timestamp; freshness/decay date (knowledge-model-v1 §3)
+  provenance?: string;
 }
 
+// B-995: writes through knowledge_assert_fact (governed insert + a same-transaction 'rpc-typed'
+// knowledge_events row) instead of a plain `.from().insert()`. The RPC resolves-or-creates the
+// subject entity ITSELF, but with a plain lookup-or-insert on the raw name (no B-993 normalize-
+// before-lookup or legacy-rename-repair-at-touch) — so resolveOrCreateEntity still runs here FIRST,
+// exactly as before, to preserve that normalization. The (now-normalized) name is what's then passed
+// to the RPC, so its own internal resolution finds the very row resolveOrCreateEntity just settled on
+// rather than risking a second, differently-named entity.
 export async function assertFact(
   client: SupabaseClient,
   projectId: string,
@@ -1541,30 +1438,29 @@ export async function assertFact(
   if (!args.source_type) throw new Error('source_type is required');
 
   const workspaceId = await getWorkspaceId(client, projectId);
-  const subjectId = await resolveOrCreateEntity(
-    client, workspaceId, projectId, args.subject_entity, args.subject_entity_kind ?? 'concept',
-  );
+  const subjectKind = args.subject_entity_kind ?? 'concept';
+  await resolveOrCreateEntity(client, workspaceId, projectId, args.subject_entity, subjectKind);
+  const subjectName = normalizeHtmlEntities(args.subject_entity);
 
   const embedding = await embedText(client, `${args.subject_entity} ${args.predicate} ${JSON.stringify(args.object)}`);
 
-  const record: Record<string, unknown> = {
-    workspace_id: workspaceId,
-    project_id: projectId,
-    subject_entity_id: subjectId,
-    predicate: args.predicate,
-    object: args.object,
-    confidence: args.confidence ?? 1.0,
-    status: 'Asserted',
-    domain: args.domain ?? [],
-    source_type: args.source_type,
-    created_by: userId,
-  };
-  if (embedding) record.embedding = embedding;
-  if (args.source_id !== undefined) record.source_id = args.source_id;
-  if (args.review_by !== undefined) record.review_by = args.review_by;
-
-  const { data, error } = await client.from('knowledge_facts').insert(record).select(FACT_COLS).single();
-  if (error) throw error;
+  const { data, error } = await client.rpc('knowledge_assert_fact', {
+    p_project_id: projectId,
+    p_subject_entity: subjectName,
+    p_predicate: args.predicate,
+    p_object: args.object,
+    p_source_type: args.source_type,
+    p_subject_entity_kind: subjectKind,
+    p_source_id: args.source_id ?? null,
+    p_confidence: args.confidence ?? 1.0,
+    p_domain: args.domain ?? [],
+    p_review_by: args.review_by ?? null,
+    p_embedding: embedding,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null,
+  });
+  if (error) throw new Error(error.message);
   return data as unknown as KnowledgeFactFull;
 }
 
@@ -1584,6 +1480,7 @@ export const assertFactTool = {
       confidence: { type: 'number', description: '0..1 (default 1.0)' },
       domain: { type: 'array', items: { type: 'string' }, description: 'Domains this fact belongs to' },
       review_by: { type: 'string', description: 'ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires.' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
     },
     required: ['subject_entity', 'predicate', 'object', 'source_type'],
   },
@@ -1593,7 +1490,7 @@ export const assertFactTool = {
 // Handler: invalidateFact
 // ---------------------------------------------------------------------------
 
-export interface InvalidateFactArgs { fact_id: string; reason?: string; }
+export interface InvalidateFactArgs { fact_id: string; reason?: string; provenance?: string; }
 
 export async function invalidateFact(
   client: SupabaseClient,
@@ -1601,16 +1498,14 @@ export async function invalidateFact(
   args: InvalidateFactArgs,
 ): Promise<KnowledgeFactFull> {
   if (!args.fact_id) throw new Error('fact_id is required');
-  const workspaceId = await getWorkspaceId(client, projectId);
-  const { data, error } = await client
-    .from('knowledge_facts')
-    .update({ valid_to: new Date().toISOString(), status: 'Superseded' })
-    .eq('workspace_id', workspaceId)
-    .eq('project_id', projectId)
-    .eq('id', args.fact_id)
-    .select(FACT_COLS)
-    .single();
-  if (error) throw error;
+  const { data, error } = await client.rpc('knowledge_invalidate_fact', {
+    p_fact_id: args.fact_id,
+    p_project_id: projectId,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null,
+  });
+  if (error) throw new Error(error.message);
   return data as unknown as KnowledgeFactFull;
 }
 
@@ -1622,6 +1517,7 @@ export const invalidateFactTool = {
     properties: {
       fact_id: { type: 'string', description: 'UUID of the fact to invalidate' },
       reason: { type: 'string', description: 'Why it is no longer valid' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
     },
     required: ['fact_id'],
   },
@@ -1700,8 +1596,17 @@ export interface SupersedeKnowledgeEntryArgs {
   new_content: string;
   type?: string;
   tags?: string[];
+  provenance?: string;
 }
 
+// B-995: writes through knowledge_supersede_knowledge_entry (governed replacement-insert +
+// mark-superseded update, in ONE transaction, plus an explicit 'rpc-typed' knowledge_events row)
+// instead of today's three-step TS flow (getKnowledgeEntry fetch -> createKnowledgeEntry insert via
+// the workspace_knowledge compat view -> a plain base-table update). The RPC does its own existing-
+// entry lookup and type/tags/source_task_id carry-over internally (COALESCE against the row it finds
+// by p_entry_id/p_title), so the pre-fetch is no longer needed. One thing the RPC does NOT do: embed
+// the replacement (no p_embedding param) — mirrors createKnowledgeEntry's post-insert self-embed
+// (B-401) as a best-effort follow-up write, exactly as this path already embedded before B-995.
 export async function supersedeKnowledgeEntry(
   client: SupabaseClient,
   projectId: string,
@@ -1712,42 +1617,25 @@ export async function supersedeKnowledgeEntry(
     throw new Error('Either entry_id or title must be provided to identify the entry to supersede');
   }
 
-  // Step 1: fetch the existing entry (scoped to projectId via getKnowledgeEntry)
-  const existing = await getKnowledgeEntry(client, projectId, {
-    entry_id: args.entry_id,
-    title: args.title,
-  });
-
-  // Step 2: create the replacement entry (status='accepted'), scoped to the token's project
-  const replacement = await createKnowledgeEntry(client, projectId, userId, {
-    title: args.new_title,
-    content: args.new_content,
-    type: args.type ?? existing.type,
-    status: 'accepted',
-    tags: args.tags ?? existing.tags,
-    source_task_id: existing.source_task_id ?? undefined,
-  });
-
-  // Step 3: mark the old entry as superseded and set superseded_by in one update.
-  // Must hit the BASE table (v1 vocab): a workspace_knowledge view update silently
-  // matches zero rows for next-gen-typed entries (outside the view's WHERE) and would
-  // error here AFTER step 2 — orphaning the already-created replacement (B-418).
   const workspaceId = await getWorkspaceId(client, projectId);
-  const { data: supersededData, error } = await client
-    .from('knowledge_decisions')
-    .update({ status: 'Superseded', superseded_by: replacement.id })
-    .eq('workspace_id', workspaceId)
-    .eq('project_id', projectId)
-    .eq('id', existing.id)
-    .select(
-      'id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at',
-    )
-    .single();
 
-  if (error) throw error;
+  const { data, error } = await client.rpc('knowledge_supersede_knowledge_entry', {
+    p_project_id: projectId,
+    p_new_title: normalizeHtmlEntities(args.new_title),
+    p_new_content: normalizeHtmlEntities(args.new_content),
+    p_entry_id: args.entry_id ?? null,
+    p_title: args.title ?? null,
+    p_type: args.type ?? null,
+    p_tags: args.tags ?? null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null,
+  });
+  if (error) throw new Error(error.message);
 
-  return {
-    superseded: supersededData as KnowledgeEntryFull,
-    replacement,
-  };
+  const result = data as unknown as { superseded: KnowledgeEntryFull; replacement: KnowledgeEntryFull };
+  await embedDecisionById(
+    client, workspaceId, projectId, result.replacement.id, result.replacement.title, result.replacement.content,
+  );
+  return result;
 }
