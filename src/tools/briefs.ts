@@ -7,6 +7,15 @@ import { resolveTaskId } from './resolve-task-id.js';
 import { detectRiskClasses } from './risk-class.js';
 import type { AcceptanceEventPayloadItem } from './acceptance-events.js';
 import { slugRef } from './payload-refs.js';
+import { listTicketKnowledge } from './workflow.js';
+import { queryKnowledge, getWorkspaceId } from './knowledge.js';
+import {
+  parseDiff,
+  deriveSearchTerms,
+  matchEntryAgainstDiff,
+  TIER_CANDIDATE_LIMIT,
+  type ContradictionMatchState,
+} from './knowledge-contradiction.js';
 
 export interface BriefItem {
   /** §3.2 sort: a decision (always recommended), a content-input (only the human can supply it),
@@ -112,16 +121,53 @@ export interface DesignTrackEntry {
  *  All six members are declared, including `clarify`; the clarify AUTHORING lives in its own ticket, so
  *  `harmony-clarify` does not populate this yet. The renderer needs the member regardless — a variant the
  *  type cannot express is a variant the render cannot position. */
+// B-838 — one Accepted knowledge entry the release-gate contradiction scan found touched by this
+// diff, and its disposition. `state` mirrors `ContradictionMatchState`
+// (knowledge-contradiction.ts) verbatim rather than importing the alias into this exported type, so
+// a `GateFrame` consumer never needs that module's import just to read the frame's shape.
+export interface ContradictionEntry {
+  entry_id: string;
+  title: string;
+  state: 'fires-and-contradicted' | 'fires-but-benign';
+  matched_values: string[];
+  /** Which read tier found this entry — the ticket's own FLOOR links, or the bounded TIER search. */
+  source: 'floor' | 'tier';
+}
+
+/** B-838 — the release frame's diff-derived contradiction signal. Three states on `status`, pinned by
+ *  `briefs.test.ts`: `diff_content` OMITTED -> 'not-computed' ("not computed — no diff supplied");
+ *  present but nothing survives exclusion/extraction -> 'no-candidates' ("no TIER candidates");
+ *  otherwise -> 'computed', where `entries: []` is the TICKET-LEVEL does-not-fire meaning "nothing
+ *  linked/matched was touched" — NEVER "no contradiction exists" (FLOOR/TIER are bounded reads, not a
+ *  whole-KB scan). `truncated` carries the parseDiff degrade message when the removed-line cap was hit. */
+export interface ContradictionSignal {
+  status: 'not-computed' | 'no-candidates' | 'computed';
+  message: string;
+  entries: ContradictionEntry[];
+  truncated?: string;
+}
+
 export type GateFrame =
   // `solving` is the OUTCOME paragraph — what becomes true for the product when this ships, in product
   // terms. NEVER a restatement of the problem: briefs restate pain well and never state the outcome
   // (§8 item 2). Altitude per §4.0 — judgeable without the repo open.
-  | { kind: 'clarify'; solving: string; in_scope: string[]; not_solving: Excluded[] }
+  | {
+      kind: 'clarify';
+      solving: string;
+      in_scope: string[];
+      not_solving: Excluded[];
+      /** B-838 — the FLOOR set (this ticket's `ticket_references_knowledge`-linked Accepted entries)
+       *  this gate confirmed reviewed for contradiction before compose, by entry id. Absent/empty on an
+       *  empty FLOOR set is NORMAL and warns on nothing (see `lintBrief`'s B-838 rule); absent on a
+       *  NON-empty FLOOR set is what the warning catches. */
+      floor_reviewed?: string[];
+    }
   | {
       kind: 'decompose';
       elements: Array<{ text: string; surface?: string; covers?: string }>;
       coverage: string;
       existing_children_checked: boolean;
+      floor_reviewed?: string[]; // B-838 — see the clarify variant's doc comment; identical contract.
     }
   | {
       kind: 'design';
@@ -133,6 +179,7 @@ export type GateFrame =
       derisk?: { run: string[]; not_run: string[] };
       /** Product track only — the AC manifest this accept files. */
       files_on_accept?: string[];
+      floor_reviewed?: string[]; // B-838 — see the clarify variant's doc comment; identical contract.
     }
   | {
       kind: 'plan';
@@ -146,6 +193,7 @@ export type GateFrame =
       /** Lint-warned as REQUIRED when the scope names more than one repo or carries a migration (§8 item 6). */
       landing?: LandingShape;
       design_delta?: string;
+      floor_reviewed?: string[]; // B-838 — see the clarify variant's doc comment; identical contract.
     }
   | {
       kind: 'release';
@@ -157,6 +205,11 @@ export type GateFrame =
        *  carried-from-gates signal, which is a different, non-diff-derived signal and still rides prose. */
       risk_classes: string[];
       pr_review_state?: string;
+      /** B-838 — DIFF-DERIVED, computed at compose from `diff_content` exactly like `risk_classes` is
+       *  from `changed_paths`: `withContradictionSignal` OVERWRITES whatever the doc authored here. See
+       *  `ContradictionSignal`'s doc comment for the three-state contract. */
+      contradiction_signal?: ContradictionSignal;
+      floor_reviewed?: string[]; // B-838 — see the clarify variant's doc comment; identical contract.
     }
   | {
       kind: 'verify';
@@ -165,6 +218,9 @@ export type GateFrame =
       exempt_reason?: string;
       evidence_status: string;
       bounded_accept?: { open_ac_ids: string[]; closes_when: string };
+      // NOTE: verify deliberately carries NO `floor_reviewed` — B-838 names exactly the five FORWARD
+      // gates (clarify/decompose/design/plan/release); verify is not one of them (confirmed at plan
+      // time: Planned->Built is a brief-less SYSTEM/AGENT advance, and there is no sixth variant).
     };
 
 /** The `reason` each frame variant belongs to — the render is positional, the lint is the matcher. */
@@ -1187,6 +1243,11 @@ export interface BriefLintContext {
    *  warn-only "a round-2+ brief carries no `doc.revision`" rule, which must stay silent on a first
    *  compose. Absent when the caller supplies no iteration, and absence warns on nothing. */
   iteration?: number;
+  /** B-838 — the size of this ticket's FLOOR set (Accepted entries in `ticket_references_knowledge`),
+   *  read at compose time. Drives the warn-only "N Accepted entries ... not confirmed reviewed" rule
+   *  on the five forward gates: a ZERO/absent count must warn on NOTHING (most tickets today have an
+   *  empty floor set), a non-zero count with an empty/absent `doc.frame.floor_reviewed` warns. */
+  floorCount?: number;
 }
 
 /** B-876 — one pull request read out of a task's `field_values`. `key` is the path it was found at
@@ -1341,6 +1402,22 @@ function lintFrame(doc: BriefDoc, ctx: BriefLintContext, warnings: string[]): vo
       `\`doc.frame.kind\` is '${frame.kind}' but this brief's reason is '${ctx.reason}', which expects the '${expected}' frame. The render positions the frame by kind, so a mismatched frame lands in the wrong place.`,
     );
     return;
+  }
+
+  // B-838 — the FLOOR-set review rule, on the FIVE forward gates only (verify carries no
+  // `floor_reviewed` field at all — see the GateFrame doc comment). An EMPTY/absent FLOOR set warns on
+  // NOTHING: most tickets today reference no knowledge, and noising every one of them would bury the
+  // signal this rule exists to raise. A NON-empty FLOOR set with no `floor_reviewed` recorded warns —
+  // this gate must read the FLOOR set and explicitly supersede or amend any contradicted entry before
+  // its brief can be accepted (skills/harmony-shared/knowledge-discipline.md).
+  if (frame.kind !== 'verify') {
+    const floorCount = ctx.floorCount ?? 0;
+    const reviewed = (frame as { floor_reviewed?: string[] }).floor_reviewed;
+    if (floorCount > 0 && (!Array.isArray(reviewed) || reviewed.length === 0)) {
+      warnings.push(
+        `${floorCount} Accepted entries linked to this ticket were not confirmed reviewed for contradiction. Read the FLOOR set (\`list_ticket_knowledge\`, Accepted only) and author \`frame.floor_reviewed\` with the ids you checked before this brief is accepted.`,
+      );
+    }
   }
 
   switch (frame.kind) {
@@ -1841,6 +1918,13 @@ export interface ComposeBriefArgs {
    *  to a release frame's `risk_classes`: compose computes that field and overwrites whatever the skill
    *  authored. No diff ⇒ `[]` — the signal is path-derived or it is nothing. */
   changed_paths?: string[];
+  /** B-838 — the build's bounded, REMOVED/REPLACED PR diff lines (`git diff origin/main...HEAD`,
+   *  pre-merge, post-exclusion, pre-cap — see knowledge-contradiction.ts's `parseDiff`/exclusion list).
+   *  The ONLY input to a release frame's `contradiction_signal`: compose computes that field and
+   *  OVERWRITES whatever the doc authored, exactly like `risk_classes` from `changed_paths`. Omitted
+   *  entirely ⇒ `{ status: 'not-computed', message: 'not computed — no diff supplied' }` — never
+   *  silently treated as "no contradictions", and never breaks an older caller that never passes it. */
+  diff_content?: string;
   /** B-843 — the human feedback that CAUSED this iterate, stored on the NEW revision.
    *
    *  An EXPLICIT parameter, never a scrape. Sourcing the feedback from `briefs.pending_resolution`
@@ -1907,6 +1991,151 @@ function withDiffDerivedRiskClasses(
   const paths = Array.isArray(changedPaths) ? changedPaths.filter((x) => typeof x === 'string') : [];
   const risk_classes = paths.length > 0 ? (detectRiskClasses({ changedPaths: paths }) as string[]) : [];
   return { ...doc, frame: { ...doc.frame, risk_classes } };
+}
+
+// ---------------------------------------------------------------------------
+// B-838 — COMPOSE IS AUTHORITATIVE for a release frame's `contradiction_signal`, exactly the same
+// shape as `withDiffDerivedRiskClasses` above: computed here from `diff_content`, and OVERWRITES
+// whatever the doc authored. Only ever touches the `release` frame — the signal is release-gate-only,
+// mirroring `risk_classes`'s own scope (see `ComposeBriefArgs.diff_content`'s doc comment).
+// ---------------------------------------------------------------------------
+
+const NOT_COMPUTED_SIGNAL: ContradictionSignal = {
+  status: 'not-computed',
+  message: 'not computed — no diff supplied',
+  entries: [],
+};
+
+/** B-838 — batch-fetch `content` for up to TIER_CANDIDATE_LIMIT knowledge_decisions ids. TIER's
+ *  `query_knowledge` summary rows carry no `content` (by design — see queryKnowledge's header), so a
+ *  small bounded follow-up read fills it in for the match. Guarded like every other B-838 read: any
+ *  failure degrades to `{}` (those TIER entries are simply skipped) rather than breaking the release
+ *  brief — a contradiction-signal read must never be the reason a release gate cannot compose. */
+async function fetchContentByIds(
+  client: SupabaseClient,
+  projectId: string,
+  ids: string[],
+): Promise<Record<string, string>> {
+  if (ids.length === 0) return {};
+  try {
+    const workspaceId = await getWorkspaceId(client, projectId);
+    const { data, error } = await client
+      .from('knowledge_decisions')
+      .select('id, content')
+      .eq('workspace_id', workspaceId)
+      .eq('project_id', projectId)
+      .in('id', ids);
+    if (error) return {};
+    const map: Record<string, string> = {};
+    for (const row of (data ?? []) as { id: string; content: string | null }[]) {
+      map[row.id] = row.content ?? '';
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * B-838 — derive the release frame's `contradiction_signal` from `diffContent` (the caller's bounded,
+ * removed-line PR diff — see `ComposeBriefArgs.diff_content`). Pure orchestration over the pure
+ * `knowledge-contradiction.ts` primitives plus two guarded reads:
+ *
+ *   FLOOR — `listTicketKnowledge`, filtered client-side to Accepted (list_ticket_knowledge itself is
+ *           status-agnostic; B-838's FLOOR is Accepted-only).
+ *   TIER  — `queryKnowledge({ search: <diff-derived terms>, limit: TIER_CANDIDATE_LIMIT })`, NOT
+ *           restricted to FLOOR — a contradicted entry the ticket never linked still matters. Note the
+ *           search path's OWN incompatibility rule (queryKnowledge's header): `search` composes with
+ *           `domain` + `limit` ONLY, never `status` — passing it would throw. That is not a gap here:
+ *           `knowledge_search_rrf` already returns Accepted-only, so the omission is deliberate, not
+ *           an oversight.
+ *
+ * THE THREE-STATE CONTRACT (pinned in briefs.test.ts): `diffContent === undefined` -> 'not-computed';
+ * present but no candidate values survive exclusion/extraction -> 'no-candidates'; otherwise ->
+ * 'computed' (an EMPTY `entries: []` here is the ticket-level does-not-fire — "nothing linked/matched
+ * was touched", never "no contradiction exists").
+ *
+ * Returns a doc CLONE when it rewrites anything; the caller's object is never mutated (same contract
+ * as `withDiffDerivedRiskClasses`).
+ */
+async function withContradictionSignal(
+  doc: BriefDoc,
+  client: SupabaseClient,
+  projectId: string,
+  taskId: string,
+  diffContent: string | undefined,
+): Promise<BriefDoc> {
+  if (doc.frame?.kind !== 'release') return doc;
+
+  if (diffContent === undefined) {
+    return { ...doc, frame: { ...doc.frame, contradiction_signal: NOT_COMPUTED_SIGNAL } };
+  }
+
+  const parsed = parseDiff(diffContent);
+  const searchTerms = deriveSearchTerms(parsed.removedLines);
+
+  if (searchTerms.length === 0) {
+    const signal: ContradictionSignal = { status: 'no-candidates', message: 'no TIER candidates', entries: [] };
+    if (parsed.truncated) signal.truncated = parsed.truncated;
+    return { ...doc, frame: { ...doc.frame, contradiction_signal: signal } };
+  }
+
+  // FLOOR: this ticket's linked Accepted entries.
+  let floorRows: Array<{ id?: string; decision_id?: string; status?: string; title?: string; content?: string }> = [];
+  try {
+    floorRows = (await listTicketKnowledge(client, projectId, { task_id: taskId })) as typeof floorRows;
+  } catch {
+    floorRows = []; // degrade — a FLOOR read failure must not break the release brief
+  }
+  const floorAccepted = floorRows.filter((r) => r.status === 'Accepted');
+
+  // TIER: bounded, content-matched search over ALL Accepted knowledge (NOT restricted to FLOOR).
+  let tierRows: Array<{ id?: string; title?: string }> = [];
+  try {
+    tierRows = (await queryKnowledge(client, projectId, {
+      search: searchTerms.join(' '),
+      limit: TIER_CANDIDATE_LIMIT,
+    })) as typeof tierRows;
+  } catch {
+    tierRows = []; // degrade — a TIER search failure must not break the release brief
+  }
+  const tierIds = tierRows.map((r) => r.id).filter((id): id is string => typeof id === 'string');
+  const tierContentById = await fetchContentByIds(client, projectId, tierIds);
+
+  const seen = new Set<string>();
+  const entries: ContradictionEntry[] = [];
+  const consider = (
+    id: string | undefined,
+    title: string | undefined,
+    content: string | undefined,
+    source: 'floor' | 'tier',
+  ): void => {
+    if (!id || seen.has(id) || typeof content !== 'string' || content.length === 0) return;
+    seen.add(id);
+    const match = matchEntryAgainstDiff(content, parsed.removedLines, parsed.addedLines);
+    if (!match) return;
+    entries.push({
+      entry_id: id,
+      title: title ?? '(untitled)',
+      state: match.state as ContradictionMatchState,
+      matched_values: match.matchedValues,
+      source,
+    });
+  };
+
+  for (const row of floorAccepted) consider(row.id ?? row.decision_id, row.title, row.content, 'floor');
+  for (const row of tierRows) consider(row.id, row.title, row.id ? tierContentById[row.id] : undefined, 'tier');
+
+  const signal: ContradictionSignal = {
+    status: 'computed',
+    message:
+      entries.length === 0
+        ? 'does-not-fire — nothing linked/matched was touched'
+        : `${entries.length} Accepted entr${entries.length === 1 ? 'y' : 'ies'} touched by this diff`,
+    entries,
+  };
+  if (parsed.truncated) signal.truncated = parsed.truncated;
+  return { ...doc, frame: { ...doc.frame, contradiction_signal: signal } };
 }
 
 /**
@@ -2176,15 +2405,38 @@ export async function composeBrief(
   // the lint now judge the doc the ROW will hold. The ORDER is load-bearing: the risk-class derivation
   // runs first (it is the one that needs the prior release frame), the gate slot next, and the entry
   // content LAST and outermost, preserving the B-867 nesting above.
+  // B-838: contradiction_signal is derived AFTER risk_classes (same ordering rationale as B-901's
+  // comment above — the risk-class step needs the prior release frame, and this step only needs the
+  // frame `withDiffDerivedRiskClasses` already produced, plus the client for the FLOOR/TIER reads).
+  const docWithContradiction = await withContradictionSignal(
+    withDiffDerivedRiskClasses(mergedDoc, args.changed_paths, priorRiskClasses),
+    client,
+    projectId,
+    taskId,
+    args.diff_content,
+  );
   const doc = withDerivedEntryContent(
-    withDerivedGateSlot(
-      withDiffDerivedRiskClasses(mergedDoc, args.changed_paths, priorRiskClasses),
-      args.reason,
-    ),
+    withDerivedGateSlot(docWithContradiction, args.reason),
     args.reason,
     mergedDecisionRef,
     renderCtx,
   );
+  // B-838 — the FLOOR-set size, for the warn-only "not confirmed reviewed" rule (lintFrame). Reason-
+  // gated to the five forward gates (the ones with a `floor_reviewed` field at all — see GateFrame);
+  // guarded like every other B-838 read, degrading to `undefined` (⇒ no warning) rather than blocking
+  // the compose. Reuses `listTicketKnowledge`, the SAME shared FLOOR query `withContradictionSignal`
+  // uses above, filtered client-side to Accepted.
+  let floorCount: number | undefined;
+  const expectedFrameKind = FRAME_KIND_FOR_REASON[args.reason];
+  if (expectedFrameKind && expectedFrameKind !== 'verify') {
+    try {
+      const floorRows = await listTicketKnowledge(client, projectId, { task_id: taskId });
+      floorCount = (floorRows as Array<{ status?: string }>).filter((r) => r.status === 'Accepted').length;
+    } catch {
+      floorCount = undefined;
+    }
+  }
+
   const content = renderBrief(doc, mergedDecisionRef, renderCtx);
   const lint = lintBrief(doc, content, {
     reason: args.reason,
@@ -2193,6 +2445,7 @@ export async function composeBrief(
     // The POST-increment iteration — identical to the value the update below writes, so the lint judges the
     // round the human will actually read. No active brief means this compose is round 1.
     iteration: existing ? ((existing as { iteration: number }).iteration ?? 1) + 1 : 1,
+    floorCount,
   });
   if (!lint.ok) {
     throw new Error(`Brief failed the §3.2 pre-send lint:\n- ${lint.errors.join('\n- ')}`);
@@ -2365,7 +2618,7 @@ export const composeBriefTool = {
   description:
     "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange — a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one — so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref — do not hand-write it. " +
     "B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately — put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. " +
-    "B-876: also author `doc.frame` — the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING — no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) — compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates.",
+    "B-876: also author `doc.frame` — the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING — no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) — compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose — compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing — an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal.",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -2400,7 +2653,7 @@ export const composeBriefTool = {
           frame: {
             type: 'object',
             description:
-              "B-876 — the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta? } | 'release' { act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state? } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], exempt_reason?, evidence_status, bounded_accept? }. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[] }. Every rule over this field is a WARNING — an absent or malformed frame never refuses the brief; omit it entirely and the render is byte-identical to the pre-B-876 output.",
+              "B-876 — the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, floor_reviewed?[] } | 'release' { act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only — never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[] }. Every rule over this field is a WARNING — an absent or malformed frame never refuses the brief; omit it entirely and the render is byte-identical to the pre-B-876 output.",
           },
           revision: {
             type: 'object',
@@ -2439,6 +2692,11 @@ export const composeBriefTool = {
         items: { type: 'string' },
         description:
           "B-876 — the build's changed file paths (`git diff --name-only origin/main...HEAD`). Used ONLY to compute a release frame's `risk_classes` with the deterministic path detector; compose is authoritative for that field and overwrites whatever the doc authored. Omit (or pass []) and the field is [] — the risk signal is path-derived or it is nothing, never prose-guessed.",
+      },
+      diff_content: {
+        type: 'string',
+        description:
+          "B-838 — the build's bounded, REMOVED/REPLACED PR diff lines (`git diff origin/main...HEAD`, pre-merge, post-exclusion, pre-cap). Used ONLY to compute a release frame's `contradiction_signal` — which Accepted knowledge entries this diff touches or contradicts; compose is authoritative for that field and overwrites whatever the doc authored, exactly like `risk_classes` from `changed_paths`. Omitted entirely -> `{ status: 'not-computed', message: 'not computed — no diff supplied' }`, never silently read as \"no contradictions\".",
       },
       underwriting_claim_ids: { type: 'array', items: { type: 'string' }, description: 'B-645 iterate-prune: on an in-place iterate, the KEPT set of elicitation-claim ids that still underwrite this brief. Coupled Asserted claims NOT listed are archived; [] archives all coupled Asserted claims; omit ⇒ no prune. Ignored on a first compose (nothing is coupled yet).' },
       iterate_feedback: {

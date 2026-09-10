@@ -37199,6 +37199,1097 @@ function slugRef(prefix, text, maxLen = 40) {
   return `${prefix}-${slug}`;
 }
 
+// src/tools/knowledge.ts
+var DECISION_COLS = "id, workspace_id, project_id, title, content, type, status, realization, domain, confidence, review_by, drift_risk, superseded_by, affected_entity_ids, madr, source_type, source_id, source_activity, tags, source_task_id, created_by, created_at, updated_at";
+var FACT_COLS = "id, workspace_id, project_id, subject_entity_id, predicate, object, confidence, status, domain, source_type, source_id, valid_from, valid_to, recorded_at, created_by";
+var ENTITY_COLS = "id, workspace_id, project_id, kind, name, description, metadata, created_at";
+var queryKnowledgeTool = {
+  name: "query_knowledge",
+  description: 'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to "Accepted" entries only. When `search` is given, retrieval is semantic (RRF) and composes only with `domain` (+ `limit`); the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      type: {
+        type: "string",
+        description: 'Filter by entry type (e.g. "architecture", "business", "convention", "specification"). (structured-filter path; not combinable with `search`)'
+      },
+      status: {
+        type: "string",
+        description: 'Filter by status. Default: "Accepted". (structured-filter path; not combinable with `search`)'
+      },
+      domain: {
+        type: "array",
+        items: { type: "string" },
+        description: "Filter to entries tagged with ANY of these domains: engineering, operations, data, product, customer, process. Query the relevant domain before deciding."
+      },
+      as_of: {
+        type: "string",
+        description: "ISO timestamp \u2014 return entries valid at or before this instant (temporal query). (structured-filter path; not combinable with `search`)"
+      },
+      tags: {
+        type: "array",
+        items: { type: "string" },
+        description: "Filter entries that contain ALL of these tags. (structured-filter path; not combinable with `search`)"
+      },
+      search: {
+        type: "string",
+        description: "Free-text search query \u2014 hybrid semantic + trigram retrieval, ranked by relevance (RRF). Composes only with `domain` and `limit`."
+      },
+      include_superseded: {
+        type: "boolean",
+        description: "When true and no explicit status given, return all statuses including superseded. Default false. (structured-filter path; not combinable with `search`)"
+      },
+      limit: { type: "number", description: "Max results to return. Default 50." },
+      offset: { type: "number", description: "Number of results to skip (for pagination). Default 0. (structured-filter path; not combinable with `search`)" }
+    }
+  }
+};
+var getKnowledgeEntryTool = {
+  name: "get_knowledge_entry",
+  description: "Get the full content of a knowledge entry by ID or title. Scoped to this project.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      entry_id: { type: "string", description: "Knowledge entry UUID" },
+      title: { type: "string", description: "Entry title (exact match)" }
+    }
+  }
+};
+var createKnowledgeEntryTool = {
+  name: "create_knowledge_entry",
+  description: 'Create a new knowledge entry in this project. Entries are created as "draft" by default \u2014 humans review and accept them. Use for architecture decisions, business decisions, conventions, and specifications (spec documents describing work to be built).',
+  inputSchema: {
+    type: "object",
+    properties: {
+      title: { type: "string", description: "Entry title (must be unique within the project)" },
+      content: { type: "string", description: "Markdown content of the entry" },
+      type: {
+        type: "string",
+        description: 'Entry type: "architecture", "business", "convention", or "specification"'
+      },
+      status: {
+        type: "string",
+        description: 'Status override. Default: "draft".'
+      },
+      tags: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional tags"
+      },
+      source_task_id: {
+        type: "string",
+        description: "Task ID that triggered this knowledge entry"
+      }
+    },
+    required: ["title", "content", "type"]
+  }
+};
+var updateKnowledgeEntryTool = {
+  name: "update_knowledge_entry",
+  description: "Update an existing knowledge entry in this project by ID or title. Can update title, content, type, status, tags, domain, madr, realization, or review_by. Works for all entry types, including the next-gen design types.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      entry_id: { type: "string", description: "Knowledge entry UUID" },
+      title: { type: "string", description: "Current entry title (used to find the entry if entry_id not provided)" },
+      new_title: { type: "string", description: "New title for the entry" },
+      content: { type: "string", description: "New markdown content" },
+      type: { type: "string", description: "New entry type" },
+      status: { type: "string", description: "New status: Asserted, Accepted, Superseded, or Archived (legacy lowercase draft/accepted/superseded also accepted)" },
+      tags: {
+        type: "array",
+        items: { type: "string" },
+        description: "Replace tags with this list"
+      },
+      domain: {
+        type: "array",
+        items: { type: "string" },
+        description: "Replace domains with this list: engineering, operations, data, product, customer, process"
+      },
+      madr: {
+        type: "object",
+        description: "Replace the structured MADR body (full-object replace, not a key-merge): { context, decision_drivers, considered_options, decision_outcome, consequences }"
+      },
+      realization: {
+        type: "string",
+        enum: ["agreed", "live", "deprecating", "retired"],
+        description: 'Implementation/realization state (orthogonal to status); NULL \u2261 live; "agreed" = decided-not-yet-built'
+      },
+      review_by: { type: "string", description: "ISO timestamp; freshness/decay date (knowledge-model-v1 \xA73)" }
+    }
+  }
+};
+var supersedeKnowledgeEntryTool = {
+  name: "supersede_knowledge_entry",
+  description: 'Supersede an existing knowledge entry in this project with a new replacement. Marks the old entry as "superseded" and creates the replacement as "accepted", linking them via superseded_by.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      entry_id: { type: "string", description: "UUID of the entry to supersede" },
+      title: { type: "string", description: "Title of the entry to supersede (used if entry_id not provided)" },
+      new_title: { type: "string", description: "Title for the replacement entry" },
+      new_content: { type: "string", description: "Content for the replacement entry" },
+      type: { type: "string", description: "Type for the replacement (defaults to type of superseded entry)" },
+      tags: {
+        type: "array",
+        items: { type: "string" },
+        description: "Tags for the replacement (defaults to tags of superseded entry)"
+      }
+    },
+    required: ["new_title", "new_content"]
+  }
+};
+async function getWorkspaceId(client, projectId) {
+  const { data, error: error2 } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
+  if (error2) throw new Error(`Could not resolve workspace: ${error2.message}`);
+  return data.workspace_id;
+}
+async function embedText(client, text) {
+  try {
+    const { data, error: error2 } = await client.functions.invoke("embed-knowledge", { body: { text } });
+    if (error2 || !data?.embedding) return null;
+    return `[${data.embedding.join(",")}]`;
+  } catch {
+    return null;
+  }
+}
+async function embedDecisionById(client, workspaceId, projectId, id, title, content) {
+  const embedding = await embedText(client, `${title}
+${content ?? ""}`);
+  if (!embedding) return;
+  await client.from("knowledge_decisions").update({ embedding }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", id);
+}
+var LEGACY_STATUS_MAP = {
+  draft: "draft",
+  accepted: "accepted",
+  superseded: "superseded",
+  Asserted: "draft",
+  Accepted: "accepted",
+  Superseded: "superseded"
+};
+function toLegacyStatus(status) {
+  const legacy = LEGACY_STATUS_MAP[status];
+  if (legacy === void 0) {
+    throw new Error(
+      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, or Superseded/superseded \u2014 Archived cannot be set through this tool, which writes the legacy compat view (no Archived state).`
+    );
+  }
+  return legacy;
+}
+var BASE_STATUS_MAP = {
+  draft: "Asserted",
+  accepted: "Accepted",
+  superseded: "Superseded",
+  Asserted: "Asserted",
+  Accepted: "Accepted",
+  Superseded: "Superseded",
+  Archived: "Archived"
+};
+function toBaseStatus(status) {
+  const base = BASE_STATUS_MAP[status];
+  if (base === void 0) {
+    throw new Error(
+      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, Superseded/superseded, or Archived.`
+    );
+  }
+  return base;
+}
+async function queryKnowledge(client, projectId, args) {
+  const workspaceId = await getWorkspaceId(client, projectId);
+  if (args.search) {
+    const incompatible = [];
+    if (args.status) incompatible.push("status");
+    if (args.include_superseded) incompatible.push("include_superseded");
+    if (args.type) incompatible.push("type");
+    if (args.tags && args.tags.length > 0) incompatible.push("tags");
+    if (args.as_of) incompatible.push("as_of");
+    if (args.offset) incompatible.push("offset");
+    if (incompatible.length > 0) {
+      throw new Error(
+        `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(", ")}. Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". Omit "search" to use the structured filters.`
+      );
+    }
+    const queryEmbedding = await embedText(client, args.search);
+    const { data: data2, error: error3 } = await client.rpc("knowledge_search_rrf", {
+      _workspace_id: workspaceId,
+      _project_id: projectId,
+      _query_embedding: queryEmbedding,
+      _query_text: args.search,
+      _domain: args.domain && args.domain.length > 0 ? args.domain : null,
+      _match_limit: args.limit ?? 50
+    });
+    if (error3) throw new Error(error3.message);
+    return (data2 ?? []).map((d) => ({
+      id: d.id,
+      title: d.title,
+      type: d.type,
+      status: d.status,
+      domain: d.domain,
+      tags: d.tags,
+      project_id: d.project_id,
+      updated_at: d.updated_at
+    }));
+  }
+  let query = client.from("knowledge_decisions").select("id, title, type, status, domain, tags, project_id, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId);
+  if (args.status) {
+    query = query.eq("status", args.status);
+  } else if (!args.include_superseded) {
+    query = query.eq("status", "Accepted");
+  }
+  if (args.type) query = query.eq("type", args.type);
+  if (args.domain && args.domain.length > 0) query = query.overlaps("domain", args.domain);
+  if (args.as_of) query = query.lte("valid_from", args.as_of);
+  if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
+  query = query.order("type", { ascending: true });
+  const limit = args.limit ?? 50;
+  const offset = args.offset ?? 0;
+  const { data, error: error2 } = await query.range(offset, offset + limit - 1);
+  if (error2) throw new Error(error2.message);
+  return data ?? [];
+}
+async function searchTicketIntents(client, projectId, args) {
+  if (!args.query?.trim()) throw new Error("query is required");
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const queryEmbedding = await embedText(client, args.query);
+  const { data, error: error2 } = await client.rpc("search_ticket_intents", {
+    _workspace_id: workspaceId,
+    _project_id: projectId,
+    _query_embedding: queryEmbedding,
+    _query_text: args.query,
+    _match_limit: args.limit ?? 50
+  });
+  if (error2) throw new Error(error2.message);
+  return (data ?? []).map((d) => ({
+    id: d.id,
+    source_task_id: d.source_task_id,
+    content: d.content,
+    score: d.score
+  }));
+}
+var searchTicketIntentsTool = {
+  name: "search_ticket_intents",
+  description: 'Find existing TICKETS whose raw intent (title + description) overlaps a query \u2014 the intent-only retrieval surface (hybrid semantic + trigram RRF, ranked by relevance). Use this to check whether a ticket already captures what someone is about to ask for (dedup / "is this already requested?"). This is SEPARATE from query_knowledge: it returns ONLY ticket-intent rows (status-agnostic) and never a design/spec/convention decision, so the two corpora never bleed. Returns each match as { source_task_id, content, score }; resolve source_task_id with get_task to inspect the ticket.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "Free-text query describing the intent to look for \u2014 matched against ticket title+description via hybrid semantic + trigram retrieval (RRF)."
+      },
+      limit: { type: "number", description: "Max matches to return. Default 50." }
+    },
+    required: ["query"]
+  }
+};
+async function getKnowledgeEntry(client, projectId, args) {
+  if (!args.entry_id && !args.title) {
+    throw new Error("Either entry_id or title must be provided");
+  }
+  const workspaceId = await getWorkspaceId(client, projectId);
+  let query = client.from("knowledge_decisions").select(
+    "id, workspace_id, project_id, title, content, type, status, realization, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+  ).eq("workspace_id", workspaceId).eq("project_id", projectId);
+  if (args.entry_id) {
+    query = query.eq("id", args.entry_id);
+  } else {
+    query = query.eq("title", args.title);
+  }
+  const { data, error: error2 } = await query.single();
+  if (error2) throw error2;
+  return data;
+}
+async function createKnowledgeEntry(client, projectId, userId, args) {
+  if (!args.title?.trim()) {
+    throw new Error("title is required");
+  }
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const record2 = {
+    workspace_id: workspaceId,
+    project_id: projectId,
+    title: normalizeHtmlEntities(args.title.trim()),
+    content: normalizeHtmlEntities(args.content ?? ""),
+    type: args.type,
+    status: args.status !== void 0 ? toLegacyStatus(args.status) : "draft",
+    created_by: userId
+  };
+  if (args.tags !== void 0) record2.tags = args.tags;
+  if (args.source_task_id !== void 0) record2.source_task_id = args.source_task_id;
+  const { data, error: error2 } = await client.from("workspace_knowledge").insert(record2).select(
+    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+  ).single();
+  if (error2) {
+    if (error2.code === "23505") {
+      throw new Error(
+        `A knowledge entry titled "${args.title.trim()}" already exists in this project`
+      );
+    }
+    throw error2;
+  }
+  const created = data;
+  await embedDecisionById(client, workspaceId, projectId, created.id, created.title, created.content);
+  return getKnowledgeEntry(client, projectId, { entry_id: created.id });
+}
+async function updateKnowledgeEntry(client, projectId, args) {
+  if (!args.entry_id && !args.title) {
+    throw new Error("Either entry_id or title must be provided to identify the entry");
+  }
+  const hasUpdates = args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
+  if (!hasUpdates) {
+    throw new Error("At least one field to update must be provided");
+  }
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const updates = {};
+  if (args.new_title !== void 0) updates.title = normalizeHtmlEntities(args.new_title.trim());
+  if (args.content !== void 0) updates.content = normalizeHtmlEntities(args.content);
+  if (args.type !== void 0) updates.type = args.type;
+  if (args.status !== void 0) updates.status = toBaseStatus(args.status);
+  if (args.tags !== void 0) updates.tags = args.tags;
+  if (args.domain !== void 0) updates.domain = args.domain;
+  if (args.madr !== void 0) updates.madr = args.madr;
+  if (args.realization !== void 0) updates.realization = args.realization;
+  if (args.review_by !== void 0) updates.review_by = args.review_by;
+  let query = client.from("knowledge_decisions").update(updates).eq("workspace_id", workspaceId).eq("project_id", projectId);
+  if (args.entry_id) {
+    query = query.eq("id", args.entry_id);
+  } else {
+    query = query.eq("title", args.title);
+  }
+  const { data, error: error2 } = await query.select(
+    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at, domain, madr, realization, review_by"
+  ).single();
+  if (error2) {
+    if (error2.code === "23505") {
+      throw new Error(
+        `A knowledge entry titled "${updates.title}" already exists in this project`
+      );
+    }
+    throw error2;
+  }
+  const updated = data;
+  if (args.new_title !== void 0 || args.content !== void 0) {
+    await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
+  }
+  return updated;
+}
+async function findCrossKindCollision(client, workspaceId, name, kind) {
+  const { data, error: error2 } = await client.from("knowledge_entities").select("id, kind").eq("workspace_id", workspaceId).eq("name", name).neq("kind", kind).limit(1).maybeSingle();
+  if (error2 || !data) return null;
+  return data;
+}
+function collisionWarning(name, requestedKind, existing) {
+  return {
+    entity_id: existing.id,
+    kind: existing.kind,
+    message: `An entity named "${name}" already exists under kind "${existing.kind}" (id ${existing.id}). This write created/resolved a SEPARATE node under kind "${requestedKind}" instead of merging. If this was unintended, use reconcile_entity to merge them.`
+  };
+}
+async function resolveOrCreateEntity(client, workspaceId, projectId, name, kind = "concept") {
+  const { data: existing, error: lookupErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).eq("kind", kind).eq("name", name).maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+  if (existing) return existing.id;
+  const collision = await findCrossKindCollision(client, workspaceId, name, kind);
+  if (collision) {
+    console.error(
+      `[knowledge] entity collision: ${collisionWarning(name, kind, collision).message}`
+    );
+  }
+  const { data, error: error2 } = await client.from("knowledge_entities").insert({ workspace_id: workspaceId, project_id: projectId, kind, name }).select("id").single();
+  if (error2) throw new Error(error2.message);
+  return data.id;
+}
+var CLAIM_PROVENANCES = ["human-stated", "agent-inferred-human-validated", "force-quit"];
+var DESIGN_DECISION_TYPES = /* @__PURE__ */ new Set(["product-design", "technical-design", "ux-ui-design"]);
+var isMissingClaimColumns = (msg) => !!msg && /(claim_provenance|underwriting_brief_id)/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
+async function recordDecision(client, projectId, userId, args) {
+  if (!args.title?.trim()) throw new Error("title is required");
+  if (!args.type) throw new Error("type is required");
+  if (args.claim_provenance !== void 0 && !CLAIM_PROVENANCES.includes(args.claim_provenance)) {
+    throw new Error(`claim_provenance must be one of: ${CLAIM_PROVENANCES.join(", ")}`);
+  }
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const affectedIds = [];
+  for (const name of args.affected_entity_names ?? []) {
+    affectedIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name));
+  }
+  const embedding = await embedText(client, `${args.title}
+${args.content ?? ""}`);
+  const record2 = {
+    workspace_id: workspaceId,
+    project_id: projectId,
+    title: normalizeHtmlEntities(args.title.trim()),
+    content: normalizeHtmlEntities(args.content ?? ""),
+    type: args.type,
+    status: args.status ?? "Asserted",
+    domain: args.domain ?? [],
+    madr: args.madr ?? null,
+    affected_entity_ids: affectedIds,
+    source_type: args.source_type ?? "manual",
+    source_activity: args.source_activity ?? null,
+    created_by: userId
+  };
+  if (embedding) record2.embedding = embedding;
+  if (args.source_id !== void 0) record2.source_id = args.source_id;
+  if (args.tags !== void 0) record2.tags = args.tags;
+  if (args.source_task_id !== void 0) record2.source_task_id = args.source_task_id;
+  if (args.review_by !== void 0) record2.review_by = args.review_by;
+  if (args.realization !== void 0) {
+    record2.realization = args.realization;
+  } else if (DESIGN_DECISION_TYPES.has(args.type)) {
+    record2.realization = "agreed";
+  }
+  if (args.claim_provenance !== void 0) record2.claim_provenance = args.claim_provenance;
+  if (args.underwriting_brief_id !== void 0) record2.underwriting_brief_id = args.underwriting_brief_id;
+  let { data, error: error2 } = await client.from("knowledge_decisions").insert(record2).select(DECISION_COLS).single();
+  if (error2 && isMissingClaimColumns(error2.message) && (args.claim_provenance !== void 0 || args.underwriting_brief_id !== void 0)) {
+    const { claim_provenance: _cp, underwriting_brief_id: _ub, ...fallback } = record2;
+    ({ data, error: error2 } = await client.from("knowledge_decisions").insert(fallback).select(DECISION_COLS).single());
+  }
+  if (error2) {
+    if (error2.code === "23505") {
+      throw new Error(`A decision titled "${args.title.trim()}" already exists in this project`);
+    }
+    throw error2;
+  }
+  return data;
+}
+async function supersedeDecision(client, projectId, userId, args) {
+  if (!args.old_decision_id) throw new Error("old_decision_id is required");
+  const hasType = !!args.type;
+  const hasTitle = !!args.title?.trim();
+  if (hasType !== hasTitle) {
+    throw new Error(
+      "supersede_decision: provide BOTH type and title to supersede with a successor, or NEITHER to retire the decision without a successor (retire-mode). Exactly one of type/title is ambiguous."
+    );
+  }
+  const retire = !hasType;
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const { data: existing, error: fetchErr } = await client.from("knowledge_decisions").select("id").eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.old_decision_id).single();
+  if (fetchErr || !existing) {
+    throw new Error(`Decision ${args.old_decision_id} not found in this project`);
+  }
+  const replacement = retire ? null : await recordDecision(client, projectId, userId, {
+    type: args.type,
+    title: args.title,
+    content: args.content,
+    madr: args.madr,
+    domain: args.domain,
+    affected_entity_names: args.affected_entity_names,
+    status: "Accepted"
+  });
+  const { data, error: error2 } = await client.from("knowledge_decisions").update({ status: "Superseded", superseded_by: replacement ? replacement.id : null }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.old_decision_id).select(DECISION_COLS).single();
+  if (error2) throw error2;
+  return { superseded: data, replacement };
+}
+var supersedeDecisionTool = {
+  name: "supersede_decision",
+  description: 'Supersede an existing decision. Two modes. (1) SUCCESSOR \u2014 provide BOTH type and title: records the replacement as "Accepted", marks the old decision "Superseded" and links them bidirectionally. (2) RETIRE \u2014 omit BOTH type and title: marks the old decision "Superseded" with superseded_by=null and creates NO successor (use when the replacement is authored later, e.g. revise-scope backing a ticket up to a gate that re-authors the decision natively). Providing exactly one of type/title is rejected. Either way, tickets referencing the old decision are automatically flagged stale.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      old_decision_id: { type: "string", description: "UUID of the decision being superseded" },
+      type: { type: "string", description: "Type for the replacement decision. Omit BOTH type and title to retire the decision without a successor (retire-mode)." },
+      title: { type: "string", description: "Title for the replacement decision. Omit BOTH type and title to retire the decision without a successor (retire-mode)." },
+      content: { type: "string", description: "Optional markdown body for the replacement (successor-mode only)" },
+      madr: { type: "object", description: "Structured MADR body for the replacement (successor-mode only)" },
+      domain: { type: "array", items: { type: "string" }, description: "Domains for the replacement (successor-mode only)" },
+      affected_entity_names: { type: "array", items: { type: "string" }, description: "Entities the replacement touches (successor-mode only)" },
+      reason: { type: "string", description: "Why the old decision is being superseded" }
+    },
+    required: ["old_decision_id"]
+  }
+};
+var recordDecisionTool = {
+  name: "record_decision",
+  description: 'Record a knowledge decision produced by a gate/skill. Author ONE ATOMIC claim, not a document \u2014 shape the `content` as Decision \xB7 Why \xB7 How-to-apply \xB7 Scope. Pick the NARROWEST fitting `type` (product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral) and multi-tag every `domain` a querying skill would filter on (engineering, operations, data, product, customer, process). Lifecycle: enters "Asserted" by default and a HUMAN promotes it to "Accepted" \u2014 never pre-mark a replacement Accepted before the decision is made. To retire an entry, SUPERSEDE it (do not edit it into irrelevance); for an in-part repair use update_knowledge_entry plus a dated banner. Migration window: supersede the old decision at decision-time, keep the old fact valid until cutover, and mark in-flight state with `realization`. Elicitation claims (B-645): a claim mined from an elicitation exchange sets `claim_provenance` + `underwriting_brief_id` so brief resolution disposes it mechanically (accept promotes human-grounded claims, defer archives; force-quit claims never promote at their own brief\'s accept).',
+  inputSchema: {
+    type: "object",
+    properties: {
+      type: { type: "string", description: "product-design | technical-design | ux-ui-design | architecture | business | convention | specification | deferral" },
+      title: { type: "string", description: "Decision title (unique within the project)" },
+      content: { type: "string", description: "Optional human-readable markdown body" },
+      madr: { type: "object", description: "Structured MADR body: { context, decision_drivers, considered_options, decision_outcome, consequences }" },
+      domain: { type: "array", items: { type: "string" }, description: "Domains: engineering, operations, data, product, customer, process" },
+      affected_entity_names: { type: "array", items: { type: "string" }, description: "Entity names this decision touches (resolved/created in knowledge_entities)" },
+      status: { type: "string", description: 'Override status (default "Asserted")' },
+      realization: { type: "string", enum: ["agreed", "live", "deprecating", "retired"], description: 'Implementation/realization state (orthogonal to status). B-977: for type product-design/technical-design/ux-ui-design, omitting this defaults to "agreed" (decided-not-yet-built) rather than NULL \u2014 pass a value explicitly to override. For every other type, omit \u21D2 NULL \u2261 live, unchanged.' },
+      source_type: { type: "string", description: "ticket | adr | manual | inferred | research (default 'manual')" },
+      source_id: { type: "string", description: "Pointer back to the producing ticket/source" },
+      source_activity: { type: "string", description: "The gate/skill that authored it (e.g. design-decide, clarify)" },
+      tags: { type: "array", items: { type: "string" }, description: "Optional tags" },
+      source_task_id: { type: "string", description: "Task that triggered this decision" },
+      review_by: { type: "string", description: "ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires." },
+      claim_provenance: { type: "string", enum: ["human-stated", "agent-inferred-human-validated", "force-quit"], description: "B-645: how an elicitation claim was grounded. 'force-quit' claims are quarantined \u2014 never promoted on their brief's accept, never grounds for inference until validated. Omit for a non-claim decision." },
+      underwriting_brief_id: { type: "string", description: "B-645: the brief (UUID) this Asserted claim underwrites \u2014 resolve_brief disposes coupled claims on accept/defer; compose_brief prunes dropped claims on iterate. Omit for a non-claim decision." }
+    },
+    required: ["type", "title"]
+  }
+};
+async function queryEntities(client, projectId, args) {
+  const workspaceId = await getWorkspaceId(client, projectId);
+  let query = client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId);
+  if (args.kind) query = query.eq("kind", args.kind);
+  if (args.name) query = query.ilike("name", `%${args.name}%`);
+  const { data, error: error2 } = await query.order("name", { ascending: true });
+  if (error2) throw new Error(error2.message);
+  return data ?? [];
+}
+var queryEntitiesTool = {
+  name: "query_entities",
+  description: "Resolve or discover knowledge entities (components, features, integrations, concepts) in this workspace by kind and/or name.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      kind: { type: "string", description: "Entity kind: 'component', 'feature', 'integration', 'concept', 'persona'" },
+      name: { type: "string", description: "Case-insensitive substring match on entity name" }
+    }
+  }
+};
+async function createEntity(client, projectId, args) {
+  if (!args.kind?.trim()) throw new Error("kind is required");
+  if (!args.name?.trim()) throw new Error("name is required");
+  const kind = args.kind.trim();
+  const name = args.name.trim();
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const { data: existing, error: lookupErr } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", kind).eq("name", name).maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+  if (existing) {
+    const patch = {};
+    if (args.description !== void 0) patch.description = args.description;
+    if (args.metadata !== void 0) patch.metadata = args.metadata;
+    if (Object.keys(patch).length === 0) return existing;
+    const { data: updated, error: updErr } = await client.from("knowledge_entities").update(patch).eq("workspace_id", workspaceId).eq("id", existing.id).select(ENTITY_COLS).single();
+    if (updErr) throw new Error(updErr.message);
+    return updated;
+  }
+  const collision = await findCrossKindCollision(client, workspaceId, name, kind);
+  const record2 = {
+    workspace_id: workspaceId,
+    project_id: projectId,
+    kind,
+    name
+  };
+  if (args.description !== void 0) record2.description = args.description;
+  if (args.metadata !== void 0) record2.metadata = args.metadata;
+  const { data, error: error2 } = await client.from("knowledge_entities").insert(record2).select(ENTITY_COLS).single();
+  if (error2) {
+    if (error2.code === "23505") {
+      const { data: raced } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", kind).eq("name", name).maybeSingle();
+      if (raced) {
+        const racedRow = raced;
+        return collision ? { ...racedRow, collision_warning: collisionWarning(name, kind, collision) } : racedRow;
+      }
+    }
+    throw new Error(error2.message);
+  }
+  const created = data;
+  return collision ? { ...created, collision_warning: collisionWarning(name, kind, collision) } : created;
+}
+var createEntityTool = {
+  name: "create_entity",
+  description: "Author a TYPED knowledge entity node (kind + name; optional description + metadata) directly in the graph. Idempotent upsert on the uniqueness key (workspace, kind, name): re-authoring the same node is a no-op, or refreshes the description/metadata when supplied. A node description is a THIN, stable, one-line canonical identifier \u2014 the substance and lifecycle (Asserted\u2192Accepted, realization) live in the decisions/facts ABOUT the entity, not on the node. Kinds are open-ended (e.g. 'persona', 'feature', 'component', 'integration', 'concept'). To merge a low-typed stub into a richer node of the same name, use reconcile_entity. B-977: creating a name that already exists under a DIFFERENT kind is never blocked \u2014 it proceeds and the result carries a non-fatal `collision_warning` ({entity_id, kind, message}) pointing at the existing node; use reconcile_entity to merge if the duplicate was unintended.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      kind: { type: "string", description: "Entity kind \u2014 open-ended (e.g. 'persona', 'feature', 'component', 'integration', 'concept')" },
+      name: { type: "string", description: "Entity name (unique within the workspace per kind)" },
+      description: { type: "string", description: "A THIN one-line canonical identifier \u2014 not a document; depth belongs in the claims about the entity" },
+      metadata: { type: "object", description: "Optional structured metadata (JSON object)" }
+    },
+    required: ["kind", "name"]
+  }
+};
+async function updateEntity(client, projectId, args) {
+  if (!args.entity_id && !(args.kind && args.name)) {
+    throw new Error("Provide entity_id, or both kind and name, to identify the entity");
+  }
+  const hasUpdates = args.new_kind !== void 0 || args.description !== void 0 || args.metadata !== void 0;
+  if (!hasUpdates) {
+    throw new Error("At least one of new_kind, description, or metadata must be provided");
+  }
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const patch = {};
+  if (args.new_kind !== void 0) patch.kind = args.new_kind;
+  if (args.description !== void 0) patch.description = args.description;
+  if (args.metadata !== void 0) patch.metadata = args.metadata;
+  let query = client.from("knowledge_entities").update(patch).eq("workspace_id", workspaceId);
+  if (args.entity_id) {
+    query = query.eq("id", args.entity_id);
+  } else {
+    query = query.eq("kind", args.kind).eq("name", args.name);
+  }
+  const { data, error: error2 } = await query.select(ENTITY_COLS).single();
+  if (error2) {
+    if (error2.code === "23505") {
+      throw new Error(
+        `An entity named "${args.name ?? patch.name ?? ""}" already exists under kind "${args.new_kind}". Use reconcile_entity to MERGE the two nodes (it repoints all references), not update_entity.`
+      );
+    }
+    throw new Error(error2.message);
+  }
+  return data;
+}
+var updateEntityTool = {
+  name: "update_entity",
+  description: "Update a typed knowledge entity's description, metadata, or kind. Identify it by entity_id, or by its current (kind, name). Changing kind to a value already taken by a same-named node is rejected with a pointer to reconcile_entity (the MERGE path that repoints references) \u2014 update_entity never silently orphans or duplicates.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      entity_id: { type: "string", description: "Entity UUID (preferred identifier)" },
+      kind: { type: "string", description: "Current kind (with name) \u2014 identifies the entity when entity_id is omitted" },
+      name: { type: "string", description: "Current name (with kind) \u2014 identifies the entity when entity_id is omitted" },
+      new_kind: { type: "string", description: "New kind. For a stub\u2192typed promotion that may collide, prefer reconcile_entity." },
+      description: { type: "string", description: "New thin one-line canonical description" },
+      metadata: { type: "object", description: "New structured metadata (full-object replace)" }
+    }
+  }
+};
+async function reconcileEntity(client, projectId, args) {
+  if (!args.name?.trim()) throw new Error("name is required");
+  if (!args.to_kind?.trim()) throw new Error("to_kind is required");
+  const name = args.name.trim();
+  const toKind = args.to_kind.trim();
+  const fromKind = (args.from_kind ?? "concept").trim();
+  if (fromKind === toKind) throw new Error("from_kind and to_kind must differ (nothing to reconcile)");
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const { data: stub, error: stubErr } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", fromKind).eq("name", name).maybeSingle();
+  if (stubErr) throw new Error(stubErr.message);
+  if (!stub) throw new Error(`No ${fromKind} entity named "${name}" to reconcile`);
+  const stubRow = stub;
+  const { data: typed, error: typedErr } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", toKind).eq("name", name).maybeSingle();
+  if (typedErr) throw new Error(typedErr.message);
+  if (!typed) {
+    const patch = { kind: toKind };
+    if (args.description !== void 0) patch.description = args.description;
+    const { data: upgraded, error: upErr } = await client.from("knowledge_entities").update(patch).eq("workspace_id", workspaceId).eq("id", stubRow.id).select(ENTITY_COLS).single();
+    if (upErr) throw new Error(upErr.message);
+    return { mode: "upgrade-in-place", entity: upgraded };
+  }
+  const typedRow = typed;
+  const { data: movedFacts, error: factErr } = await client.from("knowledge_facts").update({ subject_entity_id: typedRow.id }).eq("workspace_id", workspaceId).eq("subject_entity_id", stubRow.id).select("id");
+  if (factErr) throw new Error(factErr.message);
+  const factCount = (movedFacts ?? []).length;
+  const { data: decisionRows, error: decSelErr } = await client.from("knowledge_decisions").select("id, affected_entity_ids").eq("workspace_id", workspaceId).contains("affected_entity_ids", [stubRow.id]);
+  if (decSelErr) throw new Error(decSelErr.message);
+  let decisionCount = 0;
+  for (const row of decisionRows ?? []) {
+    const current = row.affected_entity_ids ?? [];
+    const rewritten = Array.from(new Set(current.map((id) => id === stubRow.id ? typedRow.id : id)));
+    const { error: decUpdErr } = await client.from("knowledge_decisions").update({ affected_entity_ids: rewritten }).eq("workspace_id", workspaceId).eq("id", row.id);
+    if (decUpdErr) throw new Error(decUpdErr.message);
+    decisionCount++;
+  }
+  let eventCount = 0;
+  try {
+    const { data: movedEvents } = await client.from("knowledge_events").update({ entity_id: typedRow.id }).eq("workspace_id", workspaceId).eq("entity_id", stubRow.id).select("id");
+    eventCount = (movedEvents ?? []).length;
+  } catch {
+  }
+  const { error: delErr } = await client.from("knowledge_entities").delete().eq("workspace_id", workspaceId).eq("id", stubRow.id);
+  if (delErr) throw new Error(delErr.message);
+  return {
+    mode: "merge",
+    entity: typedRow,
+    merged_stub_id: stubRow.id,
+    repointed: { facts: factCount, decisions: decisionCount, events: eventCount }
+  };
+}
+var reconcileEntityTool = {
+  name: "reconcile_entity",
+  description: "Reconcile a low-typed entity stub (default kind 'concept') into a richer typed node of the same name \u2014 the folded B-399 capability. Two modes, chosen automatically: (a) UPGRADE-IN-PLACE when NO same-named node exists under to_kind \u2014 the stub row is retyped in place (kind/description), no references move; (b) MERGE when a same-named to_kind node ALREADY exists \u2014 every referencing row (facts.subject_entity_id, decisions.affected_entity_ids, events.entity_id) is repointed to the typed node (deduping arrays), then the stub is deleted. Prevents two nodes for the same real thing.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "The shared entity name to reconcile" },
+      to_kind: { type: "string", description: "The richer target kind (e.g. component, feature, persona)" },
+      from_kind: { type: "string", description: "The stub's kind. Default 'concept'." },
+      description: { type: "string", description: "Optional refreshed one-line description (applied on upgrade-in-place)" }
+    },
+    required: ["name", "to_kind"]
+  }
+};
+async function assertFact(client, projectId, userId, args) {
+  if (!args.subject_entity?.trim()) throw new Error("subject_entity is required");
+  if (!args.predicate?.trim()) throw new Error("predicate is required");
+  if (!args.source_type) throw new Error("source_type is required");
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const subjectId = await resolveOrCreateEntity(
+    client,
+    workspaceId,
+    projectId,
+    args.subject_entity,
+    args.subject_entity_kind ?? "concept"
+  );
+  const embedding = await embedText(client, `${args.subject_entity} ${args.predicate} ${JSON.stringify(args.object)}`);
+  const record2 = {
+    workspace_id: workspaceId,
+    project_id: projectId,
+    subject_entity_id: subjectId,
+    predicate: args.predicate,
+    object: args.object,
+    confidence: args.confidence ?? 1,
+    status: "Asserted",
+    domain: args.domain ?? [],
+    source_type: args.source_type,
+    created_by: userId
+  };
+  if (embedding) record2.embedding = embedding;
+  if (args.source_id !== void 0) record2.source_id = args.source_id;
+  if (args.review_by !== void 0) record2.review_by = args.review_by;
+  const { data, error: error2 } = await client.from("knowledge_facts").insert(record2).select(FACT_COLS).single();
+  if (error2) throw error2;
+  return data;
+}
+var assertFactTool = {
+  name: "assert_fact",
+  description: 'Assert ONE ATOMIC fact about an entity (subject-predicate-object) with provenance \u2014 a single claim, not a bundle. Use a precise `predicate` and multi-tag every `domain` a querying skill would filter on. Facts enter "Asserted"; a human promotes before agents act on them autonomously (research-sourced facts especially). Do not edit a fact into irrelevance \u2014 invalidate it; during a migration window keep the old fact valid until cutover (bi-temporal).',
+  inputSchema: {
+    type: "object",
+    properties: {
+      subject_entity: { type: "string", description: "Name of the subject entity (resolved/created in knowledge_entities)" },
+      subject_entity_kind: { type: "string", description: "Kind if the entity must be created (default 'concept')" },
+      predicate: { type: "string", description: "e.g. 'implements', 'depends_on', 'uses'" },
+      object: { description: "Entity ref, scalar, or structured JSON value" },
+      source_type: { type: "string", description: "ticket | adr | manual | inferred | research (required \u2014 provenance)" },
+      source_id: { type: "string", description: "Pointer back to the source ticket/decision" },
+      confidence: { type: "number", description: "0..1 (default 1.0)" },
+      domain: { type: "array", items: { type: "string" }, description: "Domains this fact belongs to" },
+      review_by: { type: "string", description: "ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires." }
+    },
+    required: ["subject_entity", "predicate", "object", "source_type"]
+  }
+};
+async function invalidateFact(client, projectId, args) {
+  if (!args.fact_id) throw new Error("fact_id is required");
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const { data, error: error2 } = await client.from("knowledge_facts").update({ valid_to: (/* @__PURE__ */ new Date()).toISOString(), status: "Superseded" }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.fact_id).select(FACT_COLS).single();
+  if (error2) throw error2;
+  return data;
+}
+var invalidateFactTool = {
+  name: "invalidate_fact",
+  description: "Mark a fact as no longer valid (sets valid_to=now, status=Superseded). Graphiti invalidation pattern \u2014 the fact is retained for temporal queries, not deleted.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      fact_id: { type: "string", description: "UUID of the fact to invalidate" },
+      reason: { type: "string", description: "Why it is no longer valid" }
+    },
+    required: ["fact_id"]
+  }
+};
+async function queryFacts(client, projectId, args) {
+  const workspaceId = await getWorkspaceId(client, projectId);
+  let query = client.from("knowledge_facts").select(FACT_COLS).eq("workspace_id", workspaceId);
+  if (!args.include_invalidated && !args.as_of) query = query.is("valid_to", null);
+  if (args.as_of) {
+    query = query.lte("valid_from", args.as_of).or(`valid_to.is.null,valid_to.gt.${args.as_of}`);
+  }
+  if (args.predicate) query = query.eq("predicate", args.predicate);
+  if (args.min_confidence !== void 0) query = query.gte("confidence", args.min_confidence);
+  if (args.entity) {
+    const { data: ents, error: entErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).ilike("name", args.entity);
+    if (entErr) throw new Error(entErr.message);
+    const ids2 = (ents ?? []).map((e) => e.id);
+    if (ids2.length === 0) return [];
+    query = query.in("subject_entity_id", ids2);
+  }
+  const { data, error: error2 } = await query.order("recorded_at", { ascending: false });
+  if (error2) throw new Error(error2.message);
+  return data ?? [];
+}
+var queryFactsTool = {
+  name: "query_facts",
+  description: 'Query facts: "what is true (or was true) about X". Returns currently-valid facts by default; pass as_of for a point-in-time view.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      entity: { type: "string", description: "Subject entity name (case-insensitive exact match)" },
+      predicate: { type: "string", description: "Filter by predicate" },
+      as_of: { type: "string", description: "ISO timestamp \u2014 facts valid at this instant" },
+      min_confidence: { type: "number", description: "Only facts with confidence >= this" },
+      include_invalidated: { type: "boolean", description: "Include facts whose valid_to is set" }
+    }
+  }
+};
+async function supersedeKnowledgeEntry(client, projectId, userId, args) {
+  if (!args.entry_id && !args.title) {
+    throw new Error("Either entry_id or title must be provided to identify the entry to supersede");
+  }
+  const existing = await getKnowledgeEntry(client, projectId, {
+    entry_id: args.entry_id,
+    title: args.title
+  });
+  const replacement = await createKnowledgeEntry(client, projectId, userId, {
+    title: args.new_title,
+    content: args.new_content,
+    type: args.type ?? existing.type,
+    status: "accepted",
+    tags: args.tags ?? existing.tags,
+    source_task_id: existing.source_task_id ?? void 0
+  });
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const { data: supersededData, error: error2 } = await client.from("knowledge_decisions").update({ status: "Superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", existing.id).select(
+    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+  ).single();
+  if (error2) throw error2;
+  return {
+    superseded: supersededData,
+    replacement
+  };
+}
+
+// src/tools/workflow.ts
+var UNIVERSAL = {
+  parking: "Parked",
+  cancelling: "Cancelled"
+};
+function deriveToState(fromState, activity, transitions) {
+  if (activity === "researching") return fromState;
+  if (activity in UNIVERSAL) return UNIVERSAL[activity];
+  const row = transitions.find((t) => t.from_state === fromState && t.activity === activity);
+  if (!row) {
+    throw new Error(
+      `No workflow transition from '${fromState ?? "(none)"}' via activity '${activity}'`
+    );
+  }
+  return row.to_state;
+}
+var advanceWorkflowTool = {
+  name: "advance_workflow",
+  description: "Advance an opinionated-mode task along the config-led state machine for an AGENT/SYSTEM transition that has no human brief \u2014 e.g. building (Planned->Built) once tests pass, or a revising-* backflow. Derives the target state from the workflow_transitions table; the DB guard validates the edge. For HUMAN-gated transitions use compose_brief + resolve_brief instead. parking/cancelling are accepted; researching records the activity without changing state.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, number, or visual ID (e.g. B-43)" },
+      activity: {
+        type: "string",
+        description: "Workflow activity to apply, e.g. 'building', 'deploying', 'revising-designing', 'researching', 'parking', 'cancelling', 'capturing', 'proposing'."
+      }
+    },
+    required: ["task_id", "activity"]
+  }
+};
+async function advanceWorkflow(client, projectId, args) {
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const { data: task, error: e1 } = await client.from("tasks").select("workflow_state, stale").eq("id", id).eq("project_id", projectId).single();
+  if (e1) throw e1;
+  const taskRow = task;
+  const isStaleExempt = args.activity.startsWith("revising-") || args.activity === "researching" || args.activity in UNIVERSAL;
+  if (taskRow.stale === true && !isStaleExempt) {
+    throw new Error(
+      `Task is stale (tasks.stale=true) \u2014 cannot apply forward activity '${args.activity}'. Route through harmony-stale-patch (files a 'stale-patch-review' brief) or a 'revising-*' backflow first.`
+    );
+  }
+  const { data: transitions, error: e2 } = await client.from("workflow_transitions").select("from_state, activity, to_state");
+  if (e2) throw e2;
+  const fromState = taskRow.workflow_state;
+  const toState = deriveToState(fromState, args.activity, transitions ?? []);
+  const patch = args.activity === "researching" ? { workflow_activity: args.activity } : { workflow_state: toState, workflow_activity: args.activity };
+  const { data: updated, error: e3 } = await client.from("tasks").update(patch).eq("id", id).eq("project_id", projectId).select("id, workflow_state, workflow_activity").single();
+  if (e3) throw e3;
+  return {
+    task_id: id,
+    from_state: fromState,
+    to_state: toState,
+    activity: args.activity,
+    task: updated
+  };
+}
+var referenceKnowledgeTool = {
+  name: "reference_knowledge",
+  description: "Record that a task depends on a knowledge decision (ticket_references_knowledge). This is what makes P2 supersession flag the ticket Stale. Idempotent. Call after record_decision so the gate-authored decision is coupled to its ticket.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, number, or visual ID" },
+      decision_id: { type: "string", description: "knowledge_decisions.id this task references" }
+    },
+    required: ["task_id", "decision_id"]
+  }
+};
+async function referenceKnowledge(client, projectId, args) {
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const { error: error2 } = await client.from("ticket_references_knowledge").upsert({ task_id: id, decision_id: args.decision_id }, { onConflict: "task_id,decision_id", ignoreDuplicates: true });
+  if (error2) throw error2;
+  return { task_id: id, decision_id: args.decision_id, linked: true };
+}
+var listTicketKnowledgeTool = {
+  name: "list_ticket_knowledge",
+  description: "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status + source_activity (the gate/skill that authored it \u2014 use this to discriminate between multiple Accepted decisions of the same type, e.g. clarify's and decompose's specification records). Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket \u2014 query_knowledge has no ticket filter (it projects no source_task_id).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, number, or visual ID" }
+    },
+    required: ["task_id"]
+  }
+};
+async function listTicketKnowledge(client, projectId, args) {
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const { data, error: error2 } = await client.from("ticket_references_knowledge").select("decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content)").eq("task_id", id);
+  if (error2) throw error2;
+  const rows = data ?? [];
+  const affectedByDecision = await fetchAffectedEntities(client, rows.map((r) => r.decision_id));
+  return rows.map((r) => ({
+    decision_id: r.decision_id,
+    ...r.knowledge_decisions ?? {},
+    affected_entities: affectedByDecision[r.decision_id] ?? []
+  }));
+}
+async function fetchAffectedEntities(client, decisionIds) {
+  if (decisionIds.length === 0) return {};
+  const { data, error: error2 } = await client.from("decision_affects_entity").select("decision_id, entity_id, knowledge_entities(name, kind)").in("decision_id", decisionIds);
+  if (error2) throw error2;
+  const map = {};
+  for (const row of data ?? []) {
+    const entity = row.knowledge_entities;
+    if (!entity?.name) continue;
+    const list = map[row.decision_id] ?? (map[row.decision_id] = []);
+    list.push({ entity_id: row.entity_id, name: entity.name, kind: entity.kind ?? "" });
+  }
+  return map;
+}
+var linkTicketEntitiesTool = {
+  name: "link_ticket_entities",
+  description: "Link a task and a just-promoted design/visual-handoff decision to one or more knowledge entities (B-977) \u2014 writes BOTH ticket_implements_entity (task -> entity) and decision_affects_entity (decision -> entity) in the same call. Each name is resolved-or-created via the same path as record_decision's affected_entity_names, default kind 'feature'. Call this right after the design/visual-handoff gate's resolve_brief promotes the decision, passing the entity name(s) confirmed at clarify (field_values.implements_entities) \u2014 or any other entity names worth binding to this ticket/decision pair. Idempotent (upsert, ignore-duplicates).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, number, or visual ID" },
+      decision_id: { type: "string", description: "knowledge_decisions.id \u2014 the just-promoted design/visual-handoff decision" },
+      entity_names: { type: "array", items: { type: "string" }, description: "One or more entity names to resolve-or-create and link" },
+      entity_kind: { type: "string", description: "Kind used ONLY for entities that don't already exist under any kind. Default 'feature'." }
+    },
+    required: ["task_id", "decision_id", "entity_names"]
+  }
+};
+async function linkTicketEntities(client, projectId, args) {
+  if (!args.decision_id) throw new Error("decision_id is required");
+  const names = (args.entity_names ?? []).map((n) => n.trim()).filter(Boolean);
+  if (names.length === 0) throw new Error("entity_names must contain at least one non-empty name");
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const kind = args.entity_kind ?? "feature";
+  const entityIds = [];
+  for (const name of names) {
+    entityIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name, kind));
+  }
+  for (const entityId of entityIds) {
+    const { error: implementsErr } = await client.from("ticket_implements_entity").upsert({ task_id: id, entity_id: entityId }, { onConflict: "task_id,entity_id", ignoreDuplicates: true });
+    if (implementsErr) throw implementsErr;
+    const { error: affectsErr } = await client.from("decision_affects_entity").upsert({ decision_id: args.decision_id, entity_id: entityId }, { onConflict: "decision_id,entity_id", ignoreDuplicates: true });
+    if (affectsErr) throw affectsErr;
+  }
+  return { task_id: id, decision_id: args.decision_id, entity_ids: entityIds, linked: true };
+}
+
+// src/tools/knowledge-contradiction.ts
+var MAX_REMOVED_LINES_SCANNED = 2e3;
+var MAX_TIER_SEARCH_TERMS = 20;
+var TIER_CANDIDATE_LIMIT = 20;
+var MIN_INLINE_CODE_SPAN_LENGTH = 6;
+var MIN_QUOTED_STRING_LENGTH = 8;
+var GENERATED_VENDORED_EXCLUDE = [
+  /(^|\/)dist\//,
+  // build output
+  /(^|^.*\/)package-lock\.json$/,
+  // npm lockfile
+  /\.min\.[^/]+$/,
+  // any minified asset (*.min.js, *.min.css, ...)
+  /\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|gz|tgz|tar|woff2?|ttf|eot|mp4|mov|bin)$/i
+  // binary/attachment paths
+];
+function isExcludedPath(path2) {
+  return GENERATED_VENDORED_EXCLUDE.some((re) => re.test(path2));
+}
+function extractCandidateValues(text) {
+  if (!text) return [];
+  const values = [];
+  const fenceRe = /```[a-zA-Z0-9_-]*\n([\s\S]*?)```/g;
+  let working = text.replace(fenceRe, (_match, body) => {
+    for (const line of body.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.length >= MIN_INLINE_CODE_SPAN_LENGTH) values.push(trimmed);
+    }
+    return " ";
+  });
+  const spanRe = /`([^`\n]+)`/g;
+  let m;
+  while ((m = spanRe.exec(working)) !== null) {
+    const val = m[1].trim();
+    if (val.length >= MIN_INLINE_CODE_SPAN_LENGTH) values.push(val);
+  }
+  working = working.replace(spanRe, " ");
+  const quoteRe = /"([^"\n]+)"|'([^'\n]+)'/g;
+  while ((m = quoteRe.exec(working)) !== null) {
+    const val = (m[1] ?? m[2] ?? "").trim();
+    if (val.length >= MIN_QUOTED_STRING_LENGTH) values.push(val);
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const v of values) {
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+function deriveSearchTerms(removedLines) {
+  return extractCandidateValues(removedLines.join("\n")).slice(0, MAX_TIER_SEARCH_TERMS);
+}
+function parseDiff(diffContent) {
+  if (!diffContent) return { removedLines: [], addedLines: [] };
+  const lines = diffContent.split("\n");
+  const removedLines = [];
+  const addedLines = [];
+  let currentExcluded = false;
+  let truncatedAtIndex = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const header = /^diff --git a\/(\S+) b\/(\S+)/.exec(line);
+    if (header) {
+      const path2 = header[2] ?? header[1];
+      currentExcluded = isExcludedPath(path2);
+      continue;
+    }
+    if (currentExcluded) continue;
+    if (line.startsWith("--- ") || line.startsWith("+++ ") || line === "---" || line === "+++") continue;
+    if (line.startsWith("-")) {
+      if (removedLines.length >= MAX_REMOVED_LINES_SCANNED) {
+        truncatedAtIndex = i;
+        break;
+      }
+      removedLines.push(line.slice(1));
+    } else if (line.startsWith("+")) {
+      addedLines.push(line.slice(1));
+    }
+  }
+  if (truncatedAtIndex < 0) return { removedLines, addedLines };
+  const remainingLines = lines.length - truncatedAtIndex;
+  const remainingFiles = lines.slice(truncatedAtIndex).filter((l) => l.startsWith("diff --git ")).length;
+  return {
+    removedLines,
+    addedLines,
+    truncated: `contradiction scan truncated: ${remainingFiles} files / ${remainingLines} lines not scanned`
+  };
+}
+function matchEntryAgainstDiff(entryContent, removedLines, addedLines) {
+  const values = extractCandidateValues(entryContent);
+  if (values.length === 0) return null;
+  const removedText = removedLines.join("\n");
+  const addedText = addedLines.join("\n");
+  const contradicted = [];
+  const benign = [];
+  for (const v of values) {
+    if (!removedText.includes(v)) continue;
+    if (addedText.includes(v)) benign.push(v);
+    else contradicted.push(v);
+  }
+  if (contradicted.length > 0) return { state: "fires-and-contradicted", matchedValues: contradicted };
+  if (benign.length > 0) return { state: "fires-but-benign", matchedValues: benign };
+  return null;
+}
+
 // src/tools/briefs.ts
 var FRAME_KIND_FOR_REASON = {
   "clarification-draft": "clarify",
@@ -37762,6 +38853,15 @@ function lintFrame(doc, ctx, warnings) {
     );
     return;
   }
+  if (frame.kind !== "verify") {
+    const floorCount = ctx.floorCount ?? 0;
+    const reviewed = frame.floor_reviewed;
+    if (floorCount > 0 && (!Array.isArray(reviewed) || reviewed.length === 0)) {
+      warnings.push(
+        `${floorCount} Accepted entries linked to this ticket were not confirmed reviewed for contradiction. Read the FLOOR set (\`list_ticket_knowledge\`, Accepted only) and author \`frame.floor_reviewed\` with the ids you checked before this brief is accepted.`
+      );
+    }
+  }
   switch (frame.kind) {
     case "clarify":
       if (blank(frame.solving)) {
@@ -38053,6 +39153,81 @@ function withDiffDerivedRiskClasses(doc, changedPaths, priorRiskClasses) {
   const risk_classes = paths.length > 0 ? detectRiskClasses({ changedPaths: paths }) : [];
   return { ...doc, frame: { ...doc.frame, risk_classes } };
 }
+var NOT_COMPUTED_SIGNAL = {
+  status: "not-computed",
+  message: "not computed \u2014 no diff supplied",
+  entries: []
+};
+async function fetchContentByIds(client, projectId, ids2) {
+  if (ids2.length === 0) return {};
+  try {
+    const workspaceId = await getWorkspaceId(client, projectId);
+    const { data, error: error2 } = await client.from("knowledge_decisions").select("id, content").eq("workspace_id", workspaceId).eq("project_id", projectId).in("id", ids2);
+    if (error2) return {};
+    const map = {};
+    for (const row of data ?? []) {
+      map[row.id] = row.content ?? "";
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+async function withContradictionSignal(doc, client, projectId, taskId, diffContent) {
+  if (doc.frame?.kind !== "release") return doc;
+  if (diffContent === void 0) {
+    return { ...doc, frame: { ...doc.frame, contradiction_signal: NOT_COMPUTED_SIGNAL } };
+  }
+  const parsed = parseDiff(diffContent);
+  const searchTerms = deriveSearchTerms(parsed.removedLines);
+  if (searchTerms.length === 0) {
+    const signal2 = { status: "no-candidates", message: "no TIER candidates", entries: [] };
+    if (parsed.truncated) signal2.truncated = parsed.truncated;
+    return { ...doc, frame: { ...doc.frame, contradiction_signal: signal2 } };
+  }
+  let floorRows = [];
+  try {
+    floorRows = await listTicketKnowledge(client, projectId, { task_id: taskId });
+  } catch {
+    floorRows = [];
+  }
+  const floorAccepted = floorRows.filter((r) => r.status === "Accepted");
+  let tierRows = [];
+  try {
+    tierRows = await queryKnowledge(client, projectId, {
+      search: searchTerms.join(" "),
+      limit: TIER_CANDIDATE_LIMIT
+    });
+  } catch {
+    tierRows = [];
+  }
+  const tierIds = tierRows.map((r) => r.id).filter((id) => typeof id === "string");
+  const tierContentById = await fetchContentByIds(client, projectId, tierIds);
+  const seen = /* @__PURE__ */ new Set();
+  const entries = [];
+  const consider = (id, title, content, source) => {
+    if (!id || seen.has(id) || typeof content !== "string" || content.length === 0) return;
+    seen.add(id);
+    const match = matchEntryAgainstDiff(content, parsed.removedLines, parsed.addedLines);
+    if (!match) return;
+    entries.push({
+      entry_id: id,
+      title: title ?? "(untitled)",
+      state: match.state,
+      matched_values: match.matchedValues,
+      source
+    });
+  };
+  for (const row of floorAccepted) consider(row.id ?? row.decision_id, row.title, row.content, "floor");
+  for (const row of tierRows) consider(row.id, row.title, row.id ? tierContentById[row.id] : void 0, "tier");
+  const signal = {
+    status: "computed",
+    message: entries.length === 0 ? "does-not-fire \u2014 nothing linked/matched was touched" : `${entries.length} Accepted entr${entries.length === 1 ? "y" : "ies"} touched by this diff`,
+    entries
+  };
+  if (parsed.truncated) signal.truncated = parsed.truncated;
+  return { ...doc, frame: { ...doc.frame, contradiction_signal: signal } };
+}
 function mergeBriefDoc(prior, patch) {
   if (!prior || typeof prior !== "object") return patch;
   const merged = { ...prior };
@@ -38114,15 +39289,29 @@ async function composeBrief(client, projectId, userId, args) {
     accept = { from: fromState, to: tr.to_state };
   }
   const renderCtx = { reason: args.reason, accept };
+  const docWithContradiction = await withContradictionSignal(
+    withDiffDerivedRiskClasses(mergedDoc, args.changed_paths, priorRiskClasses),
+    client,
+    projectId,
+    taskId,
+    args.diff_content
+  );
   const doc = withDerivedEntryContent(
-    withDerivedGateSlot(
-      withDiffDerivedRiskClasses(mergedDoc, args.changed_paths, priorRiskClasses),
-      args.reason
-    ),
+    withDerivedGateSlot(docWithContradiction, args.reason),
     args.reason,
     mergedDecisionRef,
     renderCtx
   );
+  let floorCount;
+  const expectedFrameKind = FRAME_KIND_FOR_REASON[args.reason];
+  if (expectedFrameKind && expectedFrameKind !== "verify") {
+    try {
+      const floorRows = await listTicketKnowledge(client, projectId, { task_id: taskId });
+      floorCount = floorRows.filter((r) => r.status === "Accepted").length;
+    } catch {
+      floorCount = void 0;
+    }
+  }
   const content = renderBrief(doc, mergedDecisionRef, renderCtx);
   const lint = lintBrief(doc, content, {
     reason: args.reason,
@@ -38130,7 +39319,8 @@ async function composeBrief(client, projectId, userId, args) {
     buildPrRefs,
     // The POST-increment iteration — identical to the value the update below writes, so the lint judges the
     // round the human will actually read. No active brief means this compose is round 1.
-    iteration: existing ? (existing.iteration ?? 1) + 1 : 1
+    iteration: existing ? (existing.iteration ?? 1) + 1 : 1,
+    floorCount
   });
   if (!lint.ok) {
     throw new Error(`Brief failed the \xA73.2 pre-send lint:
@@ -38230,7 +39420,7 @@ async function composeBrief(client, projectId, userId, args) {
 }
 var composeBriefTool = {
   name: "compose_brief",
-  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING \u2014 no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates.",
+  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING \u2014 no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose \u2014 compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing \u2014 an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal.",
   inputSchema: {
     type: "object",
     properties: {
@@ -38264,7 +39454,7 @@ var composeBriefTool = {
           tail: { type: "string", description: "Optional custom command tail line; defaults to the standard one" },
           frame: {
             type: "object",
-            description: "B-876 \u2014 the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta? } | 'release' { act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state? } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], exempt_reason?, evidence_status, bounded_accept? }. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[] }. Every rule over this field is a WARNING \u2014 an absent or malformed frame never refuses the brief; omit it entirely and the render is byte-identical to the pre-B-876 output."
+            description: "B-876 \u2014 the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, floor_reviewed?[] } | 'release' { act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only \u2014 never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[] }. Every rule over this field is a WARNING \u2014 an absent or malformed frame never refuses the brief; omit it entirely and the render is byte-identical to the pre-B-876 output."
           },
           revision: {
             type: "object",
@@ -38300,6 +39490,10 @@ var composeBriefTool = {
         type: "array",
         items: { type: "string" },
         description: "B-876 \u2014 the build's changed file paths (`git diff --name-only origin/main...HEAD`). Used ONLY to compute a release frame's `risk_classes` with the deterministic path detector; compose is authoritative for that field and overwrites whatever the doc authored. Omit (or pass []) and the field is [] \u2014 the risk signal is path-derived or it is nothing, never prose-guessed."
+      },
+      diff_content: {
+        type: "string",
+        description: "B-838 \u2014 the build's bounded, REMOVED/REPLACED PR diff lines (`git diff origin/main...HEAD`, pre-merge, post-exclusion, pre-cap). Used ONLY to compute a release frame's `contradiction_signal` \u2014 which Accepted knowledge entries this diff touches or contradicts; compose is authoritative for that field and overwrites whatever the doc authored, exactly like `risk_classes` from `changed_paths`. Omitted entirely -> `{ status: 'not-computed', message: 'not computed \u2014 no diff supplied' }`, never silently read as \"no contradictions\"."
       },
       underwriting_claim_ids: { type: "array", items: { type: "string" }, description: "B-645 iterate-prune: on an in-place iterate, the KEPT set of elicitation-claim ids that still underwrite this brief. Coupled Asserted claims NOT listed are archived; [] archives all coupled Asserted claims; omit \u21D2 no prune. Ignored on a first compose (nothing is coupled yet)." },
       iterate_feedback: {
@@ -39908,7 +41102,7 @@ async function findRelatedTickets(client, projectId, args) {
     throw new Error(`Could not resolve subject ticket: ${subjectErr?.message ?? "not found"}`);
   }
   const queryText = `${subject.title ?? ""} ${subject.description ?? ""}`.trim();
-  const workspaceId = await getWorkspaceId(client, projectId);
+  const workspaceId = await getWorkspaceId2(client, projectId);
   const subjectEmbedding = await resolveIntentEmbedding(client, workspaceId, projectId, subjectId);
   const byTask = /* @__PURE__ */ new Map();
   const degradedRoutes = [];
@@ -40034,7 +41228,7 @@ function accumulateRrf(byTask, taskId, rank, route) {
     byTask.set(taskId, { score: contribution, routes: /* @__PURE__ */ new Set([route]) });
   }
 }
-async function getWorkspaceId(client, projectId) {
+async function getWorkspaceId2(client, projectId) {
   const { data, error: error2 } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
   if (error2) throw new Error(`Could not resolve workspace: ${error2.message}`);
   return data.workspace_id;
@@ -40345,845 +41539,6 @@ async function listActivity(client, projectId, args) {
     }))
   ].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   return timeline;
-}
-
-// src/tools/knowledge.ts
-var DECISION_COLS = "id, workspace_id, project_id, title, content, type, status, realization, domain, confidence, review_by, drift_risk, superseded_by, affected_entity_ids, madr, source_type, source_id, source_activity, tags, source_task_id, created_by, created_at, updated_at";
-var FACT_COLS = "id, workspace_id, project_id, subject_entity_id, predicate, object, confidence, status, domain, source_type, source_id, valid_from, valid_to, recorded_at, created_by";
-var ENTITY_COLS = "id, workspace_id, project_id, kind, name, description, metadata, created_at";
-var queryKnowledgeTool = {
-  name: "query_knowledge",
-  description: 'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to "Accepted" entries only. When `search` is given, retrieval is semantic (RRF) and composes only with `domain` (+ `limit`); the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
-  inputSchema: {
-    type: "object",
-    properties: {
-      type: {
-        type: "string",
-        description: 'Filter by entry type (e.g. "architecture", "business", "convention", "specification"). (structured-filter path; not combinable with `search`)'
-      },
-      status: {
-        type: "string",
-        description: 'Filter by status. Default: "Accepted". (structured-filter path; not combinable with `search`)'
-      },
-      domain: {
-        type: "array",
-        items: { type: "string" },
-        description: "Filter to entries tagged with ANY of these domains: engineering, operations, data, product, customer, process. Query the relevant domain before deciding."
-      },
-      as_of: {
-        type: "string",
-        description: "ISO timestamp \u2014 return entries valid at or before this instant (temporal query). (structured-filter path; not combinable with `search`)"
-      },
-      tags: {
-        type: "array",
-        items: { type: "string" },
-        description: "Filter entries that contain ALL of these tags. (structured-filter path; not combinable with `search`)"
-      },
-      search: {
-        type: "string",
-        description: "Free-text search query \u2014 hybrid semantic + trigram retrieval, ranked by relevance (RRF). Composes only with `domain` and `limit`."
-      },
-      include_superseded: {
-        type: "boolean",
-        description: "When true and no explicit status given, return all statuses including superseded. Default false. (structured-filter path; not combinable with `search`)"
-      },
-      limit: { type: "number", description: "Max results to return. Default 50." },
-      offset: { type: "number", description: "Number of results to skip (for pagination). Default 0. (structured-filter path; not combinable with `search`)" }
-    }
-  }
-};
-var getKnowledgeEntryTool = {
-  name: "get_knowledge_entry",
-  description: "Get the full content of a knowledge entry by ID or title. Scoped to this project.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      entry_id: { type: "string", description: "Knowledge entry UUID" },
-      title: { type: "string", description: "Entry title (exact match)" }
-    }
-  }
-};
-var createKnowledgeEntryTool = {
-  name: "create_knowledge_entry",
-  description: 'Create a new knowledge entry in this project. Entries are created as "draft" by default \u2014 humans review and accept them. Use for architecture decisions, business decisions, conventions, and specifications (spec documents describing work to be built).',
-  inputSchema: {
-    type: "object",
-    properties: {
-      title: { type: "string", description: "Entry title (must be unique within the project)" },
-      content: { type: "string", description: "Markdown content of the entry" },
-      type: {
-        type: "string",
-        description: 'Entry type: "architecture", "business", "convention", or "specification"'
-      },
-      status: {
-        type: "string",
-        description: 'Status override. Default: "draft".'
-      },
-      tags: {
-        type: "array",
-        items: { type: "string" },
-        description: "Optional tags"
-      },
-      source_task_id: {
-        type: "string",
-        description: "Task ID that triggered this knowledge entry"
-      }
-    },
-    required: ["title", "content", "type"]
-  }
-};
-var updateKnowledgeEntryTool = {
-  name: "update_knowledge_entry",
-  description: "Update an existing knowledge entry in this project by ID or title. Can update title, content, type, status, tags, domain, madr, realization, or review_by. Works for all entry types, including the next-gen design types.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      entry_id: { type: "string", description: "Knowledge entry UUID" },
-      title: { type: "string", description: "Current entry title (used to find the entry if entry_id not provided)" },
-      new_title: { type: "string", description: "New title for the entry" },
-      content: { type: "string", description: "New markdown content" },
-      type: { type: "string", description: "New entry type" },
-      status: { type: "string", description: "New status: Asserted, Accepted, Superseded, or Archived (legacy lowercase draft/accepted/superseded also accepted)" },
-      tags: {
-        type: "array",
-        items: { type: "string" },
-        description: "Replace tags with this list"
-      },
-      domain: {
-        type: "array",
-        items: { type: "string" },
-        description: "Replace domains with this list: engineering, operations, data, product, customer, process"
-      },
-      madr: {
-        type: "object",
-        description: "Replace the structured MADR body (full-object replace, not a key-merge): { context, decision_drivers, considered_options, decision_outcome, consequences }"
-      },
-      realization: {
-        type: "string",
-        enum: ["agreed", "live", "deprecating", "retired"],
-        description: 'Implementation/realization state (orthogonal to status); NULL \u2261 live; "agreed" = decided-not-yet-built'
-      },
-      review_by: { type: "string", description: "ISO timestamp; freshness/decay date (knowledge-model-v1 \xA73)" }
-    }
-  }
-};
-var supersedeKnowledgeEntryTool = {
-  name: "supersede_knowledge_entry",
-  description: 'Supersede an existing knowledge entry in this project with a new replacement. Marks the old entry as "superseded" and creates the replacement as "accepted", linking them via superseded_by.',
-  inputSchema: {
-    type: "object",
-    properties: {
-      entry_id: { type: "string", description: "UUID of the entry to supersede" },
-      title: { type: "string", description: "Title of the entry to supersede (used if entry_id not provided)" },
-      new_title: { type: "string", description: "Title for the replacement entry" },
-      new_content: { type: "string", description: "Content for the replacement entry" },
-      type: { type: "string", description: "Type for the replacement (defaults to type of superseded entry)" },
-      tags: {
-        type: "array",
-        items: { type: "string" },
-        description: "Tags for the replacement (defaults to tags of superseded entry)"
-      }
-    },
-    required: ["new_title", "new_content"]
-  }
-};
-async function getWorkspaceId2(client, projectId) {
-  const { data, error: error2 } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
-  if (error2) throw new Error(`Could not resolve workspace: ${error2.message}`);
-  return data.workspace_id;
-}
-async function embedText(client, text) {
-  try {
-    const { data, error: error2 } = await client.functions.invoke("embed-knowledge", { body: { text } });
-    if (error2 || !data?.embedding) return null;
-    return `[${data.embedding.join(",")}]`;
-  } catch {
-    return null;
-  }
-}
-async function embedDecisionById(client, workspaceId, projectId, id, title, content) {
-  const embedding = await embedText(client, `${title}
-${content ?? ""}`);
-  if (!embedding) return;
-  await client.from("knowledge_decisions").update({ embedding }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", id);
-}
-var LEGACY_STATUS_MAP = {
-  draft: "draft",
-  accepted: "accepted",
-  superseded: "superseded",
-  Asserted: "draft",
-  Accepted: "accepted",
-  Superseded: "superseded"
-};
-function toLegacyStatus(status) {
-  const legacy = LEGACY_STATUS_MAP[status];
-  if (legacy === void 0) {
-    throw new Error(
-      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, or Superseded/superseded \u2014 Archived cannot be set through this tool, which writes the legacy compat view (no Archived state).`
-    );
-  }
-  return legacy;
-}
-var BASE_STATUS_MAP = {
-  draft: "Asserted",
-  accepted: "Accepted",
-  superseded: "Superseded",
-  Asserted: "Asserted",
-  Accepted: "Accepted",
-  Superseded: "Superseded",
-  Archived: "Archived"
-};
-function toBaseStatus(status) {
-  const base = BASE_STATUS_MAP[status];
-  if (base === void 0) {
-    throw new Error(
-      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, Superseded/superseded, or Archived.`
-    );
-  }
-  return base;
-}
-async function queryKnowledge(client, projectId, args) {
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  if (args.search) {
-    const incompatible = [];
-    if (args.status) incompatible.push("status");
-    if (args.include_superseded) incompatible.push("include_superseded");
-    if (args.type) incompatible.push("type");
-    if (args.tags && args.tags.length > 0) incompatible.push("tags");
-    if (args.as_of) incompatible.push("as_of");
-    if (args.offset) incompatible.push("offset");
-    if (incompatible.length > 0) {
-      throw new Error(
-        `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(", ")}. Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". Omit "search" to use the structured filters.`
-      );
-    }
-    const queryEmbedding = await embedText(client, args.search);
-    const { data: data2, error: error3 } = await client.rpc("knowledge_search_rrf", {
-      _workspace_id: workspaceId,
-      _project_id: projectId,
-      _query_embedding: queryEmbedding,
-      _query_text: args.search,
-      _domain: args.domain && args.domain.length > 0 ? args.domain : null,
-      _match_limit: args.limit ?? 50
-    });
-    if (error3) throw new Error(error3.message);
-    return (data2 ?? []).map((d) => ({
-      id: d.id,
-      title: d.title,
-      type: d.type,
-      status: d.status,
-      domain: d.domain,
-      tags: d.tags,
-      project_id: d.project_id,
-      updated_at: d.updated_at
-    }));
-  }
-  let query = client.from("knowledge_decisions").select("id, title, type, status, domain, tags, project_id, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId);
-  if (args.status) {
-    query = query.eq("status", args.status);
-  } else if (!args.include_superseded) {
-    query = query.eq("status", "Accepted");
-  }
-  if (args.type) query = query.eq("type", args.type);
-  if (args.domain && args.domain.length > 0) query = query.overlaps("domain", args.domain);
-  if (args.as_of) query = query.lte("valid_from", args.as_of);
-  if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
-  query = query.order("type", { ascending: true });
-  const limit = args.limit ?? 50;
-  const offset = args.offset ?? 0;
-  const { data, error: error2 } = await query.range(offset, offset + limit - 1);
-  if (error2) throw new Error(error2.message);
-  return data ?? [];
-}
-async function searchTicketIntents(client, projectId, args) {
-  if (!args.query?.trim()) throw new Error("query is required");
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  const queryEmbedding = await embedText(client, args.query);
-  const { data, error: error2 } = await client.rpc("search_ticket_intents", {
-    _workspace_id: workspaceId,
-    _project_id: projectId,
-    _query_embedding: queryEmbedding,
-    _query_text: args.query,
-    _match_limit: args.limit ?? 50
-  });
-  if (error2) throw new Error(error2.message);
-  return (data ?? []).map((d) => ({
-    id: d.id,
-    source_task_id: d.source_task_id,
-    content: d.content,
-    score: d.score
-  }));
-}
-var searchTicketIntentsTool = {
-  name: "search_ticket_intents",
-  description: 'Find existing TICKETS whose raw intent (title + description) overlaps a query \u2014 the intent-only retrieval surface (hybrid semantic + trigram RRF, ranked by relevance). Use this to check whether a ticket already captures what someone is about to ask for (dedup / "is this already requested?"). This is SEPARATE from query_knowledge: it returns ONLY ticket-intent rows (status-agnostic) and never a design/spec/convention decision, so the two corpora never bleed. Returns each match as { source_task_id, content, score }; resolve source_task_id with get_task to inspect the ticket.',
-  inputSchema: {
-    type: "object",
-    properties: {
-      query: {
-        type: "string",
-        description: "Free-text query describing the intent to look for \u2014 matched against ticket title+description via hybrid semantic + trigram retrieval (RRF)."
-      },
-      limit: { type: "number", description: "Max matches to return. Default 50." }
-    },
-    required: ["query"]
-  }
-};
-async function getKnowledgeEntry(client, projectId, args) {
-  if (!args.entry_id && !args.title) {
-    throw new Error("Either entry_id or title must be provided");
-  }
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  let query = client.from("knowledge_decisions").select(
-    "id, workspace_id, project_id, title, content, type, status, realization, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
-  ).eq("workspace_id", workspaceId).eq("project_id", projectId);
-  if (args.entry_id) {
-    query = query.eq("id", args.entry_id);
-  } else {
-    query = query.eq("title", args.title);
-  }
-  const { data, error: error2 } = await query.single();
-  if (error2) throw error2;
-  return data;
-}
-async function createKnowledgeEntry(client, projectId, userId, args) {
-  if (!args.title?.trim()) {
-    throw new Error("title is required");
-  }
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  const record2 = {
-    workspace_id: workspaceId,
-    project_id: projectId,
-    title: normalizeHtmlEntities(args.title.trim()),
-    content: normalizeHtmlEntities(args.content ?? ""),
-    type: args.type,
-    status: args.status !== void 0 ? toLegacyStatus(args.status) : "draft",
-    created_by: userId
-  };
-  if (args.tags !== void 0) record2.tags = args.tags;
-  if (args.source_task_id !== void 0) record2.source_task_id = args.source_task_id;
-  const { data, error: error2 } = await client.from("workspace_knowledge").insert(record2).select(
-    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
-  ).single();
-  if (error2) {
-    if (error2.code === "23505") {
-      throw new Error(
-        `A knowledge entry titled "${args.title.trim()}" already exists in this project`
-      );
-    }
-    throw error2;
-  }
-  const created = data;
-  await embedDecisionById(client, workspaceId, projectId, created.id, created.title, created.content);
-  return getKnowledgeEntry(client, projectId, { entry_id: created.id });
-}
-async function updateKnowledgeEntry(client, projectId, args) {
-  if (!args.entry_id && !args.title) {
-    throw new Error("Either entry_id or title must be provided to identify the entry");
-  }
-  const hasUpdates = args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
-  if (!hasUpdates) {
-    throw new Error("At least one field to update must be provided");
-  }
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  const updates = {};
-  if (args.new_title !== void 0) updates.title = normalizeHtmlEntities(args.new_title.trim());
-  if (args.content !== void 0) updates.content = normalizeHtmlEntities(args.content);
-  if (args.type !== void 0) updates.type = args.type;
-  if (args.status !== void 0) updates.status = toBaseStatus(args.status);
-  if (args.tags !== void 0) updates.tags = args.tags;
-  if (args.domain !== void 0) updates.domain = args.domain;
-  if (args.madr !== void 0) updates.madr = args.madr;
-  if (args.realization !== void 0) updates.realization = args.realization;
-  if (args.review_by !== void 0) updates.review_by = args.review_by;
-  let query = client.from("knowledge_decisions").update(updates).eq("workspace_id", workspaceId).eq("project_id", projectId);
-  if (args.entry_id) {
-    query = query.eq("id", args.entry_id);
-  } else {
-    query = query.eq("title", args.title);
-  }
-  const { data, error: error2 } = await query.select(
-    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at, domain, madr, realization, review_by"
-  ).single();
-  if (error2) {
-    if (error2.code === "23505") {
-      throw new Error(
-        `A knowledge entry titled "${updates.title}" already exists in this project`
-      );
-    }
-    throw error2;
-  }
-  const updated = data;
-  if (args.new_title !== void 0 || args.content !== void 0) {
-    await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
-  }
-  return updated;
-}
-async function findCrossKindCollision(client, workspaceId, name, kind) {
-  const { data, error: error2 } = await client.from("knowledge_entities").select("id, kind").eq("workspace_id", workspaceId).eq("name", name).neq("kind", kind).limit(1).maybeSingle();
-  if (error2 || !data) return null;
-  return data;
-}
-function collisionWarning(name, requestedKind, existing) {
-  return {
-    entity_id: existing.id,
-    kind: existing.kind,
-    message: `An entity named "${name}" already exists under kind "${existing.kind}" (id ${existing.id}). This write created/resolved a SEPARATE node under kind "${requestedKind}" instead of merging. If this was unintended, use reconcile_entity to merge them.`
-  };
-}
-async function resolveOrCreateEntity(client, workspaceId, projectId, name, kind = "concept") {
-  const { data: existing, error: lookupErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).eq("kind", kind).eq("name", name).maybeSingle();
-  if (lookupErr) throw new Error(lookupErr.message);
-  if (existing) return existing.id;
-  const collision = await findCrossKindCollision(client, workspaceId, name, kind);
-  if (collision) {
-    console.error(
-      `[knowledge] entity collision: ${collisionWarning(name, kind, collision).message}`
-    );
-  }
-  const { data, error: error2 } = await client.from("knowledge_entities").insert({ workspace_id: workspaceId, project_id: projectId, kind, name }).select("id").single();
-  if (error2) throw new Error(error2.message);
-  return data.id;
-}
-var CLAIM_PROVENANCES = ["human-stated", "agent-inferred-human-validated", "force-quit"];
-var DESIGN_DECISION_TYPES = /* @__PURE__ */ new Set(["product-design", "technical-design", "ux-ui-design"]);
-var isMissingClaimColumns = (msg) => !!msg && /(claim_provenance|underwriting_brief_id)/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
-async function recordDecision(client, projectId, userId, args) {
-  if (!args.title?.trim()) throw new Error("title is required");
-  if (!args.type) throw new Error("type is required");
-  if (args.claim_provenance !== void 0 && !CLAIM_PROVENANCES.includes(args.claim_provenance)) {
-    throw new Error(`claim_provenance must be one of: ${CLAIM_PROVENANCES.join(", ")}`);
-  }
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  const affectedIds = [];
-  for (const name of args.affected_entity_names ?? []) {
-    affectedIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name));
-  }
-  const embedding = await embedText(client, `${args.title}
-${args.content ?? ""}`);
-  const record2 = {
-    workspace_id: workspaceId,
-    project_id: projectId,
-    title: normalizeHtmlEntities(args.title.trim()),
-    content: normalizeHtmlEntities(args.content ?? ""),
-    type: args.type,
-    status: args.status ?? "Asserted",
-    domain: args.domain ?? [],
-    madr: args.madr ?? null,
-    affected_entity_ids: affectedIds,
-    source_type: args.source_type ?? "manual",
-    source_activity: args.source_activity ?? null,
-    created_by: userId
-  };
-  if (embedding) record2.embedding = embedding;
-  if (args.source_id !== void 0) record2.source_id = args.source_id;
-  if (args.tags !== void 0) record2.tags = args.tags;
-  if (args.source_task_id !== void 0) record2.source_task_id = args.source_task_id;
-  if (args.review_by !== void 0) record2.review_by = args.review_by;
-  if (args.realization !== void 0) {
-    record2.realization = args.realization;
-  } else if (DESIGN_DECISION_TYPES.has(args.type)) {
-    record2.realization = "agreed";
-  }
-  if (args.claim_provenance !== void 0) record2.claim_provenance = args.claim_provenance;
-  if (args.underwriting_brief_id !== void 0) record2.underwriting_brief_id = args.underwriting_brief_id;
-  let { data, error: error2 } = await client.from("knowledge_decisions").insert(record2).select(DECISION_COLS).single();
-  if (error2 && isMissingClaimColumns(error2.message) && (args.claim_provenance !== void 0 || args.underwriting_brief_id !== void 0)) {
-    const { claim_provenance: _cp, underwriting_brief_id: _ub, ...fallback } = record2;
-    ({ data, error: error2 } = await client.from("knowledge_decisions").insert(fallback).select(DECISION_COLS).single());
-  }
-  if (error2) {
-    if (error2.code === "23505") {
-      throw new Error(`A decision titled "${args.title.trim()}" already exists in this project`);
-    }
-    throw error2;
-  }
-  return data;
-}
-async function supersedeDecision(client, projectId, userId, args) {
-  if (!args.old_decision_id) throw new Error("old_decision_id is required");
-  const hasType = !!args.type;
-  const hasTitle = !!args.title?.trim();
-  if (hasType !== hasTitle) {
-    throw new Error(
-      "supersede_decision: provide BOTH type and title to supersede with a successor, or NEITHER to retire the decision without a successor (retire-mode). Exactly one of type/title is ambiguous."
-    );
-  }
-  const retire = !hasType;
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  const { data: existing, error: fetchErr } = await client.from("knowledge_decisions").select("id").eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.old_decision_id).single();
-  if (fetchErr || !existing) {
-    throw new Error(`Decision ${args.old_decision_id} not found in this project`);
-  }
-  const replacement = retire ? null : await recordDecision(client, projectId, userId, {
-    type: args.type,
-    title: args.title,
-    content: args.content,
-    madr: args.madr,
-    domain: args.domain,
-    affected_entity_names: args.affected_entity_names,
-    status: "Accepted"
-  });
-  const { data, error: error2 } = await client.from("knowledge_decisions").update({ status: "Superseded", superseded_by: replacement ? replacement.id : null }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.old_decision_id).select(DECISION_COLS).single();
-  if (error2) throw error2;
-  return { superseded: data, replacement };
-}
-var supersedeDecisionTool = {
-  name: "supersede_decision",
-  description: 'Supersede an existing decision. Two modes. (1) SUCCESSOR \u2014 provide BOTH type and title: records the replacement as "Accepted", marks the old decision "Superseded" and links them bidirectionally. (2) RETIRE \u2014 omit BOTH type and title: marks the old decision "Superseded" with superseded_by=null and creates NO successor (use when the replacement is authored later, e.g. revise-scope backing a ticket up to a gate that re-authors the decision natively). Providing exactly one of type/title is rejected. Either way, tickets referencing the old decision are automatically flagged stale.',
-  inputSchema: {
-    type: "object",
-    properties: {
-      old_decision_id: { type: "string", description: "UUID of the decision being superseded" },
-      type: { type: "string", description: "Type for the replacement decision. Omit BOTH type and title to retire the decision without a successor (retire-mode)." },
-      title: { type: "string", description: "Title for the replacement decision. Omit BOTH type and title to retire the decision without a successor (retire-mode)." },
-      content: { type: "string", description: "Optional markdown body for the replacement (successor-mode only)" },
-      madr: { type: "object", description: "Structured MADR body for the replacement (successor-mode only)" },
-      domain: { type: "array", items: { type: "string" }, description: "Domains for the replacement (successor-mode only)" },
-      affected_entity_names: { type: "array", items: { type: "string" }, description: "Entities the replacement touches (successor-mode only)" },
-      reason: { type: "string", description: "Why the old decision is being superseded" }
-    },
-    required: ["old_decision_id"]
-  }
-};
-var recordDecisionTool = {
-  name: "record_decision",
-  description: 'Record a knowledge decision produced by a gate/skill. Author ONE ATOMIC claim, not a document \u2014 shape the `content` as Decision \xB7 Why \xB7 How-to-apply \xB7 Scope. Pick the NARROWEST fitting `type` (product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral) and multi-tag every `domain` a querying skill would filter on (engineering, operations, data, product, customer, process). Lifecycle: enters "Asserted" by default and a HUMAN promotes it to "Accepted" \u2014 never pre-mark a replacement Accepted before the decision is made. To retire an entry, SUPERSEDE it (do not edit it into irrelevance); for an in-part repair use update_knowledge_entry plus a dated banner. Migration window: supersede the old decision at decision-time, keep the old fact valid until cutover, and mark in-flight state with `realization`. Elicitation claims (B-645): a claim mined from an elicitation exchange sets `claim_provenance` + `underwriting_brief_id` so brief resolution disposes it mechanically (accept promotes human-grounded claims, defer archives; force-quit claims never promote at their own brief\'s accept).',
-  inputSchema: {
-    type: "object",
-    properties: {
-      type: { type: "string", description: "product-design | technical-design | ux-ui-design | architecture | business | convention | specification | deferral" },
-      title: { type: "string", description: "Decision title (unique within the project)" },
-      content: { type: "string", description: "Optional human-readable markdown body" },
-      madr: { type: "object", description: "Structured MADR body: { context, decision_drivers, considered_options, decision_outcome, consequences }" },
-      domain: { type: "array", items: { type: "string" }, description: "Domains: engineering, operations, data, product, customer, process" },
-      affected_entity_names: { type: "array", items: { type: "string" }, description: "Entity names this decision touches (resolved/created in knowledge_entities)" },
-      status: { type: "string", description: 'Override status (default "Asserted")' },
-      realization: { type: "string", enum: ["agreed", "live", "deprecating", "retired"], description: 'Implementation/realization state (orthogonal to status). B-977: for type product-design/technical-design/ux-ui-design, omitting this defaults to "agreed" (decided-not-yet-built) rather than NULL \u2014 pass a value explicitly to override. For every other type, omit \u21D2 NULL \u2261 live, unchanged.' },
-      source_type: { type: "string", description: "ticket | adr | manual | inferred | research (default 'manual')" },
-      source_id: { type: "string", description: "Pointer back to the producing ticket/source" },
-      source_activity: { type: "string", description: "The gate/skill that authored it (e.g. design-decide, clarify)" },
-      tags: { type: "array", items: { type: "string" }, description: "Optional tags" },
-      source_task_id: { type: "string", description: "Task that triggered this decision" },
-      review_by: { type: "string", description: "ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires." },
-      claim_provenance: { type: "string", enum: ["human-stated", "agent-inferred-human-validated", "force-quit"], description: "B-645: how an elicitation claim was grounded. 'force-quit' claims are quarantined \u2014 never promoted on their brief's accept, never grounds for inference until validated. Omit for a non-claim decision." },
-      underwriting_brief_id: { type: "string", description: "B-645: the brief (UUID) this Asserted claim underwrites \u2014 resolve_brief disposes coupled claims on accept/defer; compose_brief prunes dropped claims on iterate. Omit for a non-claim decision." }
-    },
-    required: ["type", "title"]
-  }
-};
-async function queryEntities(client, projectId, args) {
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  let query = client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId);
-  if (args.kind) query = query.eq("kind", args.kind);
-  if (args.name) query = query.ilike("name", `%${args.name}%`);
-  const { data, error: error2 } = await query.order("name", { ascending: true });
-  if (error2) throw new Error(error2.message);
-  return data ?? [];
-}
-var queryEntitiesTool = {
-  name: "query_entities",
-  description: "Resolve or discover knowledge entities (components, features, integrations, concepts) in this workspace by kind and/or name.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      kind: { type: "string", description: "Entity kind: 'component', 'feature', 'integration', 'concept', 'persona'" },
-      name: { type: "string", description: "Case-insensitive substring match on entity name" }
-    }
-  }
-};
-async function createEntity(client, projectId, args) {
-  if (!args.kind?.trim()) throw new Error("kind is required");
-  if (!args.name?.trim()) throw new Error("name is required");
-  const kind = args.kind.trim();
-  const name = args.name.trim();
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  const { data: existing, error: lookupErr } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", kind).eq("name", name).maybeSingle();
-  if (lookupErr) throw new Error(lookupErr.message);
-  if (existing) {
-    const patch = {};
-    if (args.description !== void 0) patch.description = args.description;
-    if (args.metadata !== void 0) patch.metadata = args.metadata;
-    if (Object.keys(patch).length === 0) return existing;
-    const { data: updated, error: updErr } = await client.from("knowledge_entities").update(patch).eq("workspace_id", workspaceId).eq("id", existing.id).select(ENTITY_COLS).single();
-    if (updErr) throw new Error(updErr.message);
-    return updated;
-  }
-  const collision = await findCrossKindCollision(client, workspaceId, name, kind);
-  const record2 = {
-    workspace_id: workspaceId,
-    project_id: projectId,
-    kind,
-    name
-  };
-  if (args.description !== void 0) record2.description = args.description;
-  if (args.metadata !== void 0) record2.metadata = args.metadata;
-  const { data, error: error2 } = await client.from("knowledge_entities").insert(record2).select(ENTITY_COLS).single();
-  if (error2) {
-    if (error2.code === "23505") {
-      const { data: raced } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", kind).eq("name", name).maybeSingle();
-      if (raced) {
-        const racedRow = raced;
-        return collision ? { ...racedRow, collision_warning: collisionWarning(name, kind, collision) } : racedRow;
-      }
-    }
-    throw new Error(error2.message);
-  }
-  const created = data;
-  return collision ? { ...created, collision_warning: collisionWarning(name, kind, collision) } : created;
-}
-var createEntityTool = {
-  name: "create_entity",
-  description: "Author a TYPED knowledge entity node (kind + name; optional description + metadata) directly in the graph. Idempotent upsert on the uniqueness key (workspace, kind, name): re-authoring the same node is a no-op, or refreshes the description/metadata when supplied. A node description is a THIN, stable, one-line canonical identifier \u2014 the substance and lifecycle (Asserted\u2192Accepted, realization) live in the decisions/facts ABOUT the entity, not on the node. Kinds are open-ended (e.g. 'persona', 'feature', 'component', 'integration', 'concept'). To merge a low-typed stub into a richer node of the same name, use reconcile_entity. B-977: creating a name that already exists under a DIFFERENT kind is never blocked \u2014 it proceeds and the result carries a non-fatal `collision_warning` ({entity_id, kind, message}) pointing at the existing node; use reconcile_entity to merge if the duplicate was unintended.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      kind: { type: "string", description: "Entity kind \u2014 open-ended (e.g. 'persona', 'feature', 'component', 'integration', 'concept')" },
-      name: { type: "string", description: "Entity name (unique within the workspace per kind)" },
-      description: { type: "string", description: "A THIN one-line canonical identifier \u2014 not a document; depth belongs in the claims about the entity" },
-      metadata: { type: "object", description: "Optional structured metadata (JSON object)" }
-    },
-    required: ["kind", "name"]
-  }
-};
-async function updateEntity(client, projectId, args) {
-  if (!args.entity_id && !(args.kind && args.name)) {
-    throw new Error("Provide entity_id, or both kind and name, to identify the entity");
-  }
-  const hasUpdates = args.new_kind !== void 0 || args.description !== void 0 || args.metadata !== void 0;
-  if (!hasUpdates) {
-    throw new Error("At least one of new_kind, description, or metadata must be provided");
-  }
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  const patch = {};
-  if (args.new_kind !== void 0) patch.kind = args.new_kind;
-  if (args.description !== void 0) patch.description = args.description;
-  if (args.metadata !== void 0) patch.metadata = args.metadata;
-  let query = client.from("knowledge_entities").update(patch).eq("workspace_id", workspaceId);
-  if (args.entity_id) {
-    query = query.eq("id", args.entity_id);
-  } else {
-    query = query.eq("kind", args.kind).eq("name", args.name);
-  }
-  const { data, error: error2 } = await query.select(ENTITY_COLS).single();
-  if (error2) {
-    if (error2.code === "23505") {
-      throw new Error(
-        `An entity named "${args.name ?? patch.name ?? ""}" already exists under kind "${args.new_kind}". Use reconcile_entity to MERGE the two nodes (it repoints all references), not update_entity.`
-      );
-    }
-    throw new Error(error2.message);
-  }
-  return data;
-}
-var updateEntityTool = {
-  name: "update_entity",
-  description: "Update a typed knowledge entity's description, metadata, or kind. Identify it by entity_id, or by its current (kind, name). Changing kind to a value already taken by a same-named node is rejected with a pointer to reconcile_entity (the MERGE path that repoints references) \u2014 update_entity never silently orphans or duplicates.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      entity_id: { type: "string", description: "Entity UUID (preferred identifier)" },
-      kind: { type: "string", description: "Current kind (with name) \u2014 identifies the entity when entity_id is omitted" },
-      name: { type: "string", description: "Current name (with kind) \u2014 identifies the entity when entity_id is omitted" },
-      new_kind: { type: "string", description: "New kind. For a stub\u2192typed promotion that may collide, prefer reconcile_entity." },
-      description: { type: "string", description: "New thin one-line canonical description" },
-      metadata: { type: "object", description: "New structured metadata (full-object replace)" }
-    }
-  }
-};
-async function reconcileEntity(client, projectId, args) {
-  if (!args.name?.trim()) throw new Error("name is required");
-  if (!args.to_kind?.trim()) throw new Error("to_kind is required");
-  const name = args.name.trim();
-  const toKind = args.to_kind.trim();
-  const fromKind = (args.from_kind ?? "concept").trim();
-  if (fromKind === toKind) throw new Error("from_kind and to_kind must differ (nothing to reconcile)");
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  const { data: stub, error: stubErr } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", fromKind).eq("name", name).maybeSingle();
-  if (stubErr) throw new Error(stubErr.message);
-  if (!stub) throw new Error(`No ${fromKind} entity named "${name}" to reconcile`);
-  const stubRow = stub;
-  const { data: typed, error: typedErr } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", toKind).eq("name", name).maybeSingle();
-  if (typedErr) throw new Error(typedErr.message);
-  if (!typed) {
-    const patch = { kind: toKind };
-    if (args.description !== void 0) patch.description = args.description;
-    const { data: upgraded, error: upErr } = await client.from("knowledge_entities").update(patch).eq("workspace_id", workspaceId).eq("id", stubRow.id).select(ENTITY_COLS).single();
-    if (upErr) throw new Error(upErr.message);
-    return { mode: "upgrade-in-place", entity: upgraded };
-  }
-  const typedRow = typed;
-  const { data: movedFacts, error: factErr } = await client.from("knowledge_facts").update({ subject_entity_id: typedRow.id }).eq("workspace_id", workspaceId).eq("subject_entity_id", stubRow.id).select("id");
-  if (factErr) throw new Error(factErr.message);
-  const factCount = (movedFacts ?? []).length;
-  const { data: decisionRows, error: decSelErr } = await client.from("knowledge_decisions").select("id, affected_entity_ids").eq("workspace_id", workspaceId).contains("affected_entity_ids", [stubRow.id]);
-  if (decSelErr) throw new Error(decSelErr.message);
-  let decisionCount = 0;
-  for (const row of decisionRows ?? []) {
-    const current = row.affected_entity_ids ?? [];
-    const rewritten = Array.from(new Set(current.map((id) => id === stubRow.id ? typedRow.id : id)));
-    const { error: decUpdErr } = await client.from("knowledge_decisions").update({ affected_entity_ids: rewritten }).eq("workspace_id", workspaceId).eq("id", row.id);
-    if (decUpdErr) throw new Error(decUpdErr.message);
-    decisionCount++;
-  }
-  let eventCount = 0;
-  try {
-    const { data: movedEvents } = await client.from("knowledge_events").update({ entity_id: typedRow.id }).eq("workspace_id", workspaceId).eq("entity_id", stubRow.id).select("id");
-    eventCount = (movedEvents ?? []).length;
-  } catch {
-  }
-  const { error: delErr } = await client.from("knowledge_entities").delete().eq("workspace_id", workspaceId).eq("id", stubRow.id);
-  if (delErr) throw new Error(delErr.message);
-  return {
-    mode: "merge",
-    entity: typedRow,
-    merged_stub_id: stubRow.id,
-    repointed: { facts: factCount, decisions: decisionCount, events: eventCount }
-  };
-}
-var reconcileEntityTool = {
-  name: "reconcile_entity",
-  description: "Reconcile a low-typed entity stub (default kind 'concept') into a richer typed node of the same name \u2014 the folded B-399 capability. Two modes, chosen automatically: (a) UPGRADE-IN-PLACE when NO same-named node exists under to_kind \u2014 the stub row is retyped in place (kind/description), no references move; (b) MERGE when a same-named to_kind node ALREADY exists \u2014 every referencing row (facts.subject_entity_id, decisions.affected_entity_ids, events.entity_id) is repointed to the typed node (deduping arrays), then the stub is deleted. Prevents two nodes for the same real thing.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      name: { type: "string", description: "The shared entity name to reconcile" },
-      to_kind: { type: "string", description: "The richer target kind (e.g. component, feature, persona)" },
-      from_kind: { type: "string", description: "The stub's kind. Default 'concept'." },
-      description: { type: "string", description: "Optional refreshed one-line description (applied on upgrade-in-place)" }
-    },
-    required: ["name", "to_kind"]
-  }
-};
-async function assertFact(client, projectId, userId, args) {
-  if (!args.subject_entity?.trim()) throw new Error("subject_entity is required");
-  if (!args.predicate?.trim()) throw new Error("predicate is required");
-  if (!args.source_type) throw new Error("source_type is required");
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  const subjectId = await resolveOrCreateEntity(
-    client,
-    workspaceId,
-    projectId,
-    args.subject_entity,
-    args.subject_entity_kind ?? "concept"
-  );
-  const embedding = await embedText(client, `${args.subject_entity} ${args.predicate} ${JSON.stringify(args.object)}`);
-  const record2 = {
-    workspace_id: workspaceId,
-    project_id: projectId,
-    subject_entity_id: subjectId,
-    predicate: args.predicate,
-    object: args.object,
-    confidence: args.confidence ?? 1,
-    status: "Asserted",
-    domain: args.domain ?? [],
-    source_type: args.source_type,
-    created_by: userId
-  };
-  if (embedding) record2.embedding = embedding;
-  if (args.source_id !== void 0) record2.source_id = args.source_id;
-  if (args.review_by !== void 0) record2.review_by = args.review_by;
-  const { data, error: error2 } = await client.from("knowledge_facts").insert(record2).select(FACT_COLS).single();
-  if (error2) throw error2;
-  return data;
-}
-var assertFactTool = {
-  name: "assert_fact",
-  description: 'Assert ONE ATOMIC fact about an entity (subject-predicate-object) with provenance \u2014 a single claim, not a bundle. Use a precise `predicate` and multi-tag every `domain` a querying skill would filter on. Facts enter "Asserted"; a human promotes before agents act on them autonomously (research-sourced facts especially). Do not edit a fact into irrelevance \u2014 invalidate it; during a migration window keep the old fact valid until cutover (bi-temporal).',
-  inputSchema: {
-    type: "object",
-    properties: {
-      subject_entity: { type: "string", description: "Name of the subject entity (resolved/created in knowledge_entities)" },
-      subject_entity_kind: { type: "string", description: "Kind if the entity must be created (default 'concept')" },
-      predicate: { type: "string", description: "e.g. 'implements', 'depends_on', 'uses'" },
-      object: { description: "Entity ref, scalar, or structured JSON value" },
-      source_type: { type: "string", description: "ticket | adr | manual | inferred | research (required \u2014 provenance)" },
-      source_id: { type: "string", description: "Pointer back to the source ticket/decision" },
-      confidence: { type: "number", description: "0..1 (default 1.0)" },
-      domain: { type: "array", items: { type: "string" }, description: "Domains this fact belongs to" },
-      review_by: { type: "string", description: "ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires." }
-    },
-    required: ["subject_entity", "predicate", "object", "source_type"]
-  }
-};
-async function invalidateFact(client, projectId, args) {
-  if (!args.fact_id) throw new Error("fact_id is required");
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  const { data, error: error2 } = await client.from("knowledge_facts").update({ valid_to: (/* @__PURE__ */ new Date()).toISOString(), status: "Superseded" }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.fact_id).select(FACT_COLS).single();
-  if (error2) throw error2;
-  return data;
-}
-var invalidateFactTool = {
-  name: "invalidate_fact",
-  description: "Mark a fact as no longer valid (sets valid_to=now, status=Superseded). Graphiti invalidation pattern \u2014 the fact is retained for temporal queries, not deleted.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      fact_id: { type: "string", description: "UUID of the fact to invalidate" },
-      reason: { type: "string", description: "Why it is no longer valid" }
-    },
-    required: ["fact_id"]
-  }
-};
-async function queryFacts(client, projectId, args) {
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  let query = client.from("knowledge_facts").select(FACT_COLS).eq("workspace_id", workspaceId);
-  if (!args.include_invalidated && !args.as_of) query = query.is("valid_to", null);
-  if (args.as_of) {
-    query = query.lte("valid_from", args.as_of).or(`valid_to.is.null,valid_to.gt.${args.as_of}`);
-  }
-  if (args.predicate) query = query.eq("predicate", args.predicate);
-  if (args.min_confidence !== void 0) query = query.gte("confidence", args.min_confidence);
-  if (args.entity) {
-    const { data: ents, error: entErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).ilike("name", args.entity);
-    if (entErr) throw new Error(entErr.message);
-    const ids2 = (ents ?? []).map((e) => e.id);
-    if (ids2.length === 0) return [];
-    query = query.in("subject_entity_id", ids2);
-  }
-  const { data, error: error2 } = await query.order("recorded_at", { ascending: false });
-  if (error2) throw new Error(error2.message);
-  return data ?? [];
-}
-var queryFactsTool = {
-  name: "query_facts",
-  description: 'Query facts: "what is true (or was true) about X". Returns currently-valid facts by default; pass as_of for a point-in-time view.',
-  inputSchema: {
-    type: "object",
-    properties: {
-      entity: { type: "string", description: "Subject entity name (case-insensitive exact match)" },
-      predicate: { type: "string", description: "Filter by predicate" },
-      as_of: { type: "string", description: "ISO timestamp \u2014 facts valid at this instant" },
-      min_confidence: { type: "number", description: "Only facts with confidence >= this" },
-      include_invalidated: { type: "boolean", description: "Include facts whose valid_to is set" }
-    }
-  }
-};
-async function supersedeKnowledgeEntry(client, projectId, userId, args) {
-  if (!args.entry_id && !args.title) {
-    throw new Error("Either entry_id or title must be provided to identify the entry to supersede");
-  }
-  const existing = await getKnowledgeEntry(client, projectId, {
-    entry_id: args.entry_id,
-    title: args.title
-  });
-  const replacement = await createKnowledgeEntry(client, projectId, userId, {
-    title: args.new_title,
-    content: args.new_content,
-    type: args.type ?? existing.type,
-    status: "accepted",
-    tags: args.tags ?? existing.tags,
-    source_task_id: existing.source_task_id ?? void 0
-  });
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  const { data: supersededData, error: error2 } = await client.from("knowledge_decisions").update({ status: "Superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", existing.id).select(
-    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
-  ).single();
-  if (error2) throw error2;
-  return {
-    superseded: supersededData,
-    replacement
-  };
 }
 
 // src/tools/milestones.ts
@@ -42373,151 +42728,6 @@ var listConductionsTool = {
     required: ["task_id"]
   }
 };
-
-// src/tools/workflow.ts
-var UNIVERSAL = {
-  parking: "Parked",
-  cancelling: "Cancelled"
-};
-function deriveToState(fromState, activity, transitions) {
-  if (activity === "researching") return fromState;
-  if (activity in UNIVERSAL) return UNIVERSAL[activity];
-  const row = transitions.find((t) => t.from_state === fromState && t.activity === activity);
-  if (!row) {
-    throw new Error(
-      `No workflow transition from '${fromState ?? "(none)"}' via activity '${activity}'`
-    );
-  }
-  return row.to_state;
-}
-var advanceWorkflowTool = {
-  name: "advance_workflow",
-  description: "Advance an opinionated-mode task along the config-led state machine for an AGENT/SYSTEM transition that has no human brief \u2014 e.g. building (Planned->Built) once tests pass, or a revising-* backflow. Derives the target state from the workflow_transitions table; the DB guard validates the edge. For HUMAN-gated transitions use compose_brief + resolve_brief instead. parking/cancelling are accepted; researching records the activity without changing state.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      task_id: { type: "string", description: "Task identifier \u2014 UUID, number, or visual ID (e.g. B-43)" },
-      activity: {
-        type: "string",
-        description: "Workflow activity to apply, e.g. 'building', 'deploying', 'revising-designing', 'researching', 'parking', 'cancelling', 'capturing', 'proposing'."
-      }
-    },
-    required: ["task_id", "activity"]
-  }
-};
-async function advanceWorkflow(client, projectId, args) {
-  const id = await resolveTaskId(client, projectId, args.task_id);
-  const { data: task, error: e1 } = await client.from("tasks").select("workflow_state, stale").eq("id", id).eq("project_id", projectId).single();
-  if (e1) throw e1;
-  const taskRow = task;
-  const isStaleExempt = args.activity.startsWith("revising-") || args.activity === "researching" || args.activity in UNIVERSAL;
-  if (taskRow.stale === true && !isStaleExempt) {
-    throw new Error(
-      `Task is stale (tasks.stale=true) \u2014 cannot apply forward activity '${args.activity}'. Route through harmony-stale-patch (files a 'stale-patch-review' brief) or a 'revising-*' backflow first.`
-    );
-  }
-  const { data: transitions, error: e2 } = await client.from("workflow_transitions").select("from_state, activity, to_state");
-  if (e2) throw e2;
-  const fromState = taskRow.workflow_state;
-  const toState = deriveToState(fromState, args.activity, transitions ?? []);
-  const patch = args.activity === "researching" ? { workflow_activity: args.activity } : { workflow_state: toState, workflow_activity: args.activity };
-  const { data: updated, error: e3 } = await client.from("tasks").update(patch).eq("id", id).eq("project_id", projectId).select("id, workflow_state, workflow_activity").single();
-  if (e3) throw e3;
-  return {
-    task_id: id,
-    from_state: fromState,
-    to_state: toState,
-    activity: args.activity,
-    task: updated
-  };
-}
-var referenceKnowledgeTool = {
-  name: "reference_knowledge",
-  description: "Record that a task depends on a knowledge decision (ticket_references_knowledge). This is what makes P2 supersession flag the ticket Stale. Idempotent. Call after record_decision so the gate-authored decision is coupled to its ticket.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      task_id: { type: "string", description: "Task identifier \u2014 UUID, number, or visual ID" },
-      decision_id: { type: "string", description: "knowledge_decisions.id this task references" }
-    },
-    required: ["task_id", "decision_id"]
-  }
-};
-async function referenceKnowledge(client, projectId, args) {
-  const id = await resolveTaskId(client, projectId, args.task_id);
-  const { error: error2 } = await client.from("ticket_references_knowledge").upsert({ task_id: id, decision_id: args.decision_id }, { onConflict: "task_id,decision_id", ignoreDuplicates: true });
-  if (error2) throw error2;
-  return { task_id: id, decision_id: args.decision_id, linked: true };
-}
-var listTicketKnowledgeTool = {
-  name: "list_ticket_knowledge",
-  description: "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status + source_activity (the gate/skill that authored it \u2014 use this to discriminate between multiple Accepted decisions of the same type, e.g. clarify's and decompose's specification records). Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket \u2014 query_knowledge has no ticket filter (it projects no source_task_id).",
-  inputSchema: {
-    type: "object",
-    properties: {
-      task_id: { type: "string", description: "Task identifier \u2014 UUID, number, or visual ID" }
-    },
-    required: ["task_id"]
-  }
-};
-async function listTicketKnowledge(client, projectId, args) {
-  const id = await resolveTaskId(client, projectId, args.task_id);
-  const { data, error: error2 } = await client.from("ticket_references_knowledge").select("decision_id, knowledge_decisions(id, type, status, title, domain, source_activity)").eq("task_id", id);
-  if (error2) throw error2;
-  const rows = data ?? [];
-  const affectedByDecision = await fetchAffectedEntities(client, rows.map((r) => r.decision_id));
-  return rows.map((r) => ({
-    decision_id: r.decision_id,
-    ...r.knowledge_decisions ?? {},
-    affected_entities: affectedByDecision[r.decision_id] ?? []
-  }));
-}
-async function fetchAffectedEntities(client, decisionIds) {
-  if (decisionIds.length === 0) return {};
-  const { data, error: error2 } = await client.from("decision_affects_entity").select("decision_id, entity_id, knowledge_entities(name, kind)").in("decision_id", decisionIds);
-  if (error2) throw error2;
-  const map = {};
-  for (const row of data ?? []) {
-    const entity = row.knowledge_entities;
-    if (!entity?.name) continue;
-    const list = map[row.decision_id] ?? (map[row.decision_id] = []);
-    list.push({ entity_id: row.entity_id, name: entity.name, kind: entity.kind ?? "" });
-  }
-  return map;
-}
-var linkTicketEntitiesTool = {
-  name: "link_ticket_entities",
-  description: "Link a task and a just-promoted design/visual-handoff decision to one or more knowledge entities (B-977) \u2014 writes BOTH ticket_implements_entity (task -> entity) and decision_affects_entity (decision -> entity) in the same call. Each name is resolved-or-created via the same path as record_decision's affected_entity_names, default kind 'feature'. Call this right after the design/visual-handoff gate's resolve_brief promotes the decision, passing the entity name(s) confirmed at clarify (field_values.implements_entities) \u2014 or any other entity names worth binding to this ticket/decision pair. Idempotent (upsert, ignore-duplicates).",
-  inputSchema: {
-    type: "object",
-    properties: {
-      task_id: { type: "string", description: "Task identifier \u2014 UUID, number, or visual ID" },
-      decision_id: { type: "string", description: "knowledge_decisions.id \u2014 the just-promoted design/visual-handoff decision" },
-      entity_names: { type: "array", items: { type: "string" }, description: "One or more entity names to resolve-or-create and link" },
-      entity_kind: { type: "string", description: "Kind used ONLY for entities that don't already exist under any kind. Default 'feature'." }
-    },
-    required: ["task_id", "decision_id", "entity_names"]
-  }
-};
-async function linkTicketEntities(client, projectId, args) {
-  if (!args.decision_id) throw new Error("decision_id is required");
-  const names = (args.entity_names ?? []).map((n) => n.trim()).filter(Boolean);
-  if (names.length === 0) throw new Error("entity_names must contain at least one non-empty name");
-  const id = await resolveTaskId(client, projectId, args.task_id);
-  const workspaceId = await getWorkspaceId2(client, projectId);
-  const kind = args.entity_kind ?? "feature";
-  const entityIds = [];
-  for (const name of names) {
-    entityIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name, kind));
-  }
-  for (const entityId of entityIds) {
-    const { error: implementsErr } = await client.from("ticket_implements_entity").upsert({ task_id: id, entity_id: entityId }, { onConflict: "task_id,entity_id", ignoreDuplicates: true });
-    if (implementsErr) throw implementsErr;
-    const { error: affectsErr } = await client.from("decision_affects_entity").upsert({ decision_id: args.decision_id, entity_id: entityId }, { onConflict: "decision_id,entity_id", ignoreDuplicates: true });
-    if (affectsErr) throw affectsErr;
-  }
-  return { task_id: id, decision_id: args.decision_id, entity_ids: entityIds, linked: true };
-}
 
 // src/tools/attachments.ts
 import { promises as fs } from "node:fs";

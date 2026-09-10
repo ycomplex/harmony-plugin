@@ -21,6 +21,32 @@ what you're deciding about:
 
 The six domains: `engineering`, `operations`, `data`, `product`, `customer`, `process`.
 
+## Contradiction discipline — read the FLOOR set before compose (B-838)
+
+A decision the system has since moved away from can sit at `Accepted` indefinitely — nothing fires
+supersession on its own when later work quietly contradicts what it records. The five FORWARD gates
+(clarify, decompose, design, plan, release) carry the mechanical floor against this: **before
+composing that gate's brief, read the ticket's FLOOR set — its `ticket_references_knowledge`-linked
+Accepted entries, via `list_ticket_knowledge`, filtered to `status: 'Accepted'`** — and for any entry
+this gate's work touches or contradicts, **explicitly supersede or amend it before the brief is
+accepted**:
+
+- A **dated amendment banner** (`update_knowledge_entry`) is the DEFAULT verb for a partial
+  contradiction — the entry mostly still holds, one recorded fact does not.
+- `supersede_decision` is reserved for a **wholesale replacement** — the entry's whole claim no longer
+  holds.
+
+Record what you reviewed on `doc.frame.floor_reviewed` — the ids of the FLOOR-set entries you
+confirmed (an empty FLOOR set needs nothing here). `compose_brief`'s lint warns — never refuses —
+when the ticket has a non-empty FLOOR set and `floor_reviewed` is absent or empty; treat the warning
+as a prompt to go back and do the read, not as noise to suppress.
+
+**At the release gate specifically**, `compose_brief` ALSO computes `frame.contradiction_signal` from
+the build's diff (`diff_content`) — a second, TIER-widened check (bounded, content-matched against the
+diff, not restricted to FLOOR) that a fires-and-contradicted entry surfaces on the release brief even
+if it was never linked to this ticket. That diff-derived signal is compose-authoritative and
+complements, not replaces, the FLOOR read every forward gate owes above.
+
 ## Surface gaps — and calibrate by impact × ignorance
 
 When you find no entry you *should* be answering from knowledge, flag it. A **thin or tangential** result —

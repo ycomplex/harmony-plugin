@@ -169,9 +169,12 @@ export async function listTicketKnowledge(
   const id = await resolveTaskId(client, projectId, args.task_id);
   // Embed the parent decision via the FK ticket_references_knowledge.decision_id -> knowledge_decisions.id.
   // knowledge_decisions RLS applies to the embed; ticket_references_knowledge is members-rw (P2 plan A6).
+  // B-838: `content` is ALSO projected — the contradiction detector's FLOOR read reuses this exact
+  // function (rather than reimplementing the query) and needs each entry's body to extract candidate
+  // recorded values from. Purely additive: every existing caller ignores the extra key.
   const { data, error } = await client
     .from('ticket_references_knowledge')
-    .select('decision_id, knowledge_decisions(id, type, status, title, domain, source_activity)')
+    .select('decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content)')
     .eq('task_id', id);
   if (error) throw error;
   // PostgREST types the embed as an array, but the decision_id->id FK is to-one so it returns a single
