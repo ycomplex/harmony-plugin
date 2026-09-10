@@ -1,0 +1,20 @@
+# B-991: harmony-plugin's own dogfood manifest for `harmony gates run <extension-point>`.
+#
+# preconditions: transcribed verbatim (condensed to one string per bullet) from the WORKSPACE root
+# CLAUDE.md's "Build isolation & harness gotchas" section (B-628) — read fresh from
+# /workspace/workspace/CLAUDE.md at authoring time, not from memory. These are DECLARED DATA ONLY:
+# `harmony gates run` only ever prints this list, it never executes a line of it.
+#
+# release.before_merge: the B-778 migration of plugin/CLAUDE.md's Versioning section's hand-written
+# release-prep steps (npm run build, npm run verify:dist) into this manifest.
+version: 1
+preconditions:
+  - "Build subagents work in a worktree by default — and in this meta-repo the worktree must be created INSIDE the child repo. The children (web/, plugin/) are gitignored, not submodules, so an isolation:'worktree' taken at the workspace root silently excludes them — the subagent falls back to the shared live checkout with zero isolation and no warning. Isolate inside web/ or plugin/."
+  - "Gitignored env files don't transfer to a fresh worktree. `git worktree add` carries only tracked files, so .env.e2e / .env.local are missing and an E2E build falls back to the committed .env (localhost login form tree-shaken -> auth.setup.ts times out). Symlink them in from the main checkout."
+  - "npm in a fresh worktree churns package-lock.json with no real dep change (web prunes @emnapi/*; plugin adds peer:true). `git restore package-lock.json` before committing — unless package.json actually changed."
+  - "CI-log greps must strip ANSI first. In raw GitHub Actions logs, vitest's `stderr | ` marker carries an ANSI escape between the word and the pipe, so a literal `grep -c \"stderr |\"` returns a clean 0 on a log with 172 stderr blocks — a false pass on both sides of a before/after comparison. Strip `\\e\\[[0-9;]*m` before counting, and pair any absence claim with a positive control (a baseline log where the pattern is known present)."
+  - "Git-write permissions are non-deterministic across contexts. A git/Write/Edit denial in the main loop may succeed in a subagent (or vice-versa) — retry in the other context before treating it as terminal. If every context is denied, ask the founder for a one-off grant."
+release:
+  before_merge:
+    - run: npm run build
+    - run: npm run verify:dist

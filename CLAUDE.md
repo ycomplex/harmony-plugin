@@ -67,10 +67,19 @@ Plugin-only changes with no new schema dependency (skills, CLI, bug fixes) are s
 
 Because Claude Code plugins aren't npm-installed (the marketplace copies files directly into `~/.claude/plugins/cache/` without running `npm install`), the compiled `dist/` output is committed so the MCP server runs immediately on fresh install. The bundle is produced by `esbuild --bundle`, so all runtime deps are inlined — no `node_modules/` is needed at runtime.
 
-**Before bumping the version in `.claude-plugin/plugin.json`:**
-1. Run `npm run build`
-2. Verify with `npm run verify:dist` — this rebuilds and fails if committed `dist/` differs from a fresh build
-3. Commit any `dist/` changes alongside the version bump
+**Before bumping the version in `.claude-plugin/plugin.json`:** run the release-prep steps —
+`npm run build` then `npm run verify:dist` (rebuilds and fails if committed `dist/` differs from a
+fresh build), then commit any `dist/` changes alongside the version bump.
+
+**B-991: the authoritative declaration of those steps now lives in this repo's own
+[`.harmony/project.yml`](.harmony/project.yml)** (`release.before_merge`), not here — this section is
+a pointer, kept only as a human-readable summary. Run them via `harmony gates run
+release.before_merge` (src/cli/commands/gates.ts), which reads the manifest, runs those two steps
+as subprocesses, and lands a `finish-work` evidence entry (typed `integration`) when it runs steps for real; `skills/finish-work/SKILL.md`'s
+release-prep step calls this automatically when `.harmony/project.yml` is present, falling back to
+this section's steps verbatim when it is absent (see `src/config/project-manifest.ts`'s header for
+why an absent/empty manifest must behave identically to today). If you ever need to hand-run the
+steps directly, `npm run build` / `npm run verify:dist` still work exactly as before.
 
 CI should run `npm run verify:dist` on every PR.
 

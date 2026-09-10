@@ -27,6 +27,7 @@ import { registerConfigCommands } from './commands/config.js';
 import { registerModelCommands } from './commands/model.js';
 import { registerLegCostCommands } from './commands/leg-cost.js';
 import { registerLegOutputCommands } from './commands/leg-output.js';
+import { registerGatesCommands } from './commands/gates.js';
 
 const program = new Command();
 
@@ -60,5 +61,6 @@ registerConfigCommands(program);
 registerModelCommands(program);
 registerLegCostCommands(program);
 registerLegOutputCommands(program);
+registerGatesCommands(program);
 
 program.parse();
