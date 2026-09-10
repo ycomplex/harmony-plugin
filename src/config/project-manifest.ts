@@ -19,6 +19,12 @@
 // executed — see the safety-relevant test in project-manifest.test.ts proving this), and the three
 // extension points `build.before_pr` / `release.before_merge` / `verify.before_ack`, each an
 // ordered list of `run:` or `agent_task:` steps.
+//
+// B-992: the PreToolUse hook (src/hooks/pretooluse-gate.ts) reads back a local, gitignored
+// EVIDENCE MARKER per extension point at `.harmony/.gate-evidence/<extension-point>.json`,
+// written atomically by `harmony gates run <extension-point>` (src/cli/commands/gates.ts) after
+// a fully successful run — no logic here, just the convention this file's own directory sits
+// beside.
 
 import { existsSync as nodeExistsSync, readFileSync as nodeReadFileSync } from 'node:fs';
 import { join as nodeJoin, resolve as nodeResolve } from 'node:path';

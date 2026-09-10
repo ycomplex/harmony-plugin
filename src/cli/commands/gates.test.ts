@@ -21,11 +21,13 @@ function baseDeps(overrides: Partial<GatesRunDeps> = {}): GatesRunDeps & {
   authCalls: number;
   runStepCalls: { command: string; cwd: string }[];
   landEvidenceCalls: unknown[];
+  writeMarkerCalls: unknown[];
 } {
   const logLines: string[] = [];
   const errorLines: string[] = [];
   const runStepCalls: { command: string; cwd: string }[] = [];
   const landEvidenceCalls: unknown[] = [];
+  const writeMarkerCalls: unknown[] = [];
   let authCalls = 0;
 
   const authCtx: AuthenticatedContext = {
@@ -51,6 +53,10 @@ function baseDeps(overrides: Partial<GatesRunDeps> = {}): GatesRunDeps & {
     landEvidence: async (...args) => {
       landEvidenceCalls.push(args);
     },
+    writeMarker: (marker) => {
+      writeMarkerCalls.push(marker);
+    },
+    resolveHeadSha: () => 'sha-1',
     log: (line) => logLines.push(line),
     error: (line) => errorLines.push(line),
     ...overrides,
@@ -65,12 +71,14 @@ function baseDeps(overrides: Partial<GatesRunDeps> = {}): GatesRunDeps & {
     },
     runStepCalls,
     landEvidenceCalls,
+    writeMarkerCalls,
   } as GatesRunDeps & {
     logLines: string[];
     errorLines: string[];
     authCalls: number;
     runStepCalls: { command: string; cwd: string }[];
     landEvidenceCalls: unknown[];
+    writeMarkerCalls: unknown[];
   };
 }
 
@@ -98,7 +106,7 @@ describe('runGatesCommand — manifest ABSENT (AC4 floor)', () => {
 });
 
 describe('runGatesCommand — manifest present but declares nothing for this extension point', () => {
-  it('exits 0, one quiet no-op line, no authenticated context acquired', async () => {
+  it('exits 0, no authenticated context acquired — build.before_pr additionally prints the (empty) preconditions line (B-992)', async () => {
     const ok: ManifestLoadResult = {
       kind: 'ok',
       file: '/fake/project/.harmony/project.yml',
@@ -108,7 +116,50 @@ describe('runGatesCommand — manifest present but declares nothing for this ext
     const deps = baseDeps({ loadManifest: () => ok });
     const code = await runGatesCommand(deps);
     expect(code).toBe(0);
+    // build.before_pr always prints ITS OWN preconditions line (even "declares no preconditions"),
+    // plus the no-op line — see the B-992 regression-pin test below for the load-bearing case.
+    expect(deps.logLines).toHaveLength(2);
+    expect(deps.logLines[0]).toContain('declares no preconditions');
+    expect(deps.authCalls).toBe(0);
+    expect(deps.runStepCalls).toHaveLength(0);
+  });
+
+  it('release.before_merge (not build.before_pr) still gets exactly one quiet no-op line — no preconditions print', async () => {
+    const ok: ManifestLoadResult = {
+      kind: 'ok',
+      file: '/fake/project/.harmony/project.yml',
+      manifest: { version: 1, preconditions: ['some precondition'] },
+      stepErrors: {},
+    };
+    const deps = baseDeps({ extensionPoint: 'release.before_merge', loadManifest: () => ok });
+    const code = await runGatesCommand(deps);
+    expect(code).toBe(0);
     expect(deps.logLines).toHaveLength(1);
+    expect(deps.authCalls).toBe(0);
+  });
+
+  it('B-992 regression pin: build.before_pr prints declared preconditions even when it declares ZERO build.before_pr steps', async () => {
+    // The exact shape this repo's own .harmony/project.yml has: top-level preconditions, but no
+    // build.before_pr steps at all. Before the fix, the steps.length===0 early return happened
+    // BEFORE the preconditions-print block ever ran, so this manifest's preconditions never printed.
+    const ok: ManifestLoadResult = {
+      kind: 'ok',
+      file: '/fake/project/.harmony/project.yml',
+      manifest: {
+        version: 1,
+        preconditions: ['isolate worktrees inside the child repo', 'symlink gitignored env files'],
+      },
+      stepErrors: {},
+    };
+    const deps = baseDeps({ extensionPoint: 'build.before_pr', loadManifest: () => ok });
+    const code = await runGatesCommand(deps);
+    expect(code).toBe(0);
+    const preconditionLines = deps.logLines.filter(
+      (l) => l.includes('isolate worktrees') || l.includes('symlink gitignored'),
+    );
+    expect(preconditionLines).toHaveLength(2);
+    // The no-op line (nothing to run) still follows, since there really are zero steps to execute.
+    expect(deps.logLines.some((l) => l.includes('declares nothing for this extension point'))).toBe(true);
     expect(deps.authCalls).toBe(0);
     expect(deps.runStepCalls).toHaveLength(0);
   });
@@ -321,6 +372,125 @@ describe('runGatesCommand — real steps to run', () => {
     const code = await runGatesCommand(deps);
     expect(code).toBe(0);
     expect(deps.landEvidenceCalls).toHaveLength(0);
+  });
+
+  // ===============================================================================================
+  // B-992: the local gate-evidence marker — writeMarker's atomic write call, and its own
+  // best-effort-never-fails-the-command discipline (mirrors landEvidence's own WARNING-path proof).
+  // ===============================================================================================
+
+  it('B-992: writes exactly ONE marker, shaped correctly, after a fully successful run', async () => {
+    const ok: ManifestLoadResult = {
+      kind: 'ok',
+      file: '/fake/project/.harmony/project.yml',
+      manifest: { version: 1, release: { before_merge: [{ run: 'npm run build' }] } },
+      stepErrors: {},
+    };
+    const deps = baseDeps({
+      extensionPoint: 'release.before_merge',
+      loadManifest: () => ok,
+      getConductionId: () => 'cond-1',
+      resolveHeadSha: () => 'deadbeef',
+    });
+    const code = await runGatesCommand(deps);
+    expect(code).toBe(0);
+    expect(deps.writeMarkerCalls).toHaveLength(1);
+    const marker = deps.writeMarkerCalls[0] as {
+      extension_point: string;
+      conduction_id: string;
+      head_sha: string;
+      ran_at: string;
+      evidence_landed: boolean;
+    };
+    expect(marker.extension_point).toBe('release.before_merge');
+    expect(marker.conduction_id).toBe('cond-1');
+    expect(marker.head_sha).toBe('deadbeef');
+    expect(marker.evidence_landed).toBe(true);
+    expect(typeof marker.ran_at).toBe('string');
+  });
+
+  it('B-992: conduction_id falls back to "none" when no conduction is in play', async () => {
+    const ok: ManifestLoadResult = {
+      kind: 'ok',
+      file: '/fake/project/.harmony/project.yml',
+      manifest: { version: 1, release: { before_merge: [{ run: 'npm run build' }] } },
+      stepErrors: {},
+    };
+    const deps = baseDeps({
+      extensionPoint: 'release.before_merge',
+      loadManifest: () => ok,
+      getConductionId: () => undefined,
+    });
+    await runGatesCommand(deps);
+    const marker = deps.writeMarkerCalls[0] as { conduction_id: string; evidence_landed: boolean };
+    expect(marker.conduction_id).toBe('none');
+    // No conduction ⇒ no task id ⇒ evidence never landed, but the marker still writes.
+    expect(marker.evidence_landed).toBe(false);
+  });
+
+  it('B-992: evidence_landed is false on the marker when landEvidence itself failed', async () => {
+    const ok: ManifestLoadResult = {
+      kind: 'ok',
+      file: '/fake/project/.harmony/project.yml',
+      manifest: { version: 1, release: { before_merge: [{ run: 'npm run build' }] } },
+      stepErrors: {},
+    };
+    const deps = baseDeps({
+      extensionPoint: 'release.before_merge',
+      loadManifest: () => ok,
+      landEvidence: async () => {
+        throw new Error('board unreachable');
+      },
+    });
+    const code = await runGatesCommand(deps);
+    expect(code).toBe(0);
+    const marker = deps.writeMarkerCalls[0] as { evidence_landed: boolean };
+    expect(marker.evidence_landed).toBe(false);
+  });
+
+  it('B-992: a writeMarker that THROWS degrades to a WARNING and never fails the command', async () => {
+    const ok: ManifestLoadResult = {
+      kind: 'ok',
+      file: '/fake/project/.harmony/project.yml',
+      manifest: { version: 1, release: { before_merge: [{ run: 'npm run build' }] } },
+      stepErrors: {},
+    };
+    const deps = baseDeps({
+      extensionPoint: 'release.before_merge',
+      loadManifest: () => ok,
+      writeMarker: () => {
+        throw new Error('EROFS');
+      },
+    });
+    const code = await runGatesCommand(deps);
+    expect(code).toBe(0);
+    expect(deps.errorLines.some((l) => l.includes('gate-evidence marker') && l.includes('EROFS'))).toBe(true);
+  });
+
+  it('B-992: a resolveHeadSha that THROWS also degrades to a WARNING, never fails the command', async () => {
+    const ok: ManifestLoadResult = {
+      kind: 'ok',
+      file: '/fake/project/.harmony/project.yml',
+      manifest: { version: 1, release: { before_merge: [{ run: 'npm run build' }] } },
+      stepErrors: {},
+    };
+    const deps = baseDeps({
+      extensionPoint: 'release.before_merge',
+      loadManifest: () => ok,
+      resolveHeadSha: () => {
+        throw new Error('not a git repo');
+      },
+    });
+    const code = await runGatesCommand(deps);
+    expect(code).toBe(0);
+    expect(deps.writeMarkerCalls).toHaveLength(0);
+    expect(deps.errorLines.some((l) => l.includes('gate-evidence marker'))).toBe(true);
+  });
+
+  it('B-992: never writes a marker on the no-op floor path', async () => {
+    const deps = baseDeps({ loadManifest: () => ({ kind: 'absent' }) });
+    await runGatesCommand(deps);
+    expect(deps.writeMarkerCalls).toHaveLength(0);
   });
 });
 
