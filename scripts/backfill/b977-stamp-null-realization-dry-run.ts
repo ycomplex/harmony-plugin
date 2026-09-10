@@ -1,20 +1,27 @@
 #!/usr/bin/env node
-// B-977 Script B — DRY-RUN ONLY. Audits TH-2 and TH-3's Accepted technical-design decisions in the
-// BIS dogfood project for NULL `realization` and prints which rows WOULD be stamped 'agreed'
-// (decided-not-yet-built) if a human later chooses to apply it. NEVER executes a write — database
-// mutations on this project are founder-held (per the B-977 ticket's guardrail). This script has NO
-// --apply flag and NO write path at all.
+// B-977 Script B — DRY-RUN ONLY. Audits Accepted technical-design decisions in the BIS dogfood
+// project for NULL `realization` and prints which rows WOULD be stamped 'agreed' (decided-not-
+// yet-built) if a human later chooses to apply it. NEVER executes a write — database mutations on
+// this project are founder-held (per the B-977 ticket's guardrail). This script has NO --apply flag
+// and NO write path at all.
 //
 // TARGET: the BIS dogfood project, specifically. The token you authenticate with
 // (HARMONY_API_TOKEN) determines which project this runs against; this script refuses to proceed
-// unless that project's key is literally "BIS" AND both TH-2/TH-3 resolve within it (resolveTaskId
-// itself rejects a visual-id prefix that doesn't match the token's project key — a second,
-// independent guard against pointing this at the wrong project).
+// unless that project's key is literally "BIS".
 //
-// WHY these two tickets specifically: TH-2/TH-3 are the tickets named in the B-977 ticket body as
-// carrying Accepted technical-design decisions from before this same ticket's realization-default
-// fix (recordDecision now defaults realization='agreed' for design-decision types going forward —
-// this script is the backfill for decisions authored BEFORE that default existed).
+// FIXED 2026-09-10 (verify-gate iterate, round 3): the original version hardcoded
+// `TARGET_TICKETS = ['TH-2', 'TH-3']` and tried to resolve them as visual IDs via resolveTaskId —
+// which validates a visual ID's prefix against the AUTHENTICATED project's key, so 'TH-2'/'TH-3'
+// could never resolve under a 'BIS'-scoped token. That constant was wrong, not the project guard:
+// per B-798's clarified-intent knowledge entry ("TH-2/TH-3 dogfood conductions produced two concrete
+// defects"), TH-2 and TH-3 name the two DOGFOOD CONDUCTION RUNS that surfaced this bug, not ticket
+// visual IDs — there is no ticket 'TH-2' or 'TH-3' to resolve. Since nothing enforced the
+// realization stamp before this same ticket's fix, every Accepted technical-design decision made in
+// the BIS project prior to the fix is a candidate, not just the two runs that happened to surface
+// it — so this script now audits ALL of them project-wide instead of resolving fixed visual IDs.
+// This is evidence-based (cf. the knowledge entry cited above), not a guess about which specific
+// tickets TH-2/TH-3 pointed at; it also structurally can't repeat the original defect, since it
+// never resolves a ticket visual ID at all.
 //
 // USAGE (no build step wired for this one-off maintenance script — bundle ad hoc):
 //   npx esbuild scripts/backfill/b977-stamp-null-realization-dry-run.ts --bundle --platform=node \
@@ -29,16 +36,14 @@
 import { HarmonyAuth } from '../../src/auth.js';
 import { createAuthenticatedClient } from '../../src/supabase.js';
 import { getProject } from '../../src/tools/project.js';
-import { resolveTaskId } from '../../src/tools/resolve-task-id.js';
+import { getWorkspaceId } from '../../src/tools/knowledge.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-const TARGET_TICKETS = ['TH-2', 'TH-3'];
 const EXPECTED_PROJECT_KEY = 'BIS';
 
 interface DecisionRow {
   id: string;
   title: string;
-  type: string;
   status: string;
   realization: string | null;
   source_task_id: string | null;
@@ -47,16 +52,28 @@ interface DecisionRow {
 
 async function findAcceptedTechnicalDesignDecisions(
   client: SupabaseClient,
-  taskId: string,
+  workspaceId: string,
+  projectId: string,
 ): Promise<DecisionRow[]> {
   const { data, error } = await client
     .from('knowledge_decisions')
-    .select('id, title, type, status, realization, source_task_id, created_at')
-    .eq('source_task_id', taskId)
+    .select('id, title, status, realization, source_task_id, created_at')
+    .eq('workspace_id', workspaceId)
+    .eq('project_id', projectId)
     .eq('type', 'technical-design')
     .eq('status', 'Accepted');
-  if (error) throw new Error(`decision lookup failed for task ${taskId}: ${error.message}`);
+  if (error) throw new Error(`decision lookup failed: ${error.message}`);
   return (data ?? []) as DecisionRow[];
+}
+
+async function resolveVisualId(
+  client: SupabaseClient,
+  taskId: string,
+  projectKey: string,
+): Promise<string> {
+  const { data, error } = await client.from('tasks').select('task_number').eq('id', taskId).maybeSingle();
+  if (error || !data) return `(unresolvable task ${taskId})`;
+  return `${projectKey}-${(data as { task_number: number }).task_number}`;
 }
 
 async function main() {
@@ -80,39 +97,41 @@ async function main() {
     process.exit(1);
   }
 
+  const workspaceId = await getWorkspaceId(client, projectId);
+
   console.log(`DRY RUN ONLY — no writes. Project: ${project.name} (${project.key}, ${projectId}).\n`);
 
-  let plannedTotal = 0;
+  const decisions = await findAcceptedTechnicalDesignDecisions(client, workspaceId, projectId);
 
-  for (const visualId of TARGET_TICKETS) {
-    let taskId: string;
-    try {
-      taskId = await resolveTaskId(client, projectId, visualId);
-    } catch (err) {
-      console.error(`  Could not resolve ${visualId} in project ${project.key}: ${(err as Error).message}`);
-      continue;
-    }
-
-    const decisions = await findAcceptedTechnicalDesignDecisions(client, taskId);
-    console.log(`── ${visualId} (${taskId}) — ${decisions.length} Accepted technical-design decision(s) ──`);
-
-    if (decisions.length === 0) {
-      console.log('  (none found)\n');
-      continue;
-    }
-
-    for (const d of decisions) {
-      if (d.realization === null) {
-        console.log(`  PLAN (not executed): stamp realization='agreed' on ${d.id} — "${d.title}" (created_at=${d.created_at})`);
-        console.log(`    -> update_knowledge_entry({ entry_id: '${d.id}', realization: 'agreed' })`);
-        plannedTotal++;
-      } else {
-        console.log(`  SKIP — ${d.id} "${d.title}" already carries realization='${d.realization}' (not NULL).`);
-      }
-    }
-    console.log('');
+  // Fail-loud guard: this query has no ticket-resolution step to fail silently on (the original
+  // defect's failure mode), but an RLS/permission problem can still return an empty result set
+  // indistinguishable from "genuinely no technical-design decisions exist yet". Surface the total
+  // so a human can tell the two apart, instead of a bare, possibly-misleading zero.
+  if (decisions.length === 0) {
+    console.log(
+      'ABORTED: found 0 Accepted technical-design decisions of ANY realization value in this project. ' +
+      'This is almost certainly a permission/RLS problem (a BIS-scoped token should see prior technical- ' +
+      'design decisions), not evidence the backfill is already done. Verify token scope before trusting ' +
+      'this result.',
+    );
+    process.exit(1);
   }
 
+  let plannedTotal = 0;
+  let alreadyStamped = 0;
+
+  for (const d of decisions) {
+    if (d.realization === null) {
+      const visualId = d.source_task_id ? await resolveVisualId(client, d.source_task_id, project.key) : '(no source ticket)';
+      console.log(`  PLAN (not executed): stamp realization='agreed' on ${d.id} — "${d.title}" (ticket=${visualId}, created_at=${d.created_at})`);
+      console.log(`    -> update_knowledge_entry({ entry_id: '${d.id}', realization: 'agreed' })`);
+      plannedTotal++;
+    } else {
+      alreadyStamped++;
+    }
+  }
+
+  console.log(`\n${decisions.length} Accepted technical-design decision(s) found; ${alreadyStamped} already carry a non-NULL realization.`);
   console.log(`Total: ${plannedTotal} decision(s) would be stamped realization='agreed'.`);
   console.log('\nNothing was written. Review the plan above, then run the printed update_knowledge_entry call(s) by hand (MCP tool or CLI) if you agree.');
 }
