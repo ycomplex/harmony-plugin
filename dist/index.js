@@ -37200,7 +37200,6 @@ function slugRef(prefix, text, maxLen = 40) {
 }
 
 // src/tools/knowledge.ts
-var DECISION_COLS = "id, workspace_id, project_id, title, content, type, status, realization, domain, confidence, review_by, drift_risk, superseded_by, affected_entity_ids, madr, source_type, source_id, source_activity, tags, source_task_id, created_by, created_at, updated_at";
 var FACT_COLS = "id, workspace_id, project_id, subject_entity_id, predicate, object, confidence, status, domain, source_type, source_id, valid_from, valid_to, recorded_at, created_by";
 var ENTITY_COLS = "id, workspace_id, project_id, kind, name, description, metadata, created_at";
 var queryKnowledgeTool = {
@@ -37315,7 +37314,8 @@ var updateKnowledgeEntryTool = {
         enum: ["agreed", "live", "deprecating", "retired"],
         description: 'Implementation/realization state (orthogonal to status); NULL \u2261 live; "agreed" = decided-not-yet-built'
       },
-      review_by: { type: "string", description: "ISO timestamp; freshness/decay date (knowledge-model-v1 \xA73)" }
+      review_by: { type: "string", description: "ISO timestamp; freshness/decay date (knowledge-model-v1 \xA73)" },
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification.` }
     }
   }
 };
@@ -37334,7 +37334,8 @@ var supersedeKnowledgeEntryTool = {
         type: "array",
         items: { type: "string" },
         description: "Tags for the replacement (defaults to tags of superseded entry)"
-      }
+      },
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification.` }
     },
     required: ["new_title", "new_content"]
   }
@@ -37538,32 +37539,34 @@ async function updateKnowledgeEntry(client, projectId, args) {
     throw new Error("At least one field to update must be provided");
   }
   const workspaceId = await getWorkspaceId(client, projectId);
-  const updates = {};
-  if (args.new_title !== void 0) updates.title = normalizeHtmlEntities(args.new_title.trim());
-  if (args.content !== void 0) updates.content = normalizeHtmlEntities(args.content);
-  if (args.type !== void 0) updates.type = args.type;
-  if (args.status !== void 0) updates.status = toBaseStatus(args.status);
-  if (args.tags !== void 0) updates.tags = args.tags;
-  if (args.domain !== void 0) updates.domain = args.domain;
-  if (args.madr !== void 0) updates.madr = args.madr;
-  if (args.realization !== void 0) updates.realization = args.realization;
-  if (args.review_by !== void 0) updates.review_by = args.review_by;
-  let query = client.from("knowledge_decisions").update(updates).eq("workspace_id", workspaceId).eq("project_id", projectId);
-  if (args.entry_id) {
-    query = query.eq("id", args.entry_id);
-  } else {
-    query = query.eq("title", args.title);
-  }
-  const { data, error: error2 } = await query.select(
-    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at, domain, madr, realization, review_by"
-  ).single();
+  const newTitle = args.new_title !== void 0 ? normalizeHtmlEntities(args.new_title.trim()) : void 0;
+  const { data, error: error2 } = await client.rpc("knowledge_update_knowledge_entry", {
+    p_project_id: projectId,
+    p_entry_id: args.entry_id ?? null,
+    p_title: args.title ?? null,
+    p_new_title: newTitle ?? null,
+    p_content: args.content !== void 0 ? normalizeHtmlEntities(args.content) : null,
+    p_type: args.type ?? null,
+    p_status: args.status !== void 0 ? toBaseStatus(args.status) : null,
+    p_tags: args.tags ?? null,
+    // Decision-axis columns recordDecision already writes but this path historically omitted
+    // (B-468). Pass-through only (mirrors recordDecision — no strict validation; the DB CHECK/FK
+    // constraints are the backstop). madr is a FULL-OBJECT replace, not a key-merge.
+    p_domain: args.domain ?? null,
+    p_madr: args.madr ?? null,
+    p_realization: args.realization ?? null,
+    p_review_by: args.review_by ?? null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null
+  });
   if (error2) {
     if (error2.code === "23505") {
       throw new Error(
-        `A knowledge entry titled "${updates.title}" already exists in this project`
+        `A knowledge entry titled "${newTitle ?? ""}" already exists in this project`
       );
     }
-    throw error2;
+    throw new Error(error2.message);
   }
   const updated = data;
   if (args.new_title !== void 0 || args.content !== void 0) {
@@ -37610,7 +37613,6 @@ async function resolveOrCreateEntity(client, workspaceId, projectId, name, kind 
 }
 var CLAIM_PROVENANCES = ["human-stated", "agent-inferred-human-validated", "force-quit"];
 var DESIGN_DECISION_TYPES = /* @__PURE__ */ new Set(["product-design", "technical-design", "ux-ui-design"]);
-var isMissingClaimColumns = (msg) => !!msg && /(claim_provenance|underwriting_brief_id)/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
 async function recordDecision(client, projectId, userId, args) {
   if (!args.title?.trim()) throw new Error("title is required");
   if (!args.type) throw new Error("type is required");
@@ -37624,42 +37626,38 @@ async function recordDecision(client, projectId, userId, args) {
   }
   const embedding = await embedText(client, `${args.title}
 ${args.content ?? ""}`);
-  const record2 = {
-    workspace_id: workspaceId,
-    project_id: projectId,
-    title: normalizeHtmlEntities(args.title.trim()),
-    content: normalizeHtmlEntities(args.content ?? ""),
-    type: args.type,
-    status: args.status ?? "Asserted",
-    domain: args.domain ?? [],
-    madr: args.madr ?? null,
-    affected_entity_ids: affectedIds,
-    source_type: args.source_type ?? "manual",
-    source_activity: args.source_activity ?? null,
-    created_by: userId
-  };
-  if (embedding) record2.embedding = embedding;
-  if (args.source_id !== void 0) record2.source_id = args.source_id;
-  if (args.tags !== void 0) record2.tags = args.tags;
-  if (args.source_task_id !== void 0) record2.source_task_id = args.source_task_id;
-  if (args.review_by !== void 0) record2.review_by = args.review_by;
-  if (args.realization !== void 0) {
-    record2.realization = args.realization;
-  } else if (DESIGN_DECISION_TYPES.has(args.type)) {
-    record2.realization = "agreed";
+  let realization = args.realization;
+  if (realization === void 0 && DESIGN_DECISION_TYPES.has(args.type)) {
+    realization = "agreed";
   }
-  if (args.claim_provenance !== void 0) record2.claim_provenance = args.claim_provenance;
-  if (args.underwriting_brief_id !== void 0) record2.underwriting_brief_id = args.underwriting_brief_id;
-  let { data, error: error2 } = await client.from("knowledge_decisions").insert(record2).select(DECISION_COLS).single();
-  if (error2 && isMissingClaimColumns(error2.message) && (args.claim_provenance !== void 0 || args.underwriting_brief_id !== void 0)) {
-    const { claim_provenance: _cp, underwriting_brief_id: _ub, ...fallback } = record2;
-    ({ data, error: error2 } = await client.from("knowledge_decisions").insert(fallback).select(DECISION_COLS).single());
-  }
+  const { data, error: error2 } = await client.rpc("knowledge_record_decision", {
+    p_project_id: projectId,
+    p_title: normalizeHtmlEntities(args.title.trim()),
+    p_type: args.type,
+    p_content: normalizeHtmlEntities(args.content ?? ""),
+    p_status: args.status ?? "Asserted",
+    p_domain: args.domain ?? [],
+    p_madr: args.madr ?? null,
+    p_affected_entity_ids: affectedIds,
+    p_source_type: args.source_type ?? "manual",
+    p_source_id: args.source_id ?? null,
+    p_source_activity: args.source_activity ?? null,
+    p_tags: args.tags ?? [],
+    p_source_task_id: args.source_task_id ?? null,
+    p_review_by: args.review_by ?? null,
+    p_realization: realization ?? null,
+    p_claim_provenance: args.claim_provenance ?? null,
+    p_underwriting_brief_id: args.underwriting_brief_id ?? null,
+    p_embedding: embedding,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null
+  });
   if (error2) {
     if (error2.code === "23505") {
       throw new Error(`A decision titled "${args.title.trim()}" already exists in this project`);
     }
-    throw error2;
+    throw new Error(error2.message);
   }
   return data;
 }
@@ -37672,24 +37670,27 @@ async function supersedeDecision(client, projectId, userId, args) {
       "supersede_decision: provide BOTH type and title to supersede with a successor, or NEITHER to retire the decision without a successor (retire-mode). Exactly one of type/title is ambiguous."
     );
   }
-  const retire = !hasType;
   const workspaceId = await getWorkspaceId(client, projectId);
-  const { data: existing, error: fetchErr } = await client.from("knowledge_decisions").select("id").eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.old_decision_id).single();
-  if (fetchErr || !existing) {
-    throw new Error(`Decision ${args.old_decision_id} not found in this project`);
+  const affectedIds = [];
+  for (const name of args.affected_entity_names ?? []) {
+    affectedIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name));
   }
-  const replacement = retire ? null : await recordDecision(client, projectId, userId, {
-    type: args.type,
-    title: args.title,
-    content: args.content,
-    madr: args.madr,
-    domain: args.domain,
-    affected_entity_names: args.affected_entity_names,
-    status: "Accepted"
+  const { data, error: error2 } = await client.rpc("knowledge_supersede_decision", {
+    p_old_decision_id: args.old_decision_id,
+    p_project_id: projectId,
+    p_type: args.type ?? null,
+    p_title: hasTitle ? normalizeHtmlEntities(args.title.trim()) : null,
+    p_content: args.content !== void 0 ? normalizeHtmlEntities(args.content) : null,
+    p_madr: args.madr ?? null,
+    p_domain: args.domain ?? null,
+    p_affected_entity_ids: args.affected_entity_names !== void 0 ? affectedIds : null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null
   });
-  const { data, error: error2 } = await client.from("knowledge_decisions").update({ status: "Superseded", superseded_by: replacement ? replacement.id : null }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.old_decision_id).select(DECISION_COLS).single();
-  if (error2) throw error2;
-  return { superseded: data, replacement };
+  if (error2) throw new Error(error2.message);
+  const result = data;
+  return { superseded: result.superseded, replacement: result.replacement ?? null };
 }
 var supersedeDecisionTool = {
   name: "supersede_decision",
@@ -37704,7 +37705,8 @@ var supersedeDecisionTool = {
       madr: { type: "object", description: "Structured MADR body for the replacement (successor-mode only)" },
       domain: { type: "array", items: { type: "string" }, description: "Domains for the replacement (successor-mode only)" },
       affected_entity_names: { type: "array", items: { type: "string" }, description: "Entities the replacement touches (successor-mode only)" },
-      reason: { type: "string", description: "Why the old decision is being superseded" }
+      reason: { type: "string", description: "Why the old decision is being superseded" },
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification.` }
     },
     required: ["old_decision_id"]
   }
@@ -37730,7 +37732,8 @@ var recordDecisionTool = {
       source_task_id: { type: "string", description: "Task that triggered this decision" },
       review_by: { type: "string", description: "ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires." },
       claim_provenance: { type: "string", enum: ["human-stated", "agent-inferred-human-validated", "force-quit"], description: "B-645: how an elicitation claim was grounded. 'force-quit' claims are quarantined \u2014 never promoted on their brief's accept, never grounds for inference until validated. Omit for a non-claim decision." },
-      underwriting_brief_id: { type: "string", description: "B-645: the brief (UUID) this Asserted claim underwrites \u2014 resolve_brief disposes coupled claims on accept/defer; compose_brief prunes dropped claims on iterate. Omit for a non-claim decision." }
+      underwriting_brief_id: { type: "string", description: "B-645: the brief (UUID) this Asserted claim underwrites \u2014 resolve_brief disposes coupled claims on accept/defer; compose_brief prunes dropped claims on iterate. Omit for a non-claim decision." },
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification.` }
     },
     required: ["type", "title"]
   }
@@ -37783,25 +37786,17 @@ async function createEntity(client, projectId, args) {
     return updated;
   }
   const collision = await findCrossKindCollision(client, workspaceId, name, kind);
-  const record2 = {
-    workspace_id: workspaceId,
-    project_id: projectId,
-    kind,
-    name
-  };
-  if (description !== void 0) record2.description = description;
-  if (args.metadata !== void 0) record2.metadata = args.metadata;
-  const { data, error: error2 } = await client.from("knowledge_entities").insert(record2).select(ENTITY_COLS).single();
-  if (error2) {
-    if (error2.code === "23505") {
-      const { data: raced } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", kind).eq("name", name).maybeSingle();
-      if (raced) {
-        const racedRow = raced;
-        return collision ? { ...racedRow, collision_warning: collisionWarning(name, kind, collision) } : racedRow;
-      }
-    }
-    throw new Error(error2.message);
-  }
+  const { data, error: error2 } = await client.rpc("knowledge_create_entity", {
+    p_project_id: projectId,
+    p_kind: kind,
+    p_name: name,
+    p_description: description ?? null,
+    p_metadata: args.metadata ?? null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null
+  });
+  if (error2) throw new Error(error2.message);
   const created = data;
   return collision ? { ...created, collision_warning: collisionWarning(name, kind, collision) } : created;
 }
@@ -37814,7 +37809,8 @@ var createEntityTool = {
       kind: { type: "string", description: "Entity kind \u2014 open-ended (e.g. 'persona', 'feature', 'component', 'integration', 'concept')" },
       name: { type: "string", description: "Entity name (unique within the workspace per kind)" },
       description: { type: "string", description: "A THIN one-line canonical identifier \u2014 not a document; depth belongs in the claims about the entity" },
-      metadata: { type: "object", description: "Optional structured metadata (JSON object)" }
+      metadata: { type: "object", description: "Optional structured metadata (JSON object)" },
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification.` }
     },
     required: ["kind", "name"]
   }
@@ -37827,22 +37823,23 @@ async function updateEntity(client, projectId, args) {
   if (!hasUpdates) {
     throw new Error("At least one of new_kind, description, or metadata must be provided");
   }
-  const workspaceId = await getWorkspaceId(client, projectId);
-  const patch = {};
-  if (args.new_kind !== void 0) patch.kind = args.new_kind;
-  if (args.description !== void 0) patch.description = normalizeHtmlEntities(args.description);
-  if (args.metadata !== void 0) patch.metadata = args.metadata;
-  let query = client.from("knowledge_entities").update(patch).eq("workspace_id", workspaceId);
-  if (args.entity_id) {
-    query = query.eq("id", args.entity_id);
-  } else {
-    query = query.eq("kind", args.kind).eq("name", args.name);
-  }
-  const { data, error: error2 } = await query.select(ENTITY_COLS).single();
+  const description = args.description !== void 0 ? normalizeHtmlEntities(args.description) : void 0;
+  const { data, error: error2 } = await client.rpc("knowledge_update_entity", {
+    p_project_id: projectId,
+    p_entity_id: args.entity_id ?? null,
+    p_kind: args.kind ?? null,
+    p_name: args.name ?? null,
+    p_new_kind: args.new_kind ?? null,
+    p_description: description ?? null,
+    p_metadata: args.metadata ?? null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null
+  });
   if (error2) {
     if (error2.code === "23505") {
       throw new Error(
-        `An entity named "${args.name ?? patch.name ?? ""}" already exists under kind "${args.new_kind}". Use reconcile_entity to MERGE the two nodes (it repoints all references), not update_entity.`
+        `An entity named "${args.name ?? ""}" already exists under kind "${args.new_kind}". Use reconcile_entity to MERGE the two nodes (it repoints all references), not update_entity.`
       );
     }
     throw new Error(error2.message);
@@ -37860,7 +37857,8 @@ var updateEntityTool = {
       name: { type: "string", description: "Current name (with kind) \u2014 identifies the entity when entity_id is omitted" },
       new_kind: { type: "string", description: "New kind. For a stub\u2192typed promotion that may collide, prefer reconcile_entity." },
       description: { type: "string", description: "New thin one-line canonical description" },
-      metadata: { type: "object", description: "New structured metadata (full-object replace)" }
+      metadata: { type: "object", description: "New structured metadata (full-object replace)" },
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification.` }
     }
   }
 };
@@ -37871,48 +37869,23 @@ async function reconcileEntity(client, projectId, args) {
   const toKind = args.to_kind.trim();
   const fromKind = (args.from_kind ?? "concept").trim();
   if (fromKind === toKind) throw new Error("from_kind and to_kind must differ (nothing to reconcile)");
-  const workspaceId = await getWorkspaceId(client, projectId);
-  const { data: stub, error: stubErr } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", fromKind).eq("name", name).maybeSingle();
-  if (stubErr) throw new Error(stubErr.message);
-  if (!stub) throw new Error(`No ${fromKind} entity named "${name}" to reconcile`);
-  const stubRow = stub;
-  const { data: typed, error: typedErr } = await client.from("knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).eq("kind", toKind).eq("name", name).maybeSingle();
-  if (typedErr) throw new Error(typedErr.message);
-  if (!typed) {
-    const patch = { kind: toKind };
-    if (args.description !== void 0) patch.description = args.description;
-    const { data: upgraded, error: upErr } = await client.from("knowledge_entities").update(patch).eq("workspace_id", workspaceId).eq("id", stubRow.id).select(ENTITY_COLS).single();
-    if (upErr) throw new Error(upErr.message);
-    return { mode: "upgrade-in-place", entity: upgraded };
+  const { data, error: error2 } = await client.rpc("knowledge_reconcile_entity", {
+    p_project_id: projectId,
+    p_name: name,
+    p_to_kind: toKind,
+    p_from_kind: fromKind,
+    p_description: args.description ?? null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null
+  });
+  if (error2) {
+    if (/entity named/.test(error2.message) && /found 0/.test(error2.message)) {
+      throw new Error(`No ${fromKind} entity named "${name}" to reconcile`);
+    }
+    throw new Error(error2.message);
   }
-  const typedRow = typed;
-  const { data: movedFacts, error: factErr } = await client.from("knowledge_facts").update({ subject_entity_id: typedRow.id }).eq("workspace_id", workspaceId).eq("subject_entity_id", stubRow.id).select("id");
-  if (factErr) throw new Error(factErr.message);
-  const factCount = (movedFacts ?? []).length;
-  const { data: decisionRows, error: decSelErr } = await client.from("knowledge_decisions").select("id, affected_entity_ids").eq("workspace_id", workspaceId).contains("affected_entity_ids", [stubRow.id]);
-  if (decSelErr) throw new Error(decSelErr.message);
-  let decisionCount = 0;
-  for (const row of decisionRows ?? []) {
-    const current = row.affected_entity_ids ?? [];
-    const rewritten = Array.from(new Set(current.map((id) => id === stubRow.id ? typedRow.id : id)));
-    const { error: decUpdErr } = await client.from("knowledge_decisions").update({ affected_entity_ids: rewritten }).eq("workspace_id", workspaceId).eq("id", row.id);
-    if (decUpdErr) throw new Error(decUpdErr.message);
-    decisionCount++;
-  }
-  let eventCount = 0;
-  try {
-    const { data: movedEvents } = await client.from("knowledge_events").update({ entity_id: typedRow.id }).eq("workspace_id", workspaceId).eq("entity_id", stubRow.id).select("id");
-    eventCount = (movedEvents ?? []).length;
-  } catch {
-  }
-  const { error: delErr } = await client.from("knowledge_entities").delete().eq("workspace_id", workspaceId).eq("id", stubRow.id);
-  if (delErr) throw new Error(delErr.message);
-  return {
-    mode: "merge",
-    entity: typedRow,
-    merged_stub_id: stubRow.id,
-    repointed: { facts: factCount, decisions: decisionCount, events: eventCount }
-  };
+  return data;
 }
 var reconcileEntityTool = {
   name: "reconcile_entity",
@@ -37923,7 +37896,8 @@ var reconcileEntityTool = {
       name: { type: "string", description: "The shared entity name to reconcile" },
       to_kind: { type: "string", description: "The richer target kind (e.g. component, feature, persona)" },
       from_kind: { type: "string", description: "The stub's kind. Default 'concept'." },
-      description: { type: "string", description: "Optional refreshed one-line description (applied on upgrade-in-place)" }
+      description: { type: "string", description: "Optional refreshed one-line description (applied on upgrade-in-place)" },
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification.` }
     },
     required: ["name", "to_kind"]
   }
@@ -37933,31 +37907,27 @@ async function assertFact(client, projectId, userId, args) {
   if (!args.predicate?.trim()) throw new Error("predicate is required");
   if (!args.source_type) throw new Error("source_type is required");
   const workspaceId = await getWorkspaceId(client, projectId);
-  const subjectId = await resolveOrCreateEntity(
-    client,
-    workspaceId,
-    projectId,
-    args.subject_entity,
-    args.subject_entity_kind ?? "concept"
-  );
+  const subjectKind = args.subject_entity_kind ?? "concept";
+  await resolveOrCreateEntity(client, workspaceId, projectId, args.subject_entity, subjectKind);
+  const subjectName = normalizeHtmlEntities(args.subject_entity);
   const embedding = await embedText(client, `${args.subject_entity} ${args.predicate} ${JSON.stringify(args.object)}`);
-  const record2 = {
-    workspace_id: workspaceId,
-    project_id: projectId,
-    subject_entity_id: subjectId,
-    predicate: args.predicate,
-    object: args.object,
-    confidence: args.confidence ?? 1,
-    status: "Asserted",
-    domain: args.domain ?? [],
-    source_type: args.source_type,
-    created_by: userId
-  };
-  if (embedding) record2.embedding = embedding;
-  if (args.source_id !== void 0) record2.source_id = args.source_id;
-  if (args.review_by !== void 0) record2.review_by = args.review_by;
-  const { data, error: error2 } = await client.from("knowledge_facts").insert(record2).select(FACT_COLS).single();
-  if (error2) throw error2;
+  const { data, error: error2 } = await client.rpc("knowledge_assert_fact", {
+    p_project_id: projectId,
+    p_subject_entity: subjectName,
+    p_predicate: args.predicate,
+    p_object: args.object,
+    p_source_type: args.source_type,
+    p_subject_entity_kind: subjectKind,
+    p_source_id: args.source_id ?? null,
+    p_confidence: args.confidence ?? 1,
+    p_domain: args.domain ?? [],
+    p_review_by: args.review_by ?? null,
+    p_embedding: embedding,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null
+  });
+  if (error2) throw new Error(error2.message);
   return data;
 }
 var assertFactTool = {
@@ -37974,16 +37944,22 @@ var assertFactTool = {
       source_id: { type: "string", description: "Pointer back to the source ticket/decision" },
       confidence: { type: "number", description: "0..1 (default 1.0)" },
       domain: { type: "array", items: { type: "string" }, description: "Domains this fact belongs to" },
-      review_by: { type: "string", description: "ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires." }
+      review_by: { type: "string", description: "ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires." },
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification.` }
     },
     required: ["subject_entity", "predicate", "object", "source_type"]
   }
 };
 async function invalidateFact(client, projectId, args) {
   if (!args.fact_id) throw new Error("fact_id is required");
-  const workspaceId = await getWorkspaceId(client, projectId);
-  const { data, error: error2 } = await client.from("knowledge_facts").update({ valid_to: (/* @__PURE__ */ new Date()).toISOString(), status: "Superseded" }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", args.fact_id).select(FACT_COLS).single();
-  if (error2) throw error2;
+  const { data, error: error2 } = await client.rpc("knowledge_invalidate_fact", {
+    p_fact_id: args.fact_id,
+    p_project_id: projectId,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null
+  });
+  if (error2) throw new Error(error2.message);
   return data;
 }
 var invalidateFactTool = {
@@ -37993,7 +37969,8 @@ var invalidateFactTool = {
     type: "object",
     properties: {
       fact_id: { type: "string", description: "UUID of the fact to invalidate" },
-      reason: { type: "string", description: "Why it is no longer valid" }
+      reason: { type: "string", description: "Why it is no longer valid" },
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification.` }
     },
     required: ["fact_id"]
   }
@@ -38036,27 +38013,30 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
   if (!args.entry_id && !args.title) {
     throw new Error("Either entry_id or title must be provided to identify the entry to supersede");
   }
-  const existing = await getKnowledgeEntry(client, projectId, {
-    entry_id: args.entry_id,
-    title: args.title
-  });
-  const replacement = await createKnowledgeEntry(client, projectId, userId, {
-    title: args.new_title,
-    content: args.new_content,
-    type: args.type ?? existing.type,
-    status: "accepted",
-    tags: args.tags ?? existing.tags,
-    source_task_id: existing.source_task_id ?? void 0
-  });
   const workspaceId = await getWorkspaceId(client, projectId);
-  const { data: supersededData, error: error2 } = await client.from("knowledge_decisions").update({ status: "Superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", existing.id).select(
-    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
-  ).single();
-  if (error2) throw error2;
-  return {
-    superseded: supersededData,
-    replacement
-  };
+  const { data, error: error2 } = await client.rpc("knowledge_supersede_knowledge_entry", {
+    p_project_id: projectId,
+    p_new_title: normalizeHtmlEntities(args.new_title),
+    p_new_content: normalizeHtmlEntities(args.new_content),
+    p_entry_id: args.entry_id ?? null,
+    p_title: args.title ?? null,
+    p_type: args.type ?? null,
+    p_tags: args.tags ?? null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null
+  });
+  if (error2) throw new Error(error2.message);
+  const result = data;
+  await embedDecisionById(
+    client,
+    workspaceId,
+    projectId,
+    result.replacement.id,
+    result.replacement.title,
+    result.replacement.content
+  );
+  return result;
 }
 
 // src/tools/workflow.ts

@@ -117,6 +117,11 @@ function buildWorkspaceAndQueryClient(secondResponse: { data: any; error?: any }
       fromCallCount++;
       return fromCallCount === 1 ? wsChain : secondChain;
     }),
+    // B-995: the governed knowledge writes now issue a client.rpc(...) call instead of (or as well
+    // as) a `.from().insert()/.update()` chain — mirror the same canned {data, error} response so
+    // existing single-response test setups keep working whichever surface the handler under test
+    // now uses.
+    rpc: vi.fn().mockResolvedValue({ data: secondResponse.data, error: secondResponse.error ?? null }),
   };
 
   return { client, wsChain, secondChain };
@@ -135,6 +140,10 @@ function buildEmbedAwareClient(opts: {
   viewResult?: { data: any; error?: any } | Array<{ data: any; error?: any }>;
   baseResult?: { data: any; error?: any } | Array<{ data: any; error?: any }>;
   embedding?: number[] | null;
+  // B-995: the RPC-backed writes (updateKnowledgeEntry, supersedeKnowledgeEntry) issue exactly ONE
+  // client.rpc(...) call for their governed write — this is that call's canned response. The
+  // embedding follow-up write (embedDecisionById) still targets the base chain directly, unchanged.
+  rpcResult?: { data: any; error?: any };
 }) {
   const wsChain: any = {};
   wsChain.select = vi.fn().mockReturnValue(wsChain);
@@ -157,6 +166,9 @@ function buildEmbedAwareClient(opts: {
 
   const viewChain = queuedChain(opts.viewResult);
   const baseChain = queuedChain(opts.baseResult);
+  const rpc = vi.fn().mockResolvedValue(
+    opts.rpcResult ? { data: opts.rpcResult.data, error: opts.rpcResult.error ?? null } : { data: null, error: null },
+  );
 
   const client: any = {
     from: vi.fn().mockImplementation((table: string) => {
@@ -164,6 +176,7 @@ function buildEmbedAwareClient(opts: {
       if (table === 'knowledge_decisions') return baseChain;
       return viewChain; // workspace_knowledge
     }),
+    rpc,
     functions: {
       invoke: vi.fn().mockResolvedValue(
         opts.embedding === null
@@ -722,47 +735,44 @@ describe('updateKnowledgeEntry', () => {
     updated_at: '2026-04-01T00:00:00Z',
   };
 
-  it('updates by entry_id and scopes to token project', async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: updatedEntry });
+  it('updates by entry_id and scopes to token project (via knowledge_update_knowledge_entry RPC)', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: updatedEntry });
     const result = await updateKnowledgeEntry(client, PROJECT_ID, {
       entry_id: 'ke-1',
       new_title: 'Updated Title',
     });
 
-    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_decisions');
-    expect(secondChain.update).toHaveBeenCalledWith(expect.objectContaining({ title: 'Updated Title' }));
-    expect(secondChain.eq).toHaveBeenCalledWith('workspace_id', WORKSPACE_ID);
-    expect(secondChain.eq).toHaveBeenCalledWith('project_id', PROJECT_ID);
-    expect(secondChain.eq).toHaveBeenCalledWith('id', 'ke-1');
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({
+      p_project_id: PROJECT_ID, p_entry_id: 'ke-1', p_new_title: 'Updated Title',
+    }));
     expect(result).toEqual(updatedEntry);
   });
 
-  it('updates a next-gen-typed entry via the base table (B-418)', async () => {
-    // The compat view's INSTEAD-OF UPDATE never fires for rows outside its WHERE
-    // (the legacy four types) → zero rows → "Cannot coerce". The base table sees all types.
+  it('updates a next-gen-typed entry (B-418 — the RPC hits the base table for every type, not just the legacy four)', async () => {
     const nextGen = { ...sampleFullEntry, id: 'ke-ng', type: 'technical-design', tags: ['layer3-nextgen'] };
-    const { client, baseChain, viewChain } = buildEmbedAwareClient({ baseResult: { data: nextGen } });
+    const { client } = buildEmbedAwareClient({ rpcResult: { data: nextGen } });
 
     const result = await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-ng', tags: ['layer3-nextgen'] });
 
-    expect(viewChain.update).not.toHaveBeenCalled();
-    expect(baseChain.update).toHaveBeenCalledWith({ tags: ['layer3-nextgen'] });
-    expect(baseChain.eq).toHaveBeenCalledWith('id', 'ke-ng');
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({
+      p_entry_id: 'ke-ng', p_tags: ['layer3-nextgen'],
+    }));
     expect(result).toEqual(nextGen);
   });
 
   it('updates by title scoped to token project', async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: updatedEntry });
+    const { client } = buildWorkspaceAndQueryClient({ data: updatedEntry });
     await updateKnowledgeEntry(client, PROJECT_ID, {
       title: 'Use TypeScript strict mode',
       content: 'new content',
     });
-    expect(secondChain.eq).toHaveBeenCalledWith('project_id', PROJECT_ID);
-    expect(secondChain.eq).toHaveBeenCalledWith('title', 'Use TypeScript strict mode');
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({
+      p_project_id: PROJECT_ID, p_title: 'Use TypeScript strict mode', p_content: 'new content',
+    }));
   });
 
   it('can update content, type, status, and tags (status normalized to base vocab)', async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: updatedEntry });
+    const { client } = buildWorkspaceAndQueryClient({ data: updatedEntry });
     await updateKnowledgeEntry(client, PROJECT_ID, {
       entry_id: 'ke-1',
       content: 'new content',
@@ -770,14 +780,12 @@ describe('updateKnowledgeEntry', () => {
       status: 'accepted',
       tags: ['new-tag'],
     });
-    expect(secondChain.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        content: 'new content',
-        type: 'business',
-        status: 'Accepted',   // base table speaks v1 vocab; legacy lowercase is normalized up
-        tags: ['new-tag'],
-      }),
-    );
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({
+      p_content: 'new content',
+      p_type: 'business',
+      p_status: 'Accepted',   // base table speaks v1 vocab; legacy lowercase is normalized up
+      p_tags: ['new-tag'],
+    }));
   });
 
   it('throws when neither entry_id nor title provided', async () => {
@@ -816,7 +824,7 @@ describe('updateKnowledgeEntry', () => {
 
   it('re-embeds via the base table when content changes (B-401)', async () => {
     const updated = { ...sampleFullEntry, status: 'Accepted', content: 'NEW why-rich content' };
-    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: updated } });
+    const { client, baseChain } = buildEmbedAwareClient({ rpcResult: { data: updated } });
 
     await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', content: 'NEW why-rich content', status: 'accepted' });
 
@@ -828,7 +836,7 @@ describe('updateKnowledgeEntry', () => {
   it('re-embeds when the title changes', async () => {
     // content is unchanged — the re-embed must still fire because the title changed
     const updated = { ...sampleFullEntry, title: 'Renamed title' };
-    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: updated } });
+    const { client, baseChain } = buildEmbedAwareClient({ rpcResult: { data: updated } });
 
     await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', new_title: 'Renamed title' });
 
@@ -838,83 +846,83 @@ describe('updateKnowledgeEntry', () => {
 
   it('does NOT re-embed when only status changes (no wasted embed call)', async () => {
     const updated = { ...sampleFullEntry, status: 'Accepted' };
-    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: updated } });
+    const { client, baseChain } = buildEmbedAwareClient({ rpcResult: { data: updated } });
 
     await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'accepted' });
 
     expect(client.functions.invoke).not.toHaveBeenCalled();            // no embed
-    expect(baseChain.update).not.toHaveBeenCalledWith(
-      expect.objectContaining({ embedding: expect.anything() }),       // no embedding write
-    );
+    expect(baseChain.update).not.toHaveBeenCalled();                   // no embedding write at all
   });
 
   it('normalizes legacy lowercase status to the v1 vocab the base table expects (B-418)', async () => {
     const updated = { ...sampleFullEntry, status: 'Asserted' };
-    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: updated } });
+    const { client } = buildEmbedAwareClient({ rpcResult: { data: updated } });
     await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'draft' });
-    expect(baseChain.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'Asserted' }));
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({ p_status: 'Asserted' }));
   });
 
   it('passes v1-capitalized status through unchanged', async () => {
     const updated = { ...sampleFullEntry, status: 'Superseded' };
-    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: updated } });
+    const { client } = buildEmbedAwareClient({ rpcResult: { data: updated } });
     await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'Superseded' });
-    expect(baseChain.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'Superseded' }));
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({ p_status: 'Superseded' }));
   });
 
   it('allows Archived now that the write hits the base table (view limitation gone)', async () => {
     const updated = { ...sampleFullEntry, status: 'Archived' };
-    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: updated } });
+    const { client } = buildEmbedAwareClient({ rpcResult: { data: updated } });
     await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'Archived' });
-    expect(baseChain.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'Archived' }));
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({ p_status: 'Archived' }));
   });
 
   it('rejects an unrecognized status instead of silently dropping it', async () => {
-    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: sampleFullEntry } });
+    const { client } = buildEmbedAwareClient({ rpcResult: { data: sampleFullEntry } });
     await expect(
       updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'bogus' }),
     ).rejects.toThrow(/Unsupported status/);
-    expect(baseChain.update).not.toHaveBeenCalled();
+    expect(client.rpc).not.toHaveBeenCalled();
   });
 
-  it('returns the row from the base-table update directly (RETURNING is authoritative — no re-read)', async () => {
+  it('returns the row from the RPC directly (RETURNING is authoritative — no re-read)', async () => {
     const persisted = { ...sampleFullEntry, id: 'ke-1', status: 'Accepted', updated_at: '2026-06-08T12:00:00Z' };
-    const { client, baseChain, viewChain } = buildEmbedAwareClient({ baseResult: { data: persisted } });
+    const { client, baseChain, viewChain } = buildEmbedAwareClient({ rpcResult: { data: persisted } });
     const result = await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'Accepted' });
     expect(result).toEqual(persisted);
     expect(viewChain.single).not.toHaveBeenCalled();          // view never touched
-    expect(baseChain.single).toHaveBeenCalledTimes(1);        // exactly the UPDATE … RETURNING, no extra read
+    expect(baseChain.single).not.toHaveBeenCalled();          // base table touched only for the RPC's own write, not via .single()
+    expect(client.rpc).toHaveBeenCalledTimes(1);              // exactly the one governed RPC call
   });
 
   // B-468 (+B-494): the decision-axis columns recordDecision writes but the update path
   // historically omitted — domain / madr / realization / review_by — are now editable.
-  it('updates domain only (no throw from hasUpdates; passed through to the base update)', async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({
+  it('updates domain only (no throw from hasUpdates; passed through to the RPC)', async () => {
+    const { client } = buildWorkspaceAndQueryClient({
       data: { ...updatedEntry, domain: ['engineering', 'data'] },
     });
     await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', domain: ['engineering', 'data'] });
-    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_decisions');
-    expect(secondChain.update).toHaveBeenCalledWith({ domain: ['engineering', 'data'] });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({
+      p_domain: ['engineering', 'data'],
+    }));
   });
 
   it('updates madr only as a full-object replace (not a key-merge)', async () => {
     const madr = { context: 'new ctx', decision_outcome: 'do X' };
-    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: { ...updatedEntry, madr } });
+    const { client } = buildWorkspaceAndQueryClient({ data: { ...updatedEntry, madr } });
     await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', madr });
     // the WHOLE madr object is set — exact-match, no merged-in extra keys
-    expect(secondChain.update).toHaveBeenCalledWith({ madr });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({ p_madr: madr }));
   });
 
   it('updates realization + review_by together', async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({
+    const { client } = buildWorkspaceAndQueryClient({
       data: { ...updatedEntry, realization: 'live', review_by: '2026-09-01T00:00:00Z' },
     });
     await updateKnowledgeEntry(client, PROJECT_ID, {
       entry_id: 'ke-1', realization: 'live', review_by: '2026-09-01T00:00:00Z',
     });
-    expect(secondChain.update).toHaveBeenCalledWith(
-      expect.objectContaining({ realization: 'live', review_by: '2026-09-01T00:00:00Z' }),
-    );
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({
+      p_realization: 'live', p_review_by: '2026-09-01T00:00:00Z',
+    }));
   });
 
   it('hasUpdates accepts each new field alone (a domain/madr/realization/review_by-only call does not throw)', async () => {
@@ -934,14 +942,26 @@ describe('updateKnowledgeEntry', () => {
     // untouched, so the re-embed must NOT fire — the DB freshness-guard trigger keys only
     // on title/content, so the embedding is never nulled by these edits.
     const updated = { ...sampleFullEntry, domain: ['engineering'], realization: 'live' };
-    const { client, baseChain } = buildEmbedAwareClient({ baseResult: { data: updated } });
+    const { client, baseChain } = buildEmbedAwareClient({ rpcResult: { data: updated } });
     await updateKnowledgeEntry(client, PROJECT_ID, {
       entry_id: 'ke-1', domain: ['engineering'], madr: { context: 'c' }, realization: 'live', review_by: '2026-09-01T00:00:00Z',
     });
     expect(client.functions.invoke).not.toHaveBeenCalled();        // no embed-knowledge call
-    expect(baseChain.update).not.toHaveBeenCalledWith(
-      expect.objectContaining({ embedding: expect.anything() }),    // no embedding write
-    );
+    expect(baseChain.update).not.toHaveBeenCalled();                // no embedding write at all
+  });
+
+  it('threads an explicit provenance and the run-config conduction id, defaulting p_leg to null', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: updatedEntry });
+    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', new_title: 'x', provenance: 'human-in-session' });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({
+      p_provenance: 'human-in-session', p_leg: null,
+    }));
+  });
+
+  it('defaults p_provenance to null when omitted', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: updatedEntry });
+    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', new_title: 'x' });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({ p_provenance: null }));
   });
 });
 
@@ -950,7 +970,6 @@ describe('updateKnowledgeEntry', () => {
 // ---------------------------------------------------------------------------
 
 describe('supersedeKnowledgeEntry', () => {
-  const existingEntry = { ...sampleFullEntry };
   const replacementEntry = {
     ...sampleFullEntry,
     id: 'ke-new',
@@ -964,40 +983,20 @@ describe('supersedeKnowledgeEntry', () => {
     superseded_by: 'ke-new',
   };
 
-  /**
-   * supersedeKnowledgeEntry's .single() calls (via buildEmbedAwareClient):
-   * base 0. getKnowledgeEntry fetch  (knowledge_decisions → single): existing entry
-   * view 0. createKnowledgeEntry insert echo  (workspace_knowledge → insert → single): echoed replacement
-   * base 1. createKnowledgeEntry re-read  (knowledge_decisions → single, B-415): authoritative replacement
-   * base 2. mark-superseded update  (knowledge_decisions → update → single): supersededEntry
-   * (the embedding write never calls .single(), so it doesn't consume the base queue)
-   *
-   * wsChain handles all projects lookups (returns WORKSPACE_ID every time).
-   * We capture inserts by spying on viewChain.insert.
-   */
-  function buildSupersedeClient(overrides?: { existing?: any }) {
-    const existingRow = overrides?.existing ?? existingEntry;
-    const { client, viewChain, baseChain } = buildEmbedAwareClient({
-      viewResult: { data: replacementEntry },  // createKnowledgeEntry insert echo
-      baseResult: [
-        { data: existingRow },      // getKnowledgeEntry fetch
-        { data: replacementEntry }, // createKnowledgeEntry re-read (authoritative — same row is fine for these tests)
-        { data: supersededEntry },  // mark-superseded update
-      ],
+  // B-995: the whole supersede (replacement insert + mark-superseded update) is now ONE
+  // knowledge_supersede_knowledge_entry RPC call returning {superseded, replacement} directly — the
+  // old getKnowledgeEntry-fetch / createKnowledgeEntry-insert-via-view / base-table-update three-step
+  // flow collapses into a single client.rpc(...) response. The replacement's embedding stays a
+  // separate follow-up write (embedDecisionById, unchanged), so baseChain is still exercised for that.
+  function buildSupersedeClient() {
+    const { client, baseChain } = buildEmbedAwareClient({
+      rpcResult: { data: { superseded: supersededEntry, replacement: replacementEntry } },
     });
-
-    const insertCalls: any[] = [];
-    const origInsert = viewChain.insert.bind(viewChain);
-    viewChain.insert = vi.fn().mockImplementation((record: any) => {
-      insertCalls.push(record);
-      return origInsert(record);
-    });
-
-    return { client, insertCalls, baseChain };
+    return { client, baseChain };
   }
 
   it('supersedes old entry and creates replacement scoped to token project', async () => {
-    const { client, insertCalls, baseChain } = buildSupersedeClient();
+    const { client } = buildSupersedeClient();
 
     const result = await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
       entry_id: 'ke-1',
@@ -1011,30 +1010,25 @@ describe('supersedeKnowledgeEntry', () => {
     expect(result.replacement.status).toBe('Accepted');
     expect(result.replacement.project_id).toBe(PROJECT_ID);
 
-    // The mark-superseded UPDATE must hit the base table with v1 vocab — a view
-    // update silently matches zero rows for next-gen types and would orphan the
-    // already-created replacement (B-418).
-    expect(baseChain.update).toHaveBeenCalledWith({ status: 'Superseded', superseded_by: 'ke-new' });
-
-    // Replacement insert must carry the token's project_id
-    const replacementInsert = insertCalls.find((r) => r.title === 'Use TypeScript strict mode v2');
-    expect(replacementInsert).toBeDefined();
-    expect(replacementInsert.project_id).toBe(PROJECT_ID);
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_knowledge_entry', expect.objectContaining({
+      p_project_id: PROJECT_ID,
+      p_entry_id: 'ke-1',
+      p_new_title: 'Use TypeScript strict mode v2',
+      p_new_content: 'Updated content for strict mode.',
+    }));
   });
 
-  it('replacement inherits token project_id even when existing entry has no project_id', async () => {
-    // Simulate a legacy existing entry whose project_id is missing
-    const legacyExisting = { ...existingEntry, project_id: undefined as any };
-    const { client, insertCalls } = buildSupersedeClient({ existing: legacyExisting });
-
-    await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+  it('replacement carries the token project_id — guaranteed by the RPC itself, not a caller-supplied value', async () => {
+    // The RPC always stamps the replacement's project_id from p_project_id (never from whatever the
+    // existing entry happens to carry), so this is now a structural guarantee rather than something
+    // that needs a "legacy entry missing project_id" simulation to exercise.
+    const { client } = buildSupersedeClient();
+    const result = await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
       entry_id: 'ke-1',
       new_title: 'Use TypeScript strict mode v2',
       new_content: 'Updated content.',
     });
-
-    const replacementInsert = insertCalls.find((r) => r.title === 'Use TypeScript strict mode v2');
-    expect(replacementInsert.project_id).toBe(PROJECT_ID);
+    expect(result.replacement.project_id).toBe(PROJECT_ID);
   });
 
   it('throws when neither entry_id nor title provided to identify old entry', async () => {
@@ -1047,17 +1041,11 @@ describe('supersedeKnowledgeEntry', () => {
     ).rejects.toThrow('Either entry_id or title must be provided');
   });
 
-  it('embeds the replacement entry (transitive via createKnowledgeEntry) [B-401]', async () => {
-    const existing = { ...sampleFullEntry, id: 'ke-old' };
+  it('embeds the replacement entry as a best-effort follow-up write (B-401) — the RPC has no p_embedding param', async () => {
     const replacement = { ...sampleFullEntry, id: 'ke-repl', title: 'New ruling', content: 'updated body' };
-    const supersededRow = { ...existing, status: 'Superseded', superseded_by: 'ke-repl' };
+    const supersededRow = { ...sampleFullEntry, id: 'ke-old', status: 'Superseded', superseded_by: 'ke-repl' };
     const { client, baseChain } = buildEmbedAwareClient({
-      viewResult: { data: replacement },  // createKnowledgeEntry: insert echo
-      baseResult: [
-        { data: existing },      // getKnowledgeEntry: fetch the old entry
-        { data: replacement },   // createKnowledgeEntry: re-read (B-415) — same row is authoritative here
-        { data: supersededRow }, // mark the old entry superseded
-      ],
+      rpcResult: { data: { superseded: supersededRow, replacement } },
     });
 
     const result = await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
@@ -1068,6 +1056,16 @@ describe('supersedeKnowledgeEntry', () => {
     expect(baseChain.update).toHaveBeenCalledWith({ embedding: '[0.1,0.2]' });
     expect(baseChain.eq).toHaveBeenCalledWith('id', 'ke-repl');
     expect(result.replacement.id).toBe('ke-repl');
+  });
+
+  it('threads an explicit provenance and the run-config conduction id, defaulting p_leg to null', async () => {
+    const { client } = buildSupersedeClient();
+    await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+      entry_id: 'ke-1', new_title: 'v2', new_content: 'c', provenance: 'agent-synthesized:unattended',
+    });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_knowledge_entry', expect.objectContaining({
+      p_provenance: 'agent-synthesized:unattended', p_leg: null,
+    }));
   });
 });
 
@@ -1167,7 +1165,13 @@ describe('queryEntities', () => {
  * — consumes the next {data,error} from that table's queue (the last entry repeats). from('projects')
  * always resolves the workspace id. `chains[table]` is exposed so tests can assert the exact args.
  */
-function buildGraphClient(tables: Record<string, Array<{ data: any; error?: any }>>) {
+function buildGraphClient(
+  tables: Record<string, Array<{ data: any; error?: any }>>,
+  // B-995: createEntity/updateEntity/reconcileEntity's terminal governed write is now a
+  // client.rpc(name, args) call rather than a `.from()` chain — keyed by rpc function name, FIFO per
+  // call (mirrors `tables`' own take()), a single (non-array) value is reused for every call.
+  rpcResults?: Record<string, Array<{ data: any; error?: any }> | { data: any; error?: any }>,
+) {
   const used: Record<string, number> = {};
   const norm = (r: { data: any; error?: any }) => ({ data: r?.data ?? null, error: r?.error ?? null });
   const take = (table: string) => {
@@ -1187,6 +1191,15 @@ function buildGraphClient(tables: Record<string, Array<{ data: any; error?: any 
     c.then = (resolve: any) => resolve(take(table)); // await chain → consume queue (thenable)
     return c;
   };
+  const rpcUsed: Record<string, number> = {};
+  const rpc = vi.fn().mockImplementation((name: string) => {
+    const cfg = rpcResults?.[name];
+    if (!cfg) return Promise.resolve({ data: null, error: null });
+    const arr = Array.isArray(cfg) ? cfg : [cfg];
+    const i = rpcUsed[name] ?? 0;
+    rpcUsed[name] = i + 1;
+    return Promise.resolve(norm(arr[Math.min(i, arr.length - 1)]));
+  });
   const client: any = {
     from: vi.fn().mockImplementation((table: string) => {
       if (table === 'projects') {
@@ -1199,6 +1212,7 @@ function buildGraphClient(tables: Record<string, Array<{ data: any; error?: any 
       if (!chains[table]) chains[table] = makeChain(table);
       return chains[table];
     }),
+    rpc,
   };
   return { client, chains };
 }
@@ -1212,16 +1226,18 @@ const sampleEntity = {
 describe('createEntity', () => {
   it('inserts a new typed node (kind + name + thin description) when none exists', async () => {
     const created = { ...sampleEntity };
-    const { client, chains } = buildGraphClient({
-      // lookup miss (same-kind), then the B-977 collision check miss (no other-kind match), then insert echo
-      knowledge_entities: [{ data: null }, { data: null }, { data: created }],
-    });
+    const { client, chains } = buildGraphClient(
+      // lookup miss (same-kind), then the B-977 collision check miss (no other-kind match)
+      { knowledge_entities: [{ data: null }, { data: null }] },
+      { knowledge_create_entity: { data: created } },
+    );
     const result = await createEntity(client, PROJECT_ID, {
       kind: 'persona', name: 'Busy PM', description: 'A time-poor product manager',
     });
-    expect(chains.knowledge_entities.insert).toHaveBeenCalledWith(expect.objectContaining({
-      workspace_id: WORKSPACE_ID, project_id: PROJECT_ID, kind: 'persona', name: 'Busy PM',
-      description: 'A time-poor product manager',
+    expect(chains.knowledge_entities.insert).not.toHaveBeenCalled();   // the write now goes through the RPC
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_create_entity', expect.objectContaining({
+      p_project_id: PROJECT_ID, p_kind: 'persona', p_name: 'Busy PM',
+      p_description: 'A time-poor product manager',
     }));
     expect(result).toEqual(created);
   });
@@ -1232,6 +1248,7 @@ describe('createEntity', () => {
     expect(result).toEqual(sampleEntity);
     expect(chains.knowledge_entities.insert).not.toHaveBeenCalled();   // no duplicate row
     expect(chains.knowledge_entities.update).not.toHaveBeenCalled();   // no needless write
+    expect(client.rpc).not.toHaveBeenCalled();                         // matched on the TS-side lookup; RPC never reached
   });
 
   it('upserts the description onto an existing node when one is supplied', async () => {
@@ -1242,6 +1259,7 @@ describe('createEntity', () => {
     const result = await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Busy PM', description: 'refreshed' });
     expect(chains.knowledge_entities.update).toHaveBeenCalledWith({ description: 'refreshed' });
     expect(chains.knowledge_entities.insert).not.toHaveBeenCalled();
+    expect(client.rpc).not.toHaveBeenCalled();   // the upsert-on-existing branch stays a plain update, not the RPC
     expect(result).toEqual(updated);
   });
 
@@ -1253,7 +1271,10 @@ describe('createEntity', () => {
 
   it('seeds a persona node that is then queryable by kind=persona (AC4)', async () => {
     const created = { ...sampleEntity };
-    const { client } = buildGraphClient({ knowledge_entities: [{ data: null }, { data: null }, { data: created }] });
+    const { client } = buildGraphClient(
+      { knowledge_entities: [{ data: null }, { data: null }] },
+      { knowledge_create_entity: { data: created } },
+    );
     const seeded = await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Busy PM', description: 'A time-poor product manager' });
     expect(seeded.kind).toBe('persona');
     // A queryEntities kind=persona over the same graph returns the seeded node (not []).
@@ -1266,15 +1287,19 @@ describe('createEntity', () => {
   // B-977 (AC3): same-name-different-kind is a WARNING, never a block, and never a silent duplicate.
   it('B-977: surfaces a non-blocking collision_warning when the name exists under a DIFFERENT kind', async () => {
     const created = { ...sampleEntity, kind: 'feature', name: 'Cloud library management' };
-    const { client, chains } = buildGraphClient({
-      knowledge_entities: [
-        { data: null },                                             // same-kind ('feature') lookup: miss
-        { data: { id: 'ent-old-concept', kind: 'concept' } },       // B-977 collision check: a DIFFERENT-kind match
-        { data: created },                                           // insert echo
-      ],
-    });
+    const { client } = buildGraphClient(
+      {
+        knowledge_entities: [
+          { data: null },                                             // same-kind ('feature') lookup: miss
+          { data: { id: 'ent-old-concept', kind: 'concept' } },       // B-977 collision check: a DIFFERENT-kind match
+        ],
+      },
+      { knowledge_create_entity: { data: created } },
+    );
     const result = await createEntity(client, PROJECT_ID, { kind: 'feature', name: 'Cloud library management' });
-    expect(chains.knowledge_entities.insert).toHaveBeenCalled();   // never blocked — create proceeds
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_create_entity', expect.objectContaining({
+      p_kind: 'feature', p_name: 'Cloud library management',
+    }));   // never blocked — create proceeds
     expect(result.id).toBe(created.id);
     expect((result as any).collision_warning).toEqual({
       entity_id: 'ent-old-concept',
@@ -1297,6 +1322,7 @@ describe('createEntity', () => {
       expect(chains.knowledge_entities.eq).toHaveBeenCalledWith('name', 'Save & Continue');
       expect(chains.knowledge_entities.insert).not.toHaveBeenCalled();
       expect(chains.knowledge_entities.update).not.toHaveBeenCalled();
+      expect(client.rpc).not.toHaveBeenCalled();
       expect(result).toEqual(existing);
     });
 
@@ -1310,34 +1336,37 @@ describe('createEntity', () => {
       const result = await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Save &amp; Continue' });
       expect(chains.knowledge_entities.update).toHaveBeenCalledWith({ name: 'Save & Continue' });
       expect(chains.knowledge_entities.insert).not.toHaveBeenCalled();
+      expect(client.rpc).not.toHaveBeenCalled();   // the rename-in-place branch stays a plain update, not the RPC
       expect(result).toEqual(renamed);
     });
 
     it('(neither-exists) inserts a new row under the normalized name when no row matches either name', async () => {
       const created = { ...sampleEntity, id: 'ent-new', name: 'Save & Continue' };
-      const { client, chains } = buildGraphClient({
-        // normalized-name lookup: miss, raw/legacy-name lookup: miss, B-977 collision check: miss, insert echo
-        knowledge_entities: [{ data: null }, { data: null }, { data: null }, { data: created }],
-      });
-      const result = await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Save &amp; Continue' });
-      expect(chains.knowledge_entities.insert).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'Save & Continue' }),
+      const { client } = buildGraphClient(
+        // normalized-name lookup: miss, raw/legacy-name lookup: miss, B-977 collision check: miss
+        { knowledge_entities: [{ data: null }, { data: null }, { data: null }] },
+        { knowledge_create_entity: { data: created } },
       );
+      const result = await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Save &amp; Continue' });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_create_entity', expect.objectContaining({
+        p_name: 'Save & Continue',
+      }));
       expect(result).toEqual(created);
     });
 
     it('(description normalization) decodes a mangled entity in description on insert', async () => {
       const created = { ...sampleEntity, id: 'ent-new', name: 'Busy PM', description: 'Say "hi" & wave' };
-      const { client, chains } = buildGraphClient({
-        // name has no entities to normalize, so no legacy lookup: same-kind miss, collision miss, insert echo
-        knowledge_entities: [{ data: null }, { data: null }, { data: created }],
-      });
+      const { client } = buildGraphClient(
+        // name has no entities to normalize, so no legacy lookup: same-kind miss, collision miss
+        { knowledge_entities: [{ data: null }, { data: null }] },
+        { knowledge_create_entity: { data: created } },
+      );
       const result = await createEntity(client, PROJECT_ID, {
         kind: 'persona', name: 'Busy PM', description: 'Say &quot;hi&quot; &amp; wave',
       });
-      expect(chains.knowledge_entities.insert).toHaveBeenCalledWith(
-        expect.objectContaining({ description: 'Say "hi" & wave' }),
-      );
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_create_entity', expect.objectContaining({
+        p_description: 'Say "hi" & wave',
+      }));
       expect(result).toEqual(created);
     });
 
@@ -1352,24 +1381,38 @@ describe('createEntity', () => {
     });
   });
 
+  it('threads an explicit provenance and the run-config conduction id, defaulting p_leg to null', async () => {
+    const created = { ...sampleEntity };
+    const { client } = buildGraphClient(
+      { knowledge_entities: [{ data: null }, { data: null }] },
+      { knowledge_create_entity: { data: created } },
+    );
+    await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Busy PM', provenance: 'human-in-session' });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_create_entity', expect.objectContaining({
+      p_provenance: 'human-in-session', p_leg: null,
+    }));
+  });
 });
 
 describe('updateEntity', () => {
   it('updates description by entity_id', async () => {
     const updated = { ...sampleEntity, description: 'new desc' };
-    const { client, chains } = buildGraphClient({ knowledge_entities: [{ data: updated }] });
+    const { client, chains } = buildGraphClient({}, { knowledge_update_entity: { data: updated } });
     const result = await updateEntity(client, PROJECT_ID, { entity_id: 'ent-1', description: 'new desc' });
-    expect(chains.knowledge_entities.update).toHaveBeenCalledWith({ description: 'new desc' });
-    expect(chains.knowledge_entities.eq).toHaveBeenCalledWith('id', 'ent-1');
+    expect(chains.knowledge_entities).toBeUndefined();   // no `.from('knowledge_entities')` chain touched at all
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_entity', expect.objectContaining({
+      p_entity_id: 'ent-1', p_description: 'new desc',
+    }));
     expect(result).toEqual(updated);
   });
 
   it('identifies the entity by (kind, name) when entity_id is omitted', async () => {
     const updated = { ...sampleEntity, kind: 'feature', name: 'Checkout' };
-    const { client, chains } = buildGraphClient({ knowledge_entities: [{ data: updated }] });
+    const { client } = buildGraphClient({}, { knowledge_update_entity: { data: updated } });
     await updateEntity(client, PROJECT_ID, { kind: 'feature', name: 'Checkout', description: 'd' });
-    expect(chains.knowledge_entities.eq).toHaveBeenCalledWith('kind', 'feature');
-    expect(chains.knowledge_entities.eq).toHaveBeenCalledWith('name', 'Checkout');
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_entity', expect.objectContaining({
+      p_entity_id: null, p_kind: 'feature', p_name: 'Checkout',
+    }));
   });
 
   it('throws when no identifier is provided', async () => {
@@ -1383,9 +1426,10 @@ describe('updateEntity', () => {
   });
 
   it('rejects a kind change that collides with a friendly pointer to reconcile_entity', async () => {
-    const { client } = buildGraphClient({
-      knowledge_entities: [{ data: null, error: { code: '23505', message: 'unique violation' } }],
-    });
+    const { client } = buildGraphClient(
+      {},
+      { knowledge_update_entity: { data: null, error: { code: '23505', message: 'unique violation' } } },
+    );
     await expect(
       updateEntity(client, PROJECT_ID, { kind: 'concept', name: 'Checkout', new_kind: 'feature' }),
     ).rejects.toThrow(/reconcile_entity to MERGE/);
@@ -1393,12 +1437,22 @@ describe('updateEntity', () => {
 
   it('B-993: normalizes a mangled entity in description', async () => {
     const updated = { ...sampleEntity, description: 'Save & Continue' };
-    const { client, chains } = buildGraphClient({ knowledge_entities: [{ data: updated }] });
+    const { client } = buildGraphClient({}, { knowledge_update_entity: { data: updated } });
     const result = await updateEntity(client, PROJECT_ID, { entity_id: 'ent-1', description: 'Save &amp; Continue' });
-    expect(chains.knowledge_entities.update).toHaveBeenCalledWith({ description: 'Save & Continue' });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_entity', expect.objectContaining({
+      p_description: 'Save & Continue',
+    }));
     expect(result).toEqual(updated);
   });
 
+  it('threads an explicit provenance and the run-config conduction id, defaulting p_leg to null', async () => {
+    const updated = { ...sampleEntity };
+    const { client } = buildGraphClient({}, { knowledge_update_entity: { data: updated } });
+    await updateEntity(client, PROJECT_ID, { entity_id: 'ent-1', description: 'x', provenance: 'human-in-session' });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_entity', expect.objectContaining({
+      p_provenance: 'human-in-session', p_leg: null,
+    }));
+  });
 });
 
 
@@ -1421,26 +1475,29 @@ describe('resolveOrCreateEntity — B-993 HTML entity normalization + repair-at-
 
   it('(normalized-exists, via record_decision) resolves directly to the existing normalized-name entity', async () => {
     const existing = { id: 'ent-1' };
-    const { client, chains } = buildGraphClient({
-      knowledge_entities: [{ data: existing }],
-      knowledge_decisions: [{ data: { ...decisionRow, affected_entity_ids: ['ent-1'] } }],
-    });
+    const { client, chains } = buildGraphClient(
+      { knowledge_entities: [{ data: existing }] },
+      { knowledge_record_decision: { data: { ...decisionRow, affected_entity_ids: ['ent-1'] } } },
+    );
     const result = await recordDecision(client, PROJECT_ID, USER_ID, {
       type: 'business', title: 'x', affected_entity_names: ['Save &amp; Continue'],
     });
     expect(chains.knowledge_entities.eq).toHaveBeenCalledWith('name', 'Save & Continue');
     expect(chains.knowledge_entities.insert).not.toHaveBeenCalled();
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({
+      p_affected_entity_ids: ['ent-1'],
+    }));
     expect(result.affected_entity_ids).toEqual(['ent-1']);
   });
 
   it('(raw-legacy-exists, via record_decision) renames a legacy mangled-name row in place', async () => {
     const legacy = { id: 'ent-legacy' };
     const renamed = { id: 'ent-legacy' };
-    const { client, chains } = buildGraphClient({
+    const { client, chains } = buildGraphClient(
       // normalized-name lookup: miss, raw/legacy-name lookup: hit, rename update: echo
-      knowledge_entities: [{ data: null }, { data: legacy }, { data: renamed }],
-      knowledge_decisions: [{ data: { ...decisionRow, affected_entity_ids: ['ent-legacy'] } }],
-    });
+      { knowledge_entities: [{ data: null }, { data: legacy }, { data: renamed }] },
+      { knowledge_record_decision: { data: { ...decisionRow, affected_entity_ids: ['ent-legacy'] } } },
+    );
     const result = await recordDecision(client, PROJECT_ID, USER_ID, {
       type: 'business', title: 'x', affected_entity_names: ['Save &amp; Continue'],
     });
@@ -1450,11 +1507,11 @@ describe('resolveOrCreateEntity — B-993 HTML entity normalization + repair-at-
   });
 
   it('(neither-exists, via record_decision) creates a new entity under the normalized name', async () => {
-    const { client, chains } = buildGraphClient({
+    const { client, chains } = buildGraphClient(
       // normalized-name lookup: miss, raw/legacy-name lookup: miss, B-977 collision check: miss, insert echo
-      knowledge_entities: [{ data: null }, { data: null }, { data: null }, { data: { id: 'ent-new' } }],
-      knowledge_decisions: [{ data: { ...decisionRow, affected_entity_ids: ['ent-new'] } }],
-    });
+      { knowledge_entities: [{ data: null }, { data: null }, { data: null }, { data: { id: 'ent-new' } }] },
+      { knowledge_record_decision: { data: { ...decisionRow, affected_entity_ids: ['ent-new'] } } },
+    );
     const result = await recordDecision(client, PROJECT_ID, USER_ID, {
       type: 'business', title: 'x', affected_entity_names: ['Save &amp; Continue'],
     });
@@ -1465,12 +1522,12 @@ describe('resolveOrCreateEntity — B-993 HTML entity normalization + repair-at-
   });
 
   it('(no entities in the name, via record_decision) skips the legacy lookup entirely — a single query resolves it', async () => {
-    const { client, chains } = buildGraphClient({
+    const { client, chains } = buildGraphClient(
       // no HTML entities in the name → normalized === raw, so only ONE lookup + the B-977
       // collision check + insert; no second (legacy) query is ever issued.
-      knowledge_entities: [{ data: null }, { data: null }, { data: { id: 'ent-plain' } }],
-      knowledge_decisions: [{ data: { ...decisionRow, affected_entity_ids: ['ent-plain'] } }],
-    });
+      { knowledge_entities: [{ data: null }, { data: null }, { data: { id: 'ent-plain' } }] },
+      { knowledge_record_decision: { data: { ...decisionRow, affected_entity_ids: ['ent-plain'] } } },
+    );
     const result = await recordDecision(client, PROJECT_ID, USER_ID, {
       type: 'business', title: 'x', affected_entity_names: ['Checkout flow'],
     });
@@ -1484,17 +1541,19 @@ describe('resolveOrCreateEntity — B-993 HTML entity normalization + repair-at-
     const legacy = { id: 'ent-legacy' };
     const renamed = { id: 'ent-legacy' };
     const factRow = { id: 'fact-b993', subject_entity_id: 'ent-legacy', predicate: 'uses', status: 'Asserted' };
-    const { client, chains } = buildGraphClient({
-      knowledge_entities: [{ data: null }, { data: legacy }, { data: renamed }],
-      knowledge_facts: [{ data: factRow }],
-    });
+    const { client, chains } = buildGraphClient(
+      { knowledge_entities: [{ data: null }, { data: legacy }, { data: renamed }] },
+      { knowledge_assert_fact: { data: factRow } },
+    );
     const result = await assertFact(client, PROJECT_ID, USER_ID, {
       subject_entity: 'Save &amp; Continue button', predicate: 'uses', object: 'x', source_type: 'manual',
     });
     expect(chains.knowledge_entities.update).toHaveBeenCalledWith({ name: 'Save & Continue button' });
-    expect(chains.knowledge_facts.insert).toHaveBeenCalledWith(
-      expect.objectContaining({ subject_entity_id: 'ent-legacy' }),
-    );
+    // resolveOrCreateEntity settles the entity first (B-993); the RPC's own inline resolution then
+    // gets passed the ALREADY-normalized name, so it resolves to the very row just renamed.
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_assert_fact', expect.objectContaining({
+      p_subject_entity: 'Save & Continue button',
+    }));
     expect(result).toEqual(factRow);
   });
 });
@@ -1503,29 +1562,38 @@ describe('reconcileEntity', () => {
   const stub = { id: 'ent-stub', workspace_id: WORKSPACE_ID, project_id: PROJECT_ID, kind: 'concept', name: 'Checkout', description: null, metadata: null, created_at: '2026-07-06T00:00:00Z' };
   const typed = { ...stub, id: 'ent-typed', kind: 'component' };
 
+  // B-995: reconcileEntity is now a thin wrapper around ONE knowledge_reconcile_entity RPC call — the
+  // whole merge (repoint facts/decisions/events, delete the stub) happens server-side in a single
+  // transaction, so these tests now assert on the RPC call's args and its jsonb return shape rather
+  // than on a sequence of `.from()` chain calls.
+  function rpcClient(result: { data: any; error?: any }) {
+    const rpc = vi.fn().mockResolvedValue({ data: result.data, error: result.error ?? null });
+    const client: any = { from: vi.fn(), rpc };
+    return client;
+  }
+
   it('UPGRADE-IN-PLACE: retypes the stub in place when no same-named typed node exists (no references move)', async () => {
     const upgraded = { ...stub, kind: 'component', description: 'the checkout surface' };
-    const { client, chains } = buildGraphClient({
-      knowledge_entities: [{ data: stub }, { data: null }, { data: upgraded }],  // stub lookup, typed miss, update
-    });
+    const client = rpcClient({ data: { mode: 'upgrade-in-place', entity: upgraded } });
+
     const result = await reconcileEntity(client, PROJECT_ID, { name: 'Checkout', to_kind: 'component', description: 'the checkout surface' });
 
     expect(result.mode).toBe('upgrade-in-place');
     expect(result.entity).toEqual(upgraded);
-    expect(chains.knowledge_entities.update).toHaveBeenCalledWith({ kind: 'component', description: 'the checkout surface' });
-    expect(chains.knowledge_entities.delete).not.toHaveBeenCalled();       // nothing deleted
-    expect(client.from).not.toHaveBeenCalledWith('knowledge_facts');       // no references repointed
-    expect(client.from).not.toHaveBeenCalledWith('knowledge_decisions');
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_reconcile_entity', expect.objectContaining({
+      p_project_id: PROJECT_ID, p_name: 'Checkout', p_to_kind: 'component', p_from_kind: 'concept',
+      p_description: 'the checkout surface',
+    }));
   });
 
   it('MERGE: repoints facts + decisions + events to the typed node (deduping arrays), then deletes the stub', async () => {
-    // The decision references BOTH the stub AND the typed node — the conflict the merge must dedup.
-    const decisionRow = { id: 'dec-1', affected_entity_ids: ['ent-stub', 'ent-typed', 'other'] };
-    const { client, chains } = buildGraphClient({
-      knowledge_entities: [{ data: stub }, { data: typed }, { data: null }],   // stub, typed, delete
-      knowledge_facts: [{ data: [{ id: 'fact-1' }] }],                          // update...select id
-      knowledge_decisions: [{ data: [decisionRow] }, { data: null }],          // select, then per-row update
-      knowledge_events: [{ data: [{ id: 'evt-1' }] }],                          // update...select id
+    const client = rpcClient({
+      data: {
+        mode: 'merge',
+        entity: typed,
+        merged_stub_id: 'ent-stub',
+        repointed: { facts: 1, decisions: 1, events: 1 },
+      },
     });
 
     const result = await reconcileEntity(client, PROJECT_ID, { name: 'Checkout', to_kind: 'component' });
@@ -1534,50 +1602,53 @@ describe('reconcileEntity', () => {
     expect(result.entity.id).toBe('ent-typed');
     expect(result.merged_stub_id).toBe('ent-stub');
     expect(result.repointed).toEqual({ facts: 1, decisions: 1, events: 1 });
-
-    // Facts: bulk repoint stub → typed.
-    expect(chains.knowledge_facts.update).toHaveBeenCalledWith({ subject_entity_id: 'ent-typed' });
-    expect(chains.knowledge_facts.eq).toHaveBeenCalledWith('subject_entity_id', 'ent-stub');
-
-    // Decisions: the array is rewritten AND deduped — 'ent-stub' → 'ent-typed', no duplicate 'ent-typed'.
-    expect(chains.knowledge_decisions.update).toHaveBeenCalledWith({ affected_entity_ids: ['ent-typed', 'other'] });
-
-    // Events: repointed too (best-effort).
-    expect(chains.knowledge_events.update).toHaveBeenCalledWith({ entity_id: 'ent-typed' });
-
-    // Stub deleted last, by id.
-    expect(chains.knowledge_entities.delete).toHaveBeenCalled();
-    expect(chains.knowledge_entities.eq).toHaveBeenCalledWith('id', 'ent-stub');
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_reconcile_entity', expect.objectContaining({
+      p_name: 'Checkout', p_to_kind: 'component', p_from_kind: 'concept',
+    }));
   });
 
-  it('MERGE never fails on the append-only event log (events repoint throwing is swallowed)', async () => {
-    const { client, chains } = buildGraphClient({
-      knowledge_entities: [{ data: stub }, { data: typed }, { data: null }],
-      knowledge_facts: [{ data: [] }],
-      knowledge_decisions: [{ data: [] }],
+  it('MERGE never fails on the append-only event log (events repoint throwing is swallowed) — the RPC reports events:0', async () => {
+    // The RPC's own best-effort events repoint (never blocking the merge) is server-side now; from
+    // this handler's perspective it is just another field of the jsonb result.
+    const client = rpcClient({
+      data: { mode: 'merge', entity: typed, merged_stub_id: 'ent-stub', repointed: { facts: 0, decisions: 0, events: 0 } },
     });
-    // Make the events chain throw when written (simulates an RLS-blocked append-only log).
-    chains.knowledge_events = {
-      update: vi.fn(() => { throw new Error('events are append-only'); }),
-    } as any;
     const result = await reconcileEntity(client, PROJECT_ID, { name: 'Checkout', to_kind: 'component' });
     expect(result.mode).toBe('merge');
     expect(result.repointed?.events).toBe(0);
-    expect(chains.knowledge_entities.delete).toHaveBeenCalled();   // stub still deleted; FK SET NULL cleans events
   });
 
   it('throws when there is no stub to reconcile', async () => {
-    const { client } = buildGraphClient({ knowledge_entities: [{ data: null }] });
+    const client = rpcClient({
+      data: null,
+      error: { message: 'knowledge_reconcile_entity: expected exactly one concept entity named "Ghost", found 0' },
+    });
     await expect(
       reconcileEntity(client, PROJECT_ID, { name: 'Ghost', to_kind: 'component' }),
     ).rejects.toThrow(/No concept entity named "Ghost"/);
   });
 
   it('throws when from_kind equals to_kind (nothing to reconcile)', async () => {
-    const { client } = buildGraphClient({});
+    const client = rpcClient({ data: null });
     await expect(
       reconcileEntity(client, PROJECT_ID, { name: 'x', to_kind: 'concept', from_kind: 'concept' }),
     ).rejects.toThrow(/must differ/);
+    expect(client.rpc).not.toHaveBeenCalled();   // validation precedes any DB access
+  });
+
+  it('surfaces any other RPC error message unchanged', async () => {
+    const client = rpcClient({ data: null, error: { message: 'some other precondition failure' } });
+    await expect(
+      reconcileEntity(client, PROJECT_ID, { name: 'Checkout', to_kind: 'component' }),
+    ).rejects.toThrow('some other precondition failure');
+  });
+
+  it('threads an explicit provenance and the run-config conduction id, defaulting p_leg to null', async () => {
+    const client = rpcClient({ data: { mode: 'upgrade-in-place', entity: typed } });
+    await reconcileEntity(client, PROJECT_ID, { name: 'Checkout', to_kind: 'component', provenance: 'human-in-session' });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_reconcile_entity', expect.objectContaining({
+      p_provenance: 'human-in-session', p_leg: null,
+    }));
   });
 });
 
@@ -1616,8 +1687,8 @@ describe('recordDecision', () => {
     created_at: '2026-05-29T00:00:00Z', updated_at: '2026-05-29T00:00:00Z',
   };
 
-  it('writes a decision defaulting status=Asserted and stamps token project + author', async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+  it('writes a decision defaulting status=Asserted and stamps token project via knowledge_record_decision', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
     const result = await recordDecision(client, PROJECT_ID, USER_ID, {
       type: 'technical-design',
       title: 'Adopt RRF for hybrid search',
@@ -1625,11 +1696,10 @@ describe('recordDecision', () => {
       madr: { context: 'why' },
       source_activity: 'design-decide',
     });
-    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_decisions');
-    expect(secondChain.insert).toHaveBeenCalledWith(expect.objectContaining({
-      workspace_id: WORKSPACE_ID, project_id: PROJECT_ID, type: 'technical-design',
-      title: 'Adopt RRF for hybrid search', status: 'Asserted', domain: ['engineering'],
-      source_activity: 'design-decide', created_by: USER_ID,
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({
+      p_project_id: PROJECT_ID, p_type: 'technical-design',
+      p_title: 'Adopt RRF for hybrid search', p_status: 'Asserted', p_domain: ['engineering'],
+      p_source_activity: 'design-decide',
     }));
     expect(result).toEqual(decisionRow);
   });
@@ -1649,51 +1719,49 @@ describe('recordDecision', () => {
   });
 
   it('embeds the decision on write and includes the pgvector literal', async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
     (client as any).functions = { invoke: vi.fn().mockResolvedValue({ data: { embedding: [0.1, 0.2], stub: true }, error: null }) };
     await recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'Adopt RRF' });
     expect((client as any).functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: expect.stringContaining('Adopt RRF') } });
-    expect(secondChain.insert).toHaveBeenCalledWith(expect.objectContaining({ embedding: '[0.1,0.2]' }));
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_embedding: '[0.1,0.2]' }));
   });
 
   it('still writes the decision when embedding fails (embedding omitted, best-effort)', async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
     (client as any).functions = { invoke: vi.fn().mockResolvedValue({ data: null, error: { message: 'down' } }) };
     await recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'Adopt RRF' });
-    expect(secondChain.insert.mock.calls[0][0]).not.toHaveProperty('embedding');
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_embedding: null }));
   });
 
   it('persists review_by on the decision row (P4 F2 — research freshness)', async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({
+    const { client } = buildWorkspaceAndQueryClient({
       data: { ...decisionRow, source_type: 'research', review_by: '2026-08-27T00:00:00Z' },
     });
     await recordDecision(client, PROJECT_ID, USER_ID, {
       type: 'specification', title: 'researched finding', source_type: 'research',
       review_by: '2026-08-27T00:00:00Z',
     });
-    expect(secondChain.insert).toHaveBeenCalledWith(
-      expect.objectContaining({ review_by: '2026-08-27T00:00:00Z', source_type: 'research' }),
-    );
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({
+      p_review_by: '2026-08-27T00:00:00Z', p_source_type: 'research',
+    }));
   });
 
   it('persists the realization axis when provided (B-400)', async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({
+    const { client } = buildWorkspaceAndQueryClient({
       data: { ...decisionRow, realization: 'agreed' },
     });
     await recordDecision(client, PROJECT_ID, USER_ID, {
       type: 'technical-design', title: 'decided not yet built', realization: 'agreed',
     });
-    expect(secondChain.insert).toHaveBeenCalledWith(
-      expect.objectContaining({ realization: 'agreed' }),
-    );
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_realization: 'agreed' }));
   });
 
-  it('omits realization from the insert when not provided (NULL ≡ live, B-400)', async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+  it('passes p_realization: null when not provided (NULL ≡ live, B-400)', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
     await recordDecision(client, PROJECT_ID, USER_ID, {
       type: 'business', title: 'no realization given',
     });
-    expect(secondChain.insert.mock.calls[0][0]).not.toHaveProperty('realization');
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_realization: null }));
   });
 
   // B-977 (AC2): a technical/product/ux-ui design decision defaults to realization='agreed'
@@ -1703,49 +1771,50 @@ describe('recordDecision', () => {
     it.each(['technical-design', 'product-design', 'ux-ui-design'])(
       "defaults realization='agreed' for type=%s when omitted",
       async (type) => {
-        const { client, secondChain } = buildWorkspaceAndQueryClient({ data: { ...decisionRow, type, realization: 'agreed' } });
+        const { client } = buildWorkspaceAndQueryClient({ data: { ...decisionRow, type, realization: 'agreed' } });
         await recordDecision(client, PROJECT_ID, USER_ID, { type, title: `a ${type} decision` });
-        expect(secondChain.insert).toHaveBeenCalledWith(expect.objectContaining({ realization: 'agreed' }));
+        expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_realization: 'agreed' }));
       },
     );
 
     it('an explicit realization on a design-decision type ALWAYS wins over the default', async () => {
-      const { client, secondChain } = buildWorkspaceAndQueryClient({
+      const { client } = buildWorkspaceAndQueryClient({
         data: { ...decisionRow, type: 'technical-design', realization: 'live' },
       });
       await recordDecision(client, PROJECT_ID, USER_ID, {
         type: 'technical-design', title: 'already shipped', realization: 'live',
       });
-      expect(secondChain.insert).toHaveBeenCalledWith(expect.objectContaining({ realization: 'live' }));
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_realization: 'live' }));
     });
 
     it.each(['business', 'architecture', 'convention', 'specification', 'deferral'])(
-      'every OTHER decision type (%s) keeps the NULL≡live default UNTOUCHED — no realization key inserted',
+      'every OTHER decision type (%s) keeps the NULL≡live default UNTOUCHED — p_realization: null',
       async (type) => {
-        const { client, secondChain } = buildWorkspaceAndQueryClient({ data: { ...decisionRow, type } });
+        const { client } = buildWorkspaceAndQueryClient({ data: { ...decisionRow, type } });
         await recordDecision(client, PROJECT_ID, USER_ID, { type, title: `a ${type} decision` });
-        expect(secondChain.insert.mock.calls[0][0]).not.toHaveProperty('realization');
+        expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_realization: null }));
       },
     );
   });
 
   // B-645: elicitation claims — provenance + brief coupling.
-  it('includes claim_provenance + underwriting_brief_id in the insert when provided (B-645)', async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+  it('includes claim_provenance + underwriting_brief_id in the RPC call when provided (B-645)', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
     await recordDecision(client, PROJECT_ID, USER_ID, {
       type: 'specification', title: 'claim: exports must be CSV-first',
       claim_provenance: 'human-stated', underwriting_brief_id: 'brief-1',
     });
-    expect(secondChain.insert).toHaveBeenCalledWith(expect.objectContaining({
-      claim_provenance: 'human-stated', underwriting_brief_id: 'brief-1',
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({
+      p_claim_provenance: 'human-stated', p_underwriting_brief_id: 'brief-1',
     }));
   });
 
-  it('omits the claim columns from the insert when not provided (a non-claim decision, B-645)', async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+  it('passes p_claim_provenance/p_underwriting_brief_id as null when not provided (a non-claim decision, B-645)', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
     await recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'ordinary decision' });
-    expect(secondChain.insert.mock.calls[0][0]).not.toHaveProperty('claim_provenance');
-    expect(secondChain.insert.mock.calls[0][0]).not.toHaveProperty('underwriting_brief_id');
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({
+      p_claim_provenance: null, p_underwriting_brief_id: null,
+    }));
   });
 
   it('rejects an invalid claim_provenance (enum check, B-645)', async () => {
@@ -1755,32 +1824,26 @@ describe('recordDecision', () => {
         type: 'specification', title: 'x', claim_provenance: 'vibes',
       }),
     ).rejects.toThrow(/claim_provenance must be one of: human-stated, agent-inferred-human-validated, force-quit/);
+    expect(client.rpc).not.toHaveBeenCalled();
   });
 
   it("accepts the 'force-quit' provenance (the quarantined ground)", async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
     await recordDecision(client, PROJECT_ID, USER_ID, {
       type: 'specification', title: 'assumed under force-quit',
       claim_provenance: 'force-quit', underwriting_brief_id: 'brief-1',
     });
-    expect(secondChain.insert).toHaveBeenCalledWith(expect.objectContaining({ claim_provenance: 'force-quit' }));
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_claim_provenance: 'force-quit' }));
   });
 
-  it('retries WITHOUT the claim columns when the DB predates them (guarded fallback, B-383 class)', async () => {
-    // First insert 400s on the missing column; the retry drops both claim columns and succeeds.
-    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: decisionRow });
-    secondChain.single
-      .mockResolvedValueOnce({ data: null, error: { message: "Could not find the 'claim_provenance' column of 'knowledge_decisions' in the schema cache" } })
-      .mockResolvedValueOnce({ data: decisionRow, error: null });
-    const result = await recordDecision(client, PROJECT_ID, USER_ID, {
-      type: 'specification', title: 'claim on an older DB',
-      claim_provenance: 'human-stated', underwriting_brief_id: 'brief-1',
+  it('threads an explicit provenance and the run-config conduction id, defaulting p_leg to null', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    await recordDecision(client, PROJECT_ID, USER_ID, {
+      type: 'business', title: 'x', provenance: 'agent-synthesized:unattended',
     });
-    expect(result).toEqual(decisionRow);
-    expect(secondChain.insert).toHaveBeenCalledTimes(2);
-    const retryPayload = secondChain.insert.mock.calls[1][0];
-    expect(retryPayload).not.toHaveProperty('claim_provenance');
-    expect(retryPayload).not.toHaveProperty('underwriting_brief_id');
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({
+      p_provenance: 'agent-synthesized:unattended', p_leg: null,
+    }));
   });
 });
 
@@ -1813,29 +1876,10 @@ describe('recordDecisionTool schema', () => {
 // ---------------------------------------------------------------------------
 
 describe('supersedeDecision', () => {
-  it('creates the replacement then marks the old decision Superseded with superseded_by', async () => {
-    // from() calls: 1 supersede getWorkspaceId -> 2 fetch existing -> 3 recordDecision getWorkspaceId -> 4 recordDecision insert -> 5 update old
-    const replacement = { id: 'dec-2', title: 'v2', status: 'Asserted', type: 'business' };
+  it('creates the replacement then marks the old decision Superseded with superseded_by (single knowledge_supersede_decision RPC call)', async () => {
+    const replacement = { id: 'dec-2', title: 'v2', status: 'Accepted', type: 'business' };
     const supersededOld = { id: 'dec-1', status: 'Superseded', superseded_by: 'dec-2' };
-    const responses = [
-      { data: { workspace_id: WORKSPACE_ID } },   // 1 supersede getWorkspaceId
-      { data: { id: 'dec-1' } },                   // 2 fetch existing (found)
-      { data: { workspace_id: WORKSPACE_ID } },    // 3 recordDecision getWorkspaceId
-      { data: replacement },                        // 4 recordDecision insert
-      { data: supersededOld },                      // 5 update old
-    ];
-    let i = 0;
-    const make = (idx: number) => {
-      const r = responses[idx] ?? { data: null };
-      const c: any = {};
-      c.select = vi.fn().mockReturnValue(c);
-      c.insert = vi.fn().mockReturnValue(c);
-      c.update = vi.fn().mockReturnValue(c);
-      c.eq = vi.fn().mockReturnValue(c);
-      c.single = vi.fn().mockResolvedValue({ data: r.data, error: null });
-      return c;
-    };
-    const client: any = { from: vi.fn().mockImplementation(() => make(i++)) };
+    const { client } = buildWorkspaceAndQueryClient({ data: { superseded: supersededOld, replacement } });
 
     const result = await supersedeDecision(client, PROJECT_ID, USER_ID, {
       old_decision_id: 'dec-1',
@@ -1843,9 +1887,12 @@ describe('supersedeDecision', () => {
       title: 'v2',
       reason: 'pricing changed',
     });
-    expect(result.replacement.id).toBe('dec-2');
+    expect(result.replacement!.id).toBe('dec-2');
     expect(result.superseded.status).toBe('Superseded');
     expect(result.superseded.superseded_by).toBe('dec-2');
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_decision', expect.objectContaining({
+      p_old_decision_id: 'dec-1', p_project_id: PROJECT_ID, p_type: 'business', p_title: 'v2',
+    }));
   });
 
   it('throws when old_decision_id is missing', async () => {
@@ -1855,45 +1902,20 @@ describe('supersedeDecision', () => {
     ).rejects.toThrow('old_decision_id is required');
   });
 
-  it('throws on a missing old_decision_id without creating an orphan replacement', async () => {
-    const ws: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
-    ws.select.mockReturnValue(ws); ws.eq.mockReturnValue(ws);
-    ws.single.mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
-    const lookup: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
-    lookup.select.mockReturnValue(lookup); lookup.eq.mockReturnValue(lookup);
-    lookup.single.mockResolvedValue({ data: null, error: { code: 'PGRST116', message: 'no rows' } });
-    const insert = vi.fn();
-    let i = 0;
-    const client: any = { from: vi.fn().mockImplementation(() => ([ws, lookup][i++] ?? { insert })) };
+  it('throws on a missing old_decision_id without creating an orphan replacement — the RPC RAISEs inside its own transaction, so nothing is ever partially written', async () => {
+    const { client } = buildWorkspaceAndQueryClient({
+      data: null,
+      error: { message: 'knowledge_supersede_decision: decision missing not found in this project' },
+    });
     await expect(
       supersedeDecision(client, PROJECT_ID, USER_ID, { old_decision_id: 'missing', type: 'business', title: 'v2' }),
     ).rejects.toThrow('not found');
-    expect(insert).not.toHaveBeenCalled();   // no replacement created
+    expect(client.rpc).toHaveBeenCalledTimes(1);   // one atomic call — no separate fetch, no separate insert
   });
 
   it('retire-mode (B-534): omitting BOTH type+title marks the old decision Superseded with superseded_by=null and creates NO successor', async () => {
-    // from() calls in retire-mode: 1 getWorkspaceId -> 2 fetch existing -> 3 update old.
-    // recordDecision is NEVER called (no successor), so there is no .insert and no extra getWorkspaceId.
     const supersededOld = { id: 'dec-1', status: 'Superseded', superseded_by: null };
-    const responses = [
-      { data: { workspace_id: WORKSPACE_ID } },   // 1 getWorkspaceId
-      { data: { id: 'dec-1' } },                   // 2 fetch existing (found)
-      { data: supersededOld },                     // 3 update old
-    ];
-    const inserts: any[] = [];
-    const updates: any[] = [];
-    let i = 0;
-    const make = (idx: number) => {
-      const r = responses[idx] ?? { data: null };
-      const c: any = {};
-      c.select = vi.fn().mockReturnValue(c);
-      c.insert = vi.fn().mockImplementation((row: any) => { inserts.push(row); return c; });
-      c.update = vi.fn().mockImplementation((row: any) => { updates.push(row); return c; });
-      c.eq = vi.fn().mockReturnValue(c);
-      c.single = vi.fn().mockResolvedValue({ data: r.data, error: null });
-      return c;
-    };
-    const client: any = { from: vi.fn().mockImplementation(() => make(i++)) };
+    const { client } = buildWorkspaceAndQueryClient({ data: { superseded: supersededOld, replacement: null } });
 
     const result = await supersedeDecision(client, PROJECT_ID, USER_ID, {
       old_decision_id: 'dec-1',
@@ -1903,13 +1925,13 @@ describe('supersedeDecision', () => {
     expect(result.replacement).toBeNull();                                   // NO successor
     expect(result.superseded.status).toBe('Superseded');
     expect(result.superseded.superseded_by).toBeNull();
-    expect(inserts).toHaveLength(0);                                         // recordDecision never ran
-    expect(updates[0]).toEqual({ status: 'Superseded', superseded_by: null });
-    expect(client.from).toHaveBeenCalledTimes(3);                           // getWorkspaceId + fetch + update only
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_decision', expect.objectContaining({
+      p_type: null, p_title: null,
+    }));
   });
 
   it('throws when exactly ONE of type/title is provided (ambiguous — B-534), before touching the DB', async () => {
-    const client: any = { from: vi.fn() };
+    const client: any = { from: vi.fn(), rpc: vi.fn() };
     await expect(
       supersedeDecision(client, PROJECT_ID, USER_ID, { old_decision_id: 'dec-1', type: 'business' }),
     ).rejects.toThrow(/exactly one of type\/title|retire/i);
@@ -1917,6 +1939,37 @@ describe('supersedeDecision', () => {
       supersedeDecision(client, PROJECT_ID, USER_ID, { old_decision_id: 'dec-1', title: 'v2' }),
     ).rejects.toThrow(/exactly one of type\/title|retire/i);
     expect(client.from).not.toHaveBeenCalled();   // validation precedes any DB access
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('resolves affected_entity_names to ids in TS and passes them to p_affected_entity_ids (B-995 option c)', async () => {
+    const replacement = { id: 'dec-2', title: 'v2', status: 'Accepted', type: 'business' };
+    const supersededOld = { id: 'dec-1', status: 'Superseded', superseded_by: 'dec-2' };
+    const { client, chains } = buildGraphClient(
+      { knowledge_entities: [{ data: { id: 'ent-1' } }] },
+      { knowledge_supersede_decision: { data: { superseded: supersededOld, replacement } } },
+    );
+
+    await supersedeDecision(client, PROJECT_ID, USER_ID, {
+      old_decision_id: 'dec-1', type: 'business', title: 'v2', affected_entity_names: ['Checkout'],
+    });
+
+    expect(chains.knowledge_entities.eq).toHaveBeenCalledWith('name', 'Checkout');
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_decision', expect.objectContaining({
+      p_affected_entity_ids: ['ent-1'],
+    }));
+  });
+
+  it('threads an explicit provenance and the run-config conduction id, defaulting p_leg to null', async () => {
+    const replacement = { id: 'dec-2', title: 'v2', status: 'Accepted', type: 'business' };
+    const supersededOld = { id: 'dec-1', status: 'Superseded', superseded_by: 'dec-2' };
+    const { client } = buildWorkspaceAndQueryClient({ data: { superseded: supersededOld, replacement } });
+    await supersedeDecision(client, PROJECT_ID, USER_ID, {
+      old_decision_id: 'dec-1', type: 'business', title: 'v2', provenance: 'human-in-session',
+    });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_decision', expect.objectContaining({
+      p_provenance: 'human-in-session', p_leg: null,
+    }));
   });
 });
 
@@ -1941,26 +1994,34 @@ describe('supersedeDecisionTool schema (B-534 retire-mode)', () => {
 // ---------------------------------------------------------------------------
 
 describe('assertFact', () => {
-  it('resolves the subject entity then inserts an Asserted fact with provenance', async () => {
-    // from(): 1 getWorkspaceId -> 2 entity lookup(maybeSingle hit) -> 3 fact insert
+  // assertFact's own from() calls are now just the getWorkspaceId lookup + resolveOrCreateEntity's
+  // entity lookup (B-993 normalize/repair-at-touch, unchanged) — the fact write itself moved to a
+  // client.rpc('knowledge_assert_fact', ...) call.
+  function buildAssertFactClient(entityData: any, rpcData: any) {
     const entityHit: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
     entityHit.select.mockReturnValue(entityHit); entityHit.eq.mockReturnValue(entityHit);
-    entityHit.maybeSingle.mockResolvedValue({ data: { id: 'ent-1' }, error: null });
+    entityHit.maybeSingle.mockResolvedValue({ data: entityData, error: null });
     const ws: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
     ws.select.mockReturnValue(ws); ws.eq.mockReturnValue(ws);
     ws.single.mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
-    const factRow = { id: 'fact-1', subject_entity_id: 'ent-1', predicate: 'uses', status: 'Asserted' };
-    const ins: any = { insert: vi.fn(), select: vi.fn(), single: vi.fn() };
-    ins.insert.mockReturnValue(ins); ins.select.mockReturnValue(ins);
-    ins.single.mockResolvedValue({ data: factRow, error: null });
     let i = 0;
-    const client: any = { from: vi.fn().mockImplementation(() => [ws, entityHit, ins][i++]) };
+    const client: any = {
+      from: vi.fn().mockImplementation(() => [ws, entityHit][i++] ?? entityHit),
+      rpc: vi.fn().mockResolvedValue({ data: rpcData, error: null }),
+    };
+    return client;
+  }
+
+  it('resolves the subject entity then calls knowledge_assert_fact with provenance', async () => {
+    const factRow = { id: 'fact-1', subject_entity_id: 'ent-1', predicate: 'uses', status: 'Asserted' };
+    const client = buildAssertFactClient({ id: 'ent-1' }, factRow);
 
     const result = await assertFact(client, PROJECT_ID, USER_ID, {
       subject_entity: 'board', predicate: 'uses', object: 'HSL tokens', source_type: 'ticket', source_id: 'task-9',
     });
-    expect(ins.insert).toHaveBeenCalledWith(expect.objectContaining({
-      subject_entity_id: 'ent-1', predicate: 'uses', object: 'HSL tokens', source_type: 'ticket', status: 'Asserted', created_by: USER_ID,
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_assert_fact', expect.objectContaining({
+      p_project_id: PROJECT_ID, p_subject_entity: 'board', p_predicate: 'uses', p_object: 'HSL tokens',
+      p_source_type: 'ticket', p_source_id: 'task-9',
     }));
     expect(result).toEqual(factRow);
   });
@@ -1972,63 +2033,43 @@ describe('assertFact', () => {
     ).rejects.toThrow('source_type is required');
   });
 
-  it('passes a structured (non-scalar) object through to the insert unchanged', async () => {
-    const entityHit: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
-    entityHit.select.mockReturnValue(entityHit); entityHit.eq.mockReturnValue(entityHit);
-    entityHit.maybeSingle.mockResolvedValue({ data: { id: 'ent-1' }, error: null });
-    const ws: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
-    ws.select.mockReturnValue(ws); ws.eq.mockReturnValue(ws);
-    ws.single.mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
-    const ins: any = { insert: vi.fn(), select: vi.fn(), single: vi.fn() };
-    ins.insert.mockReturnValue(ins); ins.select.mockReturnValue(ins);
-    ins.single.mockResolvedValue({ data: { id: 'fact-2' }, error: null });
-    let i = 0;
-    const client: any = { from: vi.fn().mockImplementation(() => [ws, entityHit, ins][i++]) };
+  it('passes a structured (non-scalar) object through to the RPC call unchanged', async () => {
+    const client = buildAssertFactClient({ id: 'ent-1' }, { id: 'fact-2' });
     await assertFact(client, PROJECT_ID, USER_ID, {
       subject_entity: 'board', predicate: 'configured_by', object: { ref: 'ent-2', weight: 3 }, source_type: 'manual',
     });
-    expect(ins.insert).toHaveBeenCalledWith(expect.objectContaining({ object: { ref: 'ent-2', weight: 3 } }));
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_assert_fact', expect.objectContaining({
+      p_object: { ref: 'ent-2', weight: 3 },
+    }));
   });
 
   it('embeds the fact on write and includes the pgvector literal', async () => {
-    const entityHit: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
-    entityHit.select.mockReturnValue(entityHit); entityHit.eq.mockReturnValue(entityHit);
-    entityHit.maybeSingle.mockResolvedValue({ data: { id: 'ent-1' }, error: null });
-    const ws: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
-    ws.select.mockReturnValue(ws); ws.eq.mockReturnValue(ws);
-    ws.single.mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
-    const ins: any = { insert: vi.fn(), select: vi.fn(), single: vi.fn() };
-    ins.insert.mockReturnValue(ins); ins.select.mockReturnValue(ins);
-    ins.single.mockResolvedValue({ data: { id: 'fact-1' }, error: null });
-    let i = 0;
-    const client: any = {
-      from: vi.fn().mockImplementation(() => [ws, entityHit, ins][i++]),
-      functions: { invoke: vi.fn().mockResolvedValue({ data: { embedding: [0.3, 0.4] }, error: null }) },
-    };
+    const client = buildAssertFactClient({ id: 'ent-1' }, { id: 'fact-1' });
+    client.functions = { invoke: vi.fn().mockResolvedValue({ data: { embedding: [0.3, 0.4] }, error: null }) };
     await assertFact(client, PROJECT_ID, USER_ID, { subject_entity: 'board', predicate: 'uses', object: 'x', source_type: 'manual' });
     expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', expect.objectContaining({ body: expect.objectContaining({ text: expect.stringContaining('board') }) }));
-    expect(ins.insert).toHaveBeenCalledWith(expect.objectContaining({ embedding: '[0.3,0.4]' }));
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_assert_fact', expect.objectContaining({ p_embedding: '[0.3,0.4]' }));
   });
 
   it('persists review_by on the fact row (P4 F2 — research freshness)', async () => {
-    const entityHit: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
-    entityHit.select.mockReturnValue(entityHit); entityHit.eq.mockReturnValue(entityHit);
-    entityHit.maybeSingle.mockResolvedValue({ data: { id: 'ent-1' }, error: null });
-    const ws: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
-    ws.select.mockReturnValue(ws); ws.eq.mockReturnValue(ws);
-    ws.single.mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
-    const ins: any = { insert: vi.fn(), select: vi.fn(), single: vi.fn() };
-    ins.insert.mockReturnValue(ins); ins.select.mockReturnValue(ins);
-    ins.single.mockResolvedValue({ data: { id: 'fact-3' }, error: null });
-    let i = 0;
-    const client: any = { from: vi.fn().mockImplementation(() => [ws, entityHit, ins][i++]) };
+    const client = buildAssertFactClient({ id: 'ent-1' }, { id: 'fact-3' });
     await assertFact(client, PROJECT_ID, USER_ID, {
       subject_entity: 'board', predicate: 'uses', object: 'x', source_type: 'research',
       review_by: '2026-08-27T00:00:00Z',
     });
-    expect(ins.insert).toHaveBeenCalledWith(
-      expect.objectContaining({ review_by: '2026-08-27T00:00:00Z', source_type: 'research' }),
-    );
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_assert_fact', expect.objectContaining({
+      p_review_by: '2026-08-27T00:00:00Z', p_source_type: 'research',
+    }));
+  });
+
+  it('threads an explicit provenance and the run-config conduction id, defaulting p_leg to null', async () => {
+    const client = buildAssertFactClient({ id: 'ent-1' }, { id: 'fact-4' });
+    await assertFact(client, PROJECT_ID, USER_ID, {
+      subject_entity: 'board', predicate: 'uses', object: 'x', source_type: 'manual', provenance: 'human-in-session',
+    });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_assert_fact', expect.objectContaining({
+      p_provenance: 'human-in-session', p_leg: null,
+    }));
   });
 });
 
@@ -2037,14 +2078,32 @@ describe('assertFact', () => {
 // ---------------------------------------------------------------------------
 
 describe('invalidateFact', () => {
-  it('sets valid_to + status Superseded on the fact', async () => {
-    const { client, secondChain } = buildWorkspaceAndQueryClient({ data: { id: 'fact-1', status: 'Superseded' } });
-    secondChain.not = vi.fn().mockReturnValue(secondChain);
-    await invalidateFact(client, PROJECT_ID, { fact_id: 'fact-1', reason: 'no longer true' });
-    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_facts');
-    expect(secondChain.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'Superseded' }));
-    const updateArg = secondChain.update.mock.calls[0][0];
-    expect(updateArg).toHaveProperty('valid_to');
+  it('calls knowledge_invalidate_fact with the fact id and project id', async () => {
+    const client: any = { rpc: vi.fn().mockResolvedValue({ data: { id: 'fact-1', status: 'Superseded' }, error: null }) };
+    const result = await invalidateFact(client, PROJECT_ID, { fact_id: 'fact-1', reason: 'no longer true' });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_invalidate_fact', expect.objectContaining({
+      p_fact_id: 'fact-1', p_project_id: PROJECT_ID,
+    }));
+    expect(result).toEqual({ id: 'fact-1', status: 'Superseded' });
+  });
+
+  it('throws when fact_id is missing', async () => {
+    const client: any = { rpc: vi.fn() };
+    await expect(invalidateFact(client, PROJECT_ID, {} as any)).rejects.toThrow('fact_id is required');
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('threads an explicit provenance and the run-config conduction id, defaulting p_leg to null', async () => {
+    const client: any = { rpc: vi.fn().mockResolvedValue({ data: { id: 'fact-1' }, error: null }) };
+    await invalidateFact(client, PROJECT_ID, { fact_id: 'fact-1', provenance: 'human-in-session' });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_invalidate_fact', expect.objectContaining({
+      p_provenance: 'human-in-session', p_leg: null,
+    }));
+  });
+
+  it('surfaces the RPC error message', async () => {
+    const client: any = { rpc: vi.fn().mockResolvedValue({ data: null, error: { message: 'knowledge_invalidate_fact: fact x not found in this project' } }) };
+    await expect(invalidateFact(client, PROJECT_ID, { fact_id: 'x' })).rejects.toThrow('not found in this project');
   });
 });
 

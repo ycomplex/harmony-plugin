@@ -36666,32 +36666,34 @@ async function updateKnowledgeEntry(client, projectId, args) {
     throw new Error("At least one field to update must be provided");
   }
   const workspaceId = await getWorkspaceId(client, projectId);
-  const updates = {};
-  if (args.new_title !== void 0) updates.title = normalizeHtmlEntities(args.new_title.trim());
-  if (args.content !== void 0) updates.content = normalizeHtmlEntities(args.content);
-  if (args.type !== void 0) updates.type = args.type;
-  if (args.status !== void 0) updates.status = toBaseStatus(args.status);
-  if (args.tags !== void 0) updates.tags = args.tags;
-  if (args.domain !== void 0) updates.domain = args.domain;
-  if (args.madr !== void 0) updates.madr = args.madr;
-  if (args.realization !== void 0) updates.realization = args.realization;
-  if (args.review_by !== void 0) updates.review_by = args.review_by;
-  let query = client.from("knowledge_decisions").update(updates).eq("workspace_id", workspaceId).eq("project_id", projectId);
-  if (args.entry_id) {
-    query = query.eq("id", args.entry_id);
-  } else {
-    query = query.eq("title", args.title);
-  }
-  const { data, error } = await query.select(
-    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at, domain, madr, realization, review_by"
-  ).single();
+  const newTitle = args.new_title !== void 0 ? normalizeHtmlEntities(args.new_title.trim()) : void 0;
+  const { data, error } = await client.rpc("knowledge_update_knowledge_entry", {
+    p_project_id: projectId,
+    p_entry_id: args.entry_id ?? null,
+    p_title: args.title ?? null,
+    p_new_title: newTitle ?? null,
+    p_content: args.content !== void 0 ? normalizeHtmlEntities(args.content) : null,
+    p_type: args.type ?? null,
+    p_status: args.status !== void 0 ? toBaseStatus(args.status) : null,
+    p_tags: args.tags ?? null,
+    // Decision-axis columns recordDecision already writes but this path historically omitted
+    // (B-468). Pass-through only (mirrors recordDecision — no strict validation; the DB CHECK/FK
+    // constraints are the backstop). madr is a FULL-OBJECT replace, not a key-merge.
+    p_domain: args.domain ?? null,
+    p_madr: args.madr ?? null,
+    p_realization: args.realization ?? null,
+    p_review_by: args.review_by ?? null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null
+  });
   if (error) {
     if (error.code === "23505") {
       throw new Error(
-        `A knowledge entry titled "${updates.title}" already exists in this project`
+        `A knowledge entry titled "${newTitle ?? ""}" already exists in this project`
       );
     }
-    throw error;
+    throw new Error(error.message);
   }
   const updated = data;
   if (args.new_title !== void 0 || args.content !== void 0) {
@@ -36703,27 +36705,30 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
   if (!args.entry_id && !args.title) {
     throw new Error("Either entry_id or title must be provided to identify the entry to supersede");
   }
-  const existing = await getKnowledgeEntry(client, projectId, {
-    entry_id: args.entry_id,
-    title: args.title
-  });
-  const replacement = await createKnowledgeEntry(client, projectId, userId, {
-    title: args.new_title,
-    content: args.new_content,
-    type: args.type ?? existing.type,
-    status: "accepted",
-    tags: args.tags ?? existing.tags,
-    source_task_id: existing.source_task_id ?? void 0
-  });
   const workspaceId = await getWorkspaceId(client, projectId);
-  const { data: supersededData, error } = await client.from("knowledge_decisions").update({ status: "Superseded", superseded_by: replacement.id }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", existing.id).select(
-    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
-  ).single();
-  if (error) throw error;
-  return {
-    superseded: supersededData,
-    replacement
-  };
+  const { data, error } = await client.rpc("knowledge_supersede_knowledge_entry", {
+    p_project_id: projectId,
+    p_new_title: normalizeHtmlEntities(args.new_title),
+    p_new_content: normalizeHtmlEntities(args.new_content),
+    p_entry_id: args.entry_id ?? null,
+    p_title: args.title ?? null,
+    p_type: args.type ?? null,
+    p_tags: args.tags ?? null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: null
+  });
+  if (error) throw new Error(error.message);
+  const result = data;
+  await embedDecisionById(
+    client,
+    workspaceId,
+    projectId,
+    result.replacement.id,
+    result.replacement.title,
+    result.replacement.content
+  );
+  return result;
 }
 
 // src/tools/briefs.ts
