@@ -21968,6 +21968,11 @@ var HarmonyAuth = class {
   projectId = null;
   userId = null;
   expiresAt = 0;
+  // B-845: single-flight guard for forceRefresh() — concurrent PGRST303 callers on ONE HarmonyAuth
+  // instance must share the SAME in-flight exchange rather than each firing their own fetch(). Set
+  // the moment a refresh starts, cleared on BOTH resolution and rejection (via .finally()) so a
+  // failed exchange can never poison the next caller into replaying a dead promise forever.
+  inFlightRefresh = null;
   constructor(apiToken) {
     this.apiToken = apiToken;
   }
@@ -21977,6 +21982,20 @@ var HarmonyAuth = class {
     }
     await this.exchange();
     return this.accessToken;
+  }
+  /** B-845: force a FRESH token exchange, bypassing getAccessToken()'s cache/expiry check entirely
+   *  — the caller (src/daemon/write-retry.ts's withWriteRetry) already knows the cached token was
+   *  rejected (PGRST303), so replaying getAccessToken()'s cache would just hand back the same dead
+   *  token. Single-flight: a second concurrent caller gets the SAME in-flight exchange, never a
+   *  second fetch. This method deliberately does NOT call getAccessToken() — see the module-level
+   *  design note above. */
+  forceRefresh() {
+    if (!this.inFlightRefresh) {
+      this.inFlightRefresh = this.exchange().finally(() => {
+        this.inFlightRefresh = null;
+      });
+    }
+    return this.inFlightRefresh;
   }
   getProjectId() {
     if (!this.projectId) throw new Error("Not authenticated yet. Call getAccessToken() first.");
@@ -21988,14 +22007,22 @@ var HarmonyAuth = class {
   }
   async exchange() {
     const endpoint = "/functions/v1/auth-token";
-    const res = await fetch(`${SUPABASE_URL}${endpoint}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
-      },
-      body: JSON.stringify({ token: this.apiToken })
-    });
+    let res;
+    try {
+      res = await fetch(`${SUPABASE_URL}${endpoint}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
+        },
+        body: JSON.stringify({ token: this.apiToken })
+      });
+    } catch (err) {
+      if (err instanceof Error) {
+        err.endpoint = endpoint;
+      }
+      throw err;
+    }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new TokenExchangeError(endpoint, res.status, body);
