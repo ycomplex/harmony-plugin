@@ -6,7 +6,13 @@
 # `harmony gates run` only ever prints this list, it never executes a line of it.
 #
 # release.before_merge: the B-778 migration of plugin/CLAUDE.md's Versioning section's hand-written
-# release-prep steps (npm run build, npm run verify:dist) into this manifest.
+# release-prep steps into this manifest. B-1007 DROPPED `npm run verify:dist` from that list: under
+# the three-branch topology `main` is source only and `dist/` is gitignored there, so verify:dist
+# (`rm -rf dist && npm run build && git diff --exit-code dist`) degrades to a SILENT NO-OP PASS —
+# with nothing tracked under dist/, `git diff` always exits 0. That is false confidence at the
+# release gate rather than a caught problem, so the step is gone rather than kept as decoration.
+# The real drift check moved downstream: scripts/generate-staging.sh REBUILDS dist/ on `staging`
+# from the merged source on every push to `main`, so the served bundle cannot drift from source.
 #
 # notify (B-973): DECLARED DATA ONLY, exactly like preconditions above. NOTHING DISPATCHES TO
 # `endpoint` — not this plugin, not the conductor daemon, not any worker. There is no consumer of
@@ -27,7 +33,6 @@ preconditions:
 release:
   before_merge:
     - run: npm run build
-    - run: npm run verify:dist
 
 notify:
   - on: "reaching Built"
