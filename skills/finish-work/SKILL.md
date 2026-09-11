@@ -888,6 +888,24 @@ rather than a state that ran ahead of reality (the B-60 conflation — review F4
 After deploy, file the verification brief so the human can acknowledge real-world behaviour matches the
 design (state-machine §6.1 — verifying is human-ack by default).
 
+**Verify-ack-prep lookup (B-1003) — run FIRST, before step 1 below, before composing or accepting the
+`verification-ack-pending` brief.** Some projects need verification-readiness steps run before a
+worker's verify-accept is trustworthy — a project-declared concern, not hand-copied prose repeated at
+every gate that needs it, mirroring O2's Release-prep lookup above. Check the repo of record (the same
+repo O2's release-prep lookup already entered, and the same repo passed as `manifest_root` below) for
+`.harmony/project.yml`:
+
+- **Present, declaring `verify.before_ack` steps** → run `harmony gates run verify.before_ack` from
+  inside that repo. This reads the manifest's `verify.before_ack` steps and runs them, landing a
+  `finish-work` evidence entry on the ticket when it actually runs steps (and the local gate-evidence
+  marker the PreToolUse hook's B-992 matcher checks before allowing a daemon worker's verify-brief
+  accept). A non-zero exit is a real verification-readiness failure — surface it (a comment naming the
+  failing step) and do NOT proceed to composing/accepting an ackable verify brief; this is a genuine
+  gate, not a formality.
+- **Absent, or present but declaring nothing for `verify.before_ack`** — this is the existing AC4 floor:
+  behave exactly as today, no new gates invocation, no new evidence entry, no behavior change. Do not
+  invent a new check here; an absent/empty manifest must behave identically to the pre-B-1003 world.
+
 **1. Read the ticket's acceptance criteria (B-703) — NOT optional, and nothing substitutes for it.**
 Before composing, make the dedicated read, at the point of use:
 

@@ -495,6 +495,51 @@ describe('runGatesCommand — real steps to run', () => {
 });
 
 // =================================================================================================
+// B-1003: contract tests keyed explicitly to verify.before_ack — finish-work's verify gate (O3) now
+// calls this extension point the same way release-prep (O2) calls release.before_merge. These pin
+// (a) a mixed pass/fail declared-steps run and (b) the absent-manifest no-op floor, both scoped to
+// verify.before_ack by name so a future extension-point-keyed regression is caught here, not just on
+// release.before_merge's existing coverage above.
+// =================================================================================================
+
+describe('runGatesCommand — verify.before_ack contract (B-1003)', () => {
+  it('runs declared verify.before_ack steps in order and stops at the first failure, naming it', async () => {
+    const ok: ManifestLoadResult = {
+      kind: 'ok',
+      file: '/fake/project/.harmony/project.yml',
+      manifest: {
+        version: 1,
+        verify: { before_ack: [{ run: 'npm run smoke' }, { run: 'npm run e2e-check' }] },
+      },
+      stepErrors: {},
+    };
+    const seen: string[] = [];
+    const runStep = (command: string): StepRunOutcome => {
+      seen.push(command);
+      return command === 'npm run e2e-check' ? { code: 3 } : { code: 0 };
+    };
+    const deps = baseDeps({ extensionPoint: 'verify.before_ack', loadManifest: () => ok, runStep });
+    const code = await runGatesCommand(deps);
+    expect(code).toBe(3);
+    expect(seen).toEqual(['npm run smoke', 'npm run e2e-check']);
+    expect(deps.errorLines.some((l) => l.includes('e2e-check') && l.includes('FAILED'))).toBe(true);
+    expect(deps.landEvidenceCalls).toHaveLength(0);
+  });
+
+  it('an absent manifest is a no-op floor for verify.before_ack too — exit 0, one quiet line, no auth', async () => {
+    const deps = baseDeps({ extensionPoint: 'verify.before_ack', loadManifest: () => ({ kind: 'absent' }) });
+    const code = await runGatesCommand(deps);
+    expect(code).toBe(0);
+    expect(deps.logLines).toHaveLength(1);
+    expect(deps.logLines[0]).toContain('verify.before_ack');
+    expect(deps.errorLines).toHaveLength(0);
+    expect(deps.authCalls).toBe(0);
+    expect(deps.runStepCalls).toHaveLength(0);
+    expect(deps.landEvidenceCalls).toHaveLength(0);
+  });
+});
+
+// =================================================================================================
 // CLI-entry-level proof of the AC4 floor: no manifest + no HARMONY_API_TOKEN ⇒ exit 0, one quiet
 // line, and getAuthenticatedContext (the real auth module, mocked here) is NEVER called.
 // =================================================================================================
