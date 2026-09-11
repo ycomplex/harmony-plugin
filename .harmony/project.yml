@@ -7,6 +7,16 @@
 #
 # release.before_merge: the B-778 migration of plugin/CLAUDE.md's Versioning section's hand-written
 # release-prep steps (npm run build, npm run verify:dist) into this manifest.
+#
+# notify (B-973): DECLARED DATA ONLY, exactly like preconditions above. NOTHING DISPATCHES TO
+# `endpoint` — not this plugin, not the conductor daemon, not any worker. There is no consumer of
+# this key anywhere in harmony-plugin: `notify` is deliberately not an extension point, and no code
+# path resolves it to an action (proved by the "notify endpoint — declared data, NEVER reached" test
+# in src/config/project-manifest.test.ts). The delivery substrate that will eventually consume these
+# declarations is owned by B-980 (the outbox) and B-1009 (the Supabase-hosted HTTP dispatcher),
+# neither of which lives in this repo. The endpoints below therefore point at the reserved `.invalid`
+# TLD, which can never resolve: they are a shape fixture, not a live webhook. Full specification —
+# event shape, dedup, ordering, at-least-once — is in docs/notify-outbox-contract.md.
 version: 1
 preconditions:
   - "Build subagents work in a worktree by default — and in this meta-repo the worktree must be created INSIDE the child repo. The children (web/, plugin/) are gitignored, not submodules, so an isolation:'worktree' taken at the workspace root silently excludes them — the subagent falls back to the shared live checkout with zero isolation and no warning. Isolate inside web/ or plugin/."
@@ -18,3 +28,9 @@ release:
   before_merge:
     - run: npm run build
     - run: npm run verify:dist
+
+notify:
+  - on: "reaching Built"
+    endpoint: "https://harmony-notify.invalid/harmony-plugin/built"
+  - on: "reaching Verified"
+    endpoint: "https://harmony-notify.invalid/harmony-plugin/verified"

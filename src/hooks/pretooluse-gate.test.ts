@@ -2,7 +2,7 @@
 // total function, each boundary-tool matcher (including its exclusions), marker freshness, the
 // verify.before_ack confirm-before-deny flow, the escape hatch, and the outer fail-open floor.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   decidePreToolUseGate,
   determineActor,
@@ -17,7 +17,10 @@ import {
   type PreToolUseGateRunnerDeps,
   type PreToolUseHookInput,
 } from './pretooluse-gate.js';
-import type { ManifestLoadResult } from '../config/project-manifest.js';
+import { loadProjectManifest, type ManifestLoadResult } from '../config/project-manifest.js';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AuthenticatedContext } from '../cli/auth.js';
 
 // =================================================================================================
@@ -610,5 +613,94 @@ describe('runPreToolUseGate — exit codes', () => {
       runnerDeps({ resolveCurrentRepoSlug: () => { throw new Error('not a git repo'); } }),
     );
     expect(code).toBe(2);
+  });
+});
+
+// =================================================================================================
+// B-973 — the enforcement REVERSAL a notify-declaring manifest undergoes.
+//
+// Before B-973, `notify` was an unrecognized top-level key, so a project that declared it had a
+// WHOLE-FILE malformed manifest. decidePreToolUseGate's `manifestResult.kind !== 'ok'` branch then
+// failed OPEN and the hook enforced NOTHING — not even the build/release/verify steps that same
+// manifest still declared. After B-973 the manifest parses, so the hook resumes enforcing. Both
+// halves are asserted here against the REAL loader (not the harness's stub) so the reversal is
+// proven end-to-end rather than asserted about a hand-built ManifestLoadResult.
+// =================================================================================================
+
+describe('decidePreToolUseGate — B-973 notify enforcement reversal', () => {
+  const roots: string[] = [];
+
+  function projectRootWith(manifestBody: string): string {
+    const root = mkdtempSync(join(tmpdir(), 'b973-pretooluse-'));
+    roots.push(root);
+    mkdirSync(join(root, '.harmony'), { recursive: true });
+    writeFileSync(join(root, '.harmony', 'project.yml'), manifestBody, 'utf8');
+    return root;
+  }
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  const DECLARED_BUILD_STEPS = ['build:', '  before_pr:', '    - run: npm run lint'];
+
+  it('a notify-declaring manifest now PARSES, so the gate ENFORCES (denies a worker with no marker) instead of failing open', async () => {
+    const root = projectRootWith(
+      [
+        'version: 1',
+        ...DECLARED_BUILD_STEPS,
+        'notify:',
+        '  - on: "reaching Built"',
+        '    endpoint: "https://hooks.example.com/harmony/built"',
+      ].join('\n'),
+    );
+
+    // Sanity: the real loader accepts it now.
+    expect(loadProjectManifest(root).kind).toBe('ok');
+
+    const h = harness({ projectRoot: root, loadManifest: loadProjectManifest, readMarker: () => null });
+    const d = await decidePreToolUseGate(BASH_PR_CREATE, h.deps);
+    expect(d.action).toBe('deny');
+  });
+
+  it('the pre-B-973 shape — an UNRECOGNIZED top-level key — still takes the kind!=="ok" fail-open branch, which is exactly what a notify declaration used to hit', async () => {
+    const root = projectRootWith(
+      [
+        'version: 1',
+        ...DECLARED_BUILD_STEPS,
+        'notifications:',
+        '  - on: "reaching Built"',
+        '    endpoint: "https://hooks.example.com/harmony/built"',
+      ].join('\n'),
+    );
+
+    const loaded = loadProjectManifest(root);
+    expect(loaded.kind).toBe('malformed');
+
+    const h = harness({ projectRoot: root, loadManifest: loadProjectManifest, readMarker: () => null });
+    const d = await decidePreToolUseGate(BASH_PR_CREATE, h.deps);
+    expect(d.action).toBe('allow');
+    expect(d.reason).toContain('no usable');
+  });
+
+  it('a notify entry naming an UNRECOGNIZED transition is whole-file malformed, so the gate fails open again — the loud error is the CLI runner\'s job, never a wrongful deny', async () => {
+    const root = projectRootWith(
+      [
+        'version: 1',
+        ...DECLARED_BUILD_STEPS,
+        'notify:',
+        '  - on: "reaching Shipped"',
+        '    endpoint: "https://hooks.example.com/harmony/built"',
+      ].join('\n'),
+    );
+
+    const loaded = loadProjectManifest(root);
+    expect(loaded.kind).toBe('malformed');
+    if (loaded.kind !== 'malformed') return;
+    expect(loaded.problem.reason).toBe('unknown-transition');
+
+    const h = harness({ projectRoot: root, loadManifest: loadProjectManifest, readMarker: () => null });
+    const d = await decidePreToolUseGate(BASH_PR_CREATE, h.deps);
+    expect(d.action).toBe('allow');
   });
 });

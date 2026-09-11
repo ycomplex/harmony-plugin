@@ -21573,12 +21573,25 @@ import { existsSync as nodeExistsSync2, readFileSync as nodeReadFileSync2 } from
 import { join as nodeJoin, resolve as nodeResolve } from "node:path";
 var PROJECT_MANIFEST_RELATIVE_PATH = ".harmony/project.yml";
 var SUPPORTED_MANIFEST_VERSION = 1;
+var DECLARABLE_TRANSITIONS = [
+  "reaching Proposed",
+  "reaching Clarified",
+  "reaching Decomposed",
+  "reaching Designed",
+  "reaching Planned",
+  "reaching Built",
+  "reaching Deployed",
+  "reaching Verified",
+  "reaching Parked",
+  "reaching Cancelled"
+];
 var RunStepSchema = external_exports.object({ run: external_exports.string().min(1) }).strict();
 var AgentTaskStepSchema = external_exports.object({ agent_task: external_exports.string().min(1) }).strict();
 var StepSchema = external_exports.union([RunStepSchema, AgentTaskStepSchema]);
 function isAgentTaskStep(step) {
   return "agent_task" in step;
 }
+var NotifyEntrySchema = external_exports.object({ on: external_exports.string().min(1), endpoint: external_exports.string().url() }).strict();
 var GateSchema = external_exports.object({ before_pr: external_exports.array(StepSchema).optional() }).strict();
 var ReleaseGateSchema = external_exports.object({ before_merge: external_exports.array(StepSchema).optional() }).strict();
 var VerifyGateSchema = external_exports.object({ before_ack: external_exports.array(StepSchema).optional() }).strict();
@@ -21587,9 +21600,10 @@ var ProjectManifestBodySchema = external_exports.object({
   preconditions: external_exports.array(external_exports.string()).optional(),
   build: GateSchema.optional(),
   release: ReleaseGateSchema.optional(),
-  verify: VerifyGateSchema.optional()
+  verify: VerifyGateSchema.optional(),
+  notify: external_exports.array(NotifyEntrySchema).optional()
 }).strict();
-var KNOWN_TOP_LEVEL_KEYS = ["version", "preconditions", "build", "release", "verify"];
+var KNOWN_TOP_LEVEL_KEYS = ["version", "preconditions", "build", "release", "verify", "notify"];
 function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -21698,6 +21712,18 @@ function loadProjectManifest(projectRoot2, deps = {}) {
     };
   }
   const manifest = shapeResult.data;
+  for (const entry of manifest.notify ?? []) {
+    if (!DECLARABLE_TRANSITIONS.includes(entry.on)) {
+      return {
+        kind: "malformed",
+        problem: {
+          file,
+          reason: "unknown-transition",
+          message: `${file}: notify declares an unrecognized transition ${JSON.stringify(entry.on)} \u2014 recognized transitions are: ${DECLARABLE_TRANSITIONS.join(", ")}`
+        }
+      };
+    }
+  }
   const stepErrors = {};
   const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot2, existsSync2);
   if (buildErr) stepErrors["build.before_pr"] = buildErr;
