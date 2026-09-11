@@ -4194,13 +4194,13 @@ var require_websocket_factory = __commonJS({
         if (env2.constructor) {
           return env2.constructor;
         }
-        let errorMessage = env2.error || "WebSocket not supported in this environment.";
+        let errorMessage2 = env2.error || "WebSocket not supported in this environment.";
         if (env2.workaround) {
-          errorMessage += `
+          errorMessage2 += `
 
 Suggested solution: ${env2.workaround}`;
         }
-        throw new Error(errorMessage);
+        throw new Error(errorMessage2);
       }
       /**
        * Detects whether the runtime can establish WebSocket connections.
@@ -7073,13 +7073,13 @@ var require_RealtimeChannel = __commonJS({
         if (response.status === 202) {
           return { success: true };
         }
-        let errorMessage = response.statusText;
+        let errorMessage2 = response.statusText;
         try {
           const errorBody = await response.json();
-          errorMessage = errorBody.error || errorBody.message || errorMessage;
+          errorMessage2 = errorBody.error || errorBody.message || errorMessage2;
         } catch (_b) {
         }
-        return Promise.reject(new Error(errorMessage));
+        return Promise.reject(new Error(errorMessage2));
       }
       /**
        * Sends a message into the channel.
@@ -7599,9 +7599,9 @@ var require_RealtimeClient = __commonJS({
         try {
           this.socketAdapter.connect();
         } catch (error) {
-          const errorMessage = error.message;
-          if (errorMessage.includes("Node.js")) {
-            throw new Error(`${errorMessage}
+          const errorMessage2 = error.message;
+          if (errorMessage2.includes("Node.js")) {
+            throw new Error(`${errorMessage2}
 
 To use Realtime in Node.js, you need to provide a WebSocket implementation:
 
@@ -7616,7 +7616,7 @@ Option 2: Install and provide the "ws" package:
     transport: ws
   })`);
           }
-          throw new Error(`WebSocket not available: ${errorMessage}`);
+          throw new Error(`WebSocket not available: ${errorMessage2}`);
         }
         this._handleNodeJsRaceCondition();
       }
@@ -31818,15 +31818,15 @@ var makeIssue = (params) => {
       message: issueData.message
     };
   }
-  let errorMessage = "";
+  let errorMessage2 = "";
   const maps = errorMaps.filter((m) => !!m).slice().reverse();
   for (const map of maps) {
-    errorMessage = map(fullIssue, { data, defaultError: errorMessage }).message;
+    errorMessage2 = map(fullIssue, { data, defaultError: errorMessage2 }).message;
   }
   return {
     ...issueData,
     path: fullPath,
-    message: errorMessage
+    message: errorMessage2
   };
 };
 var EMPTY_PATH = [];
@@ -36847,10 +36847,10 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync2) {
 }
 function loadProjectManifest(projectRoot, deps = {}) {
   const existsSync2 = deps.existsSync ?? nodeExistsSync2;
-  const readFileSync5 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
+  const readFileSync7 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin2(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
   if (!existsSync2(file)) return { kind: "absent" };
-  const raw = readFileSync5(file);
+  const raw = readFileSync7(file);
   let parsed;
   try {
     parsed = (0, import_yaml.parse)(raw);
@@ -36967,6 +36967,9 @@ function resolveExtensionPoint(result, extensionPoint) {
 }
 function getPreconditions(manifest) {
   return manifest.preconditions ?? [];
+}
+function getNotifyEntries(manifest) {
+  return manifest.notify ?? [];
 }
 
 // src/tools/briefs.ts
@@ -37966,6 +37969,13 @@ var VerifySlotSchema = external_exports.object({
 var UnknownGateSlotSchema = external_exports.record(external_exports.unknown());
 
 // src/tools/acceptance-events.ts
+function isMissingRelationOrFunction(err) {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42P01" || code === "42883" || code === "PGRST202" || code === "PGRST205") return true;
+  const msg = err.message ?? "";
+  return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
+}
 function isShippedMilestoneGuardError(error) {
   if (!error) return false;
   if (error.code !== "23514") return false;
@@ -40100,8 +40110,138 @@ function registerLegOutputCommands(program3) {
 
 // src/cli/commands/gates.ts
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync as readFileSync5, renameSync, writeFileSync } from "node:fs";
 import { dirname as dirname2 } from "node:path";
+
+// src/config/notify-sync.ts
+import { createHash } from "node:crypto";
+var NOTIFY_SYNC_CACHE_RELATIVE_PATH = ".harmony/.notify-sync.json";
+function notifySyncCachePath(projectRoot) {
+  return `${projectRoot}/${NOTIFY_SYNC_CACHE_RELATIVE_PATH}`;
+}
+var NOTIFY_SYNC_TIMEOUT_MS = 3e3;
+var NORMALIZATION_VERSION = 1;
+function transitionStateOf(on) {
+  const trimmed = on.trim();
+  return trimmed.startsWith("reaching ") ? trimmed.slice("reaching ".length).trim() : trimmed;
+}
+function normalizeNotifyDeclaration(entries) {
+  const byEndpoint = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    const url = entry.endpoint.trim();
+    const transition = transitionStateOf(entry.on);
+    if (!url || !transition) continue;
+    const set = byEndpoint.get(url) ?? /* @__PURE__ */ new Set();
+    set.add(transition);
+    byEndpoint.set(url, set);
+  }
+  return [...byEndpoint.entries()].map(([endpoint_url, transitions]) => ({ endpoint_url, transitions: [...transitions].sort() })).sort((a, b) => a.endpoint_url < b.endpoint_url ? -1 : a.endpoint_url > b.endpoint_url ? 1 : 0);
+}
+function hashNotifyDeclaration(subscriptions) {
+  return createHash("sha256").update(`v${NORMALIZATION_VERSION}
+${JSON.stringify(subscriptions)}`).digest("hex");
+}
+function readCachedHash(io, path2) {
+  let raw;
+  try {
+    raw = io.readCache(path2);
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.version !== NORMALIZATION_VERSION) return null;
+    return typeof parsed.hash === "string" && parsed.hash ? parsed.hash : null;
+  } catch {
+    return null;
+  }
+}
+var NotifySyncTimeoutError = class extends Error {
+  constructor(ms) {
+    super(`the board did not answer within ${ms}ms`);
+    this.name = "NotifySyncTimeoutError";
+  }
+};
+async function callWithHardTimeout(io, subscriptions, timeoutMs) {
+  const controller = new AbortController();
+  let timer;
+  const expiry = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new NotifySyncTimeoutError(timeoutMs));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    const call = Promise.resolve(io.callSyncRpc(subscriptions, controller.signal));
+    call.catch(() => void 0);
+    return await Promise.race([call, expiry]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+function describe(err) {
+  const message = err?.message;
+  return message && message.trim() ? message.trim() : String(err);
+}
+async function syncNotifySubscriptions(params) {
+  const { projectRoot, entries, io } = params;
+  let warned = false;
+  const warnOnce = (detail) => {
+    if (warned) return;
+    warned = true;
+    params.warn(
+      `harmony notify sync: WARNING \u2014 the notify declaration was NOT synced to the board (${detail}); this gate run is unaffected and the next run retries.`
+    );
+  };
+  try {
+    if (!entries || entries.length === 0) return { kind: "undeclared" };
+    const subscriptions = normalizeNotifyDeclaration(entries);
+    if (subscriptions.length === 0) return { kind: "undeclared" };
+    const hash = hashNotifyDeclaration(subscriptions);
+    const cachePath = notifySyncCachePath(projectRoot);
+    if (readCachedHash(io, cachePath) === hash) return { kind: "unchanged", hash };
+    let result;
+    try {
+      result = await callWithHardTimeout(io, subscriptions, io.timeoutMs ?? NOTIFY_SYNC_TIMEOUT_MS);
+    } catch (err) {
+      if (err instanceof NotifySyncTimeoutError) {
+        warnOnce(`timed out after ${io.timeoutMs ?? NOTIFY_SYNC_TIMEOUT_MS}ms and was abandoned`);
+        return { kind: "warned", reason: "timeout" };
+      }
+      if (isMissingRelationOrFunction(err)) {
+        warnOnce(
+          `this board has no notify_sync_subscriptions RPC yet \u2014 the B-1009 migration has not been applied to it: ${describe(err)}`
+        );
+        return { kind: "warned", reason: "absent-rpc" };
+      }
+      warnOnce(`the board could not be reached or refused the call: ${describe(err)}`);
+      return { kind: "warned", reason: "unreachable" };
+    }
+    if (result === null || result === void 0 || typeof result !== "object") {
+      warnOnce(`notify_sync_subscriptions returned an unreadable result (${typeof result})`);
+      return { kind: "warned", reason: "malformed" };
+    }
+    const cache = {
+      version: NORMALIZATION_VERSION,
+      hash,
+      synced_at: (io.now ?? (() => /* @__PURE__ */ new Date()))().toISOString()
+    };
+    try {
+      io.writeCache(cachePath, `${JSON.stringify(cache, null, 2)}
+`);
+    } catch (err) {
+      warnOnce(`the declaration synced, but its hash cache could not be written: ${describe(err)}`);
+      return { kind: "warned", reason: "cache-write" };
+    }
+    return { kind: "synced", hash };
+  } catch (err) {
+    warnOnce(describe(err));
+    return { kind: "warned", reason: "malformed" };
+  }
+}
 
 // src/hooks/pretooluse-gate.ts
 var GATE_EVIDENCE_DIR = ".harmony/.gate-evidence";
@@ -40146,6 +40286,15 @@ async function runGatesCommand(deps) {
     } else {
       log(`harmony gates run ${extensionPoint}: ${result.file} declares no preconditions.`);
     }
+  }
+  const notifyEntries = getNotifyEntries(result.manifest);
+  if (notifyEntries.length > 0) {
+    await syncNotifySubscriptions({
+      projectRoot,
+      entries: notifyEntries,
+      io: deps.notifySync,
+      warn: error
+    });
   }
   const steps = resolution.steps;
   if (steps.length === 0) {
@@ -40241,6 +40390,7 @@ function registerGatesCommands(program3) {
           ]
         });
       },
+      notifySync: productionNotifySyncIO(),
       writeMarker: (marker) => writeGateEvidenceMarker(process.cwd(), marker),
       resolveHeadSha: () => execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim(),
       log: (line) => console.log(line),
@@ -40256,6 +40406,172 @@ function writeGateEvidenceMarker(projectRoot, marker) {
   writeFileSync(tmpPath, `${JSON.stringify(marker, null, 2)}
 `, "utf8");
   renameSync(tmpPath, filePath);
+}
+function productionNotifySyncIO() {
+  return {
+    callSyncRpc: async (subscriptions, signal) => {
+      const ctx = await getAuthenticatedContext();
+      const { data, error: rpcError } = await ctx.client.rpc("notify_sync_subscriptions", {
+        p_project_id: ctx.projectId,
+        p_subscriptions: subscriptions
+      }).abortSignal(signal);
+      if (rpcError) {
+        throw Object.assign(new Error(rpcError.message), {
+          code: rpcError.code
+        });
+      }
+      return data;
+    },
+    readCache: (path2) => {
+      try {
+        return readFileSync5(path2, "utf8");
+      } catch {
+        return null;
+      }
+    },
+    writeCache: (path2, contents) => {
+      mkdirSync(dirname2(path2), { recursive: true });
+      const tmpPath = `${path2}.tmp-${process.pid}-${Date.now()}`;
+      writeFileSync(tmpPath, contents, "utf8");
+      renameSync(tmpPath, path2);
+    }
+  };
+}
+
+// src/cli/commands/notify.ts
+import { readFileSync as readFileSync6 } from "node:fs";
+function errorMessage(err) {
+  const message = err?.message;
+  return message && message.trim() ? message.trim() : String(err);
+}
+async function runRegisterSecret(deps, args) {
+  const endpoint = args.endpoint.trim();
+  const secret = args.secret.trim();
+  if (!endpoint) {
+    deps.error("harmony notify register-secret: --endpoint is required.");
+    return 1;
+  }
+  if (secret.length < 16) {
+    deps.error("harmony notify register-secret: the secret must be at least 16 characters.");
+    return 1;
+  }
+  let result;
+  try {
+    result = await deps.rpc("notify_register_secret", {
+      p_endpoint_url: endpoint,
+      p_secret: secret
+    });
+  } catch (err) {
+    deps.error(`harmony notify register-secret: FAILED \u2014 ${errorMessage(err)}`);
+    return 1;
+  }
+  const registeredAt = result?.registered_at;
+  if (!registeredAt) {
+    deps.error("harmony notify register-secret: the board accepted the call but returned no timestamp.");
+    return 1;
+  }
+  deps.log(`secret registered at ${registeredAt}`);
+  return 0;
+}
+async function runListDeliveries(deps, args) {
+  let result;
+  try {
+    result = await deps.rpc("notify_list_deliveries", {
+      p_dead_lettered: args.deadLettered,
+      p_limit: args.limit
+    });
+  } catch (err) {
+    deps.error(`harmony notify deliveries: FAILED \u2014 ${errorMessage(err)}`);
+    return 1;
+  }
+  const rows = Array.isArray(result) ? result : [];
+  if (args.json) {
+    deps.log(JSON.stringify(rows, null, 2));
+    return 0;
+  }
+  if (rows.length === 0) {
+    deps.log(
+      args.deadLettered === true ? "No dead-lettered deliveries." : args.deadLettered === false ? "No live deliveries." : "No deliveries."
+    );
+    return 0;
+  }
+  deps.log(
+    formatTable(rows, [
+      { key: "created_at", header: "Created" },
+      { key: "transition", header: "Transition" },
+      { key: "endpoint_url", header: "Endpoint" },
+      { key: "status", header: "Status" },
+      { key: "attempt_count", header: "Attempts" },
+      { key: "last_response_code", header: "Code", transform: (v) => v === null || v === void 0 ? "-" : String(v) },
+      {
+        key: "next_attempt_at",
+        header: "Next attempt",
+        transform: (v, row) => row.dead_lettered_at ? "dead-lettered" : v ?? "-"
+      },
+      { key: "last_error", header: "Last error", transform: (v) => v ? String(v) : "" }
+    ])
+  );
+  deps.log(`${rows.length} delivery attempt(s).`);
+  return 0;
+}
+function productionDeps() {
+  return {
+    rpc: async (fn, args) => {
+      const ctx = await getAuthenticatedContext();
+      const { data, error: rpcError } = await ctx.client.rpc(fn, { p_project_id: ctx.projectId, ...args });
+      if (rpcError) {
+        throw Object.assign(new Error(rpcError.message), { code: rpcError.code });
+      }
+      return data;
+    },
+    log: (line) => console.log(line),
+    error: (line) => console.error(source_default.red(line))
+  };
+}
+function readSecretFromStdin() {
+  try {
+    return readFileSync6(0, "utf8");
+  } catch {
+    return "";
+  }
+}
+function registerNotifyCommands(program3) {
+  const notify = program3.command("notify").description(
+    "B-1009 notify dispatcher operator surface \u2014 register an endpoint's signing secret and read every delivery attempt. Subscriptions themselves are NOT managed here: they come from the repo's .harmony/project.yml `notify:` block, synced by `harmony gates run`."
+  );
+  notify.command("register-secret").description(
+    "Register (or rotate) the HMAC signing secret for one declared endpoint. Prints only the registration timestamp \u2014 the secret is never echoed, logged or read back. Until a secret is registered, that endpoint's deliveries park in `awaiting_secret` and are never sent unsigned."
+  ).requiredOption("--endpoint <url>", "The declared endpoint URL, exactly as it appears in .harmony/project.yml").option("--secret <secret>", "The signing secret (min 16 chars). Prefer --secret-stdin.").option("--secret-stdin", "Read the secret from stdin instead, keeping it out of shell history and `ps`", false).action(async (opts) => {
+    const deps = productionDeps();
+    if (opts.secretStdin && opts.secret) {
+      deps.error("harmony notify register-secret: pass either --secret or --secret-stdin, not both.");
+      process.exit(1);
+    }
+    const secret = opts.secretStdin ? readSecretFromStdin() : opts.secret ?? "";
+    if (!secret.trim()) {
+      deps.error("harmony notify register-secret: no secret supplied (use --secret <secret> or --secret-stdin).");
+      process.exit(1);
+    }
+    const code = await runRegisterSecret(deps, { endpoint: opts.endpoint, secret });
+    process.exit(code);
+  });
+  notify.command("deliveries").description(
+    "List notify delivery attempts for the active project \u2014 status, attempt count, response code, backoff and dead-letter stamp (AC4). No secret and no payload is ever returned."
+  ).option("--dead-lettered", "Only deliveries that have been dead-lettered", false).option("--live", "Only deliveries that have NOT been dead-lettered", false).option("--limit <n>", "Maximum rows (1-500, default 50)", "50").action(async (opts) => {
+    const deps = productionDeps();
+    if (opts.deadLettered && opts.live) {
+      deps.error("harmony notify deliveries: --dead-lettered and --live are mutually exclusive.");
+      process.exit(1);
+    }
+    const deadLettered = opts.deadLettered ? true : opts.live ? false : null;
+    const parsedLimit = Number.parseInt(opts.limit ?? "50", 10);
+    const code = await runListDeliveries(deps, {
+      deadLettered,
+      limit: Number.isFinite(parsedLimit) ? parsedLimit : 50,
+      json: Boolean(program3.opts().json)
+    });
+    process.exit(code);
+  });
 }
 
 // src/cli/index.ts
@@ -40288,4 +40604,5 @@ registerModelCommands(program2);
 registerLegCostCommands(program2);
 registerLegOutputCommands(program2);
 registerGatesCommands(program2);
+registerNotifyCommands(program2);
 program2.parse();

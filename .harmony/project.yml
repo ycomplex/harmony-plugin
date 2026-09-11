@@ -8,15 +8,22 @@
 # release.before_merge: the B-778 migration of plugin/CLAUDE.md's Versioning section's hand-written
 # release-prep steps (npm run build, npm run verify:dist) into this manifest.
 #
-# notify (B-973): DECLARED DATA ONLY, exactly like preconditions above. NOTHING DISPATCHES TO
-# `endpoint` — not this plugin, not the conductor daemon, not any worker. There is no consumer of
-# this key anywhere in harmony-plugin: `notify` is deliberately not an extension point, and no code
-# path resolves it to an action (proved by the "notify endpoint — declared data, NEVER reached" test
-# in src/config/project-manifest.test.ts). The delivery substrate that will eventually consume these
-# declarations is owned by B-980 (the outbox) and B-1009 (the Supabase-hosted HTTP dispatcher),
-# neither of which lives in this repo. The endpoints below therefore point at the reserved `.invalid`
-# TLD, which can never resolve: they are a shape fixture, not a live webhook. Full specification —
-# event shape, dedup, ordering, at-least-once — is in docs/notify-outbox-contract.md.
+# notify (B-973, narrowed by B-1009): NOTHING IN THIS PLUGIN DISPATCHES TO `endpoint` — not this
+# plugin, not the conductor daemon, not any worker. `notify` is still deliberately not an extension
+# point and no code path resolves it to an action (proved by the "notify endpoint — declared data,
+# NEVER reached" test in src/config/project-manifest.test.ts), and the delivery substrate remains
+# outside this repo: B-980 (the outbox) and B-1009 (the Supabase-hosted dispatcher — an edge function
+# on a pg_net webhook plus a pg_cron sweep).
+#
+# WHAT B-1009 CHANGED: this key now HAS a consumer. `harmony gates run` syncs the block below to the
+# board (src/config/notify-sync.ts -> the notify_sync_subscriptions RPC) so declaring here is the only
+# step an operator takes. That is a call to the BOARD, never to an endpoint; it fires only when the
+# declaration's hash changed, under a hard 3s timeout, and every failure is one stderr warning that
+# cannot change a gate's stdout, steps or exit code.
+#
+# The endpoints below still point at the reserved `.invalid` TLD, which can never resolve: they are a
+# shape fixture, not a live webhook, and are deliberately left that way. Full specification — event
+# shape, dedup, ordering, at-least-once, receiver idempotency — is in docs/notify-outbox-contract.md.
 version: 1
 preconditions:
   - "Build subagents work in a worktree by default — and in this meta-repo the worktree must be created INSIDE the child repo. The children (web/, plugin/) are gitignored, not submodules, so an isolation:'worktree' taken at the workspace root silently excludes them — the subagent falls back to the shared live checkout with zero isolation and no warning. Isolate inside web/ or plugin/."
