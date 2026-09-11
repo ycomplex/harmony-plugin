@@ -17417,6 +17417,11 @@ var HarmonyAuth = class {
   projectId = null;
   userId = null;
   expiresAt = 0;
+  // B-845: single-flight guard for forceRefresh() — concurrent PGRST303 callers on ONE HarmonyAuth
+  // instance must share the SAME in-flight exchange rather than each firing their own fetch(). Set
+  // the moment a refresh starts, cleared on BOTH resolution and rejection (via .finally()) so a
+  // failed exchange can never poison the next caller into replaying a dead promise forever.
+  inFlightRefresh = null;
   constructor(apiToken) {
     this.apiToken = apiToken;
   }
@@ -17426,6 +17431,20 @@ var HarmonyAuth = class {
     }
     await this.exchange();
     return this.accessToken;
+  }
+  /** B-845: force a FRESH token exchange, bypassing getAccessToken()'s cache/expiry check entirely
+   *  — the caller (src/daemon/write-retry.ts's withWriteRetry) already knows the cached token was
+   *  rejected (PGRST303), so replaying getAccessToken()'s cache would just hand back the same dead
+   *  token. Single-flight: a second concurrent caller gets the SAME in-flight exchange, never a
+   *  second fetch. This method deliberately does NOT call getAccessToken() — see the module-level
+   *  design note above. */
+  forceRefresh() {
+    if (!this.inFlightRefresh) {
+      this.inFlightRefresh = this.exchange().finally(() => {
+        this.inFlightRefresh = null;
+      });
+    }
+    return this.inFlightRefresh;
   }
   getProjectId() {
     if (!this.projectId) throw new Error("Not authenticated yet. Call getAccessToken() first.");
@@ -17437,14 +17456,22 @@ var HarmonyAuth = class {
   }
   async exchange() {
     const endpoint = "/functions/v1/auth-token";
-    const res = await fetch(`${SUPABASE_URL}${endpoint}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
-      },
-      body: JSON.stringify({ token: this.apiToken })
-    });
+    let res;
+    try {
+      res = await fetch(`${SUPABASE_URL}${endpoint}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
+        },
+        body: JSON.stringify({ token: this.apiToken })
+      });
+    } catch (err) {
+      if (err instanceof Error) {
+        err.endpoint = endpoint;
+      }
+      throw err;
+    }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new TokenExchangeError(endpoint, res.status, body);
@@ -31308,23 +31335,95 @@ function describeCause(cause, depth = 0) {
   }
   return String(cause);
 }
+function findCauseCode(cause, depth = 0) {
+  if (depth > 5) return void 0;
+  if (cause instanceof Error) {
+    if ("code" in cause && typeof cause.code === "string") {
+      return cause.code;
+    }
+    if ("cause" in cause && cause.cause !== void 0) {
+      return findCauseCode(cause.cause, depth + 1);
+    }
+    return void 0;
+  }
+  if (typeof cause === "object" && cause !== null && "code" in cause) {
+    const code = cause.code;
+    return typeof code === "string" ? code : void 0;
+  }
+  return void 0;
+}
 function formatDaemonError(err, opts) {
   if (isHttpShapedError(err)) {
     const endpoint = err.endpoint ?? opts?.endpoint ?? "(unknown endpoint)";
     return `HTTP ${err.status} from ${endpoint}: ${safeStringify(err.body)}`;
   }
   if (err instanceof Error) {
+    const endpoint = err.endpoint ?? opts?.endpoint;
     if ("cause" in err && err.cause !== void 0) {
-      const endpointPrefix2 = opts?.endpoint ? `[${opts.endpoint}] ` : "";
+      const endpointPrefix2 = endpoint ? `[${endpoint}] ` : "";
       return `${endpointPrefix2}${err.name}: ${err.message} (cause: ${describeCause(err.cause)})`;
     }
-    const endpointPrefix = opts?.endpoint ? `[${opts.endpoint}] ` : "";
+    const endpointPrefix = endpoint ? `[${endpoint}] ` : "";
     return `${endpointPrefix}${err.name}: ${err.message}`;
   }
   return safeStringify(err);
 }
 
+// src/daemon/write-retry.ts
+var PRE_SEND_CODES = /* @__PURE__ */ new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "CERT_HAS_EXPIRED"
+]);
+var POST_SEND_CODES = /* @__PURE__ */ new Set(["ETIMEDOUT", "ECONNRESET", "UND_ERR_SOCKET"]);
+function isPgrst303(err) {
+  return typeof err === "object" && err !== null && "code" in err && err.code === "PGRST303";
+}
+function classifyRetrySafety(err) {
+  if (isPgrst303(err)) return "pgrst303";
+  if (err instanceof Error && err.message === "socket hang up") return "post-send";
+  const code = findCauseCode(err);
+  if (code && PRE_SEND_CODES.has(code)) return "pre-send";
+  if (code && POST_SEND_CODES.has(code)) return "post-send";
+  return "post-send";
+}
+var NETWORK_BACKOFFS_MS = [250, 750];
+function tagEndpoint(err, endpoint) {
+  if (!endpoint) return;
+  if (typeof err === "object" && err !== null && !("endpoint" in err)) {
+    err.endpoint = endpoint;
+  }
+}
+async function withWriteRetry(deps, opts, fn) {
+  let pgrstRefreshed = false;
+  let networkRetriesUsed = 0;
+  for (; ; ) {
+    try {
+      return await fn();
+    } catch (err) {
+      const safety = classifyRetrySafety(err);
+      if (safety === "pgrst303" && !pgrstRefreshed) {
+        pgrstRefreshed = true;
+        await deps.forceRefresh();
+        continue;
+      }
+      const networkRetryAllowed = safety === "pre-send" || safety === "post-send" && opts.class === "idempotent";
+      if (networkRetryAllowed && networkRetriesUsed < NETWORK_BACKOFFS_MS.length) {
+        const backoffMs = NETWORK_BACKOFFS_MS[networkRetriesUsed];
+        networkRetriesUsed += 1;
+        await deps.sleep(backoffMs);
+        continue;
+      }
+      tagEndpoint(err, opts.endpoint);
+      throw err;
+    }
+  }
+}
+
 // src/daemon/heartbeat.ts
+var HEARTBEAT_ENDPOINT = "conductions.updateConductionIfHeld(heartbeat)";
 function createHeartbeatKeeper(deps) {
   const timers = /* @__PURE__ */ new Map();
   const stop = (id) => {
@@ -31335,9 +31434,13 @@ function createHeartbeatKeeper(deps) {
   };
   const beat = async (id) => {
     try {
-      const row = await deps.updateConductionIfHeld(id, {
-        last_heartbeat_at: new Date(deps.now()).toISOString()
-      });
+      const row = await withWriteRetry(
+        deps,
+        { class: "idempotent", endpoint: HEARTBEAT_ENDPOINT },
+        () => deps.updateConductionIfHeld(id, {
+          last_heartbeat_at: new Date(deps.now()).toISOString()
+        })
+      );
       if (row === null) {
         deps.log(`conduction ${id}: lease no longer held \u2014 heartbeat stopped`);
         stop(id);
@@ -31693,6 +31796,8 @@ function exitClass(outcome, args) {
 }
 
 // src/daemon/scheduler.ts
+var TAKEOVER_ENDPOINT = "conductions.takeoverConduction";
+var STEAL_ENDPOINT = "conductions.stealConduction";
 var WORKER_OUTPUT_TAIL_BYTES = 64 * 1024;
 var iso = (ms) => new Date(ms).toISOString();
 var exclusionMemory = /* @__PURE__ */ new WeakMap();
@@ -31954,13 +32059,17 @@ async function handleHeldConduction(deps, state, keeper, excluded, runtime, row)
   });
 }
 async function handleForeignConduction(deps, state, keeper, excluded, runtime, row, stealCandidates, waitingCandidates) {
-  const won = await deps.takeoverConduction({
-    id: row.id,
-    observed_lease_holder: row.lease_holder,
-    // B-651 guard: the stale window originates from now() AT PASS TIME, never a stored stamp.
-    stale_before: iso(deps.now() - deps.config.staleMs),
-    new_lease_holder: deps.leaseHolder
-  });
+  const won = await withWriteRetry(
+    deps,
+    { class: "cas", endpoint: TAKEOVER_ENDPOINT },
+    () => deps.takeoverConduction({
+      id: row.id,
+      observed_lease_holder: row.lease_holder,
+      // B-651 guard: the stale window originates from now() AT PASS TIME, never a stored stamp.
+      stale_before: iso(deps.now() - deps.config.staleMs),
+      new_lease_holder: deps.leaseHolder
+    })
+  );
   if (won !== null) {
     const fallThrough = await handleWonTakeover(deps, state, keeper, runtime, row, won);
     if (fallThrough) await handleHeldConduction(deps, state, keeper, excluded, runtime, won);
@@ -32165,11 +32274,15 @@ async function fireStealCandidates(deps, state, keeper, runtime, candidates) {
   for (const { row, current } of candidates) {
     if (runtime.running.size >= deps.config.maxConcurrentWorkers) break;
     try {
-      const stolen = await deps.stealConduction({
-        id: row.id,
-        observed_lease_holder: row.lease_holder,
-        new_lease_holder: deps.leaseHolder
-      });
+      const stolen = await withWriteRetry(
+        deps,
+        { class: "cas", endpoint: STEAL_ENDPOINT },
+        () => deps.stealConduction({
+          id: row.id,
+          observed_lease_holder: row.lease_holder,
+          new_lease_holder: deps.leaseHolder
+        })
+      );
       if (stolen === null) continue;
       deps.log(`${label(row, current, deps.projectKey)}: stole ready work from ${row.lease_holder}`);
       state.delete(row.id);
@@ -32464,6 +32577,9 @@ ${err instanceof Error ? err.message : String(err)}
     takeoverConduction: (args) => takeoverConduction(client, args),
     // B-717 item 3: the multi-daemon steal CAS.
     stealConduction: (args) => stealConduction(client, args),
+    // B-845: single-flight, bound to the daemon's ONE lifetime HarmonyAuth instance — lets a CAS
+    // write self-heal a mid-tick PGRST303 without a second exchange per concurrent caller.
+    forceRefresh: () => auth.forceRefresh(),
     runCommand,
     // B-720 (replacement capture): the launcher-diagnostics write. Never throws (see
     // src/tools/leg-output-record.ts) — a settlement must never depend on it, before or after
@@ -32485,7 +32601,10 @@ ${err instanceof Error ? err.message : String(err)}
     startInterval: deps.startInterval,
     updateConductionIfHeld: (id, patch) => updateConductionIfHeld(client, id, leaseHolder, patch),
     log,
-    heartbeatMs: config.heartbeatMs
+    heartbeatMs: config.heartbeatMs,
+    // B-845: same single lifetime HarmonyAuth instance as SchedulerDeps.forceRefresh above.
+    forceRefresh: () => auth.forceRefresh(),
+    sleep
   });
   const stop = async (signal) => {
     keeper.stopAll();

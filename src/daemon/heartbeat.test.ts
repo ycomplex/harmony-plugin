@@ -16,6 +16,8 @@ function harness(opts: HarnessOpts = {}) {
   const stopped: number[] = [];
   const logs: string[] = [];
   const writes: Array<{ id: string; patch: ConductionPatch }> = [];
+  const sleeps: number[] = [];
+  let refreshCalls = 0;
   let call = 0;
 
   const deps: HeartbeatDeps = {
@@ -32,16 +34,34 @@ function harness(opts: HarnessOpts = {}) {
     },
     log: (line) => logs.push(line),
     heartbeatMs: 30_000,
+    // B-845: immediate-resolving fakes — real backoff TIMING is write-retry.test.ts's job; this
+    // harness only needs the retry LOOP itself to be exercisable without a real delay.
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+    forceRefresh: async () => {
+      refreshCalls += 1;
+    },
   };
 
-  return { deps, ticks, stopped, logs, writes, keeper: createHeartbeatKeeper(deps) };
+  return {
+    deps,
+    ticks,
+    stopped,
+    logs,
+    writes,
+    sleeps,
+    refreshCalls: () => refreshCalls,
+    keeper: createHeartbeatKeeper(deps),
+  };
 }
 
-/** Let the beat's promise chain settle (the tick itself is fire-and-forget). */
+/** Let the beat's promise chain settle (the tick itself is fire-and-forget). B-845: beat() may now
+ *  run withWriteRetry's internal retry loop (each round: an awaited write + an awaited sleep), so a
+ *  fixed handful of microtask flushes is generous enough to cover every round, not just a single
+ *  unwrapped write. */
 const settle = async () => {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let i = 0; i < 20; i += 1) await Promise.resolve();
 };
 
 describe('createHeartbeatKeeper — liveness independent of pass progress (B-739)', () => {
@@ -107,8 +127,15 @@ describe('createHeartbeatKeeper — liveness independent of pass progress (B-739
 
   // Invariant 3, and the sharpest edge in this module: conflating a transient failure with lease
   // loss would stop the heartbeat during exactly the blip that makes a healthy daemon look dead.
-  it('does NOT stop on a thrown operational error — a blip is not lease loss', async () => {
-    const h = harness({ results: [new Error('JWT expired')] });
+  //
+  // B-845: this write is now wrapped in withWriteRetry('idempotent'), which retries an
+  // unrecognized-code error (the conservative default bucket) TWICE (250ms then 750ms backoff)
+  // before giving up — so a persistent (not self-healing) blip needs three queued failures to
+  // outlast every retry and still reach this module's own catch/log/keep-running path unchanged.
+  it('does NOT stop on a thrown operational error that outlasts every internal retry — a blip is not lease loss', async () => {
+    const h = harness({
+      results: [new Error('JWT expired'), new Error('JWT expired'), new Error('JWT expired')],
+    });
     h.keeper.ensure('cond-1');
     h.ticks[0]();
     await settle();
@@ -116,18 +143,44 @@ describe('createHeartbeatKeeper — liveness independent of pass progress (B-739
     expect(h.keeper.running()).toEqual(['cond-1']);
     expect(h.stopped).toEqual([]);
     expect(h.logs.join(' ')).toMatch(/JWT expired/);
+    // All three attempts were made (the initial write plus both bounded network-error retries),
+    // backing off 250ms then 750ms in between — never a forced refresh (no PGRST303 code here).
+    expect(h.writes).toHaveLength(3);
+    expect(h.sleeps).toEqual([250, 750]);
+    expect(h.refreshCalls()).toBe(0);
   });
 
-  it('recovers on the next tick after a transient failure', async () => {
-    const h = harness({ results: [new Error('network down'), null] });
+  it('recovers on the next tick after a failure that outlasts this ticks own retries', async () => {
+    const h = harness({
+      results: [new Error('network down'), new Error('network down'), new Error('network down'), null],
+    });
     h.keeper.ensure('cond-1');
     h.ticks[0]();
     await settle();
-    expect(h.keeper.running()).toEqual(['cond-1']); // survived the blip
+    expect(h.keeper.running()).toEqual(['cond-1']); // survived the blip (still failing after retries)
 
     h.ticks[0]();
     await settle();
     expect(h.keeper.running()).toEqual([]); // then a real no-row-matched stops it
+  });
+
+  // B-845 checklist item 11: a retry that itself SUCCEEDS but returns null (lease no longer held)
+  // must still stop the keeper immediately — success-with-null is invariant 3's OTHER branch, not
+  // a reason to keep looping the retry.
+  it('a null row after a SUCCESSFUL internal retry stops the keeper and never retries again', async () => {
+    const h = harness({ results: [new Error('network down'), null] });
+    h.keeper.ensure('cond-1');
+    h.ticks[0]();
+    await settle();
+
+    expect(h.keeper.running()).toEqual([]);
+    expect(h.stopped).toEqual([0]);
+    expect(h.logs.join(' ')).toMatch(/lease no longer held/);
+    // Only ONE retry was needed (the second write succeeded, with a null result) — no second
+    // backoff, and no PGRST303 forced refresh.
+    expect(h.writes).toHaveLength(2);
+    expect(h.sleeps).toEqual([250]);
+    expect(h.refreshCalls()).toBe(0);
   });
 
   it('retain() stops only the leases that left the active set', () => {

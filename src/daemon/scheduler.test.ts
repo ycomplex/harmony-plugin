@@ -292,6 +292,10 @@ function makeHarness(opts: HarnessOpts) {
       probeRefCalls.push({ ref, result });
       return result;
     }),
+    // B-845: HarmonyAuth.forceRefresh() stand-in — real single-flight behavior is auth.test.ts's
+    // job; here it just needs to be callable so withWriteRetry's PGRST303 branch has somewhere to
+    // go in a test that exercises it.
+    forceRefresh: vi.fn(async () => {}),
   };
 
   const keeper = createHeartbeatKeeper({
@@ -300,6 +304,8 @@ function makeHarness(opts: HarnessOpts) {
     updateConductionIfHeld: (id, patch) => deps.updateConductionIfHeld(id, ME, patch),
     log: (line) => logs.push(line),
     heartbeatMs: cfg.heartbeatMs,
+    forceRefresh: deps.forceRefresh,
+    sleep: deps.sleep,
   });
 
   /** Let pending promise chains settle. Must flush MACROTASKS, not just microtasks. (Real timers
@@ -1826,6 +1832,42 @@ describe('B-717 item 3: stealConduction — AC3', () => {
     expect(h.getConduction('cond-1').lease_holder).toBe('peer-host:2:bbbb2222');
   });
 
+  // B-845: a post-send/ambiguous CAS error extends the SAME "no retry this pass, a later pass may
+  // reconsider" idiom the loses-the-race case just above already uses — it is not a new mechanism.
+  it('B-845: a post-send/ambiguous steal-CAS error is not retried this pass (logged skip via formatDaemonError with the endpoint, no worker fired); a later pass with a fresh read wins the CAS and fires the worker exactly once', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({ lease_holder: 'peer-host:2:bbbb2222', last_heartbeat_at: iso(T0 - 1_000), leg_started_at: null }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+    });
+
+    await h.pass(); // first sight — baseline only, no verdict yet
+    expect(h.deps.stealConduction).not.toHaveBeenCalled();
+
+    // Pass 1: the steal CAS write itself fails ambiguously (server-side outcome unknown) — 'cas'
+    // class writes NEVER retry this bucket, unlike 'idempotent' (heartbeat.ts).
+    (h.deps.stealConduction as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      throw { code: 'ECONNRESET', message: 'read ECONNRESET' };
+    });
+    await h.pass();
+    expect(h.deps.stealConduction).toHaveBeenCalledTimes(1);
+    expect(h.commands).toEqual([]); // no retry attempted, no worker fired
+    expect(h.getConduction('cond-1').lease_holder).toBe('peer-host:2:bbbb2222'); // untouched
+    expect(
+      h.logs.some(
+        (l) => /steal error — row skipped/.test(l) && /ECONNRESET/.test(l) && /conductions\.stealConduction/.test(l),
+      ),
+    ).toBe(true);
+
+    // Pass 2: a fresh read, real CAS semantics — this time the steal wins and fires immediately.
+    await h.pass();
+    expect(h.deps.stealConduction).toHaveBeenCalledTimes(2);
+    expect(h.getConduction('cond-1').lease_holder).toBe(ME);
+    expect(h.commands).toEqual(['launch cond-1 task-1']);
+    expect(h.running()).toEqual(['cond-1']);
+  });
+
   it('never steals a ticket a human took away from the conductor (conductor_excluded_at set)', async () => {
     const h = makeHarness({
       conductions: [
@@ -2962,5 +3004,44 @@ describe('B-720 captured launcher output', () => {
 
     expect(h.getConduction('cond-1').status).toBe('parked');
     expect(h.legOutputWrites()).toEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-845: withWriteRetry must NEVER wrap the worker-launch/fire call — a launch is not a write this
+// module's retry contract applies to, and re-firing a worker on a transient blip is a completely
+// different (and much larger) hazard than retrying a guarded DB write. This is pinned by SOURCE
+// INSPECTION rather than a behavioral assertion: a successful launch is indistinguishable, from the
+// outside, whether or not it happens to be wrapped, so the only way to prove the ABSENCE of the
+// wrapper is to look at the call site itself.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('B-845: withWriteRetry exclusion — the fire/worker-launch path is never wrapped', () => {
+  it('the launch runCommand call inside fireLaunch carries no withWriteRetry wrapper', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(fileURLToPath(new URL('./scheduler.ts', import.meta.url)), 'utf8');
+
+    const fnStart = src.indexOf('async function fireLaunch(');
+    expect(fnStart).toBeGreaterThan(-1);
+    // The next top-level function declaration after fireLaunch's — bounds the extraction to
+    // fireLaunch's OWN body, not the rest of the module (which legitimately uses withWriteRetry
+    // elsewhere, for the CAS writes). Covers every declaration shape this file actually uses
+    // ('function ', 'async function ', 'export function ', 'export async function ').
+    const candidates = [
+      '\nasync function ',
+      '\nfunction ',
+      '\nexport async function ',
+      '\nexport function ',
+    ]
+      .map((marker) => src.indexOf(marker, fnStart + 1))
+      .filter((idx) => idx !== -1);
+    expect(candidates.length).toBeGreaterThan(0);
+    const bodyEnd = Math.min(...candidates);
+    expect(bodyEnd).toBeGreaterThan(fnStart);
+    const body = src.slice(fnStart, bodyEnd);
+
+    expect(body).toContain('.runCommand(renderTemplate(deps.config.profile.launch'); // the launch call is really in here
+    expect(body).not.toContain('withWriteRetry');
   });
 });

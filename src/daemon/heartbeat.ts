@@ -33,8 +33,14 @@
 
 import type { ConductionPatch, ConductionRecord } from '../tools/conduction-record.js';
 import { formatDaemonError } from './error-format.js';
+import { withWriteRetry, type WriteRetryDeps } from './write-retry.js';
 
-export interface HeartbeatDeps {
+// B-845: a descriptive label for the heartbeat write, tagged onto a non-retried failure's
+// `.endpoint` so formatDaemonError's Rule 2 can name it even from a catch site that passes no
+// `opts` (this module's own catch below does not).
+const HEARTBEAT_ENDPOINT = 'conductions.updateConductionIfHeld(heartbeat)';
+
+export interface HeartbeatDeps extends WriteRetryDeps {
   now(): number;
   /** Start a repeating timer; returns a stop function. Injected — never global setInterval. */
   startInterval(ms: number, fn: () => void): () => void;
@@ -43,6 +49,11 @@ export interface HeartbeatDeps {
   updateConductionIfHeld(id: string, patch: ConductionPatch): Promise<ConductionRecord | null>;
   log(line: string): void;
   heartbeatMs: number;
+  /** B-845: HarmonyAuth.forceRefresh(), single-flight and bound to the daemon's one lifetime auth
+   *  instance — see WriteRetryDeps. */
+  forceRefresh(): Promise<void>;
+  /** B-845: injected backoff sleep for the network-error retry — see WriteRetryDeps. */
+  sleep(ms: number): Promise<void>;
 }
 
 export interface HeartbeatKeeper {
@@ -70,9 +81,18 @@ export function createHeartbeatKeeper(deps: HeartbeatDeps): HeartbeatKeeper {
 
   const beat = async (id: string): Promise<void> => {
     try {
-      const row = await deps.updateConductionIfHeld(id, {
-        last_heartbeat_at: new Date(deps.now()).toISOString(),
-      });
+      // B-845: this write's guard is id + self-held lease_holder only — genuinely idempotent, so a
+      // transient failure (JWT expiry or a network blip) is safe to retry unconditionally within
+      // this same tick before falling back to invariant 3's "throw = nothing is known, retry next
+      // tick" handling below.
+      const row = await withWriteRetry(
+        deps,
+        { class: 'idempotent', endpoint: HEARTBEAT_ENDPOINT },
+        () =>
+          deps.updateConductionIfHeld(id, {
+            last_heartbeat_at: new Date(deps.now()).toISOString(),
+          }),
+      );
       if (row === null) {
         // NO ROW MATCHED — the lease was taken over, or the row is gone. Go quiet on this run at
         // once; the scheduler's own guarded writes will likewise no-op, so we can never clobber

@@ -143,6 +143,13 @@ import { getModelForGate, type RunConfig } from '../config/run-config.js';
 import { WORKER_IMAGE_DEFAULT } from '../config/deployment-config.js';
 import type { HeartbeatKeeper } from './heartbeat.js';
 import { formatDaemonError } from './error-format.js';
+import { withWriteRetry, type WriteRetryDeps } from './write-retry.js';
+
+// B-845: descriptive labels tagged onto a non-retried CAS-write failure's `.endpoint` so
+// formatDaemonError's Rule 2 can name which write failed even from the existing catch sites below,
+// neither of which passes `opts` today.
+const TAKEOVER_ENDPOINT = 'conductions.takeoverConduction';
+const STEAL_ENDPOINT = 'conductions.stealConduction';
 import type {
   ConductionPatch,
   ConductionRecord,
@@ -172,7 +179,7 @@ export type DaemonTask = Taskish & {
   archived?: boolean | null;
 };
 
-export interface SchedulerDeps {
+export interface SchedulerDeps extends WriteRetryDeps {
   now(): number;
   sleep(ms: number): Promise<void>;
   listConductions(args: { status?: ConductionStatus }): Promise<ConductionRecord[]>;
@@ -189,6 +196,9 @@ export interface SchedulerDeps {
   takeoverConduction(args: TakeoverConductionArgs): Promise<ConductionRecord | null>;
   /** B-717 item 3: the multi-daemon steal CAS — see conduction-record.ts's stealConduction. */
   stealConduction(args: StealConductionArgs): Promise<ConductionRecord | null>;
+  /** B-845: HarmonyAuth.forceRefresh(), single-flight and bound to the daemon's one lifetime auth
+   *  instance — see WriteRetryDeps. Used by withWriteRetry to self-heal a PGRST303 on a CAS write. */
+  forceRefresh(): Promise<void>;
   /** B-739: start a repeating timer; returns a stop function. Injected so the loop stays
    *  fake-clock testable (the B-532 pattern) — never call global setInterval in this module. */
   startInterval(ms: number, fn: () => void): () => void;
@@ -914,13 +924,18 @@ async function handleForeignConduction(
   stealCandidates: StealCandidate[],
   waitingCandidates: Array<{ id: string; adoptAt: number }>,
 ): Promise<void> {
-  const won = await deps.takeoverConduction({
-    id: row.id,
-    observed_lease_holder: row.lease_holder,
-    // B-651 guard: the stale window originates from now() AT PASS TIME, never a stored stamp.
-    stale_before: iso(deps.now() - deps.config.staleMs),
-    new_lease_holder: deps.leaseHolder,
-  });
+  // B-845: 'cas' class — retries a PGRST303 (forced refresh) and pre-send network errors only,
+  // NEVER a post-send/ambiguous one: a retried CAS against this same observed_lease_holder would
+  // silently misread attempt 1 actually landing as a loss (see this module's write-retry.ts).
+  const won = await withWriteRetry(deps, { class: 'cas', endpoint: TAKEOVER_ENDPOINT }, () =>
+    deps.takeoverConduction({
+      id: row.id,
+      observed_lease_holder: row.lease_holder,
+      // B-651 guard: the stale window originates from now() AT PASS TIME, never a stored stamp.
+      stale_before: iso(deps.now() - deps.config.staleMs),
+      new_lease_holder: deps.leaseHolder,
+    }),
+  );
   if (won !== null) {
     const fallThrough = await handleWonTakeover(deps, state, keeper, runtime, row, won);
     // On a win, fall through to the SAME held-row continuation as an already-held row would get
@@ -1334,11 +1349,15 @@ async function fireStealCandidates(
   for (const { row, current } of candidates) {
     if (runtime.running.size >= deps.config.maxConcurrentWorkers) break;
     try {
-      const stolen = await deps.stealConduction({
-        id: row.id,
-        observed_lease_holder: row.lease_holder as string,
-        new_lease_holder: deps.leaseHolder,
-      });
+      // B-845: same 'cas' policy as takeoverConduction above — the existing null/loss handling
+      // just below is the SAME idiom a post-send/ambiguous non-retry now extends, not a new one.
+      const stolen = await withWriteRetry(deps, { class: 'cas', endpoint: STEAL_ENDPOINT }, () =>
+        deps.stealConduction({
+          id: row.id,
+          observed_lease_holder: row.lease_holder as string,
+          new_lease_holder: deps.leaseHolder,
+        }),
+      );
       if (stolen === null) continue; // lost the steal race — a later pass may reconsider.
 
       deps.log(`${label(row, current, deps.projectKey)}: stole ready work from ${row.lease_holder}`);

@@ -29,6 +29,11 @@ export class HarmonyAuth {
   private projectId: string | null = null;
   private userId: string | null = null;
   private expiresAt: number = 0;
+  // B-845: single-flight guard for forceRefresh() — concurrent PGRST303 callers on ONE HarmonyAuth
+  // instance must share the SAME in-flight exchange rather than each firing their own fetch(). Set
+  // the moment a refresh starts, cleared on BOTH resolution and rejection (via .finally()) so a
+  // failed exchange can never poison the next caller into replaying a dead promise forever.
+  private inFlightRefresh: Promise<void> | null = null;
 
   constructor(apiToken: string) {
     this.apiToken = apiToken;
@@ -40,6 +45,21 @@ export class HarmonyAuth {
     }
     await this.exchange();
     return this.accessToken!;
+  }
+
+  /** B-845: force a FRESH token exchange, bypassing getAccessToken()'s cache/expiry check entirely
+   *  — the caller (src/daemon/write-retry.ts's withWriteRetry) already knows the cached token was
+   *  rejected (PGRST303), so replaying getAccessToken()'s cache would just hand back the same dead
+   *  token. Single-flight: a second concurrent caller gets the SAME in-flight exchange, never a
+   *  second fetch. This method deliberately does NOT call getAccessToken() — see the module-level
+   *  design note above. */
+  forceRefresh(): Promise<void> {
+    if (!this.inFlightRefresh) {
+      this.inFlightRefresh = this.exchange().finally(() => {
+        this.inFlightRefresh = null;
+      });
+    }
+    return this.inFlightRefresh;
   }
 
   getProjectId(): string {
@@ -54,14 +74,26 @@ export class HarmonyAuth {
 
   private async exchange(): Promise<void> {
     const endpoint = '/functions/v1/auth-token';
-    const res = await fetch(`${SUPABASE_URL}${endpoint}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-      },
-      body: JSON.stringify({ token: this.apiToken }),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${SUPABASE_URL}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        },
+        body: JSON.stringify({ token: this.apiToken }),
+      });
+    } catch (err) {
+      // B-845: a raw fetch() rejection (DNS/ECONNREFUSED/TLS/etc) carries no endpoint of its own —
+      // tag it here, mirroring TokenExchangeError's endpoint field, so a caller (formatDaemonError's
+      // Rule 2) can render WHICH call failed instead of a bare "TypeError: fetch failed". The
+      // original error (and its `.cause` chain) is otherwise untouched and rethrown as-is.
+      if (err instanceof Error) {
+        (err as Error & { endpoint?: string }).endpoint = endpoint;
+      }
+      throw err;
+    }
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));

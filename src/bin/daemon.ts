@@ -383,6 +383,9 @@ async function main(): Promise<void> {
     takeoverConduction: (args) => takeoverConduction(client, args),
     // B-717 item 3: the multi-daemon steal CAS.
     stealConduction: (args) => stealConduction(client, args),
+    // B-845: single-flight, bound to the daemon's ONE lifetime HarmonyAuth instance — lets a CAS
+    // write self-heal a mid-tick PGRST303 without a second exchange per concurrent caller.
+    forceRefresh: () => auth.forceRefresh(),
     runCommand,
     // B-720 (replacement capture): the launcher-diagnostics write. Never throws (see
     // src/tools/leg-output-record.ts) — a settlement must never depend on it, before or after
@@ -406,6 +409,9 @@ async function main(): Promise<void> {
     updateConductionIfHeld: (id, patch) => updateConductionIfHeld(client, id, leaseHolder, patch),
     log,
     heartbeatMs: config.heartbeatMs,
+    // B-845: same single lifetime HarmonyAuth instance as SchedulerDeps.forceRefresh above.
+    forceRefresh: () => auth.forceRefresh(),
+    sleep,
   });
 
   const stop = async (signal: string): Promise<void> => {
