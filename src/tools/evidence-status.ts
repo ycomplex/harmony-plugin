@@ -1,5 +1,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+import {
+  readDeclaredEvidence,
+  resolveManifestEvidence,
+  parseAttestedKeys,
+  type DeclaredEvidenceResolution,
+} from '../config/manifest-evidence.js';
 
 // ===========================================================================
 // CONDUCTOR BUILD-EVIDENCE STATUS (B-560).
@@ -126,8 +132,35 @@ export interface BuildEvidenceStatus {
   complete: boolean;
   /** Why the ticket is exempt from the evidence requirement, or null when it is not. */
   exempt_reason: string | null;
-  /** Human-readable list of the missing pieces (only when !complete && !is_umbrella). */
+  /** Human-readable list of the missing pieces (only when !complete && !is_umbrella).
+   *
+   *  B-974 adds ONE more possible line — outstanding declared evidence — and it is deliberately NOT
+   *  conditioned on `!complete`: a declared entry is a SIGNAL the human should see, including on a
+   *  ticket whose mechanical evidence is otherwise complete. */
   missing: string[];
+  /** B-974 — the project manifest's declared `verify.evidence` entries, resolved for THIS ticket.
+   *  Present only when the caller supplied a `manifest_root`; absent otherwise, which is the same
+   *  floor the verify brief keeps. Computed by the SAME pure module the brief's overlay uses
+   *  (src/config/manifest-evidence.ts), so the tool's answer and the brief's cannot drift. */
+  declared_evidence?: DeclaredEvidence;
+}
+
+/** B-974 — the declared-evidence block. `complete` above is deliberately UNTOUCHED by any of this:
+ *  a declared entry is a signal, not a floor. RPC-side enforcement is explicitly deferred by B-936. */
+export interface DeclaredEvidence {
+  /** Every declared entry in manifest order, with its resolved state. */
+  entries: DeclaredEvidenceResolution[];
+  /** Applies and not attested. */
+  outstanding: string[];
+  /** Applies and attested (`ATTESTED: <key>` somewhere on this ticket's verify-brief lineage). */
+  attested: string[];
+  /** Path-narrowed entries that could not be evaluated — this tool has no diff, so EVERY
+   *  `applies_to.paths` entry lands here. Named, never silently skipped. */
+  not_evaluated: string[];
+  /** Attested keys naming no declared entry — reported, never dropped. */
+  unknown_attested_keys: string[];
+  /** Set instead of the rest when the manifest could not be read: the file and the specific problem. */
+  problem?: string;
 }
 
 export const getBuildEvidenceStatusTool = {
@@ -141,6 +174,11 @@ export const getBuildEvidenceStatusTool = {
         type: 'string',
         description: 'Task identifier — UUID, task number (e.g., 43), or visual ID (e.g., B-43)',
       },
+      manifest_root: {
+        type: 'string',
+        description:
+          "B-974 — optional ABSOLUTE root of the repo of record, where `.harmony/project.yml` (B-991) is read for the project's declared `verify.evidence` entries. Supplying it adds a `declared_evidence` block (each entry's key, prompt and state — declared-unattested / declared-attested / not-applicable) and, when entries are outstanding, one more line in `missing`. `complete` is deliberately UNCHANGED by declared evidence: it is a signal for the human at the verify gate, not a mechanical floor. This tool has no diff, so every entry narrowed by `applies_to.paths` reports as not-evaluated rather than being silently skipped; the verify brief, which does have the diff, resolves those.",
+      },
     },
     required: ['task_id'],
   },
@@ -149,7 +187,7 @@ export const getBuildEvidenceStatusTool = {
 export async function getBuildEvidenceStatus(
   client: SupabaseClient,
   projectId: string,
-  args: { task_id: string },
+  args: { task_id: string; manifest_root?: string },
 ): Promise<BuildEvidenceStatus> {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
 
@@ -226,6 +264,24 @@ export async function getBuildEvidenceStatus(
     if (!has_pushed_pr) missing.push('pushed PR reference (no verified branch/PR recorded)');
   }
 
+  // B-974 — the project's DECLARED verify evidence, through the same pure module the verify brief's
+  // overlay uses. Absent `manifest_root` ⇒ nothing below runs and this tool answers exactly as it did
+  // before B-974. Note `complete` is computed ABOVE and is never revisited here: RPC-side enforcement
+  // of declared evidence is explicitly deferred by B-936.
+  const declared_evidence = await resolveDeclaredEvidenceBlock(
+    client,
+    resolvedId,
+    args.manifest_root,
+    labelRows.map((l) => l.labels?.name).filter((n): n is string => typeof n === 'string'),
+  );
+  if (declared_evidence?.outstanding.length) {
+    missing.push(
+      `${declared_evidence.outstanding.length} declared evidence ` +
+        `entr${declared_evidence.outstanding.length === 1 ? 'y' : 'ies'} outstanding ` +
+        `(${declared_evidence.outstanding.join(', ')})`,
+    );
+  }
+
   return {
     task_id: resolvedId,
     is_umbrella,
@@ -238,6 +294,63 @@ export async function getBuildEvidenceStatus(
     complete,
     exempt_reason,
     missing,
+    ...(declared_evidence ? { declared_evidence } : {}),
+  };
+}
+
+/**
+ * B-974 — resolve the manifest's declared verify evidence for one ticket.
+ *
+ * Returns `undefined` for all three floor cases (no root, no manifest, no declared entries), so the
+ * caller adds no key at all and every pre-B-974 consumer sees the identical payload.
+ *
+ * `changedPaths` is deliberately NOT passed: this tool has no diff, and inventing one would be worse
+ * than reporting honestly. Every `applies_to.paths` entry therefore lands in `not_evaluated` — named,
+ * never silently skipped. The verify brief, which IS given `changed_paths`, resolves those.
+ */
+async function resolveDeclaredEvidenceBlock(
+  client: SupabaseClient,
+  taskId: string,
+  manifestRoot: string | undefined,
+  labels: string[],
+): Promise<DeclaredEvidence | undefined> {
+  const read = readDeclaredEvidence(manifestRoot);
+  if (read.kind === 'none') return undefined;
+  if (read.kind === 'malformed') {
+    return {
+      entries: [],
+      outstanding: [],
+      attested: [],
+      not_evaluated: [],
+      unknown_attested_keys: [],
+      problem: read.problem.message,
+    };
+  }
+
+  // The attestation lineage. Guarded and degrading to "nothing attested" — the safe direction, since
+  // an entry then stays visibly outstanding rather than silently reading as confirmed.
+  let attestedKeys: string[] = [];
+  try {
+    const { data, error } = await client
+      .from('briefs').select('reason, resolved_detail').eq('task_id', taskId);
+    if (!error) {
+      attestedKeys = parseAttestedKeys(
+        ((data as Array<{ reason?: unknown; resolved_detail?: unknown }>) ?? [])
+          .filter((r) => r.reason === 'verification-ack-pending')
+          .map((r) => (typeof r.resolved_detail === 'string' ? r.resolved_detail : null)),
+      );
+    }
+  } catch {
+    attestedKeys = [];
+  }
+
+  const result = resolveManifestEvidence(read.entries, { labels, attestedKeys });
+  return {
+    entries: result.entries,
+    outstanding: result.outstanding,
+    attested: result.attested,
+    not_evaluated: result.not_evaluated,
+    unknown_attested_keys: result.unknown_attested_keys,
   };
 }
 

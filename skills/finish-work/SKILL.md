@@ -965,6 +965,8 @@ frame: {
   criteria: [
     { ac_id: "<id>", text: "<the criterion VERBATIM as filed>", checked: true,
       disposition: "walk",            // 'walk' | 'blocked' | 'test-proven' | 'not-hand-checkable' | 'carried' | 'unproven'
+                                      // (+ 'manifest-declared' / 'manifest-attested' — B-974, SYNTHETIC:
+                                      //  compose overlays those two itself; never author them by hand)
       step_ref: "1" },                // REQUIRED on a 'walk' — the runbook step the human follows
     { ac_id: "<id>", text: "<...>", checked: false, disposition: "blocked",
       blocked_reason: "<why it cannot be exercised here>" },
@@ -985,12 +987,50 @@ closes it permanently, and the human should see that as a row, not infer it from
 ```
 mcp__harmony__compose_brief({
   task_id, reason: "verification-ack-pending", pending_activity: "verifying",
+  manifest_root: "<ABSOLUTE path to the repo of record>",   // B-974 — see below
+  changed_paths: [/* the merged PR's changed files — see below */],
   doc: { decide: "Does production behaviour match the design?",
     frame: { kind: "verify", environment: "staging", criteria: [/* one row per filed criterion, verbatim */],
              evidence_status: "<the B-560 line, verbatim>" },
     items: [{ kind: "decision", text: "Acknowledge verified", recommendation: "verify once confirmed" }] }
 })
 ```
+
+**B-974 — the two compose arguments that carry the project's own DECLARED verify evidence.** A project
+can declare, in `.harmony/project.yml` (B-991) under `verify.evidence`, the evidence no test can
+produce — a founder click-through, a screenshot, a manual smoke on the deployed thing. Compose overlays
+each entry that applies to this ticket onto the ledger as an extra row (`ac_id: "manifest:<key>"`,
+disposition `manifest-declared` until attested) and reports the outstanding ones on the evidence line.
+**Source both arguments; do not author the rows yourself.**
+
+- **`manifest_root`** — the ABSOLUTE root of the **repo of record**: the same repo this skill already
+  enters to run `harmony gates run release.before_merge` at release prep. Pass it explicitly; compose
+  never infers it from the server's working directory, which is not reliably the repo root. Omit it (or
+  point at a repo with no manifest, or one declaring no `verify.evidence`) and the brief is exactly
+  what it is today — no rows, no clause, nothing changes.
+- **`changed_paths`** — the merged PR's changed files, which decide whether a **path-narrowed** entry
+  (`applies_to: { paths: [...] }`) applies. At VERIFY get them from the PR, not from a branch diff:
+
+  ```bash
+  gh pr diff --name-only <field_values.build_pr.pr_url>
+  # offline fallback, when gh is unavailable:
+  git diff --name-only $(git merge-base origin/main <head_sha>) <head_sha>
+  ```
+
+  **Do NOT reuse the release-time form** (`git diff --name-only origin/main...HEAD`): the verify brief
+  composes AFTER the merge, at which point `origin/main...HEAD` is empty and every path-narrowed entry
+  would silently evaluate against nothing. If no diff is obtainable at all (an umbrella, a
+  decision-only ticket, a doc-only ticket with no PR), **omit the argument** — compose then reports
+  each path-narrowed entry as "not evaluated — no diff available" by name, which is the honest answer.
+  Passing `[]` claims the opposite: a known-empty diff, i.e. a clean non-match.
+
+**How the human attests one.** Each unattested declared row renders the exact string to type in its
+**Backed by** column — `type ATTESTED: <key> in the accept remark box or resolve_brief detail`. On the
+next compose, the marker is read back out of this ticket's verify-brief lineage and the row flips to
+`manifest-attested` (and drops out of the outstanding count). A key naming no declared entry is
+reported on the brief rather than dropped, so a typo is visible instead of silently attesting nothing.
+A **malformed** manifest never blocks the gate: the brief still composes, names the file and the
+problem on the evidence line, and carries a compose warning.
 
 **Re-entry freshness check (B-703) — arriving at a verify gate ALREADY paused with an active brief.** A
 verify pause can sit for days, and the criteria can be edited while it sits (the human tightens an AC; a

@@ -18,6 +18,7 @@ import {
   loadProjectManifest,
   resolveExtensionPoint,
   getPreconditions,
+  getDeclaredEvidence,
   getNotifyEntries,
   DECLARABLE_TRANSITIONS,
   EXTENSION_POINTS,
@@ -530,5 +531,97 @@ describe('notify endpoint — declared data, NEVER reached (safety-relevant, mir
 
     // 3. The tripwire file is untouched — loading a notify declaration ran nothing at all.
     expect(readFileSync(tripwire, 'utf8')).toBe('still here');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-974 — `verify.evidence`: declared verify-gate evidence entries and the `getDeclaredEvidence`
+// accessor. Same fixture idiom as every test above (mkdtemp + a written project.yml).
+
+describe('B-974 — verify.evidence declared entries', () => {
+  it('parses an entry list and returns it, in MANIFEST ORDER, via getDeclaredEvidence', () => {
+    const root = makeProjectRoot();
+    writeManifest(root, `version: 1
+verify:
+  before_ack:
+    - run: npm test
+  evidence:
+    - key: founder-clickthrough
+      prompt: "Click through the deployed flow."
+    - key: ui-screenshot
+      prompt: "Attach a screenshot."
+      applies_to:
+        paths: ["src/components/**"]
+        labels: ["ux"]
+`);
+    const result = loadProjectManifest(root);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    const declared = getDeclaredEvidence(result.manifest);
+    expect(declared.map((e) => e.key)).toEqual(['founder-clickthrough', 'ui-screenshot']);
+    expect(declared[0].applies_to).toBeUndefined();
+    expect(declared[1].applies_to).toEqual({ paths: ['src/components/**'], labels: ['ux'] });
+    // The entries are DECLARED DATA beside the executable steps, never instead of them.
+    expect(resolveExtensionPoint(result, 'verify.before_ack')).toEqual({
+      outcome: 'steps',
+      steps: [{ run: 'npm test' }],
+    });
+  });
+
+  it('a manifest with no `verify` block at all yields an EMPTY declared-evidence list (the floor)', () => {
+    const root = makeProjectRoot();
+    writeManifest(root, 'version: 1\n');
+    const result = loadProjectManifest(root);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(getDeclaredEvidence(result.manifest)).toEqual([]);
+  });
+
+  it('a DUPLICATE evidence key is whole-file malformed, naming the file and the duplicated key', () => {
+    const root = makeProjectRoot();
+    writeManifest(root, `version: 1
+verify:
+  evidence:
+    - key: clickthrough
+      prompt: "first"
+    - key: clickthrough
+      prompt: "second"
+`);
+    const result = loadProjectManifest(root);
+    expect(result.kind).toBe('malformed');
+    if (result.kind !== 'malformed') return;
+    expect(result.problem.reason).toBe('duplicate-evidence-key');
+    expect(result.problem.file).toBe(join(root, PROJECT_MANIFEST_RELATIVE_PATH));
+    expect(result.problem.message).toContain('clickthrough');
+    expect(result.problem.message).toContain("'ATTESTED: <key>'");
+  });
+
+  it('an evidence entry with an unrecognized key is invalid-shape — the .strict() posture holds', () => {
+    const root = makeProjectRoot();
+    writeManifest(root, 'version: 1\nverify:\n  evidence:\n    - key: k\n      prompt: p\n      when: always\n');
+    const result = loadProjectManifest(root);
+    expect(result.kind).toBe('malformed');
+    if (result.kind !== 'malformed') return;
+    expect(result.problem.reason).toBe('invalid-shape');
+  });
+
+  it('declared evidence is DATA, never executed — a prompt reading like a shell command runs nothing', () => {
+    // The same safety posture `preconditions` carries (see the test above): nothing in this loader or
+    // in src/config/manifest-evidence.ts passes a `prompt` to a shell. `run:` steps are existence-
+    // checked against disk; an evidence `prompt` is not even looked at.
+    const root = makeProjectRoot();
+    writeManifest(root, `version: 1
+verify:
+  evidence:
+    - key: danger
+      prompt: "rm -rf / --no-preserve-root"
+`);
+    const result = loadProjectManifest(root);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(getDeclaredEvidence(result.manifest)).toEqual([
+      { key: 'danger', prompt: 'rm -rf / --no-preserve-root' },
+    ]);
+    expect(result.stepErrors).toEqual({});
   });
 });

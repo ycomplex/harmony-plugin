@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { getBuildEvidenceStatus } from './evidence-status.js';
 
 vi.mock('./resolve-task-id.js', () => ({
@@ -435,5 +438,123 @@ describe('getBuildEvidenceStatus', () => {
       expect(res.complete).toBe(true); // umbrella exemption unchanged
       expect(res.exempt_reason).toMatch(/^umbrella/);
     });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// B-974 — the optional `declared_evidence` block. Same pure module the verify brief's overlay uses
+// (src/config/manifest-evidence.ts), so the tool's answer and the brief's cannot drift.
+
+describe('B-974 — declared_evidence', () => {
+  const dirs: string[] = [];
+
+  function manifestRoot(manifest?: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'b974-evstatus-'));
+    dirs.push(dir);
+    if (manifest !== undefined) {
+      mkdirSync(join(dir, '.harmony'), { recursive: true });
+      writeFileSync(join(dir, '.harmony', 'project.yml'), manifest, 'utf8');
+    }
+    return dir;
+  }
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const MANIFEST = `version: 1
+verify:
+  evidence:
+    - key: founder-clickthrough
+      prompt: "Click through the deployed flow."
+    - key: ui-screenshot
+      prompt: "Attach a screenshot."
+      applies_to:
+        paths: ["src/components/**"]
+    - key: ux-signoff
+      prompt: "Get design sign-off."
+      applies_to:
+        labels: ["ux"]
+`;
+
+  /** A leaf ticket whose mechanical evidence is COMPLETE — so the `complete`-untouched claim is real. */
+  const completeLeaf = (over: Record<string, unknown> = {}) => ({
+    tasks: [],
+    task_row: [{ field_values: { build_pr: VALID_BUILD_PR } }],
+    test_cases: [{ id: 'tc-1' }],
+    acceptance_criteria: [{ id: 'ac-1', checked: true }],
+    task_comments: [],
+    task_labels: [],
+    ...over,
+  });
+
+  it('omits the block entirely when no manifest_root is supplied — the pre-B-974 payload, unchanged', async () => {
+    const client = makeClient(completeLeaf());
+    const result = await getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1' });
+    expect(result.declared_evidence).toBeUndefined();
+    expect(result.missing).toEqual([]);
+    expect(result.complete).toBe(true);
+  });
+
+  it('omits the block when the manifest declares no verify.evidence (the same floor)', async () => {
+    const client = makeClient(completeLeaf());
+    const root = manifestRoot('version: 1\nverify:\n  before_ack:\n    - run: npm test\n');
+    const result = await getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1', manifest_root: root });
+    expect(result.declared_evidence).toBeUndefined();
+  });
+
+  it('reports outstanding entries and adds a `missing` line — while leaving `complete` UNTOUCHED', async () => {
+    const client = makeClient(completeLeaf());
+    const result = await getBuildEvidenceStatus(client, PROJECT_ID, {
+      task_id: 'B-1', manifest_root: manifestRoot(MANIFEST),
+    });
+    expect(result.declared_evidence?.outstanding).toEqual(['founder-clickthrough']);
+    // This tool has no diff, so the path-narrowed entry is NAMED as not-evaluated, never skipped.
+    expect(result.declared_evidence?.not_evaluated).toEqual(['ui-screenshot']);
+    // The label-narrowed entry cleanly does not apply — the ticket carries no `ux` label.
+    expect(result.declared_evidence?.entries.find((e) => e.key === 'ux-signoff')).toEqual({
+      key: 'ux-signoff', prompt: 'Get design sign-off.', state: 'not-applicable', not_applicable_reason: 'no-match',
+    });
+    expect(result.missing).toEqual(['1 declared evidence entry outstanding (founder-clickthrough)']);
+    // B-936 defers RPC enforcement: a declared entry is a signal, not a floor.
+    expect(result.complete).toBe(true);
+  });
+
+  it("honours the ticket's labels for a label-narrowed entry", async () => {
+    const client = makeClient(completeLeaf({ task_labels: [{ labels: { name: 'ux' } }] }));
+    const result = await getBuildEvidenceStatus(client, PROJECT_ID, {
+      task_id: 'B-1', manifest_root: manifestRoot(MANIFEST),
+    });
+    expect(result.declared_evidence?.outstanding).toEqual(['founder-clickthrough', 'ux-signoff']);
+    expect(result.missing).toEqual([
+      '2 declared evidence entries outstanding (founder-clickthrough, ux-signoff)',
+    ]);
+  });
+
+  it('reads ATTESTED markers off the verify-brief lineage, so the tool and the brief agree', async () => {
+    const client = makeClient(
+      completeLeaf({
+        briefs: [
+          { reason: 'verification-ack-pending', resolved_detail: 'walked it\nATTESTED: founder-clickthrough' },
+          { reason: 'plan-draft', resolved_detail: 'ATTESTED: ui-screenshot' }, // wrong gate — must be ignored
+        ],
+      } as any),
+    );
+    const result = await getBuildEvidenceStatus(client, PROJECT_ID, {
+      task_id: 'B-1', manifest_root: manifestRoot(MANIFEST),
+    });
+    expect(result.declared_evidence?.attested).toEqual(['founder-clickthrough']);
+    expect(result.declared_evidence?.outstanding).toEqual([]);
+    expect(result.missing).toEqual([]);
+  });
+
+  it('a malformed manifest reports the problem and overlays nothing — it never throws', async () => {
+    const root = manifestRoot('version: 1\nverify:\n  evidence:\n    - key: dup\n      prompt: a\n    - key: dup\n      prompt: b\n');
+    const client = makeClient(completeLeaf());
+    const result = await getBuildEvidenceStatus(client, PROJECT_ID, { task_id: 'B-1', manifest_root: root });
+    expect(result.declared_evidence?.problem).toContain('duplicate key(s): dup');
+    expect(result.declared_evidence?.entries).toEqual([]);
+    expect(result.missing).toEqual([]);
+    expect(result.complete).toBe(true);
   });
 });
