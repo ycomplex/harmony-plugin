@@ -34,3 +34,23 @@ notify:
     endpoint: "https://harmony-notify.invalid/harmony-plugin/built"
   - on: "reaching Verified"
     endpoint: "https://harmony-notify.invalid/harmony-plugin/verified"
+
+# verify.evidence (B-974): DECLARED DATA the VERIFY GATE renders, not executes. Each entry becomes a
+# row in the verify brief's criteria ledger, marked `manifest-declared` (unattested) until the human
+# types `ATTESTED: <key>` in the accept remark box — at which point the row reads `manifest-attested`.
+# It is a SIGNAL for the human at an always-human gate, never a mechanical floor: an outstanding entry
+# adds a `missing` line but deliberately leaves `get_build_evidence_status.complete` untouched
+# (RPC-enforcement is the graduation-gated deferral in B-936's options paper, section 5 point 4).
+#
+# `applies_to.paths` is matched against the ticket's BUILD DIFF (globs, `globToRegExp`), so this entry
+# is owed only by tickets that actually changed a skill or an MCP tool — the two surfaces the staging
+# channel (B-488) exists to exercise before `./promote-prod.sh`. A ticket touching neither renders
+# today's verify brief unchanged.
+verify:
+  evidence:
+    - key: staging-channel-smoke
+      prompt: "Ran the changed skill or tool once from the staging channel (claude --plugin-dir against the staging board) and it behaved as the ticket describes."
+      applies_to:
+        paths:
+          - "skills/**"
+          - "src/tools/**"
