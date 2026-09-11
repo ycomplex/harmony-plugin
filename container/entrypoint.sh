@@ -193,10 +193,17 @@ clone() { # $1 = url, $2 = ref, $3 = dir
 # `repos[].ref` is NEVER read for the entry with `is_plugin: true`; in the fallback three-slot shape
 # below it means PLUGIN_REF is derived from the posture, never from a separate knob. (PLUGIN_REF and
 # HARMONY_ACK_PLUGIN_AHEAD_OF_PROD do not exist in code any more — B-803 collapsed both into this one
-# var — so neither is an alternative source here.) Defaults to "main" when unset, stripping the
+# var — so neither is an alternative source here.) Defaults to "staging" when unset, stripping the
 # "ack:" prefix (that prefix matters only to provision.sh's fail-closed guard, downstream).
+#
+# B-1007 repointed that default from "main" to "staging": `main` is now SOURCE ONLY (dist/ is
+# gitignored there) and provision.sh shims the CLI off the COMMITTED dist before any agent exists to
+# run `npm ci`, so a worker cloned at `main` would die during provisioning. `staging` is the
+# CI-GENERATED branch that carries the built bundle (scripts/generate-staging.sh). The default is
+# all that moved — provision.sh's fail-closed ahead-of-prod guard is unchanged, so an unacked
+# non-prod posture still refuses a prod-target headless run.
 plugin_ref_from_posture() {
-  local posture="${HARMONY_PLUGIN_POSTURE:-main}"
+  local posture="${HARMONY_PLUGIN_POSTURE:-staging}"
   printf '%s' "${posture#ack:}"
 }
 
