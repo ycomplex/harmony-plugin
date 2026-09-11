@@ -7,3 +7,8 @@ coverage/
 # B-992: the PreToolUse hook's local gate-evidence markers — best-effort caches written by
 # `harmony gates run <extension-point>`, never committed. .harmony/project.yml ITSELF stays tracked.
 .harmony/.gate-evidence/
+
+# B-1009: the notify subscription sync's hash cache — a local, best-effort record of the last
+# declaration synced to the board, written by `harmony gates run`. Never committed; deleting it
+# costs at most one redundant (idempotent) sync.
+.harmony/.notify-sync.json

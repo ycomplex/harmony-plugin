@@ -133,8 +133,13 @@ export interface PendingAcceptanceEvent {
 /** The three PostgREST/Postgres error shapes that mean "this relation/RPC does not exist on this DB" —
  *  schema-drift class (B-383), same idiom as `isMissingPendingResolution` / `isMissingAcceptRemark` in
  *  briefs.ts. NEVER matches a permission error, a transient network failure, or any other error class —
- *  those must propagate and be retried, never silently read as "substrate absent". */
-function isMissingRelationOrFunction(err: { message?: string; code?: string } | null | undefined): boolean {
+ *  those must propagate and be retried, never silently read as "substrate absent".
+ *
+ *  EXPORTED (B-1009) so src/config/notify-sync.ts classifies "this board has no
+ *  notify_sync_subscriptions RPC yet" through THIS predicate rather than re-deriving 42883/PGRST202
+ *  at a second site — one definition of "the substrate is absent", one place to correct it. Export
+ *  only; the behavior is untouched. */
+export function isMissingRelationOrFunction(err: { message?: string; code?: string } | null | undefined): boolean {
   if (!err) return false;
   const code = err.code ?? '';
   // 42P01 = undefined_table, 42883 = undefined_function (raw Postgres codes, reachable via RPC).

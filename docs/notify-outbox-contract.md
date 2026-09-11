@@ -1,7 +1,9 @@
 # The notify → outbox sync contract (B-973)
 
-**Status:** ratified design, implemented as *declared data only*. Nothing in this plugin dispatches to
-a `notify` endpoint.
+**Status:** ratified design. Nothing in this plugin dispatches to a `notify` endpoint — that remains
+true (§8 C9). **B-1009 narrowed the "declared data only" half:** the declaration now has exactly one
+consumer, `harmony gates run`'s sync of it to the board (`src/config/notify-sync.ts`); the delivery
+substrate itself is Supabase-hosted.
 
 **Audience:** whoever builds the delivery substrate (**B-980**, the outbox) and whoever builds the
 HTTP dispatcher (**B-1009**). This document is meant to be sufficient on its own: event shape, which
@@ -16,10 +18,12 @@ A project declares, in its own `.harmony/project.yml`, which workflow-state tran
 external endpoint told about — alongside the `build` / `release` / `verify` steps and the
 `preconditions` it already declares there. That declaration is the *whole* of what this repo owns.
 
-There is, deliberately, **no HTTP dispatcher in this repo and no consumer of `endpoint` anywhere in
-this plugin.** Saying that out loud is the point: a reader who greps for the code that POSTs to
-`endpoint` will not find it, and should not go looking for a bug. The delivery chain is split across
-three tickets:
+There is, deliberately, **no HTTP dispatcher in this repo and nothing anywhere in this plugin that
+POSTs to a declared `endpoint`.** Saying that out loud is the point: a reader who greps for the code
+that POSTs to `endpoint` will not find it, and should not go looking for a bug. *(B-1009 added the
+one thing that does READ `endpoint`: `src/config/notify-sync.ts` sends the declared URL to the
+BOARD, so the Supabase-hosted dispatcher knows where to deliver. It never opens a connection to that
+URL — see §8 C9.)* The delivery chain is split across three tickets:
 
 | Piece | Owner | Where it lives |
 |---|---|---|
@@ -270,10 +274,38 @@ tested against the DB without reading this prose:
    mid-batch, restart, assert no gap.
 8. **C8 — At-least-once with lease redelivery.** An unacked claim whose lease expires is redelivered.
    *Check:* claim without acking, wait out the lease, assert redelivery.
-9. **C9 — No plugin-side dispatch.** No process in harmony-plugin opens a network connection as a
-   result of a `notify` declaration. *Check:* `src/config/project-manifest.test.ts`'s
-   "notify endpoint — declared data, NEVER reached" test, which asserts `notify` is absent from
-   `EXTENSION_POINTS` and that no code path resolves it to an action.
+9. **C9 — No plugin-side dispatch to an endpoint.** *(Narrowed by B-1009 — still true, now
+   precise.)* No process in harmony-plugin opens a network connection **to a declared `notify`
+   `endpoint`**. The dispatch is entirely Supabase-hosted: an edge function driven by a `pg_net`
+   webhook plus a `pg_cron` sweep, with HMAC signing, retry/backoff and dead-lettering all in the
+   database (B-1009's migration, `20260911153220_b1009_notify_dispatcher.sql`). *Check:*
+   `src/config/project-manifest.test.ts`'s "notify endpoint — declared data, NEVER reached" test,
+   which asserts `notify` is absent from `EXTENSION_POINTS` and that no code path resolves it to an
+   action.
+
+   **What B-1009 DID make false is "there is no consumer of the key."** There is one now:
+   `harmony gates run` syncs a repo's declaration to the board through the
+   `notify_sync_subscriptions` RPC (`src/config/notify-sync.ts`), so declaring in
+   `.harmony/project.yml` is the only step an operator takes. That call goes to the **board**, never
+   to a declared endpoint; it fires only when `notify` is declared **and** the declaration's hash
+   changed; it runs under a hard 3s timeout; and every failure mode — unreachable board, absent RPC,
+   timeout — is one stderr warning that cannot change a gate's stdout, its steps, or its exit code
+   (pinned by `src/cli/commands/gates.test.ts`'s four-outcome test).
+
+10. **C10 — Receivers must be idempotent; the uniqueness guarantee is per logical transition.**
+    Delivery is **at-least-once** end to end (C8), so a receiver **may see the same delivery
+    re-attempted** — after a timeout whose request actually landed, after a lease expiry, or on a
+    retry of a response the dispatcher never saw. Receivers must therefore be idempotent, keyed on
+    the delivery's `(tx_id, task_id, subscription_id)` identity. What B-1009 *does* guarantee is
+    **at most one delivery ROW per logical transition per subscription**, enforced by a UNIQUE index
+    on `(tx_id, task_id, subscription_id)` — a database object, not a promise. That is not
+    exactly-once delivery and must not be read as such: it bounds fan-out, not HTTP attempts.
+
+11. **C11 — A dead-letter is a typed, flagged event, not an integrity gap.** When a delivery
+    exhausts its attempts, the dead-letter event it raises is written with `source: 'trigger'` and
+    is accepted **as flagged** — the same precedent B-980's auto-reconcile set for substrate-authored
+    rows. A reader seeing `source: 'trigger'` on a dead-letter is looking at the dispatcher's own
+    honest record of a failed endpoint, not at an unattributed write or a hole in the contract.
 
 ---
 
@@ -287,13 +319,15 @@ tested against the DB without reading this prose:
 - **Outbox table shape, registration mechanics, claim/ack, lease duration, retention.** B-980,
   `web/docs/outbox-contract.md` when it lands (§1).
 
-**Explicitly: nothing in the plugin dispatches to `endpoint`.** `notify` ships as
-**declared-but-UNCONSUMED data**, structurally identical to `preconditions` — which
-`src/config/project-manifest.ts` reads, returns as strings, and never executes. `notify` is not a
-member of `EXTENSION_POINTS`, `resolveExtensionPoint` knows nothing about it, and `getNotifyEntries`
-does nothing but return an already-parsed array. There is no network call to suppress here because
-there is no consumer to make one. A project that declares no `notify` section observes exactly what it
-observes today.
+**Explicitly: nothing in the plugin dispatches to `endpoint`.** That is as true after B-1009 as it
+was before it — the dispatcher is Supabase-hosted (§8 C9). `notify` is still not a member of
+`EXTENSION_POINTS` and `resolveExtensionPoint` still knows nothing about it.
+
+**Updated by B-1009:** `notify` is no longer *unconsumed*. `harmony gates run`
+(`src/config/notify-sync.ts`) syncs the declaration to the board's `notify_sync_subscriptions` RPC —
+a board call, hash-gated, hard-timed-out, warning-only on every failure. A project that declares no
+`notify` section still observes exactly what it observed before: zero board calls, identical stdout,
+identical exit code.
 
 ---
 
