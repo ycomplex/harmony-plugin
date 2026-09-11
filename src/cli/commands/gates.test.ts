@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { Command } from 'commander';
 import { runGatesCommand, registerGatesCommands, type GatesRunDeps, type StepRunOutcome } from './gates.js';
 import type { ManifestLoadResult } from '../../config/project-manifest.js';
+import type { NotifySubscriptionDeclaration, NotifySyncIO } from '../../config/notify-sync.js';
 import type { AuthenticatedContext } from '../auth.js';
 
 // =================================================================================================
@@ -22,12 +23,14 @@ function baseDeps(overrides: Partial<GatesRunDeps> = {}): GatesRunDeps & {
   runStepCalls: { command: string; cwd: string }[];
   landEvidenceCalls: unknown[];
   writeMarkerCalls: unknown[];
+  notifyRpcCalls: NotifySubscriptionDeclaration[][];
 } {
   const logLines: string[] = [];
   const errorLines: string[] = [];
   const runStepCalls: { command: string; cwd: string }[] = [];
   const landEvidenceCalls: unknown[] = [];
   const writeMarkerCalls: unknown[] = [];
+  const notifyRpcCalls: NotifySubscriptionDeclaration[][] = [];
   let authCalls = 0;
 
   const authCtx: AuthenticatedContext = {
@@ -57,6 +60,18 @@ function baseDeps(overrides: Partial<GatesRunDeps> = {}): GatesRunDeps & {
       writeMarkerCalls.push(marker);
     },
     resolveHeadSha: () => 'sha-1',
+    // B-1009: the default notify I/O never gets touched unless a manifest declares `notify` — every
+    // pre-existing test below therefore proves, by the empty `notifyRpcCalls`, that the sync adds
+    // ZERO board calls to the floor.
+    notifySync: {
+      callSyncRpc: async (subscriptions) => {
+        notifyRpcCalls.push(subscriptions);
+        return { upserted: subscriptions.length, removed: 0 };
+      },
+      readCache: () => null,
+      writeCache: () => undefined,
+      timeoutMs: 20,
+    },
     log: (line) => logLines.push(line),
     error: (line) => errorLines.push(line),
     ...overrides,
@@ -72,6 +87,7 @@ function baseDeps(overrides: Partial<GatesRunDeps> = {}): GatesRunDeps & {
     runStepCalls,
     landEvidenceCalls,
     writeMarkerCalls,
+    notifyRpcCalls,
   } as GatesRunDeps & {
     logLines: string[];
     errorLines: string[];
@@ -79,6 +95,7 @@ function baseDeps(overrides: Partial<GatesRunDeps> = {}): GatesRunDeps & {
     runStepCalls: { command: string; cwd: string }[];
     landEvidenceCalls: unknown[];
     writeMarkerCalls: unknown[];
+    notifyRpcCalls: NotifySubscriptionDeclaration[][];
   };
 }
 
@@ -551,5 +568,175 @@ describe('harmony gates run — CLI entry, AC4 floor with no manifest and no HAR
     expect(logSpy).toHaveBeenCalledTimes(1);
     expect(errSpy).not.toHaveBeenCalled();
     expect(authMock.getAuthenticatedContext).not.toHaveBeenCalled();
+  });
+});
+
+// =================================================================================================
+// B-1009 — the notify subscription sync, driven through the REAL `runGatesCommand` (never a stub of
+// it). AC6 in one place: "running a project's gates NEVER fails, hangs or slows because the sync
+// could not reach the board". The proof is a BYTE-IDENTICAL stdout transcript and an IDENTICAL exit
+// code across four sync outcomes — success, unreachable board, absent RPC, and a slow response that
+// the hard timeout abandons — all compared against the SAME manifest with `notify` removed, which is
+// the "before B-1009" behavior verbatim.
+// =================================================================================================
+
+const NOTIFY_MANIFEST: ManifestLoadResult = {
+  kind: 'ok',
+  file: '/fake/project/.harmony/project.yml',
+  manifest: {
+    version: 1,
+    preconditions: ['do not commit package-lock churn'],
+    build: { before_pr: [{ run: 'npm test' }] },
+    notify: [
+      { on: 'reaching Built', endpoint: 'https://hooks.example.test/built' },
+      { on: 'reaching Verified', endpoint: 'https://hooks.example.test/built' },
+    ],
+  },
+  stepErrors: {},
+};
+
+/** The very same manifest with `notify` stripped — the pre-B-1009 control. */
+const NO_NOTIFY_MANIFEST: ManifestLoadResult = {
+  kind: 'ok',
+  file: NOTIFY_MANIFEST.kind === 'ok' ? NOTIFY_MANIFEST.file : '',
+  manifest: {
+    version: 1,
+    preconditions: ['do not commit package-lock churn'],
+    build: { before_pr: [{ run: 'npm test' }] },
+  },
+  stepErrors: {},
+};
+
+async function runWithNotifyIo(
+  io: Partial<NotifySyncIO>,
+  manifest: ManifestLoadResult = NOTIFY_MANIFEST,
+): Promise<{ code: number; stdout: string[]; stderr: string[]; rpcCalls: NotifySubscriptionDeclaration[][] }> {
+  // ONE deps object, its default notify I/O selectively overridden — building a second baseDeps
+  // would give the overriding half a DIFFERENT recording closure and silently record nothing.
+  const deps = baseDeps({ extensionPoint: 'build.before_pr', loadManifest: () => manifest });
+  const code = await runGatesCommand({ ...deps, notifySync: { ...deps.notifySync, ...io } });
+  return { code, stdout: deps.logLines, stderr: deps.errorLines, rpcCalls: deps.notifyRpcCalls };
+}
+
+describe('B-1009 notify sync — AC6: identical stdout and exit code across every sync outcome', () => {
+  it('success / unreachable board / absent RPC / hard timeout all leave the gate run byte-identical', async () => {
+    const control = await runWithNotifyIo({}, NO_NOTIFY_MANIFEST);
+    expect(control.rpcCalls).toHaveLength(0); // the undeclared floor: zero board calls
+
+    const success = await runWithNotifyIo({});
+    const unreachable = await runWithNotifyIo({
+      callSyncRpc: async () => {
+        throw new Error('fetch failed');
+      },
+    });
+    const absentRpc = await runWithNotifyIo({
+      callSyncRpc: async () => {
+        throw Object.assign(new Error('Could not find the function public.notify_sync_subscriptions'), {
+          code: 'PGRST202',
+        });
+      },
+    });
+    const timedOut = await runWithNotifyIo({
+      timeoutMs: 20,
+      callSyncRpc: (_subs, signal) =>
+        new Promise((resolve) => {
+          signal.addEventListener('abort', () => undefined);
+          const timer = setTimeout(() => resolve({ upserted: 1 }), 10_000);
+          (timer as unknown as { unref?: () => void }).unref?.();
+        }),
+    });
+
+    for (const outcome of [success, unreachable, absentRpc, timedOut]) {
+      // Exit code: identical, and identical to the pre-B-1009 control.
+      expect(outcome.code).toBe(control.code);
+      expect(outcome.code).toBe(0);
+      // STDOUT: byte-identical, line for line, to the control's.
+      expect(outcome.stdout.join('\n')).toBe(control.stdout.join('\n'));
+    }
+
+    // The differences live on STDERR ONLY, and are exactly one line each.
+    expect(success.stderr).toEqual(control.stderr);
+    for (const failed of [unreachable, absentRpc, timedOut]) {
+      expect(failed.stderr).toHaveLength(control.stderr.length + 1);
+      expect(failed.stderr[failed.stderr.length - 1]).toContain('harmony notify sync: WARNING');
+    }
+
+    // ...and the successful sync really did make the call, in the RPC's parameter shape.
+    expect(success.rpcCalls).toEqual([
+      [{ endpoint_url: 'https://hooks.example.test/built', transitions: ['Built', 'Verified'] }],
+    ]);
+  });
+
+  it('a slow board never SLOWS the gate run — the 3s ceiling is hard, not advisory', async () => {
+    const startedAt = Date.now();
+    const timedOut = await runWithNotifyIo({
+      timeoutMs: 20,
+      callSyncRpc: (_subs, signal) =>
+        new Promise((resolve) => {
+          signal.addEventListener('abort', () => undefined);
+          const timer = setTimeout(() => resolve({ upserted: 1 }), 10_000);
+          (timer as unknown as { unref?: () => void }).unref?.();
+        }),
+    });
+    expect(timedOut.code).toBe(0);
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it('an UNCHANGED hash makes zero board calls — the steady state for a declaring project', async () => {
+    // The cache holds the hash of exactly this declaration, so the sync must do nothing at all.
+    const first = await runWithNotifyIo({});
+    expect(first.rpcCalls).toHaveLength(1);
+
+    let written: string | null = null;
+    const deps = baseDeps({
+      extensionPoint: 'build.before_pr',
+      loadManifest: () => NOTIFY_MANIFEST,
+      notifySync: {
+        callSyncRpc: async (subscriptions) => ({ upserted: subscriptions.length }),
+        readCache: () => null,
+        writeCache: (_path, contents) => {
+          written = contents;
+        },
+        timeoutMs: 20,
+      },
+    });
+    expect(await runGatesCommand(deps)).toBe(0);
+    expect(written).not.toBeNull();
+
+    const second = await runWithNotifyIo({ readCache: () => written });
+    expect(second.rpcCalls).toHaveLength(0);
+    expect(second.code).toBe(0);
+    expect(second.stderr).toHaveLength(0);
+  });
+
+  it('runs AHEAD of the steps.length === 0 early return — a declaring repo with no steps for this gate still syncs', async () => {
+    const noSteps: ManifestLoadResult = {
+      kind: 'ok',
+      file: '/fake/project/.harmony/project.yml',
+      manifest: {
+        version: 1,
+        notify: [{ on: 'reaching Verified', endpoint: 'https://hooks.example.test/verified' }],
+      },
+      stepErrors: {},
+    };
+    const outcome = await runWithNotifyIo({}, noSteps);
+    expect(outcome.code).toBe(0);
+    expect(outcome.rpcCalls).toEqual([
+      [{ endpoint_url: 'https://hooks.example.test/verified', transitions: ['Verified'] }],
+    ]);
+  });
+
+  it('a MALFORMED manifest never syncs — it fails loud before the declaration is even reachable', async () => {
+    const malformed: ManifestLoadResult = {
+      kind: 'malformed',
+      problem: {
+        file: '/fake/project/.harmony/project.yml',
+        reason: 'unknown-key',
+        message: '/fake/project/.harmony/project.yml: unknown top-level key',
+      },
+    };
+    const outcome = await runWithNotifyIo({}, malformed);
+    expect(outcome.code).toBe(1);
+    expect(outcome.rpcCalls).toHaveLength(0);
   });
 });
