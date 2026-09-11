@@ -307,8 +307,13 @@ const PATH_GLOB_TABLE: Record<RiskClass, string[]> = {
   ],
 };
 
-/** Convert a single glob (supporting `**`, `*`, `?`) into an anchored, case-insensitive RegExp. */
-function globToRegExp(glob: string): RegExp {
+/** Convert a single glob (supporting `**`, `*`, `?`) into an anchored, case-insensitive RegExp.
+ *
+ *  B-974 — EXPORTED (previously module-private) so the manifest's declared-evidence `applies_to.paths`
+ *  matcher (src/config/manifest-evidence.ts) narrows by path with exactly this repo's ONE glob
+ *  semantics rather than a second, subtly-different one. No behaviour change here, and no new
+ *  dependency: the repo carries no glob library and B-974 deliberately does not add one. */
+export function globToRegExp(glob: string): RegExp {
   let re = '';
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];

@@ -21592,9 +21592,22 @@ function isAgentTaskStep(step) {
   return "agent_task" in step;
 }
 var NotifyEntrySchema = external_exports.object({ on: external_exports.string().min(1), endpoint: external_exports.string().url() }).strict();
+var AppliesToSchema = external_exports.object({
+  /** Globs (`**`, `*`, `?` — `globToRegExp`, src/tools/risk-class.ts) matched against the BUILD'S
+   *  CHANGED PATHS. Unevaluable when no diff is available at verify time — see
+   *  src/config/manifest-evidence.ts, which names such an entry rather than silently skipping it. */
+  paths: external_exports.array(external_exports.string().min(1)).optional(),
+  /** Matched against the TICKET'S LABEL NAMES, case-insensitively, as whole names (never globs). */
+  labels: external_exports.array(external_exports.string().min(1)).optional()
+}).strict();
+var EvidenceEntrySchema = external_exports.object({
+  key: external_exports.string().min(1),
+  prompt: external_exports.string().min(1),
+  applies_to: AppliesToSchema.optional()
+}).strict();
 var GateSchema = external_exports.object({ before_pr: external_exports.array(StepSchema).optional() }).strict();
 var ReleaseGateSchema = external_exports.object({ before_merge: external_exports.array(StepSchema).optional() }).strict();
-var VerifyGateSchema = external_exports.object({ before_ack: external_exports.array(StepSchema).optional() }).strict();
+var VerifyGateSchema = external_exports.object({ before_ack: external_exports.array(StepSchema).optional(), evidence: external_exports.array(EvidenceEntrySchema).optional() }).strict();
 var ProjectManifestBodySchema = external_exports.object({
   version: external_exports.literal(SUPPORTED_MANIFEST_VERSION),
   preconditions: external_exports.array(external_exports.string()).optional(),
@@ -21723,6 +21736,18 @@ function loadProjectManifest(projectRoot2, deps = {}) {
         }
       };
     }
+  }
+  const evidenceKeys = (manifest.verify?.evidence ?? []).map((e) => e.key);
+  const duplicateKeys = [...new Set(evidenceKeys.filter((k, i) => evidenceKeys.indexOf(k) !== i))];
+  if (duplicateKeys.length > 0) {
+    return {
+      kind: "malformed",
+      problem: {
+        file,
+        reason: "duplicate-evidence-key",
+        message: `${file}: verify.evidence declares duplicate key(s): ${duplicateKeys.join(", ")} \u2014 each entry's \`key\` must be unique, because an 'ATTESTED: <key>' marker names exactly one entry.`
+      }
+    };
   }
   const stepErrors = {};
   const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot2, existsSync2);

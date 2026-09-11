@@ -117,9 +117,50 @@ export function isAgentTaskStep(step: ManifestStep): step is { agent_task: strin
 const NotifyEntrySchema = z.object({ on: z.string().min(1), endpoint: z.string().url() }).strict();
 export type NotifyEntry = z.infer<typeof NotifyEntrySchema>;
 
+// --- B-974: declared VERIFY EVIDENCE ----------------------------------------------------------------
+
+/** B-974 — how ONE declared evidence entry narrows itself to the tickets it applies to.
+ *
+ *  ABSENT on the entry ⇒ the entry applies to EVERY ticket (the un-narrowed case). Both matchers
+ *  present ⇒ the entry applies when EITHER matches (a union, never an intersection): a project that
+ *  says "this evidence is owed when the diff touches the web UI OR the ticket is labelled ux" means
+ *  exactly that, and an AND would silently drop the half the author cared about.
+ *
+ *  `.strict()` for the same reason the rest of this file is (see the header): a hand-authored typo
+ *  like `path:` must fail loud rather than narrow to nothing and vanish. */
+const AppliesToSchema = z
+  .object({
+    /** Globs (`**`, `*`, `?` — `globToRegExp`, src/tools/risk-class.ts) matched against the BUILD'S
+     *  CHANGED PATHS. Unevaluable when no diff is available at verify time — see
+     *  src/config/manifest-evidence.ts, which names such an entry rather than silently skipping it. */
+    paths: z.array(z.string().min(1)).optional(),
+    /** Matched against the TICKET'S LABEL NAMES, case-insensitively, as whole names (never globs). */
+    labels: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+
+export type AppliesTo = z.infer<typeof AppliesToSchema>;
+
+/** B-974 — one declared verify-evidence entry: a thing the PROJECT says a human must confirm at the
+ *  verify gate, which no test can prove (a founder click-through, a screenshot, a manual smoke).
+ *
+ *  `key` is the entry's IDENTITY — it is what an `ATTESTED: <key>` marker names, so duplicates inside
+ *  one `verify.evidence` list are rejected as malformed ('duplicate-evidence-key' below): an ambiguous
+ *  attestation is worse than a refused manifest, and this is the cheapest place to catch it.
+ *  `prompt` is the sentence the human reads on the verify brief, verbatim. */
+const EvidenceEntrySchema = z
+  .object({
+    key: z.string().min(1),
+    prompt: z.string().min(1),
+    applies_to: AppliesToSchema.optional(),
+  })
+  .strict();
+
+export type EvidenceEntry = z.infer<typeof EvidenceEntrySchema>;
+
 const GateSchema = z.object({ before_pr: z.array(StepSchema).optional() }).strict();
 const ReleaseGateSchema = z.object({ before_merge: z.array(StepSchema).optional() }).strict();
-const VerifyGateSchema = z.object({ before_ack: z.array(StepSchema).optional() }).strict();
+const VerifyGateSchema = z.object({ before_ack: z.array(StepSchema).optional(), evidence: z.array(EvidenceEntrySchema).optional() }).strict();
 
 /** The 6-key top-level schema. Deliberately `.strict()` (see this file's header) — an unrecognized
  *  top-level key is AC5's own "malformed" example, not a forward-compat pass-through case. */
@@ -150,7 +191,8 @@ export type MalformedReason =
   | 'invalid-shape'
   | 'unknown-transition'
   | 'missing-script'
-  | 'unsupported-agent-task';
+  | 'unsupported-agent-task'
+  | 'duplicate-evidence-key';
 
 /** A single classified problem, always carrying the file path (AC5: "it names the file and the
  *  specific problem") and a human-readable message ready to print as-is. */
@@ -372,6 +414,26 @@ export function loadProjectManifest(
     }
   }
 
+  // B-974 — a duplicate `verify.evidence[].key` is WHOLE-FILE malformed, on purpose. Attestation is
+  // keyed on the entry key (an `ATTESTED: <key>` marker on the verify accept), so two entries sharing
+  // one key make every attestation of it ambiguous — and an ambiguous attestation is a false claim
+  // that a human confirmed something. Same posture as `unknown-key` above: a hand-authored manifest
+  // typo fails loud at the cheapest point rather than degrading into a silently wrong brief.
+  const evidenceKeys = (manifest.verify?.evidence ?? []).map((e) => e.key);
+  const duplicateKeys = [...new Set(evidenceKeys.filter((k, i) => evidenceKeys.indexOf(k) !== i))];
+  if (duplicateKeys.length > 0) {
+    return {
+      kind: 'malformed',
+      problem: {
+        file,
+        reason: 'duplicate-evidence-key',
+        message:
+          `${file}: verify.evidence declares duplicate key(s): ${duplicateKeys.join(', ')} — each ` +
+          "entry's `key` must be unique, because an 'ATTESTED: <key>' marker names exactly one entry.",
+      },
+    };
+  }
+
   const stepErrors: StepErrorsByExtensionPoint = {};
 
   const buildErr = validateSteps(file, 'build.before_pr', manifest.build?.before_pr, projectRoot, existsSync);
@@ -436,4 +498,19 @@ export function getPreconditions(manifest: ProjectManifest): string[] {
  *  docs/notify-outbox-contract.md §9 for the explicit statement of what is NOT specified. */
 export function getNotifyEntries(manifest: ProjectManifest): NotifyEntry[] {
   return manifest.notify ?? [];
+}
+
+/** B-974 — the `verify.evidence` section, as pure DECLARED DATA, in MANIFEST ORDER.
+ *
+ *  Mirrors `getPreconditions` above exactly: it reads a field off an already-parsed manifest and
+ *  does nothing else. Nothing here (or anywhere downstream) executes an entry — a `prompt` is prose
+ *  rendered onto a brief for a human to read, never a command. Keys are unique by construction: a
+ *  duplicate makes the whole manifest malformed (see loadProjectManifest), so this never returns two
+ *  entries an `ATTESTED: <key>` marker could not tell apart.
+ *
+ *  The single consumer of the RESULT is src/config/manifest-evidence.ts, which both `compose_brief`
+ *  and `get_build_evidence_status` go through, so the brief's answer and the tool's answer cannot
+ *  drift. */
+export function getDeclaredEvidence(manifest: ProjectManifest): EvidenceEntry[] {
+  return manifest.verify?.evidence ?? [];
 }

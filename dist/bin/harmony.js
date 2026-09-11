@@ -36731,6 +36731,217 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
   return result;
 }
 
+// src/config/project-manifest.ts
+var import_yaml = __toESM(require_dist(), 1);
+import { existsSync as nodeExistsSync2, readFileSync as nodeReadFileSync2 } from "node:fs";
+import { join as nodeJoin2, resolve as nodeResolve } from "node:path";
+var PROJECT_MANIFEST_RELATIVE_PATH = ".harmony/project.yml";
+var SUPPORTED_MANIFEST_VERSION = 1;
+var EXTENSION_POINTS = ["build.before_pr", "release.before_merge", "verify.before_ack"];
+var DECLARABLE_TRANSITIONS = [
+  "reaching Proposed",
+  "reaching Clarified",
+  "reaching Decomposed",
+  "reaching Designed",
+  "reaching Planned",
+  "reaching Built",
+  "reaching Deployed",
+  "reaching Verified",
+  "reaching Parked",
+  "reaching Cancelled"
+];
+var RunStepSchema = external_exports.object({ run: external_exports.string().min(1) }).strict();
+var AgentTaskStepSchema = external_exports.object({ agent_task: external_exports.string().min(1) }).strict();
+var StepSchema = external_exports.union([RunStepSchema, AgentTaskStepSchema]);
+function isRunStep(step) {
+  return "run" in step;
+}
+function isAgentTaskStep(step) {
+  return "agent_task" in step;
+}
+var NotifyEntrySchema = external_exports.object({ on: external_exports.string().min(1), endpoint: external_exports.string().url() }).strict();
+var AppliesToSchema = external_exports.object({
+  /** Globs (`**`, `*`, `?` — `globToRegExp`, src/tools/risk-class.ts) matched against the BUILD'S
+   *  CHANGED PATHS. Unevaluable when no diff is available at verify time — see
+   *  src/config/manifest-evidence.ts, which names such an entry rather than silently skipping it. */
+  paths: external_exports.array(external_exports.string().min(1)).optional(),
+  /** Matched against the TICKET'S LABEL NAMES, case-insensitively, as whole names (never globs). */
+  labels: external_exports.array(external_exports.string().min(1)).optional()
+}).strict();
+var EvidenceEntrySchema = external_exports.object({
+  key: external_exports.string().min(1),
+  prompt: external_exports.string().min(1),
+  applies_to: AppliesToSchema.optional()
+}).strict();
+var GateSchema = external_exports.object({ before_pr: external_exports.array(StepSchema).optional() }).strict();
+var ReleaseGateSchema = external_exports.object({ before_merge: external_exports.array(StepSchema).optional() }).strict();
+var VerifyGateSchema = external_exports.object({ before_ack: external_exports.array(StepSchema).optional(), evidence: external_exports.array(EvidenceEntrySchema).optional() }).strict();
+var ProjectManifestBodySchema = external_exports.object({
+  version: external_exports.literal(SUPPORTED_MANIFEST_VERSION),
+  preconditions: external_exports.array(external_exports.string()).optional(),
+  build: GateSchema.optional(),
+  release: ReleaseGateSchema.optional(),
+  verify: VerifyGateSchema.optional(),
+  notify: external_exports.array(NotifyEntrySchema).optional()
+}).strict();
+var KNOWN_TOP_LEVEL_KEYS = ["version", "preconditions", "build", "release", "verify", "notify"];
+function isPlainObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function firstToken(command) {
+  return command.trim().split(/\s+/, 1)[0] ?? "";
+}
+function looksLikeScriptPath(token) {
+  return token.includes("/");
+}
+function validateSteps(file, extensionPoint, steps, projectRoot, existsSync2) {
+  if (!steps) return void 0;
+  for (const step of steps) {
+    if (isAgentTaskStep(step)) {
+      return {
+        file,
+        reason: "unsupported-agent-task",
+        message: `${file}: ${extensionPoint} declares an 'agent_task:' step ('${step.agent_task}') \u2014 the v1 'harmony gates run' runner does not execute agent_task steps. This extension point runs NO steps until the manifest is updated; other extension points are unaffected.`
+      };
+    }
+    const token = firstToken(step.run);
+    if (looksLikeScriptPath(token)) {
+      const resolved = nodeResolve(projectRoot, token);
+      if (!existsSync2(resolved)) {
+        return {
+          file,
+          reason: "missing-script",
+          message: `${file}: ${extensionPoint}'s run step '${step.run}' names a script that does not exist on disk (looked for ${resolved}). This extension point runs NO steps until the manifest is fixed; other extension points are unaffected.`
+        };
+      }
+    }
+  }
+  return void 0;
+}
+function loadProjectManifest(projectRoot, deps = {}) {
+  const existsSync2 = deps.existsSync ?? nodeExistsSync2;
+  const readFileSync5 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
+  const file = nodeJoin2(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
+  if (!existsSync2(file)) return { kind: "absent" };
+  const raw = readFileSync5(file);
+  let parsed;
+  try {
+    parsed = (0, import_yaml.parse)(raw);
+  } catch (err) {
+    return {
+      kind: "malformed",
+      problem: {
+        file,
+        reason: "invalid-yaml",
+        message: `${file}: invalid YAML \u2014 ${err?.message ?? String(err)}`
+      }
+    };
+  }
+  if (parsed === void 0 || parsed === null) parsed = {};
+  if (!isPlainObject2(parsed)) {
+    return {
+      kind: "malformed",
+      problem: {
+        file,
+        reason: "not-a-mapping",
+        message: `${file}: the manifest's top level must be a YAML mapping (object), got ${Array.isArray(parsed) ? "a sequence/array" : typeof parsed}`
+      }
+    };
+  }
+  const unknownKeys = Object.keys(parsed).filter(
+    (k) => !KNOWN_TOP_LEVEL_KEYS.includes(k)
+  );
+  if (unknownKeys.length > 0) {
+    return {
+      kind: "malformed",
+      problem: {
+        file,
+        reason: "unknown-key",
+        message: `${file}: unrecognized top-level key(s): ${unknownKeys.join(", ")} \u2014 recognized keys are ${KNOWN_TOP_LEVEL_KEYS.join(", ")}`
+      }
+    };
+  }
+  if (!("version" in parsed)) {
+    return {
+      kind: "malformed",
+      problem: {
+        file,
+        reason: "missing-version",
+        message: `${file}: missing required 'version' key`
+      }
+    };
+  }
+  if (parsed.version !== SUPPORTED_MANIFEST_VERSION) {
+    return {
+      kind: "malformed",
+      problem: {
+        file,
+        reason: "unrecognized-version",
+        message: `${file}: unrecognized version ${JSON.stringify(parsed.version)} \u2014 this runner supports version ${SUPPORTED_MANIFEST_VERSION}`
+      }
+    };
+  }
+  const shapeResult = ProjectManifestBodySchema.safeParse(parsed);
+  if (!shapeResult.success) {
+    return {
+      kind: "malformed",
+      problem: {
+        file,
+        reason: "invalid-shape",
+        message: `${file}: ${shapeResult.error.message}`
+      }
+    };
+  }
+  const manifest = shapeResult.data;
+  for (const entry of manifest.notify ?? []) {
+    if (!DECLARABLE_TRANSITIONS.includes(entry.on)) {
+      return {
+        kind: "malformed",
+        problem: {
+          file,
+          reason: "unknown-transition",
+          message: `${file}: notify declares an unrecognized transition ${JSON.stringify(entry.on)} \u2014 recognized transitions are: ${DECLARABLE_TRANSITIONS.join(", ")}`
+        }
+      };
+    }
+  }
+  const evidenceKeys = (manifest.verify?.evidence ?? []).map((e) => e.key);
+  const duplicateKeys = [...new Set(evidenceKeys.filter((k, i) => evidenceKeys.indexOf(k) !== i))];
+  if (duplicateKeys.length > 0) {
+    return {
+      kind: "malformed",
+      problem: {
+        file,
+        reason: "duplicate-evidence-key",
+        message: `${file}: verify.evidence declares duplicate key(s): ${duplicateKeys.join(", ")} \u2014 each entry's \`key\` must be unique, because an 'ATTESTED: <key>' marker names exactly one entry.`
+      }
+    };
+  }
+  const stepErrors = {};
+  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync2);
+  if (buildErr) stepErrors["build.before_pr"] = buildErr;
+  const releaseErr = validateSteps(
+    file,
+    "release.before_merge",
+    manifest.release?.before_merge,
+    projectRoot,
+    existsSync2
+  );
+  if (releaseErr) stepErrors["release.before_merge"] = releaseErr;
+  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync2);
+  if (verifyErr) stepErrors["verify.before_ack"] = verifyErr;
+  return { kind: "ok", file, manifest, stepErrors };
+}
+function resolveExtensionPoint(result, extensionPoint) {
+  const problem = result.stepErrors[extensionPoint];
+  if (problem) return { outcome: "blocked", problem };
+  const steps = extensionPoint === "build.before_pr" ? result.manifest.build?.before_pr : extensionPoint === "release.before_merge" ? result.manifest.release?.before_merge : result.manifest.verify?.before_ack;
+  return { outcome: "steps", steps: steps ?? [] };
+}
+function getPreconditions(manifest) {
+  return manifest.preconditions ?? [];
+}
+
 // src/tools/briefs.ts
 var DEFAULT_TAIL = "Type `accept`, `edit`, `iterate <feedback>`, or `defer`.";
 var STALE_PATCH_TAIL = "`accept` applies this patch and clears the stale flag (state unchanged). `defer` REJECTS it \u2014 the flag clears anyway, the divergence is recorded, and the ticket proceeds on the retired decision; this is not a park and cannot be undone. Or `edit` / `iterate <feedback>`.";
@@ -36768,7 +36979,12 @@ var DISPOSITION_MARK = {
   "test-proven": "\u{1F9EA} test-proven",
   "not-hand-checkable": "\u{1F6C8} not hand-checkable",
   carried: "\u{1F501} carried",
-  unproven: "\u274C unproven"
+  unproven: "\u274C unproven",
+  // B-974 — the two synthetic, manifest-derived dispositions. Added HERE and nowhere else: the lint's
+  // legal-value list (`CRITERION_DISPOSITIONS`, just below) is derived from this table's own keys, so
+  // the B-903 out-of-enum rule follows for free and cannot drift from what the render can index.
+  "manifest-declared": "\u{1F4CB} declared \u2014 not yet attested",
+  "manifest-attested": "\u{1F4CB} attested"
 };
 var CRITERION_DISPOSITIONS = Object.keys(DISPOSITION_MARK);
 function dispositionLabel(row) {
@@ -36858,7 +37074,9 @@ function renderFrame(frame) {
     }
     case "verify": {
       const rows = frame.criteria ?? [];
-      const confirmable = rows.filter((r) => r.disposition === "walk").length;
+      const confirmable = rows.filter(
+        (r) => r.disposition === "walk" || r.disposition === "manifest-declared"
+      ).length;
       out.push(
         `**Verifying against \u2014 ${rows.length} criteria on file \xB7 you can confirm ${confirmable} today**`,
         ""
@@ -39857,192 +40075,6 @@ function registerLegOutputCommands(program3) {
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname as dirname2 } from "node:path";
-
-// src/config/project-manifest.ts
-var import_yaml = __toESM(require_dist(), 1);
-import { existsSync as nodeExistsSync2, readFileSync as nodeReadFileSync2 } from "node:fs";
-import { join as nodeJoin2, resolve as nodeResolve } from "node:path";
-var PROJECT_MANIFEST_RELATIVE_PATH = ".harmony/project.yml";
-var SUPPORTED_MANIFEST_VERSION = 1;
-var EXTENSION_POINTS = ["build.before_pr", "release.before_merge", "verify.before_ack"];
-var DECLARABLE_TRANSITIONS = [
-  "reaching Proposed",
-  "reaching Clarified",
-  "reaching Decomposed",
-  "reaching Designed",
-  "reaching Planned",
-  "reaching Built",
-  "reaching Deployed",
-  "reaching Verified",
-  "reaching Parked",
-  "reaching Cancelled"
-];
-var RunStepSchema = external_exports.object({ run: external_exports.string().min(1) }).strict();
-var AgentTaskStepSchema = external_exports.object({ agent_task: external_exports.string().min(1) }).strict();
-var StepSchema = external_exports.union([RunStepSchema, AgentTaskStepSchema]);
-function isRunStep(step) {
-  return "run" in step;
-}
-function isAgentTaskStep(step) {
-  return "agent_task" in step;
-}
-var NotifyEntrySchema = external_exports.object({ on: external_exports.string().min(1), endpoint: external_exports.string().url() }).strict();
-var GateSchema = external_exports.object({ before_pr: external_exports.array(StepSchema).optional() }).strict();
-var ReleaseGateSchema = external_exports.object({ before_merge: external_exports.array(StepSchema).optional() }).strict();
-var VerifyGateSchema = external_exports.object({ before_ack: external_exports.array(StepSchema).optional() }).strict();
-var ProjectManifestBodySchema = external_exports.object({
-  version: external_exports.literal(SUPPORTED_MANIFEST_VERSION),
-  preconditions: external_exports.array(external_exports.string()).optional(),
-  build: GateSchema.optional(),
-  release: ReleaseGateSchema.optional(),
-  verify: VerifyGateSchema.optional(),
-  notify: external_exports.array(NotifyEntrySchema).optional()
-}).strict();
-var KNOWN_TOP_LEVEL_KEYS = ["version", "preconditions", "build", "release", "verify", "notify"];
-function isPlainObject2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function firstToken(command) {
-  return command.trim().split(/\s+/, 1)[0] ?? "";
-}
-function looksLikeScriptPath(token) {
-  return token.includes("/");
-}
-function validateSteps(file, extensionPoint, steps, projectRoot, existsSync2) {
-  if (!steps) return void 0;
-  for (const step of steps) {
-    if (isAgentTaskStep(step)) {
-      return {
-        file,
-        reason: "unsupported-agent-task",
-        message: `${file}: ${extensionPoint} declares an 'agent_task:' step ('${step.agent_task}') \u2014 the v1 'harmony gates run' runner does not execute agent_task steps. This extension point runs NO steps until the manifest is updated; other extension points are unaffected.`
-      };
-    }
-    const token = firstToken(step.run);
-    if (looksLikeScriptPath(token)) {
-      const resolved = nodeResolve(projectRoot, token);
-      if (!existsSync2(resolved)) {
-        return {
-          file,
-          reason: "missing-script",
-          message: `${file}: ${extensionPoint}'s run step '${step.run}' names a script that does not exist on disk (looked for ${resolved}). This extension point runs NO steps until the manifest is fixed; other extension points are unaffected.`
-        };
-      }
-    }
-  }
-  return void 0;
-}
-function loadProjectManifest(projectRoot, deps = {}) {
-  const existsSync2 = deps.existsSync ?? nodeExistsSync2;
-  const readFileSync5 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
-  const file = nodeJoin2(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
-  if (!existsSync2(file)) return { kind: "absent" };
-  const raw = readFileSync5(file);
-  let parsed;
-  try {
-    parsed = (0, import_yaml.parse)(raw);
-  } catch (err) {
-    return {
-      kind: "malformed",
-      problem: {
-        file,
-        reason: "invalid-yaml",
-        message: `${file}: invalid YAML \u2014 ${err?.message ?? String(err)}`
-      }
-    };
-  }
-  if (parsed === void 0 || parsed === null) parsed = {};
-  if (!isPlainObject2(parsed)) {
-    return {
-      kind: "malformed",
-      problem: {
-        file,
-        reason: "not-a-mapping",
-        message: `${file}: the manifest's top level must be a YAML mapping (object), got ${Array.isArray(parsed) ? "a sequence/array" : typeof parsed}`
-      }
-    };
-  }
-  const unknownKeys = Object.keys(parsed).filter(
-    (k) => !KNOWN_TOP_LEVEL_KEYS.includes(k)
-  );
-  if (unknownKeys.length > 0) {
-    return {
-      kind: "malformed",
-      problem: {
-        file,
-        reason: "unknown-key",
-        message: `${file}: unrecognized top-level key(s): ${unknownKeys.join(", ")} \u2014 recognized keys are ${KNOWN_TOP_LEVEL_KEYS.join(", ")}`
-      }
-    };
-  }
-  if (!("version" in parsed)) {
-    return {
-      kind: "malformed",
-      problem: {
-        file,
-        reason: "missing-version",
-        message: `${file}: missing required 'version' key`
-      }
-    };
-  }
-  if (parsed.version !== SUPPORTED_MANIFEST_VERSION) {
-    return {
-      kind: "malformed",
-      problem: {
-        file,
-        reason: "unrecognized-version",
-        message: `${file}: unrecognized version ${JSON.stringify(parsed.version)} \u2014 this runner supports version ${SUPPORTED_MANIFEST_VERSION}`
-      }
-    };
-  }
-  const shapeResult = ProjectManifestBodySchema.safeParse(parsed);
-  if (!shapeResult.success) {
-    return {
-      kind: "malformed",
-      problem: {
-        file,
-        reason: "invalid-shape",
-        message: `${file}: ${shapeResult.error.message}`
-      }
-    };
-  }
-  const manifest = shapeResult.data;
-  for (const entry of manifest.notify ?? []) {
-    if (!DECLARABLE_TRANSITIONS.includes(entry.on)) {
-      return {
-        kind: "malformed",
-        problem: {
-          file,
-          reason: "unknown-transition",
-          message: `${file}: notify declares an unrecognized transition ${JSON.stringify(entry.on)} \u2014 recognized transitions are: ${DECLARABLE_TRANSITIONS.join(", ")}`
-        }
-      };
-    }
-  }
-  const stepErrors = {};
-  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync2);
-  if (buildErr) stepErrors["build.before_pr"] = buildErr;
-  const releaseErr = validateSteps(
-    file,
-    "release.before_merge",
-    manifest.release?.before_merge,
-    projectRoot,
-    existsSync2
-  );
-  if (releaseErr) stepErrors["release.before_merge"] = releaseErr;
-  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync2);
-  if (verifyErr) stepErrors["verify.before_ack"] = verifyErr;
-  return { kind: "ok", file, manifest, stepErrors };
-}
-function resolveExtensionPoint(result, extensionPoint) {
-  const problem = result.stepErrors[extensionPoint];
-  if (problem) return { outcome: "blocked", problem };
-  const steps = extensionPoint === "build.before_pr" ? result.manifest.build?.before_pr : extensionPoint === "release.before_merge" ? result.manifest.release?.before_merge : result.manifest.verify?.before_ack;
-  return { outcome: "steps", steps: steps ?? [] };
-}
-function getPreconditions(manifest) {
-  return manifest.preconditions ?? [];
-}
 
 // src/hooks/pretooluse-gate.ts
 var GATE_EVIDENCE_DIR = ".harmony/.gate-evidence";

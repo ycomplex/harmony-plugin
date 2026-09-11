@@ -16,6 +16,13 @@ import {
   TIER_CANDIDATE_LIMIT,
   type ContradictionMatchState,
 } from './knowledge-contradiction.js';
+import {
+  readDeclaredEvidence,
+  resolveManifestEvidence,
+  parseAttestedKeys,
+  malformedEvidenceClause,
+  malformedEvidenceWarning,
+} from '../config/manifest-evidence.js';
 
 export interface BriefItem {
   /** §3.2 sort: a decision (always recommended), a content-input (only the human can supply it),
@@ -96,7 +103,20 @@ export interface CriterionRow {
   ac_id: string;
   text: string;
   checked: boolean;
-  disposition: 'walk' | 'blocked' | 'test-proven' | 'not-hand-checkable' | 'carried' | 'unproven';
+  /** B-974 — the last two are SYNTHETIC, never authored by a skill: `compose_brief` overlays them
+   *  onto a verify frame from the project manifest's declared `verify.evidence` entries
+   *  (src/config/manifest-evidence.ts). `manifest-declared` = declared but not yet attested (it
+   *  COUNTS toward the ledger header's "you can confirm N today"); `manifest-attested` = a human
+   *  typed `ATTESTED: <key>` on this ticket's verify lineage. */
+  disposition:
+    | 'walk'
+    | 'blocked'
+    | 'test-proven'
+    | 'not-hand-checkable'
+    | 'carried'
+    | 'unproven'
+    | 'manifest-declared'
+    | 'manifest-attested';
   /** REQUIRED when `disposition === 'walk'` — a walk step the human cannot find is not a runbook. */
   step_ref?: string;
   blocked_reason?: string;
@@ -586,6 +606,11 @@ const DISPOSITION_MARK: Record<CriterionRow['disposition'], string> = {
   'not-hand-checkable': '🛈 not hand-checkable',
   carried: '🔁 carried',
   unproven: '❌ unproven',
+  // B-974 — the two synthetic, manifest-derived dispositions. Added HERE and nowhere else: the lint's
+  // legal-value list (`CRITERION_DISPOSITIONS`, just below) is derived from this table's own keys, so
+  // the B-903 out-of-enum rule follows for free and cannot drift from what the render can index.
+  'manifest-declared': '📋 declared — not yet attested',
+  'manifest-attested': '📋 attested',
 };
 
 /** The legal `disposition` values, derived from the mark table itself so the lint can never drift from
@@ -695,7 +720,12 @@ function renderFrame(frame: GateFrame): string[] {
     }
     case 'verify': {
       const rows = frame.criteria ?? [];
-      const confirmable = rows.filter((r) => r.disposition === 'walk').length;
+      // B-974 — an UNATTESTED declared-evidence entry is precisely a thing the human can confirm at
+      // THIS gate, so it counts exactly like a walk step. A brief carrying no declared rows renders
+      // identically either way, which is what keeps the no-manifest floor byte-for-byte.
+      const confirmable = rows.filter(
+        (r) => r.disposition === 'walk' || r.disposition === 'manifest-declared',
+      ).length;
       out.push(
         `**Verifying against — ${rows.length} criteria on file · you can confirm ${confirmable} today**`,
         '',
@@ -1248,6 +1278,10 @@ export interface BriefLintContext {
    *  on the five forward gates: a ZERO/absent count must warn on NOTHING (most tickets today have an
    *  empty floor set), a non-zero count with an empty/absent `doc.frame.floor_reviewed` warns. */
   floorCount?: number;
+  /** B-974 — set ONLY when the project manifest declaring verify evidence could not be read. A
+   *  WARNING string, never an error: a manifest typo must not wedge the verify gate (see
+   *  src/config/manifest-evidence.ts's header), so the brief still composes and says what is wrong. */
+  manifestEvidenceWarning?: string;
 }
 
 /** B-876 — one pull request read out of a task's `field_values`. `key` is the path it was found at
@@ -1546,6 +1580,10 @@ export function lintBrief(
 ): BriefLintResult {
   const errors: string[] = [];
   const warnings: string[] = [];
+  // B-974 — the malformed-project-manifest warning, computed at compose (the lint cannot read a file)
+  // and passed in. A WARNING by construction: `compose_brief` gains no new way to refuse, so a
+  // manifest typo can never hard-stop an unattended leg at the verify gate.
+  if (ctx.manifestEvidenceWarning) warnings.push(ctx.manifestEvidenceWarning);
   const research = doc.research ?? [];
 
   // B-732 — the release brief must not hide the approval requirement.
@@ -1916,8 +1954,25 @@ export interface ComposeBriefArgs {
   underwriting_claim_ids?: string[];
   /** B-876 — the build's changed file paths (`git diff --name-only origin/main...HEAD`). The ONLY input
    *  to a release frame's `risk_classes`: compose computes that field and overwrites whatever the skill
-   *  authored. No diff ⇒ `[]` — the signal is path-derived or it is nothing. */
+   *  authored. No diff ⇒ `[]` — the signal is path-derived or it is nothing.
+   *
+   *  B-974 WIDENS THE SCOPE (the field is no longer release-frame-only): on a VERIFY frame the same
+   *  paths feed the declared-evidence applicability test — a manifest entry narrowed by
+   *  `applies_to.paths` only applies to a ticket whose diff matches. Each overlay narrows on its own
+   *  `frame.kind`, so the two uses cannot cross-fire. OMITTED ≠ `[]` here: omitted means NO DIFF IS
+   *  AVAILABLE (an umbrella, a decision-only ticket, a doc-only ticket with no PR), which makes a
+   *  path-narrowed entry UNEVALUABLE — it renders no row, is not counted, and is NAMED on the evidence
+   *  line; `[]` is a known-empty diff and is a clean, silent non-match. At verify the source is
+   *  `gh pr diff --name-only <build_pr.pr_url>`, NOT the release-time `origin/main...HEAD` form, which
+   *  is empty once the PR has merged. */
   changed_paths?: string[];
+  /** B-974 — the ABSOLUTE root of the repo of record, i.e. where `.harmony/project.yml` (B-991) is
+   *  read from for this ticket's declared `verify.evidence` entries. An EXPLICIT argument on purpose:
+   *  the MCP server's `process.cwd()` is not reliably the repo root, and inferring it would silently
+   *  read the wrong project's manifest (or none) while looking like it worked. Omitted ⇒ no overlay at
+   *  all and the verify brief is byte-for-byte today's — the same floor as "no manifest" and "the
+   *  manifest declares no evidence". Ignored on every non-verify frame. */
+  manifest_root?: string;
   /** B-838 — the build's bounded, REMOVED/REPLACED PR diff lines (`git diff origin/main...HEAD`,
    *  pre-merge, post-exclusion, pre-cap — see knowledge-contradiction.ts's `parseDiff`/exclusion list).
    *  The ONLY input to a release frame's `contradiction_signal`: compose computes that field and
@@ -1991,6 +2046,134 @@ function withDiffDerivedRiskClasses(
   const paths = Array.isArray(changedPaths) ? changedPaths.filter((x) => typeof x === 'string') : [];
   const risk_classes = paths.length > 0 ? (detectRiskClasses({ changedPaths: paths }) as string[]) : [];
   return { ...doc, frame: { ...doc.frame, risk_classes } };
+}
+
+// ---------------------------------------------------------------------------
+// B-974 (B-936 Class C) — COMPOSE IS AUTHORITATIVE for a verify frame's DECLARED-EVIDENCE OVERLAY.
+//
+// Exactly the shape of `withDiffDerivedRiskClasses` above, one gate over: computed HERE, at compose,
+// from the project manifest's `verify.evidence` entries, and appended to whatever the skill authored
+// (appended, not overwritten — the real acceptance criteria are the skill's to author and this must
+// never displace them). The whole computation lives in ONE pure module,
+// src/config/manifest-evidence.ts, which `get_build_evidence_status` imports too, so the brief and
+// the tool cannot disagree about what is outstanding.
+//
+// THE FLOOR, enforced by the three early returns below: no verify frame, no manifest root, no
+// manifest, or no declared entries ⇒ the caller's own doc object is returned by IDENTITY. Nothing is
+// cloned, so a silent frame mutation is impossible, not merely unrendered.
+// ---------------------------------------------------------------------------
+
+/** Append one clause to a verify frame's `evidence_status` line, ` · `-joined like the rest of that
+ *  line's mechanical parts. Returns a CLONE; the caller's object is never mutated. */
+function withEvidenceClause(doc: BriefDoc, clause: string): BriefDoc {
+  if (doc.frame?.kind !== 'verify') return doc;
+  const current = typeof doc.frame.evidence_status === 'string' ? doc.frame.evidence_status.trim() : '';
+  return {
+    ...doc,
+    frame: { ...doc.frame, evidence_status: current ? `${current} · ${clause}` : clause },
+  };
+}
+
+/** The ticket's label NAMES, for the declared-evidence `applies_to.labels` matcher. Guarded like
+ *  every other compose-time enrichment read: a failure degrades to "no labels" (so a label-narrowed
+ *  entry simply does not apply) rather than failing the compose. */
+async function readTaskLabelNames(client: SupabaseClient, taskId: string): Promise<string[]> {
+  try {
+    const { data, error } = await client.from('task_labels').select('labels(name)').eq('task_id', taskId);
+    if (error) return [];
+    // supabase-js types the to-one `labels(name)` embed as an array — cast through unknown (house pattern).
+    const rows = (data ?? []) as unknown as Array<{ labels: { name: string | null } | null }>;
+    return rows.map((r) => r.labels?.name).filter((n): n is string => typeof n === 'string');
+  } catch {
+    return [];
+  }
+}
+
+/** B-974 — read the `ATTESTED: <key>` markers back out of THIS ticket's verify-brief lineage.
+ *
+ *  Two sources, both of them places a human's words actually land: `briefs.resolved_detail` on every
+ *  `verification-ack-pending` revision (what a previous accept/iterate recorded) and the active row's
+ *  `pending_resolution.detail` (a browser-submitted command not yet consumed). Parsing is done by the
+ *  pure `parseAttestedKeys`; this function only does the reading, which is what lets the parser be
+ *  unit-tested over synthetic lineage rows.
+ *
+ *  `pending_resolution` is read on the SAME select but with a `resolved_detail`-only retry, because
+ *  that column postdates some live databases (B-485's note) — a 400 there must degrade, not break a
+ *  gate. Any failure at all yields `[]`: nothing attested, which is the safe direction (an entry
+ *  stays outstanding and visible rather than silently reading as confirmed). */
+async function readAttestedKeys(client: SupabaseClient, taskId: string): Promise<string[]> {
+  const details: Array<string | null | undefined> = [];
+  try {
+    let rows: Array<Record<string, unknown>> | null = null;
+    const full = await client
+      .from('briefs').select('resolved_detail, pending_resolution')
+      .eq('task_id', taskId).eq('reason', 'verification-ack-pending');
+    if (full.error) {
+      const narrowed = await client
+        .from('briefs').select('resolved_detail')
+        .eq('task_id', taskId).eq('reason', 'verification-ack-pending');
+      if (narrowed.error) return [];
+      rows = (narrowed.data as Array<Record<string, unknown>>) ?? [];
+    } else {
+      rows = (full.data as Array<Record<string, unknown>>) ?? [];
+    }
+    for (const row of rows ?? []) {
+      if (typeof row.resolved_detail === 'string') details.push(row.resolved_detail);
+      const pending = row.pending_resolution as { detail?: unknown } | null | undefined;
+      if (pending && typeof pending === 'object' && typeof pending.detail === 'string') {
+        details.push(pending.detail);
+      }
+    }
+  } catch {
+    return [];
+  }
+  return parseAttestedKeys(details);
+}
+
+/**
+ * B-974 — overlay the project's declared verify evidence onto a verify frame.
+ *
+ * Returns the doc (a clone only when something was actually added) plus an optional compose WARNING
+ * for the malformed-manifest case. A malformed manifest overlays NO rows, says loudly on the evidence
+ * line which file is wrong and why, and warns — it never refuses the brief.
+ */
+async function withManifestEvidence(
+  client: SupabaseClient,
+  taskId: string,
+  doc: BriefDoc,
+  args: Pick<ComposeBriefArgs, 'manifest_root' | 'changed_paths'>,
+): Promise<{ doc: BriefDoc; warning?: string }> {
+  if (doc.frame?.kind !== 'verify') return { doc };
+
+  const read = readDeclaredEvidence(args.manifest_root);
+  if (read.kind === 'none') return { doc };
+  if (read.kind === 'malformed') {
+    return {
+      doc: withEvidenceClause(doc, malformedEvidenceClause(read.problem)),
+      warning: malformedEvidenceWarning(read.problem),
+    };
+  }
+
+  // Only pay for the label read when an entry actually narrows by label.
+  const needsLabels = read.entries.some((e) => (e.applies_to?.labels?.length ?? 0) > 0);
+  const labels = needsLabels ? await readTaskLabelNames(client, taskId) : [];
+  const attestedKeys = await readAttestedKeys(client, taskId);
+
+  const result = resolveManifestEvidence(read.entries, {
+    changedPaths: args.changed_paths,
+    labels,
+    attestedKeys,
+  });
+  // Every declared entry cleanly did not apply and there is nothing to report — say nothing, and
+  // return the caller's object untouched rather than a cosmetically-identical clone.
+  if (result.rows.length === 0 && result.clause === null) return { doc };
+
+  const frame = doc.frame;
+  const withRows: BriefDoc = {
+    ...doc,
+    frame: { ...frame, criteria: [...(frame.criteria ?? []), ...result.rows] },
+  };
+  return { doc: result.clause ? withEvidenceClause(withRows, result.clause) : withRows };
 }
 
 // ---------------------------------------------------------------------------
@@ -2415,8 +2598,16 @@ export async function composeBrief(
     taskId,
     args.diff_content,
   );
+  // B-974: the declared-evidence overlay runs AFTER the two release-frame derivations and BEFORE the
+  // gate slot, for the same nesting reason B-867 gives: the durable verify section is a projection of
+  // `frame.criteria`, so the manifest rows must already be ON the frame when the slot is derived, or
+  // the ticket's stored ledger would disagree with the brief the human read. It narrows on
+  // `frame.kind === 'verify'` (the release derivations narrow on 'release'), so the two cannot
+  // cross-fire; with no `manifest_root`, no manifest, or no declared entries it returns its input by
+  // identity and this whole chain is byte-for-byte what it was before B-974.
+  const manifestEvidence = await withManifestEvidence(client, taskId, docWithContradiction, args);
   const doc = withDerivedEntryContent(
-    withDerivedGateSlot(docWithContradiction, args.reason),
+    withDerivedGateSlot(manifestEvidence.doc, args.reason),
     args.reason,
     mergedDecisionRef,
     renderCtx,
@@ -2446,6 +2637,8 @@ export async function composeBrief(
     // round the human will actually read. No active brief means this compose is round 1.
     iteration: existing ? ((existing as { iteration: number }).iteration ?? 1) + 1 : 1,
     floorCount,
+    // B-974 — present ONLY when the manifest declaring verify evidence could not be read.
+    manifestEvidenceWarning: manifestEvidence.warning,
   });
   if (!lint.ok) {
     throw new Error(`Brief failed the §3.2 pre-send lint:\n- ${lint.errors.join('\n- ')}`);
@@ -2691,7 +2884,12 @@ export const composeBriefTool = {
         type: 'array',
         items: { type: 'string' },
         description:
-          "B-876 — the build's changed file paths (`git diff --name-only origin/main...HEAD`). Used ONLY to compute a release frame's `risk_classes` with the deterministic path detector; compose is authoritative for that field and overwrites whatever the doc authored. Omit (or pass []) and the field is [] — the risk signal is path-derived or it is nothing, never prose-guessed.",
+          "B-876 — the build's changed file paths. On a RELEASE frame (`git diff --name-only origin/main...HEAD`) they are the only input to `risk_classes`, computed with the deterministic path detector; compose is authoritative for that field and overwrites whatever the doc authored, and omitting them (or passing []) yields [] — the risk signal is path-derived or it is nothing, never prose-guessed. B-974 WIDENS THE SCOPE: on a VERIFY frame the same paths decide which of the project manifest's declared `verify.evidence` entries apply (an entry narrowed by `applies_to.paths`). Each overlay narrows on its own frame kind, so they never cross-fire. At verify, OMITTED and [] differ: omitted means NO DIFF IS AVAILABLE, so a path-narrowed entry is unevaluable — it renders no row, is not counted, and is NAMED on the evidence line; [] is a known-empty diff and a clean, silent non-match. Source the verify-time list from `gh pr diff --name-only <field_values.build_pr.pr_url>` (NOT the release-time `origin/main...HEAD` form, which is empty once the PR has merged).",
+      },
+      manifest_root: {
+        type: 'string',
+        description:
+          "B-974 — the ABSOLUTE root of the repo of record, where `.harmony/project.yml` (B-991) is read from for this ticket's declared `verify.evidence` entries. Used ONLY on a `verification-ack-pending` compose: each declared entry that applies to this ticket is overlaid onto the criteria ledger as a synthetic row (`ac_id: \"manifest:<key>\"`, disposition `manifest-declared` when outstanding / `manifest-attested` once a human typed `ATTESTED: <key>` on this ticket's verify lineage), and the evidence line reports what is outstanding. EXPLICIT on purpose — compose never infers it from the server's working directory, which is not reliably the repo root. Omit it (or point at a repo with no manifest / no declared evidence) and the verify brief is byte-for-byte what it is today. A MALFORMED manifest never refuses the brief: it overlays no rows, names the file and the problem on the evidence line, and adds a compose WARNING.",
       },
       diff_content: {
         type: 'string',

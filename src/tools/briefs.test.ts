@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { existsSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, mergeBriefDoc, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
@@ -2816,7 +2817,8 @@ describe('B-876 gate frame', () => {
     });
 
     it('stays silent on every legal disposition', () => {
-      for (const disposition of ['walk', 'blocked', 'test-proven', 'not-hand-checkable', 'carried', 'unproven'] as CriterionRow['disposition'][]) {
+      // B-974 widened the union from 6 to 8 — the two synthetic manifest dispositions are legal too.
+      for (const disposition of ['walk', 'blocked', 'test-proven', 'not-hand-checkable', 'carried', 'unproven', 'manifest-declared', 'manifest-attested'] as CriterionRow['disposition'][]) {
         const doc = baseDoc({ frame: verifyFrame(1, { criteria: [criterionRow(1, { disposition })] }) });
         const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
         expect(r.warnings.join(' ')).not.toContain('is not one of');
@@ -3883,5 +3885,314 @@ describe('list_briefs tool registration (B-878)', () => {
     expect(listBriefsTool.description).toContain('predate revision retention');
     expect(listBriefsTool.description).toContain('iterate_feedback');
     expect(listBriefsTool.description).toContain('pre_draft_exchanges');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// B-974 (B-936 Class C) — THE MANIFEST-EVIDENCE OVERLAY AT compose_brief.
+//
+// Composed end-to-end through `composeBrief` against the mock client, with a REAL `.harmony/
+// project.yml` on disk, because the thing under test is the wiring: the overlay fires on a verify
+// frame, appends rows AFTER the real criteria, widens the ledger header's confirmable count, and
+// reports on the evidence line — and does absolutely nothing when there is no manifest to read.
+
+describe('B-974 — declared verify evidence overlaid at compose', () => {
+  const b974Dirs: string[] = [];
+
+  function manifestRoot(manifest?: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'b974-compose-'));
+    b974Dirs.push(dir);
+    if (manifest !== undefined) {
+      mkdirSync(join(dir, '.harmony'), { recursive: true });
+      writeFileSync(join(dir, '.harmony', 'project.yml'), manifest, 'utf8');
+    }
+    return dir;
+  }
+
+  afterEach(() => {
+    for (const dir of b974Dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** The ratified two-entry fixture: one un-narrowed entry, one narrowed by BOTH matchers. */
+  const TWO_ENTRY_MANIFEST = `version: 1
+verify:
+  evidence:
+    - key: founder-clickthrough
+      prompt: "Click through the deployed flow and confirm it matches the design."
+    - key: ui-screenshot
+      prompt: "Attach a screenshot of the changed screen."
+      applies_to:
+        paths:
+          - "src/components/**"
+        labels:
+          - ux
+`;
+
+  const verifyDoc = (): BriefDoc =>
+    baseDoc({
+      decide: 'Does production behaviour match the design?',
+      frame: {
+        kind: 'verify',
+        environment: 'staging',
+        criteria: [
+          { ac_id: 'ac-1', text: 'The saved view persists across a reload', checked: false, disposition: 'walk', step_ref: '1' },
+        ],
+        evidence_status: '✓ complete',
+      } as GateFrame,
+    });
+
+  const briefRow974 = { id: 'brief-974', task_id: 'task-974', reason: 'verification-ack-pending', content: 'rendered', status: 'active', iteration: 1 };
+
+  /** Compose one verify brief and hand back the row the compose would have PERSISTED. */
+  async function composeVerify(opts: {
+    manifest_root?: string;
+    changed_paths?: string[];
+    labelRows?: Array<{ labels: { name: string } }>;
+    lineageRows?: Array<Record<string, unknown>>;
+    /** Set when the compose is expected to perform the label read (an entry narrows by label). */
+    readsLabels?: boolean;
+    /** Set when the compose is expected to perform the attestation-lineage read. */
+    readsLineage?: boolean;
+  }) {
+    const queue: Array<{ data: unknown; error?: unknown }> = [{ data: null }];
+    if (opts.readsLabels) queue.push({ data: opts.labelRows ?? [] });
+    if (opts.readsLineage) queue.push({ data: opts.lineageRows ?? [] });
+    queue.push({ data: briefRow974 }, { data: null });
+    const client = makeClient(queue);
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-974',
+      reason: 'verification-ack-pending',
+      doc: verifyDoc() as any,
+      ...(opts.manifest_root !== undefined ? { manifest_root: opts.manifest_root } : {}),
+      ...(opts.changed_paths !== undefined ? { changed_paths: opts.changed_paths } : {}),
+    });
+    const persisted = client.insert.mock.calls[0][0] as { content: string; doc: BriefDoc };
+    return { persisted, lint: result.lint };
+  }
+
+  // ── AC2 + AC3: the entries reach the ledger, and narrowing works ───────────────────────────
+
+  it('AC2 — a declared entry renders as a ledger row marked declared-but-unattested, and the evidence line reports it outstanding', async () => {
+    const { persisted } = await composeVerify({
+      manifest_root: manifestRoot(TWO_ENTRY_MANIFEST),
+      changed_paths: ['src/components/SavedView.tsx'],
+      labelRows: [],
+      readsLabels: true,
+      readsLineage: true,
+    });
+    expect(persisted.content).toContain('Click through the deployed flow and confirm it matches the design.');
+    expect(persisted.content).toContain('📋 declared — not yet attested');
+    expect(persisted.content).toContain(
+      'type ATTESTED: founder-clickthrough in the accept remark box or resolve_brief detail',
+    );
+    expect(persisted.content).toContain(
+      '**Evidence (mechanical):** ✓ complete · Declared evidence — 2 outstanding: founder-clickthrough, ui-screenshot',
+    );
+  });
+
+  it('the manifest rows are APPENDED after the real criteria, in manifest order, with manifest: ac_ids', async () => {
+    const { persisted } = await composeVerify({
+      manifest_root: manifestRoot(TWO_ENTRY_MANIFEST),
+      changed_paths: ['src/components/SavedView.tsx'],
+      readsLabels: true,
+      readsLineage: true,
+    });
+    const frame = persisted.doc.frame as Extract<GateFrame, { kind: 'verify' }>;
+    expect(frame.criteria.map((r) => r.ac_id)).toEqual([
+      'ac-1',
+      'manifest:founder-clickthrough',
+      'manifest:ui-screenshot',
+    ]);
+  });
+
+  it('the ledger header counts an unattested declared entry as confirmable TODAY (walk OR manifest-declared)', async () => {
+    const { persisted } = await composeVerify({
+      manifest_root: manifestRoot(TWO_ENTRY_MANIFEST),
+      changed_paths: ['src/components/SavedView.tsx'],
+      readsLabels: true,
+      readsLineage: true,
+    });
+    expect(persisted.content).toContain('**Verifying against — 3 criteria on file · you can confirm 3 today**');
+  });
+
+  it('AC3 — the PATH-narrowed entry does NOT appear on a ticket whose diff misses it; the un-narrowed one still does', async () => {
+    const { persisted } = await composeVerify({
+      manifest_root: manifestRoot(TWO_ENTRY_MANIFEST),
+      changed_paths: ['src/server/db.ts'],
+      labelRows: [{ labels: { name: 'backend' } }],
+      readsLabels: true,
+      readsLineage: true,
+    });
+    const frame = persisted.doc.frame as Extract<GateFrame, { kind: 'verify' }>;
+    expect(frame.criteria.map((r) => r.ac_id)).toEqual(['ac-1', 'manifest:founder-clickthrough']);
+    expect(persisted.content).not.toContain('Attach a screenshot');
+    expect(persisted.content).toContain('Declared evidence — 1 outstanding: founder-clickthrough');
+  });
+
+  it('AC3 — the LABEL matcher brings the narrowed entry in even when the diff misses it (either, not both)', async () => {
+    const { persisted } = await composeVerify({
+      manifest_root: manifestRoot(TWO_ENTRY_MANIFEST),
+      changed_paths: ['src/server/db.ts'],
+      labelRows: [{ labels: { name: 'ux' } }],
+      readsLabels: true,
+      readsLineage: true,
+    });
+    expect(persisted.content).toContain('Attach a screenshot of the changed screen.');
+    expect(persisted.content).toContain('Declared evidence — 2 outstanding: founder-clickthrough, ui-screenshot');
+  });
+
+  // ── AC4: the attestation read-back ─────────────────────────────────────────────────────────
+
+  it('AC4 — an ATTESTED: marker in the verify lineage flips the row to attested and drops it from outstanding', async () => {
+    const { persisted } = await composeVerify({
+      manifest_root: manifestRoot(TWO_ENTRY_MANIFEST),
+      changed_paths: ['src/components/SavedView.tsx'],
+      readsLabels: true,
+      readsLineage: true,
+      lineageRows: [
+        { resolved_detail: 'Walked it on staging.\nATTESTED: founder-clickthrough', pending_resolution: null },
+      ],
+    });
+    expect(persisted.content).toContain('📋 attested');
+    expect(persisted.content).toContain(
+      'Declared evidence — 1 outstanding: ui-screenshot · 1 attested: founder-clickthrough',
+    );
+    // An attested entry is no longer something the human must confirm today: 1 walk + 1 declared.
+    expect(persisted.content).toContain('**Verifying against — 3 criteria on file · you can confirm 2 today**');
+  });
+
+  it("AC4 — the active row's pending_resolution.detail is read too, not just resolved_detail", async () => {
+    const { persisted } = await composeVerify({
+      manifest_root: manifestRoot(TWO_ENTRY_MANIFEST),
+      changed_paths: ['src/components/SavedView.tsx'],
+      readsLabels: true,
+      readsLineage: true,
+      lineageRows: [
+        { resolved_detail: null, pending_resolution: { command: 'accept', detail: 'ATTESTED: ui-screenshot' } },
+      ],
+    });
+    expect(persisted.content).toContain('Declared evidence — 1 outstanding: founder-clickthrough · 1 attested: ui-screenshot');
+  });
+
+  it('an ATTESTED key naming no declared entry is REPORTED on the brief, never silently dropped', async () => {
+    const { persisted } = await composeVerify({
+      manifest_root: manifestRoot(TWO_ENTRY_MANIFEST),
+      changed_paths: ['src/components/SavedView.tsx'],
+      readsLabels: true,
+      readsLineage: true,
+      lineageRows: [{ resolved_detail: 'ATTESTED: founder-clickthru', pending_resolution: null }],
+    });
+    expect(persisted.content).toContain('⚠️ ATTESTED: names no declared entry: founder-clickthru');
+    // …and the real entry is still outstanding — a typo attests nothing.
+    expect(persisted.content).toContain('2 outstanding: founder-clickthrough, ui-screenshot');
+  });
+
+  // ── The unevaluable-paths case: SKIP BUT NAME ──────────────────────────────────────────────
+
+  it('no diff available ⇒ the path-narrowed entry renders no row, is not counted, and IS NAMED', async () => {
+    const { persisted } = await composeVerify({
+      manifest_root: manifestRoot(TWO_ENTRY_MANIFEST),
+      // changed_paths deliberately OMITTED — an umbrella / decision-only / doc-only ticket.
+      readsLabels: true,
+      readsLineage: true,
+    });
+    const frame = persisted.doc.frame as Extract<GateFrame, { kind: 'verify' }>;
+    expect(frame.criteria.map((r) => r.ac_id)).toEqual(['ac-1', 'manifest:founder-clickthrough']);
+    expect(persisted.content).toContain(
+      '1 path-narrowed entry not evaluated — no diff available: ui-screenshot',
+    );
+    expect(persisted.content).toContain('**Verifying against — 2 criteria on file · you can confirm 2 today**');
+  });
+
+  // ── The malformed manifest: loud, and never a refusal ──────────────────────────────────────
+
+  it('a DUPLICATE evidence key overlays no rows, says so loudly on the evidence line, and WARNS — never refuses', async () => {
+    const root = manifestRoot(`version: 1
+verify:
+  evidence:
+    - key: dup
+      prompt: "first"
+    - key: dup
+      prompt: "second"
+`);
+    const { persisted, lint } = await composeVerify({ manifest_root: root, changed_paths: ['src/components/X.tsx'] });
+    const frame = persisted.doc.frame as Extract<GateFrame, { kind: 'verify' }>;
+    expect(frame.criteria.map((r) => r.ac_id)).toEqual(['ac-1']);
+    expect(persisted.content).toContain('⚠️ Declared verify evidence NOT read (duplicate-evidence-key)');
+    expect(persisted.content).toContain('project.yml');
+    expect(persisted.content).toContain('dup');
+    // The brief still composed: warn-only, exactly like every other frame rule.
+    expect(lint.ok).toBe(true);
+    expect(lint.errors).toEqual([]);
+    expect(lint.warnings.join(' ')).toContain('could NOT be read (duplicate-evidence-key)');
+  });
+
+  it('a manifest that is not valid YAML at all degrades the same way — clause + warning, brief composed', async () => {
+    const root = manifestRoot('version: 1\nverify:\n  evidence:\n  - key: [unclosed\n');
+    const { persisted, lint } = await composeVerify({ manifest_root: root, changed_paths: [] });
+    expect(persisted.content).toContain('⚠️ Declared verify evidence NOT read');
+    expect(lint.ok).toBe(true);
+    expect(lint.warnings.join(' ')).toContain('could NOT be read');
+  });
+
+  // ── AC5: THE FLOOR — byte-for-byte, and the FRAME OBJECT too ───────────────────────────────
+  //
+  // Both halves are asserted deliberately. Comparing only the rendered content would pass a silent
+  // frame mutation that happens not to render (an added key, a cloned array, a reordered row); the
+  // frame comparison catches that, and `toBe` on the frame reference proves the no-op path returns
+  // the caller's own object rather than a cosmetically-identical clone.
+
+  it('AC5 — NO manifest_root renders exactly today\'s verify brief: identical content AND identical frame', async () => {
+    const baseline = await composeVerify({});
+    const withRoot = await composeVerify({ manifest_root: manifestRoot() }); // a root with no manifest file
+    expect(withRoot.persisted.content).toBe(baseline.persisted.content);
+    expect(withRoot.persisted.doc.frame).toEqual(baseline.persisted.doc.frame);
+    expect(withRoot.lint.warnings).toEqual(baseline.lint.warnings);
+  });
+
+  it('AC5 — a manifest declaring NO verify.evidence renders exactly today\'s verify brief, content AND frame', async () => {
+    const baseline = await composeVerify({});
+    const root = manifestRoot('version: 1\nverify:\n  before_ack:\n    - run: npm test\n');
+    const declaresNothing = await composeVerify({ manifest_root: root });
+    expect(declaresNothing.persisted.content).toBe(baseline.persisted.content);
+    expect(declaresNothing.persisted.doc.frame).toEqual(baseline.persisted.doc.frame);
+    expect(declaresNothing.lint.warnings).toEqual(baseline.lint.warnings);
+  });
+
+  it('AC5 — the no-op path returns the caller\'s OWN doc object, so no frame mutation is even possible', async () => {
+    const doc = verifyDoc();
+    const frameBefore = doc.frame;
+    const client = makeClient([{ data: null }, { data: briefRow974 }, { data: null }]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-974', reason: 'verification-ack-pending', doc: doc as any,
+    });
+    expect(doc.frame).toBe(frameBefore);
+    expect((doc.frame as Extract<GateFrame, { kind: 'verify' }>).criteria).toHaveLength(1);
+  });
+
+  it('the overlay never fires on a NON-verify frame, even with a manifest declaring evidence', async () => {
+    const root = manifestRoot(TWO_ENTRY_MANIFEST);
+    const client = makeClient([
+      { data: { field_values: {} } },                    // release-gate build_pr read (runs FIRST)
+      { data: null },                                    // active-brief lookup
+      { data: { ...briefRow974, reason: 'release-decision-pending' } },
+      { data: null },
+    ]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-974', reason: 'release-decision-pending', manifest_root: root,
+      changed_paths: ['src/components/X.tsx'],
+      doc: baseDoc({
+        frame: {
+          kind: 'release',
+          act: { repos: ['harmony-plugin'], pr_count: 1, lands_in: 'staging', atomicity: 'single', irreversible: [] },
+          unproven: [],
+          evidence_status: { proven_by_run: 1, walk_at_verify: 0, unproven: 0, total: 1 },
+          risk_classes: [],
+        } as GateFrame,
+      }) as any,
+    });
+    const persisted = client.insert.mock.calls[0][0] as { content: string };
+    expect(persisted.content).not.toContain('Declared evidence');
+    expect(persisted.content).not.toContain('founder-clickthrough');
   });
 });
