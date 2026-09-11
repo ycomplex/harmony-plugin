@@ -7,3 +7,10 @@ coverage/
 # B-992: the PreToolUse hook's local gate-evidence markers — best-effort caches written by
 # `harmony gates run <extension-point>`, never committed. .harmony/project.yml ITSELF stays tracked.
 .harmony/.gate-evidence/
+
+# B-1007: `main` is SOURCE ONLY. The built bundle is GENERATED and committed on the `staging`
+# branch by scripts/generate-staging.sh (and `prod` fast-forwards from there), so `dist/` must not
+# be tracked here — it was one of the two files every plugin PR used to collide on. Note that
+# .gitignore is shared across branches, which is why the generation script stages it with
+# `git add -f`. scripts/check-generated-artifacts.sh is the PR gate that keeps `main` clean.
+dist/

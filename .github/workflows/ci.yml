@@ -32,57 +32,69 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Rebuilds from scratch and fails if committed `dist/` drifts from source.
-      # Redundant build with the step above (~30ms on this bundle) is intentional —
-      # keeps the explicit "Build" status check that branch protection requires.
-      - name: Verify dist matches source
-        run: npm run verify:dist
-
-      # B-778: mechanical, fail-closed gate — every PR must bump plugin.json's version
-      # (CLAUDE.md's Versioning section), because that field is the only signal Claude
-      # Code uses to detect plugin updates. No path-based exemption: unconditional.
-      # No "base" to diff against on a plain push, so this only runs for pull_request.
-      - name: Require plugin.json version bump
+      # B-1007: the INVERTED gate. Under the three-branch topology `main` is SOURCE ONLY — the
+      # version and the built `dist/` are GENERATED on `staging` by scripts/generate-staging.sh —
+      # so a PR must NOT bump plugin.json's version and must NOT touch any path under dist/. It
+      # keeps the fail-closed property of the B-778 gate it replaces (an unreadable base or an
+      # unparseable manifest FAILS) and recognises exactly one exception: the B-1007 cutover commit
+      # itself. The logic lives in a committed, unit-tested script (src/check-generated-artifacts.
+      # test.ts) — this is only its caller. No "base" to diff against on a plain push, so this runs
+      # for pull_request only.
+      - name: Forbid generated artifacts in a PR
         if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          BASE_VERSION=$(git show "$BASE_SHA:.claude-plugin/plugin.json" | node -e '
-            let data = "";
-            process.stdin.on("data", (c) => (data += c));
-            process.stdin.on("end", () => {
-              console.log(JSON.parse(data).version);
-            });
-          ')
-          HEAD_VERSION=$(node -e 'console.log(require("./.claude-plugin/plugin.json").version)')
-          echo "Base version: $BASE_VERSION"
-          echo "Head version: $HEAD_VERSION"
-          node -e '
-            function parse(v) {
-              const m = String(v).trim().match(/^(\d+)\.(\d+)\.(\d+)/);
-              if (!m) throw new Error(`Cannot parse semver: ${v}`);
-              return [Number(m[1]), Number(m[2]), Number(m[3])];
-            }
-            function cmp(a, b) {
-              for (let i = 0; i < 3; i++) {
-                if (a[i] !== b[i]) return a[i] - b[i];
-              }
-              return 0;
-            }
-            const base = process.argv[1];
-            const head = process.argv[2];
-            if (cmp(parse(head), parse(base)) <= 0) {
-              console.error(
-                `plugin.json version was not bumped: base=${base} head=${head}. ` +
-                "Every PR must bump the \"version\" field in .claude-plugin/plugin.json " +
-                "to a strictly greater semver — see .claude-plugin/plugin.json and " +
-                "the Versioning section in CLAUDE.md."
-              );
-              process.exit(1);
-            }
-            console.log(`OK: version bumped ${base} -> ${head}`);
-          ' "$BASE_VERSION" "$HEAD_VERSION"
+          scripts/check-generated-artifacts.sh "$BASE_SHA" HEAD
+
+  # B-1007: the staging GENERATION job — the whole reason `main` can be source-only.
+  #
+  # On every push to `main` (after `check` is green) it merges `main` into `staging`, patch-bumps
+  # .claude-plugin/plugin.json, rebuilds dist/, and commits both as the harmony-daemon GitHub App.
+  # `prod` is then fast-forwarded from `staging` by the workspace's promote-prod.sh, so this job
+  # MERGES and never rewrites history — that property, the patch bump and the re-run safety all
+  # live in the committed script (scripts/generate-staging.sh, unit-tested in
+  # src/generate-staging.test.ts). This job is a thin caller, per this repo's convention that the
+  # logic lives in a committed script rather than in workflow YAML.
+  #
+  # concurrency: two merges landing in quick succession must SERIALIZE, not race — the second run
+  # waits rather than being cancelled, so no merged commit is ever skipped.
+  generate-staging:
+    name: Generate staging (version + dist)
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: plugin-staging-generate
+      cancel-in-progress: false
+    steps:
+      # The App token is what lets this job push to a protected `staging` (GITHUB_TOKEN cannot).
+      # Secret NAMES only — no value is ever embedded here.
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.HARMONY_APP_ID }}
+          private-key: ${{ secrets.HARMONY_APP_PRIVATE_KEY }}
+
+      # Full history: the script merges branches and walks ancestry (its re-run-safety check asks
+      # whether main's tip is already an ancestor of staging), so a shallow clone will not do.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: true
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # Every remote/branch/identity/build detail is env-overridable (see the script's header);
+      # the defaults are exactly this repo's topology.
+      - name: Generate staging (merge main, bump version, rebuild dist, push)
+        run: scripts/generate-staging.sh
 
   # B-694: the build container's agent-portability guardrail, checked on every
   # run — the base target must stay agent-neutral (no claude in it). Light
@@ -103,11 +115,17 @@ jobs:
       - uses: actions/checkout@v6
 
       # B-929: the toolchain-contract script runs `node dist/bin/worker-image.js`
-      # (the requirements-list generator) off the COMMITTED dist bundle — no
-      # `npm ci` needed, the esbuild output is self-contained.
+      # (the requirements-list generator) off the dist bundle.
+      #
+      # B-1007: that bundle is no longer COMMITTED on `main` (it is generated on
+      # `staging`), so this job now builds it itself before the contract runs.
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
+          cache: 'npm'
+
+      - name: Build dist for the toolchain contract (B-1007)
+        run: npm ci && npm run build
 
       - name: Build base target
         run: docker build -f container/Dockerfile --target base -t b694-base container
