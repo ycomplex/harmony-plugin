@@ -15,10 +15,30 @@
 // revision, the same way DeploymentConfigSchema (src/config/deployment-config.ts) does not need
 // passthrough either — both are versioned config files, not wire payloads between build revisions.
 //
-// Five keys, exactly the ratified design: `version`, `preconditions` (declared data, NEVER
-// executed — see the safety-relevant test in project-manifest.test.ts proving this), and the three
+// Six keys, exactly the ratified design: `version`, `preconditions` (declared data, NEVER
+// executed — see the safety-relevant test in project-manifest.test.ts proving this), the three
 // extension points `build.before_pr` / `release.before_merge` / `verify.before_ack`, each an
-// ordered list of `run:` or `agent_task:` steps.
+// ordered list of `run:` or `agent_task:` steps, and B-973's `notify` (declared data, NEVER
+// dispatched to — see below).
+//
+// B-973: `notify` is a list of `{ on, endpoint }` entries declaring which workflow-state transitions
+// a project wants an external endpoint told about. It is the SECOND declared-but-unconsumed key,
+// structurally identical to `preconditions`: nothing in this file, in src/cli/commands/gates.ts, or
+// anywhere else in this plugin ever reads `endpoint` or makes a network call. `notify` is
+// deliberately NOT an entry in EXTENSION_POINTS and resolveExtensionPoint knows nothing about it —
+// that absence is the structural discharge of the ticket's "no new behaviour, no network activity"
+// criterion (there is no consumer that COULD dispatch). The delivery substrate that will eventually
+// consume these declarations is specified in docs/notify-outbox-contract.md and owned by B-980
+// (outbox substrate) and B-1009 (the HTTP dispatcher) — neither lives here.
+//
+// `on` is validated POST-PARSE against DECLARABLE_TRANSITIONS via its own dedicated
+// `unknown-transition` MalformedReason, deliberately NOT via a zod enum inside the body schema:
+// exactly the same treatment `version` already gets a few lines below, and for the same reason — a
+// zod enum failure prints a raw union dump, whereas a hand-written message can name the file, the
+// offending value, and the recognized ten on ONE line (the PreToolUse hook's denial text has to stay
+// readable). A bad `on` value is WHOLE-FILE malformed, never scoped to an extension point: `notify`
+// has no extension-point invocation, so a scoped stepErrors entry would never be printed by anything
+// and a typo would fail silently — the opposite of what this key exists to guarantee.
 //
 // B-992: the PreToolUse hook (src/hooks/pretooluse-gate.ts) reads back a local, gitignored
 // EVIDENCE MARKER per extension point at `.harmony/.gate-evidence/<extension-point>.json`,
@@ -44,6 +64,28 @@ export const SUPPORTED_MANIFEST_VERSION = 1;
 export const EXTENSION_POINTS = ['build.before_pr', 'release.before_merge', 'verify.before_ack'] as const;
 export type ExtensionPoint = (typeof EXTENSION_POINTS)[number];
 
+/** B-973: the fixed, enumerated set of workflow transitions a `notify` entry's `on` may name — the
+ *  eight state entries plus the two exits. Anything outside this list is whole-file malformed
+ *  (reason `unknown-transition`), never a declaration that silently never fires.
+ *
+ *  `Captured` and the legacy `Idea` state are deliberately NOT declarable: they are the board's
+ *  intake states, reached by creation rather than by a gate crossing, so "notify on reaching
+ *  Captured" would fire on every ticket a project ever opens. See docs/notify-outbox-contract.md §2
+ *  for the reader-facing statement of the same exclusion. */
+export const DECLARABLE_TRANSITIONS = [
+  'reaching Proposed',
+  'reaching Clarified',
+  'reaching Decomposed',
+  'reaching Designed',
+  'reaching Planned',
+  'reaching Built',
+  'reaching Deployed',
+  'reaching Verified',
+  'reaching Parked',
+  'reaching Cancelled',
+] as const;
+export type DeclarableTransition = (typeof DECLARABLE_TRANSITIONS)[number];
+
 // --- step schema --------------------------------------------------------------------------------
 
 /** A `run:` step — a shell command executed as a subprocess by the CLI runner (src/cli/commands/
@@ -67,11 +109,19 @@ export function isAgentTaskStep(step: ManifestStep): step is { agent_task: strin
   return 'agent_task' in step;
 }
 
+/** B-973: one `notify` declaration — a transition name and the absolute URL a delivery substrate
+ *  would eventually POST to. `endpoint` is `z.string().url()` so a relative path or a typo'd scheme
+ *  fails LOUD at parse time rather than at some future dispatch that this plugin never makes. `on`
+ *  is only shape-checked here (a non-empty string); its VALUE is checked post-parse against
+ *  DECLARABLE_TRANSITIONS — see this file's header for why that is not a zod enum. */
+const NotifyEntrySchema = z.object({ on: z.string().min(1), endpoint: z.string().url() }).strict();
+export type NotifyEntry = z.infer<typeof NotifyEntrySchema>;
+
 const GateSchema = z.object({ before_pr: z.array(StepSchema).optional() }).strict();
 const ReleaseGateSchema = z.object({ before_merge: z.array(StepSchema).optional() }).strict();
 const VerifyGateSchema = z.object({ before_ack: z.array(StepSchema).optional() }).strict();
 
-/** The 5-key top-level schema. Deliberately `.strict()` (see this file's header) — an unrecognized
+/** The 6-key top-level schema. Deliberately `.strict()` (see this file's header) — an unrecognized
  *  top-level key is AC5's own "malformed" example, not a forward-compat pass-through case. */
 const ProjectManifestBodySchema = z
   .object({
@@ -80,6 +130,7 @@ const ProjectManifestBodySchema = z
     build: GateSchema.optional(),
     release: ReleaseGateSchema.optional(),
     verify: VerifyGateSchema.optional(),
+    notify: z.array(NotifyEntrySchema).optional(),
   })
   .strict();
 
@@ -97,6 +148,7 @@ export type MalformedReason =
   | 'missing-version'
   | 'unrecognized-version'
   | 'invalid-shape'
+  | 'unknown-transition'
   | 'missing-script'
   | 'unsupported-agent-task';
 
@@ -126,7 +178,7 @@ export interface LoadProjectManifestDeps {
   readFileSync?: (path: string) => string;
 }
 
-const KNOWN_TOP_LEVEL_KEYS = ['version', 'preconditions', 'build', 'release', 'verify'] as const;
+const KNOWN_TOP_LEVEL_KEYS = ['version', 'preconditions', 'build', 'release', 'verify', 'notify'] as const;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -302,6 +354,24 @@ export function loadProjectManifest(
   }
 
   const manifest = shapeResult.data;
+
+  // B-973: `notify[].on` is checked HERE, post-parse, against the fixed ten — whole-file malformed,
+  // one-line message naming the file, the offending value, and the recognized set. See this file's
+  // header for why this mirrors the `version` check above instead of being a zod enum, and why it is
+  // whole-file rather than scoped to an extension point.
+  for (const entry of manifest.notify ?? []) {
+    if (!(DECLARABLE_TRANSITIONS as readonly string[]).includes(entry.on)) {
+      return {
+        kind: 'malformed',
+        problem: {
+          file,
+          reason: 'unknown-transition',
+          message: `${file}: notify declares an unrecognized transition ${JSON.stringify(entry.on)} — recognized transitions are: ${DECLARABLE_TRANSITIONS.join(', ')}`,
+        },
+      };
+    }
+  }
+
   const stepErrors: StepErrorsByExtensionPoint = {};
 
   const buildErr = validateSteps(file, 'build.before_pr', manifest.build?.before_pr, projectRoot, existsSync);
@@ -356,4 +426,14 @@ export function resolveExtensionPoint(
  *  string that reads like `"rm -rf /"`) for the executed proof. */
 export function getPreconditions(manifest: ProjectManifest): string[] {
   return manifest.preconditions ?? [];
+}
+
+/** B-973's `notify` section, as pure DECLARED DATA — the exact same posture as getPreconditions
+ *  above. This reads an already-parsed array off the manifest and returns it; no caller in this
+ *  plugin dispatches to `endpoint`, and nothing here opens a socket. Provided so a future consumer
+ *  (the outbox substrate of B-980 / the dispatcher of B-1009, neither of which lives in this repo)
+ *  has ONE named reader rather than reaching into the manifest shape. See
+ *  docs/notify-outbox-contract.md §9 for the explicit statement of what is NOT specified. */
+export function getNotifyEntries(manifest: ProjectManifest): NotifyEntry[] {
+  return manifest.notify ?? [];
 }

@@ -4,6 +4,11 @@
 // present-but-empty, present-declaring-exactly-one-gate, and each malformed variant — plus a
 // dedicated safety test (AC's "preconditions is declared data, never executed") and a scoping test
 // proving a per-extension-point problem never leaks into another extension point's resolution.
+//
+// B-973 adds the `notify` key's coverage at the bottom of this file: validation of the fixed ten
+// declarable transitions, the URL check on `endpoint`, the no-op floor a notify-only manifest keeps,
+// and a second safety test proving `endpoint` is declared-but-UNCONSUMED data that no code path in
+// this module can reach or dispatch to.
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
@@ -13,6 +18,9 @@ import {
   loadProjectManifest,
   resolveExtensionPoint,
   getPreconditions,
+  getNotifyEntries,
+  DECLARABLE_TRANSITIONS,
+  EXTENSION_POINTS,
   PROJECT_MANIFEST_RELATIVE_PATH,
   SUPPORTED_MANIFEST_VERSION,
   isRunStep,
@@ -328,5 +336,199 @@ describe('malformed manifest problems always name the real file path', () => {
       if (result.kind !== 'malformed') continue;
       expect(result.problem.message).toContain(join(root, PROJECT_MANIFEST_RELATIVE_PATH));
     }
+  });
+});
+
+// =================================================================================================
+// B-973 — the `notify` key: a 6th strict top-level key, declared-but-unconsumed.
+// =================================================================================================
+
+describe('notify — a valid declaration parses', () => {
+  it('a manifest declaring notify entries parses to kind "ok" and carries them verbatim', () => {
+    const root = makeProjectRoot();
+    writeManifest(
+      root,
+      [
+        `version: ${SUPPORTED_MANIFEST_VERSION}`,
+        'notify:',
+        '  - on: "reaching Built"',
+        '    endpoint: "https://hooks.example.com/harmony/built"',
+        '  - on: "reaching Cancelled"',
+        '    endpoint: "https://hooks.example.com/harmony/cancelled"',
+      ].join('\n'),
+    );
+    const result = loadProjectManifest(root);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(getNotifyEntries(result.manifest)).toEqual([
+      { on: 'reaching Built', endpoint: 'https://hooks.example.com/harmony/built' },
+      { on: 'reaching Cancelled', endpoint: 'https://hooks.example.com/harmony/cancelled' },
+    ]);
+  });
+
+  it('every one of the ratified ten transitions is accepted (and Captured / Idea are NOT)', () => {
+    const root = makeProjectRoot();
+    for (const transition of DECLARABLE_TRANSITIONS) {
+      writeManifest(
+        root,
+        [
+          `version: ${SUPPORTED_MANIFEST_VERSION}`,
+          'notify:',
+          `  - on: "${transition}"`,
+          '    endpoint: "https://hooks.example.com/harmony"',
+        ].join('\n'),
+      );
+      expect(loadProjectManifest(root).kind).toBe('ok');
+    }
+    expect(DECLARABLE_TRANSITIONS).toHaveLength(10);
+    for (const notDeclarable of ['reaching Captured', 'reaching Idea']) {
+      writeManifest(
+        root,
+        [
+          `version: ${SUPPORTED_MANIFEST_VERSION}`,
+          'notify:',
+          `  - on: "${notDeclarable}"`,
+          '    endpoint: "https://hooks.example.com/harmony"',
+        ].join('\n'),
+      );
+      const result = loadProjectManifest(root);
+      expect(result.kind).toBe('malformed');
+      if (result.kind !== 'malformed') continue;
+      expect(result.problem.reason).toBe('unknown-transition');
+    }
+  });
+});
+
+describe('notify — malformed: an unrecognized transition is WHOLE-FILE malformed', () => {
+  it('classifies a bad `on` value as reason "unknown-transition", naming the file, the offending value and the recognized ten, on ONE line', () => {
+    const root = makeProjectRoot();
+    writeManifest(
+      root,
+      [
+        `version: ${SUPPORTED_MANIFEST_VERSION}`,
+        'release:',
+        '  before_merge:',
+        '    - run: npm run build',
+        'notify:',
+        '  - on: "reaching Shipped"',
+        '    endpoint: "https://hooks.example.com/harmony"',
+      ].join('\n'),
+    );
+    const result = loadProjectManifest(root);
+
+    // WHOLE-FILE, not scoped: notify has no extension-point invocation, so a scoped stepErrors
+    // entry would never be printed by anything and the typo would fail SILENTLY.
+    expect(result.kind).toBe('malformed');
+    if (result.kind !== 'malformed') return;
+    expect(result.problem.reason).toBe('unknown-transition');
+    expect(result.problem.file).toBe(join(root, PROJECT_MANIFEST_RELATIVE_PATH));
+    expect(result.problem.message).toContain(result.problem.file);
+    expect(result.problem.message).toContain('reaching Shipped');
+    for (const transition of DECLARABLE_TRANSITIONS) {
+      expect(result.problem.message).toContain(transition);
+    }
+    // ONE line — the PreToolUse hook (hooks/pretooluse-gate.sh) prints this as denial text.
+    expect(result.problem.message).not.toContain('\n');
+  });
+});
+
+describe('notify — malformed: a non-URL endpoint', () => {
+  it('classifies a relative-path endpoint as reason "invalid-shape" (the zod url() check), naming the file', () => {
+    const root = makeProjectRoot();
+    writeManifest(
+      root,
+      [
+        `version: ${SUPPORTED_MANIFEST_VERSION}`,
+        'notify:',
+        '  - on: "reaching Verified"',
+        '    endpoint: "/webhooks/verified"',
+      ].join('\n'),
+    );
+    const result = loadProjectManifest(root);
+    expect(result.kind).toBe('malformed');
+    if (result.kind !== 'malformed') return;
+    expect(result.problem.reason).toBe('invalid-shape');
+    expect(result.problem.message).toContain(join(root, PROJECT_MANIFEST_RELATIVE_PATH));
+  });
+
+  it('classifies an unknown extra key inside a notify entry as reason "invalid-shape" (the entry schema is .strict())', () => {
+    const root = makeProjectRoot();
+    writeManifest(
+      root,
+      [
+        `version: ${SUPPORTED_MANIFEST_VERSION}`,
+        'notify:',
+        '  - on: "reaching Verified"',
+        '    endpoint: "https://hooks.example.com/harmony"',
+        '    retries: 3',
+      ].join('\n'),
+    );
+    const result = loadProjectManifest(root);
+    expect(result.kind).toBe('malformed');
+    if (result.kind !== 'malformed') return;
+    expect(result.problem.reason).toBe('invalid-shape');
+  });
+});
+
+describe('notify — a notify-only manifest still floors every extension point (AC5)', () => {
+  it('declaring notify alone leaves build/release/verify resolving to empty, clean step lists', () => {
+    const root = makeProjectRoot();
+    writeManifest(
+      root,
+      [
+        `version: ${SUPPORTED_MANIFEST_VERSION}`,
+        'notify:',
+        '  - on: "reaching Deployed"',
+        '    endpoint: "https://hooks.example.com/harmony/deployed"',
+      ].join('\n'),
+    );
+    const result = loadProjectManifest(root);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.stepErrors).toEqual({});
+    for (const point of EXTENSION_POINTS) {
+      expect(resolveExtensionPoint(result, point)).toEqual({ outcome: 'steps', steps: [] });
+    }
+  });
+});
+
+describe('notify endpoint — declared data, NEVER reached (safety-relevant, mirrors the preconditions tripwire)', () => {
+  it('a notify endpoint pointing at a URL is only ever returned as a string — no consumer exists, no network call is made, and `notify` is not an extension point', () => {
+    const root = makeProjectRoot();
+    // The tripwire: a file that a dispatching implementation would have had to read this manifest
+    // to find. Nothing in this module resolves `notify` to ANY action, so it stays untouched — the
+    // same shape of proof the preconditions test above uses for shell execution.
+    const tripwire = join(root, 'notify-tripwire.txt');
+    writeFileSync(tripwire, 'still here', 'utf8');
+    writeManifest(
+      root,
+      [
+        `version: ${SUPPORTED_MANIFEST_VERSION}`,
+        'notify:',
+        '  - on: "reaching Verified"',
+        `    endpoint: "https://127.0.0.1:1/${'harmony-should-never-be-called'}"`,
+      ].join('\n'),
+    );
+
+    const result = loadProjectManifest(root);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+
+    // 1. The endpoint comes back as a plain string, nothing more.
+    expect(getNotifyEntries(result.manifest)).toEqual([
+      { on: 'reaching Verified', endpoint: 'https://127.0.0.1:1/harmony-should-never-be-called' },
+    ]);
+
+    // 2. `notify` is deliberately NOT an extension point — there is no resolveExtensionPoint path
+    //    that could ever invoke it. This is the STRUCTURAL discharge of "no network activity":
+    //    there is no consumer to suppress.
+    expect(EXTENSION_POINTS as readonly string[]).not.toContain('notify');
+    for (const point of EXTENSION_POINTS) {
+      const resolution = resolveExtensionPoint(result, point);
+      expect(resolution).toEqual({ outcome: 'steps', steps: [] });
+    }
+
+    // 3. The tripwire file is untouched — loading a notify declaration ran nothing at all.
+    expect(readFileSync(tripwire, 'utf8')).toBe('still here');
   });
 });
