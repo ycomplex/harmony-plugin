@@ -74,6 +74,12 @@ import {
   type DaemonTask,
   type SchedulerDeps,
 } from '../daemon/scheduler.js';
+// B-1011: the OPTIONAL hint subscription — a Realtime broadcast that interrupts the poll sleep.
+import {
+  startHintSubscription,
+  type HintChannelLike,
+  type HintSubscription,
+} from '../daemon/hint-subscription.js';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -129,6 +135,38 @@ async function markCleanShutdownBounded(
 /** B-761: how long stop() waits for the clean-shutdown marker write before giving up on it — short
  *  enough that a hung write can never meaningfully delay the deliberate exit it precedes. */
 const CLEAN_SHUTDOWN_TIMEOUT_MS = 2_000;
+
+/** B-1011: how long stop() waits for the hint channel to unsubscribe. Shorter than the marker
+ *  write's budget on purpose — a websocket teardown is local and best-effort, and unlike the
+ *  clean-shutdown marker nothing downstream depends on it happening at all. */
+const HINT_CLOSE_TIMEOUT_MS = 1_000;
+
+/** B-1011: bound the hint channel's unsubscribe — same shape as markCleanShutdownBounded above
+ *  (a race against an UNREF'd timer, a log line on every outcome, never throws), for the same
+ *  reason: a hung socket teardown must never delay the deliberate exit that follows it. */
+async function closeHintsBounded(
+  hints: HintSubscription,
+  logFn: (line: string) => void,
+  timeoutMs: number,
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    const outcome = await Promise.race([hints.close().then(() => 'closed' as const), timeout]);
+    logFn(
+      outcome === 'timeout'
+        ? 'hint channel did not unsubscribe in time — exiting anyway'
+        : 'hint channel unsubscribed',
+    );
+  } catch (err) {
+    logFn(`hint channel unsubscribe failed (${formatDaemonError(err)}) — exiting anyway`);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 async function main(): Promise<void> {
   const token = process.env.HARMONY_API_TOKEN;
@@ -351,6 +389,58 @@ async function main(): Promise<void> {
 
   const leaseHolder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 
+  // B-1011: the daemon's WORKSPACE uuid — B-1010's broadcast topic is `workspace:<uuid>`. ONE
+  // authenticated read, pinned for the whole lifetime exactly like projectKey above (same reason:
+  // a daemon must never re-resolve its identity mid-run). TOLERANT: a failure here is not a boot
+  // failure — it just means no hint channel, i.e. today's 25s poll, which is state (A) of the
+  // lifecycle in src/daemon/hints.ts. Same read shape as src/tools/labels.ts's own resolver.
+  let workspaceId: string | null = null;
+  try {
+    const { data, error } = await client
+      .from('projects')
+      .select('workspace_id')
+      .eq('id', projectId)
+      .single();
+    if (error) throw error;
+    workspaceId = (data as { workspace_id: string }).workspace_id;
+  } catch (err) {
+    log(
+      `could not resolve the workspace for hints (${formatDaemonError(err)}) — ` +
+        `continuing on the ${config.pollMs}ms poll interval alone`,
+    );
+  }
+
+  // B-739: real timers, unref'd so they can never hold the process open on their own. Hoisted out
+  // of the SchedulerDeps literal below (B-1011) so the hint subscription's debounce window uses the
+  // very same injected seam the scheduler does — never a bare global setTimeout.
+  const startTimeout = (ms: number, fn: () => void): (() => void) => {
+    const timer = setTimeout(fn, ms);
+    timer.unref?.();
+    return () => clearTimeout(timer);
+  };
+
+  // B-1011: the hint channel, created LAZILY — after boot, and without ever awaiting the join, so
+  // nothing about startup can block on a socket. With no workspace uuid (or a channel that never
+  // subscribes) this is simply absent and runScheduler runs the identical poll loop it always has.
+  let realChannel: ReturnType<typeof client.channel> | null = null;
+  const hints: HintSubscription | null = workspaceId
+    ? startHintSubscription({
+        createChannel: (topic) => {
+          // The EXISTING authenticated client's own channel — no new dependency and no token
+          // plumbing: the realtime socket authenticates through the same accessToken callback
+          // src/supabase.ts already passes. `private: true` is required by B-1010's RLS policy.
+          realChannel = client.channel(topic, { config: { private: true } });
+          return realChannel as unknown as HintChannelLike;
+        },
+        removeChannel: () => (realChannel ? client.removeChannel(realChannel) : Promise.resolve()),
+        workspaceId,
+        leaseHolder,
+        debounceMs: config.hintDebounceMs,
+        startTimeout,
+        log,
+      })
+    : null;
+
   const deps: SchedulerDeps = {
     now: Date.now,
     sleep,
@@ -375,11 +465,10 @@ async function main(): Promise<void> {
       timer.unref?.();
       return () => clearInterval(timer);
     },
-    startTimeout: (ms, fn) => {
-      const timer = setTimeout(fn, ms);
-      timer.unref?.();
-      return () => clearTimeout(timer);
-    },
+    startTimeout,
+    // B-1011: OPTIONAL. Present only when the workspace uuid resolved and a channel was created;
+    // absent otherwise, which leaves the scheduler's sleep the literal line it has always been.
+    hints: hints?.source,
     takeoverConduction: (args) => takeoverConduction(client, args),
     // B-717 item 3: the multi-daemon steal CAS.
     stealConduction: (args) => stealConduction(client, args),
@@ -418,6 +507,11 @@ async function main(): Promise<void> {
     // B-739: a lease must go quiet the MOMENT this process leaves, so it goes stale on schedule
     // and its run stays recoverable by another daemon's takeover.
     keeper.stopAll();
+    // B-1011: drop the hint channel next — after the leases go quiet (a lease must go quiet the
+    // moment this process leaves, and nothing about the socket may delay that) and BEFORE the
+    // clean-shutdown marker write, so the daemon is not still taking wakes it can never act on
+    // while it stamps its final rows. Bounded and best-effort, exactly like the write below.
+    if (hints) await closeHintsBounded(hints, log, HINT_CLOSE_TIMEOUT_MS);
     // B-761: mark every row this process instance still holds as CLEANLY shut down — a same-host
     // successor's takeoverConduction CAS then adopts it immediately instead of waiting out the
     // full staleness window. Best-effort and bounded: the write must never block the deliberate
@@ -437,7 +531,10 @@ async function main(): Promise<void> {
   log(
     `conductor daemon up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, ` +
       `heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms, ` +
-      `worker timeout ${config.workerTimeoutMs}ms`,
+      `worker timeout ${config.workerTimeoutMs}ms, ` +
+      // B-1011: "requested" — the channel is created lazily and its join has NOT been awaited at
+      // this point. Whether it actually subscribed is reported by its own status line.
+      `hints ${hints ? `requested (${config.hintDebounceMs}ms debounce)` : 'off'}`,
   );
   try {
     await runScheduler(deps, keeper);

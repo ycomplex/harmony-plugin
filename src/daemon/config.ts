@@ -95,6 +95,12 @@ export interface DaemonConfig {
    *  ranking purposes only (aging escalation), so a sustained stream of high-priority arrivals
    *  cannot starve a low-priority ticket indefinitely. */
   readyAgeMs: number;
+  /** B-1011: the hint debounce window — a FIXED window OPENED BY THE FIRST hint, never sliding.
+   *  Every hint arriving inside it coalesces into the ONE wake the window closes with. Fixed, not
+   *  sliding, on purpose: a sliding window could be starved indefinitely by the daemon's own write
+   *  burst (each write broadcasts, each broadcast would re-extend the window). Only consumed when
+   *  the OPTIONAL hint source is wired (src/daemon/hints.ts) — with no channel, nothing reads it. */
+  hintDebounceMs: number;
   profile: LaunchProfile;
   logPath?: string;
 }
@@ -276,6 +282,8 @@ export function loadDaemonConfig(
       validatedProfile.maxConcurrentWorkers ?? 3,
     ),
     readyAgeMs: envMs(env, 'HARMONY_DAEMON_READY_AGE_MS', 600_000),
+    // B-1011: the fixed (never sliding) hint-coalescing window — see DaemonConfig.hintDebounceMs.
+    hintDebounceMs: envMs(env, 'HARMONY_DAEMON_HINT_DEBOUNCE_MS', 1_000),
     profile: {
       launch: validatedProfile.launch,
       reap: validatedProfile.reap,
