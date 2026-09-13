@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createConduction,
   getConduction,
@@ -10,9 +10,12 @@ import {
   stealConduction,
   markCleanShutdown,
   assertNotExcluded,
+  reviveParkedTicketIfNeeded,
   ActiveConductionExistsError,
   ConductionInsertDeniedError,
   ConductorExcludedError,
+  TicketParkedError,
+  TicketStaleReviveRefusedError,
   CONDUCTION_LIVE_STATUSES,
   CONDUCTION_HUMAN_OWNED_STATUSES,
   CONDUCTION_TERMINAL_STATUSES,
@@ -29,6 +32,16 @@ import {
 // depends on NOTHING else (no resolveTaskId — the daemon deals in resolved UUIDs), so there are no
 // module-scope vi.mock factories to strip; the vi.restoreAllMocks gotcha (impls stripped after
 // test 1 — re-arm in beforeEach) does not arise here. Each test builds a fresh makeClient.
+//
+// B-964: reviveParkedTicketIfNeeded is the ONE exception — it calls into workflow.js's
+// advanceWorkflow and comments.js's addComment, both mocked out here so this suite tests ONLY
+// reviveParkedTicketIfNeeded's own ordering/refusal logic, not those (separately-tested) modules.
+const b964Mocks = vi.hoisted(() => ({
+  advanceWorkflow: vi.fn(),
+  addComment: vi.fn(),
+}));
+vi.mock('./workflow.js', () => ({ advanceWorkflow: b964Mocks.advanceWorkflow }));
+vi.mock('./comments.js', () => ({ addComment: b964Mocks.addComment }));
 
 // A chainable supabase mock whose terminal methods (single/maybeSingle) pop a queued response in
 // call order (mirrors elicitation.test.ts / briefs.test.ts makeClient).
@@ -713,5 +726,120 @@ describe('the canonical status axis', () => {
 
   it('CONDUCTION_PATCHABLE_FIELDS includes reap_requested_at (B-740)', () => {
     expect(CONDUCTION_PATCHABLE_FIELDS).toContain('reap_requested_at');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reviveParkedTicketIfNeeded (B-964)
+// ---------------------------------------------------------------------------
+
+describe('reviveParkedTicketIfNeeded', () => {
+  beforeEach(() => {
+    b964Mocks.advanceWorkflow.mockReset();
+    b964Mocks.addComment.mockReset();
+  });
+
+  it('is a no-op when the task is not Parked — no advance_workflow, no comment', async () => {
+    const client = makeClient([{ data: { workflow_state: 'Built', stale: false }, error: null }]);
+    await expect(
+      reviveParkedTicketIfNeeded(client, 'proj-1', 'user-1', 'task-1', { unpark: false }),
+    ).resolves.toBeUndefined();
+    expect(b964Mocks.advanceWorkflow).not.toHaveBeenCalled();
+    expect(b964Mocks.addComment).not.toHaveBeenCalled();
+  });
+
+  it('throws TicketParkedError when the task is Parked and unpark is not passed', async () => {
+    const client = makeClient([{ data: { workflow_state: 'Parked', stale: false }, error: null }]);
+    await expect(
+      reviveParkedTicketIfNeeded(client, 'proj-1', 'user-1', 'task-1', {}),
+    ).rejects.toBeInstanceOf(TicketParkedError);
+    expect(b964Mocks.advanceWorkflow).not.toHaveBeenCalled();
+    expect(b964Mocks.addComment).not.toHaveBeenCalled();
+  });
+
+  it('TicketParkedError names the ticket, "Parked", and the exact required flag', async () => {
+    const client = makeClient([{ data: { workflow_state: 'Parked', stale: false }, error: null }]);
+    const err = await reviveParkedTicketIfNeeded(client, 'proj-1', 'user-1', 'task-1', {}).catch(
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(TicketParkedError);
+    expect(err.message).toContain('task-1');
+    expect(err.message).toMatch(/Parked/);
+    expect(err.message).toContain('unpark: true');
+  });
+
+  it('refuses a stale Parked ticket even with unpark: true — posts a harmony-stale-patch comment, leaves it Parked, never unparks', async () => {
+    const client = makeClient([{ data: { workflow_state: 'Parked', stale: true }, error: null }]);
+    const err = await reviveParkedTicketIfNeeded(client, 'proj-1', 'user-1', 'task-1', {
+      unpark: true,
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(TicketStaleReviveRefusedError);
+    expect(b964Mocks.advanceWorkflow).not.toHaveBeenCalled(); // never unparks a stale ticket
+    expect(b964Mocks.addComment).toHaveBeenCalledTimes(1);
+    const commentArgs = b964Mocks.addComment.mock.calls[0];
+    expect(commentArgs[0]).toBe(client);
+    expect(commentArgs[1]).toBe('proj-1');
+    expect(commentArgs[2]).toBe('user-1');
+    expect(commentArgs[3].task_id).toBe('task-1');
+    expect(commentArgs[3].content).toMatch(/harmony-stale-patch/);
+  });
+
+  it('unparks (advance_workflow unparking) then posts the AC4 revive comment, in that order, when not stale', async () => {
+    const client = makeClient([{ data: { workflow_state: 'Parked', stale: false }, error: null }]);
+    b964Mocks.advanceWorkflow.mockResolvedValue({
+      task_id: 'task-1',
+      from_state: 'Parked',
+      to_state: 'Designed',
+      activity: 'unparking',
+      task: { id: 'task-1', workflow_state: 'Designed', workflow_activity: null },
+    });
+
+    await reviveParkedTicketIfNeeded(client, 'proj-1', 'user-1', 'task-1', {
+      unpark: true,
+      resume_to: 'Designed',
+      revived_by: "agent acting on the founder's explicit instruction",
+    });
+
+    expect(b964Mocks.advanceWorkflow).toHaveBeenCalledWith(client, 'proj-1', {
+      task_id: 'task-1',
+      activity: 'unparking',
+      resume_to: 'Designed',
+    });
+    expect(b964Mocks.addComment).toHaveBeenCalledTimes(1);
+    const commentArgs = b964Mocks.addComment.mock.calls[0];
+    expect(commentArgs[3].content).toContain('Designed');
+    expect(commentArgs[3].content).toContain("agent acting on the founder's explicit instruction");
+
+    // Ordering: advance_workflow's invocation happened strictly before the comment's.
+    const advanceOrder = b964Mocks.advanceWorkflow.mock.invocationCallOrder[0];
+    const commentOrder = b964Mocks.addComment.mock.invocationCallOrder[0];
+    expect(advanceOrder).toBeLessThan(commentOrder);
+  });
+
+  it('never posts the revive comment when advance_workflow itself throws — the ordering guarantee', async () => {
+    const client = makeClient([{ data: { workflow_state: 'Parked', stale: false }, error: null }]);
+    b964Mocks.advanceWorkflow.mockRejectedValue(new Error('illegal edge'));
+
+    await expect(
+      reviveParkedTicketIfNeeded(client, 'proj-1', 'user-1', 'task-1', { unpark: true }),
+    ).rejects.toThrow('illegal edge');
+    expect(b964Mocks.addComment).not.toHaveBeenCalled();
+  });
+
+  it('falls back to naming the acting user id when revived_by is omitted', async () => {
+    const client = makeClient([{ data: { workflow_state: 'Parked', stale: false }, error: null }]);
+    b964Mocks.advanceWorkflow.mockResolvedValue({
+      task_id: 'task-1',
+      from_state: 'Parked',
+      to_state: 'Proposed',
+      activity: 'unparking',
+      task: { id: 'task-1', workflow_state: 'Proposed', workflow_activity: null },
+    });
+
+    await reviveParkedTicketIfNeeded(client, 'proj-1', 'user-1', 'task-1', { unpark: true });
+
+    const commentArgs = b964Mocks.addComment.mock.calls[0];
+    expect(commentArgs[3].content).toContain('user-1');
   });
 });

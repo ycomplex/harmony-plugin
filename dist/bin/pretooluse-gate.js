@@ -21449,6 +21449,367 @@ var NEVER = INVALID;
 // src/daemon/gate-phase.ts
 var GATES = ["clarify", "decompose", "design", "plan", "build", "release", "verify"];
 
+// src/tools/environment.ts
+import { readFileSync as readFileSync2 } from "node:fs";
+import { dirname, join as join2 } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// src/config/deployment-config.ts
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+var DeploymentEnvSchema = external_exports.object({
+  HARMONY_TARGET: external_exports.enum(["prod", "staging", "custom"]).optional(),
+  HARMONY_API_TOKEN: external_exports.string().optional(),
+  HARMONY_SUPABASE_ANON_KEY: external_exports.string().optional(),
+  HARMONY_SUPABASE_URL: external_exports.string().optional(),
+  // Git identity.
+  GIT_TOKEN: external_exports.string().optional(),
+  GIT_USER_NAME: external_exports.string().optional(),
+  GIT_USER_EMAIL: external_exports.string().optional(),
+  // Ref pins.
+  WEB_REF: external_exports.string().optional(),
+  WORKSPACE_REF: external_exports.string().optional(),
+  // B-803: the single posture knob — collapses the old PLUGIN_REF + HARMONY_ACK_PLUGIN_AHEAD_OF_PROD
+  // pair (which could be set inconsistently, and the ack half was unreachable on the cloud
+  // profile). Encodes which plugin ref to run AND whether running it ahead of prod is
+  // acknowledged: "prod" | "ack:<ref>" | a bare "<ref>" (unacknowledged) — see provision.sh.
+  HARMONY_PLUGIN_POSTURE: external_exports.string().optional(),
+  // Agent layer.
+  CLAUDE_CODE_OAUTH_TOKEN: external_exports.string().optional(),
+  ANTHROPIC_API_KEY: external_exports.string().optional(),
+  CLAUDE_HEADLESS_FLAGS: external_exports.string().optional()
+}).partial();
+var RequiredToolsSchema = external_exports.object({
+  launch: external_exports.array(external_exports.string().min(1)).optional(),
+  reap: external_exports.array(external_exports.string().min(1)).optional(),
+  probe: external_exports.array(external_exports.string().min(1)).optional()
+}).partial();
+var LaunchProfileSchema = external_exports.object({
+  /** Command template that launches a one-shot worker. Placeholders: {conduction_id}, {ticket}. */
+  launch: external_exports.string().min(1),
+  /** Command template that force-removes a (possibly dead) worker. Same placeholders. */
+  reap: external_exports.string().min(1),
+  /** Optional restart-reconciliation probe template — see src/daemon/config.ts's LaunchProfile.
+   *  B-842: a profile with NO probe silently lets a takeover reap-and-refire a genuinely LIVE
+   *  worker (SIGKILL, exit 137, in-progress work discarded) — src/daemon/preflight.ts's boot
+   *  preflight now HARD-refuses to boot such a profile unless the operator explicitly opts out with
+   *  `probe: false` (accepting reap-and-refire). `z.literal(false)` is that explicit opt-out; the
+   *  non-empty-string branch is unchanged — `z.string().min(1)` stays INSIDE the union, never widened
+   *  to a bare `z.string()`. */
+  probe: external_exports.union([external_exports.string().min(1), external_exports.literal(false)]).optional(),
+  /** This profile's own concurrency ceiling. */
+  maxConcurrentWorkers: external_exports.number().int().nonnegative().optional(),
+  /** B-800: replaces the CLOUDSDK_CORE_PROJECT hardcoded default baked into cloud-worker-*.sh —
+   *  the cloud profile's GCP project, read by those scripts via `harmony config get`. */
+  gcloud_project: external_exports.string().optional(),
+  /** B-801: see RequiredToolsSchema above — src/daemon/preflight.ts's hard tool-resolution check. */
+  required_tools: RequiredToolsSchema.optional(),
+  /** B-801: true when this profile mints a worker credential via mint-installation-token.mjs before
+   *  launch (container/README.md "The credential envelopes") — gates src/daemon/preflight.ts's hard
+   *  env-contract check for HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/
+   *  HARMONY_APP_PRIVATE_KEY_PATH/HARMONY_PLUGIN_DIR. */
+  requires_app_mint: external_exports.boolean().optional(),
+  /** B-801: bumped whenever a NEW optional profile capability ships, so a stale profile file (never
+   *  regenerated after an upgrade) gets flagged by the boot preflight's soft audit instead of just
+   *  silently lacking the new capability. Defaults to 1 (this ticket's baseline) when absent — see
+   *  src/daemon/preflight.ts's CURRENT_SCHEMA_VERSION. */
+  schema_version: external_exports.number().int().positive().optional()
+});
+var RepoEntrySchema = external_exports.object({
+  /** Clone URL. */
+  url: external_exports.string().min(1),
+  /** Clone ref. IGNORED for the is_plugin entry (see header comment) — HARMONY_PLUGIN_POSTURE wins
+   *  there. Optional for every other entry; falls back to the container's existing "main" default. */
+  ref: external_exports.string().optional(),
+  /** In-container clone destination, e.g. "/workspace/workspace/plugin". */
+  path: external_exports.string().min(1),
+  /** Marks this entry as the meta-repo/nesting parent. At most one entry may set this. */
+  meta_repo_role: external_exports.boolean().optional(),
+  /** Marks this entry as the one carrying the plugin. At most one entry may set this. */
+  is_plugin: external_exports.boolean().optional()
+});
+var ReposSchema = external_exports.array(RepoEntrySchema).refine((repos) => repos.filter((r) => r.meta_repo_role).length <= 1, {
+  message: "at most one repos[] entry may set meta_repo_role"
+}).refine((repos) => repos.filter((r) => r.is_plugin).length <= 1, {
+  message: "at most one repos[] entry may set is_plugin"
+});
+var WORKER_IMAGE_DEFAULT = "harmony-build-env";
+var GithubAppSchema = external_exports.object({
+  app_id: external_exports.string(),
+  installation_id: external_exports.string(),
+  private_key_path: external_exports.string().optional()
+}).partial({ private_key_path: true });
+var LauncherSupabaseSchema = external_exports.object({
+  url: external_exports.string(),
+  anon_key: external_exports.string().optional(),
+  api_token: external_exports.string().optional()
+});
+var LauncherSchema = external_exports.object({
+  plugin_dir: external_exports.string().optional(),
+  github_app: GithubAppSchema.optional(),
+  supabase: LauncherSupabaseSchema.optional(),
+  /** Project-ref -> target name map, replacing src/tools/environment.ts's KNOWN_REFS. Merged
+   *  OVER (not instead of) the two baked-in defaults, never replacing them. */
+  supabase_refs: external_exports.record(external_exports.enum(["prod", "staging"])).optional()
+}).partial();
+var DeploymentConfigSchema = external_exports.object({
+  env: DeploymentEnvSchema.optional(),
+  profiles: external_exports.record(LaunchProfileSchema).optional(),
+  launcher: LauncherSchema.optional(),
+  /** B-814: the ordered repo set — see the RepoEntrySchema/ReposSchema header comment above. */
+  repos: ReposSchema.optional(),
+  /** B-929 lever 2: which container image this deployment's workers run. THE one place the default
+   *  is written — see the worker_image section comment above. */
+  worker_image: external_exports.string().min(1).default(WORKER_IMAGE_DEFAULT)
+});
+function resolveDeploymentConfigPath(opts) {
+  const env = opts?.env ?? process.env;
+  if (opts?.configPath) return opts.configPath;
+  if (env.HARMONY_DEPLOYMENT_CONFIG) return env.HARMONY_DEPLOYMENT_CONFIG;
+  return join(homedir(), ".harmony", "deployment.json");
+}
+function loadDeploymentConfig(opts = {}) {
+  const env = opts.env ?? process.env;
+  const exists = opts.existsSync ?? existsSync;
+  const readFile = opts.readFileSync ?? ((p) => readFileSync(p, "utf8"));
+  const path2 = resolveDeploymentConfigPath({ configPath: opts.configPath, env });
+  if (!exists(path2)) return null;
+  let raw;
+  try {
+    raw = readFile(path2);
+  } catch (err) {
+    throw new Error(
+      `could not read deployment config at ${path2}: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err }
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `deployment config at ${path2} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err }
+    );
+  }
+  const result = DeploymentConfigSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new Error(`deployment config at ${path2} failed validation: ${result.error.message}`, {
+      cause: result.error
+    });
+  }
+  return result.data;
+}
+
+// src/tools/environment.ts
+var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
+var KNOWN_REFS = {
+  eioxsunvhakmelhanmnn: "prod",
+  meqkdgncdzromunylyxf: "staging"
+  // staging.harmony.ad's deployed project
+};
+function resolveKnownRefs(env) {
+  try {
+    const deploymentConfig = loadDeploymentConfig({ env });
+    const configRefs = deploymentConfig?.launcher?.supabase_refs;
+    return configRefs ? { ...KNOWN_REFS, ...configRefs } : KNOWN_REFS;
+  } catch {
+    return KNOWN_REFS;
+  }
+}
+function readManifestVersion(manifestPath) {
+  try {
+    const parsed = JSON.parse(readFileSync2(manifestPath, "utf8"));
+    return typeof parsed.version === "string" ? parsed.version : null;
+  } catch {
+    return null;
+  }
+}
+function resolvePluginVersion(env, moduleUrl) {
+  const root = env.CLAUDE_PLUGIN_ROOT;
+  if (root) {
+    const version3 = readManifestVersion(join2(root, ".claude-plugin", "plugin.json"));
+    if (version3 !== null) return version3;
+  }
+  try {
+    let dir = dirname(fileURLToPath(moduleUrl));
+    for (let i = 0; i < 3; i++) {
+      dir = dirname(dir);
+      const version3 = readManifestVersion(join2(dir, ".claude-plugin", "plugin.json"));
+      if (version3 !== null) return version3;
+    }
+  } catch {
+  }
+  return null;
+}
+function readEnvRunConfig(env) {
+  try {
+    return getRunConfig(env);
+  } catch {
+    return null;
+  }
+}
+async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url, client) {
+  const supabase_url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
+  let supabase_project_ref = "";
+  try {
+    supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
+  } catch {
+  }
+  const conduction_id = getConductionId(env) ?? null;
+  const runConfig = await resolveRunConfigFromConduction(client, conduction_id) ?? readEnvRunConfig(env);
+  let operator_note = null;
+  let auto_approve_gates = null;
+  if (runConfig) {
+    try {
+      operator_note = getOperatorNote(runConfig) ?? null;
+    } catch {
+      operator_note = null;
+    }
+    try {
+      const gates = Array.from(getAutoApproveGates(runConfig));
+      auto_approve_gates = gates.length > 0 ? gates : null;
+    } catch {
+      auto_approve_gates = null;
+    }
+  }
+  return {
+    supabase_url,
+    supabase_project_ref,
+    target: resolveKnownRefs(env)[supabase_project_ref] ?? "custom",
+    plugin_version: resolvePluginVersion(env, moduleUrl),
+    conduction_id,
+    operator_note,
+    auto_approve_gates
+  };
+}
+
+// src/tools/trust-model.ts
+var LEVELS = ["cautious", "balanced", "autonomous"];
+var DEFAULT_TRUST_LEVEL = "balanced";
+function resolveTrustLevel(raw) {
+  const level = raw?.level;
+  return LEVELS.includes(level) ? level : DEFAULT_TRUST_LEVEL;
+}
+
+// src/tools/project.ts
+var PROJECT_COLS = "id, name, key, description, mode, custom_statuses, field_definitions, archived, workspace:workspaces!projects_workspace_id_fkey(agent_trust)";
+async function getProject(client, projectId) {
+  const { data, error } = await client.from("projects").select(PROJECT_COLS).eq("id", projectId).single();
+  if (error) throw error;
+  const row = data;
+  const ws = Array.isArray(row.workspace) ? row.workspace[0] : row.workspace;
+  const rawTrust = ws?.agent_trust ?? {};
+  const agent_trust = {
+    level: resolveTrustLevel(rawTrust),
+    overrides: rawTrust.overrides ?? {}
+  };
+  const { workspace: _workspace, ...project } = row;
+  const environment = await resolveEnvironment(void 0, void 0, client);
+  return { ...project, agent_trust, environment };
+}
+
+// src/tools/resolve-task-id.ts
+var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+var BARE_NUMBER_RE = /^\d+$/;
+var VISUAL_ID_RE = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
+var PG_INT_MAX = 2147483647;
+async function resolveTaskId(client, projectId, input) {
+  if (UUID_RE.test(input)) {
+    return input;
+  }
+  let taskNumber;
+  const bareMatch = BARE_NUMBER_RE.test(input);
+  const visualMatch = input.match(VISUAL_ID_RE);
+  if (bareMatch) {
+    taskNumber = parseInt(input, 10);
+  } else if (visualMatch) {
+    const [, inputKey, numStr] = visualMatch;
+    taskNumber = parseInt(numStr, 10);
+    const project = await getProject(client, projectId);
+    if (inputKey.toUpperCase() !== project.key.toUpperCase()) {
+      throw new Error(
+        `Task ${inputKey.toUpperCase()}-${taskNumber} not found \u2014 this token is scoped to project ${project.key}. Did you mean ${project.key}-${taskNumber}?`
+      );
+    }
+  } else {
+    throw new Error(
+      `Invalid task identifier '${input}'. Use a UUID, task number (e.g., 43), or visual ID (e.g., B-43).`
+    );
+  }
+  if (taskNumber <= 0 || taskNumber > PG_INT_MAX || !Number.isSafeInteger(taskNumber)) {
+    throw new Error(
+      `Invalid task number: ${input}. Must be between 1 and ${PG_INT_MAX}.`
+    );
+  }
+  const { data, error } = await client.from("tasks").select("id").eq("project_id", projectId).eq("task_number", taskNumber).single();
+  if (error || !data) {
+    throw new Error(`No task with number ${taskNumber} in this project`);
+  }
+  return data.id;
+}
+
+// src/tools/text-normalize.ts
+var ENTITY_MAP = {
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&quot;": '"',
+  "&#39;": "'"
+};
+var ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/g;
+var HAS_ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/;
+function splitCodeSpans(text) {
+  const segments = [];
+  let i = 0;
+  let plainStart = 0;
+  while (i < text.length) {
+    if (text.startsWith("```", i)) {
+      const close = text.indexOf("```", i + 3);
+      const codeEnd = close === -1 ? text.length : close + 3;
+      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
+      segments.push({ code: true, text: text.slice(i, codeEnd) });
+      i = codeEnd;
+      plainStart = i;
+      continue;
+    }
+    if (text[i] === "`") {
+      const close = text.indexOf("`", i + 1);
+      if (close === -1) {
+        i += 1;
+        continue;
+      }
+      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
+      segments.push({ code: true, text: text.slice(i, close + 1) });
+      i = close + 1;
+      plainStart = i;
+      continue;
+    }
+    i += 1;
+  }
+  if (plainStart < text.length) segments.push({ code: false, text: text.slice(plainStart) });
+  return segments;
+}
+function normalizeHtmlEntities(text) {
+  if (!text || !HAS_ENTITY_PATTERN.test(text)) return text;
+  return splitCodeSpans(text).map(
+    (seg) => seg.code ? seg.text : seg.text.replace(ENTITY_PATTERN, (m) => ENTITY_MAP[m] ?? m)
+  ).join("");
+}
+
+// src/tools/comments.ts
+async function addComment(client, projectId, userId, args) {
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const { data, error } = await client.from("task_comments").insert({
+    task_id: taskId,
+    user_id: userId,
+    content: normalizeHtmlEntities(args.content.replace(/\\n/g, "\n"))
+  }).select().single();
+  if (error) throw error;
+  return data;
+}
+
 // src/tools/conduction-record.ts
 var CONDUCTION_LIVE_STATUSES = ["active"];
 var CONDUCTION_HUMAN_OWNED_STATUSES = ["parked"];
@@ -30327,367 +30688,6 @@ async function resolveLegCostContext(client, conductionId) {
     warn(`reading conduction ${conductionId} for leg-cost context threw (${errText(err)})`);
     return null;
   }
-}
-
-// src/tools/environment.ts
-import { readFileSync as readFileSync2 } from "node:fs";
-import { dirname, join as join2 } from "node:path";
-import { fileURLToPath } from "node:url";
-
-// src/config/deployment-config.ts
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-var DeploymentEnvSchema = external_exports.object({
-  HARMONY_TARGET: external_exports.enum(["prod", "staging", "custom"]).optional(),
-  HARMONY_API_TOKEN: external_exports.string().optional(),
-  HARMONY_SUPABASE_ANON_KEY: external_exports.string().optional(),
-  HARMONY_SUPABASE_URL: external_exports.string().optional(),
-  // Git identity.
-  GIT_TOKEN: external_exports.string().optional(),
-  GIT_USER_NAME: external_exports.string().optional(),
-  GIT_USER_EMAIL: external_exports.string().optional(),
-  // Ref pins.
-  WEB_REF: external_exports.string().optional(),
-  WORKSPACE_REF: external_exports.string().optional(),
-  // B-803: the single posture knob — collapses the old PLUGIN_REF + HARMONY_ACK_PLUGIN_AHEAD_OF_PROD
-  // pair (which could be set inconsistently, and the ack half was unreachable on the cloud
-  // profile). Encodes which plugin ref to run AND whether running it ahead of prod is
-  // acknowledged: "prod" | "ack:<ref>" | a bare "<ref>" (unacknowledged) — see provision.sh.
-  HARMONY_PLUGIN_POSTURE: external_exports.string().optional(),
-  // Agent layer.
-  CLAUDE_CODE_OAUTH_TOKEN: external_exports.string().optional(),
-  ANTHROPIC_API_KEY: external_exports.string().optional(),
-  CLAUDE_HEADLESS_FLAGS: external_exports.string().optional()
-}).partial();
-var RequiredToolsSchema = external_exports.object({
-  launch: external_exports.array(external_exports.string().min(1)).optional(),
-  reap: external_exports.array(external_exports.string().min(1)).optional(),
-  probe: external_exports.array(external_exports.string().min(1)).optional()
-}).partial();
-var LaunchProfileSchema = external_exports.object({
-  /** Command template that launches a one-shot worker. Placeholders: {conduction_id}, {ticket}. */
-  launch: external_exports.string().min(1),
-  /** Command template that force-removes a (possibly dead) worker. Same placeholders. */
-  reap: external_exports.string().min(1),
-  /** Optional restart-reconciliation probe template — see src/daemon/config.ts's LaunchProfile.
-   *  B-842: a profile with NO probe silently lets a takeover reap-and-refire a genuinely LIVE
-   *  worker (SIGKILL, exit 137, in-progress work discarded) — src/daemon/preflight.ts's boot
-   *  preflight now HARD-refuses to boot such a profile unless the operator explicitly opts out with
-   *  `probe: false` (accepting reap-and-refire). `z.literal(false)` is that explicit opt-out; the
-   *  non-empty-string branch is unchanged — `z.string().min(1)` stays INSIDE the union, never widened
-   *  to a bare `z.string()`. */
-  probe: external_exports.union([external_exports.string().min(1), external_exports.literal(false)]).optional(),
-  /** This profile's own concurrency ceiling. */
-  maxConcurrentWorkers: external_exports.number().int().nonnegative().optional(),
-  /** B-800: replaces the CLOUDSDK_CORE_PROJECT hardcoded default baked into cloud-worker-*.sh —
-   *  the cloud profile's GCP project, read by those scripts via `harmony config get`. */
-  gcloud_project: external_exports.string().optional(),
-  /** B-801: see RequiredToolsSchema above — src/daemon/preflight.ts's hard tool-resolution check. */
-  required_tools: RequiredToolsSchema.optional(),
-  /** B-801: true when this profile mints a worker credential via mint-installation-token.mjs before
-   *  launch (container/README.md "The credential envelopes") — gates src/daemon/preflight.ts's hard
-   *  env-contract check for HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/
-   *  HARMONY_APP_PRIVATE_KEY_PATH/HARMONY_PLUGIN_DIR. */
-  requires_app_mint: external_exports.boolean().optional(),
-  /** B-801: bumped whenever a NEW optional profile capability ships, so a stale profile file (never
-   *  regenerated after an upgrade) gets flagged by the boot preflight's soft audit instead of just
-   *  silently lacking the new capability. Defaults to 1 (this ticket's baseline) when absent — see
-   *  src/daemon/preflight.ts's CURRENT_SCHEMA_VERSION. */
-  schema_version: external_exports.number().int().positive().optional()
-});
-var RepoEntrySchema = external_exports.object({
-  /** Clone URL. */
-  url: external_exports.string().min(1),
-  /** Clone ref. IGNORED for the is_plugin entry (see header comment) — HARMONY_PLUGIN_POSTURE wins
-   *  there. Optional for every other entry; falls back to the container's existing "main" default. */
-  ref: external_exports.string().optional(),
-  /** In-container clone destination, e.g. "/workspace/workspace/plugin". */
-  path: external_exports.string().min(1),
-  /** Marks this entry as the meta-repo/nesting parent. At most one entry may set this. */
-  meta_repo_role: external_exports.boolean().optional(),
-  /** Marks this entry as the one carrying the plugin. At most one entry may set this. */
-  is_plugin: external_exports.boolean().optional()
-});
-var ReposSchema = external_exports.array(RepoEntrySchema).refine((repos) => repos.filter((r) => r.meta_repo_role).length <= 1, {
-  message: "at most one repos[] entry may set meta_repo_role"
-}).refine((repos) => repos.filter((r) => r.is_plugin).length <= 1, {
-  message: "at most one repos[] entry may set is_plugin"
-});
-var WORKER_IMAGE_DEFAULT = "harmony-build-env";
-var GithubAppSchema = external_exports.object({
-  app_id: external_exports.string(),
-  installation_id: external_exports.string(),
-  private_key_path: external_exports.string().optional()
-}).partial({ private_key_path: true });
-var LauncherSupabaseSchema = external_exports.object({
-  url: external_exports.string(),
-  anon_key: external_exports.string().optional(),
-  api_token: external_exports.string().optional()
-});
-var LauncherSchema = external_exports.object({
-  plugin_dir: external_exports.string().optional(),
-  github_app: GithubAppSchema.optional(),
-  supabase: LauncherSupabaseSchema.optional(),
-  /** Project-ref -> target name map, replacing src/tools/environment.ts's KNOWN_REFS. Merged
-   *  OVER (not instead of) the two baked-in defaults, never replacing them. */
-  supabase_refs: external_exports.record(external_exports.enum(["prod", "staging"])).optional()
-}).partial();
-var DeploymentConfigSchema = external_exports.object({
-  env: DeploymentEnvSchema.optional(),
-  profiles: external_exports.record(LaunchProfileSchema).optional(),
-  launcher: LauncherSchema.optional(),
-  /** B-814: the ordered repo set — see the RepoEntrySchema/ReposSchema header comment above. */
-  repos: ReposSchema.optional(),
-  /** B-929 lever 2: which container image this deployment's workers run. THE one place the default
-   *  is written — see the worker_image section comment above. */
-  worker_image: external_exports.string().min(1).default(WORKER_IMAGE_DEFAULT)
-});
-function resolveDeploymentConfigPath(opts) {
-  const env = opts?.env ?? process.env;
-  if (opts?.configPath) return opts.configPath;
-  if (env.HARMONY_DEPLOYMENT_CONFIG) return env.HARMONY_DEPLOYMENT_CONFIG;
-  return join(homedir(), ".harmony", "deployment.json");
-}
-function loadDeploymentConfig(opts = {}) {
-  const env = opts.env ?? process.env;
-  const exists = opts.existsSync ?? existsSync;
-  const readFile = opts.readFileSync ?? ((p) => readFileSync(p, "utf8"));
-  const path2 = resolveDeploymentConfigPath({ configPath: opts.configPath, env });
-  if (!exists(path2)) return null;
-  let raw;
-  try {
-    raw = readFile(path2);
-  } catch (err) {
-    throw new Error(
-      `could not read deployment config at ${path2}: ${err instanceof Error ? err.message : String(err)}`,
-      { cause: err }
-    );
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(
-      `deployment config at ${path2} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
-      { cause: err }
-    );
-  }
-  const result = DeploymentConfigSchema.safeParse(parsed);
-  if (!result.success) {
-    throw new Error(`deployment config at ${path2} failed validation: ${result.error.message}`, {
-      cause: result.error
-    });
-  }
-  return result.data;
-}
-
-// src/tools/environment.ts
-var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
-var KNOWN_REFS = {
-  eioxsunvhakmelhanmnn: "prod",
-  meqkdgncdzromunylyxf: "staging"
-  // staging.harmony.ad's deployed project
-};
-function resolveKnownRefs(env) {
-  try {
-    const deploymentConfig = loadDeploymentConfig({ env });
-    const configRefs = deploymentConfig?.launcher?.supabase_refs;
-    return configRefs ? { ...KNOWN_REFS, ...configRefs } : KNOWN_REFS;
-  } catch {
-    return KNOWN_REFS;
-  }
-}
-function readManifestVersion(manifestPath) {
-  try {
-    const parsed = JSON.parse(readFileSync2(manifestPath, "utf8"));
-    return typeof parsed.version === "string" ? parsed.version : null;
-  } catch {
-    return null;
-  }
-}
-function resolvePluginVersion(env, moduleUrl) {
-  const root = env.CLAUDE_PLUGIN_ROOT;
-  if (root) {
-    const version3 = readManifestVersion(join2(root, ".claude-plugin", "plugin.json"));
-    if (version3 !== null) return version3;
-  }
-  try {
-    let dir = dirname(fileURLToPath(moduleUrl));
-    for (let i = 0; i < 3; i++) {
-      dir = dirname(dir);
-      const version3 = readManifestVersion(join2(dir, ".claude-plugin", "plugin.json"));
-      if (version3 !== null) return version3;
-    }
-  } catch {
-  }
-  return null;
-}
-function readEnvRunConfig(env) {
-  try {
-    return getRunConfig(env);
-  } catch {
-    return null;
-  }
-}
-async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url, client) {
-  const supabase_url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
-  let supabase_project_ref = "";
-  try {
-    supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
-  } catch {
-  }
-  const conduction_id = getConductionId(env) ?? null;
-  const runConfig = await resolveRunConfigFromConduction(client, conduction_id) ?? readEnvRunConfig(env);
-  let operator_note = null;
-  let auto_approve_gates = null;
-  if (runConfig) {
-    try {
-      operator_note = getOperatorNote(runConfig) ?? null;
-    } catch {
-      operator_note = null;
-    }
-    try {
-      const gates = Array.from(getAutoApproveGates(runConfig));
-      auto_approve_gates = gates.length > 0 ? gates : null;
-    } catch {
-      auto_approve_gates = null;
-    }
-  }
-  return {
-    supabase_url,
-    supabase_project_ref,
-    target: resolveKnownRefs(env)[supabase_project_ref] ?? "custom",
-    plugin_version: resolvePluginVersion(env, moduleUrl),
-    conduction_id,
-    operator_note,
-    auto_approve_gates
-  };
-}
-
-// src/tools/trust-model.ts
-var LEVELS = ["cautious", "balanced", "autonomous"];
-var DEFAULT_TRUST_LEVEL = "balanced";
-function resolveTrustLevel(raw) {
-  const level = raw?.level;
-  return LEVELS.includes(level) ? level : DEFAULT_TRUST_LEVEL;
-}
-
-// src/tools/project.ts
-var PROJECT_COLS = "id, name, key, description, mode, custom_statuses, field_definitions, archived, workspace:workspaces!projects_workspace_id_fkey(agent_trust)";
-async function getProject(client, projectId) {
-  const { data, error } = await client.from("projects").select(PROJECT_COLS).eq("id", projectId).single();
-  if (error) throw error;
-  const row = data;
-  const ws = Array.isArray(row.workspace) ? row.workspace[0] : row.workspace;
-  const rawTrust = ws?.agent_trust ?? {};
-  const agent_trust = {
-    level: resolveTrustLevel(rawTrust),
-    overrides: rawTrust.overrides ?? {}
-  };
-  const { workspace: _workspace, ...project } = row;
-  const environment = await resolveEnvironment(void 0, void 0, client);
-  return { ...project, agent_trust, environment };
-}
-
-// src/tools/resolve-task-id.ts
-var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-var BARE_NUMBER_RE = /^\d+$/;
-var VISUAL_ID_RE = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
-var PG_INT_MAX = 2147483647;
-async function resolveTaskId(client, projectId, input) {
-  if (UUID_RE.test(input)) {
-    return input;
-  }
-  let taskNumber;
-  const bareMatch = BARE_NUMBER_RE.test(input);
-  const visualMatch = input.match(VISUAL_ID_RE);
-  if (bareMatch) {
-    taskNumber = parseInt(input, 10);
-  } else if (visualMatch) {
-    const [, inputKey, numStr] = visualMatch;
-    taskNumber = parseInt(numStr, 10);
-    const project = await getProject(client, projectId);
-    if (inputKey.toUpperCase() !== project.key.toUpperCase()) {
-      throw new Error(
-        `Task ${inputKey.toUpperCase()}-${taskNumber} not found \u2014 this token is scoped to project ${project.key}. Did you mean ${project.key}-${taskNumber}?`
-      );
-    }
-  } else {
-    throw new Error(
-      `Invalid task identifier '${input}'. Use a UUID, task number (e.g., 43), or visual ID (e.g., B-43).`
-    );
-  }
-  if (taskNumber <= 0 || taskNumber > PG_INT_MAX || !Number.isSafeInteger(taskNumber)) {
-    throw new Error(
-      `Invalid task number: ${input}. Must be between 1 and ${PG_INT_MAX}.`
-    );
-  }
-  const { data, error } = await client.from("tasks").select("id").eq("project_id", projectId).eq("task_number", taskNumber).single();
-  if (error || !data) {
-    throw new Error(`No task with number ${taskNumber} in this project`);
-  }
-  return data.id;
-}
-
-// src/tools/text-normalize.ts
-var ENTITY_MAP = {
-  "&amp;": "&",
-  "&lt;": "<",
-  "&gt;": ">",
-  "&quot;": '"',
-  "&#39;": "'"
-};
-var ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/g;
-var HAS_ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/;
-function splitCodeSpans(text) {
-  const segments = [];
-  let i = 0;
-  let plainStart = 0;
-  while (i < text.length) {
-    if (text.startsWith("```", i)) {
-      const close = text.indexOf("```", i + 3);
-      const codeEnd = close === -1 ? text.length : close + 3;
-      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
-      segments.push({ code: true, text: text.slice(i, codeEnd) });
-      i = codeEnd;
-      plainStart = i;
-      continue;
-    }
-    if (text[i] === "`") {
-      const close = text.indexOf("`", i + 1);
-      if (close === -1) {
-        i += 1;
-        continue;
-      }
-      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
-      segments.push({ code: true, text: text.slice(i, close + 1) });
-      i = close + 1;
-      plainStart = i;
-      continue;
-    }
-    i += 1;
-  }
-  if (plainStart < text.length) segments.push({ code: false, text: text.slice(plainStart) });
-  return segments;
-}
-function normalizeHtmlEntities(text) {
-  if (!text || !HAS_ENTITY_PATTERN.test(text)) return text;
-  return splitCodeSpans(text).map(
-    (seg) => seg.code ? seg.text : seg.text.replace(ENTITY_PATTERN, (m) => ENTITY_MAP[m] ?? m)
-  ).join("");
-}
-
-// src/tools/comments.ts
-async function addComment(client, projectId, userId, args) {
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
-  const { data, error } = await client.from("task_comments").insert({
-    task_id: taskId,
-    user_id: userId,
-    content: normalizeHtmlEntities(args.content.replace(/\\n/g, "\n"))
-  }).select().single();
-  if (error) throw error;
-  return data;
 }
 
 // src/bin/pretooluse-gate.ts

@@ -43748,422 +43748,6 @@ import {
 // src/daemon/gate-phase.ts
 var GATES = ["clarify", "decompose", "design", "plan", "build", "release", "verify"];
 
-// src/tools/conduction-record.ts
-var CONDUCTION_LIVE_STATUSES = ["active"];
-var CONDUCTION_HUMAN_OWNED_STATUSES = ["parked"];
-var CONDUCTION_TERMINAL_STATUSES = ["completed", "cancelled"];
-var CONDUCTION_STATUSES = [
-  ...CONDUCTION_LIVE_STATUSES,
-  ...CONDUCTION_HUMAN_OWNED_STATUSES,
-  ...CONDUCTION_TERMINAL_STATUSES
-];
-var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, reap_requested_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
-var ActiveConductionExistsError = class extends Error {
-  code = "active-conduction-exists";
-  task_id;
-  constructor(taskId, cause) {
-    super(
-      `an active conduction already exists for task ${taskId} \u2014 the atomic insert IS the lease-acquisition primitive, so losing it means another holder owns the run` + (cause ? ` (${cause})` : "")
-    );
-    this.name = "ActiveConductionExistsError";
-    this.task_id = taskId;
-  }
-};
-var isUniqueViolation = (error2) => error2.code === "23505" || /duplicate key value violates unique constraint/i.test(error2.message ?? "");
-var ConductionInsertDeniedError = class extends Error {
-  code = "conduction-insert-denied";
-  task_id;
-  constructor(taskId, cause) {
-    super(
-      `the conductions INSERT policy refused this row for task ${taskId} \u2014 the policy requires created_by = auth.uid(), so the insert must carry the acting user's id` + (cause ? ` (${cause})` : "")
-    );
-    this.name = "ConductionInsertDeniedError";
-    this.task_id = taskId;
-  }
-};
-var isRlsDenial = (error2) => error2.code === "42501" || /violates row-level security policy/i.test(error2.message ?? "");
-async function createConduction(client, args) {
-  if (!args.task_id) throw new Error("task_id is required");
-  const row = {
-    task_id: args.task_id,
-    status: "active",
-    mode: args.mode ?? "controlled",
-    lease_holder: args.lease_holder ?? null,
-    worker_kind: args.worker_kind ?? null,
-    worker_ref: args.worker_ref ?? null,
-    created_by: args.created_by ?? null
-  };
-  if (args.lease_holder) row.lease_acquired_at = (/* @__PURE__ */ new Date()).toISOString();
-  if (args.run_config !== void 0) row.run_config = args.run_config;
-  const { data, error: error2 } = await client.from("conductions").insert(row).select(CONDUCTION_COLS).single();
-  if (error2) {
-    if (isUniqueViolation(error2)) throw new ActiveConductionExistsError(args.task_id, error2.message);
-    if (isRlsDenial(error2)) throw new ConductionInsertDeniedError(args.task_id, error2.message);
-    throw new Error(error2.message);
-  }
-  return data;
-}
-var ConductorExcludedError = class extends Error {
-  code = "conductor-excluded";
-  task_id;
-  constructor(taskId) {
-    super(
-      `This ticket is taken away from the conductor (task ${taskId}, conductor_excluded_at is set) \u2014 Return it first (the "Return to conductor" action) before handing it off.`
-    );
-    this.name = "ConductorExcludedError";
-    this.task_id = taskId;
-  }
-};
-async function assertNotExcluded(client, taskId) {
-  if (!taskId) throw new Error("task_id is required");
-  const { data, error: error2 } = await client.from("tasks").select("conductor_excluded_at").eq("id", taskId).single();
-  if (error2) throw new Error(error2.message);
-  if (data?.conductor_excluded_at) throw new ConductorExcludedError(taskId);
-}
-async function getConduction(client, id) {
-  if (!id) throw new Error("id is required");
-  const { data, error: error2 } = await client.from("conductions").select(CONDUCTION_COLS).eq("id", id).maybeSingle();
-  if (error2) throw new Error(error2.message);
-  return data ?? null;
-}
-var CONDUCTION_PATCHABLE_FIELDS = [
-  "status",
-  "lease_holder",
-  "lease_acquired_at",
-  "last_heartbeat_at",
-  "leg_started_at",
-  "clean_shutdown_at",
-  "reap_requested_at",
-  "retry_count",
-  "worker_kind",
-  "worker_ref",
-  "last_worker_exit_code",
-  "last_worker_exit_class",
-  "current_pr_ref",
-  // B-720, RETIRED: the old captured-output columns. NOTHING WRITES THESE ANY MORE — the daemon's
-  // settlement write now inserts a `source='launcher'` row into `conduction_leg_output` instead
-  // (scheduler.ts's flushLaunchOutput), and the worker writes its own `source='worker'` row from
-  // inside the container. The allowlist entries stay so an older daemon build's patch is still
-  // accepted; removing them (and the columns) is a separate tracked follow-up.
-  "last_worker_output",
-  "last_worker_output_at",
-  "last_worker_output_bytes"
-];
-function assertPatchable(patch) {
-  const keys = Object.keys(patch ?? {});
-  if (keys.length === 0) {
-    throw new Error(`patch must contain at least one of: ${CONDUCTION_PATCHABLE_FIELDS.join(", ")}`);
-  }
-  const rejected = keys.filter(
-    (k) => !CONDUCTION_PATCHABLE_FIELDS.includes(k)
-  );
-  if (rejected.length > 0) {
-    throw new Error(
-      `non-patchable field(s): ${rejected.join(", ")} \u2014 a conduction patch may only touch: ` + CONDUCTION_PATCHABLE_FIELDS.join(", ")
-    );
-  }
-  if ("status" in patch && !CONDUCTION_STATUSES.includes(patch.status)) {
-    throw new Error(`status must be one of: ${CONDUCTION_STATUSES.join(", ")}`);
-  }
-}
-async function updateConduction(client, id, patch) {
-  if (!id) throw new Error("id is required");
-  assertPatchable(patch);
-  const { data, error: error2 } = await client.from("conductions").update(patch).eq("id", id).select(CONDUCTION_COLS).single();
-  if (error2) throw error2;
-  return data;
-}
-async function listConductions(client, args) {
-  let query = client.from("conductions").select(`${CONDUCTION_COLS}, tasks(priority)`);
-  if (args.status) query = query.eq("status", args.status);
-  if (args.task_id) query = query.eq("task_id", args.task_id);
-  const { data, error: error2 } = await query.order("started_at", { ascending: args.order !== "desc" });
-  if (error2) throw error2;
-  const rows = data ?? [];
-  return rows.map((row) => {
-    const { tasks, ...rest } = row;
-    return { ...rest, task_priority: tasks?.priority ?? null };
-  });
-}
-
-// src/config/run-config.ts
-var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
-var NoteSchema = external_exports.string().optional();
-var ModelSchema = external_exports.object({
-  default: external_exports.string().optional(),
-  per_gate: external_exports.record(external_exports.string()).optional()
-}).optional();
-var AUTO_APPROVE_GATE_VALUES = GATES.filter(
-  (gate) => gate !== "release" && gate !== "verify"
-);
-var AutoApproveGateSchema = external_exports.enum(
-  AUTO_APPROVE_GATE_VALUES
-);
-var RunConfigSchema = external_exports.object({
-  session_resume: SessionResumeSchema,
-  note: NoteSchema,
-  model: ModelSchema,
-  auto_approve_gates: external_exports.array(AutoApproveGateSchema).optional()
-}).passthrough();
-var EMPTY_RUN_CONFIG = {};
-function getOperatorNote(runConfig) {
-  return runConfig.note ? runConfig.note : void 0;
-}
-function getAutoApproveGates(runConfig) {
-  return new Set(runConfig.auto_approve_gates ?? []);
-}
-function envValue(env, key) {
-  const v = env[key];
-  return v == null || v === "" ? void 0 : v;
-}
-function getConductionId(env = process.env) {
-  return envValue(env, "HARMONY_CONDUCTION_ID");
-}
-function getLeg(env = process.env) {
-  const raw = envValue(env, "HARMONY_LEG");
-  if (raw === void 0) return void 0;
-  const n = Number(raw);
-  return Number.isInteger(n) && n >= 0 ? n : void 0;
-}
-function getRunConfig(env = process.env, deps = {}) {
-  const readFile = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
-  const path2 = envValue(env, "HARMONY_RUN_CONFIG_PATH");
-  if (path2) {
-    return RunConfigSchema.parse(JSON.parse(readFile(path2)));
-  }
-  const inline = envValue(env, "HARMONY_RUN_CONFIG_JSON");
-  if (inline) {
-    const decoded = Buffer.from(inline, "base64").toString("utf8");
-    return RunConfigSchema.parse(JSON.parse(decoded));
-  }
-  return EMPTY_RUN_CONFIG;
-}
-async function resolveRunConfigFromConduction(client, conductionId) {
-  if (!client || !conductionId) return null;
-  try {
-    const conduction = await getConduction(client, conductionId);
-    const raw = conduction?.run_config;
-    if (raw == null) return null;
-    const parsed = RunConfigSchema.safeParse(raw);
-    return parsed.success ? parsed.data : null;
-  } catch {
-    return null;
-  }
-}
-var PINNED_DEFAULT_MODEL_BY_PROFILE = {
-  prod: "claude-sonnet-5",
-  staging: "claude-sonnet-5"
-};
-var MODEL_CATALOG_FALLBACK = [
-  {
-    alias: "claude-sonnet-5",
-    label: "Claude Sonnet 5",
-    context_budget_bytes: 150 * 1024 * 1024,
-    active: true,
-    verified_at: null
-  },
-  {
-    alias: "claude-opus-5",
-    label: "Claude Opus 5",
-    context_budget_bytes: 150 * 1024 * 1024,
-    active: true,
-    verified_at: null
-  },
-  {
-    alias: "claude-haiku-4-5-20251001",
-    label: "Claude Haiku 4.5",
-    context_budget_bytes: 60 * 1024 * 1024,
-    active: true,
-    verified_at: null
-  },
-  {
-    alias: "claude-fable-5",
-    label: "Claude Fable 5",
-    context_budget_bytes: 60 * 1024 * 1024,
-    active: true,
-    verified_at: null
-  }
-];
-for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
-  if (!MODEL_CATALOG_FALLBACK.some((entry) => entry.alias === pinned)) {
-    throw new Error(
-      `B-881 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_CATALOG_FALLBACK`
-    );
-  }
-}
-var DEFAULT_MODEL_CONTEXT_BUDGET_BYTES = 60 * 1024 * 1024;
-
-// src/tools/environment.ts
-var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
-var KNOWN_REFS = {
-  eioxsunvhakmelhanmnn: "prod",
-  meqkdgncdzromunylyxf: "staging"
-  // staging.harmony.ad's deployed project
-};
-function resolveKnownRefs(env) {
-  try {
-    const deploymentConfig = loadDeploymentConfig({ env });
-    const configRefs = deploymentConfig?.launcher?.supabase_refs;
-    return configRefs ? { ...KNOWN_REFS, ...configRefs } : KNOWN_REFS;
-  } catch {
-    return KNOWN_REFS;
-  }
-}
-function readManifestVersion(manifestPath) {
-  try {
-    const parsed = JSON.parse(readFileSync2(manifestPath, "utf8"));
-    return typeof parsed.version === "string" ? parsed.version : null;
-  } catch {
-    return null;
-  }
-}
-function resolvePluginVersion(env, moduleUrl) {
-  const root = env.CLAUDE_PLUGIN_ROOT;
-  if (root) {
-    const version4 = readManifestVersion(join2(root, ".claude-plugin", "plugin.json"));
-    if (version4 !== null) return version4;
-  }
-  try {
-    let dir = dirname(fileURLToPath(moduleUrl));
-    for (let i = 0; i < 3; i++) {
-      dir = dirname(dir);
-      const version4 = readManifestVersion(join2(dir, ".claude-plugin", "plugin.json"));
-      if (version4 !== null) return version4;
-    }
-  } catch {
-  }
-  return null;
-}
-function readEnvRunConfig(env) {
-  try {
-    return getRunConfig(env);
-  } catch {
-    return null;
-  }
-}
-async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url, client) {
-  const supabase_url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
-  let supabase_project_ref = "";
-  try {
-    supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
-  } catch {
-  }
-  const conduction_id = getConductionId(env) ?? null;
-  const runConfig = await resolveRunConfigFromConduction(client, conduction_id) ?? readEnvRunConfig(env);
-  let operator_note = null;
-  let auto_approve_gates = null;
-  if (runConfig) {
-    try {
-      operator_note = getOperatorNote(runConfig) ?? null;
-    } catch {
-      operator_note = null;
-    }
-    try {
-      const gates = Array.from(getAutoApproveGates(runConfig));
-      auto_approve_gates = gates.length > 0 ? gates : null;
-    } catch {
-      auto_approve_gates = null;
-    }
-  }
-  return {
-    supabase_url,
-    supabase_project_ref,
-    target: resolveKnownRefs(env)[supabase_project_ref] ?? "custom",
-    plugin_version: resolvePluginVersion(env, moduleUrl),
-    conduction_id,
-    operator_note,
-    auto_approve_gates
-  };
-}
-
-// src/tools/trust-model.ts
-var LEVELS = ["cautious", "balanced", "autonomous"];
-var DEFAULT_TRUST_LEVEL = "balanced";
-function resolveTrustLevel(raw) {
-  const level = raw?.level;
-  return LEVELS.includes(level) ? level : DEFAULT_TRUST_LEVEL;
-}
-
-// src/tools/project.ts
-var getProjectTool = {
-  name: "get_project",
-  description: "Get project details including workflow mode (manual|opinionated), statuses, field definitions, epics, the owning workspace's agent-trust dial (level + safety-rail overrides), and the runtime environment (Supabase target prod|staging|custom + plugin version).",
-  inputSchema: { type: "object", properties: {} }
-};
-var PROJECT_COLS = "id, name, key, description, mode, custom_statuses, field_definitions, archived, workspace:workspaces!projects_workspace_id_fkey(agent_trust)";
-async function getProject(client, projectId) {
-  const { data, error: error2 } = await client.from("projects").select(PROJECT_COLS).eq("id", projectId).single();
-  if (error2) throw error2;
-  const row = data;
-  const ws = Array.isArray(row.workspace) ? row.workspace[0] : row.workspace;
-  const rawTrust = ws?.agent_trust ?? {};
-  const agent_trust = {
-    level: resolveTrustLevel(rawTrust),
-    overrides: rawTrust.overrides ?? {}
-  };
-  const { workspace: _workspace, ...project } = row;
-  const environment = await resolveEnvironment(void 0, void 0, client);
-  return { ...project, agent_trust, environment };
-}
-
-// src/tools/epics.ts
-var listEpicsTool = {
-  name: "list_epics",
-  description: "List all epics in the project",
-  inputSchema: { type: "object", properties: {} }
-};
-async function listEpics(client, projectId) {
-  const { data, error: error2 } = await client.from("epics").select("id, name, color, position").eq("project_id", projectId).order("position");
-  if (error2) throw error2;
-  return data;
-}
-var createEpicTool = {
-  name: "create_epic",
-  description: "Create a new epic in the project",
-  inputSchema: {
-    type: "object",
-    properties: {
-      name: { type: "string", description: "Epic name" },
-      color: { type: "string", description: "Hex color (e.g. #6366f1). Optional." }
-    },
-    required: ["name"]
-  }
-};
-var updateEpicTool = {
-  name: "update_epic",
-  description: "Update an epic's name or color",
-  inputSchema: {
-    type: "object",
-    properties: {
-      epic_id: { type: "string", description: "Epic ID" },
-      name: { type: "string", description: "New name" },
-      color: { type: "string", description: "New hex color (e.g. #6366f1)" }
-    },
-    required: ["epic_id"]
-  }
-};
-async function updateEpic(client, projectId, args) {
-  const updates = {};
-  if (args.name !== void 0) updates.name = args.name;
-  if (args.color !== void 0) updates.color = args.color;
-  const { data, error: error2 } = await client.from("epics").update(updates).eq("id", args.epic_id).eq("project_id", projectId).select().single();
-  if (error2) throw error2;
-  return data;
-}
-async function createEpic(client, projectId, userId, args) {
-  const { data: existing } = await client.from("epics").select("position").eq("project_id", projectId).order("position", { ascending: false }).limit(1);
-  const nextPosition = (existing?.[0]?.position ?? -1) + 1;
-  const { data, error: error2 } = await client.from("epics").insert({
-    project_id: projectId,
-    name: args.name,
-    color: args.color ?? "#6366f1",
-    position: nextPosition,
-    created_by: userId
-  }).select().single();
-  if (error2) throw error2;
-  return data;
-}
-
 // src/tools/resolve-task-id.ts
 var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var BARE_NUMBER_RE = /^\d+$/;
@@ -44300,321 +43884,6 @@ function normalizeHtmlEntities(text) {
   return splitCodeSpans(text).map(
     (seg) => seg.code ? seg.text : seg.text.replace(ENTITY_PATTERN, (m) => ENTITY_MAP[m] ?? m)
   ).join("");
-}
-
-// src/tools/members.ts
-var listMembersTool = {
-  name: "list_members",
-  description: "List all members of the workspace. Returns user IDs, display names, emails, and roles. Use this to look up assignee IDs for task assignment.",
-  inputSchema: { type: "object", properties: {} }
-};
-async function listMembers(client, projectId) {
-  const { data: project, error: projError } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
-  if (projError) throw projError;
-  const { data, error: error2 } = await client.from("workspace_members").select("user_id, role, joined_at, profile:profiles!workspace_members_user_id_profiles_fkey(display_name, email)").eq("workspace_id", project.workspace_id).order("joined_at", { ascending: true });
-  if (error2) throw error2;
-  return data.map((m) => ({
-    user_id: m.user_id,
-    display_name: m.profile?.display_name ?? null,
-    email: m.profile?.email ?? null,
-    role: m.role
-  }));
-}
-async function resolveAssignee(client, projectId, assignee) {
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(assignee)) {
-    return assignee;
-  }
-  const members = await listMembers(client, projectId);
-  const query = assignee.toLowerCase();
-  const emailMatch = members.filter((m) => m.email?.toLowerCase() === query);
-  if (emailMatch.length === 1) return emailMatch[0].user_id;
-  const nameMatch = members.filter(
-    (m) => m.display_name?.toLowerCase().includes(query)
-  );
-  if (nameMatch.length === 1) return nameMatch[0].user_id;
-  if (nameMatch.length > 1) {
-    const names = nameMatch.map((m) => m.display_name ?? m.email).join(", ");
-    throw new Error(`Ambiguous assignee "${assignee}" \u2014 matches multiple members: ${names}. Be more specific.`);
-  }
-  throw new Error(`No member found matching "${assignee}". Use list_members to see available members.`);
-}
-
-// src/tools/risk-class.ts
-var RISK_CLASSES = [
-  "auth",
-  "data-migration",
-  "irreversible-destructive",
-  "shared-core"
-];
-var kw = (re, senseOk) => ({ re, senseOk });
-var AUTH_WORD_REGEX = /\bauth(?:entication|orization|z|n)?\b/i;
-var OAUTH_WORD_REGEX = /\boauth\b/i;
-var AUTH_TOKEN_QUALIFIER = /\b(?:auth|access|api|bearer|jwt|session|refresh|csrf)\b/i;
-function tokenIsAuthSense(text, start, end) {
-  const before = text.slice(Math.max(0, start - 24), start);
-  const after = text.slice(end, end + 24);
-  const window2 = before + " " + after;
-  return AUTH_TOKEN_QUALIFIER.test(window2);
-}
-var MIGRATION_CI_TRIGGER_QUALIFIER = /^\s*(?:PRs?|pull[\s-]?requests?)\b/i;
-function migrationSenseOk(text, _start, end) {
-  const after = text.slice(end, end + 20);
-  return !MIGRATION_CI_TRIGGER_QUALIFIER.test(after);
-}
-var AUTH_AUTHORING_VERBS = /\b(?:add(?:s|ed|ing)?|creat(?:e|es|ed|ing)|chang(?:e|es|ed|ing)|implement(?:s|ed|ing)?|requir(?:e|es|ed|ing))\b/i;
-var READING_QUALIFIER_WORDS = /\b(?:existing|current|exercised|accessed|observed|inside|under)\b/i;
-var READING_QUALIFIER_WINDOW = 56;
-function notReadingQualifiedSense(text, start, end) {
-  const before = text.slice(Math.max(0, start - READING_QUALIFIER_WINDOW), start);
-  const after = text.slice(end, end + READING_QUALIFIER_WINDOW);
-  const window2 = before + " " + after;
-  if (AUTH_AUTHORING_VERBS.test(window2)) return true;
-  return !READING_QUALIFIER_WORDS.test(window2);
-}
-var KEYWORD_TABLE = {
-  auth: [
-    // auth / login / logout / session / token / password / oauth / RLS / permission / role
-    kw(AUTH_WORD_REGEX),
-    kw(OAUTH_WORD_REGEX),
-    kw(/\blog[\s-]?in\b/i),
-    kw(/\blog[\s-]?out\b/i),
-    kw(/\bsign[\s-]?in\b/i),
-    kw(/\bsign[\s-]?out\b/i),
-    kw(/\bsession\b/i, notReadingQualifiedSense),
-    kw(/\btokens?\b/i, (text, start, end) => tokenIsAuthSense(text, start, end) && notReadingQualifiedSense(text, start, end)),
-    kw(/\bpasswords?\b/i),
-    kw(/\bcredentials?\b/i, notReadingQualifiedSense),
-    kw(/\bRLS\b/i),
-    kw(/\brow[\s-]?level[\s-]?security\b/i),
-    kw(/\bpermissions?\b/i, notReadingQualifiedSense),
-    kw(/\broles?\b/i)
-  ],
-  "data-migration": [
-    // migration / schema / ALTER TABLE / backfill / DROP COLUMN
-    kw(/\bmigrations?\b/i, migrationSenseOk),
-    kw(/\bschema\b/i),
-    kw(/\balter\s+table\b/i),
-    kw(/\badd\s+column\b/i),
-    kw(/\bdrop\s+column\b/i),
-    kw(/\bbackfill(?:s|ed|ing)?\b/i),
-    kw(/\bdata[\s-]?migration\b/i)
-  ],
-  "irreversible-destructive": [
-    // DROP / DELETE FROM / TRUNCATE / irreversible / hard-delete / purge
-    kw(/\bdrop\s+(?:table|column|database|schema|index|constraint)\b/i),
-    kw(/\bdelete\s+from\b/i),
-    kw(/\btruncate\b/i),
-    kw(/\birreversible\b/i),
-    kw(/\bhard[\s.-]?delete(?:s|d)?\b/i),
-    kw(/\bpurge(?:s|d|ing)?\b/i),
-    kw(/\bdestructive\b/i),
-    kw(/\bunrecoverable\b/i),
-    kw(/\bpermanently\s+(?:delete|remove|destroy)/i)
-  ],
-  "shared-core": [
-    // curated shared module names that, if touched, have broad blast radius
-    kw(/\bsupabase\.ts\b/i),
-    kw(/\bauth\.ts\b/i),
-    kw(/\bsrc\/tools\/registry\b/i),
-    kw(/\bsrc\/tools\/index\.ts\b/i),
-    kw(/\bregisterTools\b/i),
-    kw(/\bshared[\s-]?core\b/i)
-  ]
-};
-var NEGATION_CUES = /* @__PURE__ */ new Set(["no", "not", "without", "zero", "neither", "nor", "none"]);
-var NEGATION_WINDOW = 6;
-var HARD_CLAUSE_BOUNDARY_TOKENS = /* @__PURE__ */ new Set(["but", "then", "so", "yet"]);
-var LIST_CONNECTOR_TOKENS = /* @__PURE__ */ new Set(["and", "or"]);
-var SUBJECT_STARTER_WORDS = /* @__PURE__ */ new Set([
-  "it",
-  "this",
-  "that",
-  "we",
-  "you",
-  "they",
-  "there",
-  "the",
-  "a",
-  "please",
-  "run"
-]);
-var CLAUSE_BOUNDARY_PUNCT = /[,;:.–—]/;
-var ASCII_LETTER = /[a-z]/;
-function precedingTokens(text, matchStart) {
-  const slice = text.slice(Math.max(0, matchStart - 80), matchStart).toLowerCase();
-  const isWordChar = (k) => {
-    const c = slice[k];
-    if (c === void 0) return false;
-    if (ASCII_LETTER.test(c) || c === "'") return true;
-    if (c === "-") return ASCII_LETTER.test(slice[k - 1] ?? "") && ASCII_LETTER.test(slice[k + 1] ?? "");
-    return false;
-  };
-  const inClause = [];
-  let i = slice.length - 1;
-  while (i >= 0 && inClause.length < NEGATION_WINDOW) {
-    if (CLAUSE_BOUNDARY_PUNCT.test(slice[i])) break;
-    if (isWordChar(i)) {
-      let j = i;
-      while (j >= 0 && isWordChar(j)) j--;
-      const word = slice.slice(j + 1, i + 1);
-      i = j;
-      if (word.length === 0) continue;
-      if (HARD_CLAUSE_BOUNDARY_TOKENS.has(word)) break;
-      if (LIST_CONNECTOR_TOKENS.has(word)) {
-        const nextToward = inClause[inClause.length - 1];
-        if (nextToward !== void 0 && SUBJECT_STARTER_WORDS.has(nextToward)) break;
-        continue;
-      }
-      inClause.push(word);
-    } else {
-      if (slice[i] === "-") break;
-      i--;
-    }
-  }
-  return inClause;
-}
-function isNegated(text, start) {
-  for (const tok of precedingTokens(text, start)) {
-    if (NEGATION_CUES.has(tok)) return true;
-    if (tok.endsWith("n't")) return true;
-  }
-  return false;
-}
-function textHitsClass(text, cls) {
-  for (const keyword of KEYWORD_TABLE[cls]) {
-    const g = new RegExp(keyword.re.source, keyword.re.flags.includes("g") ? keyword.re.flags : keyword.re.flags + "g");
-    let m;
-    while ((m = g.exec(text)) !== null) {
-      const start = m.index;
-      const end = m.index + m[0].length;
-      if (m[0].length === 0) {
-        g.lastIndex++;
-        continue;
-      }
-      if (keyword.senseOk && !keyword.senseOk(text, start, end)) continue;
-      if (isNegated(text, start)) continue;
-      return true;
-    }
-  }
-  return false;
-}
-var PATH_GLOB_TABLE = {
-  auth: ["**/auth/**", "**/auth.ts", "**/auth.tsx", "**/middleware/auth*", "**/rls/**"],
-  "data-migration": ["**/migrations/**", "**/migration/**", "**/*.sql", "**/schema.sql", "**/supabase/migrations/**"],
-  // No reliably-destructive path signature (destructiveness lives in content, not the path);
-  // kept empty so this class trips on text/labels, never on an innocent path. The conservative
-  // bias is served by the keyword table here, not by over-broad path globs.
-  "irreversible-destructive": [],
-  "shared-core": [
-    "**/supabase.ts",
-    "**/auth.ts",
-    "**/src/tools/index.ts",
-    "**/src/tools/registry*",
-    "**/src/supabase.ts",
-    "**/src/auth.ts"
-  ]
-};
-function globToRegExp(glob) {
-  let re = "";
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob[i];
-    if (c === "*") {
-      if (glob[i + 1] === "*") {
-        re += ".*";
-        i++;
-        if (glob[i + 1] === "/") i++;
-      } else {
-        re += "[^/]*";
-      }
-    } else if (c === "?") {
-      re += "[^/]";
-    } else if ("\\^$.|+()[]{}".includes(c)) {
-      re += "\\" + c;
-    } else {
-      re += c;
-    }
-  }
-  return new RegExp("^" + re + "$", "i");
-}
-var PATH_REGEX_TABLE = {
-  auth: PATH_GLOB_TABLE.auth.map(globToRegExp),
-  "data-migration": PATH_GLOB_TABLE["data-migration"].map(globToRegExp),
-  "irreversible-destructive": PATH_GLOB_TABLE["irreversible-destructive"].map(globToRegExp),
-  "shared-core": PATH_GLOB_TABLE["shared-core"].map(globToRegExp)
-};
-function labelToRiskClass(label) {
-  const l = label.trim().toLowerCase().replace(/^risk[:/-]/, "");
-  switch (l) {
-    case "auth":
-      return "auth";
-    case "data-migration":
-    case "migration":
-    case "data migration":
-      return "data-migration";
-    case "irreversible-destructive":
-    case "irreversible":
-    case "destructive":
-      return "irreversible-destructive";
-    case "shared-core":
-    case "shared core":
-    case "core":
-      return "shared-core";
-    default:
-      return null;
-  }
-}
-function basenameOf(path2) {
-  const idx = path2.lastIndexOf("/");
-  return idx === -1 ? path2 : path2.slice(idx + 1);
-}
-function tokenizeBasename(basename2) {
-  const spaced = basename2.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
-  return spaced.split(/\s+/).filter((t) => t.length > 0);
-}
-function authBasenameHit(path2) {
-  const tokens = tokenizeBasename(basenameOf(path2));
-  return tokens.some((t) => AUTH_WORD_REGEX.test(t) || OAUTH_WORD_REGEX.test(t));
-}
-function pathHitsClass(paths, cls) {
-  const globs = PATH_REGEX_TABLE[cls];
-  if (globs.length === 0) return false;
-  return paths.some((p) => {
-    if (globs.some((re) => re.test(p))) return true;
-    return cls === "auth" && authBasenameHit(p);
-  });
-}
-function detectRiskClasses(input) {
-  const hits = /* @__PURE__ */ new Set();
-  const text = typeof input.text === "string" ? input.text : "";
-  const paths = Array.isArray(input.changedPaths) ? input.changedPaths.filter((p) => typeof p === "string") : [];
-  const labels = Array.isArray(input.labels) ? input.labels.filter((l) => typeof l === "string") : [];
-  const hasDiff = paths.length > 0;
-  for (const label of labels) {
-    const cls = labelToRiskClass(label);
-    if (cls) hits.add(cls);
-  }
-  for (const cls of RISK_CLASSES) {
-    if (pathHitsClass(paths, cls)) hits.add(cls);
-  }
-  if (text.length > 0) {
-    for (const cls of RISK_CLASSES) {
-      if (hits.has(cls)) continue;
-      if (!textHitsClass(text, cls)) continue;
-      const demotedByCleanDiff = hasDiff && PATH_GLOB_TABLE[cls].length > 0 && !pathHitsClass(paths, cls);
-      if (!demotedByCleanDiff) hits.add(cls);
-    }
-  }
-  return RISK_CLASSES.filter((cls) => hits.has(cls));
-}
-
-// src/tools/payload-refs.ts
-function kebabSlug(text, maxLen) {
-  const full = text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return full.slice(0, maxLen).replace(/-+$/g, "");
-}
-function slugRef(prefix, text, maxLen = 40) {
-  const slug = kebabSlug(text ?? "", maxLen) || "item";
-  return `${prefix}-${slug}`;
 }
 
 // src/tools/knowledge.ts
@@ -45475,14 +44744,18 @@ function deriveToState(fromState, activity, transitions) {
 }
 var advanceWorkflowTool = {
   name: "advance_workflow",
-  description: "Advance an opinionated-mode task along the config-led state machine for an AGENT/SYSTEM transition that has no human brief \u2014 e.g. building (Planned->Built) once tests pass, or a revising-* backflow. Derives the target state from the workflow_transitions table; the DB guard validates the edge. For HUMAN-gated transitions use compose_brief + resolve_brief instead. parking/cancelling are accepted; researching records the activity without changing state.",
+  description: `Advance an opinionated-mode task along the config-led state machine for an AGENT/SYSTEM transition that has no human brief \u2014 e.g. building (Planned->Built) once tests pass, or a revising-* backflow. Derives the target state from the workflow_transitions table; the DB guard validates the edge. For HUMAN-gated transitions use compose_brief + resolve_brief instead. parking/cancelling are accepted; researching records the activity without changing state. B-964: unparking revives a Parked ticket \u2014 target state is resume_to (if given), else the task's own parked_from, else 'Proposed'; writes workflow_activity: NULL (mirrors the web's own "Resume" action). unparking is deliberately NOT exempt from the stale guard below.`,
   inputSchema: {
     type: "object",
     properties: {
       task_id: { type: "string", description: "Task identifier \u2014 UUID, number, or visual ID (e.g. B-43)" },
       activity: {
         type: "string",
-        description: "Workflow activity to apply, e.g. 'building', 'deploying', 'revising-designing', 'researching', 'parking', 'cancelling', 'capturing', 'proposing'."
+        description: "Workflow activity to apply, e.g. 'building', 'deploying', 'revising-designing', 'researching', 'parking', 'cancelling', 'unparking', 'capturing', 'proposing'."
+      },
+      resume_to: {
+        type: "string",
+        description: "B-964: optional target workflow_state override, used ONLY by the 'unparking' activity. When omitted, unparking falls back to the task's own parked_from column, then to 'Proposed' if that is also null. Ignored for every other activity."
       }
     },
     required: ["task_id", "activity"]
@@ -45490,7 +44763,7 @@ var advanceWorkflowTool = {
 };
 async function advanceWorkflow(client, projectId, args) {
   const id = await resolveTaskId(client, projectId, args.task_id);
-  const { data: task, error: e1 } = await client.from("tasks").select("workflow_state, stale").eq("id", id).eq("project_id", projectId).single();
+  const { data: task, error: e1 } = await client.from("tasks").select("workflow_state, stale, parked_from").eq("id", id).eq("project_id", projectId).single();
   if (e1) throw e1;
   const taskRow = task;
   const isStaleExempt = args.activity.startsWith("revising-") || args.activity === "researching" || args.activity in UNIVERSAL;
@@ -45502,8 +44775,8 @@ async function advanceWorkflow(client, projectId, args) {
   const { data: transitions, error: e2 } = await client.from("workflow_transitions").select("from_state, activity, to_state");
   if (e2) throw e2;
   const fromState = taskRow.workflow_state;
-  const toState = deriveToState(fromState, args.activity, transitions ?? []);
-  const patch = args.activity === "researching" ? { workflow_activity: args.activity } : { workflow_state: toState, workflow_activity: args.activity };
+  const toState = args.activity === "unparking" ? args.resume_to ?? taskRow.parked_from ?? "Proposed" : deriveToState(fromState, args.activity, transitions ?? []);
+  const patch = args.activity === "researching" ? { workflow_activity: args.activity } : args.activity === "unparking" ? { workflow_state: toState, workflow_activity: null } : { workflow_state: toState, workflow_activity: args.activity };
   const { data: updated, error: e3 } = await client.from("tasks").update(patch).eq("id", id).eq("project_id", projectId).select("id, workflow_state, workflow_activity").single();
   if (e3) throw e3;
   return {
@@ -45600,6 +44873,781 @@ async function linkTicketEntities(client, projectId, args) {
     if (affectsErr) throw affectsErr;
   }
   return { task_id: id, decision_id: args.decision_id, entity_ids: entityIds, linked: true };
+}
+
+// src/tools/comments.ts
+var listCommentsTool = {
+  name: "list_comments",
+  description: "List all comments on a task, ordered by creation date (oldest first).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)"
+      }
+    },
+    required: ["task_id"]
+  }
+};
+async function listComments(client, projectId, args) {
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const { data, error: error2 } = await client.from("task_comments").select("id, content, user_id, created_at, updated_at").eq("task_id", taskId).order("created_at", { ascending: true });
+  if (error2) throw error2;
+  return data;
+}
+var addCommentTool = {
+  name: "add_comment",
+  description: "Add a comment to a task. Use for logging decisions, progress notes, or blockers.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)"
+      },
+      content: {
+        type: "string",
+        description: "Comment content (markdown supported)"
+      }
+    },
+    required: ["task_id", "content"]
+  }
+};
+async function addComment(client, projectId, userId, args) {
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const { data, error: error2 } = await client.from("task_comments").insert({
+    task_id: taskId,
+    user_id: userId,
+    content: normalizeHtmlEntities(args.content.replace(/\\n/g, "\n"))
+  }).select().single();
+  if (error2) throw error2;
+  return data;
+}
+
+// src/tools/conduction-record.ts
+var CONDUCTION_LIVE_STATUSES = ["active"];
+var CONDUCTION_HUMAN_OWNED_STATUSES = ["parked"];
+var CONDUCTION_TERMINAL_STATUSES = ["completed", "cancelled"];
+var CONDUCTION_STATUSES = [
+  ...CONDUCTION_LIVE_STATUSES,
+  ...CONDUCTION_HUMAN_OWNED_STATUSES,
+  ...CONDUCTION_TERMINAL_STATUSES
+];
+var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, reap_requested_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
+var ActiveConductionExistsError = class extends Error {
+  code = "active-conduction-exists";
+  task_id;
+  constructor(taskId, cause) {
+    super(
+      `an active conduction already exists for task ${taskId} \u2014 the atomic insert IS the lease-acquisition primitive, so losing it means another holder owns the run` + (cause ? ` (${cause})` : "")
+    );
+    this.name = "ActiveConductionExistsError";
+    this.task_id = taskId;
+  }
+};
+var isUniqueViolation = (error2) => error2.code === "23505" || /duplicate key value violates unique constraint/i.test(error2.message ?? "");
+var ConductionInsertDeniedError = class extends Error {
+  code = "conduction-insert-denied";
+  task_id;
+  constructor(taskId, cause) {
+    super(
+      `the conductions INSERT policy refused this row for task ${taskId} \u2014 the policy requires created_by = auth.uid(), so the insert must carry the acting user's id` + (cause ? ` (${cause})` : "")
+    );
+    this.name = "ConductionInsertDeniedError";
+    this.task_id = taskId;
+  }
+};
+var isRlsDenial = (error2) => error2.code === "42501" || /violates row-level security policy/i.test(error2.message ?? "");
+async function createConduction(client, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const row = {
+    task_id: args.task_id,
+    status: "active",
+    mode: args.mode ?? "controlled",
+    lease_holder: args.lease_holder ?? null,
+    worker_kind: args.worker_kind ?? null,
+    worker_ref: args.worker_ref ?? null,
+    created_by: args.created_by ?? null
+  };
+  if (args.lease_holder) row.lease_acquired_at = (/* @__PURE__ */ new Date()).toISOString();
+  if (args.run_config !== void 0) row.run_config = args.run_config;
+  const { data, error: error2 } = await client.from("conductions").insert(row).select(CONDUCTION_COLS).single();
+  if (error2) {
+    if (isUniqueViolation(error2)) throw new ActiveConductionExistsError(args.task_id, error2.message);
+    if (isRlsDenial(error2)) throw new ConductionInsertDeniedError(args.task_id, error2.message);
+    throw new Error(error2.message);
+  }
+  return data;
+}
+var ConductorExcludedError = class extends Error {
+  code = "conductor-excluded";
+  task_id;
+  constructor(taskId) {
+    super(
+      `This ticket is taken away from the conductor (task ${taskId}, conductor_excluded_at is set) \u2014 Return it first (the "Return to conductor" action) before handing it off.`
+    );
+    this.name = "ConductorExcludedError";
+    this.task_id = taskId;
+  }
+};
+async function assertNotExcluded(client, taskId) {
+  if (!taskId) throw new Error("task_id is required");
+  const { data, error: error2 } = await client.from("tasks").select("conductor_excluded_at").eq("id", taskId).single();
+  if (error2) throw new Error(error2.message);
+  if (data?.conductor_excluded_at) throw new ConductorExcludedError(taskId);
+}
+async function getConduction(client, id) {
+  if (!id) throw new Error("id is required");
+  const { data, error: error2 } = await client.from("conductions").select(CONDUCTION_COLS).eq("id", id).maybeSingle();
+  if (error2) throw new Error(error2.message);
+  return data ?? null;
+}
+var CONDUCTION_PATCHABLE_FIELDS = [
+  "status",
+  "lease_holder",
+  "lease_acquired_at",
+  "last_heartbeat_at",
+  "leg_started_at",
+  "clean_shutdown_at",
+  "reap_requested_at",
+  "retry_count",
+  "worker_kind",
+  "worker_ref",
+  "last_worker_exit_code",
+  "last_worker_exit_class",
+  "current_pr_ref",
+  // B-720, RETIRED: the old captured-output columns. NOTHING WRITES THESE ANY MORE — the daemon's
+  // settlement write now inserts a `source='launcher'` row into `conduction_leg_output` instead
+  // (scheduler.ts's flushLaunchOutput), and the worker writes its own `source='worker'` row from
+  // inside the container. The allowlist entries stay so an older daemon build's patch is still
+  // accepted; removing them (and the columns) is a separate tracked follow-up.
+  "last_worker_output",
+  "last_worker_output_at",
+  "last_worker_output_bytes"
+];
+function assertPatchable(patch) {
+  const keys = Object.keys(patch ?? {});
+  if (keys.length === 0) {
+    throw new Error(`patch must contain at least one of: ${CONDUCTION_PATCHABLE_FIELDS.join(", ")}`);
+  }
+  const rejected = keys.filter(
+    (k) => !CONDUCTION_PATCHABLE_FIELDS.includes(k)
+  );
+  if (rejected.length > 0) {
+    throw new Error(
+      `non-patchable field(s): ${rejected.join(", ")} \u2014 a conduction patch may only touch: ` + CONDUCTION_PATCHABLE_FIELDS.join(", ")
+    );
+  }
+  if ("status" in patch && !CONDUCTION_STATUSES.includes(patch.status)) {
+    throw new Error(`status must be one of: ${CONDUCTION_STATUSES.join(", ")}`);
+  }
+}
+async function updateConduction(client, id, patch) {
+  if (!id) throw new Error("id is required");
+  assertPatchable(patch);
+  const { data, error: error2 } = await client.from("conductions").update(patch).eq("id", id).select(CONDUCTION_COLS).single();
+  if (error2) throw error2;
+  return data;
+}
+async function listConductions(client, args) {
+  let query = client.from("conductions").select(`${CONDUCTION_COLS}, tasks(priority)`);
+  if (args.status) query = query.eq("status", args.status);
+  if (args.task_id) query = query.eq("task_id", args.task_id);
+  const { data, error: error2 } = await query.order("started_at", { ascending: args.order !== "desc" });
+  if (error2) throw error2;
+  const rows = data ?? [];
+  return rows.map((row) => {
+    const { tasks, ...rest } = row;
+    return { ...rest, task_priority: tasks?.priority ?? null };
+  });
+}
+var TicketParkedError = class extends Error {
+  code = "ticket-parked";
+  task_id;
+  constructor(taskId) {
+    super(
+      `Task ${taskId} is Parked \u2014 a conduction cannot be created for a Parked ticket without an explicit revive. Pass unpark: true to revive it (re-validates against current knowledge and code, then resumes it) and hand it to the conductor in the same call.`
+    );
+    this.name = "TicketParkedError";
+    this.task_id = taskId;
+  }
+};
+var TicketStaleReviveRefusedError = class extends Error {
+  code = "ticket-stale-revive-refused";
+  task_id;
+  constructor(taskId) {
+    super(
+      `Task ${taskId} is Parked AND stale \u2014 refusing to revive it blindly. Its already-completed steps reference superseded knowledge; route it through harmony-stale-patch (files a 'stale-patch-review' brief) first. The ticket is left Parked; no conduction was created.`
+    );
+    this.name = "TicketStaleReviveRefusedError";
+    this.task_id = taskId;
+  }
+};
+async function reviveParkedTicketIfNeeded(client, projectId, userId, taskId, args) {
+  if (!taskId) throw new Error("task_id is required");
+  const { data, error: error2 } = await client.from("tasks").select("workflow_state, stale").eq("id", taskId).single();
+  if (error2) throw new Error(error2.message);
+  const taskRow = data;
+  if (!taskRow || taskRow.workflow_state !== "Parked") return;
+  if (!args.unpark) throw new TicketParkedError(taskId);
+  if (taskRow.stale === true) {
+    await addComment(client, projectId, userId, {
+      task_id: taskId,
+      content: `This ticket is Parked and stale \u2014 a revive was requested but refused. Route it through harmony-stale-patch (files a 'stale-patch-review' brief) to reconcile its already-completed steps against current knowledge before it can be revived.`
+    });
+    throw new TicketStaleReviveRefusedError(taskId);
+  }
+  const { to_state: resumedTo } = await advanceWorkflow(client, projectId, {
+    task_id: taskId,
+    activity: "unparking",
+    resume_to: args.resume_to
+  });
+  await addComment(client, projectId, userId, {
+    task_id: taskId,
+    content: `Revived from Parked -> ${resumedTo}. Requested by: ${args.revived_by ?? `user ${userId}`}.`
+  });
+}
+
+// src/config/run-config.ts
+var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
+var NoteSchema = external_exports.string().optional();
+var ModelSchema = external_exports.object({
+  default: external_exports.string().optional(),
+  per_gate: external_exports.record(external_exports.string()).optional()
+}).optional();
+var AUTO_APPROVE_GATE_VALUES = GATES.filter(
+  (gate) => gate !== "release" && gate !== "verify"
+);
+var AutoApproveGateSchema = external_exports.enum(
+  AUTO_APPROVE_GATE_VALUES
+);
+var RunConfigSchema = external_exports.object({
+  session_resume: SessionResumeSchema,
+  note: NoteSchema,
+  model: ModelSchema,
+  auto_approve_gates: external_exports.array(AutoApproveGateSchema).optional()
+}).passthrough();
+var EMPTY_RUN_CONFIG = {};
+function getOperatorNote(runConfig) {
+  return runConfig.note ? runConfig.note : void 0;
+}
+function getAutoApproveGates(runConfig) {
+  return new Set(runConfig.auto_approve_gates ?? []);
+}
+function envValue(env, key) {
+  const v = env[key];
+  return v == null || v === "" ? void 0 : v;
+}
+function getConductionId(env = process.env) {
+  return envValue(env, "HARMONY_CONDUCTION_ID");
+}
+function getLeg(env = process.env) {
+  const raw = envValue(env, "HARMONY_LEG");
+  if (raw === void 0) return void 0;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : void 0;
+}
+function getRunConfig(env = process.env, deps = {}) {
+  const readFile = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
+  const path2 = envValue(env, "HARMONY_RUN_CONFIG_PATH");
+  if (path2) {
+    return RunConfigSchema.parse(JSON.parse(readFile(path2)));
+  }
+  const inline = envValue(env, "HARMONY_RUN_CONFIG_JSON");
+  if (inline) {
+    const decoded = Buffer.from(inline, "base64").toString("utf8");
+    return RunConfigSchema.parse(JSON.parse(decoded));
+  }
+  return EMPTY_RUN_CONFIG;
+}
+async function resolveRunConfigFromConduction(client, conductionId) {
+  if (!client || !conductionId) return null;
+  try {
+    const conduction = await getConduction(client, conductionId);
+    const raw = conduction?.run_config;
+    if (raw == null) return null;
+    const parsed = RunConfigSchema.safeParse(raw);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+var PINNED_DEFAULT_MODEL_BY_PROFILE = {
+  prod: "claude-sonnet-5",
+  staging: "claude-sonnet-5"
+};
+var MODEL_CATALOG_FALLBACK = [
+  {
+    alias: "claude-sonnet-5",
+    label: "Claude Sonnet 5",
+    context_budget_bytes: 150 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  },
+  {
+    alias: "claude-opus-5",
+    label: "Claude Opus 5",
+    context_budget_bytes: 150 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  },
+  {
+    alias: "claude-haiku-4-5-20251001",
+    label: "Claude Haiku 4.5",
+    context_budget_bytes: 60 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  },
+  {
+    alias: "claude-fable-5",
+    label: "Claude Fable 5",
+    context_budget_bytes: 60 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  }
+];
+for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
+  if (!MODEL_CATALOG_FALLBACK.some((entry) => entry.alias === pinned)) {
+    throw new Error(
+      `B-881 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_CATALOG_FALLBACK`
+    );
+  }
+}
+var DEFAULT_MODEL_CONTEXT_BUDGET_BYTES = 60 * 1024 * 1024;
+
+// src/tools/environment.ts
+var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
+var KNOWN_REFS = {
+  eioxsunvhakmelhanmnn: "prod",
+  meqkdgncdzromunylyxf: "staging"
+  // staging.harmony.ad's deployed project
+};
+function resolveKnownRefs(env) {
+  try {
+    const deploymentConfig = loadDeploymentConfig({ env });
+    const configRefs = deploymentConfig?.launcher?.supabase_refs;
+    return configRefs ? { ...KNOWN_REFS, ...configRefs } : KNOWN_REFS;
+  } catch {
+    return KNOWN_REFS;
+  }
+}
+function readManifestVersion(manifestPath) {
+  try {
+    const parsed = JSON.parse(readFileSync2(manifestPath, "utf8"));
+    return typeof parsed.version === "string" ? parsed.version : null;
+  } catch {
+    return null;
+  }
+}
+function resolvePluginVersion(env, moduleUrl) {
+  const root = env.CLAUDE_PLUGIN_ROOT;
+  if (root) {
+    const version4 = readManifestVersion(join2(root, ".claude-plugin", "plugin.json"));
+    if (version4 !== null) return version4;
+  }
+  try {
+    let dir = dirname(fileURLToPath(moduleUrl));
+    for (let i = 0; i < 3; i++) {
+      dir = dirname(dir);
+      const version4 = readManifestVersion(join2(dir, ".claude-plugin", "plugin.json"));
+      if (version4 !== null) return version4;
+    }
+  } catch {
+  }
+  return null;
+}
+function readEnvRunConfig(env) {
+  try {
+    return getRunConfig(env);
+  } catch {
+    return null;
+  }
+}
+async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url, client) {
+  const supabase_url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
+  let supabase_project_ref = "";
+  try {
+    supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
+  } catch {
+  }
+  const conduction_id = getConductionId(env) ?? null;
+  const runConfig = await resolveRunConfigFromConduction(client, conduction_id) ?? readEnvRunConfig(env);
+  let operator_note = null;
+  let auto_approve_gates = null;
+  if (runConfig) {
+    try {
+      operator_note = getOperatorNote(runConfig) ?? null;
+    } catch {
+      operator_note = null;
+    }
+    try {
+      const gates = Array.from(getAutoApproveGates(runConfig));
+      auto_approve_gates = gates.length > 0 ? gates : null;
+    } catch {
+      auto_approve_gates = null;
+    }
+  }
+  return {
+    supabase_url,
+    supabase_project_ref,
+    target: resolveKnownRefs(env)[supabase_project_ref] ?? "custom",
+    plugin_version: resolvePluginVersion(env, moduleUrl),
+    conduction_id,
+    operator_note,
+    auto_approve_gates
+  };
+}
+
+// src/tools/trust-model.ts
+var LEVELS = ["cautious", "balanced", "autonomous"];
+var DEFAULT_TRUST_LEVEL = "balanced";
+function resolveTrustLevel(raw) {
+  const level = raw?.level;
+  return LEVELS.includes(level) ? level : DEFAULT_TRUST_LEVEL;
+}
+
+// src/tools/project.ts
+var getProjectTool = {
+  name: "get_project",
+  description: "Get project details including workflow mode (manual|opinionated), statuses, field definitions, epics, the owning workspace's agent-trust dial (level + safety-rail overrides), and the runtime environment (Supabase target prod|staging|custom + plugin version).",
+  inputSchema: { type: "object", properties: {} }
+};
+var PROJECT_COLS = "id, name, key, description, mode, custom_statuses, field_definitions, archived, workspace:workspaces!projects_workspace_id_fkey(agent_trust)";
+async function getProject(client, projectId) {
+  const { data, error: error2 } = await client.from("projects").select(PROJECT_COLS).eq("id", projectId).single();
+  if (error2) throw error2;
+  const row = data;
+  const ws = Array.isArray(row.workspace) ? row.workspace[0] : row.workspace;
+  const rawTrust = ws?.agent_trust ?? {};
+  const agent_trust = {
+    level: resolveTrustLevel(rawTrust),
+    overrides: rawTrust.overrides ?? {}
+  };
+  const { workspace: _workspace, ...project } = row;
+  const environment = await resolveEnvironment(void 0, void 0, client);
+  return { ...project, agent_trust, environment };
+}
+
+// src/tools/epics.ts
+var listEpicsTool = {
+  name: "list_epics",
+  description: "List all epics in the project",
+  inputSchema: { type: "object", properties: {} }
+};
+async function listEpics(client, projectId) {
+  const { data, error: error2 } = await client.from("epics").select("id, name, color, position").eq("project_id", projectId).order("position");
+  if (error2) throw error2;
+  return data;
+}
+var createEpicTool = {
+  name: "create_epic",
+  description: "Create a new epic in the project",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Epic name" },
+      color: { type: "string", description: "Hex color (e.g. #6366f1). Optional." }
+    },
+    required: ["name"]
+  }
+};
+var updateEpicTool = {
+  name: "update_epic",
+  description: "Update an epic's name or color",
+  inputSchema: {
+    type: "object",
+    properties: {
+      epic_id: { type: "string", description: "Epic ID" },
+      name: { type: "string", description: "New name" },
+      color: { type: "string", description: "New hex color (e.g. #6366f1)" }
+    },
+    required: ["epic_id"]
+  }
+};
+async function updateEpic(client, projectId, args) {
+  const updates = {};
+  if (args.name !== void 0) updates.name = args.name;
+  if (args.color !== void 0) updates.color = args.color;
+  const { data, error: error2 } = await client.from("epics").update(updates).eq("id", args.epic_id).eq("project_id", projectId).select().single();
+  if (error2) throw error2;
+  return data;
+}
+async function createEpic(client, projectId, userId, args) {
+  const { data: existing } = await client.from("epics").select("position").eq("project_id", projectId).order("position", { ascending: false }).limit(1);
+  const nextPosition = (existing?.[0]?.position ?? -1) + 1;
+  const { data, error: error2 } = await client.from("epics").insert({
+    project_id: projectId,
+    name: args.name,
+    color: args.color ?? "#6366f1",
+    position: nextPosition,
+    created_by: userId
+  }).select().single();
+  if (error2) throw error2;
+  return data;
+}
+
+// src/tools/members.ts
+var listMembersTool = {
+  name: "list_members",
+  description: "List all members of the workspace. Returns user IDs, display names, emails, and roles. Use this to look up assignee IDs for task assignment.",
+  inputSchema: { type: "object", properties: {} }
+};
+async function listMembers(client, projectId) {
+  const { data: project, error: projError } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
+  if (projError) throw projError;
+  const { data, error: error2 } = await client.from("workspace_members").select("user_id, role, joined_at, profile:profiles!workspace_members_user_id_profiles_fkey(display_name, email)").eq("workspace_id", project.workspace_id).order("joined_at", { ascending: true });
+  if (error2) throw error2;
+  return data.map((m) => ({
+    user_id: m.user_id,
+    display_name: m.profile?.display_name ?? null,
+    email: m.profile?.email ?? null,
+    role: m.role
+  }));
+}
+async function resolveAssignee(client, projectId, assignee) {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(assignee)) {
+    return assignee;
+  }
+  const members = await listMembers(client, projectId);
+  const query = assignee.toLowerCase();
+  const emailMatch = members.filter((m) => m.email?.toLowerCase() === query);
+  if (emailMatch.length === 1) return emailMatch[0].user_id;
+  const nameMatch = members.filter(
+    (m) => m.display_name?.toLowerCase().includes(query)
+  );
+  if (nameMatch.length === 1) return nameMatch[0].user_id;
+  if (nameMatch.length > 1) {
+    const names = nameMatch.map((m) => m.display_name ?? m.email).join(", ");
+    throw new Error(`Ambiguous assignee "${assignee}" \u2014 matches multiple members: ${names}. Be more specific.`);
+  }
+  throw new Error(`No member found matching "${assignee}". Use list_members to see available members.`);
+}
+
+// src/tools/risk-class.ts
+var RISK_CLASSES = [
+  "auth",
+  "data-migration",
+  "irreversible-destructive",
+  "shared-core"
+];
+var kw = (re, senseOk) => ({ re, senseOk });
+var AUTH_TOKEN_QUALIFIER = /\b(?:auth|access|api|bearer|jwt|session|refresh|csrf)\b/i;
+function tokenIsAuthSense(text, start, end) {
+  const before = text.slice(Math.max(0, start - 24), start);
+  const after = text.slice(end, end + 24);
+  const window2 = before + " " + after;
+  return AUTH_TOKEN_QUALIFIER.test(window2);
+}
+var KEYWORD_TABLE = {
+  auth: [
+    // auth / login / logout / session / token / password / oauth / RLS / permission / role
+    kw(/\bauth(?:entication|orization|z|n)?\b/i),
+    kw(/\boauth\b/i),
+    kw(/\blog[\s-]?in\b/i),
+    kw(/\blog[\s-]?out\b/i),
+    kw(/\bsign[\s-]?in\b/i),
+    kw(/\bsign[\s-]?out\b/i),
+    kw(/\bsession\b/i),
+    kw(/\btokens?\b/i, tokenIsAuthSense),
+    kw(/\bpasswords?\b/i),
+    kw(/\bcredentials?\b/i),
+    kw(/\bRLS\b/i),
+    kw(/\brow[\s-]?level[\s-]?security\b/i),
+    kw(/\bpermissions?\b/i),
+    kw(/\broles?\b/i)
+  ],
+  "data-migration": [
+    // migration / schema / ALTER TABLE / backfill / DROP COLUMN
+    kw(/\bmigrations?\b/i),
+    kw(/\bschema\b/i),
+    kw(/\balter\s+table\b/i),
+    kw(/\badd\s+column\b/i),
+    kw(/\bdrop\s+column\b/i),
+    kw(/\bbackfill(?:s|ed|ing)?\b/i),
+    kw(/\bdata[\s-]?migration\b/i)
+  ],
+  "irreversible-destructive": [
+    // DROP / DELETE FROM / TRUNCATE / irreversible / hard-delete / purge
+    kw(/\bdrop\s+(?:table|column|database|schema|index|constraint)\b/i),
+    kw(/\bdelete\s+from\b/i),
+    kw(/\btruncate\b/i),
+    kw(/\birreversible\b/i),
+    kw(/\bhard[\s.-]?delete(?:s|d)?\b/i),
+    kw(/\bpurge(?:s|d|ing)?\b/i),
+    kw(/\bdestructive\b/i),
+    kw(/\bunrecoverable\b/i),
+    kw(/\bpermanently\s+(?:delete|remove|destroy)/i)
+  ],
+  "shared-core": [
+    // curated shared module names that, if touched, have broad blast radius
+    kw(/\bsupabase\.ts\b/i),
+    kw(/\bauth\.ts\b/i),
+    kw(/\bsrc\/tools\/registry\b/i),
+    kw(/\bsrc\/tools\/index\.ts\b/i),
+    kw(/\bregisterTools\b/i),
+    kw(/\bshared[\s-]?core\b/i)
+  ]
+};
+var NEGATION_CUES = /* @__PURE__ */ new Set(["no", "not", "without", "zero", "neither", "nor", "none"]);
+var NEGATION_WINDOW = 4;
+var CLAUSE_BOUNDARY_TOKENS = /* @__PURE__ */ new Set(["and", "but", "or", "then", "so", "yet"]);
+var CLAUSE_BOUNDARY_PUNCT = /[,;:.–—]/;
+var ASCII_LETTER = /[a-z]/;
+function precedingTokens(text, matchStart) {
+  const slice = text.slice(Math.max(0, matchStart - 48), matchStart).toLowerCase();
+  const isWordChar = (k) => {
+    const c = slice[k];
+    if (c === void 0) return false;
+    if (ASCII_LETTER.test(c) || c === "'") return true;
+    if (c === "-") return ASCII_LETTER.test(slice[k - 1] ?? "") && ASCII_LETTER.test(slice[k + 1] ?? "");
+    return false;
+  };
+  const inClause = [];
+  let i = slice.length - 1;
+  while (i >= 0 && inClause.length < NEGATION_WINDOW) {
+    if (CLAUSE_BOUNDARY_PUNCT.test(slice[i])) break;
+    if (isWordChar(i)) {
+      let j = i;
+      while (j >= 0 && isWordChar(j)) j--;
+      const word = slice.slice(j + 1, i + 1);
+      i = j;
+      if (word.length === 0) continue;
+      if (CLAUSE_BOUNDARY_TOKENS.has(word)) break;
+      inClause.push(word);
+    } else {
+      if (slice[i] === "-") break;
+      i--;
+    }
+  }
+  return inClause;
+}
+function isNegated(text, start) {
+  for (const tok of precedingTokens(text, start)) {
+    if (NEGATION_CUES.has(tok)) return true;
+    if (tok.endsWith("n't")) return true;
+  }
+  return false;
+}
+function textHitsClass(text, cls) {
+  for (const keyword of KEYWORD_TABLE[cls]) {
+    const g = new RegExp(keyword.re.source, keyword.re.flags.includes("g") ? keyword.re.flags : keyword.re.flags + "g");
+    let m;
+    while ((m = g.exec(text)) !== null) {
+      const start = m.index;
+      const end = m.index + m[0].length;
+      if (m[0].length === 0) {
+        g.lastIndex++;
+        continue;
+      }
+      if (keyword.senseOk && !keyword.senseOk(text, start, end)) continue;
+      if (isNegated(text, start)) continue;
+      return true;
+    }
+  }
+  return false;
+}
+var PATH_GLOB_TABLE = {
+  auth: ["**/auth/**", "**/auth.ts", "**/auth.tsx", "**/*auth*.ts", "**/middleware/auth*", "**/rls/**"],
+  "data-migration": ["**/migrations/**", "**/migration/**", "**/*.sql", "**/schema.sql", "**/supabase/migrations/**"],
+  // No reliably-destructive path signature (destructiveness lives in content, not the path);
+  // kept empty so this class trips on text/labels, never on an innocent path. The conservative
+  // bias is served by the keyword table here, not by over-broad path globs.
+  "irreversible-destructive": [],
+  "shared-core": [
+    "**/supabase.ts",
+    "**/auth.ts",
+    "**/src/tools/index.ts",
+    "**/src/tools/registry*",
+    "**/src/supabase.ts",
+    "**/src/auth.ts"
+  ]
+};
+function globToRegExp(glob) {
+  let re = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") {
+      if (glob[i + 1] === "*") {
+        re += ".*";
+        i++;
+        if (glob[i + 1] === "/") i++;
+      } else {
+        re += "[^/]*";
+      }
+    } else if (c === "?") {
+      re += "[^/]";
+    } else if ("\\^$.|+()[]{}".includes(c)) {
+      re += "\\" + c;
+    } else {
+      re += c;
+    }
+  }
+  return new RegExp("^" + re + "$", "i");
+}
+var PATH_REGEX_TABLE = {
+  auth: PATH_GLOB_TABLE.auth.map(globToRegExp),
+  "data-migration": PATH_GLOB_TABLE["data-migration"].map(globToRegExp),
+  "irreversible-destructive": PATH_GLOB_TABLE["irreversible-destructive"].map(globToRegExp),
+  "shared-core": PATH_GLOB_TABLE["shared-core"].map(globToRegExp)
+};
+function labelToRiskClass(label) {
+  const l = label.trim().toLowerCase().replace(/^risk[:/-]/, "");
+  switch (l) {
+    case "auth":
+      return "auth";
+    case "data-migration":
+    case "migration":
+    case "data migration":
+      return "data-migration";
+    case "irreversible-destructive":
+    case "irreversible":
+    case "destructive":
+      return "irreversible-destructive";
+    case "shared-core":
+    case "shared core":
+    case "core":
+      return "shared-core";
+    default:
+      return null;
+  }
+}
+function pathHitsClass(paths, cls) {
+  const globs = PATH_REGEX_TABLE[cls];
+  return globs.length > 0 && paths.some((p) => globs.some((re) => re.test(p)));
+}
+function detectRiskClasses(input) {
+  const hits = /* @__PURE__ */ new Set();
+  const text = typeof input.text === "string" ? input.text : "";
+  const paths = Array.isArray(input.changedPaths) ? input.changedPaths.filter((p) => typeof p === "string") : [];
+  const labels = Array.isArray(input.labels) ? input.labels.filter((l) => typeof l === "string") : [];
+  const hasDiff = paths.length > 0;
+  for (const label of labels) {
+    const cls = labelToRiskClass(label);
+    if (cls) hits.add(cls);
+  }
+  for (const cls of RISK_CLASSES) {
+    if (pathHitsClass(paths, cls)) hits.add(cls);
+  }
+  if (text.length > 0) {
+    for (const cls of RISK_CLASSES) {
+      if (hits.has(cls)) continue;
+      if (!textHitsClass(text, cls)) continue;
+      const demotedByCleanDiff = hasDiff && PATH_GLOB_TABLE[cls].length > 0 && !pathHitsClass(paths, cls);
+      if (!demotedByCleanDiff) hits.add(cls);
+    }
+  }
+  return RISK_CLASSES.filter((cls) => hits.has(cls));
+}
+
+// src/tools/payload-refs.ts
+function kebabSlug(text, maxLen) {
+  const full = text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return full.slice(0, maxLen).replace(/-+$/g, "");
+}
+function slugRef(prefix, text, maxLen = 40) {
+  const slug = kebabSlug(text ?? "", maxLen) || "item";
+  return `${prefix}-${slug}`;
 }
 
 // src/tools/knowledge-contradiction.ts
@@ -47066,13 +47114,6 @@ var isMissingComposeBriefRevision = (err) => {
   const msg = err.message ?? "";
   return /compose_brief_revision/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg);
 };
-var isMissingComposeBriefInitial = (err) => {
-  if (!err) return false;
-  const code = err.code ?? "";
-  if (code === "42883" || code === "PGRST202") return true;
-  const msg = err.message ?? "";
-  return /compose_brief_initial/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg);
-};
 async function composeBrief(client, projectId, userId, args) {
   if (!args.task_id) throw new Error("task_id is required");
   if (!VALID_REASONS.includes(args.reason)) {
@@ -47116,10 +47157,6 @@ async function composeBrief(client, projectId, userId, args) {
       throw new Error(`pending_activity '${mergedPendingActivity}' has no valid transition from state '${fromState ?? "NULL"}'`);
     }
     accept = { from: fromState, to: tr.to_state };
-  } else if (args.reason === "plan-draft") {
-    throw new Error(
-      "A 'plan-draft' brief must carry a real pending_activity (e.g. 'planning') \u2014 its accept always advances Designed \u2192 Planned, so it cannot advance no state."
-    );
   }
   const renderCtx = { reason: args.reason, accept };
   const docWithContradiction = await withContradictionSignal(
@@ -47234,39 +47271,16 @@ async function composeBrief(client, projectId, userId, args) {
       }
     }
   } else {
-    const insertBriefRow = async () => {
-      const insertRow = { task_id: taskId, created_by: userId, ...payload };
-      const { data, error: error2 } = await client.from("briefs").insert(insertRow).select(BRIEF_COLS).single();
-      if (error2) {
-        if (!isMissingPendingResolution(error2.message)) throw new Error(error2.message);
-        const { pending_resolution: _drop, ...fallback } = insertRow;
-        const { data: data2, error: error22 } = await client.from("briefs").insert(fallback).select(BRIEF_COLS).single();
-        if (error22) throw new Error(error22.message);
-        return data2;
-      }
-      return data;
-    };
-    if (args.couple_claim_ids !== void 0) {
-      const { data: initialData, error: initialErr } = await client.rpc("compose_brief_initial", {
-        _task_id: taskId,
-        _payload: payload,
-        _claim_ids: args.couple_claim_ids,
-        _created_by: userId
-      });
-      if (!initialErr) {
-        brief = initialData;
-      } else if (isMissingComposeBriefInitial(initialErr)) {
-        brief = await insertBriefRow();
-        if (args.couple_claim_ids.length > 0) {
-          const briefId = brief.id;
-          const { error: coupleErr } = await client.from("knowledge_decisions").update({ underwriting_brief_id: briefId }).in("id", args.couple_claim_ids).eq("status", "Asserted");
-          if (coupleErr) throw new Error(coupleErr.message);
-        }
-      } else {
-        throw new Error(initialErr.message);
-      }
+    const insertRow = { task_id: taskId, created_by: userId, ...payload };
+    const { data, error: error2 } = await client.from("briefs").insert(insertRow).select(BRIEF_COLS).single();
+    if (error2) {
+      if (!isMissingPendingResolution(error2.message)) throw new Error(error2.message);
+      const { pending_resolution: _drop, ...fallback } = insertRow;
+      const { data: data2, error: error22 } = await client.from("briefs").insert(fallback).select(BRIEF_COLS).single();
+      if (error22) throw new Error(error22.message);
+      brief = data2;
     } else {
-      brief = await insertBriefRow();
+      brief = data;
     }
   }
   const { error: taskErr } = await client.from("tasks").update({
@@ -47279,7 +47293,7 @@ async function composeBrief(client, projectId, userId, args) {
 }
 var composeBriefTool = {
   name: "compose_brief",
-  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). On a FIRST compose only (when no active brief exists yet), pass `couple_claim_ids` (B-736) = the ids of elicitation claims minted just before this call \u2014 compose atomically couples them (`underwriting_brief_id`) to the brief it creates via `compose_brief_initial`, tolerantly falling back to a bare insert plus a separate coupling update on a DB that does not yet have that RPC; omit it when no exchange ran. Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING \u2014 no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose \u2014 compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing \u2014 an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal.",
+  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING \u2014 no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose \u2014 compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing \u2014 an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal.",
   inputSchema: {
     type: "object",
     properties: {
@@ -47359,7 +47373,6 @@ var composeBriefTool = {
         description: "B-838 \u2014 the build's bounded, REMOVED/REPLACED PR diff lines (`git diff origin/main...HEAD`, pre-merge, post-exclusion, pre-cap). Used ONLY to compute a release frame's `contradiction_signal` \u2014 which Accepted knowledge entries this diff touches or contradicts; compose is authoritative for that field and overwrites whatever the doc authored, exactly like `risk_classes` from `changed_paths`. Omitted entirely -> `{ status: 'not-computed', message: 'not computed \u2014 no diff supplied' }`, never silently read as \"no contradictions\"."
       },
       underwriting_claim_ids: { type: "array", items: { type: "string" }, description: "B-645 iterate-prune: on an in-place iterate, the KEPT set of elicitation-claim ids that still underwrite this brief. Coupled Asserted claims NOT listed are archived; [] archives all coupled Asserted claims; omit \u21D2 no prune. Ignored on a first compose (nothing is coupled yet)." },
-      couple_claim_ids: { type: "array", items: { type: "string" }, description: "B-736: on a FIRST compose only, the ids of elicitation claims minted BEFORE this call that should be atomically coupled (underwriting_brief_id set) to the brief this call creates \u2014 closes the claim mint-then-accept race. Ignored when a brief already exists for the task (use underwriting_claim_ids to prune on iterate instead)." },
       iterate_feedback: {
         type: "string",
         description: "B-843 \u2014 the human's feedback that CAUSED this iterate, VERBATIM. A revision stores it ONLY when a send-back CAUSED that revision. The mechanical anchor: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail` here (as `edit` / `iterate <feedback>` and the browser reshape all do); EVERY other recompose omits the parameter and the field lands null. Omit it on a first draft (nothing caused the brief), a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to populate this field: the CALLER passes it, so the marker is never scraped (B-843) and the words are never stamped onto a revision nobody sent back (B-896/B-903). It is stored on the NEW revision, so the retained history reads as \"this is what they asked for, and this is what I changed\". Never guessed, never paraphrased into a summary, and never left out because `doc.revision` already names the changes \u2014 `doc.revision` records what YOU changed, this records what THEY said."
@@ -49246,56 +49259,6 @@ var subsumeTaskTool = {
   }
 };
 
-// src/tools/comments.ts
-var listCommentsTool = {
-  name: "list_comments",
-  description: "List all comments on a task, ordered by creation date (oldest first).",
-  inputSchema: {
-    type: "object",
-    properties: {
-      task_id: {
-        type: "string",
-        description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)"
-      }
-    },
-    required: ["task_id"]
-  }
-};
-async function listComments(client, projectId, args) {
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
-  const { data, error: error2 } = await client.from("task_comments").select("id, content, user_id, created_at, updated_at").eq("task_id", taskId).order("created_at", { ascending: true });
-  if (error2) throw error2;
-  return data;
-}
-var addCommentTool = {
-  name: "add_comment",
-  description: "Add a comment to a task. Use for logging decisions, progress notes, or blockers.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      task_id: {
-        type: "string",
-        description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)"
-      },
-      content: {
-        type: "string",
-        description: "Comment content (markdown supported)"
-      }
-    },
-    required: ["task_id", "content"]
-  }
-};
-async function addComment(client, projectId, userId, args) {
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
-  const { data, error: error2 } = await client.from("task_comments").insert({
-    task_id: taskId,
-    user_id: userId,
-    content: normalizeHtmlEntities(args.content.replace(/\\n/g, "\n"))
-  }).select().single();
-  if (error2) throw error2;
-  return data;
-}
-
 // src/tools/task-labels.ts
 var manageTaskLabelsTool = {
   name: "manage_labels",
@@ -50303,28 +50266,10 @@ async function applyAcceptanceEventPayload(client, event) {
   }
   return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind };
 }
-var RACED_EVENT_ERROR_SUBSTRING = "no longer matches event";
 async function consumeAcceptanceEvent(client, eventId) {
   const { data, error: error2 } = await client.rpc("consume_acceptance_event", { _event_id: eventId });
-  if (!error2) return data;
-  if (!error2.message.includes(RACED_EVENT_ERROR_SUBSTRING)) {
-    throw new Error(error2.message);
-  }
-  const { data: staleEventRow, error: staleEventErr } = await client.from("pending_acceptance_events").select("task_id").eq("id", eventId).maybeSingle();
-  if (staleEventErr || !staleEventRow) {
-    throw new Error(error2.message);
-  }
-  const { data: taskRow, error: taskErr } = await client.from("tasks").select("pending_acceptance_event_id").eq("id", staleEventRow.task_id).maybeSingle();
-  if (taskErr || !taskRow) {
-    throw new Error(error2.message);
-  }
-  const currentEventId = taskRow.pending_acceptance_event_id;
-  if (!currentEventId || currentEventId === eventId) {
-    throw new Error(error2.message);
-  }
-  const { data: retryData, error: retryError } = await client.rpc("consume_acceptance_event", { _event_id: currentEventId });
-  if (retryError) throw new Error(retryError.message);
-  return { ...retryData, retried_from_event_id: eventId };
+  if (error2) throw new Error(error2.message);
+  return data;
 }
 async function consumePendingAcceptanceEvent(client, projectId, taskId) {
   const probe = await probeAcceptanceEventSubstrate(client);
@@ -50340,25 +50285,15 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId) {
     return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
   }
   const consumeResult = await consumeAcceptanceEvent(client, event.id);
-  let effectiveReason = event.reason;
-  let effectiveBriefId = event.brief_id;
-  if (consumeResult.event_id && consumeResult.event_id !== event.id) {
-    const { data: actualEventRow } = await client.from("pending_acceptance_events").select("reason, brief_id").eq("id", consumeResult.event_id).maybeSingle();
-    if (actualEventRow) {
-      const actual = actualEventRow;
-      effectiveReason = actual.reason;
-      effectiveBriefId = actual.brief_id;
-    }
-  }
   return {
     status: "consumed",
-    event_id: consumeResult.event_id,
+    event_id: event.id,
     applied: applyResult.applied,
     skipped_already_done: applyResult.skipped_already_done,
     by_write_kind: applyResult.by_write_kind,
     workflow_state: consumeResult.workflow_state,
-    reason: effectiveReason,
-    brief_id: effectiveBriefId
+    reason: event.reason,
+    brief_id: event.brief_id
   };
 }
 var consumePendingAcceptanceEventTool = {
@@ -50964,6 +50899,11 @@ async function createConduction2(client, projectId, userId, args) {
   const runConfig = args.run_config !== void 0 ? RunConfigSchema.parse(args.run_config) : void 0;
   const taskId = await resolveTaskId(client, projectId, args.task_id);
   try {
+    await reviveParkedTicketIfNeeded(client, projectId, userId, taskId, {
+      unpark: args.unpark,
+      resume_to: args.resume_to,
+      revived_by: args.revived_by
+    });
     await assertNotExcluded(client, taskId);
     const conduction = await createConduction(client, {
       task_id: taskId,
@@ -50980,6 +50920,9 @@ async function createConduction2(client, projectId, userId, args) {
       message: `Conduction ${conduction.id} created for ${args.task_id} (${conduction.status}, mode: ${conduction.mode}). The conductor daemon will pick it up on its next pass. Note: ${HANDOFF_CONTRACT_NOTE}`
     };
   } catch (err) {
+    if (err instanceof TicketParkedError || err instanceof TicketStaleReviveRefusedError) {
+      throw new Error(err.message, { cause: err });
+    }
     if (err instanceof ConductorExcludedError) {
       throw new Error(
         `${args.task_id} is taken away from the conductor \u2014 Return it first (the "Return to conductor" action) before handing it off`,
@@ -51003,7 +50946,7 @@ async function createConduction2(client, projectId, userId, args) {
 }
 var createConductionTool = {
   name: "create_conduction",
-  description: `B-758: hand a ticket to the conductor daemon from ANY stage (Proposed through Deployed) \u2014 not just Proposed. Creates the durable conduction record (status 'active', mode 'controlled'); the conductor daemon notices it on its next pass and drives the run. Refuses cleanly (never a raw error) when the ticket is already being conducted (at most one active conduction per ticket) or when a human has explicitly taken this ticket away from the conductor (the web's "Take away from conductor" action) \u2014 in that case, Return it to the conductor first. Refuses cleanly, naming the cause, when the database's row-level security policy rejects the record (that policy requires the acting user's id on the insert). IMPORTANT: the duplicate-guard can only detect an active conduction record \u2014 it cannot see an in-progress terminal session, so confirm any in-session work on this ticket has stopped before handing it off.`,
+  description: `B-758: hand a ticket to the conductor daemon from ANY stage (Proposed through Deployed) \u2014 not just Proposed. Creates the durable conduction record (status 'active', mode 'controlled'); the conductor daemon notices it on its next pass and drives the run. Refuses cleanly (never a raw error) when the ticket is already being conducted (at most one active conduction per ticket) or when a human has explicitly taken this ticket away from the conductor (the web's "Take away from conductor" action) \u2014 in that case, Return it to the conductor first. Refuses cleanly, naming the cause, when the database's row-level security policy rejects the record (that policy requires the acting user's id on the insert). IMPORTANT: the duplicate-guard can only detect an active conduction record \u2014 it cannot see an in-progress terminal session, so confirm any in-session work on this ticket has stopped before handing it off. B-964: on a Parked ticket, this refuses UNLESS unpark: true is also passed (in which case it re-validates tasks.stale, resumes the ticket, records who revived it, and only THEN creates the conduction) \u2014 this is the ONLY way a Parked ticket ever resumes conducting, and it is never automatic: only call unpark: true from an explicit human instruction.`,
   inputSchema: {
     type: "object",
     properties: {
@@ -51014,6 +50957,18 @@ var createConductionTool = {
       run_config: {
         type: "object",
         description: 'B-743: optional per-run operator choices for this conduction (e.g. { "note": "..." } \u2014 a free-text steering note delivered to the worker and posted back as a scoped ticket comment at each new gate). Omit entirely for the default run behavior.'
+      },
+      unpark: {
+        type: "boolean",
+        description: "B-964: required (true) to hand off a Parked ticket. Only set this when a human has EXPLICITLY instructed the revive \u2014 never infer it from a detected condition (e.g. a sibling ticket merging). Refuses (TicketStaleReviveRefusedError) without unparking when tasks.stale is true; otherwise resumes the ticket (advance_workflow's 'unparking' activity) before the conduction is created."
+      },
+      resume_to: {
+        type: "string",
+        description: "B-964: optional target workflow_state override for the revive. Omitted -> the ticket's own parked_from column, else 'Proposed'. Ignored unless the ticket is Parked."
+      },
+      revived_by: {
+        type: "string",
+        description: "B-964: who authorized the revive \u2014 e.g. 'human-in-session' or 'agent acting on <human>'s explicit instruction'. Recorded in a ticket comment alongside the resume target. Ignored unless the ticket is Parked."
       }
     },
     required: ["task_id"]

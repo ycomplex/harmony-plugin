@@ -40,7 +40,7 @@ export function deriveToState(
 export const advanceWorkflowTool = {
   name: 'advance_workflow',
   description:
-    'Advance an opinionated-mode task along the config-led state machine for an AGENT/SYSTEM transition that has no human brief — e.g. building (Planned->Built) once tests pass, or a revising-* backflow. Derives the target state from the workflow_transitions table; the DB guard validates the edge. For HUMAN-gated transitions use compose_brief + resolve_brief instead. parking/cancelling are accepted; researching records the activity without changing state.',
+    'Advance an opinionated-mode task along the config-led state machine for an AGENT/SYSTEM transition that has no human brief — e.g. building (Planned->Built) once tests pass, or a revising-* backflow. Derives the target state from the workflow_transitions table; the DB guard validates the edge. For HUMAN-gated transitions use compose_brief + resolve_brief instead. parking/cancelling are accepted; researching records the activity without changing state. B-964: unparking revives a Parked ticket — target state is resume_to (if given), else the task\'s own parked_from, else \'Proposed\'; writes workflow_activity: NULL (mirrors the web\'s own "Resume" action). unparking is deliberately NOT exempt from the stale guard below.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -48,7 +48,12 @@ export const advanceWorkflowTool = {
       activity: {
         type: 'string',
         description:
-          "Workflow activity to apply, e.g. 'building', 'deploying', 'revising-designing', 'researching', 'parking', 'cancelling', 'capturing', 'proposing'.",
+          "Workflow activity to apply, e.g. 'building', 'deploying', 'revising-designing', 'researching', 'parking', 'cancelling', 'unparking', 'capturing', 'proposing'.",
+      },
+      resume_to: {
+        type: 'string',
+        description:
+          "B-964: optional target workflow_state override, used ONLY by the 'unparking' activity. When omitted, unparking falls back to the task's own parked_from column, then to 'Proposed' if that is also null. Ignored for every other activity.",
       },
     },
     required: ['task_id', 'activity'],
@@ -58,26 +63,29 @@ export const advanceWorkflowTool = {
 export async function advanceWorkflow(
   client: SupabaseClient,
   projectId: string,
-  args: { task_id: string; activity: string },
+  args: { task_id: string; activity: string; resume_to?: string },
 ) {
   const id = await resolveTaskId(client, projectId, args.task_id);
 
   const { data: task, error: e1 } = await client
     .from('tasks')
-    .select('workflow_state, stale')
+    .select('workflow_state, stale, parked_from')
     .eq('id', id)
     .eq('project_id', projectId)
     .single();
   if (e1) throw e1;
 
-  const taskRow = task as { workflow_state: string | null; stale: boolean | null };
+  const taskRow = task as { workflow_state: string | null; stale: boolean | null; parked_from: string | null };
 
   // B-715: mirror compose_brief's stale guard here — advance_workflow is the OTHER substrate write
   // path that can move workflow_state, and it has no human brief in front of it (it's the
   // AGENT/SYSTEM-transition path), so it needs its own backstop. Forward gate progress is refused on
   // a stale ticket; the two documented clear paths stay open: a 'revising-*' backflow (the reconciliation
   // itself) and the universal off-ramps (parking/cancelling) plus researching (records activity, never
-  // advances state — nothing to refuse).
+  // advances state — nothing to refuse). B-964: 'unparking' is DELIBERATELY left out of this exemption
+  // — a stale ticket's revive must throw exactly like any other forward activity, so create_conduction's
+  // revive path can catch it and refuse cleanly (never unpark a ticket whose completed steps reference
+  // superseded knowledge).
   const isStaleExempt =
     args.activity.startsWith('revising-') || args.activity === 'researching' || args.activity in UNIVERSAL;
   if (taskRow.stale === true && !isStaleExempt) {
@@ -93,13 +101,25 @@ export async function advanceWorkflow(
   if (e2) throw e2;
 
   const fromState: string | null = taskRow.workflow_state;
-  const toState = deriveToState(fromState, args.activity, (transitions ?? []) as WorkflowTransitionRow[]);
+  // B-964: 'unparking' is a dynamic per-ticket target (a caller override, else the task's own
+  // parked_from, else 'Proposed') — deliberately NOT added to the fixed UNIVERSAL map (that map
+  // backs deriveToState, a pure function with no row access), so it is resolved here instead of
+  // going through deriveToState at all.
+  const toState =
+    args.activity === 'unparking'
+      ? args.resume_to ?? taskRow.parked_from ?? 'Proposed'
+      : deriveToState(fromState, args.activity, (transitions ?? []) as WorkflowTransitionRow[]);
 
   // F8: researching records the activity-in-progress WITHOUT touching workflow_state. Writing toState
   // (=== fromState) would be a no-op for a stated task and a NULL→'' FK violation for an un-stated one.
+  // B-964: unparking writes workflow_activity: NULL — mirrors the web's own live "Resume" action
+  // exactly (confirmed activity-agnostic against both workflow_transition_guard migrations' Parked
+  // branch); it does not get a newly-seeded activity name.
   const patch =
     args.activity === 'researching'
       ? { workflow_activity: args.activity }
+      : args.activity === 'unparking'
+      ? { workflow_state: toState, workflow_activity: null }
       : { workflow_state: toState, workflow_activity: args.activity };
 
   const { data: updated, error: e3 } = await client

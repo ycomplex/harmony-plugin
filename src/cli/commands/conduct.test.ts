@@ -4,6 +4,8 @@ import { registerConductCommand } from './conduct.js';
 import {
   ActiveConductionExistsError,
   ConductorExcludedError,
+  TicketParkedError,
+  TicketStaleReviveRefusedError,
 } from '../../tools/conduction-record.js';
 
 // House gotcha (B-685): module-scope mock impls get stripped by restore/clear — every
@@ -13,13 +15,19 @@ const mocks = vi.hoisted(() => ({
   resolveTaskId: vi.fn(),
   createConduction: vi.fn(),
   assertNotExcluded: vi.fn(),
+  reviveParkedTicketIfNeeded: vi.fn(),
 }));
 
 vi.mock('../auth.js', () => ({ getAuthenticatedContext: mocks.getAuthenticatedContext }));
 vi.mock('../../tools/resolve-task-id.js', () => ({ resolveTaskId: mocks.resolveTaskId }));
 vi.mock('../../tools/conduction-record.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../tools/conduction-record.js')>();
-  return { ...actual, createConduction: mocks.createConduction, assertNotExcluded: mocks.assertNotExcluded };
+  return {
+    ...actual,
+    createConduction: mocks.createConduction,
+    assertNotExcluded: mocks.assertNotExcluded,
+    reviveParkedTicketIfNeeded: mocks.reviveParkedTicketIfNeeded,
+  };
 });
 
 class ExitSentinel extends Error {
@@ -57,6 +65,8 @@ beforeEach(() => {
   mocks.resolveTaskId.mockResolvedValue('uuid-1');
   mocks.assertNotExcluded.mockResolvedValue(undefined);
   mocks.createConduction.mockResolvedValue(conductionRow);
+  // B-964: a no-op by default, exactly like a non-Parked ticket.
+  mocks.reviveParkedTicketIfNeeded.mockResolvedValue(undefined);
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
@@ -133,5 +143,58 @@ describe('harmony conduct <ticket>', () => {
     const errOutput = errSpy.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(errOutput).toMatch(/B-999 not found/);
     expect(mocks.createConduction).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B-964 — `--unpark` / `--resume-to` on the CLI
+// ---------------------------------------------------------------------------
+
+describe('harmony conduct <ticket> --unpark (B-964)', () => {
+  it('threads --unpark and --resume-to into reviveParkedTicketIfNeeded, BEFORE assertNotExcluded and createConduction', async () => {
+    await run(['conduct', 'B-696', '--unpark', '--resume-to', 'Designed']);
+
+    expect(mocks.reviveParkedTicketIfNeeded).toHaveBeenCalledWith(
+      ctx.client,
+      'proj-1',
+      'user-1',
+      'uuid-1',
+      expect.objectContaining({ unpark: true, resume_to: 'Designed' }),
+    );
+    const reviveOrder = mocks.reviveParkedTicketIfNeeded.mock.invocationCallOrder[0];
+    const excludedOrder = mocks.assertNotExcluded.mock.invocationCallOrder[0];
+    const createOrder = mocks.createConduction.mock.invocationCallOrder[0];
+    expect(reviveOrder).toBeLessThan(excludedOrder);
+    expect(excludedOrder).toBeLessThan(createOrder);
+  });
+
+  it('without --unpark, still calls reviveParkedTicketIfNeeded (unpark: undefined) — a Parked ticket refuses via the SAME typed error the MCP tool uses', async () => {
+    mocks.reviveParkedTicketIfNeeded.mockRejectedValue(new TicketParkedError('uuid-1'));
+
+    await expect(run(['conduct', 'B-696'])).rejects.toThrow(ExitSentinel);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errOutput = errSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(errOutput).toMatch(/Parked/);
+    expect(errOutput).toMatch(/unpark: true/);
+    expect(mocks.createConduction).not.toHaveBeenCalled();
+
+    const call = mocks.reviveParkedTicketIfNeeded.mock.calls[0];
+    expect(call[4].unpark).toBe(false); // commander's declared default for --unpark
+  });
+
+  it('maps TicketStaleReviveRefusedError to a clean refusal naming harmony-stale-patch and exit 1', async () => {
+    mocks.reviveParkedTicketIfNeeded.mockRejectedValue(new TicketStaleReviveRefusedError('uuid-1'));
+
+    await expect(run(['conduct', 'B-696', '--unpark'])).rejects.toThrow(ExitSentinel);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errOutput = errSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(errOutput).toMatch(/harmony-stale-patch/);
+    expect(mocks.createConduction).not.toHaveBeenCalled();
+  });
+
+  it('succeeds end-to-end with --unpark when the revive resolves cleanly', async () => {
+    await run(['conduct', 'B-696', '--unpark']);
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mocks.createConduction).toHaveBeenCalled();
   });
 });

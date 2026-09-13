@@ -20,6 +20,8 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { RunConfig } from '../config/run-config.js';
+import { advanceWorkflow } from './workflow.js';
+import { addComment } from './comments.js';
 
 // ---------------------------------------------------------------------------
 // The canonical status axis.
@@ -643,4 +645,126 @@ export async function updateConductionIfHeld(
     .maybeSingle();
   if (error) throw error;
   return (data as unknown as ConductionRecord) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// reviveParkedTicketIfNeeded — the B-964 unpark primitive
+// ---------------------------------------------------------------------------
+//
+// A first-class, single-call revive for a Parked ticket, folded into create_conduction's (and the
+// CLI's `harmony conduct`'s) own Parked-ticket path — see create-conduction.ts and
+// src/cli/commands/conduct.ts, both of which call this BEFORE their normal excluded/duplicate-
+// conduction guards and the conduction insert itself. Never triggered by anything but an explicit
+// `unpark: true` argument threaded from a human (or a session acting on a human's stated
+// instruction) — classify.ts and scheduler.ts are UNCHANGED by this ticket and never set it (AC5).
+
+/** No `unpark: true` on a Parked ticket. Distinguishable from every other refusal (instanceof /
+ *  `code`) — the remedy is precise (name the ticket, the word "Parked", and the exact flag), so it
+ *  must never surface as a raw/generic error. */
+export class TicketParkedError extends Error {
+  readonly code = 'ticket-parked';
+  readonly task_id: string;
+  constructor(taskId: string) {
+    super(
+      `Task ${taskId} is Parked — a conduction cannot be created for a Parked ticket without an ` +
+        `explicit revive. Pass unpark: true to revive it (re-validates against current knowledge ` +
+        `and code, then resumes it) and hand it to the conductor in the same call.`,
+    );
+    this.name = 'TicketParkedError';
+    this.task_id = taskId;
+  }
+}
+
+/** `unpark: true` on a Parked ticket whose `tasks.stale` flag is set. AC2: nothing already-completed
+ *  is trusted blindly — a stale ticket's already-completed steps reference superseded knowledge, so
+ *  the revive is refused BEFORE the unpark step is ever attempted; the ticket is left Parked and a
+ *  comment naming `harmony-stale-patch` is posted as the next step. Distinguishable from
+ *  TicketParkedError (instanceof / `code`) — this is a DIFFERENT reason to refuse: unpark WAS
+ *  requested, but the revalidation itself failed. */
+export class TicketStaleReviveRefusedError extends Error {
+  readonly code = 'ticket-stale-revive-refused';
+  readonly task_id: string;
+  constructor(taskId: string) {
+    super(
+      `Task ${taskId} is Parked AND stale — refusing to revive it blindly. Its already-completed ` +
+        `steps reference superseded knowledge; route it through harmony-stale-patch (files a ` +
+        `'stale-patch-review' brief) first. The ticket is left Parked; no conduction was created.`,
+    );
+    this.name = 'TicketStaleReviveRefusedError';
+    this.task_id = taskId;
+  }
+}
+
+export interface ReviveParkedTicketArgs {
+  /** true to actually revive a Parked ticket; false/undefined refuses cleanly with
+   *  TicketParkedError. Never inferred — must be threaded from an explicit caller argument (AC5). */
+  unpark?: boolean;
+  /** Optional target workflow_state override, forwarded verbatim to advance_workflow's 'unparking'
+   *  activity as `resume_to`. Omitted -> the task's own `parked_from`, else 'Proposed'. */
+  resume_to?: string;
+  /** AC4: caller-supplied identity for the revive record — e.g. 'human-in-session' or 'agent acting
+   *  on <human>'s explicit instruction'. Recorded verbatim in the post-revive ticket comment. Falls
+   *  back to naming the acting user id when omitted. */
+  revived_by?: string;
+}
+
+/** B-964: fold a Parked ticket's revive into a caller's own create-conduction flow. A no-op
+ *  (resolves immediately, does nothing) when the task is not Parked at all — every pre-B-964 caller
+ *  is therefore byte-for-byte unaffected. Strictly ordered per the ratified design:
+ *
+ *    1. Not Parked -> no-op; the caller proceeds exactly as it did before B-964.
+ *    2. Parked, `unpark` not passed -> throws TicketParkedError. Nothing is written.
+ *    3. Parked, `unpark: true`, `tasks.stale === true` -> posts a comment naming
+ *       `harmony-stale-patch`, then throws TicketStaleReviveRefusedError. The unpark step (4) is
+ *       NEVER attempted — the ticket is left exactly as it was, Parked.
+ *    4. Parked, `unpark: true`, not stale -> calls advance_workflow's 'unparking' activity. ANY
+ *       throw here (e.g. an illegal edge from the DB guard) propagates UNCHANGED; the caller must
+ *       not insert a conduction row in that case — the ordering guarantee this ticket exists for.
+ *    5. Unpark succeeded -> posts the AC4 "who revived + resume target" comment, then returns so the
+ *       caller proceeds to its own duplicate/excluded guards and the conduction insert. */
+export async function reviveParkedTicketIfNeeded(
+  client: SupabaseClient,
+  projectId: string,
+  userId: string,
+  taskId: string,
+  args: ReviveParkedTicketArgs,
+): Promise<void> {
+  if (!taskId) throw new Error('task_id is required');
+  const { data, error } = await client
+    .from('tasks')
+    .select('workflow_state, stale')
+    .eq('id', taskId)
+    .single();
+  if (error) throw new Error(error.message);
+
+  const taskRow = data as { workflow_state: string | null; stale: boolean | null } | null;
+  if (!taskRow || taskRow.workflow_state !== 'Parked') return; // not Parked — nothing to revive
+
+  if (!args.unpark) throw new TicketParkedError(taskId);
+
+  if (taskRow.stale === true) {
+    await addComment(client, projectId, userId, {
+      task_id: taskId,
+      content:
+        `This ticket is Parked and stale — a revive was requested but refused. Route it through ` +
+        `harmony-stale-patch (files a 'stale-patch-review' brief) to reconcile its already-completed ` +
+        `steps against current knowledge before it can be revived.`,
+    });
+    throw new TicketStaleReviveRefusedError(taskId);
+  }
+
+  // Ordering guarantee: the conduction insert (in the caller) only ever runs AFTER this resolves,
+  // so a throw here (e.g. the DB guard rejecting an illegal edge) leaves the ticket Parked and no
+  // conduction is ever created for it.
+  const { to_state: resumedTo } = await advanceWorkflow(client, projectId, {
+    task_id: taskId,
+    activity: 'unparking',
+    resume_to: args.resume_to,
+  });
+
+  // AC4: who revived it, and to what state — visible after the fact on the ticket itself.
+  await addComment(client, projectId, userId, {
+    task_id: taskId,
+    content: `Revived from Parked -> ${resumedTo}. Requested by: ${args.revived_by ?? `user ${userId}`}.`,
+  });
 }
