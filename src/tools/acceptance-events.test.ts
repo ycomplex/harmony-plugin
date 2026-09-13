@@ -8,6 +8,7 @@ import {
   classifyPayload,
   isShippedMilestoneGuardError,
   ShippedMilestoneGuardError,
+  RACED_EVENT_ERROR_SUBSTRING,
   type PendingAcceptanceEvent,
   type AcceptanceEventPayloadItem,
 } from './acceptance-events.js';
@@ -478,6 +479,81 @@ describe('consumeAcceptanceEvent', () => {
     const client = makeClient({ rpcResponses: { consume_acceptance_event: [{ data: null, error: { message: 'no transition' } }] } });
     await expect(consumeAcceptanceEvent(client, 'event-1')).rejects.toThrow(/no transition/);
   });
+
+  // B-922 — retry-once-on-race, straight through consumeAcceptanceEvent (both call sites — the direct
+  // MCP tool and consumePendingAcceptanceEvent's internal call — share this one implementation).
+  describe('B-922 — retry-once when the RPC raises the row-count race guard', () => {
+    const RACE_ERROR = { message: 'consume_acceptance_event: task task-1 pending_acceptance_event_id no longer matches event event-1 (raced by a newer event) — expected 0 rows updated to mean already-superseded, not silently consumed' };
+
+    it('an ordinary (non-race) error still throws unchanged — no retry attempted', async () => {
+      const client = makeClient({ rpcResponses: { consume_acceptance_event: [{ data: null, error: { message: 'no transition' } }] } });
+      await expect(consumeAcceptanceEvent(client, 'event-1')).rejects.toThrow(/no transition/);
+      expect(client.rpc).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries once against the task\'s CURRENT pending_acceptance_event_id and returns the retry\'s result', async () => {
+      const client = makeClient({
+        fromResponses: {
+          pending_acceptance_events: [{ data: { task_id: 'task-1' } }],
+          tasks: [{ data: { pending_acceptance_event_id: 'event-2' } }],
+        },
+        rpcResponses: {
+          consume_acceptance_event: [
+            { data: null, error: RACE_ERROR },
+            { data: { event_id: 'event-2', task_id: 'task-1', status: 'consumed', workflow_state: 'Planned', idempotent: false } },
+          ],
+        },
+      });
+      const result = await consumeAcceptanceEvent(client, 'event-1');
+      expect(result.event_id).toBe('event-2');
+      expect(result.workflow_state).toBe('Planned');
+      expect(result.retried_from_event_id).toBe('event-1');
+      expect(client.rpc).toHaveBeenCalledTimes(2);
+      expect(client.rpc).toHaveBeenNthCalledWith(1, 'consume_acceptance_event', { _event_id: 'event-1' });
+      expect(client.rpc).toHaveBeenNthCalledWith(2, 'consume_acceptance_event', { _event_id: 'event-2' });
+    });
+
+    it('anomaly — the task\'s current pending_acceptance_event_id is null: propagates the ORIGINAL error, no wasted retry', async () => {
+      const client = makeClient({
+        fromResponses: {
+          pending_acceptance_events: [{ data: { task_id: 'task-1' } }],
+          tasks: [{ data: { pending_acceptance_event_id: null } }],
+        },
+        rpcResponses: { consume_acceptance_event: [{ data: null, error: RACE_ERROR }] },
+      });
+      await expect(consumeAcceptanceEvent(client, 'event-1')).rejects.toThrow(new RegExp(RACED_EVENT_ERROR_SUBSTRING));
+      expect(client.rpc).toHaveBeenCalledTimes(1);
+    });
+
+    it('anomaly — the task\'s current pending_acceptance_event_id still equals the stale id: propagates the ORIGINAL error, no wasted retry', async () => {
+      const client = makeClient({
+        fromResponses: {
+          pending_acceptance_events: [{ data: { task_id: 'task-1' } }],
+          tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+        },
+        rpcResponses: { consume_acceptance_event: [{ data: null, error: RACE_ERROR }] },
+      });
+      await expect(consumeAcceptanceEvent(client, 'event-1')).rejects.toThrow(new RegExp(RACED_EVENT_ERROR_SUBSTRING));
+      expect(client.rpc).toHaveBeenCalledTimes(1);
+    });
+
+    it('if the retry itself errors, that error propagates unchanged — never a retry-of-a-retry', async () => {
+      const client = makeClient({
+        fromResponses: {
+          pending_acceptance_events: [{ data: { task_id: 'task-1' } }],
+          tasks: [{ data: { pending_acceptance_event_id: 'event-2' } }],
+        },
+        rpcResponses: {
+          consume_acceptance_event: [
+            { data: null, error: RACE_ERROR },
+            { data: null, error: { message: 'retry also failed' } },
+          ],
+        },
+      });
+      await expect(consumeAcceptanceEvent(client, 'event-1')).rejects.toThrow(/retry also failed/);
+      expect(client.rpc).toHaveBeenCalledTimes(2);
+    });
+  });
 });
 
 describe('consumePendingAcceptanceEvent — the leg-start-consume orchestrator', () => {
@@ -581,6 +657,45 @@ describe('consumePendingAcceptanceEvent — the leg-start-consume orchestrator',
     expect(result.brief_id).toBe('clar-brief-1');
     expect(result.by_write_kind?.acceptance_criterion).toBeUndefined();
     expect(result.by_write_kind?.acceptance_criterion ?? 0).toBe(0);
+  });
+
+  // B-922 — the end-to-end race: this call reads event-1, but by the time it tries to consume it, some
+  // other actor has already re-pointed the task's pending_acceptance_event_id at event-2. The retry
+  // inside consumeAcceptanceEvent lands against event-2, and this orchestrator's RETURNED
+  // workflow_state/reason/brief_id must describe event-2 (the event ACTUALLY consumed) — not the stale
+  // event-1 this call started with.
+  it('B-922: reproduces the race — the final result describes the event actually consumed, not the stale one', async () => {
+    const event = {
+      id: 'event-1', task_id: 'task-1', brief_id: 'brief-1', reason: 'plan-draft',
+      payload: { items: [checklistItem('step-1')] }, pending_activity: 'planning', status: 'pending',
+    };
+    const client = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [
+          { data: [], error: null },                          // substrate probe
+          { data: event },                                    // getPendingAcceptanceEvent's event read
+          { data: { task_id: 'task-1' } },                    // consumeAcceptanceEvent's stale-event-row re-read
+          { data: { reason: 'design-decision-draft', brief_id: 'brief-2' } }, // re-derive from the ACTUALLY consumed event
+        ],
+        tasks: [
+          { data: { pending_acceptance_event_id: 'event-1' } },  // getPendingAcceptanceEvent's task read
+          { data: { pending_acceptance_event_id: 'event-2' } },  // consumeAcceptanceEvent's current-pointer re-read
+        ],
+      },
+      rpcResponses: {
+        consume_checklist_item_write: [{ data: { applied: true, result_id: 'item-1' } }],
+        consume_acceptance_event: [
+          { data: null, error: { message: 'consume_acceptance_event: task task-1 pending_acceptance_event_id no longer matches event event-1 (raced by a newer event) — expected 0 rows updated to mean already-superseded, not silently consumed' } },
+          { data: { event_id: 'event-2', task_id: 'task-1', status: 'consumed', workflow_state: 'Planned', idempotent: false } },
+        ],
+      },
+    });
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
+    expect(result.status).toBe('consumed');
+    expect(result.event_id).toBe('event-2');
+    expect(result.workflow_state).toBe('Planned');
+    expect(result.reason).toBe('design-decision-draft');
+    expect(result.brief_id).toBe('brief-2');
   });
 
   // TEST #11 — a payload-write failure must leave the event visibly pending: consume_acceptance_event

@@ -47098,6 +47098,10 @@ async function composeBrief(client, projectId, userId, args) {
       throw new Error(`pending_activity '${mergedPendingActivity}' has no valid transition from state '${fromState ?? "NULL"}'`);
     }
     accept = { from: fromState, to: tr.to_state };
+  } else if (args.reason === "plan-draft") {
+    throw new Error(
+      "A 'plan-draft' brief must carry a real pending_activity (e.g. 'planning') \u2014 its accept always advances Designed \u2192 Planned, so it cannot advance no state."
+    );
   }
   const renderCtx = { reason: args.reason, accept };
   const docWithContradiction = await withContradictionSignal(
@@ -50281,10 +50285,28 @@ async function applyAcceptanceEventPayload(client, event) {
   }
   return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind };
 }
+var RACED_EVENT_ERROR_SUBSTRING = "no longer matches event";
 async function consumeAcceptanceEvent(client, eventId) {
   const { data, error: error2 } = await client.rpc("consume_acceptance_event", { _event_id: eventId });
-  if (error2) throw new Error(error2.message);
-  return data;
+  if (!error2) return data;
+  if (!error2.message.includes(RACED_EVENT_ERROR_SUBSTRING)) {
+    throw new Error(error2.message);
+  }
+  const { data: staleEventRow, error: staleEventErr } = await client.from("pending_acceptance_events").select("task_id").eq("id", eventId).maybeSingle();
+  if (staleEventErr || !staleEventRow) {
+    throw new Error(error2.message);
+  }
+  const { data: taskRow, error: taskErr } = await client.from("tasks").select("pending_acceptance_event_id").eq("id", staleEventRow.task_id).maybeSingle();
+  if (taskErr || !taskRow) {
+    throw new Error(error2.message);
+  }
+  const currentEventId = taskRow.pending_acceptance_event_id;
+  if (!currentEventId || currentEventId === eventId) {
+    throw new Error(error2.message);
+  }
+  const { data: retryData, error: retryError } = await client.rpc("consume_acceptance_event", { _event_id: currentEventId });
+  if (retryError) throw new Error(retryError.message);
+  return { ...retryData, retried_from_event_id: eventId };
 }
 async function consumePendingAcceptanceEvent(client, projectId, taskId) {
   const probe = await probeAcceptanceEventSubstrate(client);
@@ -50300,15 +50322,25 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId) {
     return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
   }
   const consumeResult = await consumeAcceptanceEvent(client, event.id);
+  let effectiveReason = event.reason;
+  let effectiveBriefId = event.brief_id;
+  if (consumeResult.event_id && consumeResult.event_id !== event.id) {
+    const { data: actualEventRow } = await client.from("pending_acceptance_events").select("reason, brief_id").eq("id", consumeResult.event_id).maybeSingle();
+    if (actualEventRow) {
+      const actual = actualEventRow;
+      effectiveReason = actual.reason;
+      effectiveBriefId = actual.brief_id;
+    }
+  }
   return {
     status: "consumed",
-    event_id: event.id,
+    event_id: consumeResult.event_id,
     applied: applyResult.applied,
     skipped_already_done: applyResult.skipped_already_done,
     by_write_kind: applyResult.by_write_kind,
     workflow_state: consumeResult.workflow_state,
-    reason: event.reason,
-    brief_id: event.brief_id
+    reason: effectiveReason,
+    brief_id: effectiveBriefId
   };
 }
 var consumePendingAcceptanceEventTool = {

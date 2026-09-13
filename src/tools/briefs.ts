@@ -2598,6 +2598,19 @@ export async function composeBrief(
       throw new Error(`pending_activity '${mergedPendingActivity}' has no valid transition from state '${fromState ?? 'NULL'}'`);
     }
     accept = { from: fromState, to: (tr as { to_state: string }).to_state };
+  } else if (args.reason === 'plan-draft') {
+    // B-922: a plan-draft brief's accept must ALWAYS advance the ticket Designed → Planned — there is
+    // no such thing as a plan brief that advances no state. The general guard above is entirely gated
+    // on `mergedPendingActivity` being truthy, so a compose_brief call with `pending_activity: null`
+    // (or a revision that omits it while no prior activity exists, merging to null — see
+    // `mergedPendingActivity` above) skipped that guard wholesale and composed with zero validation.
+    // Confirmed root cause of B-1006: such a brief, once accepted, reports success while stranding the
+    // ticket at `Designed`. This refusal is plan-draft-only and additive — every other reason keeps
+    // relying solely on the `if (mergedPendingActivity)` block above, unchanged.
+    throw new Error(
+      "A 'plan-draft' brief must carry a real pending_activity (e.g. 'planning') — its accept always " +
+      'advances Designed → Planned, so it cannot advance no state.',
+    );
   }
 
   // Render the canonical doc to the blob, then lint the doc (what's checked is what's rendered).

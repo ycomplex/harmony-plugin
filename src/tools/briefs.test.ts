@@ -1600,6 +1600,58 @@ describe('composeBrief — B-715 stale gate (substrate guard)', () => {
   });
 });
 
+// B-922 — a plan-draft brief's accept always advances Designed → Planned; there is no such thing as a
+// plan brief that advances no state. The general `if (mergedPendingActivity)` guard is entirely skipped
+// when the MERGED value is falsy, so a plan-draft compose_brief call used to sail through with zero
+// validation on that path — confirmed root cause of B-1006 (accepted brief reports success while
+// stranding the ticket at Designed). This refusal is plan-draft-only and additive.
+describe('composeBrief — B-922: a plan-draft brief refuses a null MERGED pending_activity', () => {
+  const briefRow = { id: 'brief-1', task_id: 'task-1', reason: 'plan-draft', content: 'rendered', status: 'active', iteration: 1 };
+
+  it('refuses an explicit pending_activity: null on a first compose (no prior row)', async () => {
+    // responses: [no active brief]  — nothing past the guard should ever be read/written.
+    const client = makeClient([{ data: null }]);
+    await expect(
+      composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'plan-draft', doc: okDoc as any, pending_activity: null as any,
+      }),
+    ).rejects.toThrow(/plan-draft.*pending_activity|pending_activity.*plan-draft/is);
+    expect(client.insert).not.toHaveBeenCalled();
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  // The MERGED-null case: a revision that OMITS pending_activity while the prior round also carried none
+  // — the absent-vs-null merge rule (B-901) carries the prior null forward, so the merged value is still
+  // null and the refusal must still fire.
+  it('refuses a revision that omits pending_activity when no prior activity exists (merged-null)', async () => {
+    // responses: [active brief found, WITH its doc, pending_activity: null] — nothing past the guard.
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1, doc: okDoc, pending_activity: null } }]);
+    await expect(
+      composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'plan-draft', doc: { decide: okDoc.decide } as any,
+      }),
+    ).rejects.toThrow(/plan-draft.*pending_activity|pending_activity.*plan-draft/is);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('a normal plan-draft compose with a real pending_activity still succeeds unchanged (no regression)', async () => {
+    // responses: [no active brief] -> [task state] -> [transition exists] -> [insert row] -> [task update]
+    const client = makeClient([
+      { data: null },
+      { data: { workflow_state: 'Designed', stale: false } },
+      { data: { to_state: 'Planned' } },
+      { data: briefRow },
+      { data: null },
+    ]);
+    await expect(
+      composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'plan-draft', doc: okDoc as any, pending_activity: 'planning',
+      }),
+    ).resolves.not.toThrow();
+    expect(client.insert).toHaveBeenCalled();
+  });
+});
+
 // B-645 iterate-prune: the in-place iterate is the elicitation-claim disposal moment. When
 // `underwriting_claim_ids` (the KEPT set) is passed, coupled dangling claims — Asserted rows whose
 // underwriting_brief_id is the active brief — are archived unless kept. The mock can't filter rows,
@@ -3341,10 +3393,19 @@ describe('B-876 gate frame', () => {
     });
 
     it('leaves a NON-release frame alone — the field only exists on the release variant', async () => {
-      // responses: [no active brief] -> [insert] -> [task update]
-      const client = makeClient([{ data: null }, { data: briefRow }, { data: null }]);
+      // responses: [no active brief] -> [task state] -> [transition exists] -> [insert] -> [task update]
+      // B-922: a plan-draft compose now refuses a null merged pending_activity (see the dedicated
+      // describe block below), so this incidental non-release-frame case must carry a real one —
+      // 'planning' — which means the transition-guard reads are now in the response sequence too.
+      const client = makeClient([
+        { data: null },
+        { data: { workflow_state: 'Designed' } },
+        { data: { to_state: 'Planned' } },
+        { data: briefRow },
+        { data: null },
+      ]);
       await composeBrief(client, PROJECT_ID, USER_ID, {
-        task_id: 'task-1', reason: 'plan-draft', pending_activity: null as any,
+        task_id: 'task-1', reason: 'plan-draft', pending_activity: 'planning',
         doc: { ...okDoc, frame: planFrame() } as any,
         changed_paths: ['web/supabase/migrations/x.sql'],
       });
@@ -3622,9 +3683,17 @@ describe('B-876 gate frame', () => {
     });
 
     it('leaves a NON-release frame alone — the field only exists on the release variant', async () => {
-      const client = makeClient([{ data: null }, { data: cBriefRow }, { data: null }]);
+      // B-922: a plan-draft compose now refuses a null merged pending_activity — give it a real one
+      // ('planning'), which adds the transition-guard's task-state + transition-lookup reads.
+      const client = makeClient([
+        { data: null },
+        { data: { workflow_state: 'Designed' } },
+        { data: { to_state: 'Planned' } },
+        { data: cBriefRow },
+        { data: null },
+      ]);
       await composeBrief(client, PROJECT_ID, USER_ID, {
-        task_id: 'task-1', reason: 'plan-draft', pending_activity: null as any,
+        task_id: 'task-1', reason: 'plan-draft', pending_activity: 'planning',
         doc: { ...okDoc, frame: planFrame() } as any,
         diff_content: 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-`some long enough value`\n+`some long enough value`',
       });

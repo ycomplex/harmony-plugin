@@ -450,18 +450,81 @@ export interface ConsumeAcceptanceEventResult {
   status: string;
   workflow_state: string | null;
   idempotent: boolean;
+  /** B-922 — set ONLY when this call retried against a DIFFERENT (newer) event after the RPC's row-count
+   *  guard raised "no longer matches event" on the id the caller originally passed in. Carries that
+   *  ORIGINAL (stale, superseded) event id, so a caller that built other state off it (e.g.
+   *  `consumePendingAcceptanceEvent`'s `event`) can tell a retry happened and re-derive anything it cached
+   *  from the stale event. Additive — absent on every ordinary (non-raced) consume, so existing callers
+   *  that don't check it see no behavior change. `event_id` above is always the id ACTUALLY consumed. */
+  retried_from_event_id?: string;
 }
+
+/** B-922 — the stable substring the harmony-web migration's row-count guard raises when a
+ *  `pending_activity`-carrying event's guarded `UPDATE tasks ... WHERE pending_acceptance_event_id =
+ *  _event_id` affects 0 rows: something else already re-pointed the task's `pending_acceptance_event_id`
+ *  at a newer event (a race), so the RPC refuses rather than silently no-op-consuming a superseded event.
+ *  Match ONLY this substring — the full message interpolates task/event ids via `%` and can't be matched
+ *  exactly. Exported so a test (or another caller) can assert against the SAME literal, never a re-typed
+ *  copy that could silently drift from the RPC's actual wording. */
+export const RACED_EVENT_ERROR_SUBSTRING = 'no longer matches event';
 
 /** The FINAL commit — call ONLY after `applyAcceptanceEventPayload` has returned without throwing (every
  *  promised write has landed, or was already landed on a prior attempt). Idempotent: a second call on an
- *  already-consumed event is a safe no-op (the DB RPC itself guards this). */
+ *  already-consumed event is a safe no-op (the DB RPC itself guards this).
+ *
+ *  B-922 — retry-once-on-race: if the RPC raises the row-count guard's `RACED_EVENT_ERROR_SUBSTRING`
+ *  (this event was superseded by a newer one before we could consume it), re-read the task's CURRENT
+ *  `pending_acceptance_event_id` and, if it names a genuinely different, non-null event, retry the RPC
+ *  exactly once against THAT event id. The retry is naturally idempotent (re-consuming an already-consumed
+ *  event is a documented RPC no-op), so this never double-applies anything. Any other error shape, or any
+ *  anomaly in the retry precondition (can't find the stale event's task, the task has no current pending
+ *  event, or it's the same stale id we started with), propagates the ORIGINAL error unchanged — never
+ *  swallowed, never retried a second time. */
 export async function consumeAcceptanceEvent(
   client: SupabaseClient,
   eventId: string,
 ): Promise<ConsumeAcceptanceEventResult> {
   const { data, error } = await client.rpc('consume_acceptance_event', { _event_id: eventId });
-  if (error) throw new Error(error.message);
-  return data as ConsumeAcceptanceEventResult;
+  if (!error) return data as ConsumeAcceptanceEventResult;
+
+  if (!error.message.includes(RACED_EVENT_ERROR_SUBSTRING)) {
+    throw new Error(error.message);
+  }
+
+  // The race shape: find the task this stale event belonged to (the row is untouched — the RAISE fires
+  // BEFORE any write in this failure path), then read what that task's pending_acceptance_event_id
+  // ACTUALLY points at right now.
+  const { data: staleEventRow, error: staleEventErr } = await client
+    .from('pending_acceptance_events')
+    .select('task_id')
+    .eq('id', eventId)
+    .maybeSingle();
+  if (staleEventErr || !staleEventRow) {
+    throw new Error(error.message);
+  }
+
+  const { data: taskRow, error: taskErr } = await client
+    .from('tasks')
+    .select('pending_acceptance_event_id')
+    .eq('id', (staleEventRow as { task_id: string }).task_id)
+    .maybeSingle();
+  if (taskErr || !taskRow) {
+    throw new Error(error.message);
+  }
+
+  const currentEventId = (taskRow as { pending_acceptance_event_id: string | null }).pending_acceptance_event_id;
+  if (!currentEventId || currentEventId === eventId) {
+    // No genuine retry target — either nothing pending (null) or the task still points at the SAME
+    // stale id (not the expected race shape). A genuine anomaly, not the expected race — propagate the
+    // original RAISE unchanged.
+    throw new Error(error.message);
+  }
+
+  // Retry ONCE against the current event. If the retry itself errors, let it propagate unchanged — never
+  // retry-of-a-retry.
+  const { data: retryData, error: retryError } = await client.rpc('consume_acceptance_event', { _event_id: currentEventId });
+  if (retryError) throw new Error(retryError.message);
+  return { ...(retryData as ConsumeAcceptanceEventResult), retried_from_event_id: eventId };
 }
 
 export interface ConsumePendingAcceptanceResult {
@@ -537,15 +600,38 @@ export async function consumePendingAcceptanceEvent(
 
   const consumeResult = await consumeAcceptanceEvent(client, event.id);
 
+  // B-922: `consumeAcceptanceEvent` may have retried against a DIFFERENT (newer) event than the one we
+  // read into `event` above, if a race superseded it between our read and our consume attempt
+  // (`consumeResult.event_id` is always the id ACTUALLY consumed — see its doc comment). When that
+  // happened, `reason`/`brief_id` must describe THAT event, not the stale one we started with, or this
+  // result would truthfully report the workflow_state advance while misreporting which event caused it.
+  // The stale event's row is untouched (the RAISE fires before any write), so re-reading the actually-
+  // consumed event's row is safe; on any failure to do so, fall back to the stale event's own
+  // reason/brief_id rather than throwing post-hoc on an already-successful consume.
+  let effectiveReason = event.reason;
+  let effectiveBriefId = event.brief_id;
+  if (consumeResult.event_id && consumeResult.event_id !== event.id) {
+    const { data: actualEventRow } = await client
+      .from('pending_acceptance_events')
+      .select('reason, brief_id')
+      .eq('id', consumeResult.event_id)
+      .maybeSingle();
+    if (actualEventRow) {
+      const actual = actualEventRow as { reason: string; brief_id: string };
+      effectiveReason = actual.reason;
+      effectiveBriefId = actual.brief_id;
+    }
+  }
+
   return {
     status: 'consumed',
-    event_id: event.id,
+    event_id: consumeResult.event_id,
     applied: applyResult.applied,
     skipped_already_done: applyResult.skipped_already_done,
     by_write_kind: applyResult.by_write_kind,
     workflow_state: consumeResult.workflow_state,
-    reason: event.reason,
-    brief_id: event.brief_id,
+    reason: effectiveReason,
+    brief_id: effectiveBriefId,
   };
 }
 
