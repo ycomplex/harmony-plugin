@@ -116,11 +116,19 @@ function tokenIsAuthSense(text: string, start: number, end: number): boolean {
   return AUTH_TOKEN_QUALIFIER.test(window);
 }
 
+// Shared word-boundary regexes for the `auth` keyword family (B-932). Extracted so the
+// prose detector (KEYWORD_TABLE.auth below) and the path-glob basename check
+// (authBasenameHit, near PATH_GLOB_TABLE) apply IDENTICAL word-boundary discipline —
+// a filename/word merely CONTAINING "auth" (e.g. "authoring", "coauthor") must not trip
+// either detector.
+const AUTH_WORD_REGEX = /\bauth(?:entication|orization|z|n)?\b/i;
+const OAUTH_WORD_REGEX = /\boauth\b/i;
+
 const KEYWORD_TABLE: Record<RiskClass, Keyword[]> = {
   auth: [
     // auth / login / logout / session / token / password / oauth / RLS / permission / role
-    kw(/\bauth(?:entication|orization|z|n)?\b/i),
-    kw(/\boauth\b/i),
+    kw(AUTH_WORD_REGEX),
+    kw(OAUTH_WORD_REGEX),
     kw(/\blog[\s-]?in\b/i),
     kw(/\blog[\s-]?out\b/i),
     kw(/\bsign[\s-]?in\b/i),
@@ -290,8 +298,8 @@ function textHitsClass(text: string, cls: RiskClass): boolean {
 // case-insensitive regexes. The shared-core list is a CURATED set of high-blast
 // modules; extend it as the shared surface grows.
 // ---------------------------------------------------------------------------
-const PATH_GLOB_TABLE: Record<RiskClass, string[]> = {
-  auth: ['**/auth/**', '**/auth.ts', '**/auth.tsx', '**/*auth*.ts', '**/middleware/auth*', '**/rls/**'],
+export const PATH_GLOB_TABLE: Record<RiskClass, string[]> = {
+  auth: ['**/auth/**', '**/auth.ts', '**/auth.tsx', '**/middleware/auth*', '**/rls/**'],
   'data-migration': ['**/migrations/**', '**/migration/**', '**/*.sql', '**/schema.sql', '**/supabase/migrations/**'],
   // No reliably-destructive path signature (destructiveness lives in content, not the path);
   // kept empty so this class trips on text/labels, never on an innocent path. The conservative
@@ -371,10 +379,26 @@ export function labelToRiskClass(label: string): RiskClass | null {
   }
 }
 
-/** A changed path matches `cls`'s path-globs. */
+// B-932 — a `.ts`-scoped basename check for the `auth` class ONLY, consulted AFTER the glob
+// check. The removed `**/*auth*.ts` glob matched ANY `.ts` filename CONTAINING "auth"
+// (`brief-authoring.contract.test.ts`, `coauthor.ts`), tripping the floor on a bare substring.
+// This check instead tests the path's BASENAME against the same word-boundary regexes the prose
+// detector uses (AUTH_WORD_REGEX / OAUTH_WORD_REGEX), so "authoring"/"coauthor" no longer match
+// while genuine auth basenames (`auth.ts`, `oauth-client.ts`) still do. Scoped to `.ts` only
+// (case-insensitive) — the removed glob never covered `.tsx`, so this doesn't extend coverage.
+function authBasenameHit(path: string): boolean {
+  if (!/\.ts$/i.test(path)) return false;
+  const basename = path.split('/').pop() ?? path;
+  return AUTH_WORD_REGEX.test(basename) || OAUTH_WORD_REGEX.test(basename);
+}
+
+/** A changed path matches `cls`'s path-globs (or, for `auth` only, the word-boundary basename
+ *  check above). */
 function pathHitsClass(paths: string[], cls: RiskClass): boolean {
   const globs = PATH_REGEX_TABLE[cls];
-  return globs.length > 0 && paths.some((p) => globs.some((re) => re.test(p)));
+  if (globs.length > 0 && paths.some((p) => globs.some((re) => re.test(p)))) return true;
+  if (cls === 'auth' && paths.some(authBasenameHit)) return true;
+  return false;
 }
 
 /**

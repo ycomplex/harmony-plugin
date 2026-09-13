@@ -44348,11 +44348,13 @@ function tokenIsAuthSense(text, start, end) {
   const window2 = before + " " + after;
   return AUTH_TOKEN_QUALIFIER.test(window2);
 }
+var AUTH_WORD_REGEX = /\bauth(?:entication|orization|z|n)?\b/i;
+var OAUTH_WORD_REGEX = /\boauth\b/i;
 var KEYWORD_TABLE = {
   auth: [
     // auth / login / logout / session / token / password / oauth / RLS / permission / role
-    kw(/\bauth(?:entication|orization|z|n)?\b/i),
-    kw(/\boauth\b/i),
+    kw(AUTH_WORD_REGEX),
+    kw(OAUTH_WORD_REGEX),
     kw(/\blog[\s-]?in\b/i),
     kw(/\blog[\s-]?out\b/i),
     kw(/\bsign[\s-]?in\b/i),
@@ -44457,7 +44459,7 @@ function textHitsClass(text, cls) {
   return false;
 }
 var PATH_GLOB_TABLE = {
-  auth: ["**/auth/**", "**/auth.ts", "**/auth.tsx", "**/*auth*.ts", "**/middleware/auth*", "**/rls/**"],
+  auth: ["**/auth/**", "**/auth.ts", "**/auth.tsx", "**/middleware/auth*", "**/rls/**"],
   "data-migration": ["**/migrations/**", "**/migration/**", "**/*.sql", "**/schema.sql", "**/supabase/migrations/**"],
   // No reliably-destructive path signature (destructiveness lives in content, not the path);
   // kept empty so this class trips on text/labels, never on an innocent path. The conservative
@@ -44521,9 +44523,16 @@ function labelToRiskClass(label) {
       return null;
   }
 }
+function authBasenameHit(path2) {
+  if (!/\.ts$/i.test(path2)) return false;
+  const basename2 = path2.split("/").pop() ?? path2;
+  return AUTH_WORD_REGEX.test(basename2) || OAUTH_WORD_REGEX.test(basename2);
+}
 function pathHitsClass(paths, cls) {
   const globs = PATH_REGEX_TABLE[cls];
-  return globs.length > 0 && paths.some((p) => globs.some((re) => re.test(p)));
+  if (globs.length > 0 && paths.some((p) => globs.some((re) => re.test(p)))) return true;
+  if (cls === "auth" && paths.some(authBasenameHit)) return true;
+  return false;
 }
 function detectRiskClasses(input) {
   const hits = /* @__PURE__ */ new Set();

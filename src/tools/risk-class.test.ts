@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   detectRiskClasses,
   labelToRiskClass,
+  PATH_GLOB_TABLE,
   RISK_CLASSES,
   type RiskClass,
 } from './risk-class.js';
@@ -61,6 +62,28 @@ describe('risk-class detector (conductor floor)', () => {
       expect(
         detectRiskClasses({ text: 'This is mostly a copy change but it lives near the auth screen.' }),
       ).toContain<RiskClass>('auth');
+    });
+  });
+
+  describe('B-932 — auth path-glob false positive (word-boundary basename check)', () => {
+    it('does NOT trip `auth` on a filename merely containing "auth" inside another word', () => {
+      expect(
+        detectRiskClasses({ text: '', changedPaths: ['src/skills/brief-authoring.contract.test.ts'] }),
+      ).not.toContain<RiskClass>('auth');
+      expect(detectRiskClasses({ text: '', changedPaths: ['src/tools/coauthor.ts'] })).not.toContain<RiskClass>(
+        'auth',
+      );
+    });
+
+    it('still trips on genuine auth paths', () => {
+      expect(detectRiskClasses({ changedPaths: ['src/auth.ts'] })).toContain<RiskClass>('auth');
+      expect(detectRiskClasses({ changedPaths: ['src/oauth-client.ts'] })).toContain<RiskClass>('auth');
+      expect(detectRiskClasses({ changedPaths: ['src/auth/middleware.ts'] })).toContain<RiskClass>('auth');
+      expect(detectRiskClasses({ changedPaths: ['middleware/auth-check.ts'] })).toContain<RiskClass>('auth');
+    });
+
+    it('positive control: PATH_GLOB_TABLE.auth has exactly 5 entries (the unanchored *auth*.ts glob stays removed)', () => {
+      expect(PATH_GLOB_TABLE.auth.length).toBe(5);
     });
   });
 
