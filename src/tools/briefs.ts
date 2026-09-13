@@ -9,6 +9,7 @@ import type { AcceptanceEventPayloadItem } from './acceptance-events.js';
 import { slugRef } from './payload-refs.js';
 import { listTicketKnowledge } from './workflow.js';
 import { queryKnowledge, getWorkspaceId } from './knowledge.js';
+import { getConductionId, getLeg } from '../config/run-config.js';
 import {
   parseDiff,
   deriveSearchTerms,
@@ -3126,6 +3127,13 @@ const isMissingAcceptRemark = (msg: string | undefined): boolean =>
 const isMissingRemarkParam = (msg: string | undefined): boolean =>
   !!msg && /p_remark/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
 
+/** B-1000: the same drift-detection shape as isMissingRemarkParam, for log_brief_decision_event's
+ *  own new trailing p_source/p_conduction_id/p_leg params — used only by reshapeBrief's tolerant
+ *  retry (resolveBrief's p_conduction_id/p_leg need no such guard; they shipped earlier, in B-994,
+ *  and are already live on prod). */
+const isMissingLegParams = (msg: string | undefined): boolean =>
+  !!msg && /p_(source|conduction_id|leg)\b/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
+
 export async function consumeAcceptRemark(
   client: SupabaseClient,
   _projectId: string,
@@ -3532,6 +3540,12 @@ export async function resolveBrief(
     _detail: args.detail ?? null,
     // B-734: the decision entry's attribution. Validated above — never a caller's raw string.
     p_provenance: provenance,
+    // B-1000: name the running conduction/leg, when this call is conductor-driven. Both params are
+    // already live on prod (B-994 shipped them as trailing DEFAULT NULL), so no tolerance guard is
+    // needed here — unlike reshapeBrief's log_brief_decision_event call below, which threads params
+    // this SAME ticket's own (not-yet-promoted) migration adds.
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: getLeg() ?? null,
   };
 
   // A blank remark omits the parameter entirely — that IS "blank is absent", so it needs no other branch.
@@ -3645,8 +3659,13 @@ export async function reshapeBrief(
 
   const brief = active as { id: string; reason: string };
 
-  // WRITE 1 — the provenance-bearing audit row. FIRST, always (see the ordering note above).
-  const { error: auditErr } = await client.rpc('log_brief_decision_event', {
+  // B-1000: name the running conduction/leg on THIS row too, self-describing it as 'rpc-typed' — the
+  // same shape resolve_brief's own accept row already carries — so it reads as conductor-driven under
+  // activity_event_causation_meaning instead of unconditionally 'changed outside the causation-tracked
+  // RPC surface' (AC 10a9cdd0). Tolerant of a database that predates THIS ticket's own migration (unlike
+  // resolve_brief's p_conduction_id/p_leg, which shipped earlier in B-994 and are already live on prod):
+  // a retry-once-with-the-old-shape fallback, mirroring resolveBrief's own remark-drift retry above.
+  const legArgs = {
     p_task_id: taskId,
     p_brief_id: brief.id,
     p_command: 'iterate',
@@ -3654,16 +3673,44 @@ export async function reshapeBrief(
     // Validated above — never a caller's raw string.
     p_provenance: provenance,
     p_detail: feedback,
-  });
+    p_source: 'rpc-typed',
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: getLeg() ?? null,
+  };
+
+  // WRITE 1 — the provenance-bearing audit row. FIRST, always (see the ordering note above).
+  const { error: auditErr } = await client.rpc('log_brief_decision_event', legArgs);
   if (auditErr) {
-    // Drift on write 1: the audit row could not be written, so write 2 is NOT attempted — a marker with
-    // no provenance is the one outcome this tool must never produce. Nothing was written.
-    if (isReshapeRpcSchemaDrift(auditErr.message)) {
+    // B-1000: CHECKED FIRST — more specific than isReshapeRpcSchemaDrift below. A PostgREST
+    // "could not find the function" error for an overload mismatch names the FULL attempted
+    // parameter list, so a DB that has log_brief_decision_event but predates its trailing
+    // p_source/p_conduction_id/p_leg params ALSO matches isReshapeRpcSchemaDrift's plain
+    // function-name test — checking that one first would misclassify this exact case as "the
+    // whole RPC is missing" and needlessly refuse a reshape the tolerant retry could complete.
+    // Degrade to the pre-B-1000 6-arg shape rather than failing the whole reshape. The row lands
+    // 'trigger'-sourced (its pre-existing default) instead of self-describing as conductor-driven;
+    // logged, never silently swallowed — the same "retry lands, degradation is reported" doctrine
+    // resolveBrief's own isMissingRemarkParam retry uses above.
+    if (isMissingLegParams(auditErr.message)) {
+      const { error: retryErr } = await client.rpc('log_brief_decision_event', {
+        p_task_id: taskId,
+        p_brief_id: brief.id,
+        p_command: 'iterate',
+        p_reason: brief.reason,
+        p_provenance: provenance,
+        p_detail: feedback,
+      });
+      if (retryErr) throw new Error(retryErr.message);
+      console.error(
+        `reshapeBrief: log_brief_decision_event predates p_source/p_conduction_id/p_leg — retried with the pre-B-1000 6-arg shape. The audit row for brief ${brief.id} landed 'trigger'-sourced with no conduction/leg attribution. Underlying error: ${auditErr.message}`,
+      );
+    } else if (isReshapeRpcSchemaDrift(auditErr.message)) {
       throw new Error(
         `reshape is unavailable on this database: it predates the decision-trail RPC (log_brief_decision_event). Nothing was written — the reshape was NOT applied. Reshape from the browser, or promote the schema first. Underlying error: ${auditErr.message}`,
       );
+    } else {
+      throw new Error(auditErr.message);
     }
-    throw new Error(auditErr.message);
   }
 
   // WRITE 2 — B-498's atomic marker + ball-handoff. SECOND. The brief stays `active` and keeps its

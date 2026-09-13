@@ -85,6 +85,9 @@ mcp__harmony__record_decision({
   review_by: "<today + 90 days, ISO>",
   source_activity: "research",
   source_task_id: "<task uuid>",
+  // B-1000: this ingests the human's own just-submitted relay (an elicitation-round answer, or an
+  // inline paste) — the write is agent-executed, but the content and the "go" are the human's.
+  provenance: "human-in-session",
 })
 ```
 
@@ -95,6 +98,8 @@ mcp__harmony__assert_fact({
   subject_entity: "<entity>", predicate: "<relation>", object: "<value>",
   source_type: "research", domain: ["data"], confidence: 0.6,
   review_by: "<today + 90 days, ISO>",
+  // B-1000: same reasoning as the record_decision call above.
+  provenance: "human-in-session",
 })
 ```
 

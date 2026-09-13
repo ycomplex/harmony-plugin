@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   queryKnowledge,
   searchTicketIntents,
@@ -27,6 +27,14 @@ import {
 const PROJECT_ID = 'proj-abc-123';
 const WORKSPACE_ID = 'ws-xyz-456';
 const USER_ID = 'user-abc-123';
+
+// B-1000: isolate every test in this file from the AMBIENT environment's HARMONY_CONDUCTION_ID /
+// HARMONY_LEG (this suite may itself be running inside a real conductor leg with both genuinely
+// set) — same rationale as briefs.test.ts's own isolation hook.
+beforeEach(() => {
+  delete process.env.HARMONY_CONDUCTION_ID;
+  delete process.env.HARMONY_LEG;
+});
 
 // ---------------------------------------------------------------------------
 // Sample data
@@ -958,6 +966,17 @@ describe('updateKnowledgeEntry', () => {
     }));
   });
 
+  it('B-1000: threads p_leg from HARMONY_LEG when set', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: updatedEntry });
+    process.env.HARMONY_LEG = '4';
+    try {
+      await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', new_title: 'x', provenance: 'human-in-session' });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({ p_leg: 4 }));
+    } finally {
+      delete process.env.HARMONY_LEG;
+    }
+  });
+
   it('defaults p_provenance to null when omitted', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: updatedEntry });
     await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', new_title: 'x' });
@@ -1066,6 +1085,19 @@ describe('supersedeKnowledgeEntry', () => {
     expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_knowledge_entry', expect.objectContaining({
       p_provenance: 'agent-synthesized:unattended', p_leg: null,
     }));
+  });
+
+  it('B-1000: threads p_leg from HARMONY_LEG when set', async () => {
+    const { client } = buildSupersedeClient();
+    process.env.HARMONY_LEG = '4';
+    try {
+      await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+        entry_id: 'ke-1', new_title: 'v2', new_content: 'c', provenance: 'agent-synthesized:unattended',
+      });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_knowledge_entry', expect.objectContaining({ p_leg: 4 }));
+    } finally {
+      delete process.env.HARMONY_LEG;
+    }
   });
 });
 
@@ -1392,6 +1424,21 @@ describe('createEntity', () => {
       p_provenance: 'human-in-session', p_leg: null,
     }));
   });
+
+  it('B-1000: threads p_leg from HARMONY_LEG when set', async () => {
+    const created = { ...sampleEntity };
+    const { client } = buildGraphClient(
+      { knowledge_entities: [{ data: null }, { data: null }] },
+      { knowledge_create_entity: { data: created } },
+    );
+    process.env.HARMONY_LEG = '4';
+    try {
+      await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Busy PM', provenance: 'human-in-session' });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_create_entity', expect.objectContaining({ p_leg: 4 }));
+    } finally {
+      delete process.env.HARMONY_LEG;
+    }
+  });
 });
 
 describe('updateEntity', () => {
@@ -1452,6 +1499,18 @@ describe('updateEntity', () => {
     expect(client.rpc).toHaveBeenCalledWith('knowledge_update_entity', expect.objectContaining({
       p_provenance: 'human-in-session', p_leg: null,
     }));
+  });
+
+  it('B-1000: threads p_leg from HARMONY_LEG when set', async () => {
+    const updated = { ...sampleEntity };
+    const { client } = buildGraphClient({}, { knowledge_update_entity: { data: updated } });
+    process.env.HARMONY_LEG = '4';
+    try {
+      await updateEntity(client, PROJECT_ID, { entity_id: 'ent-1', description: 'x', provenance: 'human-in-session' });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_update_entity', expect.objectContaining({ p_leg: 4 }));
+    } finally {
+      delete process.env.HARMONY_LEG;
+    }
   });
 });
 
@@ -1650,6 +1709,17 @@ describe('reconcileEntity', () => {
       p_provenance: 'human-in-session', p_leg: null,
     }));
   });
+
+  it('B-1000: threads p_leg from HARMONY_LEG when set', async () => {
+    const client = rpcClient({ data: { mode: 'upgrade-in-place', entity: typed } });
+    process.env.HARMONY_LEG = '4';
+    try {
+      await reconcileEntity(client, PROJECT_ID, { name: 'Checkout', to_kind: 'component', provenance: 'human-in-session' });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_reconcile_entity', expect.objectContaining({ p_leg: 4 }));
+    } finally {
+      delete process.env.HARMONY_LEG;
+    }
+  });
 });
 
 describe('entity-authoring tool schemas (B-397)', () => {
@@ -1845,6 +1915,19 @@ describe('recordDecision', () => {
       p_provenance: 'agent-synthesized:unattended', p_leg: null,
     }));
   });
+
+  it('B-1000: threads p_leg from HARMONY_LEG when set', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    process.env.HARMONY_LEG = '4';
+    try {
+      await recordDecision(client, PROJECT_ID, USER_ID, {
+        type: 'business', title: 'x', provenance: 'agent-synthesized:unattended',
+      });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_leg: 4 }));
+    } finally {
+      delete process.env.HARMONY_LEG;
+    }
+  });
 });
 
 describe('recordDecisionTool schema — B-645 claim params', () => {
@@ -1971,6 +2054,21 @@ describe('supersedeDecision', () => {
       p_provenance: 'human-in-session', p_leg: null,
     }));
   });
+
+  it('B-1000: threads p_leg from HARMONY_LEG when set', async () => {
+    const replacement = { id: 'dec-2', title: 'v2', status: 'Accepted', type: 'business' };
+    const supersededOld = { id: 'dec-1', status: 'Superseded', superseded_by: 'dec-2' };
+    const { client } = buildWorkspaceAndQueryClient({ data: { superseded: supersededOld, replacement } });
+    process.env.HARMONY_LEG = '4';
+    try {
+      await supersedeDecision(client, PROJECT_ID, USER_ID, {
+        old_decision_id: 'dec-1', type: 'business', title: 'v2', provenance: 'human-in-session',
+      });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_decision', expect.objectContaining({ p_leg: 4 }));
+    } finally {
+      delete process.env.HARMONY_LEG;
+    }
+  });
 });
 
 describe('supersedeDecisionTool schema (B-534 retire-mode)', () => {
@@ -2071,6 +2169,19 @@ describe('assertFact', () => {
       p_provenance: 'human-in-session', p_leg: null,
     }));
   });
+
+  it('B-1000: threads p_leg from HARMONY_LEG when set', async () => {
+    const client = buildAssertFactClient({ id: 'ent-1' }, { id: 'fact-4' });
+    process.env.HARMONY_LEG = '4';
+    try {
+      await assertFact(client, PROJECT_ID, USER_ID, {
+        subject_entity: 'board', predicate: 'uses', object: 'x', source_type: 'manual', provenance: 'human-in-session',
+      });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_assert_fact', expect.objectContaining({ p_leg: 4 }));
+    } finally {
+      delete process.env.HARMONY_LEG;
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2099,6 +2210,17 @@ describe('invalidateFact', () => {
     expect(client.rpc).toHaveBeenCalledWith('knowledge_invalidate_fact', expect.objectContaining({
       p_provenance: 'human-in-session', p_leg: null,
     }));
+  });
+
+  it('B-1000: threads p_leg from HARMONY_LEG when set', async () => {
+    const client: any = { rpc: vi.fn().mockResolvedValue({ data: { id: 'fact-1' }, error: null }) };
+    process.env.HARMONY_LEG = '4';
+    try {
+      await invalidateFact(client, PROJECT_ID, { fact_id: 'fact-1', provenance: 'human-in-session' });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_invalidate_fact', expect.objectContaining({ p_leg: 4 }));
+    } finally {
+      delete process.env.HARMONY_LEG;
+    }
   });
 
   it('surfaces the RPC error message', async () => {

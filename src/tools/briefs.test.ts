@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { existsSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -13,6 +13,15 @@ vi.mock('./resolve-task-id.js', () => ({
 
 import { resolveTaskId } from './resolve-task-id.js';
 const mockResolveTaskId = vi.mocked(resolveTaskId);
+
+// B-1000: isolate every test in this file from the AMBIENT environment's HARMONY_CONDUCTION_ID /
+// HARMONY_LEG — this suite may itself be running inside a real conductor leg (both vars genuinely
+// set), which would otherwise leak into resolveBrief/reshapeBrief's exact-match assertions below and
+// make this file's pass/fail depend on where it happens to run.
+beforeEach(() => {
+  delete process.env.HARMONY_CONDUCTION_ID;
+  delete process.env.HARMONY_LEG;
+});
 
 const decision = (over: Partial<BriefItem> = {}): BriefItem => ({
   kind: 'decision', text: 'Pick sidebar placement', recommendation: 'Sub-section under project views', ...over,
@@ -1870,14 +1879,14 @@ describe('resolveBrief', () => {
   it('looks up the (unique) active brief then calls the resolve_brief RPC for accept', async () => {
     const client = makeRpcClient({ id: 'brief-1' }, { brief_id: 'brief-1', workflow_state: 'Clarified', brief_status: 'accepted' });
     const result = await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', provenance: 'human-in-session' });
-    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-1', _command: 'accept', _detail: null, p_provenance: 'human-in-session' });
+    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-1', _command: 'accept', _detail: null, p_provenance: 'human-in-session', p_conduction_id: null, p_leg: null });
     expect(result).toEqual({ brief_id: 'brief-1', workflow_state: 'Clarified', brief_status: 'accepted' });
   });
 
   it('passes the detail through for defer', async () => {
     const client = makeRpcClient({ id: 'brief-1' }, { brief_status: 'deferred' });
     await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'defer', detail: 'later', provenance: 'human-in-session' });
-    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-1', _command: 'defer', _detail: 'later', p_provenance: 'human-in-session' });
+    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-1', _command: 'defer', _detail: 'later', p_provenance: 'human-in-session', p_conduction_id: null, p_leg: null });
   });
 
   it('rejects commands other than accept/defer', async () => {
@@ -1948,7 +1957,8 @@ describe('resolveBrief — accept-with-remark (B-883)', () => {
     // Forwarded as the RPC parameter that actually writes briefs.accept_remark.
     expect(client.rpcCalls[0]).toEqual({
       _brief_id: 'brief-1', _command: 'accept', _detail: null,
-      p_provenance: 'human-in-session', p_remark: 'bump to 0.14.135, read the version from main',
+      p_provenance: 'human-in-session', p_conduction_id: null, p_leg: null,
+      p_remark: 'bump to 0.14.135, read the version from main',
     });
     // ...and read back through the SAME projection the conductor picks up on.
     expect(await fetchPendingRemark(client, 'task-1')).toMatchObject({
@@ -1982,7 +1992,7 @@ describe('resolveBrief — accept-with-remark (B-883)', () => {
   it('a plain defer is unaffected — detail still passes through', async () => {
     const client = makeRoundTripClient();
     await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'defer', detail: 'later', provenance: 'human-in-session' });
-    expect(client.rpcCalls[0]).toEqual({ _brief_id: 'brief-1', _command: 'defer', _detail: 'later', p_provenance: 'human-in-session' });
+    expect(client.rpcCalls[0]).toEqual({ _brief_id: 'brief-1', _command: 'defer', _detail: 'later', p_provenance: 'human-in-session', p_conduction_id: null, p_leg: null });
   });
 
   it('a blank / whitespace-only remark behaves exactly as NO remark', async () => {
@@ -2133,6 +2143,47 @@ describe('resolveBrief — provenance (B-734)', () => {
   });
 });
 
+describe('resolveBrief — conduction/leg threading (B-1000)', () => {
+  function makeRpcClient(active: unknown, rpcResult: unknown) {
+    const chain: any = {};
+    for (const m of ['from', 'select', 'eq']) chain[m] = vi.fn(() => chain);
+    chain.maybeSingle = vi.fn(async () => ({ data: active, error: null }));
+    chain.rpc = vi.fn(async () => ({ data: rpcResult, error: null }));
+    return chain;
+  }
+
+  afterEach(() => {
+    delete process.env.HARMONY_CONDUCTION_ID;
+    delete process.env.HARMONY_LEG;
+  });
+
+  it('threads p_conduction_id/p_leg as null when neither env var is set', async () => {
+    const client = makeRpcClient({ id: 'brief-1' }, { brief_status: 'accepted' });
+    await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', provenance: 'human-in-session' });
+    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', expect.objectContaining({
+      p_conduction_id: null, p_leg: null,
+    }));
+  });
+
+  it('threads p_conduction_id/p_leg from HARMONY_CONDUCTION_ID/HARMONY_LEG when a conductor leg is running', async () => {
+    process.env.HARMONY_CONDUCTION_ID = 'cond-abc';
+    process.env.HARMONY_LEG = '5';
+    const client = makeRpcClient({ id: 'brief-1' }, { brief_status: 'accepted' });
+    await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', provenance: 'agent-synthesized:unattended' });
+    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', expect.objectContaining({
+      p_conduction_id: 'cond-abc', p_leg: 5,
+    }));
+  });
+
+  it('needs NO tolerance guard for these params — both are already live on prod per B-994', async () => {
+    // Unlike reshapeBrief's log_brief_decision_event call, resolve_brief's own p_conduction_id/p_leg
+    // shipped in B-994, so a schema-drift retry path would be dead code here. Confirmed by absence:
+    const source = readFileSync(fileURLToPath(new URL('./briefs.ts', import.meta.url)), 'utf8');
+    const resolveBriefBody = source.slice(source.indexOf('export async function resolveBrief('), source.indexOf('export async function reshapeBrief('));
+    expect(resolveBriefBody).not.toMatch(/isMissingLegParams/);
+  });
+});
+
 describe('validateResolutionProvenance (B-734) — the unit behind the tool', () => {
   it('returns the accepted value unchanged', () => {
     expect(validateResolutionProvenance('human-in-session')).toBe('human-in-session');
@@ -2192,7 +2243,7 @@ describe('resolveBrief — brief-less umbrella verify-ack (B-517)', () => {
     // active brief present -> umbrella branch is never entered.
     const client = makeUmbrellaClient({ id: 'brief-1' }, sentinel, { brief_status: 'accepted' });
     await resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', provenance: 'human-in-session' });
-    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-1', _command: 'accept', _detail: null, p_provenance: 'human-in-session' });
+    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-1', _command: 'accept', _detail: null, p_provenance: 'human-in-session', p_conduction_id: null, p_leg: null });
     expect(client.rpc).not.toHaveBeenCalledWith('ack_umbrella_verify', expect.anything());
   });
 
@@ -3492,10 +3543,67 @@ describe('reshapeBrief (B-896)', () => {
       p_reason: 'release-decision-pending',
       p_provenance: 'agent-synthesized:unattended',
       p_detail: 'the release brief omits the migration ordering',
+      // B-1000: self-describes as rpc-typed, naming the running conduction/leg (null here — neither
+      // env var is set in this test).
+      p_source: 'rpc-typed',
+      p_conduction_id: null,
+      p_leg: null,
     });
     expect(client.rpcCalls[1].params).toEqual({
       _brief_id: 'brief-7', _command: 'iterate', _detail: 'the release brief omits the migration ordering',
     });
+  });
+
+  // ——— B-1000: tolerant retry when the DB predates p_source/p_conduction_id/p_leg ——————————————————
+  it('B-1000: threads p_source=rpc-typed + the running conduction/leg into the audit row', async () => {
+    process.env.HARMONY_CONDUCTION_ID = 'cond-xyz';
+    process.env.HARMONY_LEG = '2';
+    try {
+      const client = makeReshapeClient({ active: { id: 'brief-7', reason: 'plan-draft' } });
+      await reshape(client);
+      expect(client.rpcCalls[0].params).toEqual(expect.objectContaining({
+        p_source: 'rpc-typed', p_conduction_id: 'cond-xyz', p_leg: 2,
+      }));
+    } finally {
+      delete process.env.HARMONY_CONDUCTION_ID;
+      delete process.env.HARMONY_LEG;
+    }
+  });
+
+  it('B-1000: SCHEMA DRIFT — a DB predating p_source/p_conduction_id/p_leg degrades to the pre-B-1000 6-arg shape, reported not swallowed', async () => {
+    const active = { id: 'brief-7', reason: 'plan-draft' };
+    const chain: any = { rpcCalls: [] as Array<{ name: string; params: any }> };
+    for (const m of ['from', 'eq', 'order', 'limit', 'is', 'not']) chain[m] = vi.fn(() => chain);
+    chain.select = vi.fn(() => chain);
+    chain.maybeSingle = vi.fn(async () => ({ data: active, error: null }));
+    chain.rpc = vi.fn(async (name: string, params: any) => {
+      chain.rpcCalls.push({ name, params });
+      if (name === LOG && 'p_source' in params) {
+        // What PostgREST returns when the deployed function signature lacks the new trailing params.
+        return { data: null, error: { message: 'Could not find the function public.log_brief_decision_event(p_task_id, p_brief_id, p_command, p_reason, p_provenance, p_detail, p_source, p_conduction_id, p_leg) in the schema cache' } };
+      }
+      if (name === LOG) return { data: null, error: null };
+      return { data: { brief_id: params._brief_id, task_id: 'task-1', command: params._command }, error: null };
+    });
+    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(reshape(chain)).resolves.toBeDefined();
+      // First attempt carried the new params; the retry dropped them so the audit row could land.
+      expect(chain.rpcCalls.filter((c: any) => c.name === LOG)).toHaveLength(2);
+      expect(chain.rpcCalls[0].params).toHaveProperty('p_source');
+      expect(chain.rpcCalls[1].params).not.toHaveProperty('p_source');
+      expect(chain.rpcCalls[1].params).not.toHaveProperty('p_conduction_id');
+      expect(chain.rpcCalls[1].params).not.toHaveProperty('p_leg');
+      // The degrade is VISIBLE, not silent — B-1000 mirrors the isMissingRemarkParam doctrine.
+      expect(consoleErr).toHaveBeenCalledWith(expect.stringContaining('predates p_source/p_conduction_id/p_leg'));
+    } finally {
+      consoleErr.mockRestore();
+    }
+  });
+
+  it("B-1000: the drift predicate is scoped to log_brief_decision_event's new params, not a substring collision with p_remark", () => {
+    const msg = 'Could not find the function public.log_brief_decision_event(p_task_id, p_brief_id, p_command, p_reason, p_provenance, p_detail, p_source, p_conduction_id, p_leg) in the schema cache';
+    expect(msg).not.toContain('p_remark');
   });
 
   it('returns an ack naming the brief, the gate it was reshaped at, and the recorded provenance', async () => {

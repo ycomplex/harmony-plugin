@@ -114,7 +114,8 @@ Then write the builder's answers to **two** places:
   where the builder and future agents read it.
 - A **`convention` knowledge entry per semantic** via
   `mcp__harmony__record_decision({ type: 'convention', title: "<project>: 'Deployed' means <X> here",
-  content: "...", domain: ['process'], source_activity: 'inception' })`.
+  content: "...", domain: ['process'], source_activity: 'inception',
+  provenance: 'human-in-session' })` — B-1000: the builder's own answer, recorded in this session.
 
 > **NEVER seed Harmony's OWN semantics.** Record the PROJECT's mapping ("Deployed = live on Cloudflare
 > Pages for *this* project"), never the generic state-machine definition. The generic lifecycle is baked
@@ -182,10 +183,13 @@ then** — the node-lifecycle rule
 nodes from the just-Accepted proposition claims:
 
 ```
+// B-1000: carries the SAME provenance the clarify accept declared when it promoted these persona/feature
+// claims (see harmony-clarify's own note) — 'human-in-session' for Day-1 inception's direct human
+// invocation, or 'agent-synthesized:<mode>' if that accept ever runs under a conductor delegation.
 // one thin node per persona named in the Accepted proposition
-mcp__harmony__create_entity({ kind: 'persona',  name: "<persona>",  description: "<ONE-line canonical identity>" })
+mcp__harmony__create_entity({ kind: 'persona',  name: "<persona>",  description: "<ONE-line canonical identity>", provenance: 'human-in-session' })
 // one thin node per feature/capability named in the Accepted proposition
-mcp__harmony__create_entity({ kind: 'feature',  name: "<feature>",  description: "<ONE-line canonical identity>" })
+mcp__harmony__create_entity({ kind: 'feature',  name: "<feature>",  description: "<ONE-line canonical identity>", provenance: 'human-in-session' })
 ```
 
 **Entity-node lifecycle rule (technical-design `826c5088` point 6 — do not violate):**
@@ -442,7 +446,9 @@ re-run fast-paths to a no-op (step 0.2):
 ```
 mcp__harmony__record_decision({ type: 'convention', title: "inception:scaffold-complete — <project>",
   content: "Genesis scaffold stamped: v1+deferred milestone fence, proposition-root, S2 spine, S3 umbrellas, S4 roadmap slot, edges, persona+feature nodes.",
-  status: 'Accepted', domain: ['process'], source_activity: 'inception' })
+  status: 'Accepted', domain: ['process'], source_activity: 'inception',
+  // B-1000: Day-1 inception runs directly under a human invocation.
+  provenance: 'human-in-session' })
 ```
 
 Its title uniqueness is the idempotency backstop: a resumed run that reaches here when the marker already

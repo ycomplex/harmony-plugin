@@ -35663,6 +35663,12 @@ function envValue(env2, key) {
 function getConductionId(env2 = process.env) {
   return envValue(env2, "HARMONY_CONDUCTION_ID");
 }
+function getLeg(env2 = process.env) {
+  const raw = envValue(env2, "HARMONY_LEG");
+  if (raw === void 0) return void 0;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : void 0;
+}
 function getRunConfig(env2 = process.env, deps = {}) {
   const readFile = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
   const path2 = envValue(env2, "HARMONY_RUN_CONFIG_PATH");
@@ -36712,7 +36718,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
     p_review_by: args.review_by ?? null,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null
+    p_leg: getLeg() ?? null
   });
   if (error) {
     if (error.code === "23505") {
@@ -36743,7 +36749,7 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
     p_tags: args.tags ?? null,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null
+    p_leg: getLeg() ?? null
   });
   if (error) throw new Error(error.message);
   const result = data;

@@ -43919,6 +43919,12 @@ function envValue(env, key) {
 function getConductionId(env = process.env) {
   return envValue(env, "HARMONY_CONDUCTION_ID");
 }
+function getLeg(env = process.env) {
+  const raw = envValue(env, "HARMONY_LEG");
+  if (raw === void 0) return void 0;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : void 0;
+}
 function getRunConfig(env = process.env, deps = {}) {
   const readFile = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
   const path2 = envValue(env, "HARMONY_RUN_CONFIG_PATH");
@@ -44918,7 +44924,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
     p_review_by: args.review_by ?? null,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null
+    p_leg: getLeg() ?? null
   });
   if (error2) {
     if (error2.code === "23505") {
@@ -45011,7 +45017,7 @@ ${args.content ?? ""}`);
     p_embedding: embedding,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null
+    p_leg: getLeg() ?? null
   });
   if (error2) {
     if (error2.code === "23505") {
@@ -45046,7 +45052,7 @@ async function supersedeDecision(client, projectId, userId, args) {
     p_affected_entity_ids: args.affected_entity_names !== void 0 ? affectedIds : null,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null
+    p_leg: getLeg() ?? null
   });
   if (error2) throw new Error(error2.message);
   const result = data;
@@ -45154,7 +45160,7 @@ async function createEntity(client, projectId, args) {
     p_metadata: args.metadata ?? null,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null
+    p_leg: getLeg() ?? null
   });
   if (error2) throw new Error(error2.message);
   const created = data;
@@ -45194,7 +45200,7 @@ async function updateEntity(client, projectId, args) {
     p_metadata: args.metadata ?? null,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null
+    p_leg: getLeg() ?? null
   });
   if (error2) {
     if (error2.code === "23505") {
@@ -45237,7 +45243,7 @@ async function reconcileEntity(client, projectId, args) {
     p_description: args.description ?? null,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null
+    p_leg: getLeg() ?? null
   });
   if (error2) {
     if (/entity named/.test(error2.message) && /found 0/.test(error2.message)) {
@@ -45285,7 +45291,7 @@ async function assertFact(client, projectId, userId, args) {
     p_embedding: embedding,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null
+    p_leg: getLeg() ?? null
   });
   if (error2) throw new Error(error2.message);
   return data;
@@ -45317,7 +45323,7 @@ async function invalidateFact(client, projectId, args) {
     p_project_id: projectId,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null
+    p_leg: getLeg() ?? null
   });
   if (error2) throw new Error(error2.message);
   return data;
@@ -45384,7 +45390,7 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
     p_tags: args.tags ?? null,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null
+    p_leg: getLeg() ?? null
   });
   if (error2) throw new Error(error2.message);
   const result = data;
@@ -47358,6 +47364,7 @@ async function fetchPendingRemark(client, taskId) {
 }
 var isMissingAcceptRemark = (msg) => !!msg && /accept_remark/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
 var isMissingRemarkParam = (msg) => !!msg && /p_remark/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
+var isMissingLegParams = (msg) => !!msg && /p_(source|conduction_id|leg)\b/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
 async function consumeAcceptRemark(client, _projectId, args) {
   if (!args.brief_id) throw new Error("brief_id is required");
   const { data, error: error2 } = await client.from("briefs").update({ accept_remark_consumed_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", args.brief_id).not("accept_remark", "is", null).is("accept_remark_consumed_at", null).select("id").maybeSingle();
@@ -47558,7 +47565,13 @@ async function resolveBrief(client, projectId, args) {
     _command: args.command,
     _detail: args.detail ?? null,
     // B-734: the decision entry's attribution. Validated above — never a caller's raw string.
-    p_provenance: provenance
+    p_provenance: provenance,
+    // B-1000: name the running conduction/leg, when this call is conductor-driven. Both params are
+    // already live on prod (B-994 shipped them as trailing DEFAULT NULL), so no tolerance guard is
+    // needed here — unlike reshapeBrief's log_brief_decision_event call below, which threads params
+    // this SAME ticket's own (not-yet-promoted) migration adds.
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: getLeg() ?? null
   };
   const { data, error: error2 } = await client.rpc(
     "resolve_brief",
@@ -47604,22 +47617,40 @@ async function reshapeBrief(client, projectId, args) {
     );
   }
   const brief = active;
-  const { error: auditErr } = await client.rpc("log_brief_decision_event", {
+  const legArgs = {
     p_task_id: taskId,
     p_brief_id: brief.id,
     p_command: "iterate",
     p_reason: brief.reason,
     // Validated above — never a caller's raw string.
     p_provenance: provenance,
-    p_detail: feedback
-  });
+    p_detail: feedback,
+    p_source: "rpc-typed",
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: getLeg() ?? null
+  };
+  const { error: auditErr } = await client.rpc("log_brief_decision_event", legArgs);
   if (auditErr) {
-    if (isReshapeRpcSchemaDrift(auditErr.message)) {
+    if (isMissingLegParams(auditErr.message)) {
+      const { error: retryErr } = await client.rpc("log_brief_decision_event", {
+        p_task_id: taskId,
+        p_brief_id: brief.id,
+        p_command: "iterate",
+        p_reason: brief.reason,
+        p_provenance: provenance,
+        p_detail: feedback
+      });
+      if (retryErr) throw new Error(retryErr.message);
+      console.error(
+        `reshapeBrief: log_brief_decision_event predates p_source/p_conduction_id/p_leg \u2014 retried with the pre-B-1000 6-arg shape. The audit row for brief ${brief.id} landed 'trigger'-sourced with no conduction/leg attribution. Underlying error: ${auditErr.message}`
+      );
+    } else if (isReshapeRpcSchemaDrift(auditErr.message)) {
       throw new Error(
         `reshape is unavailable on this database: it predates the decision-trail RPC (log_brief_decision_event). Nothing was written \u2014 the reshape was NOT applied. Reshape from the browser, or promote the schema first. Underlying error: ${auditErr.message}`
       );
+    } else {
+      throw new Error(auditErr.message);
     }
-    throw new Error(auditErr.message);
   }
   const { data, error: error2 } = await client.rpc("submit_brief_command", {
     _brief_id: brief.id,

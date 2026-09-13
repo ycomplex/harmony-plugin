@@ -18,6 +18,7 @@ import {
   fetchModelCatalog,
   getAutoApproveGates,
   getConductionId,
+  getLeg,
   getModelContextBudgetBytes,
   getModelForGate,
   getModelHandoffPath,
@@ -150,6 +151,33 @@ describe('getConductionId', () => {
 
   it('treats an empty-string value as absent (B-694 empty-env-value shadow class)', () => {
     expect(getConductionId({ HARMONY_CONDUCTION_ID: '' })).toBeUndefined();
+  });
+});
+
+describe('getLeg (B-1000)', () => {
+  it('returns the HARMONY_LEG value, parsed as a number, when set', () => {
+    expect(getLeg({ HARMONY_LEG: '3' })).toBe(3);
+  });
+
+  it('returns undefined when absent — never throws for absence', () => {
+    expect(getLeg({})).toBeUndefined();
+  });
+
+  it('treats an empty-string value as absent (B-694 empty-env-value shadow class)', () => {
+    expect(getLeg({ HARMONY_LEG: '' })).toBeUndefined();
+  });
+
+  it('treats zero as a real leg number, not absence', () => {
+    expect(getLeg({ HARMONY_LEG: '0' })).toBe(0);
+  });
+
+  it.each([
+    ['not-a-number', 'garbage'],
+    ['1.5', 'a non-integer'],
+    ['-1', 'a negative number'],
+    ['NaN', 'the literal string NaN'],
+  ])('treats %s (%s) as absent rather than passing a bad value to the RPC', (value) => {
+    expect(getLeg({ HARMONY_LEG: value })).toBeUndefined();
   });
 });
 

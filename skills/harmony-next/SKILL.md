@@ -77,6 +77,8 @@ declares anything else.
     content: '<rationale: what we are not doing now + the condition/date to revisit>',
     review_by: '<watch/revisit date, ISO>', domain: [ /* the domain(s) it touches */ ],
     source_type: 'manual', source_activity: 'defer', source_task_id: '<task uuid>',
+    // B-1000: harmony-next never synthesizes (see this section's own Provenance note above).
+    provenance: 'human-in-session',
   })
   mcp__harmony__reference_knowledge({ task_id, decision_id: deferral.id })
   mcp__harmony__resolve_brief({ task_id, command: 'defer', detail: '<reason>', provenance: 'human-in-session' })   // → Parked

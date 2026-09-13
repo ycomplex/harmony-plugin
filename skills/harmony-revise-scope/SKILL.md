@@ -238,6 +238,9 @@ const decision = mcp__harmony__record_decision({
   source_type: "manual",
   source_activity: "revise-scope",
   source_task_id: task_id,
+  // B-1000: an agent-authored draft, same reasoning as harmony-clarify's own spec-draft note — append
+  // ':<mode>' under harmony-conduct; this is not the accept's own provenance.
+  provenance: "agent-synthesized",
 })
 mcp__harmony__reference_knowledge({ task_id, decision_id: decision.id })
 ```
