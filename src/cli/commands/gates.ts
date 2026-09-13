@@ -11,9 +11,21 @@
 // that supplies the real filesystem/subprocess/auth/DB — mirrors src/hooks/stop-gate.ts's own
 // pure-core-plus-thin-I/O-shell split, for the same testability reason.
 //
+// B-1009 NARROWS THAT FLOOR IN EXACTLY ONE PLACE, AND NOWHERE ELSE. A manifest that declares
+// `notify` (B-973) now has a consumer: this command syncs the declaration to the board so the
+// Supabase-hosted dispatcher can fan it out (src/config/notify-sync.ts). That is the ONE board call
+// this file can make outside step execution, and it is fenced four ways so the floor above still
+// holds byte-for-byte: it fires ONLY when `notify` is declared AND the declaration's hash CHANGED
+// (so the steady state for EVERY project, declared or not, is zero board calls), it runs under a
+// hard 3s timeout, it writes nothing to stdout, and it can never change the exit code or the steps.
+// Nothing here opens a connection to a declared `endpoint` — see docs/notify-outbox-contract.md's
+// C9, which stays true and is now precise about it.
+//
 // THE ORDERING CONSTRAINT THAT MAKES THE FLOOR HOLD: the manifest is located and parsed FIRST,
 // entirely offline. Only once there is at least one step to actually execute (and therefore
 // evidence to land on the ticket) does this command call `getAuthenticatedContext` — never before.
+// (The notify sync above authenticates lazily inside its own injected RPC caller, on the changed-
+// hash path only, so an undeclared or unchanged manifest still authenticates NOTHING.)
 // A malformed manifest (AC5) fails loud (non-zero exit, names the file + the specific problem) but
 // STILL never authenticates and still runs no steps for the extension point(s) that manifest would
 // have declared; it never silently falls back to the floor, and a problem scoped to one extension
@@ -21,13 +33,14 @@
 // `stepErrors`) never blocks any OTHER extension point's own invocation.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { Command } from 'commander';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   EXTENSION_POINTS,
   PROJECT_MANIFEST_RELATIVE_PATH,
+  getNotifyEntries,
   getPreconditions,
   isRunStep,
   loadProjectManifest,
@@ -36,6 +49,11 @@ import {
   type ManifestLoadResult,
   type ManifestStep,
 } from '../../config/project-manifest.js';
+import {
+  syncNotifySubscriptions,
+  type NotifySubscriptionDeclaration,
+  type NotifySyncIO,
+} from '../../config/notify-sync.js';
 import { getConductionId } from '../../config/run-config.js';
 import { resolveLegCostContext } from '../../tools/leg-cost-record.js';
 import { manageTestCases } from '../../tools/test-cases.js';
@@ -91,6 +109,12 @@ export interface GatesRunDeps {
   /** `git rev-parse HEAD` in `projectRoot`, stamped onto the marker. Production wiring only; MAY
    *  throw (a throw degrades the marker write to the same best-effort WARNING as above). */
   resolveHeadSha: () => string;
+  /** B-1009: the I/O the notify subscription sync needs — the RPC caller (which authenticates
+   *  LAZILY, so it is never touched on the unchanged/undeclared path), plus the hash cache's
+   *  reader/writer. Grouped rather than splayed flat because it is one feature's seam; production
+   *  wiring lives ONLY in `registerGatesCommands`, and gates.test.ts drives all four sync outcomes
+   *  (success / unreachable / absent RPC / timeout) through THIS dep against the real runner. */
+  notifySync: NotifySyncIO;
   log: (line: string) => void;
   error: (line: string) => void;
 }
@@ -153,6 +177,23 @@ export async function runGatesCommand(deps: GatesRunDeps): Promise<number> {
     } else {
       log(`harmony gates run ${extensionPoint}: ${result.file} declares no preconditions.`);
     }
+  }
+
+  // B-1009: sync the manifest's `notify` declaration to the board — SITED HERE, ahead of the
+  // `steps.length === 0` early return below, for exactly the reason the B-992 preconditions hoist
+  // above it is: a declaration is DECLARED DATA on the whole manifest, not a property of one
+  // extension point, so a repo that declares `notify` but no steps for the gate being run must
+  // still carry its declaration across. Gated on BOTH "notify is declared" and (inside the sync)
+  // "the hash changed", so the steady state is zero board calls. It never throws, never writes to
+  // stdout, and never touches the exit code — AC6, pinned by gates.test.ts's four-outcome test.
+  const notifyEntries = getNotifyEntries(result.manifest);
+  if (notifyEntries.length > 0) {
+    await syncNotifySubscriptions({
+      projectRoot,
+      entries: notifyEntries,
+      io: deps.notifySync,
+      warn: error,
+    });
   }
 
   const steps = resolution.steps;
@@ -282,6 +323,7 @@ export function registerGatesCommands(program: Command): void {
             ],
           });
         },
+        notifySync: productionNotifySyncIO(),
         writeMarker: (marker) => writeGateEvidenceMarker(process.cwd(), marker),
         resolveHeadSha: () =>
           execFileSync('git', ['rev-parse', 'HEAD'], { cwd: process.cwd(), encoding: 'utf8' }).trim(),
@@ -301,4 +343,47 @@ function writeGateEvidenceMarker(projectRoot: string, marker: GateEvidenceMarker
   const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   writeFileSync(tmpPath, `${JSON.stringify(marker, null, 2)}\n`, 'utf8');
   renameSync(tmpPath, filePath);
+}
+
+/** B-1009: the real I/O behind the notify subscription sync — production-only, kept out of
+ *  `runGatesCommand` (and out of notify-sync.ts's pure core) so neither needs a real network, a real
+ *  login, or a real filesystem to be tested.
+ *
+ *  `callSyncRpc` authenticates LAZILY: it is invoked only on the changed-hash path, so an undeclared
+ *  or unchanged manifest never reads a token, never builds a client, and never touches the network.
+ *  It converts PostgREST's `{ data, error }` pair into a THROW that carries `code`, because that is
+ *  what `isMissingRelationOrFunction` classifies — an absent RPC (the state of every board until the
+ *  B-1009 web migration lands there) must come out as "substrate absent", not as a generic failure.
+ *  The AbortSignal is handed to PostgREST so the 3s timeout genuinely abandons the request. */
+function productionNotifySyncIO(): NotifySyncIO {
+  return {
+    callSyncRpc: async (subscriptions: NotifySubscriptionDeclaration[], signal: AbortSignal) => {
+      const ctx = await getAuthenticatedContext();
+      const { data, error: rpcError } = await ctx.client
+        .rpc('notify_sync_subscriptions', {
+          p_project_id: ctx.projectId,
+          p_subscriptions: subscriptions,
+        })
+        .abortSignal(signal);
+      if (rpcError) {
+        throw Object.assign(new Error(rpcError.message), {
+          code: (rpcError as { code?: string }).code,
+        });
+      }
+      return data;
+    },
+    readCache: (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    },
+    writeCache: (path, contents) => {
+      mkdirSync(dirname(path), { recursive: true });
+      const tmpPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+      writeFileSync(tmpPath, contents, 'utf8');
+      renameSync(tmpPath, path);
+    },
+  };
 }
