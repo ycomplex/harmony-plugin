@@ -1953,6 +1953,11 @@ export interface ComposeBriefArgs {
    *  On an in-place iterate, coupled Asserted claims NOT in this list are archived (empty array ⇒
    *  archive all coupled Asserted claims). Omitted ⇒ no prune (back-compat). */
   underwriting_claim_ids?: string[];
+  /** B-736: the ids of elicitation claims minted BEFORE this call (so nothing is coupled to them
+   *  yet) that this FIRST compose should atomically couple to the brief it creates. Ignored on an
+   *  iterate/revision (that path already has `underwriting_claim_ids` for pruning) — only meaningful
+   *  when there is no existing active brief for the task. */
+  couple_claim_ids?: string[];
   /** B-876 — the build's changed file paths (`git diff --name-only origin/main...HEAD`). The ONLY input
    *  to a release frame's `risk_classes`: compose computes that field and overwrites whatever the skill
    *  authored. No diff ⇒ `[]` — the signal is path-derived or it is nothing.
@@ -2394,6 +2399,29 @@ export const isMissingComposeBriefRevision = (
 };
 
 /**
+ * B-736 — "the compose_brief_initial RPC does not exist on this DB (yet)".
+ *
+ * Exact structural mirror of `isMissingComposeBriefRevision` above, for the FIRST-compose sibling RPC:
+ * the plugin's `main` reaches the PROD board the moment it merges, but harmony-web's migration adding
+ * `compose_brief_initial` only reaches prod at the next `./promote-prod.sh`. So there is a real window
+ * in which this code runs against a DB with no `compose_brief_initial`, and composing must degrade to
+ * today's bare insert + separate coupling update rather than hard-failing the gate.
+ *
+ * Same idiom, same guarantees: 42883 = undefined_function, PGRST202 = PostgREST "function not found in
+ * schema cache". It NEVER matches a permission error, a transient network failure, or a genuine write
+ * failure — those must propagate, never be silently read as "substrate absent".
+ */
+export const isMissingComposeBriefInitial = (
+  err: { code?: string; message?: string } | null | undefined,
+): boolean => {
+  if (!err) return false;
+  const code = err.code ?? '';
+  if (code === '42883' || code === 'PGRST202') return true;
+  const msg = err.message ?? '';
+  return /compose_brief_initial/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg);
+};
+
+/**
  * B-903 — clear ONE retained revision's `iterate_feedback`.
  *
  * The remediation half of the provenance fix: a revision that no send-back caused must not carry the
@@ -2772,18 +2800,65 @@ export async function composeBrief(
       }
     }
   } else {
-    const insertRow = { task_id: taskId, created_by: userId, ...payload };
-    const { data, error } = await client
-      .from('briefs').insert(insertRow).select(BRIEF_COLS).single();
-    if (error) {
-      if (!isMissingPendingResolution(error.message)) throw new Error(error.message);
-      const { pending_resolution: _drop, ...fallback } = insertRow;
-      const { data: data2, error: error2 } = await client
-        .from('briefs').insert(fallback).select(BRIEF_COLS).single();
-      if (error2) throw new Error(error2.message);
-      brief = data2;
+    // B-736: a plain helper mirroring the bare-insert-plus-guarded-retry that this branch has always
+    // done, so both the RPC-absent fallback and the no-couple-ids path share ONE code path instead of
+    // two copies that could silently drift apart.
+    const insertBriefRow = async (): Promise<unknown> => {
+      const insertRow = { task_id: taskId, created_by: userId, ...payload };
+      const { data, error } = await client
+        .from('briefs').insert(insertRow).select(BRIEF_COLS).single();
+      if (error) {
+        if (!isMissingPendingResolution(error.message)) throw new Error(error.message);
+        const { pending_resolution: _drop, ...fallback } = insertRow;
+        const { data: data2, error: error2 } = await client
+          .from('briefs').insert(fallback).select(BRIEF_COLS).single();
+        if (error2) throw new Error(error2.message);
+        return data2;
+      }
+      return data;
+    };
+
+    if (args.couple_claim_ids !== undefined) {
+      // B-736: mint-then-accept race fix. `args.couple_claim_ids` names elicitation claims minted
+      // BEFORE this call (so nothing is coupled to them yet). `compose_brief_initial` inserts the brief
+      // AND couples those claims in ONE transaction, closing the window a fast accept could otherwise
+      // race — `resolve_brief`'s one-shot coupled-claim promotion could run before a claim minted
+      // moments earlier was even inserted.
+      const { data: initialData, error: initialErr } = await client.rpc('compose_brief_initial', {
+        _task_id: taskId,
+        _payload: payload,
+        _claim_ids: args.couple_claim_ids,
+        _created_by: userId,
+      });
+
+      if (!initialErr) {
+        brief = initialData;
+      } else if (isMissingComposeBriefInitial(initialErr)) {
+        // B-736 / B-383 guarded degradation (the same shape as `compose_brief_revision`'s fallback
+        // above): the plugin's `main` runs against the PROD board before harmony-web's migration
+        // adding `compose_brief_initial` is promoted there, so the RPC is genuinely absent for a
+        // window. Fall back to EXACTLY today's pre-existing two-statement shape — a bare insert, then
+        // (only if there are ids to couple) a SEPARATE post-hoc coupling update. This is a deliberate,
+        // temporary, tolerated race during the pre-promote window, not an attempt to make the fallback
+        // atomic — that would defeat the whole point of a fallback. ANY other RPC error rethrows: a
+        // real write failure must be loud.
+        brief = await insertBriefRow();
+        if (args.couple_claim_ids.length > 0) {
+          const briefId = (brief as { id: string }).id;
+          const { error: coupleErr } = await client
+            .from('knowledge_decisions')
+            .update({ underwriting_brief_id: briefId })
+            .in('id', args.couple_claim_ids)
+            .eq('status', 'Asserted');
+          if (coupleErr) throw new Error(coupleErr.message);
+        }
+      } else {
+        throw new Error(initialErr.message);
+      }
     } else {
-      brief = data;
+      // Back-compat floor: the overwhelmingly common non-exchange case, and every pre-existing caller.
+      // No RPC call at all, no coupling update — behaves exactly as before B-736.
+      brief = await insertBriefRow();
     }
   }
 
@@ -2810,7 +2885,7 @@ export async function composeBrief(
 export const composeBriefTool = {
   name: 'compose_brief',
   description:
-    "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange — a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one — so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref — do not hand-write it. " +
+    "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange — a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one — so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). On a FIRST compose only (when no active brief exists yet), pass `couple_claim_ids` (B-736) = the ids of elicitation claims minted just before this call — compose atomically couples them (`underwriting_brief_id`) to the brief it creates via `compose_brief_initial`, tolerantly falling back to a bare insert plus a separate coupling update on a DB that does not yet have that RPC; omit it when no exchange ran. Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref — do not hand-write it. " +
     "B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately — put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. " +
     "B-876: also author `doc.frame` — the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING — no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) — compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose — compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing — an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal.",
   inputSchema: {
@@ -2898,6 +2973,7 @@ export const composeBriefTool = {
           "B-838 — the build's bounded, REMOVED/REPLACED PR diff lines (`git diff origin/main...HEAD`, pre-merge, post-exclusion, pre-cap). Used ONLY to compute a release frame's `contradiction_signal` — which Accepted knowledge entries this diff touches or contradicts; compose is authoritative for that field and overwrites whatever the doc authored, exactly like `risk_classes` from `changed_paths`. Omitted entirely -> `{ status: 'not-computed', message: 'not computed — no diff supplied' }`, never silently read as \"no contradictions\".",
       },
       underwriting_claim_ids: { type: 'array', items: { type: 'string' }, description: 'B-645 iterate-prune: on an in-place iterate, the KEPT set of elicitation-claim ids that still underwrite this brief. Coupled Asserted claims NOT listed are archived; [] archives all coupled Asserted claims; omit ⇒ no prune. Ignored on a first compose (nothing is coupled yet).' },
+      couple_claim_ids: { type: 'array', items: { type: 'string' }, description: 'B-736: on a FIRST compose only, the ids of elicitation claims minted BEFORE this call that should be atomically coupled (underwriting_brief_id set) to the brief this call creates — closes the claim mint-then-accept race. Ignored when a brief already exists for the task (use underwriting_claim_ids to prune on iterate instead).' },
       iterate_feedback: {
         type: 'string',
         description:

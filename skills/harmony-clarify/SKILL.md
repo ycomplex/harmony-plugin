@@ -204,7 +204,7 @@ Rounds follow the engine contract (≤5 questions, stakes-split — a load-beari
   load-bearing question re-framed, or let it go. *Force-quit* (the marker, or said in-terminal) →
   `conclude_elicitation('force-quit')` → step 3, drafting from what you have.
 
-### 3. Draft the clarification — the convergence handoff (emission order: spec → proposed ACs → de-scope block → brief → claims)
+### 3. Draft the clarification — the convergence handoff (emission order: spec → proposed ACs → de-scope block → claims → brief)
 
 Resolve the open questions from what the exchange established (or from inference alone on the
 draft-directly path). The emission is **one discrete, ordered step** — the order is what lets claims
@@ -271,17 +271,23 @@ mcp__harmony__reference_knowledge({ task_id, decision_id: decision.id })
    Never author this block for a split motivated by size or technical compositeness — that is
    decompose's axis (`skills/harmony-shared/gate-routing.md` §Split ownership).
 
-4. **Brief.** Compose the brief (step 4) with `decision_ref` = the spec. **When an exchange ran**, the
-   doc's context carries a **"What I learned from you"** section — one line per load-bearing claim
-   that steered the draft, badged by provenance: **You said** / **You confirmed** / **Best effort —
-   unvalidated** (force-quit).
+4. **Claims — ONLY when an exchange actually ran (v1).** Mint each load-bearing claim that steered the
+   draft via `record_decision` with `claim_provenance` (`'human-stated'` |
+   `'agent-inferred-human-validated'` | `'force-quit'`) — **omit `underwriting_brief_id`: no brief
+   exists yet.** **Mint-time dedupe** per the engine contract: a duplicate of an existing entry becomes
+   a validation candidate, not a twin. Collect the minted ids — they are coupled to the brief
+   atomically in the next step (B-736), closing the window a separate post-hoc coupling call used to
+   leave open between "brief exists" and "these claims are coupled to it".
 
-5. **Claims — ONLY when an exchange actually ran (v1).** Mint each load-bearing claim that steered the
-   brief via `record_decision` with `claim_provenance` (`'human-stated'` |
-   `'agent-inferred-human-validated'` | `'force-quit'`) and `underwriting_brief_id` = the
-   just-composed brief's id. **Mint-time dedupe** per the engine contract: a duplicate of an existing
-   entry becomes a validation candidate, not a twin. Disposal is then mechanical at brief resolution —
-   accept promotes (except force-quit, which stays quarantined), defer archives, iterate prunes.
+5. **Brief.** Compose the brief (step 4) with `decision_ref` = the spec. **When an exchange ran**, also
+   pass `couple_claim_ids` = the ids collected in step 4, so `compose_brief` couples them to the new
+   brief in the same call that creates it — this is what makes disposal at accept/defer mechanical even
+   for a claim minted moments before a fast accept. The doc's context carries a **"What I learned from
+   you"** section — one line per load-bearing claim that steered the draft, badged by provenance:
+   **You said** / **You confirmed** / **Best effort — unvalidated** (force-quit). **When no exchange
+   ran, omit `couple_claim_ids` entirely** — there is nothing to couple, and this must behave exactly as
+   today's plain first compose. Disposal is then mechanical at brief resolution — accept promotes
+   (except force-quit, which stays quarantined), defer archives, iterate prunes.
 
 #### 3b. Load-bearing gap → research-first
 
