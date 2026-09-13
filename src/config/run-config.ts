@@ -167,6 +167,20 @@ export function getConductionId(env: NodeJS.ProcessEnv = process.env): string | 
   return envValue(env, 'HARMONY_CONDUCTION_ID');
 }
 
+/** B-1000: reads the `HARMONY_LEG` env var — the launcher's leg counter for THIS worker, set
+ *  alongside `HARMONY_CONDUCTION_ID` — mirroring getConductionId's own absence-is-fine contract.
+ *  Undefined when absent or unparseable (a "was one set, and is it a real integer" query, never a
+ *  hard requirement) — this never throws. A non-integer / negative value is treated as absent
+ *  rather than passed through, since resolve_brief's p_leg column is a plain `int` and a garbage
+ *  caller-side value would otherwise surface as an opaque Postgres cast error deep inside an RPC
+ *  instead of cleanly reading as "no leg" here. */
+export function getLeg(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const raw = envValue(env, 'HARMONY_LEG');
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : undefined;
+}
+
 export interface GetRunConfigDeps {
   /** Injectable so this accessor is unit-testable without touching the real filesystem — mirrors
    *  scripts/mint-installation-token.mjs's resolveBaseContent readImpl injection style. */

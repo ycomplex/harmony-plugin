@@ -839,6 +839,9 @@ simply never firing. Reuse this run's changed paths from the B-516 risk signal a
      realization: "live",
      source_task_id: task_id,
      source_activity: "finish-work",
+     // B-1000: this release-gate write only ever runs downstream of the release/verify hard floor's
+     // always-human accept (contract 3 — never auto-advanced), so it names that accept's own provenance.
+     provenance: "human-in-session",
    })
    ```
    Pass `status: "Accepted"` explicitly — this is a system-authored record of what just shipped, not a
@@ -851,6 +854,8 @@ simply never firing. Reuse this run's changed paths from the B-516 risk signal a
      content: "<prepend a newest-first dated section — today's date, this ticket's id, and what changed —
        onto the EXISTING content; never replace or drop the entry's prior history>",
      realization: "live",
+     // B-1000: same reasoning as the fresh-entry write above — release/verify are the hard floor.
+     provenance: "human-in-session",
    })
    ```
    Never call `supersede_decision` here — an amend is always an in-place `update_knowledge_entry`,
