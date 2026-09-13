@@ -422,4 +422,102 @@ describe('risk-class detector (conductor floor)', () => {
       );
     });
   });
+
+  // =========================================================================
+  // B-889 — negation scope widening (hard vs list-connector clause boundaries,
+  // window 4→6) + two new word-sense guards (migration CI-trigger prose,
+  // reading-qualifier auth prose). Same conservative-on-ambiguity contract as
+  // B-516: suppress ONLY a clear negation / wrong sense, never on ambiguity.
+  // =========================================================================
+  describe('B-889 negation-scoping: list-connector vs hard clause boundary', () => {
+    it('AC1/AC2: a single shared "no" crossing "and" over a plain list item does NOT trip data-migration', () => {
+      expect(
+        detectRiskClasses({
+          text: 'This adds no client-side detector port and no tasks table migration.',
+        }),
+      ).not.toContain<RiskClass>('data-migration');
+      expect(
+        detectRiskClasses({ text: 'adds no client-side detector port and migration' }),
+      ).not.toContain<RiskClass>('data-migration');
+    });
+
+    it('AC1/AC2: the other literal B-889 negation specimens do NOT trip data-migration', () => {
+      expect(detectRiskClasses({ text: 'no schema change, no migration' })).not.toContain<RiskClass>(
+        'data-migration',
+      );
+      expect(detectRiskClasses({ text: 'builds no column' })).not.toContain<RiskClass>('data-migration');
+    });
+
+    it('AC5 control: a list-connector followed by a SUBJECT_STARTER_WORD stops the scan — a genuine NEW clause after "and" still fires', () => {
+      // "no" negates *downtime* only; "this" is a subject-starter right after "and", so the scan
+      // stops there and "migration" is a fresh, un-negated clause.
+      expect(
+        detectRiskClasses({ text: 'There is no downtime and this migration must run before deploy.' }),
+      ).toContain<RiskClass>('data-migration');
+    });
+  });
+
+  describe('B-889 word-sense: migrations? rejected next to a CI-trigger PR/pull-request noun', () => {
+    it('AC3: "on a migration PR" does NOT trip data-migration', () => {
+      expect(
+        detectRiskClasses({ text: "Harmony's Playwright E2E on a migration PR" }),
+      ).not.toContain<RiskClass>('data-migration');
+    });
+
+    it('AC3: "on non-migration PRs" does NOT trip data-migration', () => {
+      expect(detectRiskClasses({ text: 'web E2E on non-migration PRs' })).not.toContain<RiskClass>(
+        'data-migration',
+      );
+    });
+
+    it('AC5 control: a genuine migration mention near an unrelated "PR" elsewhere in the sentence still trips', () => {
+      // "PR" is not the word immediately after "migration" — this is a real schema migration,
+      // not CI-trigger-condition prose.
+      expect(
+        detectRiskClasses({ text: 'We should ship a database migration before merging this PR.' }),
+      ).toContain<RiskClass>('data-migration');
+    });
+  });
+
+  describe('B-889 word-sense: credentials?/session/tokens?/permissions? rejected near a reading-qualifier word', () => {
+    it('AC4: the B-930 literal specimens do NOT trip auth', () => {
+      expect(detectRiskClasses({ text: '403 Resource not accessible by integration' })).not.toContain<RiskClass>(
+        'auth',
+      );
+      expect(
+        detectRiskClasses({ text: "has not been exercised from inside a worker's credentials" }),
+      ).not.toContain<RiskClass>('auth');
+    });
+
+    it('B-936: the same ticket text read twice (once bare, once with reading-qualifier brief prose added) produces a STABLE class set', () => {
+      const baseText =
+        'Investigate flaky CI: the worker task probably needs another look at the daemon retry logs.';
+      const withBrief =
+        baseText +
+        ' The failure trace shows the daemon reading the existing session state before the retry; ' +
+        'the current credentials remain untouched here — under normal operation the token file ' +
+        'is left as-is by this fix.';
+      const before = detectRiskClasses({ text: baseText });
+      const after = detectRiskClasses({ text: withBrief });
+      expect(before).toEqual([]);
+      // The added prose mentions session/credentials/token, but ALL are reading-qualifier hits
+      // (existing/current/under) with no authoring verb nearby — the class set must not flip.
+      expect(after).toEqual(before);
+    });
+
+    it('AC5 control: an authoring-verb signal WINS over a nearby reading-qualifier word — still trips auth', () => {
+      expect(
+        detectRiskClasses({
+          text: 'Add a new auth check under the existing session middleware to require credentials.',
+        }),
+      ).toContain<RiskClass>('auth');
+      // Isolated case with NO unconditional auth keyword (no "auth"/"login"/etc.) — proves the
+      // authoring-verb-wins behaviour on credentials/session specifically, not a different keyword.
+      expect(
+        detectRiskClasses({
+          text: 'Implement a new step that requires credentials under the existing session flow.',
+        }),
+      ).toContain<RiskClass>('auth');
+    });
+  });
 });

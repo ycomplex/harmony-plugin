@@ -24,13 +24,23 @@
 // B-516 SCOPE-AWARENESS (still deterministic, NO LLM): three mechanical filters
 // trim the *clear* false-positives without weakening the floor on ambiguity —
 // (1) NEGATION-SCOPING (a clearly-negated keyword hit doesn't count, e.g. "no
-// migration"); (2) WORD-SENSE TIGHTENING (a thin keyword like `token` counts for
-// `auth` only in the auth sense, never the state-machine "gate token" sense);
-// and (3) a BUILD-GATE DOWN-WEIGHT (a prose-only hit is demoted when a real diff
-// is present and touches none of the class's path-globs). Each suppresses ONLY a
-// clear negation / wrong sense / clean-diff contradiction; on ANY ambiguity the
-// class still trips. The down-weight fires only with a real diff (discovery gates
-// pass no paths), so absence-of-diff never suppresses.
+// migration") over a preceding window (B-889: widened 4→6 tokens), bounded by a
+// HARD clause boundary (but/then/so/yet — always stops the scan) or a LIST
+// CONNECTOR (and/or — stops the scan too, UNLESS the word right after it opens a
+// genuinely new clause's subject, e.g. "it"/"this"/"there", in which case the
+// connector is crossed so a single shared negation can still reach an earlier
+// keyword); (2) WORD-SENSE TIGHTENING (a thin keyword like `token` counts for
+// `auth` only in the auth sense, never the state-machine "gate token" sense;
+// B-889 adds two more — `migrations?` is rejected when immediately followed by a
+// PR/pull-request noun (CI-trigger-condition prose, not a schema change), and
+// `credentials?`/`session`/`tokens?`/`permissions?` are rejected near a
+// READING-qualifier word like "existing"/"under" UNLESS an authoring verb like
+// add/create/change/implement/require is also nearby); and (3) a BUILD-GATE
+// DOWN-WEIGHT (a prose-only hit is demoted when a real diff is present and
+// touches none of the class's path-globs). Each suppresses ONLY a clear negation
+// / wrong sense / clean-diff contradiction; on ANY ambiguity the class still
+// trips. The down-weight fires only with a real diff (discovery gates pass no
+// paths), so absence-of-diff never suppresses.
 //
 // This file is intentionally dependency-free and pure so it is trivially unit
 // testable (mirrors src/tools/trust-model.ts) and reusable by the MCP get_task
@@ -74,13 +84,26 @@ export interface DetectRiskInput {
 //      exists to catch). Repro: "no schema/RPC/DB, no MCP, no migration" → no
 //      `data-migration`.
 //   2. WORD-SENSE TIGHTENING — thin keywords carry a per-keyword sense guard
-//      (`senseOk`). The only one tuned so far (evidence-driven, minimal): the
-//      `token` keyword counts for `auth` ONLY when an auth qualifier sits adjacent
-//      (`auth|access|api|bearer|jwt|session|refresh|csrf`). The state-machine sense
-//      (`gate token` / `state token` / `workflow_state token`) carries no qualifier,
-//      so it returns false on its own — no separate veto needed. A present auth
-//      qualifier WINS (conservative-on-ambiguity). Repro: "workflow_state gate
-//      token" → no `auth`; "bearer token in the gate handler" → `auth`.
+//      (`senseOk`). Tuned so far (evidence-driven, minimal):
+//        - the `token` keyword counts for `auth` ONLY when an auth qualifier sits
+//          adjacent (`auth|access|api|bearer|jwt|session|refresh|csrf`). The
+//          state-machine sense (`gate token` / `state token` / `workflow_state
+//          token`) carries no qualifier, so it returns false on its own — no
+//          separate veto needed. A present auth qualifier WINS
+//          (conservative-on-ambiguity). Repro: "workflow_state gate token" → no
+//          `auth`; "bearer token in the gate handler" → `auth`.
+//        - (B-889) `migrations?` is rejected when the very next word is a
+//          PR/pull-request noun — CI-trigger-condition prose ("a migration PR",
+//          "non-migration PRs") describing WHICH PRs a workflow runs on, not an
+//          actual schema migration. See `MIGRATION_CI_TRIGGER_QUALIFIER`.
+//        - (B-889) `credentials?`/`session`/`tokens?`/`permissions?` are
+//          rejected near a READING-qualifier word (existing/current/exercised/
+//          accessed/observed/inside/under) — text merely OBSERVING an existing
+//          auth surface, not authoring a new one — UNLESS an authoring verb
+//          (add/create/change/implement/require) also sits nearby, which WINS
+//          (conservative-on-ambiguity). See `notReadingQualifiedSense`. `tokens?`
+//          layers this ON TOP of its existing auth-qualifier guard — both must
+//          pass.
 // ---------------------------------------------------------------------------
 
 /** A keyword entry: a word-boundary regex plus an optional per-keyword word-sense guard.
@@ -116,6 +139,41 @@ function tokenIsAuthSense(text: string, start: number, end: number): boolean {
   return AUTH_TOKEN_QUALIFIER.test(window);
 }
 
+// Word-sense guard for the `migrations?` keyword (B-889, repro: Playwright/web E2E CI-trigger
+// prose). "on a migration PR" / "on non-migration PRs" describes WHICH PRs a CI workflow runs on
+// — a CI-trigger condition, not an actual schema migration. Tight ADJACENCY only (the very next
+// word, not a wide window): a genuine migration mention that merely happens to be near an
+// unrelated "PR" further away (e.g. "ship a migration before merging this PR") must still count.
+const MIGRATION_CI_TRIGGER_QUALIFIER = /^\s*(?:PRs?|pull[\s-]?requests?)\b/i;
+function migrationSenseOk(text: string, _start: number, end: number): boolean {
+  // Only the immediate next word after the match — "immediately followed by", not "near".
+  const after = text.slice(end, end + 20);
+  return !MIGRATION_CI_TRIGGER_QUALIFIER.test(after);
+}
+
+// Word-sense guard for the thin `credentials?`/`session`/`tokens?`/`permissions?` keywords
+// (B-889, repro: B-930 "has not been exercised from inside a worker's credentials"; B-936 the
+// same ticket text read twice producing an unstable class set). These keywords also show up in
+// prose merely READING/observing an existing auth surface ("the existing session", "current
+// permissions", "exercised from inside a worker's credentials") rather than authoring a NEW one.
+// An authoring-verb signal (add/create/change/implement/require) nearby is
+// CONSERVATIVE-ON-AMBIGUITY: it WINS and the hit stands even next to a reading-qualifier word;
+// only in ITS ABSENCE does a nearby reading-qualifier reject the hit.
+const AUTH_AUTHORING_VERBS =
+  /\b(?:add(?:s|ed|ing)?|creat(?:e|es|ed|ing)|chang(?:e|es|ed|ing)|implement(?:s|ed|ing)?|requir(?:e|es|ed|ing))\b/i;
+const READING_QUALIFIER_WORDS = /\b(?:existing|current|exercised|accessed|observed|inside|under)\b/i;
+// Wider than AUTH_TOKEN_QUALIFIER's ~24 chars — reading-qualifier words like "exercised" / "inside"
+// often sit further back ("has not been exercised from inside a worker's credentials" is ~6 words
+// of preceding context).
+const READING_QUALIFIER_WINDOW = 56;
+function notReadingQualifiedSense(text: string, start: number, end: number): boolean {
+  const before = text.slice(Math.max(0, start - READING_QUALIFIER_WINDOW), start);
+  const after = text.slice(end, end + READING_QUALIFIER_WINDOW);
+  const window = before + ' ' + after;
+  if (AUTH_AUTHORING_VERBS.test(window)) return true; // an authoring signal WINS — conservative-on-ambiguity
+  return !READING_QUALIFIER_WORDS.test(window);
+}
+
 const KEYWORD_TABLE: Record<RiskClass, Keyword[]> = {
   auth: [
     // auth / login / logout / session / token / password / oauth / RLS / permission / role
@@ -125,18 +183,18 @@ const KEYWORD_TABLE: Record<RiskClass, Keyword[]> = {
     kw(/\blog[\s-]?out\b/i),
     kw(/\bsign[\s-]?in\b/i),
     kw(/\bsign[\s-]?out\b/i),
-    kw(/\bsession\b/i),
-    kw(/\btokens?\b/i, tokenIsAuthSense),
+    kw(/\bsession\b/i, notReadingQualifiedSense),
+    kw(/\btokens?\b/i, (text, start, end) => tokenIsAuthSense(text, start, end) && notReadingQualifiedSense(text, start, end)),
     kw(/\bpasswords?\b/i),
-    kw(/\bcredentials?\b/i),
+    kw(/\bcredentials?\b/i, notReadingQualifiedSense),
     kw(/\bRLS\b/i),
     kw(/\brow[\s-]?level[\s-]?security\b/i),
-    kw(/\bpermissions?\b/i),
+    kw(/\bpermissions?\b/i, notReadingQualifiedSense),
     kw(/\broles?\b/i),
   ],
   'data-migration': [
     // migration / schema / ALTER TABLE / backfill / DROP COLUMN
-    kw(/\bmigrations?\b/i),
+    kw(/\bmigrations?\b/i, migrationSenseOk),
     kw(/\bschema\b/i),
     kw(/\balter\s+table\b/i),
     kw(/\badd\s+column\b/i),
@@ -168,23 +226,40 @@ const KEYWORD_TABLE: Record<RiskClass, Keyword[]> = {
 };
 
 // ---------------------------------------------------------------------------
-// NEGATION-SCOPING (B-516, hardened B-516-review). For a keyword hit, scan a
-// short PRECEDING token window for a negation cue. Deterministic;
-// conservative-on-ambiguity — it suppresses ONLY a clearly-negated hit.
+// NEGATION-SCOPING (B-516, hardened B-516-review, widened B-889). For a keyword
+// hit, scan a short PRECEDING token window (B-889: widened 4→6 tokens) for a
+// negation cue. Deterministic; conservative-on-ambiguity — it suppresses ONLY a
+// clearly-negated hit.
 //
 // Cues: `no`, `not`, `without`, an `n't` contraction (don't/won't/can't…),
 // `zero`, and `neither`/`nor`/`none`.
 //
-// CLAUSE-BOUNDARY BOUND (review fix): the backward scan STOPS at a clause
-// boundary — a comma / semicolon / colon / period, an em/en dash or a spaced
-// hyphen-dash, or a coordinating conjunction (`and`/`but`/`or`/`then`/`so`/
-// `yet`). A cue only negates the keyword if it is reachable WITHOUT crossing a
-// boundary. This kills the false-negative where a cue negates a DIFFERENT
-// clause's subject, e.g. "with no downtime, run the migration" ('no' negates
-// *downtime*, across the comma → the migration hit fires). The repeated
-// "no schema, no migration" enumeration is unaffected: each item's OWN
-// immediately-preceding `no` sits in the same clause as that item, so it still
-// suppresses.
+// CLAUSE-BOUNDARY BOUND (review fix; split B-889): the backward scan STOPS at a
+// clause boundary — a comma / semicolon / colon / period, an em/en dash or a
+// spaced hyphen-dash, or a HARD coordinating conjunction (`but`/`then`/`so`/
+// `yet` — these ALWAYS stop the scan, no exception). A LIST CONNECTOR
+// (`and`/`or`) is different: it stops the scan too, UNLESS the word immediately
+// after it (i.e. the token just consumed, closer to the keyword) is a
+// SUBJECT-STARTER word (`it`/`this`/`that`/`we`/`you`/`they`/`there`/`the`/`a`/
+// `please`/`run`) — a clear signal that word opens a genuinely NEW clause's
+// subject, so the connector still stops the scan. Otherwise the connector reads
+// as a same-clause list item (e.g. "no X and Y") and is CROSSED so the scan
+// keeps looking further back toward a shared negation cue. A cue only negates
+// the keyword if it is reachable without crossing a HARD boundary or a
+// clause-opening list connector.
+//
+// This kills the false-negative where a cue negates a DIFFERENT clause's
+// subject, e.g. "with no downtime, run the migration" ('no' negates *downtime*,
+// across the comma → the migration hit fires) and "There is no downtime and
+// this migration must run before deploy" ('this' opens a new clause right after
+// "and" → the migration hit fires); it also fixes the false-POSITIVE repro
+// where a single shared "no" crosses a list connector over a non-subject-starter
+// word, e.g. "This adds no client-side detector port and no tasks table
+// migration" and "adds no client-side detector port and migration" (B-889) —
+// both suppress `data-migration`, since "and" here is followed by a plain list
+// item, not a new clause. The repeated "no schema, no migration" enumeration is
+// unaffected: each item's OWN immediately-preceding `no` sits in the same
+// clause as that item, so it still suppresses.
 //
 // HYPHEN-AWARE TOKENIZATION (review fix): an ASCII hyphen flanked by letters is
 // INTRA-WORD, so `no-op` is ONE token (`no-op` ≠ the cue `no`) — "no-op guard;
@@ -194,9 +269,19 @@ const KEYWORD_TABLE: Record<RiskClass, Keyword[]> = {
 // negations are unaffected.
 // ---------------------------------------------------------------------------
 const NEGATION_CUES = new Set(['no', 'not', 'without', 'zero', 'neither', 'nor', 'none']);
-const NEGATION_WINDOW = 4; // tokens of preceding context to scan
-// Tokens that end the backward scan: a cue past one of these does NOT negate the keyword.
-const CLAUSE_BOUNDARY_TOKENS = new Set(['and', 'but', 'or', 'then', 'so', 'yet']);
+const NEGATION_WINDOW = 6; // tokens of preceding context to scan (B-889: widened from 4)
+// HARD clause-boundary tokens: a cue past one of these NEVER reaches the keyword — no exception.
+const HARD_CLAUSE_BOUNDARY_TOKENS = new Set(['but', 'then', 'so', 'yet']);
+// LIST-CONNECTOR tokens: same-clause list items ("no X and Y") share a single negation, so these
+// are CROSSED rather than stopping the scan — UNLESS the word right after (closer to the keyword,
+// i.e. the token most recently consumed) is a SUBJECT_STARTER_WORD, a clear signal the connector
+// opens a genuinely NEW clause instead (see block comment above for the worked examples).
+const LIST_CONNECTOR_TOKENS = new Set(['and', 'or']);
+// Words that, appearing immediately after a LIST_CONNECTOR_TOKENS word (walking toward the
+// keyword), mark the START of a new clause's subject — so the connector still stops the scan.
+const SUBJECT_STARTER_WORDS = new Set([
+  'it', 'this', 'that', 'we', 'you', 'they', 'there', 'the', 'a', 'please', 'run',
+]);
 // Punctuation that ends a clause (a cue past one of these does NOT reach the keyword).
 // Includes em/en dashes; a bare ASCII hyphen is handled positionally (intra-word vs spaced dash).
 const CLAUSE_BOUNDARY_PUNCT = /[,;:.–—]/;
@@ -204,13 +289,15 @@ const ASCII_LETTER = /[a-z]/; // (slice is lower-cased before scanning)
 
 /**
  * Tokenize the preceding slice into lowercased word tokens, newest-first, STOPPING at the
- * first clause boundary (punctuation OR a coordinating conjunction). A hyphen counts as
- * intra-word (so `no-op` stays one token) ONLY when flanked by letters; an unflanked hyphen
- * or an em/en dash is a clause boundary. Returns at most NEGATION_WINDOW in-clause tokens.
+ * first clause boundary (punctuation OR a HARD coordinating conjunction OR a clause-opening
+ * LIST connector). A hyphen counts as intra-word (so `no-op` stays one token) ONLY when flanked
+ * by letters; an unflanked hyphen or an em/en dash is a clause boundary. Returns at most
+ * NEGATION_WINDOW in-clause tokens (a CROSSED list connector does not consume any of that budget).
  */
 function precedingTokens(text: string, matchStart: number): string[] {
-  // A generous char window (≈ NEGATION_WINDOW words, allowing for punctuation/parens).
-  const slice = text.slice(Math.max(0, matchStart - 48), matchStart).toLowerCase();
+  // A generous char window (≈ NEGATION_WINDOW words plus room for crossed list connectors,
+  // allowing for punctuation/parens).
+  const slice = text.slice(Math.max(0, matchStart - 80), matchStart).toLowerCase();
   // True iff the char at index k is a word char: a letter / apostrophe, or an intra-word
   // ASCII hyphen (a hyphen with a letter on BOTH sides — `no-op`, not a spaced " - " dash).
   const isWordChar = (k: number): boolean => {
@@ -232,7 +319,15 @@ function precedingTokens(text: string, matchStart: number): string[] {
       const word = slice.slice(j + 1, i + 1);
       i = j;
       if (word.length === 0) continue;
-      if (CLAUSE_BOUNDARY_TOKENS.has(word)) break; // coordinating conjunction — clause boundary
+      if (HARD_CLAUSE_BOUNDARY_TOKENS.has(word)) break; // always ends the scan — no exception
+      if (LIST_CONNECTOR_TOKENS.has(word)) {
+        // The token immediately after the connector (closer to the keyword) is the LAST one we
+        // pushed. If it starts a new clause's subject, the connector stops the scan too;
+        // otherwise it's a same-clause list item ("no X and Y") — cross it and keep scanning.
+        const nextToward = inClause[inClause.length - 1];
+        if (nextToward !== undefined && SUBJECT_STARTER_WORDS.has(nextToward)) break;
+        continue; // crossed — the connector itself is not a negatable token
+      }
       inClause.push(word);
     } else {
       // a non-word char that isn't boundary punctuation: whitespace, parens, slash, or a
