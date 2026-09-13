@@ -470,12 +470,17 @@ the wait while the leg exits looking clean.
 **Then LAND the build evidence on the ticket BEFORE advancing — ORDERED & NON-OPTIONAL (B-560).** Gates
 only advance `workflow_state`; a delegated/worktree build never touches the ticket, so the evidence must
 be recorded here or it is lost (B-551 reached Verified with zero build trail). By now the artefact step
-has already recorded `build_pr` and commented the PR URL. Do these two steps, in order, before composing
+has already recorded `build_pr` and commented the PR URL. Do these three steps, in order, before composing
 the release brief:
 
 1. **Record the test cases** from the build's tests — `mcp__harmony__manage_test_cases({ task_id, add: [...] })`
    (one entry per test/spec the build added or relies on; `type: "integration"` / `"e2e"`).
-2. **Check the acceptance criteria the build satisfies** — `mcp__harmony__manage_acceptance_criteria({ task_id, update: [{ id, checked: true }, ...] })`
+2. **Read the ticket's current acceptance criteria** — `mcp__harmony__list_acceptance_criteria({ task_id })`
+   — immediately before ticking any of them, so the tick reflects a freshly-read, current list rather than
+   context assembled earlier in the run. A criterion edited or added after the build started is ticked (or
+   left unticked) according to its live wording, not a stale copy (B-730 — mirrors the identical fix B-703
+   made at the verify gate).
+3. **Check the acceptance criteria the build satisfies** — `mcp__harmony__manage_acceptance_criteria({ task_id, update: [{ id, checked: true }, ...] })`
    for each AC the work now meets (create any missing ACs first via `add`). By Built, the ACs the build
    satisfied should be checked.
 
