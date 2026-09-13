@@ -36332,6 +36332,21 @@ function tokenIsAuthSense(text, start, end) {
   const window2 = before + " " + after;
   return AUTH_TOKEN_QUALIFIER.test(window2);
 }
+var MIGRATION_CI_TRIGGER_QUALIFIER = /^\s*(?:PRs?|pull[\s-]?requests?)\b/i;
+function migrationSenseOk(text, _start, end) {
+  const after = text.slice(end, end + 20);
+  return !MIGRATION_CI_TRIGGER_QUALIFIER.test(after);
+}
+var AUTH_AUTHORING_VERBS = /\b(?:add(?:s|ed|ing)?|creat(?:e|es|ed|ing)|chang(?:e|es|ed|ing)|implement(?:s|ed|ing)?|requir(?:e|es|ed|ing))\b/i;
+var READING_QUALIFIER_WORDS = /\b(?:existing|current|exercised|accessed|observed|inside|under)\b/i;
+var READING_QUALIFIER_WINDOW = 56;
+function notReadingQualifiedSense(text, start, end) {
+  const before = text.slice(Math.max(0, start - READING_QUALIFIER_WINDOW), start);
+  const after = text.slice(end, end + READING_QUALIFIER_WINDOW);
+  const window2 = before + " " + after;
+  if (AUTH_AUTHORING_VERBS.test(window2)) return true;
+  return !READING_QUALIFIER_WORDS.test(window2);
+}
 var KEYWORD_TABLE = {
   auth: [
     // auth / login / logout / session / token / password / oauth / RLS / permission / role
@@ -36341,18 +36356,18 @@ var KEYWORD_TABLE = {
     kw(/\blog[\s-]?out\b/i),
     kw(/\bsign[\s-]?in\b/i),
     kw(/\bsign[\s-]?out\b/i),
-    kw(/\bsession\b/i),
-    kw(/\btokens?\b/i, tokenIsAuthSense),
+    kw(/\bsession\b/i, notReadingQualifiedSense),
+    kw(/\btokens?\b/i, (text, start, end) => tokenIsAuthSense(text, start, end) && notReadingQualifiedSense(text, start, end)),
     kw(/\bpasswords?\b/i),
-    kw(/\bcredentials?\b/i),
+    kw(/\bcredentials?\b/i, notReadingQualifiedSense),
     kw(/\bRLS\b/i),
     kw(/\brow[\s-]?level[\s-]?security\b/i),
-    kw(/\bpermissions?\b/i),
+    kw(/\bpermissions?\b/i, notReadingQualifiedSense),
     kw(/\broles?\b/i)
   ],
   "data-migration": [
     // migration / schema / ALTER TABLE / backfill / DROP COLUMN
-    kw(/\bmigrations?\b/i),
+    kw(/\bmigrations?\b/i, migrationSenseOk),
     kw(/\bschema\b/i),
     kw(/\balter\s+table\b/i),
     kw(/\badd\s+column\b/i),
@@ -36383,12 +36398,26 @@ var KEYWORD_TABLE = {
   ]
 };
 var NEGATION_CUES = /* @__PURE__ */ new Set(["no", "not", "without", "zero", "neither", "nor", "none"]);
-var NEGATION_WINDOW = 4;
-var CLAUSE_BOUNDARY_TOKENS = /* @__PURE__ */ new Set(["and", "but", "or", "then", "so", "yet"]);
+var NEGATION_WINDOW = 6;
+var HARD_CLAUSE_BOUNDARY_TOKENS = /* @__PURE__ */ new Set(["but", "then", "so", "yet"]);
+var LIST_CONNECTOR_TOKENS = /* @__PURE__ */ new Set(["and", "or"]);
+var SUBJECT_STARTER_WORDS = /* @__PURE__ */ new Set([
+  "it",
+  "this",
+  "that",
+  "we",
+  "you",
+  "they",
+  "there",
+  "the",
+  "a",
+  "please",
+  "run"
+]);
 var CLAUSE_BOUNDARY_PUNCT = /[,;:.–—]/;
 var ASCII_LETTER = /[a-z]/;
 function precedingTokens(text, matchStart) {
-  const slice = text.slice(Math.max(0, matchStart - 48), matchStart).toLowerCase();
+  const slice = text.slice(Math.max(0, matchStart - 80), matchStart).toLowerCase();
   const isWordChar = (k) => {
     const c = slice[k];
     if (c === void 0) return false;
@@ -36406,7 +36435,12 @@ function precedingTokens(text, matchStart) {
       const word = slice.slice(j + 1, i + 1);
       i = j;
       if (word.length === 0) continue;
-      if (CLAUSE_BOUNDARY_TOKENS.has(word)) break;
+      if (HARD_CLAUSE_BOUNDARY_TOKENS.has(word)) break;
+      if (LIST_CONNECTOR_TOKENS.has(word)) {
+        const nextToward = inClause[inClause.length - 1];
+        if (nextToward !== void 0 && SUBJECT_STARTER_WORDS.has(nextToward)) break;
+        continue;
+      }
       inClause.push(word);
     } else {
       if (slice[i] === "-") break;
