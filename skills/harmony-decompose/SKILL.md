@@ -165,6 +165,9 @@ const split = mcp__harmony__record_decision({
   source_type: "manual",
   source_activity: "decompose",
   source_task_id: "<parent task uuid>",
+  // B-1000: an agent-authored draft, same reasoning as harmony-clarify's own spec-draft note — append
+  // ':<mode>' under harmony-conduct; this is not the accept's own provenance.
+  provenance: "agent-synthesized",
 })
 mcp__harmony__reference_knowledge({ task_id, decision_id: split.id })
 ```
@@ -198,6 +201,8 @@ Judge the amend rule yourself, as PROSE — never defer it to a human — over e
     entry_id,
     content: "<prepend ONE newest-first dated section naming the pattern and this ticket as its
       canonical example, onto the EXISTING content — never replace or drop history>",
+    // B-1000: agent-authored, same reasoning as the split write above.
+    provenance: "agent-synthesized",
   })
   ```
 - **Create-on-first-use — the entry does not exist yet.** Create it directly as Accepted (system-authored
@@ -209,6 +214,8 @@ Judge the amend rule yourself, as PROSE — never defer it to a human — over e
       id list; retired per-ticket entries stay reachable via include_superseded>",
     tags: ["decompose-no-split"], domain: ["product", "process"],
     status: "Accepted", source_task_id: "<task uuid>", source_activity: "decompose",
+    // B-1000: agent-authored, same reasoning as the split write above.
+    provenance: "agent-synthesized",
   })
   ```
 
@@ -297,6 +304,8 @@ Show the rendered `content`. On the human's command:
     content: "<rationale: why not breaking this down now + when to revisit>",
     review_by: "<watch/revisit date, ISO>", domain: ["engineering", "product"],
     source_type: "manual", source_activity: "defer", source_task_id: "<task uuid>",
+    // B-1000: a defer is always human — carries the SAME provenance as the resolve_brief defer below.
+    provenance: "human-in-session",
   })
   mcp__harmony__reference_knowledge({ task_id, decision_id: deferral.id })
   mcp__harmony__resolve_brief({ task_id, command: "defer", detail: "<why>", provenance: "human-in-session" })

@@ -221,6 +221,12 @@ const decision = mcp__harmony__record_decision({
   source_type: "manual",
   source_activity: "clarify",
   source_task_id: "<task uuid>",
+  // B-1000: this draft write is always agent-authored, whichever mode is running — append ':<mode>'
+  // when this leg is running under harmony-conduct (see skills/harmony-shared/gate-routing.md §
+  // Resolution provenance); a bare "agent-synthesized" outside a conduct run is fine too — this is
+  // NOT the accept's own provenance (the human's later accept promotes this entry via resolve_brief,
+  // a separate write), it is who authored the Asserted draft itself.
+  provenance: "agent-synthesized",
 })
 mcp__harmony__reference_knowledge({ task_id, decision_id: decision.id })
 ```
@@ -696,6 +702,9 @@ Show the rendered `content` verbatim. On the human's command:
     content: "<rationale: what we're not clarifying now + when to revisit>",
     review_by: "<watch/revisit date, ISO>", domain: ["product"],
     source_type: "manual", source_activity: "defer", source_task_id: "<task uuid>",
+    // B-1000: a defer is ALWAYS human (contract 3a/§4b — the conductor's synthesized accept never
+    // defers), so this carries the SAME provenance the resolve_brief defer call below declares.
+    provenance: "human-in-session",
   })
   mcp__harmony__reference_knowledge({ task_id, decision_id: deferral.id })
   mcp__harmony__resolve_brief({ task_id, command: "defer", detail: "<why>", provenance: "human-in-session" })   // → Parked; coupled Asserted claims archive (DB-side)

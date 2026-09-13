@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { normalizeHtmlEntities } from './text-normalize.js';
-import { getConductionId } from '../config/run-config.js';
+import { getConductionId, getLeg } from '../config/run-config.js';
 
 // ---------------------------------------------------------------------------
 // Interfaces
@@ -681,7 +681,7 @@ export async function updateKnowledgeEntry(
     p_review_by: args.review_by ?? null,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null,
+    p_leg: getLeg() ?? null,
   });
 
   if (error) {
@@ -924,7 +924,7 @@ export async function recordDecision(
     p_embedding: embedding,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null,
+    p_leg: getLeg() ?? null,
   });
   if (error) {
     if (error.code === '23505') {
@@ -1007,7 +1007,7 @@ export async function supersedeDecision(
     p_affected_entity_ids: args.affected_entity_names !== undefined ? affectedIds : null,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null,
+    p_leg: getLeg() ?? null,
   });
   if (error) throw new Error(error.message);
 
@@ -1202,7 +1202,7 @@ export async function createEntity(
     p_metadata: args.metadata ?? null,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null,
+    p_leg: getLeg() ?? null,
   });
   if (error) throw new Error(error.message);
   const created = data as unknown as KnowledgeEntityFull;
@@ -1275,7 +1275,7 @@ export async function updateEntity(
     p_metadata: args.metadata ?? null,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null,
+    p_leg: getLeg() ?? null,
   });
   if (error) {
     if (error.code === '23505') {
@@ -1368,7 +1368,7 @@ export async function reconcileEntity(
     p_description: args.description ?? null,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null,
+    p_leg: getLeg() ?? null,
   });
   if (error) {
     // The RPC's "expected exactly one ... found 0" precondition failure is this handler's long-
@@ -1458,7 +1458,7 @@ export async function assertFact(
     p_embedding: embedding,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null,
+    p_leg: getLeg() ?? null,
   });
   if (error) throw new Error(error.message);
   return data as unknown as KnowledgeFactFull;
@@ -1503,7 +1503,7 @@ export async function invalidateFact(
     p_project_id: projectId,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null,
+    p_leg: getLeg() ?? null,
   });
   if (error) throw new Error(error.message);
   return data as unknown as KnowledgeFactFull;
@@ -1629,7 +1629,7 @@ export async function supersedeKnowledgeEntry(
     p_tags: args.tags ?? null,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: null,
+    p_leg: getLeg() ?? null,
   });
   if (error) throw new Error(error.message);
 
