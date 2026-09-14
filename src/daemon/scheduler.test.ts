@@ -12,6 +12,7 @@ import {
 } from './scheduler.js';
 import { createHeartbeatKeeper } from './heartbeat.js';
 import type { WatchBaseline } from './watch.js';
+import { createHintCoalescer, type HintSource } from './hints.js';
 import type { ConductionRecord } from '../tools/conduction-record.js';
 import type { DaemonConfig } from './config.js';
 
@@ -1589,6 +1590,226 @@ describe('runScheduler — persistent auth-failure exit', () => {
     };
     await expect(runScheduler(h.deps, h.keeper)).rejects.toThrow('stop-the-loop');
     expect(h.deps.listConductions).toHaveBeenCalledTimes(5); // survived well past 3
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-1011 — the OPTIONAL hint race against the (unchanged) poll sleep.
+//
+// Everything below drives the REAL src/daemon/hints.ts coalescer over a virtual clock on the
+// already-injected `sleep` / `startTimeout` seams. No real timers, no socket: the impure channel
+// adapter is tested separately in hint-subscription.test.ts.
+
+/** A virtual clock for the two seams the loop actually uses. `sleep` is a promise that resolves
+ *  when time reaches its deadline — which is what makes a LOSING sleep observable: it stays
+ *  pending in this queue and fires later, exactly as a real abandoned timer does. */
+function makeVirtualClock() {
+  let now = 0;
+  let seq = 0;
+  const pending: Array<{ id: number; at: number; fire: () => void }> = [];
+  const flush = async () => {
+    for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  return {
+    now: () => now,
+    pendingCount: () => pending.length,
+    sleep: (ms: number): Promise<void> =>
+      new Promise<void>((resolve) => {
+        pending.push({ id: (seq += 1), at: now + ms, fire: resolve });
+      }),
+    startTimeout: (ms: number, fn: () => void): (() => void) => {
+      const entry = { id: (seq += 1), at: now + ms, fire: fn };
+      pending.push(entry);
+      return () => {
+        const i = pending.indexOf(entry);
+        if (i >= 0) pending.splice(i, 1);
+      };
+    },
+    /** Advance to an ABSOLUTE time, firing everything due in (deadline, insertion) order and
+     *  letting the loop run to quiescence between each. */
+    advanceTo: async (t: number): Promise<void> => {
+      for (;;) {
+        const due = pending
+          .filter((p) => p.at <= t)
+          .sort((a, b) => a.at - b.at || a.id - b.id)[0];
+        if (!due) break;
+        pending.splice(pending.indexOf(due), 1);
+        now = due.at;
+        due.fire();
+        await flush();
+      }
+      now = t;
+      await flush();
+    },
+  };
+}
+
+/** Wire the harness's scheduler deps onto a virtual clock + the REAL hint coalescer, and start the
+ *  forever loop in the background. `passes()` counts passes by the one read every pass makes. */
+function startLoopWithHints(h: ReturnType<typeof makeHarness>, opts: { hints?: boolean } = {}) {
+  const clock = makeVirtualClock();
+  const coalescer = createHintCoalescer({ leaseHolder: ME, debounceMs: 1_000 });
+  const sleepArgs: number[] = [];
+  (h.deps as { sleep: (ms: number) => Promise<void> }).sleep = (ms: number) => {
+    sleepArgs.push(ms);
+    return clock.sleep(ms);
+  };
+  (h.deps as { startTimeout: (ms: number, fn: () => void) => () => void }).startTimeout =
+    clock.startTimeout;
+  if (opts.hints !== false) (h.deps as { hints?: HintSource }).hints = coalescer;
+  const loop = runScheduler(h.deps, h.keeper);
+  void loop.catch(() => {
+    /* the loop is never stopped in these tests; the process ends with the test */
+  });
+  /** Deliver a broadcast message exactly as the adapter would: decide, then arm the window timer. */
+  const hint = (msg: Parameters<typeof coalescer.accept>[0]): void => {
+    const action = coalescer.accept(msg);
+    if (action.action === 'open-window') clock.startTimeout(action.debounceMs, coalescer.closeWindow);
+  };
+  return {
+    clock,
+    hint,
+    sleepArgs,
+    passes: () => (h.deps.listConductions as unknown as { mock: { calls: unknown[] } }).mock.calls.length,
+  };
+}
+
+const taskHint = { event: 'task_change', payload: { record: { id: 'task-1' } } };
+
+describe('runScheduler — B-1011 hint race', () => {
+  it('a hint at t+1s runs a full pass at t+2s (first hint opens the fixed 1s window)', async () => {
+    const h = makeHarness({ conductions: [], tasks: {} });
+    const w = startLoopWithHints(h);
+    await w.clock.advanceTo(0);
+    expect(w.passes()).toBe(1); // the boot pass, then the loop is asleep
+
+    await w.clock.advanceTo(1_000);
+    w.hint(taskHint);
+    await w.clock.advanceTo(1_999);
+    expect(w.passes()).toBe(1); // still inside the fixed 1s debounce window
+    await w.clock.advanceTo(2_000);
+    expect(w.passes()).toBe(2); // woken at t+2s — NOT t+25s
+    expect(w.clock.now()).toBe(2_000);
+  });
+
+  it('a SILENT channel changes nothing: the next pass is at t+25s and every sleep is still pollMs', async () => {
+    const h = makeHarness({ conductions: [], tasks: {} });
+    const w = startLoopWithHints(h);
+    await w.clock.advanceTo(0);
+    await w.clock.advanceTo(24_999);
+    expect(w.passes()).toBe(1);
+    await w.clock.advanceTo(25_000);
+    expect(w.passes()).toBe(2);
+    await w.clock.advanceTo(50_000);
+    expect(w.passes()).toBe(3);
+    expect(w.sleepArgs.every((ms) => ms === config.pollMs)).toBe(true);
+  });
+
+  it('with NO hints dep the loop is unchanged — pass at t+25s, and the same pollMs sleep', async () => {
+    const h = makeHarness({ conductions: [], tasks: {} });
+    const w = startLoopWithHints(h, { hints: false });
+    await w.clock.advanceTo(0);
+    await w.clock.advanceTo(24_999);
+    expect(w.passes()).toBe(1);
+    await w.clock.advanceTo(25_000);
+    expect(w.passes()).toBe(2);
+    expect(w.sleepArgs).toEqual([config.pollMs, config.pollMs]);
+  });
+
+  it('a BURST of hints produces exactly ONE extra pass', async () => {
+    const h = makeHarness({ conductions: [], tasks: {} });
+    const w = startLoopWithHints(h);
+    await w.clock.advanceTo(0);
+    for (let i = 0; i < 20; i += 1) w.hint(taskHint);
+    await w.clock.advanceTo(500);
+    for (let i = 0; i < 20; i += 1) w.hint(taskHint); // still inside the same fixed window
+    await w.clock.advanceTo(5_000);
+    expect(w.passes()).toBe(2); // ONE pass for the whole burst
+  });
+
+  it('THE RACE HAZARD: a stale losing pollMs sleep resolving later can never wake a LATER iteration', async () => {
+    const h = makeHarness({ conductions: [], tasks: {} });
+    const w = startLoopWithHints(h);
+    await w.clock.advanceTo(0);
+
+    // Iteration 1 races a sleep due at t=25s. A hint wins it at t=2s, ABANDONING that sleep —
+    // which is still queued and will resolve on schedule.
+    await w.clock.advanceTo(1_000);
+    w.hint(taskHint);
+    await w.clock.advanceTo(2_000);
+    expect(w.passes()).toBe(2);
+
+    // Iteration 2 raced a FRESH sleep, due at t=27s. The abandoned one fires at t=25s...
+    await w.clock.advanceTo(25_000);
+    expect(w.passes()).toBe(2); // ...and wakes nothing: no awaiter is left holding it.
+    await w.clock.advanceTo(26_999);
+    expect(w.passes()).toBe(2);
+    await w.clock.advanceTo(27_000);
+    expect(w.passes()).toBe(3); // the FRESH sleep, a full pollMs after its own iteration began
+  });
+
+  it('a hint arriving MID-PASS is consumed at the next sleep — no wake lost, no two passes overlapping', async () => {
+    const h = makeHarness({ conductions: [], tasks: {} });
+    let inFlight = 0;
+    let maxConcurrent = 0;
+    let calls = 0;
+    let release: (() => void) | null = null;
+    // Pass 2 BLOCKS until the test releases it, so a wake can land in the middle of a pass — the
+    // exact case the sticky flag exists for.
+    (h.deps as { listConductions: () => Promise<unknown[]> }).listConductions = vi.fn(async () => {
+      calls += 1;
+      inFlight += 1;
+      maxConcurrent = Math.max(maxConcurrent, inFlight);
+      if (calls === 2) await new Promise<void>((resolve) => (release = resolve));
+      inFlight -= 1;
+      return [];
+    });
+    const w = startLoopWithHints(h);
+    await w.clock.advanceTo(0);
+    await w.clock.advanceTo(25_000); // the poll fires pass 2 — which now blocks, mid-pass
+    expect(w.passes()).toBe(2);
+
+    w.hint(taskHint); // window opens at t=25s and closes at t=26s, while pass 2 still runs
+    await w.clock.advanceTo(26_000);
+    expect(w.passes()).toBe(2); // the wake is LATCHED, not delivered into a running pass
+    expect(maxConcurrent).toBe(1);
+
+    release!();
+    await w.clock.advanceTo(26_000); // pass 2 finishes and the loop reaches its sleep
+    expect(w.passes()).toBe(3); // the sticky wake is consumed there — nothing was lost
+    expect(maxConcurrent).toBe(1); // and still never two passes at once
+
+    // Consumed exactly ONCE: the sleep after it runs the full poll interval.
+    await w.clock.advanceTo(50_999);
+    expect(w.passes()).toBe(3);
+    await w.clock.advanceTo(51_000);
+    expect(w.passes()).toBe(4);
+  });
+
+  it('the hint never enters any read or decision: a hint-driven pass reads exactly what a poll-driven one reads', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': { workflow_state: 'Built', awaiting_human_input: true } },
+    });
+    const w = startLoopWithHints(h);
+    await w.clock.advanceTo(0);
+    const pollDrivenReads = (h.deps.getTaskMeta as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls.length;
+
+    // A payload full of ids the daemon must NEVER act on — it is read only to DISCARD, so a
+    // hint-driven pass must re-read the board and touch nothing the payload named.
+    await w.clock.advanceTo(1_000);
+    w.hint({
+      event: 'task_change',
+      payload: { record: { id: 'task-FORGED', status: 'Ready', lease_holder: 'someone-else' } },
+    });
+    await w.clock.advanceTo(2_000);
+
+    const reads = (h.deps.getTaskMeta as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(reads.length).toBe(pollDrivenReads + 1); // same reads, one pass later
+    expect(reads.every((c) => c[0] === 'task-1')).toBe(true); // never the payload's id
+    expect(h.commands.join(' ')).not.toContain('FORGED');
+    expect(h.logs.join(' ')).not.toContain('FORGED');
   });
 });
 

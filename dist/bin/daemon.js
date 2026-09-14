@@ -31583,6 +31583,8 @@ function loadDaemonConfig(env, readFile, opts = {}) {
       validatedProfile.maxConcurrentWorkers ?? 3
     ),
     readyAgeMs: envMs(env, "HARMONY_DAEMON_READY_AGE_MS", 6e5),
+    // B-1011: the fixed (never sliding) hint-coalescing window — see DaemonConfig.hintDebounceMs.
+    hintDebounceMs: envMs(env, "HARMONY_DAEMON_HINT_DEBOUNCE_MS", 1e3),
     profile: {
       launch: validatedProfile.launch,
       reap: validatedProfile.reap,
@@ -32379,8 +32381,181 @@ async function runScheduler(deps, keeper) {
     if (consecutiveAuthFailingPasses >= AUTH_FAILURE_PASS_LIMIT) {
       throw new PersistentAuthFailure(consecutiveAuthFailingPasses);
     }
-    await deps.sleep(deps.config.pollMs);
+    if (deps.hints) {
+      await Promise.race([deps.sleep(deps.config.pollMs), deps.hints.next()]);
+      deps.hints.abandon();
+    } else {
+      await deps.sleep(deps.config.pollMs);
+    }
   }
+}
+
+// src/daemon/hints.ts
+var HINT_EVENTS = ["task_change", "conduction_change"];
+var IGNORABLE_KEYS = /* @__PURE__ */ new Set(["last_heartbeat_at", "updated_at"]);
+function asRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function hintDropReason(msg, leaseHolder) {
+  if (!msg.event || !HINT_EVENTS.includes(msg.event)) return "unknown-event";
+  const payload = asRecord(msg.payload);
+  if (!payload) return null;
+  const record = asRecord(payload.record);
+  if (!record) return null;
+  if (typeof record.lease_holder === "string" && record.lease_holder === leaseHolder) {
+    return "self-lease";
+  }
+  const oldRecord = asRecord(payload.old_record);
+  if (oldRecord) {
+    const keys = /* @__PURE__ */ new Set([...Object.keys(record), ...Object.keys(oldRecord)]);
+    let differs = false;
+    for (const key of keys) {
+      if (JSON.stringify(record[key]) === JSON.stringify(oldRecord[key])) continue;
+      if (!IGNORABLE_KEYS.has(key)) return null;
+      differs = true;
+    }
+    if (differs) return "heartbeat-only";
+  }
+  return null;
+}
+function createHintCoalescer(opts) {
+  let open = false;
+  let latched = false;
+  let waiter = null;
+  return {
+    accept(msg) {
+      const reason = hintDropReason(msg, opts.leaseHolder);
+      if (reason) return { action: "drop", reason };
+      if (open) return { action: "coalesce" };
+      open = true;
+      return { action: "open-window", debounceMs: opts.debounceMs };
+    },
+    closeWindow() {
+      open = false;
+      const resolve = waiter;
+      waiter = null;
+      if (resolve) {
+        resolve();
+        return;
+      }
+      latched = true;
+    },
+    next() {
+      if (latched) {
+        latched = false;
+        return Promise.resolve();
+      }
+      return new Promise((resolve) => {
+        waiter = resolve;
+      });
+    },
+    abandon() {
+      waiter = null;
+    },
+    pendingWake: () => latched,
+    windowOpen: () => open
+  };
+}
+function describe(status, err) {
+  const detail = err instanceof Error ? err.message : err == null ? "" : String(err);
+  return detail ? `${status} (${detail})` : status;
+}
+function createHintLifecycle(opts) {
+  let subscribedOnce = false;
+  let dead = false;
+  let live = false;
+  let lastStatus = null;
+  return {
+    onStatus(status, err) {
+      if (dead) return { kind: "none" };
+      const repeat = status === lastStatus;
+      lastStatus = status;
+      if (status === "SUBSCRIBED") {
+        const first = !subscribedOnce;
+        subscribedOnce = true;
+        live = true;
+        if (repeat) return { kind: "none" };
+        return {
+          kind: "log",
+          line: first ? `hint channel subscribed: ${opts.topic} \u2014 waking on board changes` : `hint channel re-subscribed: ${opts.topic} \u2014 hints resume`
+        };
+      }
+      live = false;
+      if (!subscribedOnce) {
+        dead = true;
+        return {
+          kind: "log-and-teardown",
+          line: `hint channel unavailable (${describe(status, err)}) on ${opts.topic} \u2014 continuing on the poll interval alone; not retried in this process`
+        };
+      }
+      if (repeat) return { kind: "none" };
+      return {
+        kind: "log",
+        line: `hint channel ${describe(status, err)} on ${opts.topic} \u2014 awaiting the client's own rejoin`
+      };
+    },
+    acceptsMessages: () => live && !dead,
+    isDead: () => dead,
+    everSubscribed: () => subscribedOnce
+  };
+}
+
+// src/daemon/hint-subscription.ts
+function hintTopic(workspaceId) {
+  return `workspace:${workspaceId}`;
+}
+function startHintSubscription(deps) {
+  const topic = hintTopic(deps.workspaceId);
+  const coalescer = createHintCoalescer({
+    leaseHolder: deps.leaseHolder,
+    debounceMs: deps.debounceMs
+  });
+  const lifecycle = createHintLifecycle({ topic });
+  let channel = null;
+  const apply = (status, err) => {
+    const action = lifecycle.onStatus(status, err);
+    if (action.kind === "none") return;
+    deps.log(action.line);
+    if (action.kind === "log-and-teardown" && channel) {
+      const doomed = channel;
+      channel = null;
+      try {
+        void Promise.resolve(deps.removeChannel(doomed)).catch(() => {
+        });
+      } catch {
+      }
+    }
+  };
+  const onMessage = (message) => {
+    if (!lifecycle.acceptsMessages()) return;
+    const action = coalescer.accept(message);
+    if (action.action !== "open-window") return;
+    deps.startTimeout(action.debounceMs, coalescer.closeWindow);
+  };
+  try {
+    channel = deps.createChannel(topic);
+    for (const event of HINT_EVENTS) channel.on("broadcast", { event }, onMessage);
+    channel.subscribe((status, err) => {
+      apply(
+        ["SUBSCRIBED", "CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].find(
+          (s) => s === status
+        ) ?? "CHANNEL_ERROR",
+        err
+      );
+    });
+  } catch (err) {
+    apply("SETUP_FAILED", err);
+  }
+  return {
+    source: coalescer,
+    isDead: () => lifecycle.isDead(),
+    close: async () => {
+      const open = channel;
+      channel = null;
+      if (!open) return;
+      await deps.removeChannel(open);
+    }
+  };
 }
 
 // src/bin/daemon.ts
@@ -32418,6 +32593,24 @@ async function markCleanShutdownBounded(client, holder, logFn, timeoutMs) {
   }
 }
 var CLEAN_SHUTDOWN_TIMEOUT_MS = 2e3;
+var HINT_CLOSE_TIMEOUT_MS = 1e3;
+async function closeHintsBounded(hints, logFn, timeoutMs) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    const outcome = await Promise.race([hints.close().then(() => "closed"), timeout]);
+    logFn(
+      outcome === "timeout" ? "hint channel did not unsubscribe in time \u2014 exiting anyway" : "hint channel unsubscribed"
+    );
+  } catch (err) {
+    logFn(`hint channel unsubscribe failed (${formatDaemonError(err)}) \u2014 exiting anyway`);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 async function main() {
   const token = process.env.HARMONY_API_TOKEN;
   if (!token) {
@@ -32549,6 +32742,34 @@ ${err instanceof Error ? err.message : String(err)}
   const projectId = auth.getProjectId();
   const projectKey = (await getProject(client, projectId)).key;
   const leaseHolder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
+  let workspaceId = null;
+  try {
+    const { data, error } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
+    if (error) throw error;
+    workspaceId = data.workspace_id;
+  } catch (err) {
+    log(
+      `could not resolve the workspace for hints (${formatDaemonError(err)}) \u2014 continuing on the ${config.pollMs}ms poll interval alone`
+    );
+  }
+  const startTimeout = (ms, fn) => {
+    const timer = setTimeout(fn, ms);
+    timer.unref?.();
+    return () => clearTimeout(timer);
+  };
+  let realChannel = null;
+  const hints = workspaceId ? startHintSubscription({
+    createChannel: (topic) => {
+      realChannel = client.channel(topic, { config: { private: true } });
+      return realChannel;
+    },
+    removeChannel: () => realChannel ? client.removeChannel(realChannel) : Promise.resolve(),
+    workspaceId,
+    leaseHolder,
+    debounceMs: config.hintDebounceMs,
+    startTimeout,
+    log
+  }) : null;
   const deps = {
     now: Date.now,
     sleep,
@@ -32569,11 +32790,10 @@ ${err instanceof Error ? err.message : String(err)}
       timer.unref?.();
       return () => clearInterval(timer);
     },
-    startTimeout: (ms, fn) => {
-      const timer = setTimeout(fn, ms);
-      timer.unref?.();
-      return () => clearTimeout(timer);
-    },
+    startTimeout,
+    // B-1011: OPTIONAL. Present only when the workspace uuid resolved and a channel was created;
+    // absent otherwise, which leaves the scheduler's sleep the literal line it has always been.
+    hints: hints?.source,
     takeoverConduction: (args) => takeoverConduction(client, args),
     // B-717 item 3: the multi-daemon steal CAS.
     stealConduction: (args) => stealConduction(client, args),
@@ -32608,6 +32828,7 @@ ${err instanceof Error ? err.message : String(err)}
   });
   const stop = async (signal) => {
     keeper.stopAll();
+    if (hints) await closeHintsBounded(hints, log, HINT_CLOSE_TIMEOUT_MS);
     await markCleanShutdownBounded(client, leaseHolder, log, CLEAN_SHUTDOWN_TIMEOUT_MS);
     log(`received ${signal} \u2014 exiting (launchd owns restart)`);
     process.exit(0);
@@ -32619,7 +32840,7 @@ ${err instanceof Error ? err.message : String(err)}
     void stop("SIGINT");
   });
   log(
-    `conductor daemon up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms, worker timeout ${config.workerTimeoutMs}ms`
+    `conductor daemon up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms, worker timeout ${config.workerTimeoutMs}ms, hints ${hints ? `requested (${config.hintDebounceMs}ms debounce)` : "off"}`
   );
   try {
     await runScheduler(deps, keeper);

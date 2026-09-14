@@ -90,6 +90,24 @@ describe('loadDaemonConfig', () => {
     ).toThrow(/HARMONY_DAEMON_POLL_MS/);
   });
 
+  // B-1011: the hint debounce window — a FIXED window opened by the first hint, never sliding.
+  it('applies the B-1011 hint debounce default of 1s', () => {
+    const cfg = loadDaemonConfig(envWith(), readProfile);
+    expect(cfg.hintDebounceMs).toBe(1000);
+  });
+
+  it('reads HARMONY_DAEMON_HINT_DEBOUNCE_MS from env when set', () => {
+    const cfg = loadDaemonConfig(envWith({ HARMONY_DAEMON_HINT_DEBOUNCE_MS: '250' }), readProfile);
+    expect(cfg.hintDebounceMs).toBe(250);
+  });
+
+  it('treats an EMPTY HARMONY_DAEMON_HINT_DEBOUNCE_MS as unset, and rejects a non-positive one', () => {
+    expect(loadDaemonConfig(envWith({ HARMONY_DAEMON_HINT_DEBOUNCE_MS: '' }), readProfile).hintDebounceMs).toBe(1000);
+    expect(() =>
+      loadDaemonConfig(envWith({ HARMONY_DAEMON_HINT_DEBOUNCE_MS: '0' }), readProfile),
+    ).toThrow(/HARMONY_DAEMON_HINT_DEBOUNCE_MS/);
+  });
+
   it('applies the B-713 retry defaults: cap 2, backoff 15s', () => {
     const cfg = loadDaemonConfig(envWith(), readProfile);
     expect(cfg.retryCap).toBe(2);

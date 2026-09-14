@@ -159,6 +159,7 @@ import type {
 } from '../tools/conduction-record.js';
 import type { RecordLegOutputArgs } from '../tools/leg-output-record.js';
 import type { Taskish } from '../conductor/poll-loop.js';
+import type { HintSource } from './hints.js';
 
 /** The ticket shape the daemon reads (a getTask view:'meta' result is structurally assignable). */
 export type DaemonTask = Taskish & {
@@ -204,6 +205,17 @@ export interface SchedulerDeps extends WriteRetryDeps {
   startInterval(ms: number, fn: () => void): () => void;
   /** B-739: start a one-shot timer; returns a cancel function. Same dependency-injection rule. */
   startTimeout(ms: number, fn: () => void): () => void;
+  /** B-1011: OPTIONAL interrupt for the poll sleep — resolves when a board change is worth a pass
+   *  sooner than `config.pollMs`. Fed by a Supabase Realtime broadcast subscription
+   *  (src/daemon/hint-subscription.ts) over the pure decision core in src/daemon/hints.ts.
+   *
+   *  OPTIONAL IS THE POINT. Absent — no channel, RLS denial, a board without the B-1010 triggers —
+   *  the loop below runs the SAME literal `await deps.sleep(deps.config.pollMs)` it always has, so
+   *  "behaves exactly as it does today" is a property of the code path, not of a test result.
+   *
+   *  It is a WAKE, NOT DATA: it carries no value and nothing in this module reads one. A hint-
+   *  driven pass is a FULL pass — the same reads, the same decisions, just sooner. */
+  hints?: HintSource;
   /** Run a rendered launch/reap/probe command to completion.
    *
    *  CONTROL vs DISPLAY (amended by B-720, corrected by its replacement capture). The exit code
@@ -1529,7 +1541,10 @@ async function fireLaunch(
 /** The forever loop: pass; sleep(pollMs). A pass-level failure (e.g. a transient list error) is
  *  logged and the loop keeps going — supervision (launchd) owns process death, not transients.
  *  ONE exception (B-696): AUTH_FAILURE_PASS_LIMIT consecutive auth-shaped-failing passes throw
- *  PersistentAuthFailure — a zombie daemon must die loudly, not heartbeat forever. */
+ *  PersistentAuthFailure — a zombie daemon must die loudly, not heartbeat forever.
+ *
+ *  B-1011: when — and ONLY when — the optional `deps.hints` source is wired, that sleep is RACED
+ *  against it (see the bottom of the loop). `pollMs` itself is unchanged either way. */
 export async function runScheduler(deps: SchedulerDeps, keeper: HeartbeatKeeper): Promise<never> {
   const state = new Map<string, WatchBaseline>();
   const runtime = createSchedulerRuntime();
@@ -1553,6 +1568,24 @@ export async function runScheduler(deps: SchedulerDeps, keeper: HeartbeatKeeper)
     if (consecutiveAuthFailingPasses >= AUTH_FAILURE_PASS_LIMIT) {
       throw new PersistentAuthFailure(consecutiveAuthFailingPasses);
     }
-    await deps.sleep(deps.config.pollMs);
+    // B-1011: the ONE line that was the daemon's whole reaction latency. With no hint source it is
+    // untouched, byte for byte. With one, it is RACED — the poll interval itself is unchanged, so
+    // a hint can only ever make a pass happen SOONER, never later, and never less often.
+    //
+    // The race's one real hazard is a stale sleep: the loser of a race keeps running, so the
+    // 25s sleep this iteration abandoned resolves at some point during a LATER iteration. It can
+    // never wake that later iteration, because every iteration races a FRESH `deps.sleep(...)`
+    // promise and holds no reference to the previous one — the resolved stale promise has no
+    // awaiter left. (Asserted directly in scheduler.test.ts's stale-sleep test.)
+    if (deps.hints) {
+      await Promise.race([deps.sleep(deps.config.pollMs), deps.hints.next()]);
+      // The race is over: tell the source to stop listening on the promise it just handed out.
+      // Without this, a hint arriving during the pass BELOW would be delivered to an abandoned
+      // promise and lost for a full poll interval; with it, that hint LATCHES and is consumed at
+      // the next sleep (the sticky flag). See HintSource's doc comment in ./hints.ts.
+      deps.hints.abandon();
+    } else {
+      await deps.sleep(deps.config.pollMs);
+    }
   }
 }
