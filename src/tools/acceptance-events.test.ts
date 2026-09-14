@@ -391,8 +391,10 @@ describe('applyAcceptanceEventPayload', () => {
     const result = await applyAcceptanceEventPayload(client, event);
     expect(result.applied).toBe(1);
     expect(result.by_write_kind).toEqual({ knowledge_entry_content: 1 });
+    // B-921: the call now also carries `_title` (null here — the item was minted with no title).
     expect(client.rpc).toHaveBeenCalledWith('consume_knowledge_entry_content_write', {
       _event_id: 'event-1', _external_ref: 'entry-1', _content: 'THE ACCEPTED WORDING', _entry_id: null,
+      _title: null,
     });
   });
 
@@ -403,6 +405,54 @@ describe('applyAcceptanceEventPayload', () => {
     await applyAcceptanceEventPayload(client, makeEvent([knowledgeEntryItem('entry-1', { entry_id: 'kd-77' })]));
     expect(client.rpc).toHaveBeenCalledWith('consume_knowledge_entry_content_write',
       expect.objectContaining({ _entry_id: 'kd-77' }));
+  });
+
+  // B-921 — the write-side sibling of the B-883 p_remark drift retry: the companion web migration
+  // (harmony-web PR #485) widens this RPC with a new trailing `_title` param, so a not-yet-migrated DB
+  // rejects the whole call. The accept must still land (degrading to today's content-only write), and
+  // the dropped title must be reported, never silently swallowed.
+  it('passes item.title through as _title when present', async () => {
+    const client = makeClient({
+      rpcResponses: { consume_knowledge_entry_content_write: [{ data: { applied: true } }] },
+    });
+    await applyAcceptanceEventPayload(client, makeEvent([knowledgeEntryItem('entry-1', { title: 'B-921: technical design — X' })]));
+    expect(client.rpc).toHaveBeenCalledWith('consume_knowledge_entry_content_write',
+      expect.objectContaining({ _title: 'B-921: technical design — X' }));
+  });
+
+  it('SCHEMA DRIFT: a PGRST202 naming _title retries WITHOUT it, and the write still lands', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_knowledge_entry_content_write: [
+          { data: null, error: { message: 'Could not find the function public.consume_knowledge_entry_content_write(_content, _entry_id, _event_id, _external_ref, _title) in the schema cache' } },
+          { data: { applied: true, result_id: 'entry-1' } },
+        ],
+      },
+    });
+    const event = makeEvent([knowledgeEntryItem('entry-1', { title: 'B-921: technical design — X' })]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.applied).toBe(1);
+    expect(client.rpcCalls).toHaveLength(2);
+    expect(client.rpcCalls[0].args).toHaveProperty('_title', 'B-921: technical design — X');
+    expect(client.rpcCalls[1].args).not.toHaveProperty('_title');
+  });
+
+  it('a knowledge_entry_content RPC missing altogether (not a _title-specific drift) still degrades to substrate-absent, not a title retry', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_knowledge_entry_content_write: [
+          { data: null, error: { code: '42883', message: 'function public.consume_knowledge_entry_content_write does not exist' } },
+        ],
+      },
+    });
+    const event = makeEvent([knowledgeEntryItem('entry-1', { title: 'B-921: technical design — X' })]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    // The B-383 whole-substrate-absent degrade (unrelated to B-921's _title retry) — applied nothing,
+    // named the write kind, never threw.
+    expect(result.applied).toBe(0);
+    expect(result.substrate_absent_for).toBe('knowledge_entry_content');
+    // No retry attempted: this is a wholly-absent function, not the _title-drift case.
+    expect(client.rpcCalls).toHaveLength(1);
   });
 
   it('refuses a knowledge_entry_content item with no content — the payload CARRIES the text, it is never synthesized', async () => {

@@ -4,6 +4,7 @@ import {
   renderBrief,
   renderEntry,
   withDerivedEntryContent,
+  deriveEntryTitle,
   derivesEntryContent,
   needsAcceptanceEventVehicle,
   GATE_REASON_FLOW,
@@ -21,6 +22,17 @@ import { applyAcceptanceEventPayload, type PendingAcceptanceEvent } from './acce
 vi.mock('./resolve-task-id.js', () => ({
   resolveTaskId: vi.fn(async (_client: unknown, _projectId: string, input: string) => input),
 }));
+
+// B-921 — the visualId lookup's project-key half goes through `getProject`, which (via
+// `resolveEnvironment`) can fire an EXTRA `conductions` read whenever HARMONY_CONDUCTION_ID happens to
+// be set in the process env (true of a conducted worker's own build leg — exactly the environment this
+// suite can run in). That read would consume a slot off the shared FIFO queue this file's `makeClient`
+// uses for everything else, misaligning every response after it — a hazard entirely independent of
+// this ticket's fix. Mocked here, same discipline as `resolve-task-id.test.ts`'s own `getProject` mock,
+// so this file's `visual.projectKey` plumbing (see `makeClient` below) is the ONLY thing under test.
+vi.mock('./project.js', () => ({ getProject: vi.fn() }));
+import { getProject } from './project.js';
+const mockGetProject = vi.mocked(getProject);
 
 /**
  * B-866 — THE DERIVATION CONTRACT.
@@ -47,7 +59,15 @@ vi.mock('./resolve-task-id.js', () => ({
 const PROJECT_ID = 'proj-1';
 const USER_ID = 'user-1';
 
-function makeClient(responses: Array<{ data: unknown; error?: unknown }>) {
+function makeClient(
+  responses: Array<{ data: unknown; error?: unknown }>,
+  // B-921 — the visualId lookup (decomposition-proposal / design-decision-draft only) reads the
+  // project's `key` and the task's `task_number`. OPTIONAL and defaulted to "not found" so every test
+  // written before B-921 keeps composing with NO visualId — deriveEntryTitle's own guard then no-ops,
+  // which is byte-identical to pre-B-921 behavior (no title on the stored payload item). Tests that
+  // DO want a derived title (the three B-921 cases below) pass this explicitly.
+  visual: { projectKey?: string; taskNumber?: number } = {},
+) {
   let i = 0;
   const next = () => responses[i++] ?? { data: null, error: null };
   const chain: any = {};
@@ -64,8 +84,34 @@ function makeClient(responses: Array<{ data: unknown; error?: unknown }>) {
   const emptyFloorChain: any = {};
   emptyFloorChain.select = vi.fn(() => emptyFloorChain);
   emptyFloorChain.eq = vi.fn(async () => ({ data: [], error: null }));
+
+  // B-921 — the visualId lookup's project-key half is mocked at the MODULE level (`getProject`,
+  // above) rather than routed through this client, for the reason stated on that mock. Configure it
+  // here, per-call, so every pre-B-921 test (which passes no `visual`) gets a rejection — caught by
+  // composeBrief's own guard, degrading to no visualId, byte-identical to today.
+  mockGetProject.mockReset();
+  if (visual.projectKey != null) {
+    mockGetProject.mockResolvedValue({ key: visual.projectKey } as any);
+  } else {
+    mockGetProject.mockRejectedValue(new Error('project not found'));
+  }
+
+  // The task-number half of the SAME lookup IS a raw client read (`.from('tasks').select('task_number')`)
+  // — TABLE/COLUMN-ROUTED, same precedent as the B-838 floor read above, so tests written before B-921
+  // keep exercising exactly the response sequence they already queue. `tasks` IS otherwise read (the
+  // plan-draft transition guard), so only the literal `'task_number'` select — unique to this new read
+  // — is intercepted; every other `tasks` select keeps flowing through the generic FIFO chain unchanged.
+  const taskNumberStub: any = {};
+  taskNumberStub.eq = vi.fn(() => taskNumberStub);
+  taskNumberStub.maybeSingle = vi.fn(async () => ({
+    data: visual.taskNumber != null ? { task_number: visual.taskNumber } : null,
+    error: null,
+  }));
+
   const realFrom = chain.from;
   chain.from = vi.fn((table: string) => (table === 'ticket_references_knowledge' ? emptyFloorChain : realFrom(table)));
+  const realSelect = chain.select;
+  chain.select = vi.fn((cols?: string) => (cols === 'task_number' ? taskNumberStub : realSelect(cols)));
   return chain;
 }
 
@@ -103,8 +149,16 @@ function authoredKeys(): string[] {
   ];
 }
 
-/** Compose a brief through the real handler and hand back what was actually stored. */
-async function composeAndCapture(reason: string, doc: BriefDoc, decisionRef: DecisionRef | null = DECISION_REF) {
+/** Compose a brief through the real handler and hand back what was actually stored.
+ *  `visual` (B-921) is forwarded to `makeClient` — pass `{ projectKey, taskNumber }` to exercise the
+ *  derived-title path; omitted (the default) composes with no visualId, exactly like every pre-B-921
+ *  call here. */
+async function composeAndCapture(
+  reason: string,
+  doc: BriefDoc,
+  decisionRef: DecisionRef | null = DECISION_REF,
+  visual: { projectKey?: string; taskNumber?: number } = {},
+) {
   // B-922: a plan-draft brief refuses a null MERGED pending_activity (its accept always advances
   // Designed → Planned) — so, unlike every other reason here, it needs a REAL one, which pulls in the
   // transition guard's own task-state + transition-lookup reads ahead of the insert.
@@ -119,7 +173,7 @@ async function composeAndCapture(reason: string, doc: BriefDoc, decisionRef: Dec
     ] : []),
     { data: { id: 'brief-1', task_id: 'task-1', reason, status: 'active', iteration: 1 } },
     { data: null },                                                        // tasks flag update
-  ]);
+  ], visual);
   await composeBrief(client, PROJECT_ID, USER_ID, {
     task_id: 'task-1', reason, doc, pending_activity: (isPlanDraft ? 'planning' : null) as any,
     ...(decisionRef ? { decision_ref: decisionRef } : {}),
@@ -299,11 +353,14 @@ describe('the derivation contract: approved doc in, promoted entry + executed wr
     };
     const result = await applyAcceptanceEventPayload({ rpc } as any, event);
     expect(result.applied).toBe(1);
+    // B-921: the RPC call now ALSO carries `_title` (null here — this compose passed no visualId, so
+    // deriveEntryTitle no-opped and the stored item carries no title, exactly today's pre-B-921 shape).
     expect(rpc).toHaveBeenCalledWith('consume_knowledge_entry_content_write', {
       _event_id: 'event-1',
       _external_ref: entryItemOf(stored.doc)!.ref,
       _content: entryItemOf(stored.doc)!.content,
       _entry_id: DECISION_REF.id,
+      _title: null,
     });
   });
 
@@ -468,5 +525,92 @@ describe('one structuring, two projections — and the archive is untouched (B-8
     const doc = ratifiedDoc();
     expect(withDerivedEntryContent(doc, 'plan-draft', DECISION_REF, { reason: 'plan-draft' })).toBe(doc);
     expect(withDerivedEntryContent(doc, 'clarification-draft', null, { reason: 'clarification-draft' })).toBe(doc);
+  });
+});
+
+// ——— B-921: the entry TITLE is re-derived at accept time, exactly like the CONTENT ——————————————————
+//
+// The bug this closes: an iterate to a different FINAL recommendation left the entry's title stamped
+// from round 1 (set once at the skill's round-1 `record_decision` call) while the content correctly
+// tracked the final round. The fix rides the SAME `withDerivedEntryContent` call, computing `title`
+// from the SAME doc `content` is computed from — so a title drift is structurally impossible: both are
+// projections of one doc, at one call.
+
+describe('B-921: the derived title tracks the FINAL round, riding the same withDerivedEntryContent call', () => {
+  const VISUAL = { projectKey: 'B', taskNumber: 921 };
+
+  it('decompose iterate: the derived title matches the FINAL round\'s recommendation, not round 1\'s', async () => {
+    const round1 = await composeAndCapture(
+      'decomposition-proposal',
+      ratifiedDoc({ recommend: { text: 'Three children: schema, MCP surface, web UI' } }),
+      DECISION_REF,
+      VISUAL,
+    );
+    const round1Title = entryItemOf(round1.doc)!.title;
+    expect(round1Title).toBe('B-921: decomposition — Three children: schema, MCP surface, web UI');
+
+    // Round 2 — the FINAL, accepted round — iterates to a DIFFERENT recommendation (no split).
+    const round2 = await composeAndCapture(
+      'decomposition-proposal',
+      ratifiedDoc({ recommend: { text: 'No split — keep as one ticket' } }),
+      DECISION_REF,
+      VISUAL,
+    );
+    const round2Title = entryItemOf(round2.doc)!.title;
+    expect(round2Title).toBe('B-921: decomposition — No split — keep as one ticket');
+    // The whole bug in one assertion: the final round's title must NOT be round 1's stale stamp.
+    expect(round2Title).not.toBe(round1Title);
+  });
+
+  it("design-decide iterate: the derived title matches the FINAL round's decision, not round 1's", async () => {
+    const round1 = await composeAndCapture(
+      'design-decision-draft',
+      ratifiedDoc({ recommend: { text: 'Adopt a per-request cache' } }),
+      DECISION_REF, // type: 'technical-design'
+      VISUAL,
+    );
+    expect(entryItemOf(round1.doc)!.title).toBe('B-921: technical design — Adopt a per-request cache');
+
+    // Round 2 — the FINAL, accepted round — iterates to a DIFFERENT technical decision.
+    const round2 = await composeAndCapture(
+      'design-decision-draft',
+      ratifiedDoc({ recommend: { text: 'Adopt a per-process cache instead' } }),
+      DECISION_REF,
+      VISUAL,
+    );
+    const round2Title = entryItemOf(round2.doc)!.title;
+    expect(round2Title).toBe('B-921: technical design — Adopt a per-process cache instead');
+    expect(round2Title).not.toBe(entryItemOf(round1.doc)!.title);
+  });
+
+  it('no-iterate control: a single-round accept derives the SAME title a human would have hand-authored — no regression', async () => {
+    const stored = await composeAndCapture(
+      'decomposition-proposal',
+      ratifiedDoc({ recommend: { text: 'Three children: schema, MCP surface, web UI' } }),
+      DECISION_REF,
+      VISUAL,
+    );
+    // The mechanically-derived title matches EXACTLY the skill's own hand-authored convention
+    // (skills/harmony-decompose/SKILL.md: "<parent ticket>: decomposition — <recommendation>") — the
+    // common (never-iterated) case is byte-identical to what a human would have written by hand.
+    expect(entryItemOf(stored.doc)!.title).toBe('B-921: decomposition — Three children: schema, MCP surface, web UI');
+  });
+
+  it('deriveEntryTitle returns undefined (never a broken title) with no visualId, no recommendation, or no decisionRef.type', () => {
+    const doc = ratifiedDoc({ recommend: { text: 'Ship it' } });
+    expect(deriveEntryTitle(doc, 'decomposition-proposal', {})).toBeUndefined();
+    expect(deriveEntryTitle({ ...doc, recommend: undefined }, 'decomposition-proposal', { visualId: 'B-921' })).toBeUndefined();
+    expect(deriveEntryTitle(doc, 'design-decision-draft', { visualId: 'B-921' })).toBeUndefined(); // no decisionRef.type
+    expect(deriveEntryTitle(doc, 'clarification-draft', { visualId: 'B-921' })).toBeUndefined(); // out of scope
+  });
+
+  it("sub-track casing: the type's own '-design'-suffixed slug with only the TRAILING hyphen turned into a space", () => {
+    const doc = ratifiedDoc({ recommend: { text: 'X' } });
+    expect(deriveEntryTitle(doc, 'design-decision-draft', { visualId: 'B-921', decisionRef: { type: 'technical-design', id: 'x' } }))
+      .toBe('B-921: technical design — X');
+    expect(deriveEntryTitle(doc, 'design-decision-draft', { visualId: 'B-921', decisionRef: { type: 'product-design', id: 'x' } }))
+      .toBe('B-921: product design — X');
+    expect(deriveEntryTitle(doc, 'design-decision-draft', { visualId: 'B-921', decisionRef: { type: 'ux-ui-design', id: 'x' } }))
+      .toBe('B-921: ux-ui design — X');
   });
 });
