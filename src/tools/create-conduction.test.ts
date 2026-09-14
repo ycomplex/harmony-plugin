@@ -11,12 +11,15 @@ import {
   ActiveConductionExistsError,
   ConductionInsertDeniedError,
   ConductorExcludedError,
+  TicketParkedError,
+  TicketStaleReviveRefusedError,
 } from './conduction-record.js';
 
 const mocks = vi.hoisted(() => ({
   resolveTaskId: vi.fn(),
   assertNotExcluded: vi.fn(),
   insertConduction: vi.fn(),
+  reviveParkedTicketIfNeeded: vi.fn(),
 }));
 
 vi.mock('./resolve-task-id.js', () => ({ resolveTaskId: mocks.resolveTaskId }));
@@ -26,6 +29,7 @@ vi.mock('./conduction-record.js', async (importOriginal) => {
     ...actual,
     assertNotExcluded: mocks.assertNotExcluded,
     createConduction: mocks.insertConduction,
+    reviveParkedTicketIfNeeded: mocks.reviveParkedTicketIfNeeded,
   };
 });
 
@@ -45,6 +49,9 @@ beforeEach(() => {
   mocks.resolveTaskId.mockResolvedValue('uuid-1');
   mocks.assertNotExcluded.mockResolvedValue(undefined);
   mocks.insertConduction.mockResolvedValue(conductionRow);
+  // B-964: a no-op by default, exactly like a non-Parked ticket — most tests here don't care
+  // about the revive path at all.
+  mocks.reviveParkedTicketIfNeeded.mockResolvedValue(undefined);
 });
 
 describe('createConduction (create_conduction MCP tool handler)', () => {
@@ -194,6 +201,66 @@ describe('createConduction (create_conduction MCP tool handler)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// B-964 — the Parked-ticket revive path folded into create_conduction
+// ---------------------------------------------------------------------------
+
+describe('createConduction (create_conduction MCP tool handler) — B-964 unpark', () => {
+  it('calls reviveParkedTicketIfNeeded with the resolved task id and the unpark/resume_to/revived_by args, BEFORE assertNotExcluded and the insert', async () => {
+    await createConduction(client, 'proj-1', 'user-7', {
+      task_id: 'B-964',
+      unpark: true,
+      resume_to: 'Designed',
+      revived_by: "agent acting on the founder's explicit instruction",
+    });
+
+    expect(mocks.reviveParkedTicketIfNeeded).toHaveBeenCalledWith(client, 'proj-1', 'user-7', 'uuid-1', {
+      unpark: true,
+      resume_to: 'Designed',
+      revived_by: "agent acting on the founder's explicit instruction",
+    });
+
+    const reviveOrder = mocks.reviveParkedTicketIfNeeded.mock.invocationCallOrder[0];
+    const excludedOrder = mocks.assertNotExcluded.mock.invocationCallOrder[0];
+    const createOrder = mocks.insertConduction.mock.invocationCallOrder[0];
+    expect(reviveOrder).toBeLessThan(excludedOrder);
+    expect(excludedOrder).toBeLessThan(createOrder);
+  });
+
+  it('maps TicketParkedError to a clean refusal — never a raw error — and never creates a conduction', async () => {
+    mocks.reviveParkedTicketIfNeeded.mockRejectedValue(new TicketParkedError('uuid-1'));
+
+    const err = await createConduction(client, 'proj-1', 'user-7', { task_id: 'B-964' }).catch(
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/Parked/);
+    expect(err.message).toMatch(/unpark: true/);
+    expect(err.cause).toBeInstanceOf(TicketParkedError);
+    expect(mocks.assertNotExcluded).not.toHaveBeenCalled();
+    expect(mocks.insertConduction).not.toHaveBeenCalled();
+  });
+
+  it('maps TicketStaleReviveRefusedError to a clean refusal naming harmony-stale-patch and never creates a conduction', async () => {
+    mocks.reviveParkedTicketIfNeeded.mockRejectedValue(new TicketStaleReviveRefusedError('uuid-1'));
+
+    const err = await createConduction(client, 'proj-1', 'user-7', {
+      task_id: 'B-964',
+      unpark: true,
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/harmony-stale-patch/);
+    expect(err.cause).toBeInstanceOf(TicketStaleReviveRefusedError);
+    expect(mocks.insertConduction).not.toHaveBeenCalled();
+  });
+
+  it('proceeds to create the conduction when the revive succeeds (or is a no-op for a non-Parked ticket)', async () => {
+    const result = await createConduction(client, 'proj-1', 'user-7', { task_id: 'B-964' });
+    expect(result.conduction).toEqual(conductionRow);
+    expect(mocks.insertConduction).toHaveBeenCalled();
+  });
+});
+
 describe('createConductionTool (MCP tool descriptor)', () => {
   it('names the tool create_conduction, requires task_id, and states the operator contract in its description', () => {
     expect(createConductionTool.name).toBe('create_conduction');
@@ -205,5 +272,12 @@ describe('createConductionTool (MCP tool descriptor)', () => {
 
   it('B-894: documents the row-level-security refusal as a third clean refusal', () => {
     expect(createConductionTool.description).toMatch(/row-level security policy/i);
+  });
+
+  it('B-964: documents the Parked-ticket unpark path and its arguments', () => {
+    expect(createConductionTool.description).toMatch(/unpark: true/);
+    expect(createConductionTool.inputSchema.properties).toHaveProperty('unpark');
+    expect(createConductionTool.inputSchema.properties).toHaveProperty('resume_to');
+    expect(createConductionTool.inputSchema.properties).toHaveProperty('revived_by');
   });
 });

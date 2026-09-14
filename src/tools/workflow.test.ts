@@ -54,7 +54,11 @@ vi.mock('./knowledge.js', () => ({
 // Returns the client AND the update spy, so tests can assert the PERSISTED patch
 // (not just the derived return value) — the read goes through tasks.select(); the
 // write goes through tasks.update(), whose payload we capture.
-function mockClientFor(currentState: string | null, stale = false) {
+//
+// B-964: a 4th optional arg carries `parked_from` — the advanceWorkflow read now also selects it
+// (needed for the 'unparking' activity's dynamic target fallback); every pre-B-964 test omits it
+// and gets `null`, matching a task that has never been Parked.
+function mockClientFor(currentState: string | null, stale = false, parkedFrom: string | null = null) {
   const updateSpy = vi.fn((payload: Record<string, unknown>) => ({
     eq: () => ({
       eq: () => ({
@@ -69,10 +73,16 @@ function mockClientFor(currentState: string | null, stale = false) {
       }
       if (table === 'tasks') {
         return {
-          // advanceWorkflow's read: select('workflow_state, stale').eq().eq().single()
+          // advanceWorkflow's read: select('workflow_state, stale, parked_from').eq().eq().single()
           select: () => ({
             eq: () => ({
-              eq: () => ({ single: () => Promise.resolve({ data: { workflow_state: currentState, stale }, error: null }) }),
+              eq: () => ({
+                single: () =>
+                  Promise.resolve({
+                    data: { workflow_state: currentState, stale, parked_from: parkedFrom },
+                    error: null,
+                  }),
+              }),
             }),
           }),
           update: updateSpy,
@@ -133,6 +143,44 @@ describe('advanceWorkflow', () => {
     await expect(
       advanceWorkflow(client, 'proj', { task_id: 'B-1', activity: 'researching' }),
     ).resolves.not.toThrow();
+  });
+
+  // ---------------------------------------------------------------------------
+  // B-964 — 'unparking': the dynamic target resolution (3 cases) + stale non-exemption
+  // ---------------------------------------------------------------------------
+
+  it('B-964: unparking resolves to an explicit resume_to override when given', async () => {
+    const { client, updateSpy } = mockClientFor('Parked', false, 'Designed');
+    const res = await advanceWorkflow(client, 'proj', {
+      task_id: 'B-1',
+      activity: 'unparking',
+      resume_to: 'Built',
+    });
+    expect(res.to_state).toBe('Built'); // override wins even though parked_from is 'Designed'
+    expect(res.from_state).toBe('Parked');
+    // Writes workflow_activity: NULL — mirrors the web's own live "Resume" action exactly.
+    expect(updateSpy).toHaveBeenCalledWith({ workflow_state: 'Built', workflow_activity: null });
+  });
+
+  it("B-964: unparking falls back to the task's own parked_from when no override is given", async () => {
+    const { client, updateSpy } = mockClientFor('Parked', false, 'Designed');
+    const res = await advanceWorkflow(client, 'proj', { task_id: 'B-1', activity: 'unparking' });
+    expect(res.to_state).toBe('Designed');
+    expect(updateSpy).toHaveBeenCalledWith({ workflow_state: 'Designed', workflow_activity: null });
+  });
+
+  it("B-964: unparking falls back to 'Proposed' when parked_from is itself null and no override is given", async () => {
+    const { client, updateSpy } = mockClientFor('Parked', false, null);
+    const res = await advanceWorkflow(client, 'proj', { task_id: 'B-1', activity: 'unparking' });
+    expect(res.to_state).toBe('Proposed');
+    expect(updateSpy).toHaveBeenCalledWith({ workflow_state: 'Proposed', workflow_activity: null });
+  });
+
+  it('B-964: unparking is NOT stale-exempt — a stale Parked ticket refuses exactly like any other forward activity', async () => {
+    const { client } = mockClientFor('Parked', true, 'Designed');
+    await expect(
+      advanceWorkflow(client, 'proj', { task_id: 'B-1', activity: 'unparking' }),
+    ).rejects.toThrow(/stale/i);
   });
 });
 

@@ -853,6 +853,34 @@ facts; this is the deliberate other half of B-490's "same routing, opposite hand
 | Built / Deployed | the **release** / **verify** gates — **HARD FLOOR, always human** (gate-routing.md marks these); never auto-advanced |
 | Verified / Parked / Cancelled | TERMINAL — loop ends |
 
+**Revived from Parked into a build-state ticket — verify the PR/branch is still live before trusting it
+(B-964).** A Parked ticket can now be revived by an explicit human-authorized `unpark: true` call to
+`create_conduction` (or `harmony conduct <ticket> --unpark`) — never by the conductor itself (AC5; nothing
+here infers a revive from a detected condition). When the loop picks up a ticket that was **just revived**
+this way and its re-read `workflow_state` lands at **`Built` or `Deployed`** (i.e. it carries a live
+`field_values.build_pr` from before the park), do **NOT** trust that PR/branch is still mergeable just
+because the ticket says so — a Parked ticket can sit for a long time, and the PR may have been closed,
+superseded, or gone conflicted in the meantime. This is the SAME "verify the base before trusting it"
+discipline the Plan/Build gate bullets above already apply to code and assumptions (B-585); this is its
+PR-liveness counterpart, extended to a *resumed* run (the B-703 pattern):
+
+1. Read `field_values.build_pr`'s PR number off the ticket (`get_task`).
+2. Check it is still open and mergeable: `gh pr view <pr_number> --json state,mergeable` (or the
+   equivalent API call).
+3. **Still open and mergeable** → proceed to the release gate exactly as any other Built/Deployed ticket
+   (§ the table above) — the revive is trustworthy, no special handling needed beyond this check.
+4. **Closed, or `mergeable` reports a conflict** → do **not** resume into the stale Built/Deployed state.
+   Back the ticket up via the SAME backflow `harmony-revise-scope`'s `--to build` case already uses for the
+   release-gate merge-conflict reopen (B-762) — `reopenToGate(task_id, 'build')`
+   (`skills/harmony-shared/gate-routing.md` §Reopen to a target gate), i.e.
+   `advance_workflow({ activity: 'revising-building' })` (landing at `Planned`, applied twice from
+   `Deployed`) — rather than trusting a closed/conflicted PR into the release gate. Report to the human why
+   (the PR closed/conflicted while the ticket was Parked) before continuing the loop.
+
+This check is **only** for a just-revived ticket arriving at Built/Deployed — it is not a re-check the loop
+otherwise performs on every ordinary Built/Deployed pass (the release gate's own merge-conflict handling,
+`finish-work/SKILL.md` O2, already covers that path).
+
 **Decision-only tickets complete at their deliverable gate (B-681).** When the ticket carries the
 `decision-only` label, the walk above ENDS at the deliverable gate: the clarify accept (capture-only) or
 the last design sub-track's accept (decision ticket) carries an explicit completion line and — on the

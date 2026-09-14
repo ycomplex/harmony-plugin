@@ -20,9 +20,12 @@ import { resolveTaskId } from './resolve-task-id.js';
 import {
   createConduction as insertConduction,
   assertNotExcluded,
+  reviveParkedTicketIfNeeded,
   ActiveConductionExistsError,
   ConductionInsertDeniedError,
   ConductorExcludedError,
+  TicketParkedError,
+  TicketStaleReviveRefusedError,
   type ConductionRecord,
 } from './conduction-record.js';
 import { RunConfigSchema, type RunConfig } from '../config/run-config.js';
@@ -34,6 +37,18 @@ export interface CreateConductionArgs {
    *  createConduction below). Omitted entirely -> the DB column's own default applies, unchanged
    *  from every pre-B-743 handoff. */
   run_config?: RunConfig;
+  /** B-964: revive a Parked ticket and hand it to the conductor IN THIS SAME CALL. A no-op when the
+   *  ticket is not Parked. Required (and re-validates tasks.stale before resuming) when it is —
+   *  see reviveParkedTicketIfNeeded (conduction-record.ts). Never inferred: only an explicit human
+   *  (or a session acting on the human's stated instruction) may set this (AC5). */
+  unpark?: boolean;
+  /** B-964: optional target workflow_state override for the revive. Omitted -> the task's own
+   *  parked_from, else 'Proposed'. Ignored when the ticket is not Parked. */
+  resume_to?: string;
+  /** B-964 AC4: caller-supplied identity for the revive record — e.g. 'human-in-session' or 'agent
+   *  acting on <human>'s explicit instruction'. Recorded in a ticket comment. Ignored when the
+   *  ticket is not Parked (there is nothing to revive). */
+  revived_by?: string;
 }
 
 export interface CreateConductionResult {
@@ -63,6 +78,15 @@ export async function createConduction(
   const taskId = await resolveTaskId(client, projectId, args.task_id);
 
   try {
+    // B-964: a no-op when the ticket isn't Parked; refuses cleanly (TicketParkedError) when it IS
+    // Parked and unpark:true wasn't passed, and revalidates (tasks.stale) + unparks BEFORE any
+    // conduction is created when it was. Runs ahead of the excluded/duplicate-conduction guards —
+    // the Parked-and-not-unparked refusal is the more specific, more actionable one.
+    await reviveParkedTicketIfNeeded(client, projectId, userId, taskId, {
+      unpark: args.unpark,
+      resume_to: args.resume_to,
+      revived_by: args.revived_by,
+    });
     await assertNotExcluded(client, taskId);
     const conduction = await insertConduction(client, {
       task_id: taskId,
@@ -81,6 +105,11 @@ export async function createConduction(
         `${conduction.mode}). The conductor daemon will pick it up on its next pass. Note: ${HANDOFF_CONTRACT_NOTE}`,
     };
   } catch (err) {
+    if (err instanceof TicketParkedError || err instanceof TicketStaleReviveRefusedError) {
+      // Both are already clean, user-facing messages (see conduction-record.ts) — preserved
+      // verbatim, wrapped only so the typed cause survives for callers/tests that check it.
+      throw new Error(err.message, { cause: err });
+    }
     if (err instanceof ConductorExcludedError) {
       throw new Error(
         `${args.task_id} is taken away from the conductor — Return it first (the "Return to ` +
@@ -113,7 +142,7 @@ export async function createConduction(
 export const createConductionTool = {
   name: 'create_conduction',
   description:
-    'B-758: hand a ticket to the conductor daemon from ANY stage (Proposed through Deployed) — not just Proposed. Creates the durable conduction record (status \'active\', mode \'controlled\'); the conductor daemon notices it on its next pass and drives the run. Refuses cleanly (never a raw error) when the ticket is already being conducted (at most one active conduction per ticket) or when a human has explicitly taken this ticket away from the conductor (the web\'s "Take away from conductor" action) — in that case, Return it to the conductor first. Refuses cleanly, naming the cause, when the database\'s row-level security policy rejects the record (that policy requires the acting user\'s id on the insert). IMPORTANT: the duplicate-guard can only detect an active conduction record — it cannot see an in-progress terminal session, so confirm any in-session work on this ticket has stopped before handing it off.',
+    'B-758: hand a ticket to the conductor daemon from ANY stage (Proposed through Deployed) — not just Proposed. Creates the durable conduction record (status \'active\', mode \'controlled\'); the conductor daemon notices it on its next pass and drives the run. Refuses cleanly (never a raw error) when the ticket is already being conducted (at most one active conduction per ticket) or when a human has explicitly taken this ticket away from the conductor (the web\'s "Take away from conductor" action) — in that case, Return it to the conductor first. Refuses cleanly, naming the cause, when the database\'s row-level security policy rejects the record (that policy requires the acting user\'s id on the insert). IMPORTANT: the duplicate-guard can only detect an active conduction record — it cannot see an in-progress terminal session, so confirm any in-session work on this ticket has stopped before handing it off. B-964: on a Parked ticket, this refuses UNLESS unpark: true is also passed (in which case it re-validates tasks.stale, resumes the ticket, records who revived it, and only THEN creates the conduction) — this is the ONLY way a Parked ticket ever resumes conducting, and it is never automatic: only call unpark: true from an explicit human instruction.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -127,6 +156,28 @@ export const createConductionTool = {
           "B-743: optional per-run operator choices for this conduction (e.g. { \"note\": \"...\" } — " +
           'a free-text steering note delivered to the worker and posted back as a scoped ticket ' +
           'comment at each new gate). Omit entirely for the default run behavior.',
+      },
+      unpark: {
+        type: 'boolean',
+        description:
+          "B-964: required (true) to hand off a Parked ticket. Only set this when a human has " +
+          "EXPLICITLY instructed the revive — never infer it from a detected condition (e.g. a " +
+          "sibling ticket merging). Refuses (TicketStaleReviveRefusedError) without unparking when " +
+          "tasks.stale is true; otherwise resumes the ticket (advance_workflow's 'unparking' " +
+          "activity) before the conduction is created.",
+      },
+      resume_to: {
+        type: 'string',
+        description:
+          "B-964: optional target workflow_state override for the revive. Omitted -> the ticket's " +
+          "own parked_from column, else 'Proposed'. Ignored unless the ticket is Parked.",
+      },
+      revived_by: {
+        type: 'string',
+        description:
+          "B-964: who authorized the revive — e.g. 'human-in-session' or 'agent acting on <human>'s " +
+          "explicit instruction'. Recorded in a ticket comment alongside the resume target. Ignored " +
+          "unless the ticket is Parked.",
       },
     },
     required: ['task_id'],

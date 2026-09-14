@@ -629,4 +629,25 @@ describe('harmony-conduct: the turn-end gate and its sanctioned alternatives (B-
     expect(body).toMatch(/`Decomposed` with ≥1 non-archived child/);
     expect(body).toMatch(/no breadcrumb at all/);
   });
+
+  // ---------------------------------------------------------------------------
+  // B-964 — revived-from-Parked PR/branch liveness (the B-703 pattern)
+  // ---------------------------------------------------------------------------
+
+  it('B-964: a just-revived Parked ticket arriving at Built/Deployed gets a PR/branch liveness check before being trusted', () => {
+    const body = skill.body;
+    // Named: the revive is explicit/human-authorized, never the conductor's own inference.
+    expect(body).toMatch(/unpark: true/);
+    expect(body).toMatch(/never by the conductor itself/i);
+    // The liveness check itself: build_pr, and the gh invocation (or its equivalent).
+    expect(body).toMatch(/field_values\.build_pr/);
+    expect(body).toMatch(/gh pr view/);
+    expect(body).toMatch(/state,mergeable/);
+    // The backflow on a closed/conflicted PR reuses the SAME B-762 mechanism/terminology as
+    // harmony-revise-scope's `--to build` case — not a new, parallel back-up path.
+    expect(body).toMatch(/revising-building/);
+    expect(body).toMatch(/reopenToGate/);
+    expect(body).toMatch(/--to build/);
+    expect(body).toMatch(/B-762/);
+  });
 });

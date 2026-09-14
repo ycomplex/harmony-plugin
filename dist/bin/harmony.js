@@ -35551,6 +35551,436 @@ function resolveGatePhase(workflow_state, workflow_activity) {
   return GATE_BY_WORKFLOW_STATE[workflow_state] ?? null;
 }
 
+// src/tools/resolve-task-id.ts
+var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+var BARE_NUMBER_RE = /^\d+$/;
+var VISUAL_ID_RE = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
+var PG_INT_MAX = 2147483647;
+async function resolveTaskId(client, projectId, input) {
+  if (UUID_RE.test(input)) {
+    return input;
+  }
+  let taskNumber;
+  const bareMatch = BARE_NUMBER_RE.test(input);
+  const visualMatch = input.match(VISUAL_ID_RE);
+  if (bareMatch) {
+    taskNumber = parseInt(input, 10);
+  } else if (visualMatch) {
+    const [, inputKey, numStr] = visualMatch;
+    taskNumber = parseInt(numStr, 10);
+    const project = await getProject(client, projectId);
+    if (inputKey.toUpperCase() !== project.key.toUpperCase()) {
+      throw new Error(
+        `Task ${inputKey.toUpperCase()}-${taskNumber} not found \u2014 this token is scoped to project ${project.key}. Did you mean ${project.key}-${taskNumber}?`
+      );
+    }
+  } else {
+    throw new Error(
+      `Invalid task identifier '${input}'. Use a UUID, task number (e.g., 43), or visual ID (e.g., B-43).`
+    );
+  }
+  if (taskNumber <= 0 || taskNumber > PG_INT_MAX || !Number.isSafeInteger(taskNumber)) {
+    throw new Error(
+      `Invalid task number: ${input}. Must be between 1 and ${PG_INT_MAX}.`
+    );
+  }
+  const { data, error } = await client.from("tasks").select("id").eq("project_id", projectId).eq("task_number", taskNumber).single();
+  if (error || !data) {
+    throw new Error(`No task with number ${taskNumber} in this project`);
+  }
+  return data.id;
+}
+async function resolveTaskIds(client, projectId, inputs) {
+  const classified = [];
+  let projectKey;
+  for (const input of inputs) {
+    if (UUID_RE.test(input)) {
+      classified.push({ kind: "uuid", id: input });
+      continue;
+    }
+    let taskNumber;
+    const visualMatch = input.match(VISUAL_ID_RE);
+    if (BARE_NUMBER_RE.test(input)) {
+      taskNumber = parseInt(input, 10);
+    } else if (visualMatch) {
+      const [, inputKey, numStr] = visualMatch;
+      taskNumber = parseInt(numStr, 10);
+      if (projectKey === void 0) {
+        projectKey = (await getProject(client, projectId)).key;
+      }
+      if (inputKey.toUpperCase() !== projectKey.toUpperCase()) {
+        throw new Error(
+          `Task ${inputKey.toUpperCase()}-${taskNumber} not found \u2014 this token is scoped to project ${projectKey}. Did you mean ${projectKey}-${taskNumber}?`
+        );
+      }
+    } else {
+      throw new Error(
+        `Invalid task identifier '${input}'. Use a UUID, task number (e.g., 43), or visual ID (e.g., B-43).`
+      );
+    }
+    if (taskNumber <= 0 || taskNumber > PG_INT_MAX || !Number.isSafeInteger(taskNumber)) {
+      throw new Error(
+        `Invalid task number: ${input}. Must be between 1 and ${PG_INT_MAX}.`
+      );
+    }
+    classified.push({ kind: "number", taskNumber });
+  }
+  const neededNumbers = [
+    ...new Set(classified.flatMap((c) => c.kind === "number" ? [c.taskNumber] : []))
+  ];
+  const idByNumber = /* @__PURE__ */ new Map();
+  if (neededNumbers.length > 0) {
+    const { data, error } = await client.from("tasks").select("id, task_number").eq("project_id", projectId).in("task_number", neededNumbers);
+    if (error) throw error;
+    for (const row of data ?? []) idByNumber.set(row.task_number, row.id);
+    const missing = neededNumbers.filter((n) => !idByNumber.has(n));
+    if (missing.length > 0) {
+      throw new Error(`No task(s) with number(s) ${missing.join(", ")} in this project`);
+    }
+  }
+  return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
+}
+
+// src/tools/text-normalize.ts
+var ENTITY_MAP = {
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&quot;": '"',
+  "&#39;": "'"
+};
+var ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/g;
+var HAS_ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/;
+function splitCodeSpans(text) {
+  const segments = [];
+  let i = 0;
+  let plainStart = 0;
+  while (i < text.length) {
+    if (text.startsWith("```", i)) {
+      const close = text.indexOf("```", i + 3);
+      const codeEnd = close === -1 ? text.length : close + 3;
+      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
+      segments.push({ code: true, text: text.slice(i, codeEnd) });
+      i = codeEnd;
+      plainStart = i;
+      continue;
+    }
+    if (text[i] === "`") {
+      const close = text.indexOf("`", i + 1);
+      if (close === -1) {
+        i += 1;
+        continue;
+      }
+      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
+      segments.push({ code: true, text: text.slice(i, close + 1) });
+      i = close + 1;
+      plainStart = i;
+      continue;
+    }
+    i += 1;
+  }
+  if (plainStart < text.length) segments.push({ code: false, text: text.slice(plainStart) });
+  return segments;
+}
+function normalizeHtmlEntities(text) {
+  if (!text || !HAS_ENTITY_PATTERN.test(text)) return text;
+  return splitCodeSpans(text).map(
+    (seg) => seg.code ? seg.text : seg.text.replace(ENTITY_PATTERN, (m) => ENTITY_MAP[m] ?? m)
+  ).join("");
+}
+
+// src/tools/knowledge.ts
+async function getWorkspaceId(client, projectId) {
+  const { data, error } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
+  if (error) throw new Error(`Could not resolve workspace: ${error.message}`);
+  return data.workspace_id;
+}
+async function embedText(client, text) {
+  try {
+    const { data, error } = await client.functions.invoke("embed-knowledge", { body: { text } });
+    if (error || !data?.embedding) return null;
+    return `[${data.embedding.join(",")}]`;
+  } catch {
+    return null;
+  }
+}
+async function embedDecisionById(client, workspaceId, projectId, id, title, content) {
+  const embedding = await embedText(client, `${title}
+${content ?? ""}`);
+  if (!embedding) return;
+  await client.from("knowledge_decisions").update({ embedding }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", id);
+}
+var LEGACY_STATUS_MAP = {
+  draft: "draft",
+  accepted: "accepted",
+  superseded: "superseded",
+  Asserted: "draft",
+  Accepted: "accepted",
+  Superseded: "superseded"
+};
+function toLegacyStatus(status) {
+  const legacy = LEGACY_STATUS_MAP[status];
+  if (legacy === void 0) {
+    throw new Error(
+      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, or Superseded/superseded \u2014 Archived cannot be set through this tool, which writes the legacy compat view (no Archived state).`
+    );
+  }
+  return legacy;
+}
+var BASE_STATUS_MAP = {
+  draft: "Asserted",
+  accepted: "Accepted",
+  superseded: "Superseded",
+  Asserted: "Asserted",
+  Accepted: "Accepted",
+  Superseded: "Superseded",
+  Archived: "Archived"
+};
+function toBaseStatus(status) {
+  const base = BASE_STATUS_MAP[status];
+  if (base === void 0) {
+    throw new Error(
+      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, Superseded/superseded, or Archived.`
+    );
+  }
+  return base;
+}
+async function queryKnowledge(client, projectId, args) {
+  const workspaceId = await getWorkspaceId(client, projectId);
+  if (args.search) {
+    const incompatible = [];
+    if (args.status) incompatible.push("status");
+    if (args.include_superseded) incompatible.push("include_superseded");
+    if (args.type) incompatible.push("type");
+    if (args.tags && args.tags.length > 0) incompatible.push("tags");
+    if (args.as_of) incompatible.push("as_of");
+    if (args.offset) incompatible.push("offset");
+    if (incompatible.length > 0) {
+      throw new Error(
+        `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(", ")}. Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". Omit "search" to use the structured filters.`
+      );
+    }
+    const queryEmbedding = await embedText(client, args.search);
+    const { data: data2, error: error2 } = await client.rpc("knowledge_search_rrf", {
+      _workspace_id: workspaceId,
+      _project_id: projectId,
+      _query_embedding: queryEmbedding,
+      _query_text: args.search,
+      _domain: args.domain && args.domain.length > 0 ? args.domain : null,
+      _match_limit: args.limit ?? 50
+    });
+    if (error2) throw new Error(error2.message);
+    return (data2 ?? []).map((d) => ({
+      id: d.id,
+      title: d.title,
+      type: d.type,
+      status: d.status,
+      domain: d.domain,
+      tags: d.tags,
+      project_id: d.project_id,
+      updated_at: d.updated_at
+    }));
+  }
+  let query = client.from("knowledge_decisions").select("id, title, type, status, domain, tags, project_id, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId);
+  if (args.status) {
+    query = query.eq("status", args.status);
+  } else if (!args.include_superseded) {
+    query = query.eq("status", "Accepted");
+  }
+  if (args.type) query = query.eq("type", args.type);
+  if (args.domain && args.domain.length > 0) query = query.overlaps("domain", args.domain);
+  if (args.as_of) query = query.lte("valid_from", args.as_of);
+  if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
+  query = query.order("type", { ascending: true });
+  const limit = args.limit ?? 50;
+  const offset = args.offset ?? 0;
+  const { data, error } = await query.range(offset, offset + limit - 1);
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+async function getKnowledgeEntry(client, projectId, args) {
+  if (!args.entry_id && !args.title) {
+    throw new Error("Either entry_id or title must be provided");
+  }
+  const workspaceId = await getWorkspaceId(client, projectId);
+  let query = client.from("knowledge_decisions").select(
+    "id, workspace_id, project_id, title, content, type, status, realization, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+  ).eq("workspace_id", workspaceId).eq("project_id", projectId);
+  if (args.entry_id) {
+    query = query.eq("id", args.entry_id);
+  } else {
+    query = query.eq("title", args.title);
+  }
+  const { data, error } = await query.single();
+  if (error) throw error;
+  return data;
+}
+async function createKnowledgeEntry(client, projectId, userId, args) {
+  if (!args.title?.trim()) {
+    throw new Error("title is required");
+  }
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const record = {
+    workspace_id: workspaceId,
+    project_id: projectId,
+    title: normalizeHtmlEntities(args.title.trim()),
+    content: normalizeHtmlEntities(args.content ?? ""),
+    type: args.type,
+    status: args.status !== void 0 ? toLegacyStatus(args.status) : "draft",
+    created_by: userId
+  };
+  if (args.tags !== void 0) record.tags = args.tags;
+  if (args.source_task_id !== void 0) record.source_task_id = args.source_task_id;
+  const { data, error } = await client.from("workspace_knowledge").insert(record).select(
+    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+  ).single();
+  if (error) {
+    if (error.code === "23505") {
+      throw new Error(
+        `A knowledge entry titled "${args.title.trim()}" already exists in this project`
+      );
+    }
+    throw error;
+  }
+  const created = data;
+  await embedDecisionById(client, workspaceId, projectId, created.id, created.title, created.content);
+  return getKnowledgeEntry(client, projectId, { entry_id: created.id });
+}
+async function updateKnowledgeEntry(client, projectId, args) {
+  if (!args.entry_id && !args.title) {
+    throw new Error("Either entry_id or title must be provided to identify the entry");
+  }
+  const hasUpdates = args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
+  if (!hasUpdates) {
+    throw new Error("At least one field to update must be provided");
+  }
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const newTitle = args.new_title !== void 0 ? normalizeHtmlEntities(args.new_title.trim()) : void 0;
+  const { data, error } = await client.rpc("knowledge_update_knowledge_entry", {
+    p_project_id: projectId,
+    p_entry_id: args.entry_id ?? null,
+    p_title: args.title ?? null,
+    p_new_title: newTitle ?? null,
+    p_content: args.content !== void 0 ? normalizeHtmlEntities(args.content) : null,
+    p_type: args.type ?? null,
+    p_status: args.status !== void 0 ? toBaseStatus(args.status) : null,
+    p_tags: args.tags ?? null,
+    // Decision-axis columns recordDecision already writes but this path historically omitted
+    // (B-468). Pass-through only (mirrors recordDecision — no strict validation; the DB CHECK/FK
+    // constraints are the backstop). madr is a FULL-OBJECT replace, not a key-merge.
+    p_domain: args.domain ?? null,
+    p_madr: args.madr ?? null,
+    p_realization: args.realization ?? null,
+    p_review_by: args.review_by ?? null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: getLeg() ?? null
+  });
+  if (error) {
+    if (error.code === "23505") {
+      throw new Error(
+        `A knowledge entry titled "${newTitle ?? ""}" already exists in this project`
+      );
+    }
+    throw new Error(error.message);
+  }
+  const updated = data;
+  if (args.new_title !== void 0 || args.content !== void 0) {
+    await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
+  }
+  return updated;
+}
+async function supersedeKnowledgeEntry(client, projectId, userId, args) {
+  if (!args.entry_id && !args.title) {
+    throw new Error("Either entry_id or title must be provided to identify the entry to supersede");
+  }
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const { data, error } = await client.rpc("knowledge_supersede_knowledge_entry", {
+    p_project_id: projectId,
+    p_new_title: normalizeHtmlEntities(args.new_title),
+    p_new_content: normalizeHtmlEntities(args.new_content),
+    p_entry_id: args.entry_id ?? null,
+    p_title: args.title ?? null,
+    p_type: args.type ?? null,
+    p_tags: args.tags ?? null,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: getLeg() ?? null
+  });
+  if (error) throw new Error(error.message);
+  const result = data;
+  await embedDecisionById(
+    client,
+    workspaceId,
+    projectId,
+    result.replacement.id,
+    result.replacement.title,
+    result.replacement.content
+  );
+  return result;
+}
+
+// src/tools/workflow.ts
+var UNIVERSAL = {
+  parking: "Parked",
+  cancelling: "Cancelled"
+};
+function deriveToState(fromState, activity, transitions) {
+  if (activity === "researching") return fromState;
+  if (activity in UNIVERSAL) return UNIVERSAL[activity];
+  const row = transitions.find((t) => t.from_state === fromState && t.activity === activity);
+  if (!row) {
+    throw new Error(
+      `No workflow transition from '${fromState ?? "(none)"}' via activity '${activity}'`
+    );
+  }
+  return row.to_state;
+}
+async function advanceWorkflow(client, projectId, args) {
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const { data: task, error: e1 } = await client.from("tasks").select("workflow_state, stale, parked_from").eq("id", id).eq("project_id", projectId).single();
+  if (e1) throw e1;
+  const taskRow = task;
+  const isStaleExempt = args.activity.startsWith("revising-") || args.activity === "researching" || args.activity in UNIVERSAL;
+  if (taskRow.stale === true && !isStaleExempt) {
+    throw new Error(
+      `Task is stale (tasks.stale=true) \u2014 cannot apply forward activity '${args.activity}'. Route through harmony-stale-patch (files a 'stale-patch-review' brief) or a 'revising-*' backflow first.`
+    );
+  }
+  const { data: transitions, error: e2 } = await client.from("workflow_transitions").select("from_state, activity, to_state");
+  if (e2) throw e2;
+  const fromState = taskRow.workflow_state;
+  const toState = args.activity === "unparking" ? args.resume_to ?? taskRow.parked_from ?? "Proposed" : deriveToState(fromState, args.activity, transitions ?? []);
+  const patch = args.activity === "researching" ? { workflow_activity: args.activity } : args.activity === "unparking" ? { workflow_state: toState, workflow_activity: null } : { workflow_state: toState, workflow_activity: args.activity };
+  const { data: updated, error: e3 } = await client.from("tasks").update(patch).eq("id", id).eq("project_id", projectId).select("id, workflow_state, workflow_activity").single();
+  if (e3) throw e3;
+  return {
+    task_id: id,
+    from_state: fromState,
+    to_state: toState,
+    activity: args.activity,
+    task: updated
+  };
+}
+
+// src/tools/comments.ts
+async function listComments(client, projectId, args) {
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const { data, error } = await client.from("task_comments").select("id, content, user_id, created_at, updated_at").eq("task_id", taskId).order("created_at", { ascending: true });
+  if (error) throw error;
+  return data;
+}
+async function addComment(client, projectId, userId, args) {
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const { data, error } = await client.from("task_comments").insert({
+    task_id: taskId,
+    user_id: userId,
+    content: normalizeHtmlEntities(args.content.replace(/\\n/g, "\n"))
+  }).select().single();
+  if (error) throw error;
+  return data;
+}
+
 // src/tools/conduction-record.ts
 var CONDUCTION_LIVE_STATUSES = ["active"];
 var CONDUCTION_HUMAN_OWNED_STATUSES = ["parked"];
@@ -35628,6 +36058,52 @@ async function getConduction(client, id) {
   const { data, error } = await client.from("conductions").select(CONDUCTION_COLS).eq("id", id).maybeSingle();
   if (error) throw new Error(error.message);
   return data ?? null;
+}
+var TicketParkedError = class extends Error {
+  code = "ticket-parked";
+  task_id;
+  constructor(taskId) {
+    super(
+      `Task ${taskId} is Parked \u2014 a conduction cannot be created for a Parked ticket without an explicit revive. Pass unpark: true to revive it (re-validates against current knowledge and code, then resumes it) and hand it to the conductor in the same call.`
+    );
+    this.name = "TicketParkedError";
+    this.task_id = taskId;
+  }
+};
+var TicketStaleReviveRefusedError = class extends Error {
+  code = "ticket-stale-revive-refused";
+  task_id;
+  constructor(taskId) {
+    super(
+      `Task ${taskId} is Parked AND stale \u2014 refusing to revive it blindly. Its already-completed steps reference superseded knowledge; route it through harmony-stale-patch (files a 'stale-patch-review' brief) first. The ticket is left Parked; no conduction was created.`
+    );
+    this.name = "TicketStaleReviveRefusedError";
+    this.task_id = taskId;
+  }
+};
+async function reviveParkedTicketIfNeeded(client, projectId, userId, taskId, args) {
+  if (!taskId) throw new Error("task_id is required");
+  const { data, error } = await client.from("tasks").select("workflow_state, stale").eq("id", taskId).single();
+  if (error) throw new Error(error.message);
+  const taskRow = data;
+  if (!taskRow || taskRow.workflow_state !== "Parked") return;
+  if (!args.unpark) throw new TicketParkedError(taskId);
+  if (taskRow.stale === true) {
+    await addComment(client, projectId, userId, {
+      task_id: taskId,
+      content: `This ticket is Parked and stale \u2014 a revive was requested but refused. Route it through harmony-stale-patch (files a 'stale-patch-review' brief) to reconcile its already-completed steps against current knowledge before it can be revived.`
+    });
+    throw new TicketStaleReviveRefusedError(taskId);
+  }
+  const { to_state: resumedTo } = await advanceWorkflow(client, projectId, {
+    task_id: taskId,
+    activity: "unparking",
+    resume_to: args.resume_to
+  });
+  await addComment(client, projectId, userId, {
+    task_id: taskId,
+    content: `Revived from Parked -> ${resumedTo}. Requested by: ${args.revived_by ?? `user ${userId}`}.`
+  });
 }
 
 // src/config/run-config.ts
@@ -36147,144 +36623,6 @@ function registerAuthCommands(program3) {
   });
 }
 
-// src/tools/resolve-task-id.ts
-var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-var BARE_NUMBER_RE = /^\d+$/;
-var VISUAL_ID_RE = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
-var PG_INT_MAX = 2147483647;
-async function resolveTaskId(client, projectId, input) {
-  if (UUID_RE.test(input)) {
-    return input;
-  }
-  let taskNumber;
-  const bareMatch = BARE_NUMBER_RE.test(input);
-  const visualMatch = input.match(VISUAL_ID_RE);
-  if (bareMatch) {
-    taskNumber = parseInt(input, 10);
-  } else if (visualMatch) {
-    const [, inputKey, numStr] = visualMatch;
-    taskNumber = parseInt(numStr, 10);
-    const project = await getProject(client, projectId);
-    if (inputKey.toUpperCase() !== project.key.toUpperCase()) {
-      throw new Error(
-        `Task ${inputKey.toUpperCase()}-${taskNumber} not found \u2014 this token is scoped to project ${project.key}. Did you mean ${project.key}-${taskNumber}?`
-      );
-    }
-  } else {
-    throw new Error(
-      `Invalid task identifier '${input}'. Use a UUID, task number (e.g., 43), or visual ID (e.g., B-43).`
-    );
-  }
-  if (taskNumber <= 0 || taskNumber > PG_INT_MAX || !Number.isSafeInteger(taskNumber)) {
-    throw new Error(
-      `Invalid task number: ${input}. Must be between 1 and ${PG_INT_MAX}.`
-    );
-  }
-  const { data, error } = await client.from("tasks").select("id").eq("project_id", projectId).eq("task_number", taskNumber).single();
-  if (error || !data) {
-    throw new Error(`No task with number ${taskNumber} in this project`);
-  }
-  return data.id;
-}
-async function resolveTaskIds(client, projectId, inputs) {
-  const classified = [];
-  let projectKey;
-  for (const input of inputs) {
-    if (UUID_RE.test(input)) {
-      classified.push({ kind: "uuid", id: input });
-      continue;
-    }
-    let taskNumber;
-    const visualMatch = input.match(VISUAL_ID_RE);
-    if (BARE_NUMBER_RE.test(input)) {
-      taskNumber = parseInt(input, 10);
-    } else if (visualMatch) {
-      const [, inputKey, numStr] = visualMatch;
-      taskNumber = parseInt(numStr, 10);
-      if (projectKey === void 0) {
-        projectKey = (await getProject(client, projectId)).key;
-      }
-      if (inputKey.toUpperCase() !== projectKey.toUpperCase()) {
-        throw new Error(
-          `Task ${inputKey.toUpperCase()}-${taskNumber} not found \u2014 this token is scoped to project ${projectKey}. Did you mean ${projectKey}-${taskNumber}?`
-        );
-      }
-    } else {
-      throw new Error(
-        `Invalid task identifier '${input}'. Use a UUID, task number (e.g., 43), or visual ID (e.g., B-43).`
-      );
-    }
-    if (taskNumber <= 0 || taskNumber > PG_INT_MAX || !Number.isSafeInteger(taskNumber)) {
-      throw new Error(
-        `Invalid task number: ${input}. Must be between 1 and ${PG_INT_MAX}.`
-      );
-    }
-    classified.push({ kind: "number", taskNumber });
-  }
-  const neededNumbers = [
-    ...new Set(classified.flatMap((c) => c.kind === "number" ? [c.taskNumber] : []))
-  ];
-  const idByNumber = /* @__PURE__ */ new Map();
-  if (neededNumbers.length > 0) {
-    const { data, error } = await client.from("tasks").select("id, task_number").eq("project_id", projectId).in("task_number", neededNumbers);
-    if (error) throw error;
-    for (const row of data ?? []) idByNumber.set(row.task_number, row.id);
-    const missing = neededNumbers.filter((n) => !idByNumber.has(n));
-    if (missing.length > 0) {
-      throw new Error(`No task(s) with number(s) ${missing.join(", ")} in this project`);
-    }
-  }
-  return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
-}
-
-// src/tools/text-normalize.ts
-var ENTITY_MAP = {
-  "&amp;": "&",
-  "&lt;": "<",
-  "&gt;": ">",
-  "&quot;": '"',
-  "&#39;": "'"
-};
-var ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/g;
-var HAS_ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/;
-function splitCodeSpans(text) {
-  const segments = [];
-  let i = 0;
-  let plainStart = 0;
-  while (i < text.length) {
-    if (text.startsWith("```", i)) {
-      const close = text.indexOf("```", i + 3);
-      const codeEnd = close === -1 ? text.length : close + 3;
-      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
-      segments.push({ code: true, text: text.slice(i, codeEnd) });
-      i = codeEnd;
-      plainStart = i;
-      continue;
-    }
-    if (text[i] === "`") {
-      const close = text.indexOf("`", i + 1);
-      if (close === -1) {
-        i += 1;
-        continue;
-      }
-      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
-      segments.push({ code: true, text: text.slice(i, close + 1) });
-      i = close + 1;
-      plainStart = i;
-      continue;
-    }
-    i += 1;
-  }
-  if (plainStart < text.length) segments.push({ code: false, text: text.slice(plainStart) });
-  return segments;
-}
-function normalizeHtmlEntities(text) {
-  if (!text || !HAS_ENTITY_PATTERN.test(text)) return text;
-  return splitCodeSpans(text).map(
-    (seg) => seg.code ? seg.text : seg.text.replace(ENTITY_PATTERN, (m) => ENTITY_MAP[m] ?? m)
-  ).join("");
-}
-
 // src/tools/members.ts
 async function listMembers(client, projectId) {
   const { data: project, error: projError } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
@@ -36583,237 +36921,6 @@ function detectRiskClasses(input) {
     }
   }
   return RISK_CLASSES.filter((cls) => hits.has(cls));
-}
-
-// src/tools/knowledge.ts
-async function getWorkspaceId(client, projectId) {
-  const { data, error } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
-  if (error) throw new Error(`Could not resolve workspace: ${error.message}`);
-  return data.workspace_id;
-}
-async function embedText(client, text) {
-  try {
-    const { data, error } = await client.functions.invoke("embed-knowledge", { body: { text } });
-    if (error || !data?.embedding) return null;
-    return `[${data.embedding.join(",")}]`;
-  } catch {
-    return null;
-  }
-}
-async function embedDecisionById(client, workspaceId, projectId, id, title, content) {
-  const embedding = await embedText(client, `${title}
-${content ?? ""}`);
-  if (!embedding) return;
-  await client.from("knowledge_decisions").update({ embedding }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", id);
-}
-var LEGACY_STATUS_MAP = {
-  draft: "draft",
-  accepted: "accepted",
-  superseded: "superseded",
-  Asserted: "draft",
-  Accepted: "accepted",
-  Superseded: "superseded"
-};
-function toLegacyStatus(status) {
-  const legacy = LEGACY_STATUS_MAP[status];
-  if (legacy === void 0) {
-    throw new Error(
-      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, or Superseded/superseded \u2014 Archived cannot be set through this tool, which writes the legacy compat view (no Archived state).`
-    );
-  }
-  return legacy;
-}
-var BASE_STATUS_MAP = {
-  draft: "Asserted",
-  accepted: "Accepted",
-  superseded: "Superseded",
-  Asserted: "Asserted",
-  Accepted: "Accepted",
-  Superseded: "Superseded",
-  Archived: "Archived"
-};
-function toBaseStatus(status) {
-  const base = BASE_STATUS_MAP[status];
-  if (base === void 0) {
-    throw new Error(
-      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, Superseded/superseded, or Archived.`
-    );
-  }
-  return base;
-}
-async function queryKnowledge(client, projectId, args) {
-  const workspaceId = await getWorkspaceId(client, projectId);
-  if (args.search) {
-    const incompatible = [];
-    if (args.status) incompatible.push("status");
-    if (args.include_superseded) incompatible.push("include_superseded");
-    if (args.type) incompatible.push("type");
-    if (args.tags && args.tags.length > 0) incompatible.push("tags");
-    if (args.as_of) incompatible.push("as_of");
-    if (args.offset) incompatible.push("offset");
-    if (incompatible.length > 0) {
-      throw new Error(
-        `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(", ")}. Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". Omit "search" to use the structured filters.`
-      );
-    }
-    const queryEmbedding = await embedText(client, args.search);
-    const { data: data2, error: error2 } = await client.rpc("knowledge_search_rrf", {
-      _workspace_id: workspaceId,
-      _project_id: projectId,
-      _query_embedding: queryEmbedding,
-      _query_text: args.search,
-      _domain: args.domain && args.domain.length > 0 ? args.domain : null,
-      _match_limit: args.limit ?? 50
-    });
-    if (error2) throw new Error(error2.message);
-    return (data2 ?? []).map((d) => ({
-      id: d.id,
-      title: d.title,
-      type: d.type,
-      status: d.status,
-      domain: d.domain,
-      tags: d.tags,
-      project_id: d.project_id,
-      updated_at: d.updated_at
-    }));
-  }
-  let query = client.from("knowledge_decisions").select("id, title, type, status, domain, tags, project_id, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId);
-  if (args.status) {
-    query = query.eq("status", args.status);
-  } else if (!args.include_superseded) {
-    query = query.eq("status", "Accepted");
-  }
-  if (args.type) query = query.eq("type", args.type);
-  if (args.domain && args.domain.length > 0) query = query.overlaps("domain", args.domain);
-  if (args.as_of) query = query.lte("valid_from", args.as_of);
-  if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
-  query = query.order("type", { ascending: true });
-  const limit = args.limit ?? 50;
-  const offset = args.offset ?? 0;
-  const { data, error } = await query.range(offset, offset + limit - 1);
-  if (error) throw new Error(error.message);
-  return data ?? [];
-}
-async function getKnowledgeEntry(client, projectId, args) {
-  if (!args.entry_id && !args.title) {
-    throw new Error("Either entry_id or title must be provided");
-  }
-  const workspaceId = await getWorkspaceId(client, projectId);
-  let query = client.from("knowledge_decisions").select(
-    "id, workspace_id, project_id, title, content, type, status, realization, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
-  ).eq("workspace_id", workspaceId).eq("project_id", projectId);
-  if (args.entry_id) {
-    query = query.eq("id", args.entry_id);
-  } else {
-    query = query.eq("title", args.title);
-  }
-  const { data, error } = await query.single();
-  if (error) throw error;
-  return data;
-}
-async function createKnowledgeEntry(client, projectId, userId, args) {
-  if (!args.title?.trim()) {
-    throw new Error("title is required");
-  }
-  const workspaceId = await getWorkspaceId(client, projectId);
-  const record = {
-    workspace_id: workspaceId,
-    project_id: projectId,
-    title: normalizeHtmlEntities(args.title.trim()),
-    content: normalizeHtmlEntities(args.content ?? ""),
-    type: args.type,
-    status: args.status !== void 0 ? toLegacyStatus(args.status) : "draft",
-    created_by: userId
-  };
-  if (args.tags !== void 0) record.tags = args.tags;
-  if (args.source_task_id !== void 0) record.source_task_id = args.source_task_id;
-  const { data, error } = await client.from("workspace_knowledge").insert(record).select(
-    "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
-  ).single();
-  if (error) {
-    if (error.code === "23505") {
-      throw new Error(
-        `A knowledge entry titled "${args.title.trim()}" already exists in this project`
-      );
-    }
-    throw error;
-  }
-  const created = data;
-  await embedDecisionById(client, workspaceId, projectId, created.id, created.title, created.content);
-  return getKnowledgeEntry(client, projectId, { entry_id: created.id });
-}
-async function updateKnowledgeEntry(client, projectId, args) {
-  if (!args.entry_id && !args.title) {
-    throw new Error("Either entry_id or title must be provided to identify the entry");
-  }
-  const hasUpdates = args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
-  if (!hasUpdates) {
-    throw new Error("At least one field to update must be provided");
-  }
-  const workspaceId = await getWorkspaceId(client, projectId);
-  const newTitle = args.new_title !== void 0 ? normalizeHtmlEntities(args.new_title.trim()) : void 0;
-  const { data, error } = await client.rpc("knowledge_update_knowledge_entry", {
-    p_project_id: projectId,
-    p_entry_id: args.entry_id ?? null,
-    p_title: args.title ?? null,
-    p_new_title: newTitle ?? null,
-    p_content: args.content !== void 0 ? normalizeHtmlEntities(args.content) : null,
-    p_type: args.type ?? null,
-    p_status: args.status !== void 0 ? toBaseStatus(args.status) : null,
-    p_tags: args.tags ?? null,
-    // Decision-axis columns recordDecision already writes but this path historically omitted
-    // (B-468). Pass-through only (mirrors recordDecision — no strict validation; the DB CHECK/FK
-    // constraints are the backstop). madr is a FULL-OBJECT replace, not a key-merge.
-    p_domain: args.domain ?? null,
-    p_madr: args.madr ?? null,
-    p_realization: args.realization ?? null,
-    p_review_by: args.review_by ?? null,
-    p_provenance: args.provenance ?? null,
-    p_conduction_id: getConductionId() ?? null,
-    p_leg: getLeg() ?? null
-  });
-  if (error) {
-    if (error.code === "23505") {
-      throw new Error(
-        `A knowledge entry titled "${newTitle ?? ""}" already exists in this project`
-      );
-    }
-    throw new Error(error.message);
-  }
-  const updated = data;
-  if (args.new_title !== void 0 || args.content !== void 0) {
-    await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
-  }
-  return updated;
-}
-async function supersedeKnowledgeEntry(client, projectId, userId, args) {
-  if (!args.entry_id && !args.title) {
-    throw new Error("Either entry_id or title must be provided to identify the entry to supersede");
-  }
-  const workspaceId = await getWorkspaceId(client, projectId);
-  const { data, error } = await client.rpc("knowledge_supersede_knowledge_entry", {
-    p_project_id: projectId,
-    p_new_title: normalizeHtmlEntities(args.new_title),
-    p_new_content: normalizeHtmlEntities(args.new_content),
-    p_entry_id: args.entry_id ?? null,
-    p_title: args.title ?? null,
-    p_type: args.type ?? null,
-    p_tags: args.tags ?? null,
-    p_provenance: args.provenance ?? null,
-    p_conduction_id: getConductionId() ?? null,
-    p_leg: getLeg() ?? null
-  });
-  if (error) throw new Error(error.message);
-  const result = data;
-  await embedDecisionById(
-    client,
-    workspaceId,
-    projectId,
-    result.replacement.id,
-    result.replacement.title,
-    result.replacement.content
-  );
-  return result;
 }
 
 // src/config/project-manifest.ts
@@ -38378,24 +38485,6 @@ function registerQueryCommand(program3) {
   });
 }
 
-// src/tools/comments.ts
-async function listComments(client, projectId, args) {
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
-  const { data, error } = await client.from("task_comments").select("id, content, user_id, created_at, updated_at").eq("task_id", taskId).order("created_at", { ascending: true });
-  if (error) throw error;
-  return data;
-}
-async function addComment(client, projectId, userId, args) {
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
-  const { data, error } = await client.from("task_comments").insert({
-    task_id: taskId,
-    user_id: userId,
-    content: normalizeHtmlEntities(args.content.replace(/\\n/g, "\n"))
-  }).select().single();
-  if (error) throw error;
-  return data;
-}
-
 // src/cli/commands/comments.ts
 function registerCommentCommands(program3) {
   const tasks = program3.commands.find((c) => c.name() === "tasks");
@@ -39634,12 +39723,17 @@ function registerBriefCommands(program3) {
 
 // src/cli/commands/conduct.ts
 function registerConductCommand(program3) {
-  program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor daemon picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").action(async (ticket) => {
+  program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor daemon picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").option("--unpark", "Revive a Parked ticket and hand it to the conductor in this same call (B-964)", false).option("--resume-to <state>", "Target workflow_state override when reviving a Parked ticket (defaults to the ticket's own parked_from, else Proposed)").action(async (ticket, opts) => {
     await runCommand(
       program3.opts(),
       async (ctx) => {
         const taskId = await resolveTaskId(ctx.client, ctx.projectId, ticket);
         try {
+          await reviveParkedTicketIfNeeded(ctx.client, ctx.projectId, ctx.userId, taskId, {
+            unpark: opts.unpark,
+            resume_to: opts.resumeTo,
+            revived_by: `human via CLI (harmony conduct --unpark), acting user ${ctx.userId}`
+          });
           await assertNotExcluded(ctx.client, taskId);
           return await createConduction(ctx.client, {
             task_id: taskId,
@@ -39647,6 +39741,9 @@ function registerConductCommand(program3) {
             created_by: ctx.userId
           });
         } catch (err) {
+          if (err instanceof TicketParkedError || err instanceof TicketStaleReviveRefusedError) {
+            throw new Error(err.message, { cause: err });
+          }
           if (err instanceof ConductorExcludedError) {
             throw new Error(
               `${ticket} is taken away from the conductor \u2014 Return it first (the "Return to conductor" action) before handing it off`,
