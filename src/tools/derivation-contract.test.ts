@@ -104,15 +104,23 @@ function authoredKeys(): string[] {
 
 /** Compose a brief through the real handler and hand back what was actually stored. */
 async function composeAndCapture(reason: string, doc: BriefDoc, decisionRef: DecisionRef | null = DECISION_REF) {
+  // B-922: a plan-draft brief refuses a null MERGED pending_activity (its accept always advances
+  // Designed → Planned) — so, unlike every other reason here, it needs a REAL one, which pulls in the
+  // transition guard's own task-state + transition-lookup reads ahead of the insert.
+  const isPlanDraft = reason === 'plan-draft';
   const client = makeClient([
     // release-decision-pending alone reads the task's build_pr record first (B-732/B-876).
     ...(reason === 'release-decision-pending' ? [{ data: { field_values: {} } }] : []),
     { data: null },                                                        // no active brief
+    ...(isPlanDraft ? [
+      { data: { workflow_state: 'Designed', stale: false } },              // task state (transition guard)
+      { data: { to_state: 'Planned' } },                                   // transition exists
+    ] : []),
     { data: { id: 'brief-1', task_id: 'task-1', reason, status: 'active', iteration: 1 } },
     { data: null },                                                        // tasks flag update
   ]);
   await composeBrief(client, PROJECT_ID, USER_ID, {
-    task_id: 'task-1', reason, doc, pending_activity: null as any,
+    task_id: 'task-1', reason, doc, pending_activity: (isPlanDraft ? 'planning' : null) as any,
     ...(decisionRef ? { decision_ref: decisionRef } : {}),
   });
   const stored = client.insert.mock.calls[0][0] as { doc: BriefDoc; content: string; decision_ref: DecisionRef | null };
