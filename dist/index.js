@@ -46566,6 +46566,20 @@ function renderEntry(doc, ctx) {
   if (changes.length) out.push("**Changed in the final round:**", ...markAll(changes), "");
   return out.join("\n").trimEnd();
 }
+function deriveEntryTitle(doc, reason, ctx) {
+  const recommendation = doc.recommend?.text;
+  if (!recommendation || !ctx.visualId) return void 0;
+  if (reason === "decomposition-proposal") {
+    return `${ctx.visualId}: decomposition \u2014 ${recommendation}`;
+  }
+  if (reason === "design-decision-draft") {
+    const type = ctx.decisionRef?.type;
+    if (!type) return void 0;
+    const subTrackDisplay = type.replace(/-design$/, " design");
+    return `${ctx.visualId}: ${subTrackDisplay} \u2014 ${recommendation}`;
+  }
+  return void 0;
+}
 var GATE_SLOT_NAMES = ["clarify", "release", "verify"];
 var REASON_FOR_GATE_SLOT = {
   clarify: "clarification-draft",
@@ -46996,7 +47010,8 @@ function withDerivedEntryContent(doc, reason, decisionRef, ctx) {
   const stub = { write_kind: "knowledge_entry_content", ref, entry_id: decisionRef.id };
   const staged = { ...doc, payload: [...others, stub] };
   const content = renderEntry(staged, { ...ctx, decisionRef });
-  return { ...staged, payload: [...others, { ...stub, content }] };
+  const title = deriveEntryTitle(staged, reason, { ...ctx, decisionRef });
+  return { ...staged, payload: [...others, { ...stub, content, ...title ? { title } : {} }] };
 }
 function withDiffDerivedRiskClasses(doc, changedPaths, priorRiskClasses) {
   if (doc.frame?.kind !== "release") return doc;
@@ -47221,7 +47236,21 @@ async function composeBrief(client, projectId, userId, args) {
       "A 'plan-draft' brief must carry a real pending_activity (e.g. 'planning') \u2014 its accept always advances Designed \u2192 Planned, so it cannot advance no state."
     );
   }
-  const renderCtx = { reason: args.reason, accept };
+  let visualId;
+  if (args.reason === "decomposition-proposal" || args.reason === "design-decision-draft") {
+    try {
+      const [{ data: taskRow }, project] = await Promise.all([
+        client.from("tasks").select("task_number").eq("id", taskId).maybeSingle(),
+        getProject(client, projectId)
+      ]);
+      const taskNumber = taskRow?.task_number;
+      if (taskNumber != null && project?.key) {
+        visualId = `${project.key}-${taskNumber}`;
+      }
+    } catch {
+    }
+  }
+  const renderCtx = { reason: args.reason, accept, visualId };
   const docWithContradiction = await withContradictionSignal(
     withDiffDerivedRiskClasses(mergedDoc, args.changed_paths, priorRiskClasses),
     client,
@@ -50168,6 +50197,7 @@ function isMissingRelationOrFunction(err) {
   const msg = err.message ?? "";
   return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
 }
+var isMissingTitleParam = (msg) => !!msg && /_title/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
 function isShippedMilestoneGuardError(error2) {
   if (!error2) return false;
   if (error2.code !== "23514") return false;
@@ -50301,12 +50331,21 @@ async function applyAcceptanceEventPayload(client, event) {
         result = data;
       } else if (item.write_kind === "knowledge_entry_content") {
         if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content \u2014 the payload CARRIES the entry text; it is never synthesized from doc fields`);
-        const { data, error: error2 } = await client.rpc("consume_knowledge_entry_content_write", {
+        let { data, error: error2 } = await client.rpc("consume_knowledge_entry_content_write", {
           _event_id: event.id,
           _external_ref: item.ref,
           _content: item.content,
-          _entry_id: item.entry_id ?? null
+          _entry_id: item.entry_id ?? null,
+          _title: item.title ?? null
         });
+        if (error2 && isMissingTitleParam(error2.message)) {
+          ({ data, error: error2 } = await client.rpc("consume_knowledge_entry_content_write", {
+            _event_id: event.id,
+            _external_ref: item.ref,
+            _content: item.content,
+            _entry_id: item.entry_id ?? null
+          }));
+        }
         if (error2) {
           if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("knowledge_entry_content");
           throw new Error(error2.message);

@@ -149,6 +149,16 @@ export function isMissingRelationOrFunction(err: { message?: string; code?: stri
   return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
 }
 
+/** B-921 — the write-side drift predicate for `consume_knowledge_entry_content_write`'s new trailing
+ *  `_title` param, in the exact shape of briefs.ts's `isMissingRemarkParam` (a PostgREST
+ *  FUNCTION-resolution failure — PGRST202, "Could not find the function ... in the schema cache" —
+ *  naming the unresolvable parameter, not a column-read failure). Matched on `_title` specifically,
+ *  confirmed against the companion migration's actual parameter name
+ *  (`20260914093000_b921_knowledge_entry_content_title.sql`, harmony-web PR #485) — never a guessed
+ *  name. */
+const isMissingTitleParam = (msg: string | undefined): boolean =>
+  !!msg && /_title/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
+
 /** B-975 — the b847 shipped-milestone guard trigger's refusal (`tasks_guard_shipped_milestone`,
  *  migration `20260902145707_b847_shipped_milestone_guard.sql`): Postgres raises `check_violation`
  *  (ERRCODE 23514) with a message that names the shipped milestone, when it shipped, and states the
@@ -382,9 +392,22 @@ export async function applyAcceptanceEventPayload(
         result = data as { applied?: boolean };
       } else if (item.write_kind === 'knowledge_entry_content') {
         if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content — the payload CARRIES the entry text; it is never synthesized from doc fields`);
-        const { data, error } = await client.rpc('consume_knowledge_entry_content_write', {
+        let { data, error } = await client.rpc('consume_knowledge_entry_content_write', {
           _event_id: event.id, _external_ref: item.ref, _content: item.content, _entry_id: item.entry_id ?? null,
+          _title: item.title ?? null,
         });
+        // B-921: write-side schema drift, same class/shape as briefs.ts's isMissingRemarkParam — the
+        // companion web migration (harmony-web PR #485) widens this RPC with a new trailing `_title`
+        // param, so a not-yet-migrated DB rejects the whole call with a PGRST202 naming `_title`. Checked
+        // BEFORE isMissingRelationOrFunction below (which would ALSO match this exact error — a
+        // wrong-signature PGRST202 looks identical to a wholly-absent function) so a title-only drift
+        // retries the SAME call without `_title` instead of degrading to "substrate absent" and skipping
+        // the content write entirely, which the B-843 mechanism this rides must never do.
+        if (error && isMissingTitleParam(error.message)) {
+          ({ data, error } = await client.rpc('consume_knowledge_entry_content_write', {
+            _event_id: event.id, _external_ref: item.ref, _content: item.content, _entry_id: item.entry_id ?? null,
+          }));
+        }
         if (error) {
           // Same B-383 window as label_add below: harmony-web's migration reaches prod only at the next
           // promote, so this RPC can be genuinely absent while plugin `main` is live. Degrade SAFELY. A

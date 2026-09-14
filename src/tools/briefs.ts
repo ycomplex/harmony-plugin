@@ -10,6 +10,7 @@ import { slugRef } from './payload-refs.js';
 import { listTicketKnowledge } from './workflow.js';
 import { queryKnowledge, getWorkspaceId } from './knowledge.js';
 import { getConductionId, getLeg } from '../config/run-config.js';
+import { getProject } from './project.js';
 import {
   parseDiff,
   deriveSearchTerms,
@@ -1007,6 +1008,9 @@ export interface EntryRenderContext extends BriefRenderContext {
   decisionRef?: DecisionRef | null;
   /** The construction date. Injectable so the projection is deterministic under test; defaults to now. */
   now?: Date;
+  /** B-921: the ticket's own visual id (e.g. 'B-921'), for a gate whose entry title embeds it — populated
+   *  by the composeBrief call site. */
+  visualId?: string;
 }
 
 /** The construction-provenance line every derived entry opens with (see ENTRY_PROVENANCE_PREFIX). */
@@ -1138,6 +1142,42 @@ export function renderEntry(doc: BriefDoc, ctx?: EntryRenderContext): string {
   if (changes.length) out.push('**Changed in the final round:**', ...markAll(changes), '');
 
   return out.join('\n').trimEnd();
+}
+
+/**
+ * B-921 — re-derive the entry's TITLE the same way `renderEntry` re-derives its CONTENT: a mechanical
+ * projection of the FINAL round's doc, computed at the SAME accept-time call. Closes the bug where an
+ * iterate to a different final recommendation left the title stamped from round 1 (set once at the
+ * skill's round-1 `record_decision` call) while the content correctly reflected the final round.
+ *
+ * Keyed off `reason` AND `ctx.decisionRef?.type` — NOT `reason` alone, because design-decide's three
+ * sub-tracks (technical-design / product-design / ux-ui-design) are distinguished only by the
+ * decision_ref's type, and each renders a different sub-track label in its title.
+ *
+ * Returns `undefined` — never a broken/partial title — whenever an input the format needs is missing.
+ * The caller (`withDerivedEntryContent`) then leaves the entry's title exactly as it already is, which
+ * is today's behavior: this function can only ever ADD a title, never remove or blank one.
+ */
+export function deriveEntryTitle(doc: BriefDoc, reason: string, ctx: EntryRenderContext): string | undefined {
+  const recommendation = doc.recommend?.text;
+  if (!recommendation || !ctx.visualId) return undefined;
+
+  if (reason === 'decomposition-proposal') {
+    return `${ctx.visualId}: decomposition — ${recommendation}`;
+  }
+
+  if (reason === 'design-decision-draft') {
+    const type = ctx.decisionRef?.type;
+    if (!type) return undefined;
+    // The sub-track display form is the type's own `-design`-suffixed slug with THAT TRAILING HYPHEN
+    // turned into a space — e.g. 'technical-design' -> 'technical design' — never title-cased, and
+    // never touching any OTHER hyphen in the slug (so 'ux-ui-design' -> 'ux-ui design', not 'ux ui
+    // design'). Confirmed against this ticket's own Accepted technical-design entry title.
+    const subTrackDisplay = type.replace(/-design$/, ' design');
+    return `${ctx.visualId}: ${subTrackDisplay} — ${recommendation}`;
+  }
+
+  return undefined;
 }
 
 // ——— B-867: the THIRD projection — what the TICKET keeps ————————————————————————————————————————
@@ -1949,7 +1989,12 @@ export function withDerivedEntryContent(
   const stub: AcceptanceEventPayloadItem = { write_kind: 'knowledge_entry_content', ref, entry_id: decisionRef.id };
   const staged: BriefDoc = { ...doc, payload: [...others, stub] };
   const content = renderEntry(staged, { ...ctx, decisionRef });
-  return { ...staged, payload: [...others, { ...stub, content }] };
+  // B-921 — re-derive the title the SAME way, at the SAME call, riding the SAME payload item: an
+  // iterate to a different final recommendation must not leave the title stamped from an earlier
+  // round. `undefined` (missing visualId, missing recommendation, or — for design-decide — missing
+  // decisionRef.type) means "leave the entry's title exactly as it already is", never a broken title.
+  const title = deriveEntryTitle(staged, reason, { ...ctx, decisionRef });
+  return { ...staged, payload: [...others, { ...stub, content, ...(title ? { title } : {}) }] };
 }
 
 export interface ComposeBriefArgs {
@@ -2633,7 +2678,26 @@ export async function composeBrief(
   // B-866: `doc` also carries the DERIVED `knowledge_entry_content` payload item for the five gate
   // reasons whose accept promotes a knowledge entry — the entry prose is a projection of this same doc
   // (`renderEntry`), so the human ratifies and the accept promotes one authored source, not two.
-  const renderCtx: BriefRenderContext = { reason: args.reason, accept };
+  // B-921 — the ticket's own visual id (e.g. 'B-921'), fetched ONLY for the two reasons whose entry
+  // title embeds it (deriveEntryTitle no-ops for every other reason, so the extra queries below would be
+  // wasted work). A read failure here must NEVER block compose — it degrades to `visualId: undefined`,
+  // which makes deriveEntryTitle's own guard no-op exactly like today's (pre-this-ticket) behavior.
+  let visualId: string | undefined;
+  if (args.reason === 'decomposition-proposal' || args.reason === 'design-decision-draft') {
+    try {
+      const [{ data: taskRow }, project] = await Promise.all([
+        client.from('tasks').select('task_number').eq('id', taskId).maybeSingle(),
+        getProject(client, projectId),
+      ]);
+      const taskNumber = (taskRow as { task_number?: number } | null)?.task_number;
+      if (taskNumber != null && project?.key) {
+        visualId = `${project.key}-${taskNumber}`;
+      }
+    } catch {
+      // Swallowed deliberately — see comment above.
+    }
+  }
+  const renderCtx: EntryRenderContext = { reason: args.reason, accept, visualId };
   // B-867: `withDerivedGateSlot` runs INSIDE the entry derivation, never after it — the entry's content
   // is a render of this same doc, so the slot's promise line must already be on the page when that
   // render happens or the promoted entry would disagree with the brief the human read.
