@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   detectRiskClasses,
   labelToRiskClass,
+  PATH_GLOB_TABLE,
   RISK_CLASSES,
   type RiskClass,
 } from './risk-class.js';
@@ -401,6 +402,53 @@ describe('risk-class detector (conductor floor)', () => {
           changedPaths: ['plugin/src/supabase.ts'],
         }),
       ).toContain<RiskClass>('shared-core');
+    });
+  });
+
+  // =========================================================================
+  // B-932 — word-sense-aware auth BASENAME matching for path-glob detection.
+  // The unanchored glob `**/*auth*.ts` used to trip on any `.ts` filename merely
+  // CONTAINING the substring "auth" (e.g. `brief-authoring.contract.test.ts`,
+  // `coauthor.ts`). The basename check now tokenizes (split on `-`/`_`/`.`/digit-run/
+  // camelCase boundaries) and tests each token WHOLE against the same word-sense
+  // regexes the prose detector uses — so a real auth term still trips regardless of
+  // delimiter style, while a merely-containing name does not.
+  // =========================================================================
+  describe('B-932 auth path-glob basename word-sense matching', () => {
+    it('positive control: the unanchored glob was removed (6 -> 5 entries)', () => {
+      expect(PATH_GLOB_TABLE.auth.length).toBe(5);
+    });
+
+    it('MUST TRIP: camelCase / delimiter-separated real-auth basenames', () => {
+      for (const p of [
+        'src/authService.ts',
+        'src/useAuth.ts',
+        'src/authClient.ts',
+        'src/oauth2.ts',
+        'src/auth.ts',
+        'src/oauth-client.ts',
+        'src/authz.ts',
+      ]) {
+        expect(detectRiskClasses({ changedPaths: [p] })).toContain<RiskClass>('auth');
+      }
+    });
+
+    it('MUST NOT TRIP: a basename that merely CONTAINS the substring "auth"', () => {
+      for (const p of ['src/brief-authoring.contract.test.ts', 'src/coauthor.ts', 'src/Coauthor.ts']) {
+        expect(detectRiskClasses({ changedPaths: [p] })).not.toContain<RiskClass>('auth');
+      }
+    });
+
+    it('CONSERVATIVE-ON-AMBIGUITY: no token boundary before "auth" (mid-token) does NOT trip', () => {
+      for (const p of ['src/Unauthorized.ts', 'src/unauthenticated.ts']) {
+        expect(detectRiskClasses({ changedPaths: [p] })).not.toContain<RiskClass>('auth');
+      }
+    });
+
+    it('round 1 glob-path positives still trip (glob-check path and basename-check path each pinned)', () => {
+      for (const p of ['src/auth.ts', 'src/oauth-client.ts', 'src/auth/middleware.ts', 'middleware/auth-check.ts']) {
+        expect(detectRiskClasses({ changedPaths: [p] })).toContain<RiskClass>('auth');
+      }
     });
   });
 

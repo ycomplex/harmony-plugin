@@ -36325,6 +36325,8 @@ var RISK_CLASSES = [
   "shared-core"
 ];
 var kw = (re, senseOk) => ({ re, senseOk });
+var AUTH_WORD_REGEX = /\bauth(?:entication|orization|z|n)?\b/i;
+var OAUTH_WORD_REGEX = /\boauth\b/i;
 var AUTH_TOKEN_QUALIFIER = /\b(?:auth|access|api|bearer|jwt|session|refresh|csrf)\b/i;
 function tokenIsAuthSense(text, start, end) {
   const before = text.slice(Math.max(0, start - 24), start);
@@ -36350,8 +36352,8 @@ function notReadingQualifiedSense(text, start, end) {
 var KEYWORD_TABLE = {
   auth: [
     // auth / login / logout / session / token / password / oauth / RLS / permission / role
-    kw(/\bauth(?:entication|orization|z|n)?\b/i),
-    kw(/\boauth\b/i),
+    kw(AUTH_WORD_REGEX),
+    kw(OAUTH_WORD_REGEX),
     kw(/\blog[\s-]?in\b/i),
     kw(/\blog[\s-]?out\b/i),
     kw(/\bsign[\s-]?in\b/i),
@@ -36475,7 +36477,7 @@ function textHitsClass(text, cls) {
   return false;
 }
 var PATH_GLOB_TABLE = {
-  auth: ["**/auth/**", "**/auth.ts", "**/auth.tsx", "**/*auth*.ts", "**/middleware/auth*", "**/rls/**"],
+  auth: ["**/auth/**", "**/auth.ts", "**/auth.tsx", "**/middleware/auth*", "**/rls/**"],
   "data-migration": ["**/migrations/**", "**/migration/**", "**/*.sql", "**/schema.sql", "**/supabase/migrations/**"],
   // No reliably-destructive path signature (destructiveness lives in content, not the path);
   // kept empty so this class trips on text/labels, never on an innocent path. The conservative
@@ -36539,9 +36541,25 @@ function labelToRiskClass(label) {
       return null;
   }
 }
+function basenameOf(path2) {
+  const idx = path2.lastIndexOf("/");
+  return idx === -1 ? path2 : path2.slice(idx + 1);
+}
+function tokenizeBasename(basename) {
+  const spaced = basename.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
+  return spaced.split(/\s+/).filter((t) => t.length > 0);
+}
+function authBasenameHit(path2) {
+  const tokens = tokenizeBasename(basenameOf(path2));
+  return tokens.some((t) => AUTH_WORD_REGEX.test(t) || OAUTH_WORD_REGEX.test(t));
+}
 function pathHitsClass(paths, cls) {
   const globs = PATH_REGEX_TABLE[cls];
-  return globs.length > 0 && paths.some((p) => globs.some((re) => re.test(p)));
+  if (globs.length === 0) return false;
+  return paths.some((p) => {
+    if (globs.some((re) => re.test(p))) return true;
+    return cls === "auth" && authBasenameHit(p);
+  });
 }
 function detectRiskClasses(input) {
   const hits = /* @__PURE__ */ new Set();

@@ -116,6 +116,13 @@ interface Keyword {
 
 const kw = (re: RegExp, senseOk?: Keyword['senseOk']): Keyword => ({ re, senseOk });
 
+// B-932 — shared word-sense regexes for "auth"/"oauth". Extracted so the path-glob basename
+// check (authBasenameHit, below) can apply the SAME word-boundary discipline the prose detector
+// already has, instead of re-deriving it. No behavior change to the prose KEYWORD_TABLE entries —
+// this is a pure extraction.
+const AUTH_WORD_REGEX = /\bauth(?:entication|orization|z|n)?\b/i;
+const OAUTH_WORD_REGEX = /\boauth\b/i;
+
 // Word-sense guard for the thin `token` keyword (B-516, repro Ev1c; hardened B-516-review).
 // `token` is too generic to trip `auth` on its own — Harmony's own domain uses "gate token" /
 // "workflow_state token" (state-machine senses). So `token` counts for `auth` ONLY when an
@@ -177,8 +184,8 @@ function notReadingQualifiedSense(text: string, start: number, end: number): boo
 const KEYWORD_TABLE: Record<RiskClass, Keyword[]> = {
   auth: [
     // auth / login / logout / session / token / password / oauth / RLS / permission / role
-    kw(/\bauth(?:entication|orization|z|n)?\b/i),
-    kw(/\boauth\b/i),
+    kw(AUTH_WORD_REGEX),
+    kw(OAUTH_WORD_REGEX),
     kw(/\blog[\s-]?in\b/i),
     kw(/\blog[\s-]?out\b/i),
     kw(/\bsign[\s-]?in\b/i),
@@ -385,8 +392,8 @@ function textHitsClass(text: string, cls: RiskClass): boolean {
 // case-insensitive regexes. The shared-core list is a CURATED set of high-blast
 // modules; extend it as the shared surface grows.
 // ---------------------------------------------------------------------------
-const PATH_GLOB_TABLE: Record<RiskClass, string[]> = {
-  auth: ['**/auth/**', '**/auth.ts', '**/auth.tsx', '**/*auth*.ts', '**/middleware/auth*', '**/rls/**'],
+export const PATH_GLOB_TABLE: Record<RiskClass, string[]> = {
+  auth: ['**/auth/**', '**/auth.ts', '**/auth.tsx', '**/middleware/auth*', '**/rls/**'],
   'data-migration': ['**/migrations/**', '**/migration/**', '**/*.sql', '**/schema.sql', '**/supabase/migrations/**'],
   // No reliably-destructive path signature (destructiveness lives in content, not the path);
   // kept empty so this class trips on text/labels, never on an innocent path. The conservative
@@ -466,10 +473,61 @@ export function labelToRiskClass(label: string): RiskClass | null {
   }
 }
 
-/** A changed path matches `cls`'s path-globs. */
+// ---------------------------------------------------------------------------
+// B-932 — word-sense-aware basename check for the `auth` path-glob class.
+//
+// The unanchored glob `**/*auth*.ts` used to trip on ANY `.ts` filename containing the
+// substring "auth" (`brief-authoring.contract.test.ts`, `coauthor.ts`), unlike the prose
+// detector which already guards "author" vs "auth" via a word-boundary regex. This gives the
+// basename check that SAME word-sense discipline, via tokenization rather than a whole-string
+// substring test — so camelCase/delimiter-separated real auth terms (`authService.ts`,
+// `useAuth.ts`, `oauth2.ts`) still trip, while a merely-containing name (`authoring`,
+// `coauthor`) or an ambiguous mid-token one (`Unauthorized`, `unauthenticated` — no token
+// boundary before "auth") does not.
+// ---------------------------------------------------------------------------
+
+/** The final path segment (basename) of a forward-slash path. */
+function basenameOf(path: string): string {
+  const idx = path.lastIndexOf('/');
+  return idx === -1 ? path : path.slice(idx + 1);
+}
+
+/**
+ * Tokenize a basename into its word-sense units: split on `-`, `_`, `.`, a digit-run boundary
+ * (letter<->digit), and a camelCase boundary (lower->upper). Each resulting token is a maximal
+ * run of letters-or-digits with no internal punctuation, so testing a \b-bounded regex against a
+ * token is equivalent to a WHOLE-token match (the token's own start/end already supply the
+ * boundary) — this is what lets `authoring`/`coauthor` correctly miss (the match would need a
+ * boundary mid-token) while `authService`/`useAuth`/`oauth2` correctly hit (the word-sense unit
+ * IS `auth`/`oauth`, exactly).
+ */
+function tokenizeBasename(basename: string): string[] {
+  const spaced = basename
+    .replace(/([a-zA-Z])([0-9])/g, '$1 $2')
+    .replace(/([0-9])([a-zA-Z])/g, '$1 $2')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[-_.]+/g, ' ');
+  return spaced.split(/\s+/).filter((t) => t.length > 0);
+}
+
+/** True iff `path`'s basename has a token that IS, whole, the auth or oauth word-sense unit
+ *  (camelCase/delimiter-aware) — the path-glob analogue of the prose detector's word-boundary
+ *  discipline. Consulted ONLY for the `auth` class. */
+function authBasenameHit(path: string): boolean {
+  const tokens = tokenizeBasename(basenameOf(path));
+  return tokens.some((t) => AUTH_WORD_REGEX.test(t) || OAUTH_WORD_REGEX.test(t));
+}
+
+/** A changed path matches `cls`'s path-globs — or, for `auth` only, has a basename whose
+ *  tokenization hits the shared auth/oauth word-sense regexes (checked AFTER the glob test, so a
+ *  genuine glob match like `src/auth/middleware.ts` still trips regardless of basename tokenization). */
 function pathHitsClass(paths: string[], cls: RiskClass): boolean {
   const globs = PATH_REGEX_TABLE[cls];
-  return globs.length > 0 && paths.some((p) => globs.some((re) => re.test(p)));
+  if (globs.length === 0) return false;
+  return paths.some((p) => {
+    if (globs.some((re) => re.test(p))) return true;
+    return cls === 'auth' && authBasenameHit(p);
+  });
 }
 
 /**
