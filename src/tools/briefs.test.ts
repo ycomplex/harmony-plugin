@@ -3,7 +3,7 @@ import { existsSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, mergeBriefDoc, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, isMissingComposeBriefInitial, mergeBriefDoc, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -497,7 +497,7 @@ function makeClient(
   let i = 0;
   const next = () => responses[i++] ?? { data: null, error: null };
   const chain: any = {};
-  for (const m of ['from', 'select', 'insert', 'update', 'eq', 'is', 'not', 'order', 'limit']) chain[m] = vi.fn(() => chain);
+  for (const m of ['from', 'select', 'insert', 'update', 'eq', 'is', 'not', 'in', 'order', 'limit']) chain[m] = vi.fn(() => chain);
   chain.maybeSingle = vi.fn(async () => next());
   chain.single = vi.fn(async () => next());
   chain.then = (resolve: (v: unknown) => unknown) => resolve(next());
@@ -1684,6 +1684,158 @@ describe('composeBrief — B-645 elicitation-claim iterate-prune', () => {
         underwriting_claim_ids: ['keep1'],
       }),
     ).rejects.toThrow(/permission denied/i);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// B-736 — the mint-then-accept race: a claim minted moments before a fast accept could be orphaned
+// because the old first-compose path was a bare insert with no coupling at all. `compose_brief_initial`
+// inserts the brief AND couples the pre-minted claim ids in ONE transaction; a PGRST202/42883 "function
+// absent" response degrades to today's exact bare-insert-then-separate-update shape (tolerated race
+// during the pre-promote window), and any other RPC error rethrows.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+describe('composeBrief — B-736 compose_brief_initial (claim mint-before-accept race)', () => {
+  const rpcBriefRow = {
+    id: 'brief-rpc-1', task_id: 'task-1', reason: 'clarification-draft', doc: okDoc, content: 'rendered',
+    expand_sections: {}, related: [], pending_activity: null, decision_ref: null, status: 'active',
+    iteration: 1, resolved_command: null, resolved_detail: null, resolved_at: null, created_by: USER_ID,
+    created_at: '2026-09-13T00:00:00Z', updated_at: '2026-09-13T00:00:00Z',
+  };
+  const bareBriefRow = { id: 'brief-1', task_id: 'task-1', reason: 'clarification-draft', content: 'rendered', status: 'active', iteration: 1 };
+
+  it('(a) RPC path — first compose with claims to couple calls compose_brief_initial, not insert', async () => {
+    // responses: [no active brief] -> [task flag update]. The RPC itself is NOT on the shared FIFO
+    // queue — it resolves from rpcResponses, keyed by name.
+    const client = makeClient(
+      [{ data: null }, { data: null }],
+      { compose_brief_initial: { data: rpcBriefRow, error: null } },
+    );
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      couple_claim_ids: ['claim-1', 'claim-2'],
+    });
+    expect(client.rpc).toHaveBeenCalledWith('compose_brief_initial', expect.objectContaining({
+      _task_id: 'task-1',
+      _payload: expect.objectContaining({
+        reason: 'clarification-draft', doc: okDoc, content: expect.any(String),
+        expand_sections: {}, related: [],
+      }),
+      _claim_ids: ['claim-1', 'claim-2'],
+      _created_by: USER_ID,
+    }));
+    expect(client.insert).not.toHaveBeenCalled();
+    expect(result.brief).toEqual(rpcBriefRow);
+  });
+
+  it('(b) fallback — RPC absent (PGRST202) degrades to the EXACT pre-existing bare-insert + separate coupling update, in order', async () => {
+    // responses: [no active brief] -> [bare insert] -> [coupling update await] -> [task flag update]
+    const client = makeClient(
+      [{ data: null }, { data: bareBriefRow }, { data: null }, { data: null }],
+      {
+        compose_brief_initial: {
+          data: null,
+          error: { code: 'PGRST202', message: 'Could not find the function public.compose_brief_initial(uuid, jsonb, uuid[], uuid) in the schema cache' },
+        },
+      },
+    );
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      couple_claim_ids: ['claim-1', 'claim-2'],
+    });
+
+    // (1) the bare insert ran with the SAME shape as the old bare-insert path — no couple_claim_ids /
+    // _claim_ids key leaking into the briefs row.
+    expect(client.insert).toHaveBeenCalledWith(expect.objectContaining({
+      task_id: 'task-1', created_by: USER_ID, reason: 'clarification-draft',
+    }));
+    const insertedRow = client.insert.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertedRow).not.toHaveProperty('couple_claim_ids');
+    expect(insertedRow).not.toHaveProperty('_claim_ids');
+
+    // (2) THEN, separately, the knowledge_decisions coupling update ran.
+    expect(client.from).toHaveBeenCalledWith('knowledge_decisions');
+    expect(client.update).toHaveBeenCalledWith({ underwriting_brief_id: bareBriefRow.id });
+    expect(client.in).toHaveBeenCalledWith('id', ['claim-1', 'claim-2']);
+    expect(client.eq).toHaveBeenCalledWith('status', 'Asserted');
+
+    // (3) ORDER: insert before the coupling update, not just "both happened".
+    const coupleUpdateIndex = client.update.mock.calls.findIndex(
+      (c: any[]) => c[0] && (c[0] as Record<string, unknown>).underwriting_brief_id === bareBriefRow.id,
+    );
+    expect(coupleUpdateIndex).toBeGreaterThanOrEqual(0);
+    expect(client.update.mock.invocationCallOrder[coupleUpdateIndex]).toBeGreaterThan(
+      client.insert.mock.invocationCallOrder[0],
+    );
+
+    expect(result.brief).toEqual(bareBriefRow);
+  });
+
+  it('(b2) any OTHER rpc error rethrows — never silently treated as "substrate absent"', async () => {
+    const client = makeClient(
+      [{ data: null }],
+      { compose_brief_initial: { data: null, error: { code: '42501', message: 'permission denied for function compose_brief_initial' } } },
+    );
+    await expect(
+      composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+        couple_claim_ids: ['claim-1'],
+      }),
+    ).rejects.toThrow(/permission denied/i);
+    expect(client.insert).not.toHaveBeenCalled();
+  });
+
+  it('(c) positive control — the RPC path performs NO separate coupling update (would reopen the race)', async () => {
+    const client = makeClient(
+      [{ data: null }, { data: null }],
+      { compose_brief_initial: { data: rpcBriefRow, error: null } },
+    );
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      couple_claim_ids: ['claim-1', 'claim-2'],
+    });
+    expect(client.from).not.toHaveBeenCalledWith('knowledge_decisions');
+    expect(client.update).not.toHaveBeenCalledWith(expect.objectContaining({ underwriting_brief_id: expect.anything() }));
+  });
+
+  it('(d) back-compat — couple_claim_ids omitted never calls compose_brief_initial, plain insert runs as before', async () => {
+    // responses: [no active brief] -> [insert row] -> [task update] — identical to the pre-B-736 shape.
+    const client = makeClient([{ data: null }, { data: bareBriefRow }, { data: null }]);
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    });
+    expect(client.rpc.mock.calls.some((c: any[]) => c[0] === 'compose_brief_initial')).toBe(false);
+    expect(client.insert).toHaveBeenCalledWith(expect.objectContaining({
+      task_id: 'task-1', created_by: USER_ID, reason: 'clarification-draft',
+    }));
+    expect(client.from).not.toHaveBeenCalledWith('knowledge_decisions');
+    expect(result.brief).toEqual(bareBriefRow);
+  });
+
+  it('(d2) an empty couple_claim_ids array is still a valid "mint happened but produced nothing" case — RPC still called', async () => {
+    const client = makeClient(
+      [{ data: null }, { data: null }],
+      { compose_brief_initial: { data: rpcBriefRow, error: null } },
+    );
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      couple_claim_ids: [],
+    });
+    expect(client.rpc).toHaveBeenCalledWith('compose_brief_initial', expect.objectContaining({ _claim_ids: [] }));
+  });
+
+  describe('isMissingComposeBriefInitial', () => {
+    it('matches the 42883 / PGRST202 codes and a message match', () => {
+      expect(isMissingComposeBriefInitial({ code: '42883', message: 'x' })).toBe(true);
+      expect(isMissingComposeBriefInitial({ code: 'PGRST202', message: 'x' })).toBe(true);
+      expect(isMissingComposeBriefInitial({ message: 'Could not find the function public.compose_brief_initial in the schema cache' })).toBe(true);
+    });
+    it('does NOT match a permission error, a timeout, an unrelated message, or null/undefined', () => {
+      expect(isMissingComposeBriefInitial({ code: '42501', message: 'permission denied' })).toBe(false);
+      expect(isMissingComposeBriefInitial({ code: '57014', message: 'statement timeout' })).toBe(false);
+      expect(isMissingComposeBriefInitial({ message: 'compose_brief_initial returned null' })).toBe(false);
+      expect(isMissingComposeBriefInitial(null)).toBe(false);
+      expect(isMissingComposeBriefInitial(undefined)).toBe(false);
+    });
   });
 });
 
