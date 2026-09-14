@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { existsSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -4302,5 +4302,32 @@ verify:
     const persisted = client.insert.mock.calls[0][0] as { content: string };
     expect(persisted.content).not.toContain('Declared evidence');
     expect(persisted.content).not.toContain('founder-clickthrough');
+  });
+});
+
+describe('reshapeBrief is the sole caller of submit_brief_command (B-898 residual-risk closure)', () => {
+  function listTsFiles(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'dist') continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...listTsFiles(full));
+      else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) out.push(full);
+    }
+    return out;
+  }
+
+  it('is the ONLY call site of the submit_brief_command RPC across src/ — a future second caller must fail this test, not vanish invisibly from the activity feed (B-898)', () => {
+    const srcDir = fileURLToPath(new URL('../', import.meta.url)); // src/tools/../ -> src/
+    const callSitePattern = /\.rpc\(\s*['"]submit_brief_command['"]/g;
+    const hits: Record<string, number> = {};
+    for (const file of listTsFiles(srcDir)) {
+      const text = readFileSync(file, 'utf8');
+      const count = (text.match(callSitePattern) ?? []).length;
+      if (count > 0) hits[file] = count;
+    }
+    const briefsFile = fileURLToPath(new URL('./briefs.ts', import.meta.url));
+    expect(Object.keys(hits)).toEqual([briefsFile]);
+    expect(hits[briefsFile]).toBe(1);
   });
 });
