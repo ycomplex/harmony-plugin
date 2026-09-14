@@ -215,4 +215,44 @@ describe('start-work skill contract (evolved)', () => {
       expect(body.toLowerCase()).toMatch(/never swallow the guard's error/);
     });
   });
+
+  describe('B-730: O3 build-evidence tick reads current acceptance criteria first', () => {
+    const body = skill.body;
+    const o3 = body.indexOf('### O3. Build (Planned');
+
+    it('reads the acceptance criteria BEFORE ticking them (the read must precede the tick)', () => {
+      expect(o3, 'O3 section not found').toBeGreaterThan(-1);
+
+      // Scope to O3's own build-evidence-landing step - the manage_acceptance_criteria TOOL NAME is also
+      // mentioned in prose outside O3 (the Execute-route AC display around :228 and the manual-mode
+      // handoff near :799), so an unscoped indexOf on the bare tool name would be a false pass. Anchor on
+      // the actual call-site signature, searched from the "LAND the build evidence" heading, so a
+      // pre-existing read elsewhere in O3 (e.g. the B-747 floor check at the top) cannot satisfy this.
+      const landIdx = body.indexOf('LAND the build evidence', o3);
+      expect(landIdx, 'LAND the build evidence step not found in O3').toBeGreaterThan(-1);
+
+      const readIdx = body.indexOf('list_acceptance_criteria', landIdx);
+      const tickIdx = body.indexOf('manage_acceptance_criteria({ task_id, update:', landIdx);
+
+      expect(
+        readIdx,
+        'the build-evidence-landing step never calls list_acceptance_criteria before ticking - the tick ' +
+          'can run against context assembled earlier in the run instead of the criteria live wording (B-730)',
+      ).toBeGreaterThan(-1);
+      expect(
+        tickIdx,
+        'the acceptance-criteria tick call site was not found in the build-evidence-landing step',
+      ).toBeGreaterThan(-1);
+      expect(
+        readIdx,
+        'the acceptance-criteria read must precede the tick - ticking first is the exact B-730 defect',
+      ).toBeLessThan(tickIdx);
+    });
+
+    it('does not turn the freshness read into a second presence floor (B-747 stays a single check)', () => {
+      // The new read is a FRESHNESS read, not a floor - the B-747 "deliberately not here" paragraph must
+      // stay intact and the pre-tick step must not gain its own presence assertion.
+      expect(body).toMatch(/deliberately not here/i);
+    });
+  });
 });
