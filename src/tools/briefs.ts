@@ -1854,6 +1854,17 @@ export function writesGateSlot(reason: string | undefined): boolean {
   return !!reason && GATE_REASON_FLOW[reason]?.writes_slot === true;
 }
 
+/** B-908 — does this gate reason need an ACCEPTANCE-EVENT VEHICLE at all? The corrected invariant is
+ *  derives_entry_content OR carries_writes (not derives_entry_content alone — that set omits
+ *  plan-draft, which carries_writes:true but derives_entry_content:false). harmony-web's resolve_brief
+ *  migration pins its OWN literal mirror of the reasons this predicate returns true for
+ *  (v_is_event_reason); this repo's own mirror lives in derivation-contract.test.ts's set-equality test
+ *  below. RULE: a 9th reason that sets EITHER flag must touch BOTH pinned lists in the SAME change, or
+ *  one side's test fails and names the diverging reason. */
+export function needsAcceptanceEventVehicle(reason: string | undefined): boolean {
+  return derivesEntryContent(reason) || (!!reason && GATE_REASON_FLOW[reason]?.carries_writes === true);
+}
+
 /** The gate slots reachable through a brief's ACCEPT PAYLOAD — clarify alone, and the ledger above is
  *  why. Release and verify write slots too, but `resolve_brief` defers only the four agent-owned-payload
  *  reasons, so their accept mints no acceptance event and a payload item would have nothing to ride.

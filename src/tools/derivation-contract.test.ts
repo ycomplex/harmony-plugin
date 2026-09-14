@@ -5,6 +5,7 @@ import {
   renderEntry,
   withDerivedEntryContent,
   derivesEntryContent,
+  needsAcceptanceEventVehicle,
   GATE_REASON_FLOW,
   carriesDecisionRef,
   ENTRY_PROVENANCE_PREFIX,
@@ -222,6 +223,18 @@ describe('the eight-reason coverage ledger is PINNED, so an unflowed reason is n
     for (const reason of REASONS) {
       expect(GATE_REASON_FLOW[reason].note.trim().length).toBeGreaterThan(20);
     }
+  });
+
+  it('needsAcceptanceEventVehicle — the corrected invariant (derives_entry_content OR carries_writes) matches the pinned 5-member event-reason set (B-908)', () => {
+    const PINNED_EVENT_REASONS = [
+      'clarification-draft', 'decomposition-proposal', 'design-decision-draft', 'plan-draft', 'revise-scope-review',
+    ].sort();
+    const computed = REASONS.filter((r) => needsAcceptanceEventVehicle(r)).sort();
+    const missing = PINNED_EVENT_REASONS.filter((r) => !computed.includes(r));
+    const extra = computed.filter((r) => !PINNED_EVENT_REASONS.includes(r));
+    // A 9th reason (or a flag flip) that diverges from harmony-web's v_is_event_reason mirror shows up
+    // HERE, named in the failure diff — never a silent stub (the B-902/B-904 failure mode).
+    expect({ computed, missing, extra }).toEqual({ computed: PINNED_EVENT_REASONS, missing: [], extra: [] });
   });
 });
 
