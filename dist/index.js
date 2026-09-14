@@ -45432,6 +45432,8 @@ var RISK_CLASSES = [
   "shared-core"
 ];
 var kw = (re, senseOk) => ({ re, senseOk });
+var AUTH_WORD_REGEX = /\bauth(?:entication|orization|z|n)?\b/i;
+var OAUTH_WORD_REGEX = /\boauth\b/i;
 var AUTH_TOKEN_QUALIFIER = /\b(?:auth|access|api|bearer|jwt|session|refresh|csrf)\b/i;
 function tokenIsAuthSense(text, start, end) {
   const before = text.slice(Math.max(0, start - 24), start);
@@ -45439,27 +45441,42 @@ function tokenIsAuthSense(text, start, end) {
   const window2 = before + " " + after;
   return AUTH_TOKEN_QUALIFIER.test(window2);
 }
+var MIGRATION_CI_TRIGGER_QUALIFIER = /^\s*(?:PRs?|pull[\s-]?requests?)\b/i;
+function migrationSenseOk(text, _start, end) {
+  const after = text.slice(end, end + 20);
+  return !MIGRATION_CI_TRIGGER_QUALIFIER.test(after);
+}
+var AUTH_AUTHORING_VERBS = /\b(?:add(?:s|ed|ing)?|creat(?:e|es|ed|ing)|chang(?:e|es|ed|ing)|implement(?:s|ed|ing)?|requir(?:e|es|ed|ing))\b/i;
+var READING_QUALIFIER_WORDS = /\b(?:existing|current|exercised|accessed|observed|inside|under)\b/i;
+var READING_QUALIFIER_WINDOW = 56;
+function notReadingQualifiedSense(text, start, end) {
+  const before = text.slice(Math.max(0, start - READING_QUALIFIER_WINDOW), start);
+  const after = text.slice(end, end + READING_QUALIFIER_WINDOW);
+  const window2 = before + " " + after;
+  if (AUTH_AUTHORING_VERBS.test(window2)) return true;
+  return !READING_QUALIFIER_WORDS.test(window2);
+}
 var KEYWORD_TABLE = {
   auth: [
     // auth / login / logout / session / token / password / oauth / RLS / permission / role
-    kw(/\bauth(?:entication|orization|z|n)?\b/i),
-    kw(/\boauth\b/i),
+    kw(AUTH_WORD_REGEX),
+    kw(OAUTH_WORD_REGEX),
     kw(/\blog[\s-]?in\b/i),
     kw(/\blog[\s-]?out\b/i),
     kw(/\bsign[\s-]?in\b/i),
     kw(/\bsign[\s-]?out\b/i),
-    kw(/\bsession\b/i),
-    kw(/\btokens?\b/i, tokenIsAuthSense),
+    kw(/\bsession\b/i, notReadingQualifiedSense),
+    kw(/\btokens?\b/i, (text, start, end) => tokenIsAuthSense(text, start, end) && notReadingQualifiedSense(text, start, end)),
     kw(/\bpasswords?\b/i),
-    kw(/\bcredentials?\b/i),
+    kw(/\bcredentials?\b/i, notReadingQualifiedSense),
     kw(/\bRLS\b/i),
     kw(/\brow[\s-]?level[\s-]?security\b/i),
-    kw(/\bpermissions?\b/i),
+    kw(/\bpermissions?\b/i, notReadingQualifiedSense),
     kw(/\broles?\b/i)
   ],
   "data-migration": [
     // migration / schema / ALTER TABLE / backfill / DROP COLUMN
-    kw(/\bmigrations?\b/i),
+    kw(/\bmigrations?\b/i, migrationSenseOk),
     kw(/\bschema\b/i),
     kw(/\balter\s+table\b/i),
     kw(/\badd\s+column\b/i),
@@ -45490,12 +45507,26 @@ var KEYWORD_TABLE = {
   ]
 };
 var NEGATION_CUES = /* @__PURE__ */ new Set(["no", "not", "without", "zero", "neither", "nor", "none"]);
-var NEGATION_WINDOW = 4;
-var CLAUSE_BOUNDARY_TOKENS = /* @__PURE__ */ new Set(["and", "but", "or", "then", "so", "yet"]);
+var NEGATION_WINDOW = 6;
+var HARD_CLAUSE_BOUNDARY_TOKENS = /* @__PURE__ */ new Set(["but", "then", "so", "yet"]);
+var LIST_CONNECTOR_TOKENS = /* @__PURE__ */ new Set(["and", "or"]);
+var SUBJECT_STARTER_WORDS = /* @__PURE__ */ new Set([
+  "it",
+  "this",
+  "that",
+  "we",
+  "you",
+  "they",
+  "there",
+  "the",
+  "a",
+  "please",
+  "run"
+]);
 var CLAUSE_BOUNDARY_PUNCT = /[,;:.–—]/;
 var ASCII_LETTER = /[a-z]/;
 function precedingTokens(text, matchStart) {
-  const slice = text.slice(Math.max(0, matchStart - 48), matchStart).toLowerCase();
+  const slice = text.slice(Math.max(0, matchStart - 80), matchStart).toLowerCase();
   const isWordChar = (k) => {
     const c = slice[k];
     if (c === void 0) return false;
@@ -45513,7 +45544,12 @@ function precedingTokens(text, matchStart) {
       const word = slice.slice(j + 1, i + 1);
       i = j;
       if (word.length === 0) continue;
-      if (CLAUSE_BOUNDARY_TOKENS.has(word)) break;
+      if (HARD_CLAUSE_BOUNDARY_TOKENS.has(word)) break;
+      if (LIST_CONNECTOR_TOKENS.has(word)) {
+        const nextToward = inClause[inClause.length - 1];
+        if (nextToward !== void 0 && SUBJECT_STARTER_WORDS.has(nextToward)) break;
+        continue;
+      }
       inClause.push(word);
     } else {
       if (slice[i] === "-") break;
@@ -45548,7 +45584,7 @@ function textHitsClass(text, cls) {
   return false;
 }
 var PATH_GLOB_TABLE = {
-  auth: ["**/auth/**", "**/auth.ts", "**/auth.tsx", "**/*auth*.ts", "**/middleware/auth*", "**/rls/**"],
+  auth: ["**/auth/**", "**/auth.ts", "**/auth.tsx", "**/middleware/auth*", "**/rls/**"],
   "data-migration": ["**/migrations/**", "**/migration/**", "**/*.sql", "**/schema.sql", "**/supabase/migrations/**"],
   // No reliably-destructive path signature (destructiveness lives in content, not the path);
   // kept empty so this class trips on text/labels, never on an innocent path. The conservative
@@ -45612,9 +45648,25 @@ function labelToRiskClass(label) {
       return null;
   }
 }
+function basenameOf(path2) {
+  const idx = path2.lastIndexOf("/");
+  return idx === -1 ? path2 : path2.slice(idx + 1);
+}
+function tokenizeBasename(basename2) {
+  const spaced = basename2.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
+  return spaced.split(/\s+/).filter((t) => t.length > 0);
+}
+function authBasenameHit(path2) {
+  const tokens = tokenizeBasename(basenameOf(path2));
+  return tokens.some((t) => AUTH_WORD_REGEX.test(t) || OAUTH_WORD_REGEX.test(t));
+}
 function pathHitsClass(paths, cls) {
   const globs = PATH_REGEX_TABLE[cls];
-  return globs.length > 0 && paths.some((p) => globs.some((re) => re.test(p)));
+  if (globs.length === 0) return false;
+  return paths.some((p) => {
+    if (globs.some((re) => re.test(p))) return true;
+    return cls === "auth" && authBasenameHit(p);
+  });
 }
 function detectRiskClasses(input) {
   const hits = /* @__PURE__ */ new Set();
@@ -47114,6 +47166,13 @@ var isMissingComposeBriefRevision = (err) => {
   const msg = err.message ?? "";
   return /compose_brief_revision/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg);
 };
+var isMissingComposeBriefInitial = (err) => {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42883" || code === "PGRST202") return true;
+  const msg = err.message ?? "";
+  return /compose_brief_initial/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg);
+};
 async function composeBrief(client, projectId, userId, args) {
   if (!args.task_id) throw new Error("task_id is required");
   if (!VALID_REASONS.includes(args.reason)) {
@@ -47157,6 +47216,10 @@ async function composeBrief(client, projectId, userId, args) {
       throw new Error(`pending_activity '${mergedPendingActivity}' has no valid transition from state '${fromState ?? "NULL"}'`);
     }
     accept = { from: fromState, to: tr.to_state };
+  } else if (args.reason === "plan-draft") {
+    throw new Error(
+      "A 'plan-draft' brief must carry a real pending_activity (e.g. 'planning') \u2014 its accept always advances Designed \u2192 Planned, so it cannot advance no state."
+    );
   }
   const renderCtx = { reason: args.reason, accept };
   const docWithContradiction = await withContradictionSignal(
@@ -47271,16 +47334,39 @@ async function composeBrief(client, projectId, userId, args) {
       }
     }
   } else {
-    const insertRow = { task_id: taskId, created_by: userId, ...payload };
-    const { data, error: error2 } = await client.from("briefs").insert(insertRow).select(BRIEF_COLS).single();
-    if (error2) {
-      if (!isMissingPendingResolution(error2.message)) throw new Error(error2.message);
-      const { pending_resolution: _drop, ...fallback } = insertRow;
-      const { data: data2, error: error22 } = await client.from("briefs").insert(fallback).select(BRIEF_COLS).single();
-      if (error22) throw new Error(error22.message);
-      brief = data2;
+    const insertBriefRow = async () => {
+      const insertRow = { task_id: taskId, created_by: userId, ...payload };
+      const { data, error: error2 } = await client.from("briefs").insert(insertRow).select(BRIEF_COLS).single();
+      if (error2) {
+        if (!isMissingPendingResolution(error2.message)) throw new Error(error2.message);
+        const { pending_resolution: _drop, ...fallback } = insertRow;
+        const { data: data2, error: error22 } = await client.from("briefs").insert(fallback).select(BRIEF_COLS).single();
+        if (error22) throw new Error(error22.message);
+        return data2;
+      }
+      return data;
+    };
+    if (args.couple_claim_ids !== void 0) {
+      const { data: initialData, error: initialErr } = await client.rpc("compose_brief_initial", {
+        _task_id: taskId,
+        _payload: payload,
+        _claim_ids: args.couple_claim_ids,
+        _created_by: userId
+      });
+      if (!initialErr) {
+        brief = initialData;
+      } else if (isMissingComposeBriefInitial(initialErr)) {
+        brief = await insertBriefRow();
+        if (args.couple_claim_ids.length > 0) {
+          const briefId = brief.id;
+          const { error: coupleErr } = await client.from("knowledge_decisions").update({ underwriting_brief_id: briefId }).in("id", args.couple_claim_ids).eq("status", "Asserted");
+          if (coupleErr) throw new Error(coupleErr.message);
+        }
+      } else {
+        throw new Error(initialErr.message);
+      }
     } else {
-      brief = data;
+      brief = await insertBriefRow();
     }
   }
   const { error: taskErr } = await client.from("tasks").update({
@@ -47293,7 +47379,7 @@ async function composeBrief(client, projectId, userId, args) {
 }
 var composeBriefTool = {
   name: "compose_brief",
-  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING \u2014 no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose \u2014 compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing \u2014 an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal.",
+  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). On a FIRST compose only (when no active brief exists yet), pass `couple_claim_ids` (B-736) = the ids of elicitation claims minted just before this call \u2014 compose atomically couples them (`underwriting_brief_id`) to the brief it creates via `compose_brief_initial`, tolerantly falling back to a bare insert plus a separate coupling update on a DB that does not yet have that RPC; omit it when no exchange ran. Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING \u2014 no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose \u2014 compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing \u2014 an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal.",
   inputSchema: {
     type: "object",
     properties: {
@@ -47373,6 +47459,7 @@ var composeBriefTool = {
         description: "B-838 \u2014 the build's bounded, REMOVED/REPLACED PR diff lines (`git diff origin/main...HEAD`, pre-merge, post-exclusion, pre-cap). Used ONLY to compute a release frame's `contradiction_signal` \u2014 which Accepted knowledge entries this diff touches or contradicts; compose is authoritative for that field and overwrites whatever the doc authored, exactly like `risk_classes` from `changed_paths`. Omitted entirely -> `{ status: 'not-computed', message: 'not computed \u2014 no diff supplied' }`, never silently read as \"no contradictions\"."
       },
       underwriting_claim_ids: { type: "array", items: { type: "string" }, description: "B-645 iterate-prune: on an in-place iterate, the KEPT set of elicitation-claim ids that still underwrite this brief. Coupled Asserted claims NOT listed are archived; [] archives all coupled Asserted claims; omit \u21D2 no prune. Ignored on a first compose (nothing is coupled yet)." },
+      couple_claim_ids: { type: "array", items: { type: "string" }, description: "B-736: on a FIRST compose only, the ids of elicitation claims minted BEFORE this call that should be atomically coupled (underwriting_brief_id set) to the brief this call creates \u2014 closes the claim mint-then-accept race. Ignored when a brief already exists for the task (use underwriting_claim_ids to prune on iterate instead)." },
       iterate_feedback: {
         type: "string",
         description: "B-843 \u2014 the human's feedback that CAUSED this iterate, VERBATIM. A revision stores it ONLY when a send-back CAUSED that revision. The mechanical anchor: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail` here (as `edit` / `iterate <feedback>` and the browser reshape all do); EVERY other recompose omits the parameter and the field lands null. Omit it on a first draft (nothing caused the brief), a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to populate this field: the CALLER passes it, so the marker is never scraped (B-843) and the words are never stamped onto a revision nobody sent back (B-896/B-903). It is stored on the NEW revision, so the retained history reads as \"this is what they asked for, and this is what I changed\". Never guessed, never paraphrased into a summary, and never left out because `doc.revision` already names the changes \u2014 `doc.revision` records what YOU changed, this records what THEY said."
@@ -50266,10 +50353,28 @@ async function applyAcceptanceEventPayload(client, event) {
   }
   return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind };
 }
+var RACED_EVENT_ERROR_SUBSTRING = "no longer matches event";
 async function consumeAcceptanceEvent(client, eventId) {
   const { data, error: error2 } = await client.rpc("consume_acceptance_event", { _event_id: eventId });
-  if (error2) throw new Error(error2.message);
-  return data;
+  if (!error2) return data;
+  if (!error2.message.includes(RACED_EVENT_ERROR_SUBSTRING)) {
+    throw new Error(error2.message);
+  }
+  const { data: staleEventRow, error: staleEventErr } = await client.from("pending_acceptance_events").select("task_id").eq("id", eventId).maybeSingle();
+  if (staleEventErr || !staleEventRow) {
+    throw new Error(error2.message);
+  }
+  const { data: taskRow, error: taskErr } = await client.from("tasks").select("pending_acceptance_event_id").eq("id", staleEventRow.task_id).maybeSingle();
+  if (taskErr || !taskRow) {
+    throw new Error(error2.message);
+  }
+  const currentEventId = taskRow.pending_acceptance_event_id;
+  if (!currentEventId || currentEventId === eventId) {
+    throw new Error(error2.message);
+  }
+  const { data: retryData, error: retryError } = await client.rpc("consume_acceptance_event", { _event_id: currentEventId });
+  if (retryError) throw new Error(retryError.message);
+  return { ...retryData, retried_from_event_id: eventId };
 }
 async function consumePendingAcceptanceEvent(client, projectId, taskId) {
   const probe = await probeAcceptanceEventSubstrate(client);
@@ -50285,15 +50390,25 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId) {
     return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
   }
   const consumeResult = await consumeAcceptanceEvent(client, event.id);
+  let effectiveReason = event.reason;
+  let effectiveBriefId = event.brief_id;
+  if (consumeResult.event_id && consumeResult.event_id !== event.id) {
+    const { data: actualEventRow } = await client.from("pending_acceptance_events").select("reason, brief_id").eq("id", consumeResult.event_id).maybeSingle();
+    if (actualEventRow) {
+      const actual = actualEventRow;
+      effectiveReason = actual.reason;
+      effectiveBriefId = actual.brief_id;
+    }
+  }
   return {
     status: "consumed",
-    event_id: event.id,
+    event_id: consumeResult.event_id,
     applied: applyResult.applied,
     skipped_already_done: applyResult.skipped_already_done,
     by_write_kind: applyResult.by_write_kind,
     workflow_state: consumeResult.workflow_state,
-    reason: event.reason,
-    brief_id: event.brief_id
+    reason: effectiveReason,
+    brief_id: effectiveBriefId
   };
 }
 var consumePendingAcceptanceEventTool = {
