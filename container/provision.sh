@@ -134,8 +134,17 @@ fi
 #   prod        -> ref=prod  (the safe default posture)
 #   ack:<ref>   -> ref=<ref>, acked (the ahead-of-prod risk is explicitly accepted)
 #   <ref>       -> ref=<ref>, NOT acked (a bare ref with no "ack:" prefix)
-#   unset       -> defaults to "main", NOT acked (matches the daemon's historical default posture)
-PLUGIN_POSTURE="${HARMONY_PLUGIN_POSTURE:-main}"
+#   unset       -> defaults to "staging", NOT acked
+#
+# B-1007 repointed that default from "main" to "staging". Under the three-branch topology `main` is
+# SOURCE ONLY — no tracked dist/ — and this script shims the CLI straight off the COMMITTED bundle
+# and runs `harmony login` before any agent exists to run `npm ci`, so a worker on a dist-less ref
+# dies before any agent runs. `staging` is the CI-GENERATED branch that carries the built dist/ (see
+# scripts/generate-staging.sh), so it is the only non-prod ref a cloud worker can actually boot on.
+# This is a RENAME OF THE DEFAULT ONLY: the B-383 ahead-of-prod guard below is unchanged in
+# substance — an unacked non-prod posture (staging included) still fails closed on a prod-target
+# headless run, and a deployment's existing `ack:main` simply becomes `ack:staging`.
+PLUGIN_POSTURE="${HARMONY_PLUGIN_POSTURE:-staging}"
 case "$PLUGIN_POSTURE" in
   ack:*)
     PLUGIN_REF="${PLUGIN_POSTURE#ack:}"
