@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { readSkill, readSharedDoc, referencedHarmonyTools } from './skill-contract.js';
 import { VALID_TRIGGERS } from '../tools/elicitation.js';
+import { addCommentTool } from '../tools/comments.js';
 
 const SKILLS = join(process.cwd(), 'skills');
 
@@ -381,5 +382,132 @@ describe('clean-exit-contract: ONE rule, two surfaces (B-870)', () => {
   it('is honest about what remains a discipline (clauses (a) and (b), and the build subagent)', () => {
     expect(doc).toMatch(/What is still discipline/);
     expect(doc).toMatch(/WORKER-QUESTION:/);
+  });
+});
+
+// B-899: a worker following the conduct skill's own `add_comment` example verbatim hit an opaque
+// tool error, because the example used `body` where the tool's real parameter is `content` (see
+// addCommentTool.inputSchema.properties in src/tools/comments.ts). Several skill-prose call sites
+// had the same wrong-name bug. Walk every .md file under skills/ (same recursive-walk shape as the
+// VALID_TRIGGERS sweep above), extract each `add_comment({ ... })` call's top-level argument names
+// with a small string/template-literal-aware parser, and assert every name is a member of the LIVE
+// addCommentTool schema — never a hardcoded list, so this also catches a future rename of `content`.
+describe('add_comment skill-prose calls use the live tool schema (B-899)', () => {
+  function findMatchingClose(text: string, openIdx: number, openChar: string, closeChar: string): number {
+    let depth = 0;
+    let inString: '"' | "'" | '`' | null = null;
+    for (let i = openIdx; i < text.length; i++) {
+      const c = text[i];
+      if (inString) {
+        if (c === '\\') {
+          i++;
+          continue;
+        }
+        if (c === inString) inString = null;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === '`') {
+        inString = c;
+        continue;
+      }
+      if (c === openChar) depth++;
+      else if (c === closeChar) {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
+  }
+
+  function splitTopLevelArgNames(objInner: string): string[] {
+    const parts: string[] = [];
+    let depth = 0;
+    let inString: '"' | "'" | '`' | null = null;
+    let current = '';
+    for (let i = 0; i < objInner.length; i++) {
+      const c = objInner[i];
+      if (inString) {
+        current += c;
+        if (c === '\\') {
+          i++;
+          current += objInner[i] ?? '';
+          continue;
+        }
+        if (c === inString) inString = null;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === '`') {
+        inString = c;
+        current += c;
+        continue;
+      }
+      if (c === '{' || c === '(' || c === '[') {
+        depth++;
+        current += c;
+        continue;
+      }
+      if (c === '}' || c === ')' || c === ']') {
+        depth--;
+        current += c;
+        continue;
+      }
+      if (c === ',' && depth === 0) {
+        parts.push(current);
+        current = '';
+        continue;
+      }
+      current += c;
+    }
+    if (current.trim()) parts.push(current);
+
+    return parts
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0)
+      .map((p) => {
+        const colonIdx = p.indexOf(':');
+        return (colonIdx === -1 ? p : p.slice(0, colonIdx)).trim();
+      })
+      .filter((name) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name));
+  }
+
+  // Returns one string[] per `add_comment({ ... })` call site found in `text`.
+  function extractAddCommentArgNames(text: string): string[][] {
+    const results: string[][] = [];
+    const callRegex = /add_comment\s*\(/g;
+    let m: RegExpExecArray | null;
+    while ((m = callRegex.exec(text))) {
+      const parenOpen = m.index + m[0].length - 1;
+      const parenClose = findMatchingClose(text, parenOpen, '(', ')');
+      if (parenClose === -1) continue;
+      const inner = text.slice(parenOpen + 1, parenClose);
+      const braceOpen = inner.indexOf('{');
+      if (braceOpen === -1) continue; // not an object-literal call — nothing to check
+      const braceClose = findMatchingClose(inner, braceOpen, '{', '}');
+      if (braceClose === -1) continue;
+      const objInner = inner.slice(braceOpen + 1, braceClose);
+      results.push(splitTopLevelArgNames(objInner));
+    }
+    return results;
+  }
+
+  it('every add_comment({...}) call in skills/ prose uses argument names accepted by the live tool schema', () => {
+    const validNames = new Set(Object.keys(addCommentTool.inputSchema.properties));
+    const mdFiles = readdirSync(SKILLS, { recursive: true })
+      .filter((entry): entry is string => typeof entry === 'string' && entry.endsWith('.md'));
+
+    let callsChecked = 0;
+    for (const rel of mdFiles) {
+      const text = readFileSync(join(SKILLS, rel), 'utf8');
+      for (const names of extractAddCommentArgNames(text)) {
+        callsChecked++;
+        for (const name of names) {
+          expect(
+            validNames.has(name),
+            `${rel}: add_comment(...) call uses argument '${name}', which is not in the live addCommentTool schema (valid: ${[...validNames].join(', ')})`,
+          ).toBe(true);
+        }
+      }
+    }
+    expect(callsChecked, 'expected to find at least one add_comment({...}) call in skills/ prose').toBeGreaterThan(0);
   });
 });
