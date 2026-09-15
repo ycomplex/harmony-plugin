@@ -4272,7 +4272,34 @@ describe('listBriefs (B-878)', () => {
     const client = makeClient([{ data: [] }, { data: [] }, { data: [] }]);
     const result = await listBriefs(client, PROJECT_ID, { task_id: 'task-1' });
     expect(result.lineages).toEqual([]);
-    expect(result.substrate).toEqual({ revision_columns: 'present', lineage_view: 'present', exchanges: 'present' });
+    expect(result.substrate).toEqual({ revision_columns: 'present', revision_cause: 'present', lineage_view: 'present', exchanges: 'present' });
+  });
+
+  // ── B-1017: each revision carries WHY it exists ────────────────────────────────────────────────
+  it('carries revision_cause on each revision — the typed cause when stored, null when absent', async () => {
+    const rows = [
+      rev({ revision_cause: { source: 'lint-self-review', lines: ['w1', 'w2'] } }),
+      rev({ id: 'b-1', iteration: 1, status: 'superseded', iterate_feedback: null, revision_cause: null, created_at: '2026-05-29T00:00:00Z' }),
+    ];
+    const client = makeClient([{ data: rows }, { data: [] }, { data: VIEW }]);
+    const result = await listBriefs(client, PROJECT_ID, { task_id: 'task-1' });
+    const [newest, oldest] = result.lineages[0].revisions;
+    expect(newest.revision_cause).toEqual({ source: 'lint-self-review', lines: ['w1', 'w2'] });
+    expect(oldest.revision_cause).toBeNull();
+    expect(result.substrate.revision_cause).toBe('present');
+    // The read asks for the column by name — it is a real column read, not a derivation.
+    expect(client.select.mock.calls[0][0]).toMatch(/revision_cause/);
+  });
+
+  it('reads a MALFORMED stored cause as null — tolerant, never a throw (and a row without the key too)', async () => {
+    const rows = [
+      rev({ revision_cause: { source: 'made-up', lines: ['x'] } }),
+      rev({ id: 'b-1', iteration: 1, status: 'superseded', created_at: '2026-05-29T00:00:00Z' }), // key absent entirely
+    ];
+    const client = makeClient([{ data: rows }, { data: [] }, { data: VIEW }]);
+    const result = await listBriefs(client, PROJECT_ID, { task_id: 'task-1' });
+    expect(result.lineages[0].revisions[0].revision_cause).toBeNull();
+    expect(result.lineages[0].revisions[1].revision_cause).toBeNull();
   });
 });
 
@@ -4334,7 +4361,80 @@ describe('listBriefs — B-383 tolerance (the substrate may not be on this DB ye
       .rejects.toThrow('connection failure');
   });
 
+  // ── B-1017: the cause column has its OWN rung between "everything" and "no revision columns" ────
+  it('degrades when ONLY the revision_cause column is absent: refetches without it, keeps lineage/feedback, and says so', async () => {
+    // responses: [briefs: revision_cause column error] -> [briefs, no-cause select] -> [exchanges] -> [lineage view]
+    const withLineage = { ...plain, lineage_id: 'lin-1', iterate_feedback: 'narrow it' };
+    const client = makeClient([
+      { data: null, error: { code: '42703', message: 'column briefs.revision_cause does not exist' } },
+      { data: [withLineage] },
+      { data: [] },
+      { data: [] },
+    ]);
+    const result = await listBriefs(client, PROJECT_ID, { task_id: 'task-1' });
+
+    expect(result.substrate.revision_cause).toBe('absent');
+    expect(result.substrate.revision_columns).toBe('present'); // lineage_id / iterate_feedback still read on the second select
+    expect(result.lineages[0].lineage_id).toBe('lin-1');
+    expect(result.lineages[0].revisions[0].iterate_feedback).toBe('narrow it');
+    expect(result.lineages[0].revisions[0].revision_cause).toBeNull();
+    // The second select drops EXACTLY the one column: the B-843 pair is still asked for.
+    const selects = client.select.mock.calls.map((c: any[]) => c[0] as string);
+    expect(selects[0]).toMatch(/revision_cause/);
+    expect(selects[1]).not.toMatch(/revision_cause/);
+    expect(selects[1]).toMatch(/lineage_id, iterate_feedback/);
+  });
+
+  it('degrades on the PostgREST schema-cache shape for the cause column too (PGRST204)', async () => {
+    const client = makeClient([
+      { data: null, error: { code: 'PGRST204', message: "Could not find the 'revision_cause' column of 'briefs' in the schema cache" } },
+      { data: [{ ...plain, lineage_id: 'lin-1', iterate_feedback: null }] },
+      { data: [] },
+      { data: [] },
+    ]);
+    const result = await listBriefs(client, PROJECT_ID, { task_id: 'task-1' });
+    expect(result.substrate).toMatchObject({ revision_cause: 'absent', revision_columns: 'present' });
+  });
+
+  it('falls through to the plain BRIEF_COLS rung when the no-cause select ALSO hits absent substrate', async () => {
+    // responses: [briefs: revision_cause error] -> [briefs: lineage_id error] -> [briefs plain] -> [exchanges] -> [view]
+    const client = makeClient([
+      { data: null, error: { code: '42703', message: 'column briefs.revision_cause does not exist' } },
+      { data: null, error: { code: '42703', message: 'column briefs.lineage_id does not exist' } },
+      { data: [plain] },
+      { data: [] },
+      { data: [] },
+    ]);
+    const result = await listBriefs(client, PROJECT_ID, { task_id: 'task-1' });
+    expect(result.substrate).toMatchObject({ revision_cause: 'absent', revision_columns: 'absent' });
+    expect(result.lineages).toHaveLength(1);
+    expect(result.lineages[0].lineage_id).toBe('b-1');
+    expect(result.lineages[0].revisions[0].revision_cause).toBeNull();
+    expect(client.select.mock.calls.filter((c: any[]) => /pending_activity, decision_ref/.test(c[0]))).toHaveLength(3);
+  });
+
+  it('an error naming the B-843 columns (not the cause) still goes STRAIGHT to the plain rung — one fallback select, as today', async () => {
+    const client = makeClient([
+      { data: null, error: { code: '42703', message: 'column briefs.lineage_id does not exist' } },
+      { data: [plain] },
+      { data: [] },
+      { data: [] },
+    ]);
+    const result = await listBriefs(client, PROJECT_ID, { task_id: 'task-1' });
+    expect(result.substrate).toMatchObject({ revision_cause: 'absent', revision_columns: 'absent' });
+    expect(client.select.mock.calls.filter((c: any[]) => /pending_activity, decision_ref/.test(c[0]))).toHaveLength(2);
+  });
+
+  it('PROPAGATES a non-schema error from the no-cause rung instead of reading it as absent substrate', async () => {
+    const client = makeClient([
+      { data: null, error: { code: '42703', message: 'column briefs.revision_cause does not exist' } },
+      { data: null, error: { code: '42501', message: 'permission denied for table briefs' } },
+    ]);
+    await expect(listBriefs(client, PROJECT_ID, { task_id: 'task-1' })).rejects.toThrow('permission denied for table briefs');
+  });
+
   it('isMissingBriefHistorySubstrate matches only schema-absence, never another error class', () => {
+    expect(isMissingBriefHistorySubstrate({ message: "Could not find the 'revision_cause' column in the schema cache" })).toBe(true);
     expect(isMissingBriefHistorySubstrate({ code: '42703', message: 'column briefs.lineage_id does not exist' })).toBe(true);
     expect(isMissingBriefHistorySubstrate({ code: '42P01', message: 'relation does not exist' })).toBe(true);
     expect(isMissingBriefHistorySubstrate({ code: 'PGRST205', message: 'not found' })).toBe(true);
@@ -4359,6 +4459,11 @@ describe('list_briefs tool registration (B-878)', () => {
     expect(listBriefsTool.description).toContain('predate revision retention');
     expect(listBriefsTool.description).toContain('iterate_feedback');
     expect(listBriefsTool.description).toContain('pre_draft_exchanges');
+  });
+
+  it('tells the reader each revision carries its cause, and that the substrate block reports the column (B-1017)', () => {
+    expect(listBriefsTool.description).toContain('revision_cause');
+    expect(listBriefsTool.description).toMatch(/why it was redrafted/i);
   });
 });
 

@@ -3424,8 +3424,10 @@ export async function getBrief(
 // every retained revision of it at every status, the reshape feedback that produced each revision, and
 // the elicitation exchanges anchored where they actually happened.
 
-/** The history read needs BRIEF_COLS plus B-843's two revision columns. */
-const BRIEF_HISTORY_COLS = `${BRIEF_COLS}, lineage_id, iterate_feedback`;
+/** The history read needs BRIEF_COLS plus B-843's two revision columns plus B-1017's cause. */
+const BRIEF_HISTORY_COLS = `${BRIEF_COLS}, lineage_id, iterate_feedback, revision_cause`;
+/** B-1017 rung: the B-843 columns WITHOUT the B-1017 one — for a DB that has retention but not the cause. */
+const BRIEF_HISTORY_COLS_NO_CAUSE = `${BRIEF_COLS}, lineage_id, iterate_feedback`;
 
 /** The exchange columns the history read surfaces (no consumable markers — history never answers). */
 const HISTORY_EXCHANGE_COLS = 'id, task_id, brief_id, trigger, gate, status, rounds, created_at';
@@ -3445,10 +3447,16 @@ export const isMissingBriefHistorySubstrate = (
   const code = err.code ?? '';
   if (code === '42703' || code === '42P01' || code === 'PGRST204' || code === 'PGRST205') return true;
   const msg = err.message ?? '';
-  if (/(lineage_id|iterate_feedback|brief_revision_lineages)/.test(msg)
+  if (/(lineage_id|iterate_feedback|revision_cause|brief_revision_lineages)/.test(msg)
     && /(does not exist|could not find|schema cache)/i.test(msg)) return true;
   return false;
 };
+
+/** B-1017 — does this substrate-absence error name the CAUSE column specifically? Postgres (42703) and
+ *  PostgREST (PGRST204) both name the offending column, and Postgres names the FIRST missing one in select
+ *  order — so an error naming `revision_cause` means the B-843 pair ahead of it in the list resolved. */
+const namesRevisionCauseColumn = (err: { message?: string } | null | undefined): boolean =>
+  /revision_cause/.test(err?.message ?? '');
 
 export interface ListBriefsArgs { task_id: string; }
 
@@ -3466,6 +3474,9 @@ export interface BriefRevisionEntry {
   doc: unknown;
   content: string | null;
   iterate_feedback: string | null;
+  /** B-1017 — WHY this revision exists: `{ source, lines }`, or null (a lineage's first revision, a legacy
+   *  row retained before the cause existed, a DB without the column, or an unparseable stored value). */
+  revision_cause: RevisionCause | null;
   status: string | null;
   resolved_command: string | null;
   resolved_detail: string | null;
@@ -3502,6 +3513,9 @@ export interface ListBriefsResult {
    */
   substrate: {
     revision_columns: 'present' | 'absent';
+    /** B-1017 — whether `briefs.revision_cause` was readable. 'absent' ⇒ every `revision_cause` below is
+     *  null BECAUSE the column is not there yet, not because no cause was recorded. */
+    revision_cause: 'present' | 'absent';
     lineage_view: 'present' | 'absent';
     exchanges: 'present' | 'absent';
   };
@@ -3524,22 +3538,36 @@ export async function listBriefs(
   const taskId = await resolveTaskId(client, projectId, args.task_id);
 
   // 1) Every brief on the task — no status filter (that active-only blindness is what this closes).
+  //
+  // Three rungs, widest first: everything (B-843 pair + B-1017 cause) → the B-843 pair without the cause
+  // → the plain BRIEF_COLS. The middle rung exists so a DB that has retention but predates the cause
+  // column (the window between the two web promotions) keeps its lineage grouping and its feedback —
+  // dropping straight to the plain rung there would report every revision as its own lineage, which is
+  // a worse answer than the DB can actually give. Taken ONLY when the error names `revision_cause`: an
+  // error naming `lineage_id`/`iterate_feedback` means the pair itself is missing, and the middle rung
+  // would just fail again for nothing.
   let revision_columns: 'present' | 'absent' = 'present';
+  let revision_cause: 'present' | 'absent' = 'present';
   let rows: Record<string, unknown>[] = [];
   {
-    const { data, error } = await client
-      .from('briefs').select(BRIEF_HISTORY_COLS)
-      .eq('task_id', taskId).order('created_at', { ascending: false });
+    const readBriefs = async (cols: string) => (await client
+      .from('briefs').select(cols)
+      .eq('task_id', taskId).order('created_at', { ascending: false })) as unknown as
+      { data: Record<string, unknown>[] | null; error: { code?: string; message: string } | null };
+    let { data, error } = await readBriefs(BRIEF_HISTORY_COLS);
+    if (error && isMissingBriefHistorySubstrate(error) && namesRevisionCauseColumn(error)) {
+      revision_cause = 'absent';
+      ({ data, error } = await readBriefs(BRIEF_HISTORY_COLS_NO_CAUSE));
+    }
     if (error) {
       if (!isMissingBriefHistorySubstrate(error)) throw new Error(error.message);
       revision_columns = 'absent';
-      const fallback = await client
-        .from('briefs').select(BRIEF_COLS)
-        .eq('task_id', taskId).order('created_at', { ascending: false });
+      revision_cause = 'absent';
+      const fallback = await readBriefs(BRIEF_COLS);
       if (fallback.error) throw new Error(fallback.error.message);
-      rows = (fallback.data as Record<string, unknown>[]) ?? [];
+      rows = fallback.data ?? [];
     } else {
-      rows = (data as Record<string, unknown>[]) ?? [];
+      rows = data ?? [];
     }
   }
 
@@ -3609,6 +3637,8 @@ export async function listBriefs(
         doc: row.doc ?? null,
         content: (row.content as string) ?? null,
         iterate_feedback: (row.iterate_feedback as string) ?? null,
+        // B-1017: a tolerant read — a stored value that is not a well-formed cause reads as null.
+        revision_cause: isRevisionCause(row.revision_cause) ? row.revision_cause : null,
         status: (row.status as string) ?? null,
         resolved_command: (row.resolved_command as string) ?? null,
         resolved_detail: (row.resolved_detail as string) ?? null,
@@ -3633,7 +3663,7 @@ export async function listBriefs(
   return {
     task_id: taskId,
     lineages,
-    substrate: { revision_columns, lineage_view, exchanges: exchangesPresence },
+    substrate: { revision_columns, revision_cause, lineage_view, exchanges: exchangesPresence },
   };
 }
 
@@ -3975,7 +4005,8 @@ export const listBriefsTool = {
     "Read the FULL brief history of a task: every gate ask (a lineage), every RETAINED revision of it at every status, newest first — the record `get_brief` cannot show you, because get_brief answers only 'what is awaiting the human right now' (status='active') and is unchanged by this tool. " +
     "Each lineage carries its reason (the gate), how it stands or ended (status + resolved_command + resolved_detail), the retained revision count, and — from the brief_revision_lineages view — how many earlier revisions were NOT retained because they predate revision retention (B-843): a real count of briefs whose text is gone, never a claim that there were none. " +
     "Each revision carries `doc`, `content`, `reason`, `iteration`, `iterate_feedback` (the send-back feedback that PRODUCED this revision — stored on the successor, not on the version it rejected), `status`, `resolved_command`, `resolved_detail`, `resolved_at`, plus the elicitation exchanges attached to that specific revision (elicitation_exchanges.brief_id match). Exchanges with a NULL brief_id are pre-draft conversations and are reported at LINEAGE level as `pre_draft_exchanges` — what preceded the first draft. " +
-    "Degrades rather than failing against a database that predates the substrate (B-383's merge-before-promote window): the `substrate` block reports which of the revision columns / the counts view / the exchange table were actually present, so a partial answer is visible as partial and never mistaken for 'there is no history'.",
+    "Degrades rather than failing against a database that predates the substrate (B-383's merge-before-promote window): the `substrate` block reports which of the revision columns / the counts view / the exchange table were actually present, so a partial answer is visible as partial and never mistaken for 'there is no history'. " +
+    "B-1017: each revision also carries `revision_cause` ({ source, lines } | null) — why it was redrafted (a human or orchestrator send-back, a lint self-review with the warnings verbatim, a self-review, a concluded discussion, an accept remark, refreshed inputs); null on a lineage's first revision and on legacy rows. The `substrate` block reports whether the column was present, so a null is never mistaken for 'no cause recorded' on a DB that cannot record one.",
   inputSchema: {
     type: 'object' as const,
     properties: { task_id: { type: 'string', description: 'The task whose brief history to read — UUID, task number, or visual ID (e.g., B-43)' } },
