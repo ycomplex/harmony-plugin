@@ -326,7 +326,7 @@ export async function applyAcceptanceEventPayload(
 ): Promise<ApplyPayloadResult> {
   const items = itemsOf(event.payload);
   const order: AcceptanceEventPayloadItem['write_kind'][] = [
-    'child_ticket', 'checklist_item', 'acceptance_criterion', 'ac_transfer', 'label_add',
+    'child_ticket', 'checklist_item', 'acceptance_criterion', 'ac_transfer',
     // B-867 sits HERE — after every concrete materialization, before the entry promotion. Same reasoning
     // as the line below, one notch weaker: the slot is the ticket's DISPLAYED record of what this accept
     // did, so a payload that fails partway must not leave a section on the ticket announcing writes that
@@ -334,10 +334,21 @@ export async function applyAcceptanceEventPayload(
     // repaired by the next accept (latest-accepted-per-gate), whereas a wrongly-promoted entry has
     // already superseded a real one.
     'gate_slot',
-    // B-843 LAST, on purpose: it promotes the gate's knowledge entry and supersedes the previous round's.
-    // Running it after every AC/child/checklist write means a payload that fails partway leaves the
-    // knowledge base untouched rather than promoting a decision whose materialization never landed.
+    // B-843 sits after gate_slot, before label_add: it promotes the gate's knowledge entry and supersedes
+    // the previous round's. Running it after every AC/child/checklist write means a payload that fails
+    // partway leaves the knowledge base untouched rather than promoting a decision whose materialization
+    // never landed.
     'knowledge_entry_content',
+    // B-1029: label_add moved LAST, deliberately after gate_slot/knowledge_entry_content (not before, as
+    // it used to run). `consume_label_add_write` can be blocked two ways that are NOT transient: a
+    // decision-only guard-block (a persistent business-rule refusal from the RPC itself) or the RPC being
+    // altogether absent on this DB (B-383 pre-migration window, surfaced as `substrate_absent_for`).
+    // Either one throws/degrades and stops the loop — so with label_add anywhere earlier in this order, a
+    // decision-only-shaped ticket's label write would PERMANENTLY block gate_slot/knowledge_entry_content
+    // from ever landing on that payload, even though those two writes have nothing to do with the label
+    // guard rule. Running label_add last means every other write in the payload lands first, and only the
+    // genuinely-blocked label write is left pending — it never blocks the more consequential writes.
+    'label_add',
   ];
   const ordered = order.flatMap((kind) => items.filter((i) => i.write_kind === kind));
 
@@ -715,12 +726,23 @@ export const consumeAcceptanceEventTool = {
   description:
     'B-797 — the FINAL commit for a pending acceptance event: marks it consumed, clears ' +
     'tasks.pending_acceptance_event_id, and applies the brief\'s originally-deferred workflow-state advance ' +
-    '(if any), atomically. Call this DIRECTLY (skipping consume_pending_acceptance_event\'s payload-apply ' +
-    'step) in the SAME-SESSION accept path: the owning gate skill just finished its OWN materialization ' +
-    '(e.g. clarify\'s manage_acceptance_criteria call, decompose\'s manage_subtasks call) as it always did ' +
-    'before B-797, so there is nothing left to apply — only the deferred advance to commit. `resolve_brief`\'s ' +
-    'response carries `pending_acceptance_event_id`; when non-null, call this with it right after resolving. ' +
-    'Idempotent — a second call on an already-consumed event is a safe no-op.',
+    '(if any), atomically. B-1029: this is FINAL-COMMIT-ONLY — it applies NOTHING from the payload (no ' +
+    'gate_slot, no knowledge_entry_content, no label_add); most same-session accept paths must call ' +
+    '`consume_pending_acceptance_event({ task_id })` instead, which runs `applyAcceptanceEventPayload` ' +
+    'FIRST. Calling this one directly is correct in only three remaining LEGITIMATE cases, all already-past ' +
+    'the apply step by construction: (a) harmony-conduct\'s §1c `payload-unrecognized` route, once it has ' +
+    'confirmed the owning gate\'s own materialization already did the work; and (b) harmony-clarify\'s two ' +
+    'guard-blocked/label-RPC-absent continuations, which run AFTER `consume_pending_acceptance_event` has ' +
+    'already applied gate_slot/knowledge_entry_content and only the terminally-blocked label_add write is ' +
+    'left pending — retrying the full apply again would just retry the same doomed label write; ' +
+    'and (c) start-work\'s O3 leg-start-standalone self-heal (its own `payload-unrecognized` route) — ' +
+    'start-work\'s equivalent of harmony-conduct\'s §1c when it runs with no conductor loop wrapping it: ' +
+    'it manually re-materializes the missed checklist/gate_slot items from the echoed payload, and only ' +
+    'the commit is left. Do NOT use ' +
+    'this as generic same-session accept guidance; every other caller wants ' +
+    '`consume_pending_acceptance_event` so the deferred payload actually lands. `resolve_brief`\'s response ' +
+    'carries `pending_acceptance_event_id`; when non-null and one of the three cases above applies, call this ' +
+    'with it. Idempotent — a second call on an already-consumed event is a safe no-op.',
   inputSchema: {
     type: 'object' as const,
     properties: {

@@ -390,9 +390,13 @@ Show the rendered `content`. On the human's command:
   derive a `knowledge_entry_content` payload item uniformly, per `GATE_REASON_FLOW`); none stay synchronous
   anymore. If non-null, the advance (if
   `pending_activity: "designing"` was carried — the last required sub-track) is DEFERRED to this event,
-  not applied yet. Since you already performed this track's AC add/update/delete writes above (step 2b) —
-  there is nothing left to APPLY, only the deferred advance to COMMIT. Call
-  `mcp__harmony__consume_acceptance_event({ event_id: <that id> })` right away, in this same turn.
+  not applied yet. You already performed this track's AC add/update/delete writes above (step 2b), but
+  B-866/B-867 mean the SAME event's payload also carries `knowledge_entry_content` (and possibly
+  `gate_slot`) items this skill never materializes on its own — so this is NOT commit-only. Call
+  `mcp__harmony__consume_pending_acceptance_event({ task_id })` right away, in this same turn (B-1029:
+  swapped from the commit-only `consume_acceptance_event`), so those write kinds actually land — the AC
+  writes you already made are idempotently skipped by their own ledger, so this does not double-file
+  anything.
 
   **Link the ticket + decision to their implemented entities (B-977) — three-state handling.** Read
   `field_values.implements_entities` off `get_task` (it may already be in context from step 1):
