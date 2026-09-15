@@ -441,7 +441,7 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
        order):
        1. Read the currently-active catalog for the comment:
           `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" model list-aliases`.
-       2. `mcp__harmony__add_comment({ task_id, body: "Model switch refused — '<WANTED_MODEL>' is not in the live model catalog. Currently active: <comma-joined list-aliases output>." })` —
+       2. `mcp__harmony__add_comment({ task_id, content: "Model switch refused — '<WANTED_MODEL>' is not in the live model catalog. Currently active: <comma-joined list-aliases output>." })` —
           name BOTH the offending alias and the current catalog, so a human can fix either side
           (add the alias to `model_catalog`, or repoint `run_config.model` at one that's already active)
           without forensics.
@@ -527,7 +527,7 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
 
      - **Marker found** → already delivered for this exact (conduction_id, workflow_state) pair. Skip,
        proceed to step 5.
-     - **No marker found** → `mcp__harmony__add_comment({ task_id, body })`, ONE comment carrying both the
+     - **No marker found** → `mcp__harmony__add_comment({ task_id, content })`, ONE comment carrying both the
        human-facing note and the marker (no separate write — "note posted" and "marker exists" are the SAME
        fact, never two facts that can desync):
 
