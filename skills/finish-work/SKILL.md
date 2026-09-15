@@ -365,6 +365,7 @@ proceed-worthy read failure, since branch protection independently backs whateve
 shown.
 
 **The release frame (B-876) — author `doc.frame` on every release brief you compose or re-compose.**
+Every recompose that is NOT a send-back passes `revision_cause` — see `skills/harmony-shared/brief-authoring.md` §Stating the cause of a redraft (B-1017).
 Release is the one gate with a measured wrong accept, and it had no field at all for the act it
 authorizes; one author faked one with an ALL-CAPS header inside a `context[]` string. The frame renders
 **below DECIDE and above Recommend** — the object of the decision named before an opinion is offered
@@ -1061,7 +1062,9 @@ re-opened clarify adds one). Before surfacing an existing brief, **re-read the c
 compare them against the runbook steps in the active brief:
 
 - A criterion **missing** from the runbook, or one whose **wording no longer matches** the step built from
-  it → **re-compose in place**: rebuild the runbook per step 2 and call `compose_brief` again. It updates
+  it → **re-compose in place**: rebuild the runbook per step 2 and call `compose_brief` again, passing
+  `revision_cause: { source: 'refreshed-inputs', lines: ['acceptance criteria changed during the verify pause: …'] }`
+  (§Stating the cause of a redraft, B-1017). It updates
   the active brief in place and bumps `iteration` (+1) — it does not file a second brief.
 - Otherwise → surface the existing brief **unchanged**. Do not churn `iteration` for a no-op.
 

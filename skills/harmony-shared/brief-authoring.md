@@ -134,6 +134,28 @@ What that changes in your hands:
 The one place you still write entry prose by hand is an entry that is **not** a gate accept's promotion
 — a research finding, a `deferral` record, an amendment applied from an accept remark.
 
+## Stating the cause of a redraft (B-1017)
+
+Every retained revision after a lineage's first records WHY it exists — a typed cause, written by
+`compose_brief` from what the caller supplies. It renders in the brief history beside the send-back
+feedback, labelled by source, and `list_briefs` carries it. A redraft that states no cause is still
+retained (warn-only), but the history reads **"No cause recorded"** — reserved for rows that predate this.
+
+| You are recomposing because… | Pass | `source` |
+|---|---|---|
+| a human sent it back (browser reshape, terminal `iterate <feedback>`) | `iterate_feedback` = their words (B-903 — ONLY on the recompose that consumes the marker) | derived by the DB: `human-send-back` |
+| the orchestrator sent it back (`reshape_brief`) | `iterate_feedback` = its words | derived by the DB: `orchestrator-send-back` |
+| the compose lint warned and you are redrafting for it | `revision_cause: { source: 'lint-self-review', lines: <the previous compose's lint.warnings, verbatim> }` — a SECOND self-recompose passes ITS OWN warnings | `lint-self-review` |
+| you are redrafting for your own reason, no lint warning | `revision_cause: { source: 'self-review', lines: ['<one line: what was wrong>'] }` | `self-review` |
+| a `discuss` exchange concluded and you recompose once | `revision_cause: { source: 'after-discussion', lines: ['Discussion <exchange_id> concluded'] }` — NO `iterate_feedback` | `after-discussion` |
+| you are answering an accept-with-remark | `revision_cause: { source: 'accept-remark', lines: [<the remark, verbatim>] }` | `accept-remark` |
+| the inputs changed — a rebase before release, an acceptance criterion edited during the verify pause | `revision_cause: { source: 'refreshed-inputs', lines: ['<what changed>'] }` | `refreshed-inputs` |
+
+Never pass a send-back `source` yourself — the function derives the sender from the provenance row the
+send-back already wrote (B-896). Never both `iterate_feedback` and `revision_cause` on one call unless the
+redraft genuinely answers a send-back AND something else; then `revision_cause` wins and the words ride in
+its `lines`. `doc.revision` (what YOU changed) and this (WHY the revision exists) are not substitutes.
+
 ## Per-gate contracts
 
 ### Clarify (Proposed → Clarified — high-engagement)

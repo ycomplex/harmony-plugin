@@ -388,7 +388,7 @@ Show the rendered `content` verbatim. On the human's command:
   > Do NOT supersede, do NOT revert state, do NOT Park. Reject means the run continues exactly where it was.
 
 - **edit** / **iterate** → revise the draft (target gate, scope summary, supersede/keep lists) and re-call
-  `compose_brief` (updates in place, bumps `iteration`).
+  `compose_brief` (updates in place, bumps `iteration`). Every recompose that is NOT a send-back passes `revision_cause` — see `skills/harmony-shared/brief-authoring.md` §Stating the cause of a redraft (B-1017).
 
 ### 6. Report
 

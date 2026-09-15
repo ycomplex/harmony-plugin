@@ -158,7 +158,7 @@ Show the rendered `content` verbatim. On the human's command:
   is no `reject` command — reject = this scoped `defer`).
 - **expand** / **related** → show the pre-generated sections from `get_brief`.
 - **edit** / **iterate** → revise the proposed patch and re-call `compose_brief` (updates in place, bumps
-  `iteration`).
+  `iteration`). Every recompose that is NOT a send-back passes `revision_cause` — see `skills/harmony-shared/brief-authoring.md` §Stating the cause of a redraft (B-1017).
 
 ### 6. Report
 
