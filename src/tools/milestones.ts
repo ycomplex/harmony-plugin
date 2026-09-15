@@ -104,7 +104,7 @@ export async function updateMilestone(
 
 export const shipMilestoneTool = {
   name: 'ship_milestone',
-  description: "Ship a milestone. Non-done tasks (mode-aware: in opinionated mode a task is done when its workflow_state is Verified or its status is the terminal status; in manual mode when its status is the terminal status) are removed from the milestone (returned in response). Done tasks become hidden from board/list views.",
+  description: "Ship a milestone. Outstanding tasks (mode-aware: in opinionated mode a task is resolved when its workflow_state is Verified or Cancelled, or its status is the terminal status; in manual mode when its status is the terminal status — Cancelled is not specially retained) are removed from the milestone (returned in response). Resolved tasks (Done or, in opinionated mode, Cancelled) become hidden from board/list views and stay on the shipped milestone; the response's `retained_cancelled_count` reports how many of those were retained specifically because they were Cancelled (B-706, mirrors the web ship gate's B-704 fix).",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -147,15 +147,25 @@ export async function shipMilestone(
       ? (t.workflow_state === 'Verified' || t.status === doneStatus)
       : (t.status === doneStatus);
 
-  const nonDone = (tasks ?? []).filter(t => !isDone(t));
-  const done = (tasks ?? []).filter(t => isDone(t));
+  // B-706: Cancelled is terminal record at ship — mirrors web's isTaskCancelled
+  // (web/src/lib/completionAxis.ts). Opinionated mode only: manual mode has no
+  // workflow_state axis, so Cancelled is never specially retained there.
+  const isCancelled = (t: { workflow_state: string }) =>
+    isOpinionated && t.workflow_state === 'Cancelled';
 
-  // Remove non-Done tasks from milestone
-  if (nonDone.length > 0) {
+  // Widened partition: a task is resolved (stays on the shipped milestone, hidden from
+  // board/list views) when it is done OR — opinionated mode only — Cancelled. Everything
+  // else is outstanding and gets stripped off the milestone.
+  const outstanding = (tasks ?? []).filter(t => !isDone(t) && !isCancelled(t));
+  const resolved = (tasks ?? []).filter(t => isDone(t) || isCancelled(t));
+
+  // Remove only outstanding tasks from the milestone; resolved tasks (including retained
+  // Cancelled ones) are left alone.
+  if (outstanding.length > 0) {
     await client
       .from('tasks')
       .update({ milestone_id: null })
-      .in('id', nonDone.map(t => t.id));
+      .in('id', outstanding.map(t => t.id));
   }
 
   // Ship the milestone
@@ -169,7 +179,8 @@ export async function shipMilestone(
 
   return {
     milestone: data,
-    shipped_task_count: done.length,
-    removed_tasks: nonDone.map(t => ({ id: t.id, title: t.title, status: t.status })),
+    shipped_task_count: resolved.length,
+    retained_cancelled_count: resolved.filter(isCancelled).length,
+    removed_tasks: outstanding.map(t => ({ id: t.id, title: t.title, status: t.status })),
   };
 }
