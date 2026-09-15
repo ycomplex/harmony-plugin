@@ -11,6 +11,7 @@ import { listTicketKnowledge } from './workflow.js';
 import { queryKnowledge, getWorkspaceId } from './knowledge.js';
 import { getConductionId, getLeg } from '../config/run-config.js';
 import { getProject } from './project.js';
+import { REVISION_CAUSE_SOURCES, isRevisionCause, type RevisionCause } from './revision-cause.js';
 import {
   parseDiff,
   deriveSearchTerms,
@@ -1323,6 +1324,11 @@ export interface BriefLintContext {
    *  WARNING string, never an error: a manifest typo must not wedge the verify gate (see
    *  src/config/manifest-evidence.ts's header), so the brief still composes and says what is wrong. */
   manifestEvidenceWarning?: string;
+  /** B-1017 — whether this compose states WHY the revision exists: an explicit `revision_cause`, or an
+   *  `iterate_feedback` (a send-back — the DB derives the cause from it). Drives the warn-only "this
+   *  revision states no cause" rule, gated on the same post-increment `iteration` as the `doc.revision`
+   *  rule, so a first compose can never warn. Absent (an older caller) warns on nothing. */
+  statesCause?: boolean;
 }
 
 /** B-876 — one pull request read out of a task's `field_values`. `key` is the path it was found at
@@ -1675,6 +1681,12 @@ export function lintBrief(
   // every brief ever composed, which is the exact inverse of this tail-case signal.
   if (!doc.revision && ctx.iteration !== undefined && ctx.iteration > 1) {
     warnings.push(`This brief is being composed as round ${ctx.iteration} but carries no \`doc.revision\`. An iterated brief owes the reader a record of what changed and which feedback each change answers — without it they must diff two renders to find out what moved.`);
+  }
+  // B-1017 — the revision's CAUSE is the other half of that record: `doc.revision` says what YOU changed,
+  // the cause says WHY the revision exists at all (a send-back, a lint self-review, ...). Warn-only by the
+  // B-876 law — the revision is retained with a null cause and the history reads "No cause recorded".
+  if (ctx.iteration !== undefined && ctx.iteration >= 2 && ctx.statesCause === false) {
+    warnings.push('This revision states no cause. Pass `revision_cause` ({ source, lines }) — the previous compose\'s lint.warnings for a lint self-review, or your one-line reason for a self-review — or `iterate_feedback` for a send-back. The revision is retained with a null cause and the history will read "No cause recorded" (B-1017).');
   }
   if (doc.revision) {
     if (typeof doc.revision.round === 'number' && doc.revision.round < 2) {
@@ -2063,6 +2075,12 @@ export interface ComposeBriefArgs {
    *  leaving authorship to be inferred from the marker. (The original comment also named the RPC
    *  `request_brief_reshape`, which exists nowhere in harmony-web — the function is `submit_brief_command`.) */
   iterate_feedback?: string;
+  /** B-1017 — WHY this revision exists, supplied by the caller (never inferred): { source, lines }.
+   *  lint-self-review carries the previous compose's `lint.warnings` verbatim; self-review the leg's one-line
+   *  reason; after-discussion / accept-remark / refreshed-inputs their own line. For a SEND-BACK pass only
+   *  `iterate_feedback` — the function derives the sender from the B-896 provenance row. Omitted on a first
+   *  compose. A round-2+ compose with neither this nor iterate_feedback WARNS (never refuses). */
+  revision_cause?: RevisionCause;
 }
 
 /**
@@ -2508,6 +2526,11 @@ export async function composeBrief(
     throw new Error(`reason must be one of: ${VALID_REASONS.join(', ')}`);
   }
   if (!args.doc?.decide?.trim()) throw new Error('doc.decide is required');
+  // B-1017 — validate the cause's shape ONCE, up front: a malformed cause is a caller bug, not a DB
+  // round-trip (the DB CHECK would refuse it anyway, after the reads and the lint had already run).
+  if (args.revision_cause !== undefined && !isRevisionCause(args.revision_cause)) {
+    throw new Error(`compose_brief: revision_cause must be { source: <one of ${REVISION_CAUSE_SOURCES.join(' | ')}>, lines: string[] }`);
+  }
 
   // Resolve the task identifier (UUID / task number / visual ID), matching the sibling task tools.
   // B-732: this now runs BEFORE the lint, because the release-brief approval rule needs the task's
@@ -2756,6 +2779,8 @@ export async function composeBrief(
     floorCount,
     // B-974 — present ONLY when the manifest declaring verify evidence could not be read.
     manifestEvidenceWarning: manifestEvidence.warning,
+    // B-1017 — an explicit cause, or a send-back the DB derives one from.
+    statesCause: args.revision_cause !== undefined || args.iterate_feedback != null,
   });
   if (!lint.ok) {
     throw new Error(`Brief failed the §3.2 pre-send lint:\n- ${lint.errors.join('\n- ')}`);
@@ -2823,21 +2848,37 @@ export async function composeBrief(
   let brief: unknown;
   if (existing) {
     const briefId = (existing as { id: string }).id;
-    const { data: revision, error: revisionErr } = await client.rpc('compose_brief_revision', {
+    // B-1017 — the cause rides the RPC as `_revision_cause`, ALWAYS sent (null when the caller states
+    // none) so a DB that has the argument stores an honest null rather than seeing the key omitted.
+    const baseArgs = {
       _task_id: taskId,
       _patch: revisionPatch,
       _iterate_feedback: args.iterate_feedback ?? null,
       _created_by: userId,
-    });
+    };
+    const withCause = { ...baseArgs, _revision_cause: args.revision_cause ?? null };
+    let { data: revision, error: revisionErr } = await client.rpc('compose_brief_revision', withCause);
+    if (revisionErr && isMissingComposeBriefRevision(revisionErr)) {
+      // B-1017 rung 1: the function may exist but PREDATE `_revision_cause` (PostgREST resolves a function
+      // by its argument NAMES, so an unknown name is reported as "function not found" — the same PGRST202
+      // an absent function gives). Retry the SAME call WITHOUT the key: on that DB the revision is still
+      // RETAINED, only the cause is dropped. Falling straight to the in-place UPDATE here would lose B-843
+      // retention on every DB between the two migrations — the one regression this rung exists to prevent.
+      ({ data: revision, error: revisionErr } = await client.rpc('compose_brief_revision', baseArgs));
+      if (!revisionErr) {
+        lint.warnings.push('revision_cause not stored — this database\'s compose_brief_revision predates it (B-1017); the revision was retained with a null cause.');
+      }
+    }
 
     if (!revisionErr) {
       brief = revision;
     } else if (isMissingComposeBriefRevision(revisionErr)) {
-      // B-383 / B-734 guarded degradation (the same shape as the `pending_resolution` fallback below and
-      // the B-645 claim prune): the plugin's `main` runs against the PROD board before harmony-web's
-      // migration is promoted there, so the RPC is genuinely absent for a window. Fall back to today's
-      // in-place UPDATE — the prior revision is not retained and the feedback is not stored, but the gate
-      // keeps working exactly as it does today. ANY other error rethrows: a real write failure must be loud.
+      // Rung 2 — the function is genuinely ABSENT (both shapes missed). B-383 / B-734 guarded degradation
+      // (the same shape as the `pending_resolution` fallback below and the B-645 claim prune): the plugin's
+      // `main` runs against the PROD board before harmony-web's migration is promoted there, so the RPC is
+      // genuinely absent for a window. Fall back to today's in-place UPDATE — the prior revision is not
+      // retained and the feedback is not stored, but the gate keeps working exactly as it does today. ANY
+      // other error rethrows: a real write failure must be loud.
       const updateRow = { ...payload, iteration: ((existing as { iteration: number }).iteration ?? 1) + 1 };
       const { data, error } = await client
         .from('briefs').update(updateRow).eq('id', briefId).select(BRIEF_COLS).single();
@@ -2975,7 +3016,8 @@ export const composeBriefTool = {
   description:
     "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange — a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one — so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). On a FIRST compose only (when no active brief exists yet), pass `couple_claim_ids` (B-736) = the ids of elicitation claims minted just before this call — compose atomically couples them (`underwriting_brief_id`) to the brief it creates via `compose_brief_initial`, tolerantly falling back to a bare insert plus a separate coupling update on a DB that does not yet have that RPC; omit it when no exchange ran. Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref — do not hand-write it. " +
     "B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately — put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. " +
-    "B-876: also author `doc.frame` — the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING — no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) — compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose — compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing — an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal.",
+    "B-876: also author `doc.frame` — the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING — no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) — compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose — compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing — an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal. " +
+    "B-1017: pass `revision_cause` on every redraft that is not a send-back — see skills/harmony-shared/brief-authoring.md §Stating the cause of a redraft.",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -3066,6 +3108,16 @@ export const composeBriefTool = {
         type: 'string',
         description:
           "B-843 — the human's feedback that CAUSED this iterate, VERBATIM. A revision stores it ONLY when a send-back CAUSED that revision. The mechanical anchor: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail` here (as `edit` / `iterate <feedback>` and the browser reshape all do); EVERY other recompose omits the parameter and the field lands null. Omit it on a first draft (nothing caused the brief), a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange — a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to populate this field: the CALLER passes it, so the marker is never scraped (B-843) and the words are never stamped onto a revision nobody sent back (B-896/B-903). It is stored on the NEW revision, so the retained history reads as \"this is what they asked for, and this is what I changed\". Never guessed, never paraphrased into a summary, and never left out because `doc.revision` already names the changes — `doc.revision` records what YOU changed, this records what THEY said.",
+      },
+      revision_cause: {
+        type: 'object',
+        properties: {
+          source: { type: 'string', enum: [...REVISION_CAUSE_SOURCES] },
+          lines: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['source', 'lines'],
+        description:
+          "B-1017 — WHY this revision exists, supplied by the CALLER: { source, lines }. lint-self-review: pass the previous compose's lint.warnings verbatim (a second self-recompose passes ITS OWN warnings, never the first one's). self-review: your one-line reason. after-discussion / accept-remark / refreshed-inputs: one line naming what happened. For a SEND-BACK pass only iterate_feedback — the function derives the sender (human vs orchestrator) from the B-896 provenance row; do not also pass a send-back source. Omit on a first compose. A round-2+ compose with neither this nor iterate_feedback WARNS and stores a null cause (renders 'No cause recorded') — never refused.",
       },
     },
     required: ['task_id', 'reason', 'doc'],

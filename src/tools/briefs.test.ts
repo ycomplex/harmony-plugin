@@ -1502,6 +1502,151 @@ describe('composeBrief — B-843 retained revisions (compose_brief_revision)', (
     });
   });
 
+  // ── B-1017: the revision's CAUSE ──────────────────────────────────────────────────────────────────
+  //
+  // `revision_cause` is caller-supplied (never inferred) and rides the RPC as `_revision_cause`. A
+  // round-2+ compose that states neither a cause nor a send-back WARNS — never refuses — and the key is
+  // still sent (as null) so a DB that has the argument stores an honest null. The two-rung tolerance
+  // below is what keeps B-843 retention on a DB whose function predates the argument: PostgREST resolves
+  // by argument NAMES, so an unknown name is "function not found" (PGRST202) — the same shape as an
+  // ABSENT function. Falling to the in-place UPDATE on that first miss would lose the prior revision.
+  const rpcCalls = (client: any) => client.rpc.mock.calls.filter((c: any[]) => c[0] === 'compose_brief_revision');
+  const NO_CAUSE_WARNING = 'This revision states no cause.';
+  const NOT_STORED_WARNING = 'revision_cause not stored';
+
+  it('passes revision_cause through as _revision_cause on a revision — and does not warn', async () => {
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: null }], revisionOk);
+    const res = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      revision_cause: { source: 'lint-self-review', lines: ['w1', 'w2'] },
+    });
+    expect(patchOf(client)._revision_cause).toEqual({ source: 'lint-self-review', lines: ['w1', 'w2'] });
+    expect(patchOf(client)._iterate_feedback).toBeNull();
+    expect(res.lint.warnings.some((w: string) => w.startsWith(NO_CAUSE_WARNING))).toBe(false);
+  });
+
+  it('a second self-recompose carries ITS OWN warnings — nothing is cached from the first', async () => {
+    // responses: [active] -> (rpc) -> [task update] -> [active] -> (rpc) -> [task update]
+    const client = makeClient(
+      [{ data: { id: 'brief-1', iteration: 1 } }, { data: null }, { data: { id: 'brief-2', iteration: 2 } }, { data: null }],
+      revisionOk,
+    );
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      revision_cause: { source: 'lint-self-review', lines: ['first warning'] },
+    });
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      revision_cause: { source: 'lint-self-review', lines: ['second warning'] },
+    });
+    const [a, b] = rpcCalls(client);
+    expect(a[1]._revision_cause.lines).toEqual(['first warning']);
+    expect(b[1]._revision_cause.lines).toEqual(['second warning']);
+  });
+
+  it('warns — never refuses — when a round-2+ revision supplies neither revision_cause nor iterate_feedback', async () => {
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: null }], revisionOk);
+    const res = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    });
+    expect(res.lint.ok).toBe(true);
+    expect(res.lint.warnings.some((w: string) => w.startsWith(NO_CAUSE_WARNING))).toBe(true);
+    // The key is SENT, as null — an honest null on a DB that has the column, not an omitted argument.
+    expect(patchOf(client)).toHaveProperty('_revision_cause');
+    expect(patchOf(client)._revision_cause).toBeNull();
+  });
+
+  it('does not warn on a first compose (nothing caused it) or when iterate_feedback is supplied', async () => {
+    // first compose: [no active] -> [insert row] -> [task update]
+    const fresh = makeClient([{ data: null }, { data: { id: 'brief-1', iteration: 1 } }, { data: null }]);
+    const r1 = await composeBrief(fresh, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    });
+    expect(r1.lint.warnings.some((w: string) => w.startsWith(NO_CAUSE_WARNING))).toBe(false);
+
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: null }], revisionOk);
+    const r2 = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, iterate_feedback: 'cut it',
+    });
+    expect(r2.lint.warnings.some((w: string) => w.startsWith(NO_CAUSE_WARNING))).toBe(false);
+  });
+
+  it('REFUSES a malformed revision_cause before any write — a caller bug, not a DB round-trip', async () => {
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: null }], revisionOk);
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      revision_cause: { source: 'made-up', lines: ['x'] } as any,
+    })).rejects.toThrow(/revision_cause must be/);
+    expect(client.rpc).not.toHaveBeenCalled();
+    expect(client.insert).not.toHaveBeenCalled();
+  });
+
+  it('two-rung tolerance: PGRST202 with _revision_cause retries WITHOUT it — never the in-place fallback first', async () => {
+    // responses: [active] -> (rpc miss) -> (rpc ok) -> [task update]
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: null }]);
+    client.rpc
+      .mockResolvedValueOnce({ data: null, error: { code: 'PGRST202', message: 'Could not find the function public.compose_brief_revision(_created_by, _iterate_feedback, _patch, _revision_cause, _task_id) in the schema cache' } })
+      .mockResolvedValueOnce({ data: revisionRow, error: null });
+    const res = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      revision_cause: { source: 'self-review', lines: ['restated pending_activity'] },
+    });
+    const calls = rpcCalls(client);
+    expect(calls).toHaveLength(2);
+    expect('_revision_cause' in calls[0][1]).toBe(true);
+    expect('_revision_cause' in calls[1][1]).toBe(false);
+    // The rest of the call is IDENTICAL between the rungs — only the one key is dropped.
+    const { _revision_cause: _dropped, ...firstWithoutCause } = calls[0][1];
+    expect(calls[1][1]).toEqual(firstWithoutCause);
+    // The in-place fallback did NOT run: the only update is the trailing tasks flag, never an iteration bump.
+    expect(client.update).not.toHaveBeenCalledWith(expect.objectContaining({ iteration: expect.anything() }));
+    expect(res.brief).toEqual(revisionRow);
+    expect(res.lint.warnings.some((w: string) => w.startsWith(NOT_STORED_WARNING))).toBe(true);
+  });
+
+  it('two-rung tolerance: PGRST202 on BOTH rungs falls through to the existing in-place fallback', async () => {
+    // responses: [active] -> (rpc miss) -> (rpc miss) -> [in-place update row] -> [task update]
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: { id: 'brief-1', iteration: 2 } }, { data: null }]);
+    const missing = { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.compose_brief_revision in the schema cache' } };
+    client.rpc.mockResolvedValueOnce(missing).mockResolvedValueOnce(missing);
+    const res = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      revision_cause: { source: 'self-review', lines: ['x'] },
+    });
+    expect(rpcCalls(client)).toHaveLength(2);
+    expect(client.update).toHaveBeenCalledWith(expect.objectContaining({ iteration: 2 })); // legacy in-place path, exactly as today's B-843 fallback
+    expect((res.brief as any).iteration).toBe(2);
+    // The "not stored" warning belongs to the RETAINED rung only; the in-place path stored no revision at all.
+    expect(res.lint.warnings.some((w: string) => w.startsWith(NOT_STORED_WARNING))).toBe(false);
+  });
+
+  it('two-rung tolerance: a NON-schema error on the second rung rethrows — never the in-place fallback', async () => {
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: null }]);
+    client.rpc
+      .mockResolvedValueOnce({ data: null, error: { code: 'PGRST202', message: 'Could not find the function public.compose_brief_revision in the schema cache' } })
+      .mockResolvedValueOnce({ data: null, error: { code: '42501', message: 'permission denied for table briefs' } });
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      revision_cause: { source: 'self-review', lines: ['x'] },
+    })).rejects.toThrow(/permission denied/);
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
+  it('compose_brief exposes revision_cause as an object with the closed source enum, never required', () => {
+    const props = composeBriefTool.inputSchema.properties as any;
+    expect(props.revision_cause.type).toBe('object');
+    expect(props.revision_cause.required).toEqual(['source', 'lines']);
+    expect(props.revision_cause.properties.source.enum).toEqual([
+      'human-send-back', 'orchestrator-send-back', 'lint-self-review', 'self-review',
+      'after-discussion', 'accept-remark', 'refreshed-inputs',
+    ]);
+    expect(props.revision_cause.properties.lines).toEqual({ type: 'array', items: { type: 'string' } });
+    expect(props.revision_cause.description).toMatch(/lint\.warnings/);
+    expect(props.revision_cause.description).toMatch(/do not also pass a send-back source/i);
+    expect(composeBriefTool.inputSchema.required).not.toContain('revision_cause');
+    expect(composeBriefTool.description).toMatch(/Stating the cause of a redraft/);
+  });
+
   it('compose_brief exposes iterate_feedback as a string parameter', () => {
     const props = composeBriefTool.inputSchema.properties as any;
     expect(props.iterate_feedback.type).toBe('string');
