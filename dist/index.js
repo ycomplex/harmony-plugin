@@ -49575,7 +49575,7 @@ async function updateMilestone(client, projectId, args) {
 }
 var shipMilestoneTool = {
   name: "ship_milestone",
-  description: "Ship a milestone. Non-done tasks (mode-aware: in opinionated mode a task is done when its workflow_state is Verified or its status is the terminal status; in manual mode when its status is the terminal status) are removed from the milestone (returned in response). Done tasks become hidden from board/list views.",
+  description: "Ship a milestone. Outstanding tasks (mode-aware: in opinionated mode a task is resolved when its workflow_state is Verified or Cancelled, or its status is the terminal status; in manual mode when its status is the terminal status \u2014 Cancelled is not specially retained) are removed from the milestone (returned in response). Resolved tasks (Done or, in opinionated mode, Cancelled) become hidden from board/list views and stay on the shipped milestone; the response's `retained_cancelled_count` reports how many of those were retained specifically because they were Cancelled (B-706, mirrors the web ship gate's B-704 fix).",
   inputSchema: {
     type: "object",
     properties: {
@@ -49591,17 +49591,19 @@ async function shipMilestone(client, projectId, args) {
   const isOpinionated = project?.mode === "opinionated";
   const { data: tasks } = await client.from("tasks").select("id, status, title, workflow_state").eq("milestone_id", args.milestone_id);
   const isDone = (t) => isOpinionated ? t.workflow_state === "Verified" || t.status === doneStatus : t.status === doneStatus;
-  const nonDone = (tasks ?? []).filter((t) => !isDone(t));
-  const done = (tasks ?? []).filter((t) => isDone(t));
-  if (nonDone.length > 0) {
-    await client.from("tasks").update({ milestone_id: null }).in("id", nonDone.map((t) => t.id));
+  const isCancelled = (t) => isOpinionated && t.workflow_state === "Cancelled";
+  const outstanding = (tasks ?? []).filter((t) => !isDone(t) && !isCancelled(t));
+  const resolved = (tasks ?? []).filter((t) => isDone(t) || isCancelled(t));
+  if (outstanding.length > 0) {
+    await client.from("tasks").update({ milestone_id: null }).in("id", outstanding.map((t) => t.id));
   }
   const { data, error: error2 } = await client.from("milestones").update({ status: "shipped", shipped_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", args.milestone_id).select().single();
   if (error2) throw error2;
   return {
     milestone: data,
-    shipped_task_count: done.length,
-    removed_tasks: nonDone.map((t) => ({ id: t.id, title: t.title, status: t.status }))
+    shipped_task_count: resolved.length,
+    retained_cancelled_count: resolved.filter(isCancelled).length,
+    removed_tasks: outstanding.map((t) => ({ id: t.id, title: t.title, status: t.status }))
   };
 }
 

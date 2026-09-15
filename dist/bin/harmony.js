@@ -38811,17 +38811,19 @@ async function shipMilestone(client, projectId, args) {
   const isOpinionated = project?.mode === "opinionated";
   const { data: tasks } = await client.from("tasks").select("id, status, title, workflow_state").eq("milestone_id", args.milestone_id);
   const isDone = (t) => isOpinionated ? t.workflow_state === "Verified" || t.status === doneStatus : t.status === doneStatus;
-  const nonDone = (tasks ?? []).filter((t) => !isDone(t));
-  const done = (tasks ?? []).filter((t) => isDone(t));
-  if (nonDone.length > 0) {
-    await client.from("tasks").update({ milestone_id: null }).in("id", nonDone.map((t) => t.id));
+  const isCancelled = (t) => isOpinionated && t.workflow_state === "Cancelled";
+  const outstanding = (tasks ?? []).filter((t) => !isDone(t) && !isCancelled(t));
+  const resolved = (tasks ?? []).filter((t) => isDone(t) || isCancelled(t));
+  if (outstanding.length > 0) {
+    await client.from("tasks").update({ milestone_id: null }).in("id", outstanding.map((t) => t.id));
   }
   const { data, error } = await client.from("milestones").update({ status: "shipped", shipped_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", args.milestone_id).select().single();
   if (error) throw error;
   return {
     milestone: data,
-    shipped_task_count: done.length,
-    removed_tasks: nonDone.map((t) => ({ id: t.id, title: t.title, status: t.status }))
+    shipped_task_count: resolved.length,
+    retained_cancelled_count: resolved.filter(isCancelled).length,
+    removed_tasks: outstanding.map((t) => ({ id: t.id, title: t.title, status: t.status }))
   };
 }
 
