@@ -30592,6 +30592,17 @@ function detectRiskClasses(input) {
   return RISK_CLASSES.filter((cls) => hits.has(cls));
 }
 
+// src/tools/revision-cause.ts
+var REVISION_CAUSE_SOURCES = [
+  "human-send-back",
+  "orchestrator-send-back",
+  "lint-self-review",
+  "self-review",
+  "after-discussion",
+  "accept-remark",
+  "refreshed-inputs"
+];
+
 // src/config/project-manifest.ts
 var import_yaml = __toESM(require_dist(), 1);
 var SUPPORTED_MANIFEST_VERSION = 1;
@@ -30975,6 +30986,106 @@ function renderEntry(doc, ctx) {
   return out.join("\n").trimEnd();
 }
 var BRIEF_COLS = "id, task_id, reason, doc, content, expand_sections, related, pending_activity, decision_ref, status, iteration, resolved_command, resolved_detail, resolved_at, created_by, created_at, updated_at";
+var composeBriefTool = {
+  name: "compose_brief",
+  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). On a FIRST compose only (when no active brief exists yet), pass `couple_claim_ids` (B-736) = the ids of elicitation claims minted just before this call \u2014 compose atomically couples them (`underwriting_brief_id`) to the brief it creates via `compose_brief_initial`, tolerantly falling back to a bare insert plus a separate coupling update on a DB that does not yet have that RPC; omit it when no exchange ran. Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING \u2014 no frame defect can refuse a brief. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose \u2014 compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing \u2014 an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal. B-1017: pass `revision_cause` on every redraft that is not a send-back \u2014 see skills/harmony-shared/brief-authoring.md \xA7Stating the cause of a redraft.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "The task this brief decides on \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)" },
+      reason: { type: "string", description: "Gate reason (\xA76.5): clarification-draft | decomposition-proposal | design-decision-draft | plan-draft | release-decision-pending | verification-ack-pending | stale-patch-review | revise-scope-review" },
+      doc: {
+        type: "object",
+        description: "The canonical structured BLUF brief. The rendered Markdown blob is derived from this.",
+        properties: {
+          decide: { type: "string", description: "One-line statement of the decision needed" },
+          recommend: { type: "object", description: '{ text, confidence?: "high" | "medium" | "low", cede?: boolean } \u2014 omit when load_bearing_gap (research-first)' },
+          why: { type: "array", items: { type: "string" }, description: "2\u20133 bullets of reasoning" },
+          alternatives: { type: "array", items: { type: "object" }, description: "[{ option, rejection }]" },
+          context: { type: "array", items: { type: "string" }, description: "Peer decisions / scope / known patterns" },
+          items: {
+            type: "array",
+            description: 'The "You need to" items, each sorted into exactly one kind (\xA73.2).',
+            items: {
+              type: "object",
+              properties: {
+                kind: { type: "string", description: "'decision' (always recommended) | 'content-input' (only the human can supply) | 'derived-constraint' (already fixed \u2014 belongs in Context, NOT an ask)" },
+                text: { type: "string" },
+                recommendation: { type: "string", description: "Required for a decision unless deferred behind research" },
+                deferred: { type: "boolean", description: "true when the decision is deferred behind research" }
+              },
+              required: ["kind", "text"]
+            }
+          },
+          research: { type: "array", items: { type: "string" }, description: "Research prompts \u2014 required + surfaced up front when load_bearing_gap, never buried" },
+          load_bearing_gap: { type: "boolean", description: "true when a load-bearing knowledge gap blocks a substantive decision (forces research-first)" },
+          tail: { type: "string", description: "Optional custom command tail line; defaults to the standard one" },
+          frame: {
+            type: "object",
+            description: "B-876 \u2014 the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, floor_reviewed?[] } | 'release' { act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only \u2014 never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[] }. Every rule over this field is a WARNING \u2014 an absent or malformed frame never refuses the brief; omit it entirely and the render is byte-identical to the pre-B-876 output."
+          },
+          revision: {
+            type: "object",
+            description: "B-876 \u2014 round-2+ only: { round: number, changes: [{ change, responds_to }] }. One entry per change made this round, each bound to the feedback it answers. Renders under the **On accept:** line as 'Changed this round:' and never above the frame \u2014 the human approves the totality, not the diff."
+          },
+          payload: {
+            type: "array",
+            description: "B-810 \u2014 the promised structured writes this brief's ACCEPT will materialize (AcceptanceEventPayloadItem[], acceptance-events.ts): one item per acceptance_criterion / child_ticket / checklist_item / ac_transfer / label_add / knowledge_entry_content write, mirroring exactly what the gate's own same-session accept-time materialization performs. A `knowledge_entry_content` item (B-843) CARRIES the full prose of the knowledge entry this brief's decision_ref names. B-866: DO NOT AUTHOR ONE \u2014 compose DERIVES it from this same doc (renderEntry) for the FOUR reasons whose gate records the entry itself (clarification-draft, decomposition-proposal, design-decision-draft, revise-scope-review), sets its `ref` and `entry_id`, and REPLACES any item you supply. stale-patch-review is a NAMED EXEMPTION: it carries a decision_ref (the depth-pointer still renders) but its entry was ratified at another gate, so its body is never overwritten; the entry's prose belongs in the doc (recommend / why / alternatives / context / frame), never in a second hand-authored copy. The payload is executed by the B-797 cross-session safety net (a web accept with no session running); since B-866 the brief also RENDERS its promise \u2014 one line per promised write \u2014 so what the reader sees and what the accept executes cannot disagree. Every item's `ref` MUST be derived via `slugRef` + deduped via `dedupeRefs` (payload-refs.ts) \u2014 a content-derived slug, never a positional index, stable across an in-place iterate recompose. Omit or pass `[]` when this gate has no promised writes (e.g. decompose's 'no split').",
+            items: {
+              type: "object",
+              properties: {
+                write_kind: { type: "string", description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content'" },
+                ref: { type: "string", description: "Stable, content-derived, within-payload-unique ref \u2014 from slugRef/dedupeRefs (payload-refs.ts)" },
+                content: { type: "string", description: "Required for acceptance_criterion, ac_transfer and knowledge_entry_content \u2014 the full text, verbatim" },
+                title: { type: "string", description: "Required for child_ticket and checklist_item" },
+                description: { type: ["string", "null"], description: "Optional, child_ticket only" },
+                target_child_ref: { type: "string", description: "ac_transfer only \u2014 the destination child_ticket item's own `ref` from this SAME payload" },
+                from_ac_id: { type: ["string", "null"], description: "ac_transfer only \u2014 the parent AC's own id being removed; omit only for the rare copy-not-move case" },
+                label_name: { type: "string", description: "label_add only (B-688) \u2014 the label to add; defaults to 'decision-only' when omitted (the only real-world caller today)" },
+                entry_id: { type: ["string", "null"], description: "knowledge_entry_content only (B-843) \u2014 the target knowledge entry; omit to let the DB resolve it from this brief's own decision_ref (the normal case)" }
+              },
+              required: ["write_kind", "ref"]
+            }
+          }
+        },
+        required: ["decide", "items"]
+      },
+      expand_sections: { type: "object", description: "Pre-generated expand content keyed by section: reasoning/alternatives/history" },
+      related: { type: "array", description: "Pre-generated related decisions/tickets/knowledge" },
+      pending_activity: { type: ["string", "null"], description: 'The workflow activity `accept` applies (e.g. clarifying, decomposing, deploying, verifying). A real activity is validated against the transition table; explicit null \u21D2 accept advances no state. B-901 \u2014 on a REVISION, OMITTING this CARRIES FORWARD the prior revision\'s activity (it does not mean "no state change"), and the carried value is validated too: a partial recompose of a stale ticket can now be REFUSED where it previously composed in silence. Pass explicit null to actually clear it.' },
+      decision_ref: { type: "object", description: 'The Asserted knowledge entry to promote on accept: { type: "decision", id: "<uuid>" }' },
+      changed_paths: {
+        type: "array",
+        items: { type: "string" },
+        description: "B-876 \u2014 the build's changed file paths. On a RELEASE frame (`git diff --name-only origin/main...HEAD`) they are the only input to `risk_classes`, computed with the deterministic path detector; compose is authoritative for that field and overwrites whatever the doc authored, and omitting them (or passing []) yields [] \u2014 the risk signal is path-derived or it is nothing, never prose-guessed. B-974 WIDENS THE SCOPE: on a VERIFY frame the same paths decide which of the project manifest's declared `verify.evidence` entries apply (an entry narrowed by `applies_to.paths`). Each overlay narrows on its own frame kind, so they never cross-fire. At verify, OMITTED and [] differ: omitted means NO DIFF IS AVAILABLE, so a path-narrowed entry is unevaluable \u2014 it renders no row, is not counted, and is NAMED on the evidence line; [] is a known-empty diff and a clean, silent non-match. Source the verify-time list from `gh pr diff --name-only <field_values.build_pr.pr_url>` (NOT the release-time `origin/main...HEAD` form, which is empty once the PR has merged)."
+      },
+      manifest_root: {
+        type: "string",
+        description: "B-974 \u2014 the ABSOLUTE root of the repo of record, where `.harmony/project.yml` (B-991) is read from for this ticket's declared `verify.evidence` entries. Used ONLY on a `verification-ack-pending` compose: each declared entry that applies to this ticket is overlaid onto the criteria ledger as a synthetic row (`ac_id: \"manifest:<key>\"`, disposition `manifest-declared` when outstanding / `manifest-attested` once a human typed `ATTESTED: <key>` on this ticket's verify lineage), and the evidence line reports what is outstanding. EXPLICIT on purpose \u2014 compose never infers it from the server's working directory, which is not reliably the repo root. Omit it (or point at a repo with no manifest / no declared evidence) and the verify brief is byte-for-byte what it is today. A MALFORMED manifest never refuses the brief: it overlays no rows, names the file and the problem on the evidence line, and adds a compose WARNING."
+      },
+      diff_content: {
+        type: "string",
+        description: "B-838 \u2014 the build's bounded, REMOVED/REPLACED PR diff lines (`git diff origin/main...HEAD`, pre-merge, post-exclusion, pre-cap). Used ONLY to compute a release frame's `contradiction_signal` \u2014 which Accepted knowledge entries this diff touches or contradicts; compose is authoritative for that field and overwrites whatever the doc authored, exactly like `risk_classes` from `changed_paths`. Omitted entirely -> `{ status: 'not-computed', message: 'not computed \u2014 no diff supplied' }`, never silently read as \"no contradictions\"."
+      },
+      underwriting_claim_ids: { type: "array", items: { type: "string" }, description: "B-645 iterate-prune: on an in-place iterate, the KEPT set of elicitation-claim ids that still underwrite this brief. Coupled Asserted claims NOT listed are archived; [] archives all coupled Asserted claims; omit \u21D2 no prune. Ignored on a first compose (nothing is coupled yet)." },
+      couple_claim_ids: { type: "array", items: { type: "string" }, description: "B-736: on a FIRST compose only, the ids of elicitation claims minted BEFORE this call that should be atomically coupled (underwriting_brief_id set) to the brief this call creates \u2014 closes the claim mint-then-accept race. Ignored when a brief already exists for the task (use underwriting_claim_ids to prune on iterate instead)." },
+      iterate_feedback: {
+        type: "string",
+        description: "B-843 \u2014 the human's feedback that CAUSED this iterate, VERBATIM. A revision stores it ONLY when a send-back CAUSED that revision. The mechanical anchor: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail` here (as `edit` / `iterate <feedback>` and the browser reshape all do); EVERY other recompose omits the parameter and the field lands null. Omit it on a first draft (nothing caused the brief), a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to populate this field: the CALLER passes it, so the marker is never scraped (B-843) and the words are never stamped onto a revision nobody sent back (B-896/B-903). It is stored on the NEW revision, so the retained history reads as \"this is what they asked for, and this is what I changed\". Never guessed, never paraphrased into a summary, and never left out because `doc.revision` already names the changes \u2014 `doc.revision` records what YOU changed, this records what THEY said."
+      },
+      revision_cause: {
+        type: "object",
+        properties: {
+          source: { type: "string", enum: [...REVISION_CAUSE_SOURCES] },
+          lines: { type: "array", items: { type: "string" } }
+        },
+        required: ["source", "lines"],
+        description: "B-1017 \u2014 WHY this revision exists, supplied by the CALLER: { source, lines }. lint-self-review: pass the previous compose's lint.warnings verbatim (a second self-recompose passes ITS OWN warnings, never the first one's). self-review: your one-line reason. after-discussion / accept-remark / refreshed-inputs: one line naming what happened. For a SEND-BACK pass only iterate_feedback \u2014 the function derives the sender (human vs orchestrator) from the B-896 provenance row; do not also pass a send-back source. Omit on a first compose. A round-2+ compose with neither this nor iterate_feedback WARNS and stores a null cause (renders 'No cause recorded') \u2014 never refused."
+      }
+    },
+    required: ["task_id", "reason", "doc"]
+  }
+};
 async function fetchPendingResolution(client, taskId) {
   try {
     const { data, error } = await client.from("briefs").select("pending_resolution").eq("task_id", taskId).eq("status", "active").maybeSingle();
@@ -31056,7 +31167,8 @@ async function fetchPendingRemark(client, taskId) {
     return null;
   }
 }
-var BRIEF_HISTORY_COLS = `${BRIEF_COLS}, lineage_id, iterate_feedback`;
+var BRIEF_HISTORY_COLS = `${BRIEF_COLS}, lineage_id, iterate_feedback, revision_cause`;
+var BRIEF_HISTORY_COLS_NO_CAUSE = `${BRIEF_COLS}, lineage_id, iterate_feedback`;
 var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
 var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
 var ACCEPTED_PROVENANCE = `'${PROVENANCE_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_SYNTHESIZED}', or '${PROVENANCE_AGENT_SYNTHESIZED}:<mode>'`;

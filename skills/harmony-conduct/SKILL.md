@@ -1130,7 +1130,8 @@ the conductor delegates to the OWNING gate skill for the brief's `awaiting_human
 discussion exchange on the active brief per `skills/harmony-shared/elicitation-engine.md` §The discuss
 trigger (the remark seeds round 1). While a discussion is open, **brief resolution is suspended** — do not
 route an accept/defer to the brief; offer **force-quit** or **cancel** instead. When the exchange concludes,
-the gate skill re-composes the brief once and the pause resumes on the updated brief.
+the gate skill re-composes the brief once — with `revision_cause: { source: 'after-discussion', … }` and no
+`iterate_feedback` (§Stating the cause of a redraft, B-1017) — and the pause resumes on the updated brief.
 
 **If the human answers in this same session** (e.g. "accept", "looks good", or substantive feedback),
 hand the resolution to the owning gate skill for that `awaiting_human_reason` (the gate skill performs the
@@ -1371,7 +1372,9 @@ handle BOTH, the B-611 swallow class). Handle it in two steps, strictly ordered:
      by a remark — when the veto fires, surface the gate and pause instead (state the veto's `why`).
    - **SUBSTANTIVE remark** — it would change the decision that was accepted: **NOT absorbed**. Write a
      trail comment and re-surface it to the human (the decision the human accepted stands until the human
-     revises it — the conductor never silently re-decides).
+     revises it — the conductor never silently re-decides). A recompose made to answer the remark — here, or
+     at a downstream gate that folds it in — passes `revision_cause: { source: 'accept-remark', lines: [<the
+     remark, verbatim>] }` and no `iterate_feedback` (§Stating the cause of a redraft, B-1017).
 
 In all handled cases: `mcp__harmony__add_comment` the remark + the action taken, **THEN** call
 `mcp__harmony__consume_accept_remark({ brief_id })`. **Consume-after-apply:** never mark the remark
@@ -1456,7 +1459,9 @@ mechanically; **the LLM iterate runs where the agent runs — here**. Consume it
    `awaiting_human_reason` (e.g. `harmony-clarify` for `clarification-draft`, `harmony-design-decide` for a
    design sub-track) so it revises its draft **incorporating `detail`** and re-calls
    `mcp__harmony__compose_brief` — the same in-place `iterate` path a same-session "iterate <feedback>"
-   takes. `compose_brief` updates the active brief in place and **bumps `iteration` (+1)**, and re-sets
+   takes (the recompose passes only `iterate_feedback` = `detail`; the sender is derived —
+   §Stating the cause of a redraft, B-1017). `compose_brief` updates the active brief in place and **bumps
+   `iteration` (+1)**, and re-sets
    `awaiting_human_input = true` (the brief is awaiting the human again ⇒ B-492 **'Needs human'**).
 2. **The consumed marker is cleared by the re-compose.** `compose_brief` nulls `pending_resolution` on the
    active brief as part of the in-place iterate write — so re-composing the brief (step 1) *is* the consume,
