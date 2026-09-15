@@ -138,10 +138,13 @@ mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-
 ```
 
 advances Designed→Planned. **B-797 — finalize the deferred advance NOW, same session.** The response
-carries `pending_acceptance_event_id`: since you just materialized the checklist yourself above, there is
-nothing left to APPLY — only the deferred advance to COMMIT. Call
-`mcp__harmony__consume_acceptance_event({ event_id: <that id> })` right away, in this same turn. The
-accept IS the "go" to build.
+carries `pending_acceptance_event_id`. You just materialized the checklist yourself above, but B-866/
+B-867 mean the same event's payload can ALSO carry `gate_slot`/`knowledge_entry_content` items this
+skill never materializes on its own — so this is NOT commit-only. Call
+`mcp__harmony__consume_pending_acceptance_event({ task_id })` right away, in this same turn (B-1029:
+swapped from the commit-only `consume_acceptance_event`), so those write kinds actually land — the
+checklist items you already filed are idempotently skipped by their own ledger, so this does not
+double-file anything. The accept IS the "go" to build.
 
 > **Provenance (B-734):** `human-in-session` is the human deciding *here* — a conductor-synthesized accept
 > carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
@@ -219,7 +222,12 @@ mcp__harmony__consume_pending_acceptance_event({ task_id })
   `checklist_item` entries, verbatim — present THOSE as a confirm-then-materialize ask ("here is the
   plan you accepted — confirm this is still the work list, or adjust it"), never an open "what was the
   plan?" question. On confirm, materialize via `manage_checklist_items` exactly as O2's accept step
-  does, then `mcp__harmony__consume_acceptance_event({ event_id })` to commit the deferred advance.
+  does. **B-1029: also re-apply a missed `gate_slot` item from this SAME echoed payload** — the
+  `payload-unrecognized`/`substrate_absent_for` degrade path (`acceptance-events.ts`) can leave a
+  structured `gate_slot` item unapplied for the same reason the checklist can be unmaterialized; if
+  `items` carries one, write it the same way `applyAcceptanceEventPayload` would (the gate's durable
+  per-gate section, keyed on this ticket + gate). Then `mcp__harmony__consume_acceptance_event({ event_id
+  })` to commit the deferred advance.
 - **`none` / `substrate-absent`** → genuinely nothing to echo (a pre-B-810 ticket, or the checklist was
   legitimately never populated) — only THEN fall back to an open question, and only for what the
   snapshot doesn't carry.

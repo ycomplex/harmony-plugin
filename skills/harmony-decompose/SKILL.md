@@ -38,9 +38,11 @@ pre-filed to confirm — but the accepted brief's snapshot is NOT lost: `consume
 echoed it verbatim on the result's `items` field. Render those `child_ticket` items (title/description
 per item) as a **confirm-then-create ask** — never an open "what were the children?" re-dictation
 question. On the human's confirm, mint them via the SAME §4 accept-step-1 `manage_subtasks add_new` +
-promote-to-Proposed sequence, then commit the deferred advance
-(`mcp__harmony__consume_acceptance_event({ event_id })`). Any `ac_transfer` items in the same `items`
-array apply per §4 step 3, unchanged.
+promote-to-Proposed sequence, then apply the deferred payload for real
+(`mcp__harmony__consume_pending_acceptance_event({ task_id })` — B-1029: swapped from the commit-only
+`consume_acceptance_event`, since the same accepted event's payload can also carry `gate_slot`/
+`knowledge_entry_content` items this manual self-heal never materializes on its own). Any `ac_transfer`
+items in the same `items` array apply per §4 step 3, unchanged.
 
 Query `engineering` (how this codebase structures multi-surface work) and `product` (feature
 boundaries). Apply the manageability rule: split until each child is a clean, independently-shippable
@@ -288,10 +290,13 @@ Show the rendered `content`. On the human's command:
      `decision_ref` is `null` there, so nothing is promoted; any touch to the shared
      `decompose-no-split` convention entry was already written directly, back in §3.)
   5. **B-797 — finalize the deferred advance NOW, same session.** The response carries
-     `pending_acceptance_event_id`: since you just minted/confirmed the children (and moved any ACs)
-     yourself above, there is nothing left to APPLY — only the deferred Clarified→Decomposed advance to
-     COMMIT. Call `mcp__harmony__consume_acceptance_event({ event_id: <that id> })` right away, in this
-     same turn.
+     `pending_acceptance_event_id`. You just minted/confirmed the children (and moved any ACs) yourself
+     above, but B-866/B-867 mean the same accepted event's payload can ALSO carry `gate_slot`/
+     `knowledge_entry_content` items this skill never materializes on its own — so this is NOT
+     commit-only. Call `mcp__harmony__consume_pending_acceptance_event({ task_id })` right away, in this
+     same turn (B-1029: swapped from the commit-only `consume_acceptance_event`), so those two write
+     kinds actually land — the children/ACs you already filed are idempotently skipped by their own
+     ledger, so this does not double-file anything.
 
   The existing-children branch also makes accept idempotent for free: a re-run after a crash
   mid-accept (children created, resolve not yet run) sees them as existing and confirms instead of

@@ -157,6 +157,9 @@ const labelAddItem = (ref: string, over: Partial<AcceptanceEventPayloadItem> = {
 const knowledgeEntryItem = (ref: string, over: Partial<AcceptanceEventPayloadItem> = {}): AcceptanceEventPayloadItem => ({
   write_kind: 'knowledge_entry_content', ref, content: `Entry prose ${ref}`, ...over,
 });
+const gateSlotItem = (ref: string, over: Partial<AcceptanceEventPayloadItem> = {}): AcceptanceEventPayloadItem => ({
+  write_kind: 'gate_slot', ref, gate: 'clarify', slot_content: { summary: `Slot ${ref}` }, ...over,
+});
 
 function makeEvent(items: AcceptanceEventPayloadItem[]): PendingAcceptanceEvent {
   return {
@@ -491,9 +494,12 @@ describe('applyAcceptanceEventPayload', () => {
       .rejects.toThrow(/no target entry/);
   });
 
-  // ORDER: the knowledge promotion + per-gate supersede runs LAST, after every AC/child/checklist write.
-  // A payload that fails partway must never leave the knowledge base promoted for work that never landed.
-  it('applies knowledge_entry_content LAST, whatever order the payload authored it in', async () => {
+  // ORDER: the knowledge promotion + per-gate supersede runs BEFORE label_add (B-1029 moved label_add
+  // to run LAST of all, after gate_slot/knowledge_entry_content too — see the `order` array's own
+  // comment). A payload that fails partway must never leave the knowledge base promoted for work that
+  // never landed, and a guard-blocked/not-yet-deployed label_add must never block the two writes ahead
+  // of it.
+  it('applies knowledge_entry_content BEFORE label_add, whatever order the payload authored it in (B-1029)', async () => {
     const client = makeClient({
       rpcResponses: {
         consume_knowledge_entry_content_write: [{ data: { applied: true } }],
@@ -509,9 +515,67 @@ describe('applyAcceptanceEventPayload', () => {
     expect(client.rpcCalls.map((c: { name: string }) => c.name)).toEqual([
       'consume_child_mint_write',
       'consume_ac_add_write',
-      'consume_label_add_write',
       'consume_knowledge_entry_content_write',
+      'consume_label_add_write',
     ]);
+  });
+
+  // B-1029 regression (a) — a decision-only-shaped payload's label_add write can be blocked two ways
+  // that are NOT transient: a guard refusal (tested here) or the RPC being altogether absent (already
+  // covered above for label_add specifically). EITHER WAY, gate_slot and knowledge_entry_content items
+  // in the SAME payload must land regardless — that is the entire point of moving label_add to run last.
+  it('B-1029 — a guard-blocked label_add does NOT prevent gate_slot and knowledge_entry_content in the same payload from landing', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_gate_slot_write: [{ data: { applied: true, result_id: 'slot-1' } }],
+        consume_knowledge_entry_content_write: [{ data: { applied: true, result_id: 'entry-1' } }],
+        consume_label_add_write: [{ data: null, error: { code: '23514', message: 'decision-only guard blocked: build-shape (task abc-123)' } }],
+      },
+    });
+    const event = makeEvent([
+      labelAddItem('label-decision-only'), gateSlotItem('slot-1'), knowledgeEntryItem('entry-1'),
+    ]);
+    await expect(applyAcceptanceEventPayload(client, event)).rejects.toThrow(/decision-only guard blocked: build-shape/);
+    // The throw happens ONLY once label_add (last in order) is reached — gate_slot and
+    // knowledge_entry_content both already committed via their own independent RPC calls by then.
+    expect(client.rpc).toHaveBeenCalledWith('consume_gate_slot_write', expect.objectContaining({ _external_ref: 'slot-1', _gate: 'clarify' }));
+    expect(client.rpc).toHaveBeenCalledWith('consume_knowledge_entry_content_write', expect.objectContaining({ _external_ref: 'entry-1' }));
+    expect(client.rpcCalls.map((c: { name: string }) => c.name)).toEqual([
+      'consume_gate_slot_write',
+      'consume_knowledge_entry_content_write',
+      'consume_label_add_write',
+    ]);
+  });
+
+  // B-1029 regression (b) — the no-double-file proof: calling applyAcceptanceEventPayload a SECOND time
+  // on an event whose payload already landed in full must change nothing. Every RPC reports its own
+  // idempotent no-op (`applied: false`, the ledger's ON CONFLICT DO NOTHING short-circuit — the same
+  // shape TEST #10 exercises for a single write_kind); the aggregate result must show ALL of them as
+  // `skipped_already_done`, none as newly `applied`, and no write_kind is ever attempted twice.
+  it('B-1029 — re-running applyAcceptanceEventPayload on a fully-applied event changes nothing (no double-file)', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_child_mint_write: [{ data: { applied: false } }],
+        consume_ac_add_write: [{ data: { applied: false } }],
+        consume_checklist_item_write: [{ data: { applied: false } }],
+        consume_gate_slot_write: [{ data: { applied: false } }],
+        consume_knowledge_entry_content_write: [{ data: { applied: false } }],
+        consume_label_add_write: [{ data: { applied: false } }],
+      },
+    });
+    const event = makeEvent([
+      childItem('child-1'), acItem('ac-1'), checklistItem('step-1'),
+      gateSlotItem('slot-1'), knowledgeEntryItem('entry-1'), labelAddItem('label-1'),
+    ]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.applied).toBe(0);
+    expect(result.skipped_already_done).toBe(6);
+    expect(result.by_write_kind).toEqual({});
+    expect(client.rpc).toHaveBeenCalledTimes(6);
+    // Every write_kind was attempted EXACTLY once — a re-run replans from the same payload, it never
+    // re-issues an RPC call more than once per item.
+    const names = client.rpcCalls.map((c: { name: string }) => c.name);
+    expect(new Set(names).size).toBe(names.length);
   });
 });
 
