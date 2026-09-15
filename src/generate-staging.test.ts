@@ -206,6 +206,34 @@ describe.skipIf(!CAPABLE)('generate-staging.sh (B-1007 staging generation)', () 
     expect(git(ciDir, 'show', `${secondTip}:source.ts`)).toContain('export const n = 2;');
   }, 60_000);
 
+  it('merges main into staging with NO git identity in the environment — the CI runner case (2026-09-15 run 34959224293)', () => {
+    // The fixture exports GIT_AUTHOR_*/GIT_COMMITTER_* for every run, which is exactly how the first
+    // ordinary merge run's "fatal: empty ident name" slipped past this suite: the script set the bot
+    // identity only on its final commit, and `git merge --no-commit` needs one too. This run strips
+    // the four variables (the global/system gitconfig are already pointed at nowhere) so the script
+    // must supply the identity itself on both the merge and the commit.
+    const { GIT_AUTHOR_NAME: _a, GIT_AUTHOR_EMAIL: _b, GIT_COMMITTER_NAME: _c, GIT_COMMITTER_EMAIL: _d, ...bare } = env;
+    const generateBare = () =>
+      execFileSync('bash', [SCRIPT], { cwd: ciDir, env: {
+        ...bare,
+        HARMONY_STAGING_BUILD_CMD: FAKE_BUILD,
+        // Forbid git's fallback of guessing an identity from the OS user: a developer machine would
+        // otherwise pass this test while the runner (whose user has no name to guess) fails.
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'user.useConfigOnly',
+        GIT_CONFIG_VALUE_0: 'true',
+      }, encoding: 'utf8' });
+    generateBare(); // bootstrap: no merge yet
+    const firstTip = remoteStagingSha();
+    advanceMain('export const n = 3;\n');
+    expect(() => generateBare()).not.toThrow(); // the merge path, identity-less environment
+    const secondTip = remoteStagingSha();
+    expect(secondTip).not.toBe(firstTip);
+    expect(() => git(ciDir, 'merge-base', '--is-ancestor', firstTip, secondTip)).not.toThrow();
+    const author = git(ciDir, 'log', '-1', '--format=%an <%ae>', secondTip).trim();
+    expect(author).toBe('harmony-daemon[bot] <harmony-daemon[bot]@users.noreply.github.com>');
+  });
+
   it('keeps the generated dist/ on staging across generations (main never carries it, the merge never deletes it)', () => {
     generate();
     advanceMain('export const n = 3;\n');
