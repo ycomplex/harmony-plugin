@@ -21,9 +21,11 @@ unenumerated route is the normal state of affairs. If you find another, add it.
 
 **B-797 update.** Routes 1 and 3 above are the exact specimen class B-797 closes structurally: `resolve_brief`
 now defers the state advance itself for `clarification-draft` (and `decomposition-proposal` / `plan-draft` /
-`design-decision-draft` on the product track) until a `consume_acceptance_event` commits it, so a web accept
-with no session running leaves the ticket VISIBLY pending (`pending_acceptance_event_id` set) rather than
-silently advancing with the criteria still unfiled. `harmony-conduct` §1c (the B-797 leg-start-consume) is
+`design-decision-draft` on every design sub-track — B-904) until `consume_pending_acceptance_event`
+(B-1029: the same-session tool — it applies the deferred payload first, THEN commits; the commit-only
+`consume_acceptance_event` is reserved for the two narrow post-apply continuations documented in
+`gate-routing.md`) commits it, so a web accept with no session running leaves the ticket VISIBLY pending
+(`pending_acceptance_event_id` set) rather than silently advancing with the criteria still unfiled. `harmony-conduct` §1c (the B-797 leg-start-consume) is
 the generalized successor to §1b for these four reasons — see `gate-routing.md`'s B-797 section. §1b (this
 file's route-3 fix) stays as-is for now: it is the self-heal RECOVERY when the snapshotted payload is not
 (yet) in the structured shape §1c applies (a not-yet-migrated `compose_brief` call site) — see §1c's

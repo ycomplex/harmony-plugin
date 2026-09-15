@@ -608,10 +608,13 @@ Show the rendered `content` verbatim. On the human's command:
   response carries `pending_acceptance_event_id` — capture it as `event_id` for what follows in both
   branches.
 
-  **A (continued) — finalize the deferred advance NOW, same session (B-797).** Since you just filed the
-  ACs (and any de-scope) yourself above, there is nothing left to APPLY — only the deferred
-  Proposed→Clarified advance to COMMIT. Call
-  `mcp__harmony__consume_acceptance_event({ event_id })` right away, in this same turn.
+  **A (continued) — finalize the deferred advance NOW, same session (B-797).** You just filed the
+  ACs (and any de-scope) yourself above, but B-866/B-867 mean the brief's payload can ALSO carry
+  `gate_slot`/`knowledge_entry_content` items this skill never materializes on its own — so this is NOT
+  commit-only. Call
+  `mcp__harmony__consume_pending_acceptance_event({ task_id })` right away, in this same turn, so those
+  two write kinds actually land (the AC/checklist items you already filed are idempotently skipped by
+  their own ledger, so this does not double-file anything).
   **Decision-only fast-forward (B-681):** if the ticket ALREADY carried the `decision-only` label before
   this accept (the brief carried the completion line for that reason — branch A never proposes the label
   itself), run the trailing mechanical completion the accept just authorized:
@@ -639,11 +642,11 @@ Show the rendered `content` verbatim. On the human's command:
     "fast-forwarding" })`, report **Verified (decision-only fast-forward, realization stays 'agreed')**.
   - **Throws an error whose message contains `"decision-only guard blocked"`** — the DB-side guard
     (`can_mark_decision_only`) blocked the label (message names the reason: `terminal` or `build-shape`).
-    **The `acceptance_criterion` items are NOT lost** — the apply path orders `acceptance_criterion`
-    writes strictly BEFORE `label_add` (`acceptance-events.ts`'s `order` array), and each write_kind's RPC
-    commits independently, so by the time `label_add` raises, every AC this brief proposed has already
-    landed via its own ledgered insert. Catch this specific error (never let it surface as a bare tool
-    failure to the human):
+    **The `acceptance_criterion`, `gate_slot`, and `knowledge_entry_content` items are NOT lost** — B-1029
+    reordered `label_add` to run strictly LAST in `acceptance-events.ts`'s `order` array (after every
+    other write_kind, not just `acceptance_criterion`), and each write_kind's RPC commits independently,
+    so by the time `label_add` raises, everything else this brief's payload carried has already landed.
+    Catch this specific error (never let it surface as a bare tool failure to the human):
     1. Write the filing-pass marker. The thrown call carries no structured `by_write_kind` breakdown, so
        use the count of `acceptance_criterion` items THIS brief's payload proposed as `N` (a documented
        approximation — safe because the ordering guarantee above means all of them are landed by this
@@ -652,8 +655,12 @@ Show the rendered `content` verbatim. On the human's command:
        ```
        mcp__harmony__add_comment({ task_id, content: `AC-FILING-PASS brief_id=${brief.id} filed=${payload.filter(i => i.write_kind === "acceptance_criterion").length}` })
        ```
-    2. Commit the deferred advance directly (the AC materialization this brief owed is done; only the
-       separate label proposal was blocked): `mcp__harmony__consume_acceptance_event({ event_id })`.
+    2. Commit the deferred advance directly — correctly commit-only here, not a swap back to
+       `consume_pending_acceptance_event`: the `mcp__harmony__consume_pending_acceptance_event({ task_id })`
+       call above already ran `applyAcceptanceEventPayload` once this turn, which (per the B-1029 reorder)
+       landed every write except the terminally guard-blocked `label_add` before raising — re-running the
+       full apply here would just retry the same doomed label write for no benefit, so only the deferred
+       advance itself remains to commit: `mcp__harmony__consume_acceptance_event({ event_id })`.
        Report **Clarified** (never Verified — the label never landed, so no fast-forward).
     3. File a `worker-question` round (`skills/harmony-shared/elicitation-engine.md` §The worker-question
        trigger) naming what happened — the ticket was judged decision-only-shaped and proposed, but the
@@ -671,7 +678,10 @@ Show the rendered `content` verbatim. On the human's command:
     `manage_acceptance_criteria`, which would DOUBLE-FILE them here (the same ordering guarantee means
     they already landed via the ledger before `label_add` was ever reached):
     1. Write the filing-pass marker using the same `N` approximation as the guard-blocked branch.
-    2. Commit the deferred advance directly: `mcp__harmony__consume_acceptance_event({ event_id })`.
+    2. Commit the deferred advance directly — same reasoning as the guard-blocked branch above: the
+       preceding `consume_pending_acceptance_event` call already applied every other write_kind (B-1029's
+       `label_add`-last reorder means only the RPC-absent label write is outstanding), so only the deferred
+       advance itself remains: `mcp__harmony__consume_acceptance_event({ event_id })`.
        Report **Clarified**.
     3. File a `worker-question` round noting the decision-only proposal could not be applied yet because
        its DB function is not deployed to this environment, and that a human who still wants the ticket
