@@ -124,6 +124,44 @@ describe('shipMilestone', () => {
     expect(result.removed_tasks.map((t: any) => t.id)).toEqual(['t-verified-but-open']);
     expect(client.nulledIds).toEqual([['t-verified-but-open']]);
   });
+
+  // B-706: opinionated mode treats Cancelled as terminal record, not outstanding — mirrors
+  // the web ship gate's B-704 fix (isTaskCancelled). A Cancelled task must stay on the
+  // shipped milestone (not stripped, not in removed_tasks) and be reported honestly via
+  // retained_cancelled_count, distinct from tasks that actually got removed.
+  it('opinionated mode: Cancelled task is retained on the milestone and reported via retained_cancelled_count (B-706)', async () => {
+    const tasks: TaskRow[] = [
+      { id: 't-verified', status: 'In Progress', title: 'Done feature', workflow_state: 'Verified' },
+      { id: 't-cancelled', status: 'In Progress', title: "Won't do", workflow_state: 'Cancelled' },
+      { id: 't-open', status: 'In Progress', title: 'WIP feature', workflow_state: 'Built' },
+    ];
+    const client = createMockClient({ mode: 'opinionated', tasks });
+
+    const result = await shipMilestone(client, PROJECT_ID, { milestone_id: MILESTONE_ID });
+
+    // Both the Verified task and the Cancelled task are resolved/retained.
+    expect(result.shipped_task_count).toBe(2);
+    expect(result.retained_cancelled_count).toBe(1);
+    // Only the genuinely-open task is removed; the Cancelled one is not in removed_tasks.
+    expect(result.removed_tasks.map((t: any) => t.id)).toEqual(['t-open']);
+    expect(client.nulledIds).toEqual([['t-open']]);
+  });
+
+  // B-706: manual mode has no workflow_state axis, so Cancelled is never specially
+  // retained there — behaviour must stay exactly as before (status-only partition).
+  it('manual mode: Cancelled workflow_state is not specially retained — task is still stripped (B-706)', async () => {
+    const tasks: TaskRow[] = [
+      { id: 't-cancelled', status: 'In Progress', title: "Won't do", workflow_state: 'Cancelled' },
+    ];
+    const client = createMockClient({ mode: 'manual', tasks });
+
+    const result = await shipMilestone(client, PROJECT_ID, { milestone_id: MILESTONE_ID });
+
+    expect(result.shipped_task_count).toBe(0);
+    expect(result.retained_cancelled_count).toBe(0);
+    expect(result.removed_tasks.map((t: any) => t.id)).toEqual(['t-cancelled']);
+    expect(client.nulledIds).toEqual([['t-cancelled']]);
+  });
 });
 
 /**
