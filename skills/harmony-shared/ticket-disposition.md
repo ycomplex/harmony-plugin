@@ -32,7 +32,7 @@ Use when you fold or dedupe a ticket into an existing / umbrella ticket that now
 The work is genuinely dead: irrelevant, obsolete, decided-against, or a discarded orphan. Retire it in **this order** — cancel first to record the reason, then archive to clear it from active views:
 
 1. `advance_workflow({ task_id, activity: 'cancelling' })` → `workflow_state = Cancelled`.
-2. `add_comment({ task_id, body: 'Cancelled — <why>' })` — **durably record the reason.** `advance_workflow` has NO reason field; the comment IS the reason-capture mechanism. Do not skip it.
+2. `add_comment({ task_id, content: 'Cancelled — <why>' })` — **durably record the reason.** `advance_workflow` has NO reason field; the comment IS the reason-capture mechanism. Do not skip it.
 3. `update_task({ task_id, archived: true })` — remove it from active views.
 
 **Never archive-only** — an archived-but-not-Cancelled ticket still reads as a *live* `workflow_state` (it is merely unlisted) AND loses the *why*. **Never cancel-only** — a Cancelled-but-not-archived ticket clutters active views. Drop is always **both, in this order.**

@@ -73,6 +73,13 @@ BUILD_CMD="${HARMONY_STAGING_BUILD_CMD:-npm ci && npm run build}"
 BOT_NAME="${HARMONY_STAGING_BOT_NAME:-harmony-daemon[bot]}"
 BOT_EMAIL="${HARMONY_STAGING_BOT_EMAIL:-harmony-daemon[bot]@users.noreply.github.com}"
 
+# EVERY git command in this run needs an identity, not only the final commit below: on a CI runner with
+# no configured user, `git merge --no-ff --no-commit` refuses with "fatal: empty ident name" before
+# it touches a file (the first ordinary merge run, 2026-09-15, run 34959224293 — which this script then
+# misreported as a content conflict). Exported once so the merge and the commit carry the same bot.
+export GIT_AUTHOR_NAME="$BOT_NAME" GIT_AUTHOR_EMAIL="$BOT_EMAIL"
+export GIT_COMMITTER_NAME="$BOT_NAME" GIT_COMMITTER_EMAIL="$BOT_EMAIL"
+
 say() { echo "generate-staging: $*"; }
 die() { echo "generate-staging: $*" >&2; exit 1; }
 
@@ -130,8 +137,15 @@ if [ "$BOOTSTRAP" = "0" ]; then
   # --no-commit so the merge, the version bump and the rebuilt dist/ land as ONE commit; the commit
   # below still records both parents, so the previous staging tip stays an ancestor of the new one.
   if ! git merge --no-ff --no-commit --no-edit "$MAIN_SHA"; then
-    git merge --abort || true
-    die "merging $MAIN_BRANCH into $STAGING_BRANCH conflicted — resolve it on $STAGING_BRANCH by hand"
+    # Tell a real content conflict apart from any other merge failure: only the former is something a
+    # human should hand-resolve on staging; anything else (identity, permissions, a bad ref) must be
+    # fixed at its cause, and git's own message above names it.
+    CONFLICTS="$(git diff --name-only --diff-filter=U 2>/dev/null || true)"
+    git merge --abort >/dev/null 2>&1 || true
+    if [ -n "$CONFLICTS" ]; then
+      die "merging $MAIN_BRANCH into $STAGING_BRANCH conflicted — resolve it on $STAGING_BRANCH by hand: $(printf '%s ' $CONFLICTS)"
+    fi
+    die "git merge of $MAIN_BRANCH into $STAGING_BRANCH failed for a reason OTHER than a content conflict (see git's message above) — do not hand-resolve; fix the cause"
   fi
 fi
 
