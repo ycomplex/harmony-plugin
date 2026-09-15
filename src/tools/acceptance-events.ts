@@ -729,15 +729,19 @@ export const consumeAcceptanceEventTool = {
     '(if any), atomically. B-1029: this is FINAL-COMMIT-ONLY — it applies NOTHING from the payload (no ' +
     'gate_slot, no knowledge_entry_content, no label_add); most same-session accept paths must call ' +
     '`consume_pending_acceptance_event({ task_id })` instead, which runs `applyAcceptanceEventPayload` ' +
-    'FIRST. Calling this one directly is correct in only two remaining LEGITIMATE cases, both already-past ' +
+    'FIRST. Calling this one directly is correct in only three remaining LEGITIMATE cases, all already-past ' +
     'the apply step by construction: (a) harmony-conduct\'s §1c `payload-unrecognized` route, once it has ' +
     'confirmed the owning gate\'s own materialization already did the work; and (b) harmony-clarify\'s two ' +
     'guard-blocked/label-RPC-absent continuations, which run AFTER `consume_pending_acceptance_event` has ' +
     'already applied gate_slot/knowledge_entry_content and only the terminally-blocked label_add write is ' +
-    'left pending — retrying the full apply again would just retry the same doomed label write. Do NOT use ' +
+    'left pending — retrying the full apply again would just retry the same doomed label write; ' +
+    'and (c) start-work\'s O3 leg-start-standalone self-heal (its own `payload-unrecognized` route) — ' +
+    'start-work\'s equivalent of harmony-conduct\'s §1c when it runs with no conductor loop wrapping it: ' +
+    'it manually re-materializes the missed checklist/gate_slot items from the echoed payload, and only ' +
+    'the commit is left. Do NOT use ' +
     'this as generic same-session accept guidance; every other caller wants ' +
     '`consume_pending_acceptance_event` so the deferred payload actually lands. `resolve_brief`\'s response ' +
-    'carries `pending_acceptance_event_id`; when non-null and one of the two cases above applies, call this ' +
+    'carries `pending_acceptance_event_id`; when non-null and one of the three cases above applies, call this ' +
     'with it. Idempotent — a second call on an already-consumed event is a safe no-op.',
   inputSchema: {
     type: 'object' as const,
