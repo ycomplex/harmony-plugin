@@ -3,6 +3,7 @@ import {
   probeAcceptanceEventSubstrate,
   getPendingAcceptanceEvent,
   applyAcceptanceEventPayload,
+  restrictPayloadToEntrySlotItems,
   consumeAcceptanceEvent,
   consumePendingAcceptanceEvent,
   classifyPayload,
@@ -576,6 +577,99 @@ describe('applyAcceptanceEventPayload', () => {
     // re-issues an RPC call more than once per item.
     const names = client.rpcCalls.map((c: { name: string }) => c.name);
     expect(new Set(names).size).toBe(names.length);
+  });
+});
+
+describe('restrictPayloadToEntrySlotItems (B-1029 production-defect fix)', () => {
+  it('keeps only the knowledge_entry_content/gate_slot items named in `keep`', () => {
+    const items = [
+      knowledgeEntryItem('entry-1'), knowledgeEntryItem('entry-2'), gateSlotItem('slot-1'),
+    ];
+    const restricted = restrictPayloadToEntrySlotItems(items, [
+      { kind: 'knowledge_entry_content', ref: 'entry-1' },
+      { kind: 'gate_slot', ref: 'slot-1' },
+    ]);
+    expect(restricted).toEqual([knowledgeEntryItem('entry-1'), gateSlotItem('slot-1')]);
+  });
+
+  it('excludes a knowledge_entry_content/gate_slot item NOT named in `keep` — i.e. one the scan judged already-correct', () => {
+    const items = [knowledgeEntryItem('entry-1'), gateSlotItem('slot-1')];
+    const restricted = restrictPayloadToEntrySlotItems(items, [{ kind: 'gate_slot', ref: 'slot-1' }]);
+    expect(restricted).toEqual([gateSlotItem('slot-1')]);
+  });
+
+  it('NEVER lets an acceptance_criterion/checklist_item/child_ticket/ac_transfer/label_add item through, even if `keep` mistakenly names its ref (defense-in-depth)', () => {
+    const items = [
+      acItem('ac-1'), checklistItem('step-1'), childItem('child-1'),
+      transferItem('xfer-1', 'child-1'), labelAddItem('label-1'),
+      knowledgeEntryItem('entry-1'),
+    ];
+    // `keep` deliberately (and wrongly) names every ref, including the five non-entry/slot kinds.
+    const restricted = restrictPayloadToEntrySlotItems(items, [
+      { kind: 'knowledge_entry_content', ref: 'ac-1' },
+      { kind: 'knowledge_entry_content', ref: 'step-1' },
+      { kind: 'knowledge_entry_content', ref: 'child-1' },
+      { kind: 'knowledge_entry_content', ref: 'xfer-1' },
+      { kind: 'knowledge_entry_content', ref: 'label-1' },
+      { kind: 'knowledge_entry_content', ref: 'entry-1' },
+    ]);
+    expect(restricted).toEqual([knowledgeEntryItem('entry-1')]);
+  });
+
+  it('returns an empty array when `keep` is empty', () => {
+    expect(restrictPayloadToEntrySlotItems([knowledgeEntryItem('entry-1'), gateSlotItem('slot-1')], [])).toEqual([]);
+  });
+});
+
+// B-1029 production-defect pinning test (2026-09-15 --apply run): re-running applyAcceptanceEventPayload
+// over a row's FULL stored payload re-issued acceptance_criterion/checklist_item writes for ACs/checklist
+// items that had ALREADY been filed in-session by the owning gate skill's own direct tool call — those
+// rows carry no external_ref in their own tables, so the ledger RPCs can't dedupe them. The fix: restrict
+// to only the missing knowledge_entry_content/gate_slot items before calling applyAcceptanceEventPayload.
+describe('applyAcceptanceEventPayload — restricted to missing entry/slot items only (B-1029 production-defect fix)', () => {
+  it('applying a payload restricted to the missing knowledge_entry_content/gate_slot items yields EXACTLY those two writes and NEVER calls the acceptance_criterion/checklist_item RPCs at all', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_knowledge_entry_content_write: [{ data: { applied: true } }],
+        consume_gate_slot_write: [{ data: { applied: true, result_id: 'slot-1' } }],
+      },
+    });
+    // The full stored payload, as it actually landed on disk: ac/checklist items the gate skill already
+    // filed in-session (simulated here simply by never wiring their RPCs — if applyAcceptanceEventPayload
+    // ever dispatched them, the mock queue would return the default `{ data: null, error: null }` and the
+    // assertion on `client.rpc` below would catch the unwanted call), plus the two genuinely-missing items.
+    const fullPayload = [
+      acItem('ac-1'), checklistItem('step-1'), knowledgeEntryItem('entry-1'), gateSlotItem('slot-1'),
+    ];
+    const restrictedItems = restrictPayloadToEntrySlotItems(fullPayload, [
+      { kind: 'knowledge_entry_content', ref: 'entry-1' },
+      { kind: 'gate_slot', ref: 'slot-1' },
+    ]);
+    const event = makeEvent(restrictedItems);
+
+    const result = await applyAcceptanceEventPayload(client, event);
+
+    expect(result.by_write_kind).toEqual({ knowledge_entry_content: 1, gate_slot: 1 });
+    expect(client.rpc).not.toHaveBeenCalledWith('consume_ac_add_write', expect.anything());
+    expect(client.rpc).not.toHaveBeenCalledWith('consume_checklist_item_write', expect.anything());
+    expect(client.rpcCalls.map((c: { name: string }) => c.name).sort()).toEqual([
+      'consume_gate_slot_write', 'consume_knowledge_entry_content_write',
+    ]);
+
+    // A second run over the SAME restricted payload is a no-op — nothing double-filed, and the
+    // acceptance_criterion/checklist_item RPCs are STILL never touched.
+    const client2 = makeClient({
+      rpcResponses: {
+        consume_knowledge_entry_content_write: [{ data: { applied: false } }],
+        consume_gate_slot_write: [{ data: { applied: false } }],
+      },
+    });
+    const secondResult = await applyAcceptanceEventPayload(client2, event);
+    expect(secondResult.applied).toBe(0);
+    expect(secondResult.skipped_already_done).toBe(2);
+    expect(secondResult.by_write_kind).toEqual({});
+    expect(client2.rpc).not.toHaveBeenCalledWith('consume_ac_add_write', expect.anything());
+    expect(client2.rpc).not.toHaveBeenCalledWith('consume_checklist_item_write', expect.anything());
   });
 });
 

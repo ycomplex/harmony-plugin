@@ -31,13 +31,17 @@
 //
 // USAGE — no build step is wired for this one-off maintenance script; bundle it ad hoc with esbuild
 // (already a devDependency) rather than adding a permanent dist target for a script meant to run once
-// per defect, not on every build:
+// per defect, not on every build. Use `--format=cjs`, NOT `--format=esm` — an ESM bundle of this script
+// crashes at startup with `Error: Dynamic require of "process" is not supported` (a CJS `require` pulled
+// in transitively via `src/config/project-manifest.ts`'s `yaml` dependency, inside an ESM bundle). The
+// `--format=cjs` bundle below has been verified to run correctly; expect one benign, EXPECTED warning
+// about `import.meta` being empty in `src/tools/environment.ts` on this path — that is not a failure:
 //
-//   npx esbuild scripts/repair-stubbed-accept-payloads.ts --bundle --platform=node --format=esm \
-//     --outfile=/tmp/repair-b1029.mjs
-//   node /tmp/repair-b1029.mjs                       # dry run — prints each candidate, writes nothing
-//   node /tmp/repair-b1029.mjs --apply                # re-applies the missing write(s) per candidate
-//   node /tmp/repair-b1029.mjs --apply --ids <event-uuid>[,<event-uuid>...]   # explicit event id list
+//   npx esbuild scripts/repair-stubbed-accept-payloads.ts --bundle --platform=node --format=cjs \
+//     --outfile=/tmp/repair-b1029.cjs
+//   node /tmp/repair-b1029.cjs                       # dry run — prints each candidate, writes nothing
+//   node /tmp/repair-b1029.cjs --apply                # re-applies the missing write(s) per candidate
+//   node /tmp/repair-b1029.cjs --apply --ids <event-uuid>[,<event-uuid>...]   # explicit event id list
 //
 // Requires HARMONY_API_TOKEN (and optionally HARMONY_SUPABASE_URL / HARMONY_SUPABASE_ANON_KEY) in the
 // environment — the SAME credentials the CLI/MCP server use. Every write goes through
@@ -48,6 +52,7 @@ import { HarmonyAuth } from '../src/auth.js';
 import { createAuthenticatedClient } from '../src/supabase.js';
 import {
   applyAcceptanceEventPayload,
+  restrictPayloadToEntrySlotItems,
   type AcceptanceEventPayloadItem,
   type PendingAcceptanceEvent,
 } from '../src/tools/acceptance-events.js';
@@ -153,8 +158,34 @@ async function resolveEntryId(
   return ref?.id ?? null;
 }
 
+const WRITE_KIND_ORDER: AcceptanceEventPayloadItem['write_kind'][] = [
+  'child_ticket', 'checklist_item', 'acceptance_criterion', 'ac_transfer', 'gate_slot', 'knowledge_entry_content', 'label_add',
+];
+
+/** Tally EVERY write_kind a row's stored payload carries, in the same order `applyAcceptanceEventPayload`
+ *  itself dispatches them — so the dry run's log shows an operator everything `--apply` will and will NOT
+ *  touch, not just the two kinds this script checks for missingness. B-1029 (production-defect fix):
+ *  `--apply` only ever re-issues the specific `knowledge_entry_content`/`gate_slot` writes THIS row's own
+ *  scan found missing (via `restrictPayloadToEntrySlotItems`, src/tools/acceptance-events.ts) — it never
+ *  replays `acceptance_criterion`/`child_ticket`/`checklist_item`/`ac_transfer`/`label_add` from a stored
+ *  payload, regardless of what this breakdown shows. This function is purely informational. */
+function writeKindBreakdown(items: AcceptanceEventPayloadItem[]): Array<{ kind: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const item of items) counts.set(item.write_kind, (counts.get(item.write_kind) ?? 0) + 1);
+  return WRITE_KIND_ORDER.filter((k) => counts.has(k)).map((k) => ({ kind: k, count: counts.get(k) as number }));
+}
+
 /** For each row, determine which `knowledge_entry_content` / `gate_slot` items this event's payload
- *  carries but never actually landed. Read-only — never writes. */
+ *  carries but never actually landed. Read-only — never writes.
+ *
+ *  NOTE on design-decision-draft rows never surfacing a `gate_slot` finding: this is EXPECTED, not a bug
+ *  to re-investigate. `src/tools/briefs.ts`'s `GATE_REASON_FLOW` map (~line 1830 onward) marks
+ *  `'design-decision-draft'` (and `'decomposition-proposal'`, `'plan-draft'`, `'stale-patch-review'`,
+ *  `'revise-scope-review'`) `writes_slot: false` — only `'clarification-draft'` (via its own accept
+ *  payload), `'release-decision-pending'`, and `'verification-ack-pending'` (via the `write_gate_slot` MCP
+ *  tool directly, never a payload item) ever write a `gate_slots` entry. So a design accept's payload
+ *  NEVER carries a `gate_slot` item in the first place; the gate_slot check below is already correct and
+ *  simply has nothing to find for a design-decision-draft row (confirmed live on B-934, 2026-09-15). */
 async function findMissingItems(client: SupabaseClient, projectId: string, row: EventRow): Promise<MissingItem[]> {
   const items = itemsOf(row.payload);
   const missing: MissingItem[] = [];
@@ -228,15 +259,27 @@ async function main() {
     }
     candidates++;
     console.log(`CANDIDATE  event=${row.id}  ticket=${row.task_id}  reason=${row.reason}`);
+    const breakdown = writeKindBreakdown(itemsOf(row.payload));
+    console.log(`  payload write_kinds: ${breakdown.length ? breakdown.map((b) => `${b.kind}=${b.count}`).join(', ') : '(none)'}`);
     for (const m of missing) console.log(`  missing ${m.kind} (ref=${m.ref}) — ${m.detail}`);
 
     if (apply) {
+      // B-1029 (production-defect fix) — pass ONLY the missing knowledge_entry_content/gate_slot items
+      // THIS row's own scan found, never the row's full stored payload: re-running
+      // applyAcceptanceEventPayload over the FULL payload also re-issued acceptance_criterion (and would
+      // have re-issued checklist_item/child_ticket/ac_transfer/label_add) writes that had already been
+      // filed in-session by the owning gate skill's own direct tool call — see
+      // restrictPayloadToEntrySlotItems's doc-comment (src/tools/acceptance-events.ts) for the full story.
+      const restrictedItems = restrictPayloadToEntrySlotItems(
+        itemsOf(row.payload),
+        missing.map((m) => ({ kind: m.kind, ref: m.ref })),
+      );
       const event: PendingAcceptanceEvent = {
         id: row.id,
         task_id: row.task_id,
         brief_id: row.brief_id,
         reason: row.reason,
-        payload: row.payload,
+        payload: { items: restrictedItems },
         pending_activity: row.pending_activity,
         status: row.status,
       };

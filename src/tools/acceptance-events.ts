@@ -256,6 +256,32 @@ function itemsOf(payload: PendingAcceptanceEvent['payload']): AcceptanceEventPay
   return rawItemsOf(payload) as AcceptanceEventPayloadItem[];
 }
 
+/** B-1029 (production-defect fix, 2026-09-15) — restrict a stored payload's items to ONLY the specific
+ *  `knowledge_entry_content` / `gate_slot` entries a caller's own dry-run scan (e.g.
+ *  `scripts/repair-stubbed-accept-payloads.ts`'s `findMissingItems`) actually found missing, discarding
+ *  every other item regardless of write_kind. This is the fix for the production defect where re-running
+ *  `applyAcceptanceEventPayload` over a row's FULL stored payload also re-issued `acceptance_criterion`
+ *  writes (and would have re-issued `checklist_item`/`child_ticket`/`ac_transfer`/`label_add` writes too)
+ *  that had ALREADY been filed in-session by the owning gate skill's own direct tool call — those rows
+ *  carry no `external_ref` in their own tables, so the per-write-kind ledger RPCs (keyed on
+ *  `(event_id, write_kind, external_ref)`) can't see them and insert unwanted duplicates. A targeted
+ *  repair of a stubbed `knowledge_entry_content`/`gate_slot` item must NEVER also replay any other
+ *  write_kind from the same stored payload.
+ *
+ *  Filtering on BOTH `write_kind` membership in the two allowed kinds AND presence in `keep` is deliberate
+ *  defense-in-depth: even if a caller's `keep` list were ever wrong (e.g. mistakenly including an
+ *  `acceptance_criterion` ref), this function can never let anything but `knowledge_entry_content`/
+ *  `gate_slot` items through. */
+export function restrictPayloadToEntrySlotItems(
+  items: AcceptanceEventPayloadItem[],
+  keep: { kind: 'knowledge_entry_content' | 'gate_slot'; ref: string }[],
+): AcceptanceEventPayloadItem[] {
+  const keepKeys = new Set(keep.map((k) => `${k.kind}:${k.ref}`));
+  return items.filter(
+    (i) => (i.write_kind === 'knowledge_entry_content' || i.write_kind === 'gate_slot') && keepKeys.has(`${i.write_kind}:${i.ref}`),
+  );
+}
+
 export type PayloadShape = 'empty' | 'structured' | 'unrecognized';
 
 /**
