@@ -810,6 +810,15 @@ never reaches this step, so it automatically gets no entry; that's not a special
 simply never firing. Reuse this run's changed paths from the B-516 risk signal above (`git diff
 --name-only origin/main...HEAD` over the PR / the B-722 `build_pr` record) — do not recompute them.
 
+**B-1021: this write is agent-executed on a human's already-made decision, not the agent's own — stamp
+`agent-on-behalf:<release_provenance>`, never a bare `human-in-*` value.** Capture `<release_provenance>`
+as the release accept's OWN recorded provenance: `"human-in-session"` when THIS run's own accept resolved
+it (the fresh path, O1 above), or the `metadata.provenance` value O1 step 3's positive-evidence check found
+on the `brief_resolved` entry when this run instead resumed on a prior accept (which may be
+`"human-in-browser"` from the web). Both writes below therefore stamp exactly one of
+`agent-on-behalf:human-in-session` or `agent-on-behalf:human-in-browser` — whichever the release accept
+actually recorded.
+
 1. **Qualifying-path filter.** A path qualifies if it touches `container/`, `scripts/`, `commands/`, or a
    config schema file. If NONE of the changed paths qualify, write NOTHING — no entry, no comment. This is
    a deliberate no-op, not a floor violation.
@@ -840,9 +849,9 @@ simply never firing. Reuse this run's changed paths from the B-516 risk signal a
      realization: "live",
      source_task_id: task_id,
      source_activity: "finish-work",
-     // B-1000: this release-gate write only ever runs downstream of the release/verify hard floor's
-     // always-human accept (contract 3 — never auto-advanced), so it names that accept's own provenance.
-     provenance: "human-in-session",
+     // B-1021: agent-on-behalf:<release_provenance> per the note above — the write is agent-executed,
+     // the release accept behind it was the human's.
+     provenance: "agent-on-behalf:<release_provenance>",   // agent-on-behalf:human-in-session or agent-on-behalf:human-in-browser
    })
    ```
    Pass `status: "Accepted"` explicitly — this is a system-authored record of what just shipped, not a
@@ -855,8 +864,8 @@ simply never firing. Reuse this run's changed paths from the B-516 risk signal a
      content: "<prepend a newest-first dated section — today's date, this ticket's id, and what changed —
        onto the EXISTING content; never replace or drop the entry's prior history>",
      realization: "live",
-     // B-1000: same reasoning as the fresh-entry write above — release/verify are the hard floor.
-     provenance: "human-in-session",
+     // B-1021: same reasoning as the fresh-entry write above.
+     provenance: "agent-on-behalf:<release_provenance>",   // agent-on-behalf:human-in-session or agent-on-behalf:human-in-browser
    })
    ```
    Never call `supersede_decision` here — an amend is always an in-place `update_knowledge_entry`,

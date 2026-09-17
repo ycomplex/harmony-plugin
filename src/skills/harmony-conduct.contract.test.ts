@@ -651,3 +651,28 @@ describe('harmony-conduct: the turn-end gate and its sanctioned alternatives (B-
     expect(body).toMatch(/B-762/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// B-1021 — §4c case 2's LIGHT-amendment update_knowledge_entry stamps agent-on-behalf:human-in-browser
+// ---------------------------------------------------------------------------
+
+describe('harmony-conduct §4c LIGHT-amendment provenance (B-1021)', () => {
+  const skill = readSkill('harmony-conduct');
+
+  it('the LIGHT-amendment update_knowledge_entry call stamps agent-on-behalf:human-in-browser', () => {
+    const body = skill.body;
+    const idx = body.indexOf('LIGHT amendment');
+    expect(idx).toBeGreaterThan(-1);
+    const segment = body.slice(idx, idx + 800);
+    expect(segment).toContain('mcp__harmony__update_knowledge_entry');
+    expect(segment).toContain('agent-on-behalf:human-in-browser');
+  });
+
+  it('explains WHY it is always human-in-browser here (this path only ever fires from a browser-submitted accept-with-remark)', () => {
+    const body = skill.body;
+    const idx = body.indexOf('LIGHT amendment');
+    const segment = body.slice(idx, idx + 800);
+    expect(segment.toLowerCase()).toMatch(/browser-submitted accept-with-remark/);
+    expect(segment.toLowerCase()).toMatch(/no other route/);
+  });
+});

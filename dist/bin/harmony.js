@@ -35689,6 +35689,30 @@ function normalizeHtmlEntities(text) {
   ).join("");
 }
 
+// src/tools/provenance.ts
+var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
+var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
+var PROVENANCE_WEB_ONLY = "human-in-browser";
+var PROVENANCE_AGENT_ON_BEHALF = "agent-on-behalf";
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_IN_SESSION}`;
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_WEB_ONLY}`;
+var AGENT_ON_BEHALF_CLOSED_SUFFIXES = [PROVENANCE_HUMAN_IN_SESSION, PROVENANCE_WEB_ONLY];
+function guardKnowledgeWriteProvenance(provenance) {
+  if (provenance === null || provenance === void 0) return;
+  if (provenance === PROVENANCE_WEB_ONLY) {
+    throw new Error(
+      `provenance '${PROVENANCE_WEB_ONLY}' is the web client's alone \u2014 the plugin is never the browser, and accepting it here would let an agent claim a human clicked. Use '${PROVENANCE_HUMAN_IN_SESSION}' when the human decided in this session, or '${PROVENANCE_AGENT_ON_BEHALF}:<human-provenance>' when an agent is writing on a human's already-made decision (accepted: '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}' or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}').`
+    );
+  }
+  if (provenance.startsWith(`${PROVENANCE_AGENT_ON_BEHALF}:`)) {
+    const suffix = provenance.slice(PROVENANCE_AGENT_ON_BEHALF.length + 1);
+    if (AGENT_ON_BEHALF_CLOSED_SUFFIXES.includes(suffix)) return;
+    throw new Error(
+      `invalid provenance '${provenance}' \u2014 '${PROVENANCE_AGENT_ON_BEHALF}:' accepts only '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}' or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', never any other suffix \u2014 an unrecognised suffix would render as an unattributed/unrecognised tag forever.`
+    );
+  }
+}
+
 // src/tools/knowledge.ts
 async function getWorkspaceId(client, projectId) {
   const { data, error } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
@@ -35856,6 +35880,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
   }
   const workspaceId = await getWorkspaceId(client, projectId);
   const newTitle = args.new_title !== void 0 ? normalizeHtmlEntities(args.new_title.trim()) : void 0;
+  guardKnowledgeWriteProvenance(args.provenance);
   const { data, error } = await client.rpc("knowledge_update_knowledge_entry", {
     p_project_id: projectId,
     p_entry_id: args.entry_id ?? null,
@@ -35895,6 +35920,7 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
     throw new Error("Either entry_id or title must be provided to identify the entry to supersede");
   }
   const workspaceId = await getWorkspaceId(client, projectId);
+  guardKnowledgeWriteProvenance(args.provenance);
   const { data, error } = await client.rpc("knowledge_supersede_knowledge_entry", {
     p_project_id: projectId,
     p_new_title: normalizeHtmlEntities(args.new_title),
@@ -37808,8 +37834,6 @@ async function listBriefs(client, projectId, args) {
     substrate: { revision_columns, revision_cause, lineage_view, exchanges: exchangesPresence }
   };
 }
-var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
-var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
 var ACCEPTED_PROVENANCE = `'${PROVENANCE_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_SYNTHESIZED}', or '${PROVENANCE_AGENT_SYNTHESIZED}:<mode>'`;
 
 // src/elicitation/engine.ts

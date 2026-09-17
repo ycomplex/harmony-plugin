@@ -3701,10 +3701,11 @@ export async function listBriefs(
 // would otherwise be stored verbatim, fall through harmony-web's exact-match attribution, and render
 // as unattributed forever: a typo that looks like a data problem. An error at the call site is
 // strictly better than a wrong value in an audit trail.
-export const PROVENANCE_HUMAN_IN_SESSION = 'human-in-session';
-export const PROVENANCE_AGENT_SYNTHESIZED = 'agent-synthesized';
-/** harmony-web's own value — the plugin must never send it. */
-export const PROVENANCE_WEB_ONLY = 'human-in-browser';
+// B-1021: the three constants below now live in provenance.ts (shared with knowledge.ts's own
+// provenance fence) — re-exported here unchanged so every existing import of these names from
+// briefs.ts keeps working. See provenance.ts's header for why the module lives separately.
+export { PROVENANCE_HUMAN_IN_SESSION, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY } from './provenance.js';
+import { PROVENANCE_HUMAN_IN_SESSION, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY } from './provenance.js';
 
 const ACCEPTED_PROVENANCE = `'${PROVENANCE_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_SYNTHESIZED}', or '${PROVENANCE_AGENT_SYNTHESIZED}:<mode>'`;
 
