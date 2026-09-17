@@ -13,6 +13,7 @@ import {
   type PendingAcceptanceEvent,
   type AcceptanceEventPayloadItem,
 } from './acceptance-events.js';
+import { manageAcceptanceCriteria } from './acceptance-criteria.js';
 
 // Pass-through, mirroring briefs.test.ts's convention.
 vi.mock('./resolve-task-id.js', () => ({
@@ -1407,5 +1408,267 @@ describe('rawItemsOf / classifyPayload — B-816 doc-nested snapshot (B-803 plan
     });
     expect(client.rpc).not.toHaveBeenCalledWith('consume_acceptance_event', expect.anything());
     expect(client.rpc).not.toHaveBeenCalled();
+  });
+});
+
+// B-1034 — the accept-time double-write regression. Before this fix, four gate skills paired a MANUAL
+// `manage_acceptance_criteria`/`manage_checklist_items`/`manage_subtasks` write with a same-session call
+// to `consume_pending_acceptance_event` that ALSO applies the identical payload item — two writers for
+// the same accept, landing two rows (the per-write-kind ledger's `ON CONFLICT (event_id, write_kind,
+// external_ref)` has no way to see a write it didn't make itself). The fix drops the manual write and
+// makes THIS call the sole writer. These tests prove the ledger side of that contract directly: ONE call
+// to `consumePendingAcceptanceEvent` files EXACTLY one row per payload item, covering the clarify
+// (acceptance_criterion) and decompose (child_ticket + ac_transfer) shapes named in the ticket.
+describe('B-1034 regression — consume_pending_acceptance_event alone files exactly one row per item', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('clarify-shaped: N acceptance_criterion items in ONE event are filed as exactly N rows, never 2N', async () => {
+    const items = [acItem('ac-1'), acItem('ac-2')];
+    const event: PendingAcceptanceEvent = {
+      id: 'event-1', task_id: 'task-1', brief_id: 'clar-brief-1', reason: 'clarification-draft',
+      payload: { items }, pending_activity: 'clarifying', status: 'pending',
+    };
+    const client = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+      },
+      rpcResponses: {
+        consume_ac_add_write: [
+          { data: { applied: true, result_id: 'row-1' } },
+          { data: { applied: true, result_id: 'row-2' } },
+        ],
+        consume_acceptance_event: [{ data: { event_id: 'event-1', task_id: 'task-1', status: 'consumed', workflow_state: 'Clarified', idempotent: false } }],
+      },
+    });
+
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
+
+    expect(result.status).toBe('consumed');
+    expect(result.applied).toBe(2);
+    // Exactly one consume_ac_add_write call per item — a double-write regression would show 4, not 2.
+    expect(client.rpc.mock.calls.filter((c: unknown[]) => c[0] === 'consume_ac_add_write')).toHaveLength(2);
+    expect(client.rpc).toHaveBeenCalledWith('consume_ac_add_write', { _event_id: 'event-1', _external_ref: 'ac-1', _content: 'AC ac-1' });
+    expect(client.rpc).toHaveBeenCalledWith('consume_ac_add_write', { _event_id: 'event-1', _external_ref: 'ac-2', _content: 'AC ac-2' });
+    expect(result.by_write_kind).toEqual({ acceptance_criterion: 2 });
+  });
+
+  it('decompose-shaped: N child_ticket items + an ac_transfer in ONE event are filed as exactly N+1 rows, never doubled (higher stakes: a doubled child_ticket row is a literal duplicate ticket)', async () => {
+    const items = [childItem('child-1'), childItem('child-2'), transferItem('xfer-1', 'child-1')];
+    const event: PendingAcceptanceEvent = {
+      id: 'event-1', task_id: 'task-1', brief_id: 'decompose-brief-1', reason: 'decomposition-proposal',
+      payload: { items }, pending_activity: 'decomposing', status: 'pending',
+    };
+    const client = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+      },
+      rpcResponses: {
+        consume_child_mint_write: [
+          { data: { applied: true, result_id: 'child-row-1' } },
+          { data: { applied: true, result_id: 'child-row-2' } },
+        ],
+        consume_ac_transfer_write: [{ data: { applied: true, result_id: 'xfer-row-1' } }],
+        consume_acceptance_event: [{ data: { event_id: 'event-1', task_id: 'task-1', status: 'consumed', workflow_state: 'Decomposed', idempotent: false } }],
+      },
+    });
+
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
+
+    expect(result.status).toBe('consumed');
+    expect(result.applied).toBe(3);
+    expect(client.rpc.mock.calls.filter((c: unknown[]) => c[0] === 'consume_child_mint_write')).toHaveLength(2);
+    expect(client.rpc.mock.calls.filter((c: unknown[]) => c[0] === 'consume_ac_transfer_write')).toHaveLength(1);
+    expect(result.by_write_kind).toEqual({ child_ticket: 2, ac_transfer: 1 });
+  });
+
+  it('start-work-shaped: N checklist_item items in ONE event are filed as exactly N rows, never 2N', async () => {
+    const items = [checklistItem('step-1'), checklistItem('step-2'), checklistItem('step-3')];
+    const event: PendingAcceptanceEvent = {
+      id: 'event-1', task_id: 'task-1', brief_id: 'plan-brief-1', reason: 'plan-draft',
+      payload: { items }, pending_activity: 'planning', status: 'pending',
+    };
+    const client = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+      },
+      rpcResponses: {
+        consume_checklist_item_write: [
+          { data: { applied: true, result_id: 'row-1' } },
+          { data: { applied: true, result_id: 'row-2' } },
+          { data: { applied: true, result_id: 'row-3' } },
+        ],
+        consume_acceptance_event: [{ data: { event_id: 'event-1', task_id: 'task-1', status: 'consumed', workflow_state: 'Planned', idempotent: false } }],
+      },
+    });
+
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
+
+    expect(result.applied).toBe(3);
+    expect(client.rpc.mock.calls.filter((c: unknown[]) => c[0] === 'consume_checklist_item_write')).toHaveLength(3);
+    expect(result.by_write_kind).toEqual({ checklist_item: 3 });
+  });
+});
+
+// B-1034 AC C — harmony-design-decide's product track: an ADD-only payload auto-applies through the
+// ledger (proven above via the generic acceptance_criterion case); a MIXED payload (an ADD alongside a
+// SHARPEN/update in the SAME round) must NOT auto-apply at all — `acceptance_criterion_update` is
+// deliberately outside KNOWN_WRITE_KINDS (B-810), so the whole payload classifies 'unrecognized' and the
+// ledger contributes ZERO rows. That is what makes the skill's own manual `manage_acceptance_criteria`
+// call (tested directly in acceptance-criteria.test.ts) the SOLE writer for a mixed round — never a
+// doubled ADD, because nothing else ever touches it.
+describe('B-1034 AC C — design-decide mixed ADD+SHARPEN payload never auto-applies (zero ledger rows)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('a payload carrying one ADD (acceptance_criterion) and one SHARPEN (acceptance_criterion_update) classifies "unrecognized" and the ledger applies NOTHING', async () => {
+    const mixedItems = [
+      acItem('ac-new-1'),
+      { write_kind: 'acceptance_criterion_update', ref: 'ac-sharpen-1', content: 'Sharpened AC text', from_ac_id: 'ac-existing-1' } as unknown as AcceptanceEventPayloadItem,
+    ];
+    expect(classifyPayload({ items: mixedItems })).toBe('unrecognized');
+
+    const event: PendingAcceptanceEvent = {
+      id: 'event-1', task_id: 'task-1', brief_id: 'design-brief-1', reason: 'design-decision-draft',
+      payload: { items: mixedItems }, pending_activity: 'designing', status: 'pending',
+    };
+    const client = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+      },
+    });
+
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
+
+    expect(result).toEqual({
+      status: 'payload-unrecognized', event_id: 'event-1', reason: 'design-decision-draft', items: mixedItems,
+    });
+    // The ledger never touches ANY item in a mixed round — not even the ADD, which on its own would
+    // otherwise be a recognized write_kind. Zero RPC calls at all: the manual write is the ONLY writer.
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('the SAME ADD item on its own (no SHARPEN in the round) classifies "structured" and the ledger IS the sole writer', async () => {
+    const addOnlyItems = [acItem('ac-new-1')];
+    expect(classifyPayload({ items: addOnlyItems })).toBe('structured');
+
+    const event: PendingAcceptanceEvent = {
+      id: 'event-1', task_id: 'task-1', brief_id: 'design-brief-1', reason: 'design-decision-draft',
+      payload: { items: addOnlyItems }, pending_activity: 'designing', status: 'pending',
+    };
+    const client = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+      },
+      rpcResponses: {
+        consume_ac_add_write: [{ data: { applied: true, result_id: 'row-1' } }],
+        consume_acceptance_event: [{ data: { event_id: 'event-1', task_id: 'task-1', status: 'consumed', workflow_state: 'Designed', idempotent: false } }],
+      },
+    });
+
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
+
+    expect(result.status).toBe('consumed');
+    expect(result.by_write_kind).toEqual({ acceptance_criterion: 1 });
+    expect(client.rpc.mock.calls.filter((c: unknown[]) => c[0] === 'consume_ac_add_write')).toHaveLength(1);
+  });
+});
+
+// B-1034 AC D — reproduce the duplicate BEFORE the fix, then show zero after, by exercising the exact
+// two writers harmony-clarify §5 branch A used to chain in the SAME turn (pre-B-1034):
+//   1. a manual `manage_acceptance_criteria({ add: [...] })` call — a bare INSERT with no `event_id`/
+//      `external_ref`, so the ledger's `(event_id, write_kind, external_ref)` ON CONFLICT key has no way
+//      to see it ever happened;
+//   2. the SAME turn's `consume_pending_acceptance_event({ task_id })` call, whose payload carries the
+//      identical criterion as an `acceptance_criterion` item.
+// Because step 1 is invisible to step 2's ledger, step 2 files it again unconditionally — two DB rows
+// for one logical criterion. The fix (this ticket) simply deletes step 1; step 2 alone then files
+// exactly one row, per the "AC B" tests above.
+//
+// A minimal insert-counting mock for the `acceptance_criteria` table — mirrors acceptance-criteria.test.ts's
+// own `makeClient`, kept local (rather than imported) so this file's `.rpc()`-based `makeClient` above is
+// never shadowed.
+function makeAcCriteriaClient(insertSpy: ReturnType<typeof vi.fn>) {
+  return {
+    from: vi.fn(() => {
+      const selectChain: any = { eq: () => selectChain, order: () => selectChain, limit: vi.fn().mockResolvedValue({ data: [], error: null }) };
+      return {
+        select: () => selectChain,
+        insert: (rows: any[]) => {
+          insertSpy(rows);
+          return { select: vi.fn().mockResolvedValue({ data: rows.map((r, i) => ({ ...r, id: `row-${i}` })), error: null }) };
+        },
+      };
+    }),
+  } as any;
+}
+
+describe('B-1034 AC D — before/after reproduction of the accept-time double-write', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const clarifyProposedAc = { content: 'Saving a filter persists it to the user\'s settings' };
+  const clarifyPayloadItem = acItem('happy-path-1', { content: clarifyProposedAc.content });
+
+  it('BEFORE THE FIX (pre-B-1034 branch A shape): a manual add() PLUS the ledgered consume for the SAME item files TWO rows for one logical criterion', async () => {
+    // Step 1 — the manual write branch A used to make, directly.
+    const insertSpy = vi.fn();
+    const manualClient = makeAcCriteriaClient(insertSpy);
+    await manageAcceptanceCriteria(manualClient, 'proj-1', 'user-1', {
+      task_id: 'B-1',
+      add: [clarifyProposedAc],
+    });
+    expect(insertSpy).toHaveBeenCalledTimes(1); // row #1
+
+    // Step 2 — the SAME turn's ledgered consume, whose payload carries the identical item. The ledger's
+    // own ON CONFLICT key never saw step 1 (a plain insert with no event_id/external_ref), so it files
+    // it again unconditionally, producing row #2 for what a human reading the ticket sees as ONE
+    // accepted criterion.
+    const event: PendingAcceptanceEvent = {
+      id: 'event-1', task_id: 'task-1', brief_id: 'clar-brief-1', reason: 'clarification-draft',
+      payload: { items: [clarifyPayloadItem] }, pending_activity: 'clarifying', status: 'pending',
+    };
+    const ledgerClient = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+      },
+      rpcResponses: {
+        consume_ac_add_write: [{ data: { applied: true, result_id: 'row-2' } }], // no ON CONFLICT skip — sees a fresh external_ref
+        consume_acceptance_event: [{ data: { event_id: 'event-1', task_id: 'task-1', status: 'consumed', workflow_state: 'Clarified', idempotent: false } }],
+      },
+    });
+    const result = await consumePendingAcceptanceEvent(ledgerClient, PROJECT_ID, 'task-1');
+    expect(result.applied).toBe(1); // row #2 — the ledger's own count, oblivious to row #1
+
+    // Total DB rows filed for ONE logical criterion this accept: 2. THIS is the bug (B-798-shaped: a
+    // clarify accept that filed 2 ACs manually, then the same-turn consume filed the same 2 again).
+    const totalRowsFiledForThisOneAc = insertSpy.mock.calls.length + result.applied!;
+    expect(totalRowsFiledForThisOneAc).toBe(2);
+  });
+
+  it('AFTER THE FIX (this ticket): dropping the manual write leaves the SAME ledgered consume as the sole writer — exactly ONE row for the same logical criterion', async () => {
+    // No manual manage_acceptance_criteria call at all — branch A no longer makes one (B-1034).
+    const event: PendingAcceptanceEvent = {
+      id: 'event-1', task_id: 'task-1', brief_id: 'clar-brief-1', reason: 'clarification-draft',
+      payload: { items: [clarifyPayloadItem] }, pending_activity: 'clarifying', status: 'pending',
+    };
+    const ledgerClient = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+      },
+      rpcResponses: {
+        consume_ac_add_write: [{ data: { applied: true, result_id: 'row-1' } }],
+        consume_acceptance_event: [{ data: { event_id: 'event-1', task_id: 'task-1', status: 'consumed', workflow_state: 'Clarified', idempotent: false } }],
+      },
+    });
+    const result = await consumePendingAcceptanceEvent(ledgerClient, PROJECT_ID, 'task-1');
+
+    expect(result.applied).toBe(1);
+    const totalRowsFiledForThisOneAc = result.applied!;
+    expect(totalRowsFiledForThisOneAc).toBe(1); // was 2 before the fix, above
   });
 });

@@ -37,12 +37,24 @@ OWNING GATE's materialization for a `payload-unrecognized` `decomposition-propos
 pre-filed to confirm — but the accepted brief's snapshot is NOT lost: `consume_pending_acceptance_event`
 echoed it verbatim on the result's `items` field. Render those `child_ticket` items (title/description
 per item) as a **confirm-then-create ask** — never an open "what were the children?" re-dictation
-question. On the human's confirm, mint them via the SAME §4 accept-step-1 `manage_subtasks add_new` +
-promote-to-Proposed sequence, then apply the deferred payload for real
-(`mcp__harmony__consume_pending_acceptance_event({ task_id })` — B-1029: swapped from the commit-only
-`consume_acceptance_event`, since the same accepted event's payload can also carry `gate_slot`/
-`knowledge_entry_content` items this manual self-heal never materializes on its own). Any `ac_transfer`
-items in the same `items` array apply per §4 step 3, unchanged.
+question. On the human's confirm, mint them directly here (this manual mint is NOT §4's normal accept path and
+is NOT the B-1034 double-write hazard — a `payload-unrecognized` result means the ledger's own
+`applyAcceptanceEventPayload` never runs for this event at all, so this manual write is the only one
+that will ever happen):
+```
+mcp__harmony__manage_subtasks({ task_id, add_new: [{ title: "...", description: "..." }, ...] })
+```
+then promote-to-Proposed exactly as §4 step 4's shape. Any `ac_transfer` items in the same `items`
+array move the AC the same manual add-then-delete way §4 used to before B-1034, for the identical
+reason (the ledger cannot apply an unrecognized-shape payload either):
+```
+mcp__harmony__manage_acceptance_criteria({ task_id: <child>, add: [{ content: "<AC content>" }] })
+mcp__harmony__manage_acceptance_criteria({ task_id, delete: ["<from_ac_id>"] })
+```
+Then apply the deferred payload for real (`mcp__harmony__consume_pending_acceptance_event({ task_id })`
+— B-1029: swapped from the commit-only `consume_acceptance_event`, since the same accepted event's
+payload can also carry `gate_slot`/`knowledge_entry_content` items this manual self-heal never
+materializes on its own).
 
 Query `engineering` (how this codebase structures multi-surface work) and `product` (feature
 boundaries). Apply the manageability rule: split until each child is a clean, independently-shippable
@@ -250,57 +262,63 @@ Show the rendered `content`. On the human's command:
 > accept carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
 > §Resolution provenance).
 
-- **accept** → first create the children, then move any proposed ACs, then advance:
-  1. For confirmed-EXISTING children, skip `manage_subtasks add_new` entirely — they are already the
-     hierarchy. Call `mcp__harmony__manage_subtasks({ task_id, add_new: [{ title: "...", description: "..." }, ...] })`
-     ONLY for genuinely net-new children. Never `add_new` a fresh set that duplicates existing
-     non-archived children (B-646).
-     **B-975 — a shipped-parent milestone refusal is NOT an ordinary tool failure.** Each new child
+- **accept** → resolve, then apply the payload (which mints any new children and moves any transferred
+  ACs), then promote every child to Proposed:
+  1. For confirmed-EXISTING children, there's nothing to do here — they are already the hierarchy.
+     **Genuinely net-new children, and any AC transfer onto a child (§3's `child_ticket` / `ac_transfer`
+     payload items, B-810), are NOT minted/moved here directly — do NOT call `manage_subtasks add_new`
+     or `manage_acceptance_criteria` for them.** Doing so would double-write against those SAME items'
+     own ledgered insert in step 3 below (B-1034 — this is HIGHER STAKES than an ordinary double-filed
+     row: a double-mint here creates a literal duplicate CHILD TICKET). The ledger's `ON CONFLICT` key on
+     `(event_id, write_kind, external_ref)` can't see a write it didn't make, so a manual write ahead of
+     the ledgered apply always double-files. `consume_child_mint_write` / `consume_ac_transfer_write`
+     (`src/tools/acceptance-events.ts`) have no title-dedupe of their own beyond that key — which is
+     exactly why the `list_subtasks`-based B-646 "does this child already exist" pre-check in §2 REMAINS
+     ESSENTIAL as the read-side guard deciding which children get authored as `child_ticket` items in §3
+     in the first place. Never `add_new` a fresh set that duplicates existing non-archived children.
+  2. `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })` →
+     records the decision. For a split, this is also where the `specification` entry recorded in §3
+     above is PROMOTED — its placeholder `content` replaced by `renderEntry(doc)`, the mechanical
+     projection of the ratified brief. (For "no decomposition needed", `decision_ref` is `null` there, so
+     nothing is promoted; any touch to the shared `decompose-no-split` convention entry was already
+     written directly, back in §3.)
+  3. **B-797 — finalize the deferred advance NOW, same session; this is also where the children actually
+     mint and the ACs actually transfer (B-1034).** The response carries `pending_acceptance_event_id`.
+     Call `mcp__harmony__consume_pending_acceptance_event({ task_id })` right away, in this same turn
+     (B-1029: swapped from the commit-only `consume_acceptance_event`). This is the SINGLE write for
+     every `child_ticket` and `ac_transfer` item §3's payload carries — applied in that order, children
+     before transfers, so a transfer's destination child already exists when it resolves
+     (`applyAcceptanceEventPayload`'s own ordering) — plus any `gate_slot`/`knowledge_entry_content`
+     items B-866/B-867 added.
+     **B-975 — a shipped-parent milestone refusal is NOT an ordinary tool failure, and now surfaces from
+     THIS call** (the mint moved here from the old direct `manage_subtasks add_new`). Each new child
      INHERITS the parent's `milestone_id` (an unmilestoned parent still yields an unmilestoned child —
-     no change there). If the parent's milestone has already **shipped**, this call throws a
-     `ShippedMilestoneGuardError` (surfaced from the b847 shipped-milestone guard trigger) instead of
-     creating anything — the insert is all-or-nothing, so on this error **no children exist yet** for
-     this call. Do not retry it, do not silently drop the milestone and re-attempt, and do not report it
-     as a generic build/tool error. Instead, **stop and file a `worker-question` round right here**
-     (per `skills/harmony-shared/elicitation-engine.md` §The worker-question trigger) with
-     `stakes: 'load-bearing'` / `kind: 'open'`, quoting the guard's own error message VERBATIM (it
-     already names the shipped milestone and when it shipped) and asking the human to decide: assign
-     the children to a different (open) milestone, leave them unmilestoned, or reassign the parent's
-     own milestone first. Only resume this step once that round concludes.
-  2. Then bring EVERY still-**Captured** child — existing and newly created alike — to **Proposed**
-     (state-machine §8.1). `manage_subtasks add_new` lands children at **Captured** (the
-     `tasks_default_workflow_state` insert trigger), and existing children pre-filed at triage
+     no change there). If the parent's milestone has already **shipped**, the underlying
+     `consume_child_mint_write` RPC throws a `ShippedMilestoneGuardError` for that item — no child is
+     created for it (every other item in the payload, applied earlier in the ordering, stays landed —
+     each write_kind's own ledger commits independently). Do not retry it, do not silently drop the
+     milestone and re-attempt, and do not report it as a generic build/tool error. Instead, **stop and
+     file a `worker-question` round right here** (per `skills/harmony-shared/elicitation-engine.md` §The
+     worker-question trigger) with `stakes: 'load-bearing'` / `kind: 'open'`, quoting the guard's own
+     error message VERBATIM (it already names the shipped milestone and when it shipped) and asking the
+     human to decide: assign the children to a different (open) milestone, leave them unmilestoned, or
+     reassign the parent's own milestone first. Only resume this step once that round concludes.
+  4. Then bring EVERY still-**Captured** child — existing and just-minted alike — to **Proposed**
+     (state-machine §8.1). Re-query `mcp__harmony__list_subtasks({ task_id })` now that step 3 has minted
+     any new children (the ledger's `consume_child_mint_write` RPC lands them at **Captured**, same target
+     state the old direct `manage_subtasks add_new` used to), and existing children pre-filed at triage
      typically sit at Captured too; promote each one Captured→Proposed in a single step — do **not**
      call `capturing` first (the child is already Captured, so `capturing` has no valid edge and the
      transition guard rejects it):
      `mcp__harmony__advance_workflow({ task_id: <child>, activity: "proposing" })`.
-  3. **AC transfer (B-810) — for each `ac_transfer` item the brief's `doc.payload` carries** (§3 §2),
-     move that AC onto its destination child: add the SAME content verbatim onto the child, then delete
-     it from the parent —
-     `mcp__harmony__manage_acceptance_criteria({ task_id: <child>, add: [{ content: "<AC content>" }] })`
-     then
-     `mcp__harmony__manage_acceptance_criteria({ task_id, delete: ["<from_ac_id>"] })`
-     — in that order (add before delete), so a crash between the two calls leaves the content on BOTH
-     tickets rather than losing it. Never reword the content in transit. Skip an item whose target
-     child already carries that exact content (idempotent re-run after a crash mid-accept).
-  4. `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })` →
-     records the decision. For a split, this is also where the `specification` entry recorded in §3
-     above is PROMOTED — its placeholder `content` replaced by `renderEntry(doc)`, the mechanical
-     projection of the ratified brief. (For "no decomposition needed", skip 1–3 and just accept —
-     `decision_ref` is `null` there, so nothing is promoted; any touch to the shared
-     `decompose-no-split` convention entry was already written directly, back in §3.)
-  5. **B-797 — finalize the deferred advance NOW, same session.** The response carries
-     `pending_acceptance_event_id`. You just minted/confirmed the children (and moved any ACs) yourself
-     above, but B-866/B-867 mean the same accepted event's payload can ALSO carry `gate_slot`/
-     `knowledge_entry_content` items this skill never materializes on its own — so this is NOT
-     commit-only. Call `mcp__harmony__consume_pending_acceptance_event({ task_id })` right away, in this
-     same turn (B-1029: swapped from the commit-only `consume_acceptance_event`), so those two write
-     kinds actually land — the children/ACs you already filed are idempotently skipped by their own
-     ledger, so this does not double-file anything.
 
-  The existing-children branch also makes accept idempotent for free: a re-run after a crash
-  mid-accept (children created, resolve not yet run) sees them as existing and confirms instead of
-  re-creating.
+  **Decompose has no existing marker mechanism analogous to clarify's `AC-FILING-PASS` to re-key onto this
+  ledgered call's counts — flagged as an open gap here, not invented (out of this ticket's scope).**
+
+  The existing-children branch also makes accept idempotent for free: a re-run after a crash mid-accept
+  (resolve already run, children minted) sees them as existing on the next `list_subtasks` and confirms
+  instead of re-creating — and the ledger's own `(event_id, write_kind, external_ref)` key makes a
+  repeated `consume_pending_acceptance_event` call a no-op for anything already applied.
 - **defer** → **deferral is knowledge** (knowledge-discipline.md §"Deferral is knowledge"). Author the
   deferral, then park:
   ```
