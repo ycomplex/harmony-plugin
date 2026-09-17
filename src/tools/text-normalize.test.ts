@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
-import { normalizeHtmlEntities } from './text-normalize.js';
+import { normalizeHtmlEntities, validateTitle } from './text-normalize.js';
 
 describe('normalizeHtmlEntities', () => {
   it('returns plain text with no entities unchanged', () => {
@@ -100,5 +100,58 @@ describe('idempotence', () => {
     const twice = normalizeHtmlEntities(once);
     expect(twice).toBe(once);
     expect(once).toBe('Save & Continue');
+  });
+});
+
+describe('validateTitle (B-1033)', () => {
+  describe('length', () => {
+    it('throws with the exact message for a 201-char title', () => {
+      const title = 'a'.repeat(201);
+      expect(() => validateTitle(title)).toThrow('Title exceeds 200 characters (received 201).');
+    });
+
+    it('does not throw for a title of exactly 200 chars', () => {
+      const title = 'a'.repeat(200);
+      expect(() => validateTitle(title)).not.toThrow();
+    });
+  });
+
+  // Real specimen shapes that corrupted B-1021, B-1030, and B-1032: a stray
+  // tool-call XML fragment (a closing </title>, a <parameter> tag) landed in
+  // the title field instead of the intended body. These fixtures are
+  // truncated/reconstructed plausibly -- the original ~4000-char bodies
+  // aren't preserved verbatim -- but the leading shape that triggered the bug
+  // is pinned here so a future reader knows why these are fixtures.
+  describe('markup', () => {
+    it('throws quoting the fragment for a stray leading </title> (B-1021 shape)', () => {
+      const title = '</title>\n<parameter name="description">Some body text here...';
+      expect(() => validateTitle(title)).toThrow('Title contains disallowed markup: `</title>`');
+    });
+
+    it('throws quoting the fragment for a mid-string <parameter> tag (B-1030 shape)', () => {
+      const title = 'Fix the login flow <parameter name="foo"> for real this time';
+      expect(() => validateTitle(title)).toThrow(
+        'Title contains disallowed markup: `<parameter name="foo">`',
+      );
+    });
+
+    it('throws quoting the fragment for a title that is just a tag pair (B-1032 shape)', () => {
+      const title = '<title>Something</title>';
+      expect(() => validateTitle(title)).toThrow('Title contains disallowed markup: `<title>`');
+    });
+  });
+
+  describe('line breaks', () => {
+    it('throws the exact message for a title containing \\n with no markup', () => {
+      expect(() => validateTitle('First line\nSecond line')).toThrow(
+        'Title cannot contain a line break.',
+      );
+    });
+  });
+
+  describe('positive control', () => {
+    it('does not throw for a normal one-sentence title with an em dash and an apostrophe', () => {
+      expect(() => validateTitle("Don't ship — it's not ready yet")).not.toThrow();
+    });
   });
 });

@@ -97,3 +97,42 @@ export function normalizeHtmlEntities(text: string): string {
     )
     .join('');
 }
+
+// ---------------------------------------------------------------------------
+// Helper: validateTitle (B-1033)
+// ---------------------------------------------------------------------------
+//
+// Guards task/bulk-task titles against two failure shapes seen in the wild
+// (B-1021, B-1030, B-1032): an oversized title, and a title that is actually a
+// stray fragment of tool-call XML/markup (e.g. `</title>` or
+// `<parameter name="description">`) that leaked into the title field instead
+// of the intended body. Both corrupt the board silently if left unguarded, so
+// this throws rather than truncating or stripping.
+//
+// Runs on the RAW title -- BEFORE normalizeHtmlEntities -- deliberately: an
+// HTML-escaped `&lt;parameter&gt;` typed in ordinary prose must not be
+// flagged, and validating pre-decode is what keeps that true for free, with
+// no special-casing required.
+const TAG_LIKE_PATTERN = /<\/?[a-zA-Z][\w-]*(?:\s[^<>]*)?>/;
+const LINE_BREAK_PATTERN = /[\n\r]/;
+
+/**
+ * Validate a task title. Throws a plain `Error` (never returns a value) if
+ * the RAW title is too long, contains tag-like markup, or contains a line
+ * break. Checks run in that order, so the first applicable violation is the
+ * one reported.
+ */
+export function validateTitle(title: string, cap = 200): void {
+  if (title.length > cap) {
+    throw new Error(`Title exceeds 200 characters (received ${title.length}).`);
+  }
+
+  const markupMatch = title.match(TAG_LIKE_PATTERN);
+  if (markupMatch) {
+    throw new Error(`Title contains disallowed markup: \`${markupMatch[0]}\``);
+  }
+
+  if (LINE_BREAK_PATTERN.test(title)) {
+    throw new Error('Title cannot contain a line break.');
+  }
+}

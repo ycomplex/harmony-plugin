@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId, resolveTaskIds } from './resolve-task-id.js';
-import { normalizeHtmlEntities } from './text-normalize.js';
+import { normalizeHtmlEntities, validateTitle } from './text-normalize.js';
 import { resolveAssignee } from './members.js';
 import { fetchPendingResolution, fetchPendingRemark } from './briefs.js';
 import { fetchActiveExchange } from './elicitation.js';
@@ -502,6 +502,7 @@ export async function createTask(
     .limit(1);
   const nextPosition = (existing?.[0]?.position ?? -1) + 1;
 
+  validateTitle(args.title);
   const { data, error } = await client
     .from('tasks')
     .insert({
@@ -598,6 +599,7 @@ export async function updateTask(
 
   // Normalize escaped newlines, then HTML entities, in title/description.
   if (typeof updates.title === 'string') {
+    validateTitle(updates.title);
     updates.title = normalizeHtmlEntities(updates.title);
   }
   if (typeof updates.description === 'string') {
@@ -767,7 +769,12 @@ export async function bulkCreateTasks(
     maxPositions[status] = existing?.[0]?.position ?? -1;
   }
 
-  const rows = args.tasks.map(task => {
+  const rows = args.tasks.map((task, i) => {
+    try {
+      validateTitle(task.title);
+    } catch (err) {
+      throw new Error(`Task ${i + 1}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    }
     const status = task.status ?? 'Backlog';
     const pos = (maxPositions[status] ?? -1) + 1;
     maxPositions[status] = pos;
