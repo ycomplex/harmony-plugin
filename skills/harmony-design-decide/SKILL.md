@@ -307,6 +307,26 @@ mcp__harmony__compose_brief({
 })
 ```
 
+**Also author `doc.payload` with an `entity_link` item, on EVERY sub-track — not just product (B-997).**
+Read `field_values.implements_entities` off `get_task` (it may already be in context from step 1) — the
+array of feature-entity name(s) clarify's own accept confirmed:
+- **Present with one or more names** → one `entity_link` item PER NAME, added to this SAME `doc.payload`
+  (alongside the product track's own AC edits below, when this is the product sub-track — the two
+  coexist in one array):
+  ```
+  { write_kind: "entity_link", ref: slugRef("entity", name), entity_name: name, decision_id: decision.id }
+  ```
+- **Absent entirely** (the PERMANENT state for every ticket already past clarify before B-977 shipped —
+  e.g. B-975, B-978, and every other open v1.5 ticket at Designed-or-later; not a transition window that
+  closes) or **present but an empty list** (`names: []` — a legitimate "no linkable feature" answer) →
+  author NO `entity_link` item at all. No throw, no warn, no empty-edge write.
+
+`consume_pending_acceptance_event` (step 5) resolves each name to an entity (create-if-absent, via the
+SAME path `record_decision`'s `affected_entity_names` uses) and lands BOTH edges —
+`ticket_implements_entity` and `decision_affects_entity` — the write the old inline `link_ticket_entities`
+call used to make at accept; it now lands whether the accept happens in this session or over the web with
+no session at all (B-997 — the inline call was measurably inert in the latter case).
+
 **On an iterate (round 2+), also author `doc.revision`** — `{ round, changes: [{ change, responds_to }] }`,
 one entry per change made this round, each bound to the feedback it answers. It renders under the
 **On accept:** line, never above the frame: the human approves the totality, never the diff.
@@ -398,15 +418,12 @@ Show the rendered `content`. On the human's command:
   writes you already made are idempotently skipped by their own ledger, so this does not double-file
   anything.
 
-  **Link the ticket + decision to their implemented entities (B-977) — three-state handling.** Read
-  `field_values.implements_entities` off `get_task` (it may already be in context from step 1):
-  - **Present with one or more names** → `mcp__harmony__link_ticket_entities({ task_id, decision_id:
-    decision.id, entity_names: field_values.implements_entities.names })`.
-  - **Absent entirely** (the PERMANENT state for every ticket already past clarify before B-977
-    shipped — e.g. B-975, B-978, and every other open v1.5 ticket at Designed-or-later; not a
-    transition window that closes) → skip cleanly and silently. No throw, no warn, no empty-edge write.
-  - **Present but an empty list** (`names: []`) → treat the same as absent — a legitimate "no linkable
-    feature" answer, not an error. Skip cleanly, no edges written.
+  **The ticket + decision's implemented-entity edges (B-977) already landed above (B-997).** Step 4's
+  `doc.payload` authored one `entity_link` item per confirmed name (three-state handling: present/
+  absent/empty — see step 4), and the SAME `consume_pending_acceptance_event` call just above lands them
+  — there is nothing further to do here. This replaces what used to be a separate inline
+  `link_ticket_entities` call here — that call only ever ran in a same-session accept, so the wiring was
+  measurably inert whenever the accept happened over the web with no session running.
 
   Then report whether the ticket is now Designed or still needs other sub-tracks.
   **Decision-only fast-forward (B-681):** if the ticket carries the `decision-only` label AND this was the

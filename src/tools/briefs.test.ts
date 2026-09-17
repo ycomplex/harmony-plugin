@@ -105,6 +105,25 @@ describe('renderBrief', () => {
     expect(md).not.toContain('Confidentiality rule is already fixed');
   });
 
+  // B-997 — the 'confirm-or-adjust' item kind (AC1): before this fix BriefItem's kind union had no such
+  // member, so renderBrief's itemLines loop silently dropped it (matched neither branch, fell through).
+  it('renders a confirm-or-adjust item as a still-open ask, showing the proposed default (B-997)', () => {
+    const md = renderBrief(baseDoc({
+      items: [{ kind: 'confirm-or-adjust', text: 'Feature(s) this ticket implements — confirm or adjust', proposed: { names: ['Saved Filters'] } }],
+    }));
+    expect(md).toContain('- [ ] Feature(s) this ticket implements — confirm or adjust');
+    expect(md).toContain('proposed: Saved Filters');
+    expect(md).toContain('confirm or adjust');
+  });
+
+  it('renders an EMPTY proposed names list on a confirm-or-adjust item — a meaningful "zero named entities" proposal, not omitted (B-997)', () => {
+    const md = renderBrief(baseDoc({
+      items: [{ kind: 'confirm-or-adjust', text: 'Feature(s) this ticket implements — confirm or adjust', proposed: { names: [] } }],
+    }));
+    expect(md).toContain('- [ ] Feature(s) this ticket implements — confirm or adjust');
+    expect(md).toContain('(none proposed)');
+  });
+
   it('appends the depth-pointer footer when a decision_ref is supplied (B-674)', () => {
     const md = renderBrief(baseDoc(), { type: 'specification', id: 'abc' });
     expect(md).toContain('fuller depth lives in the linked decision entry');
@@ -2182,6 +2201,31 @@ describe('fetchPendingRemark (B-503 — the accept-with-remark detector)', () =>
         entry_id: 'dec-7',
         warning: expect.stringContaining('no reconstruction is possible'),
       });
+    });
+
+    // B-997 — the remark-adjustment syntax contract: an accept-with-remark on a brief whose doc carries a
+    // 'confirm-or-adjust' item (e.g. clarify's B-977 feature-entity proposal) is captured through the
+    // EXISTING pending_remark.referent light-amendment path — no new payload verb, no special-cased
+    // reconstruction for this item kind. The reconstruction renders the item exactly like any other
+    // (decidedItems now has a branch for it — see derivation-contract.test.ts's B-997 case), so this is a
+    // NEGATIVE assertion: reconstructReferent needs no confirm-or-adjust-specific code at all.
+    it('reconstructs a brief whose doc carries a confirm-or-adjust item — the SAME referent mechanism, no new payload verb', async () => {
+      const client = makeClient([
+        { data: briefRow({
+          decision_ref: { type: 'specification', id: 'dec-7' },
+          doc: {
+            decide: 'Is this a saved filter?', recommend: { text: 'Yes.' },
+            items: [{ kind: 'confirm-or-adjust', text: 'Feature(s) this ticket implements — confirm or adjust', proposed: { names: ['Saved Filters'] } }],
+          },
+        }) },
+        { data: null, error: { message: 'relation "knowledge_decisions" does not exist' } },
+      ]);
+      const r = await fetchPendingRemark(client, 'task-1');
+      expect(r?.detail).toBe('tighten the scope sentence');
+      const referent = r!.referent;
+      expect(referent.status).toBe('reconstructed');
+      // The SAME projection renderEntry always produces — decided form, naming what was confirmed.
+      expect((referent as { content: string }).content).toContain('Feature(s) this ticket implements — confirm or adjust — Confirmed: Saved Filters');
     });
   });
 

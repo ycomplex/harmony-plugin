@@ -484,6 +484,21 @@ describe('B-902: ratified asks render in DECIDED form, and the entry drops the p
     expect(entry).toContain(`- [x] Deferred pending research ${NOT_RATIFIED_MARK}`);
   });
 
+  // B-997 — before this fix, `decidedItems` had no branch for 'confirm-or-adjust', so BOTH `itemLines`
+  // (the brief) and `decidedItems` (the entry) silently dropped it — the item never appeared anywhere.
+  it('a confirm-or-adjust item renders in DECIDED form on the entry, naming what was confirmed (B-997)', () => {
+    const doc = ratifiedDoc({
+      items: [{ kind: 'confirm-or-adjust', text: 'Feature(s) this ticket implements — confirm or adjust', proposed: { names: ['Saved Filters'] } }],
+    });
+    const brief = renderBrief(doc, null, { reason: 'design-decision-draft' });
+    const entry = renderEntry(doc, { reason: 'design-decision-draft' });
+    expect(brief).toContain('- [ ] Feature(s) this ticket implements — confirm or adjust');
+    expect(entry).toContain('- [x] Feature(s) this ticket implements — confirm or adjust — Confirmed: Saved Filters');
+    // Skip the provenance stamp line — its own boilerplate text mentions the NOT_RATIFIED_MARK generically.
+    const body = entry.split('\n').slice(1).join('\n');
+    expect(body).not.toContain(NOT_RATIFIED_MARK);
+  });
+
   it('the entry NEVER contains the promised-writes block — renderBrief still does', async () => {
     const stored = await composeAndCapture('design-decision-draft', ratifiedDoc({
       payload: [{ write_kind: 'label_add', ref: 'l1', label_name: 'decision-only' }],
