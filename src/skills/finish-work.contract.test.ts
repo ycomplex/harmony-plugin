@@ -46,6 +46,23 @@ describe('finish-work skill contract (evolved)', () => {
     expect(skill.frontmatter['disallowed-tools']).toMatch(/supersede_decision/);
   });
 
+  // B-1021: O2's convention-entry writer stamps agent-on-behalf:<release_provenance> — an agent-executed
+  // write on a human's already-made release-accept decision — never a bare human-in-* value.
+  it('B-1021: O2 convention-entry writer stamps agent-on-behalf:<release_provenance>, never a bare human-in-*', () => {
+    const body = skill.body;
+    const o2Idx = body.indexOf('### O2.');
+    expect(o2Idx).toBeGreaterThan(-1);
+    const o3Idx = body.indexOf('### O3.');
+    expect(o3Idx).toBeGreaterThan(o2Idx);
+    const o2 = body.slice(o2Idx, o3Idx);
+    expect(o2).toContain('agent-on-behalf:human-in-session');
+    expect(o2).toContain('agent-on-behalf:human-in-browser');
+    // both write sites (record_decision fresh-entry + update_knowledge_entry amend) use the template,
+    // never a hardcoded bare human-in-session/human-in-browser provenance value.
+    expect(o2).not.toMatch(/provenance: "human-in-session"/);
+    expect(o2).not.toMatch(/provenance: "human-in-browser"/);
+  });
+
   // B-471: the PR-less umbrella verify path (a decomposed parent whose work shipped in its children).
   it('documents the PR-less umbrella verify branch (skip merge; compose + resolve the verify brief)', () => {
     const body = skill.body;

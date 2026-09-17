@@ -1352,8 +1352,12 @@ handle BOTH, the B-611 swallow class). Handle it in two steps, strictly ordered:
 2. **Then interpret the remark** (`detail`), by weight:
    - **LIGHT amendment** — the promoted decision stays the same decision (a wording fix, a clarifying
      constraint, a small addendum): apply it to the promoted knowledge entry via
-     `mcp__harmony__update_knowledge_entry`. **Amend the REFERENT, never a re-authored copy of it
-     (B-866).** `pending_remark.referent` names what the accept actually promoted:
+     `mcp__harmony__update_knowledge_entry({ entry_id, content, provenance: "agent-on-behalf:human-in-browser" })`.
+     **Always `human-in-browser` here specifically (B-1021):** this light-amendment path only ever fires
+     in response to a browser-submitted accept-with-remark — there is no other route to it — so the human's
+     decision behind this agent-executed write is always the web's, never a session's. **Amend the
+     REFERENT, never a re-authored copy of it (B-866).** `pending_remark.referent` names what the accept
+     actually promoted:
      - `status: 'entry'` — `entry_id` + the entry's live `content`. Amend THAT entry, from THAT text.
      - `status: 'reconstructed'` — the entry could NOT be read; `content` is a LOCAL projection of the
        brief's doc and `warning` says why. **Re-read the entry (`get_knowledge_entry`) before amending**,
