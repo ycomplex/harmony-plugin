@@ -56,7 +56,6 @@ describe('harmony-revise-scope skill contract', () => {
 
   it('ACCEPT supersedes (not deletes) only the invalidated decisions and reverts via a revising-* back-edge', () => {
     const tools = referencedHarmonyTools(skill.body);
-    expect(tools).toContain('supersede_decision');
     expect(tools).toContain('advance_workflow');
     const body = skill.body.toLowerCase();
     // the back-edge activities (all three targets):
@@ -69,6 +68,33 @@ describe('harmony-revise-scope skill contract', () => {
     expect(body).toMatch(/auto-clear|auto-clos/);
     expect(body).toContain('b-482');
     expect(body).toMatch(/stale/);
+  });
+
+  // B-941 — the browser-accept gap this ticket closes: the retirement of each supersede-list decision
+  // must ride the SAME payload-driven B-797 mechanism as the state revert, so it lands whether the accept
+  // happens in this running session or (the bug) in the browser with no session at all. The manual
+  // per-entry `mcp__harmony__supersede_decision` loop + raw commit-only resolve are GONE from the accept
+  // path; `resolve_brief` + `consume_pending_acceptance_event` do this work now.
+  it('B-941: the accept path is payload-driven — resolve_brief + consume_pending_acceptance_event, not a manual supersede_decision loop', () => {
+    const tools = referencedHarmonyTools(skill.body);
+    expect(tools).toContain('resolve_brief');
+    expect(tools).toContain('consume_pending_acceptance_event');
+    // the direct per-entry tool call is gone from the accept path — the write_kind string is the only
+    // surviving reference (in doc.payload authoring and in prose explaining the old call is no longer made).
+    expect(skill.body).not.toMatch(/mcp__harmony__supersede_decision\(\{\s*old_decision_id/);
+  });
+
+  // B-941 — compose_brief authors one `supersede_decision` payload item per supersede-list entry, `ref`
+  // set to the superseded decision's own id (the companion RPC's external_ref convention).
+  it('B-941: compose_brief authors doc.payload with a supersede_decision item per supersede-list entry', () => {
+    const body = skill.body;
+    expect(body).toMatch(/write_kind:\s*"supersede_decision"/);
+    // authored at LEAST once per supersede-list entry in the worked example (two, matching its two-item
+    // supersede-list: the clarify spec + the decompose decision).
+    const matches = body.match(/write_kind:\s*"supersede_decision"/g) ?? [];
+    expect(matches.length).toBeGreaterThanOrEqual(2);
+    // ref carries the decision's own id, per the companion RPC's external_ref convention.
+    expect(body).toMatch(/decision_id/);
   });
 
   it('B-529: reverts to the gate INPUT for ALL THREE targets (clarify→Proposed, decompose→Clarified, design→Decomposed)', () => {
