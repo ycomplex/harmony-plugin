@@ -108,7 +108,7 @@ export async function queryTasks(
   // Lean rows omit description (the bulk of a broad result's weight); view:'full' restores it.
   // Trimmed at the SELECT, not fetch-then-strip: nothing here computes over the body.
   const baseCols =
-    'id, title, status, priority, task_number, assignee_id, epic_id, field_values, archived, due_date, created_at, updated_at, workflow_state, workflow_activity, awaiting_human_input, awaiting_human_reason, awaiting_human_ref, stale';
+    'id, title, status, priority, task_number, assignee_id, epic_id, field_values, archived, due_date, created_at, updated_at, workflow_state, workflow_activity, awaiting_human_input, awaiting_human_reason, awaiting_human_ref, stale, parent_task_id';
   const cols = args.view === 'full' ? `${baseCols}, description` : baseCols;
 
   let query = client

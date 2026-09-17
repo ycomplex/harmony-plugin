@@ -1275,6 +1275,21 @@ describe('listTasks (B-686)', () => {
     }
   });
 
+  // B-931: parent_task_id was omitted from list_tasks's row shape, forcing an N+1 get_task per
+  // ticket to reconstruct hierarchy. Purely additive to baseCols.
+  it('B-931: includes parent_task_id in the select (both lean and full)', async () => {
+    const { client, calls } = makeListClient();
+    await listTasks(client, 'proj-1', {});
+    expect(calls.select).toContain('parent_task_id');
+  });
+
+  it('B-931: returned rows carry parent_task_id', async () => {
+    const rows = [{ id: 't1', title: 'One', status: 'To Do', parent_task_id: 'parent-uuid', task_labels: [] }];
+    const { client } = makeListClient({ rows });
+    const result = await listTasks(client, 'proj-1', {});
+    expect(result[0].parent_task_id).toBe('parent-uuid');
+  });
+
   it("view:'full' restores description in the select (and keeps the new fields)", async () => {
     const { client, calls } = makeListClient();
     await listTasks(client, 'proj-1', { view: 'full' });

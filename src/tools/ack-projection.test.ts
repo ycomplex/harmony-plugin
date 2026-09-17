@@ -34,6 +34,8 @@ const READ_TOOLS = [
   'find_related_tickets',
   'list_comments',
   'list_activity',
+  // B-931 — the project-scoped workflow_state transition read; no record echo to strip.
+  'list_workflow_transitions',
   'list_members',
   'query_knowledge',
   'search_ticket_intents',
