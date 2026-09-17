@@ -290,6 +290,17 @@ mcp__harmony__compose_brief({
     ],
     items: [
       { kind: "decision", text: "Revert to Proposed and re-run clarify natively; supersede the clarify spec + decompose decision; keep the unaffected product-design sub-track", recommendation: "accept" }
+    ],
+    // B-941 — one `supersede_decision` payload item per SUPERSEDE-LIST entry (never the keep-list), so
+    // the accept's B-797 deferred-write mechanism actually retires them — this is what closes the browser
+    // gap where a backed-up ticket reverted state but its superseded decisions stayed Accepted on the
+    // Decision Trail. `ref` IS the decision's own id (the RPC's `external_ref` convention — stable and
+    // idempotent by construction, unlike an author-chosen slug); `decision_id` carries the same value for
+    // the RPC's own target argument; `title` is optional, purely for the promise line's display text.
+    payload: [
+      { write_kind: "supersede_decision", ref: "<clarify-spec-decision-id>", decision_id: "<clarify-spec-decision-id>", title: "<clarify spec decision title>" },
+      { write_kind: "supersede_decision", ref: "<decompose-decision-id>", decision_id: "<decompose-decision-id>", title: "<decompose decision title>" }
+      // ...one per entry in the supersede-list from step 3, omitting every keep-list entry
     ]
   }
 })
@@ -327,26 +338,39 @@ Show the rendered `content` verbatim. On the human's command:
      - **abort** (Tier-2 choice): abandon the whole back-up — do **NOT** supersede, do **NOT** revert; the run
        stays at the current gate (same as reject). This is NOT a child disposition — it leaves the child untouched.
      Record each disposition in the resolution detail (the Decision Trail) — supersede-never-delete consistent.
-  1. **Supersede the invalidated decisions:** `mcp__harmony__supersede_decision` **each** decision in the
-     supersede-list (the target gate's decision + the downstream decisions the scope change invalidates).
-     This preserves the Decision Trail; the keep-list is left untouched. There is NO successor to point at —
-     the revised decision is authored later, by the target gate's native re-run, not here. (This call never
-     mints a successor — superseding without an immediate successor is intentional. The rationale decision
-     for the back-up itself was already authored at DRAFT time, step 4, and is promoted mechanically by
-     `resolve_brief` via `decision_ref` when the human accepts below — nothing to author here, and
-     re-authoring it here would risk a double-record on an already-processed browser accept, B-763.) Call it
-     in **retire-mode (B-534): OMIT both `type` and `title`** — e.g.
-     `mcp__harmony__supersede_decision({ old_decision_id: <id>, reason: "<why>" })`. That marks the old
-     decision `Superseded` with `superseded_by=null` and creates NO successor decision (providing exactly one
-     of type/title is rejected; provide both only to supersede-with-successor, which this flow never does).
-  2. **Revert state to the gate's INPUT via the shared `reopenToGate` procedure**
+  1. **Supersede the invalidated decisions + revert state — PAYLOAD-DRIVEN (B-941).** This flow no longer
+     calls `mcp__harmony__supersede_decision` directly, and does not resolve via a raw commit-only call —
+     both the retirement of each supersede-list decision AND the state revert now ride the SAME B-797
+     deferred-acceptance-event mechanism step 4's `doc.payload` authored, so they land correctly whether the
+     accept happens in this running session or (the B-941 bug) in the browser with no session at all:
+     - `mcp__harmony__resolve_brief({ task_id, command: 'accept', provenance: ... })` — provenance per
+       `skills/harmony-shared/gate-routing.md` §Resolution provenance (`human-in-session` for the human's own
+       accept here; `agent-synthesized:<mode>` when a conductor delegation synthesized it). This snapshots
+       the brief's `doc.payload` (the `supersede_decision` items, step 4) and its `pending_activity` (the
+       `revising-*` back-edge) into a pending B-797 event — it does **NOT** yet execute either.
+     - `mcp__harmony__consume_pending_acceptance_event({ task_id })`, in this SAME turn — mirrors the exact
+       two-call sequence `skills/start-work/SKILL.md` O2 uses. This executes every `supersede_decision` item
+       (`consume_supersede_decision_write`, retire-mode: marks each decision `Superseded` with
+       `superseded_by=null` and mints NO successor — the same retire-mode semantics the old direct
+       `supersede_decision({ old_decision_id, reason })` call used) and **commits the deferred
+       `pending_activity` hop** (`revising-promoting`→`Proposed` for clarify, `revising-clarifying`→
+       `Clarified` for decompose, `revising-decomposing`→`Decomposed` for design). The keep-list is left
+       untouched — only supersede-list entries got a `supersede_decision` item at compose time. There is
+       still NO successor to point at — the revised decision is authored later, by the target gate's native
+       re-run, not here. (The rationale decision for the back-up itself was already authored at DRAFT time,
+       step 4, and is promoted mechanically by `resolve_brief` via `decision_ref` in the same call —
+       nothing to author here, and re-authoring it here would risk a double-record on an already-processed
+       browser accept, B-763.)
+  2. **Confirm/complete the revert via the shared `reopenToGate` procedure**
      (`skills/harmony-shared/gate-routing.md` §Reopen to a target gate): call `reopenToGate(task_id,
-     targetGate)`. For a **clarify**/**decompose**/**design** target this is unaffected — exactly one
-     `advance_workflow` call, same shape as before (`revising-promoting`→`Proposed` for clarify,
-     `revising-clarifying`→`Clarified` for decompose, `revising-decomposing`→`Decomposed` for design; the loop
-     exits after iteration 1). For a **build** target the loop may apply `revising-building` **twice**
-     (`Deployed`→`Built`→`Planned`) before arriving at `Planned` — this is exactly why `--to build` uses the
-     loop rather than a single raw `advance_workflow` call. Each hop's DB guard, in the same pass,
+     targetGate)`. For a **clarify**/**decompose**/**design** target, step 1's `consume_pending_acceptance_event`
+     already committed the ONE hop these targets need, so `reopenToGate`'s own step-1 read finds the ticket
+     already at `targetGate` and its step-3 "arrived?" check returns **`arrived`** immediately — this call is
+     now a CONFIRMATION, not the mover; it makes NO further `advance_workflow` call. For a **build** target
+     the revert needs the loop's full two hops (`Deployed`→`Built`→`Planned`) but step 1 committed only ONE
+     `pending_activity` (a brief carries exactly one) — so `reopenToGate` applies the REMAINING hop(s) itself,
+     exactly as it always has (this is unchanged: `--to build` still needs the loop, never a single raw
+     `advance_workflow` call). Each hop's DB guard, in the same pass,
      **auto-clears the orphaned active downstream brief** (the B-482 reconciliation guard — direction-agnostic,
      closes any active brief on a state change) **AND auto-clears the `stale` flag** that superseding this
      ticket's own gate decisions would otherwise self-set (the B-519 guard branch matches `revising-%`, so every
