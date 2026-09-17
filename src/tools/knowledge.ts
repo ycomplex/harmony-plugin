@@ -441,10 +441,23 @@ export async function queryKnowledge(
 // ---------------------------------------------------------------------------
 
 export interface TicketIntentMatch {
-  id: string;              // the knowledge_decisions intent-row id
   source_task_id: string;  // the originating TICKET (what the caller actually wants)
-  content: string;         // title + description (raw ticket intent)
+  content: string;         // title + description (raw ticket intent), capped at 400 chars (see truncateContent)
   score: number;           // RRF fusion score (higher = more relevant)
+}
+
+// B-837: search_ticket_intents at ordinary limits (20-25) blows the MCP tool-result payload
+// ceiling for large-corpus areas, spilling the response to a file instead of returning inline.
+// Fix is a TS-layer projection trim only (no RPC/schema change): drop the unused `id` field and
+// cap `content` to 400 chars with a visible truncation marker. Mirrors the B-776 convention of
+// capping INPUT at 400 chars, but there's no existing helper for the RETURNED content, hence this
+// small local one.
+const TICKET_INTENT_CONTENT_CAP = 400;
+
+function truncateContent(content: string): string {
+  return content.length > TICKET_INTENT_CONTENT_CAP
+    ? `${content.slice(0, TICKET_INTENT_CONTENT_CAP)} […truncated]`
+    : content;
 }
 
 export interface SearchTicketIntentsArgs {
@@ -485,9 +498,8 @@ export async function searchTicketIntents(
   });
   if (error) throw new Error(error.message);
   return ((data ?? []) as Array<Record<string, unknown>>).map((d) => ({
-    id: d.id,
     source_task_id: d.source_task_id,
-    content: d.content,
+    content: truncateContent(d.content as string),
     score: d.score,
   })) as unknown as TicketIntentMatch[];
 }
@@ -495,7 +507,7 @@ export async function searchTicketIntents(
 export const searchTicketIntentsTool = {
   name: 'search_ticket_intents',
   description:
-    'Find existing TICKETS whose raw intent (title + description) overlaps a query — the intent-only retrieval surface (hybrid semantic + trigram RRF, ranked by relevance). Use this to check whether a ticket already captures what someone is about to ask for (dedup / "is this already requested?"). This is SEPARATE from query_knowledge: it returns ONLY ticket-intent rows (status-agnostic) and never a design/spec/convention decision, so the two corpora never bleed. Returns each match as { source_task_id, content, score }; resolve source_task_id with get_task to inspect the ticket.',
+    'Find existing TICKETS whose raw intent (title + description) overlaps a query — the intent-only retrieval surface (hybrid semantic + trigram RRF, ranked by relevance). Use this to check whether a ticket already captures what someone is about to ask for (dedup / "is this already requested?"). This is SEPARATE from query_knowledge: it returns ONLY ticket-intent rows (status-agnostic) and never a design/spec/convention decision, so the two corpora never bleed. Returns each match as { source_task_id, content, score }; resolve source_task_id with get_task to inspect the ticket. `content` is capped at 400 chars with a visible truncation marker when the full ticket intent is longer.',
   inputSchema: {
     type: 'object' as const,
     properties: {

@@ -44135,6 +44135,10 @@ async function queryKnowledge(client, projectId, args) {
   if (error2) throw new Error(error2.message);
   return data ?? [];
 }
+var TICKET_INTENT_CONTENT_CAP = 400;
+function truncateContent(content) {
+  return content.length > TICKET_INTENT_CONTENT_CAP ? `${content.slice(0, TICKET_INTENT_CONTENT_CAP)} [\u2026truncated]` : content;
+}
 async function searchTicketIntents(client, projectId, args) {
   if (!args.query?.trim()) throw new Error("query is required");
   const workspaceId = await getWorkspaceId(client, projectId);
@@ -44148,15 +44152,14 @@ async function searchTicketIntents(client, projectId, args) {
   });
   if (error2) throw new Error(error2.message);
   return (data ?? []).map((d) => ({
-    id: d.id,
     source_task_id: d.source_task_id,
-    content: d.content,
+    content: truncateContent(d.content),
     score: d.score
   }));
 }
 var searchTicketIntentsTool = {
   name: "search_ticket_intents",
-  description: 'Find existing TICKETS whose raw intent (title + description) overlaps a query \u2014 the intent-only retrieval surface (hybrid semantic + trigram RRF, ranked by relevance). Use this to check whether a ticket already captures what someone is about to ask for (dedup / "is this already requested?"). This is SEPARATE from query_knowledge: it returns ONLY ticket-intent rows (status-agnostic) and never a design/spec/convention decision, so the two corpora never bleed. Returns each match as { source_task_id, content, score }; resolve source_task_id with get_task to inspect the ticket.',
+  description: 'Find existing TICKETS whose raw intent (title + description) overlaps a query \u2014 the intent-only retrieval surface (hybrid semantic + trigram RRF, ranked by relevance). Use this to check whether a ticket already captures what someone is about to ask for (dedup / "is this already requested?"). This is SEPARATE from query_knowledge: it returns ONLY ticket-intent rows (status-agnostic) and never a design/spec/convention decision, so the two corpora never bleed. Returns each match as { source_task_id, content, score }; resolve source_task_id with get_task to inspect the ticket. `content` is capped at 400 chars with a visible truncation marker when the full ticket intent is longer.',
   inputSchema: {
     type: "object",
     properties: {
