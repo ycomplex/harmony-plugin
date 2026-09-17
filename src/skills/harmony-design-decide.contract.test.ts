@@ -131,17 +131,22 @@ describe('harmony-design-decide skill contract', () => {
 // B-977: link_ticket_entities wiring at accept, with three-state field_values.implements_entities
 // handling (present/absent/empty) — never a throw, never a warn, never an empty-edge write on the
 // absent/empty paths (the permanent state for every pre-B-977 ticket).
-describe('harmony-design-decide: B-977 entity-linking wiring', () => {
+describe('harmony-design-decide: B-977/B-997 entity-linking wiring', () => {
   const skill = readSkill('harmony-design-decide');
 
-  it('calls link_ticket_entities (a real registered tool) at accept', () => {
-    expect(referencedHarmonyTools(skill.body)).toContain('link_ticket_entities');
+  // B-997: the inline link_ticket_entities call is GONE — the write rides an entity_link payload item
+  // through the SAME ledgered consume_pending_acceptance_event call as every other write_kind.
+  it('B-997: authors an entity_link payload item at compose, instead of an inline link_ticket_entities call', () => {
+    expect(skill.body).toMatch(/write_kind:\s*"entity_link"/);
+    expect(skill.body).not.toMatch(/mcp__harmony__link_ticket_entities\(/);
+    expect(referencedHarmonyTools(skill.body)).not.toContain('link_ticket_entities');
+    expect(referencedHarmonyTools(skill.body)).toContain('consume_pending_acceptance_event');
   });
 
   it('documents all three states of field_values.implements_entities', () => {
     expect(skill.body).toContain('implements_entities');
     expect(skill.body.toLowerCase()).toContain('absent entirely');
-    expect(skill.body).toMatch(/empty list.*no edges|no edges written/i);
+    expect(skill.body).toMatch(/empty list.*no edges|no edges written|no empty-edge/i);
     expect(skill.body.toLowerCase()).toMatch(/no throw,\s+no warn,\s+no\s+empty-edge write/);
   });
 });

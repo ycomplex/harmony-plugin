@@ -46463,6 +46463,10 @@ function itemLines(doc) {
     } else if (item.kind === "decision") {
       const rec = !item.deferred && item.recommendation ? ` \u2014 *recommend: ${item.recommendation}*` : "";
       out.push(`- [ ] ${item.text}${rec}`);
+    } else if (item.kind === "confirm-or-adjust") {
+      const names = item.proposed?.names ?? [];
+      const proposedText = names.length ? names.join(", ") : "(none proposed)";
+      out.push(`- [ ] ${item.text} \u2014 *proposed: ${proposedText} (confirm or adjust)*`);
     }
   }
   return out;
@@ -46498,6 +46502,14 @@ function promisedWriteLine(item) {
     case "supersede_decision": {
       const label = text(item.title);
       return `- supersede decision \u2014 ${label ? `"${label}"` : text(item.decision_id) ?? text(item.ref) ?? "(unnamed)"}, retired with no successor authored here`;
+    }
+    case "implements_entities": {
+      const names = Array.isArray(item.names) ? item.names : [];
+      return `- the confirmed feature-entity name(s) \u2014 ${names.length ? names.join(", ") : "(none)"} \u2014 landed on the ticket`;
+    }
+    case "entity_link": {
+      const name = text(item.entity_name);
+      return name ? `- links this ticket${item.decision_id ? " and this decision" : ""} to the entity "${name}"` : null;
     }
     default:
       return null;
@@ -46571,13 +46583,18 @@ function entryProvenanceStamp(ctx) {
   return `_${ENTRY_PROVENANCE_PREFIX}${gate}, ${when} \u2014 a mechanical projection of the brief the human approved, not separately authored prose. ${RATIFICATION_CONVENTION}_`;
 }
 function decidedItemLine(item) {
+  if (item.kind === "confirm-or-adjust") {
+    const names = item.proposed?.names ?? [];
+    const confirmedText = names.length ? names.join(", ") : "(none)";
+    return `- [x] ${item.text} \u2014 Confirmed: ${confirmedText}`;
+  }
   const decided = item.kind === "decision" && !item.deferred && item.recommendation ? ` \u2014 Decided: ${item.recommendation}` : "";
   return `- [x] ${item.text}${decided}`;
 }
 function decidedItems(doc) {
   const out = [];
   for (const item of doc.items ?? []) {
-    if (item.kind === "content-input" || item.kind === "decision") {
+    if (item.kind === "content-input" || item.kind === "decision" || item.kind === "confirm-or-adjust") {
       out.push({ item, line: decidedItemLine(item) });
     }
   }
@@ -47501,10 +47518,11 @@ var composeBriefTool = {
             items: {
               type: "object",
               properties: {
-                kind: { type: "string", description: "'decision' (always recommended) | 'content-input' (only the human can supply) | 'derived-constraint' (already fixed \u2014 belongs in Context, NOT an ask)" },
+                kind: { type: "string", description: "'decision' (always recommended) | 'content-input' (only the human can supply) | 'derived-constraint' (already fixed \u2014 belongs in Context, NOT an ask) | 'confirm-or-adjust' (B-997: a PROPOSED default the human confirms as-is or adjusts at accept \u2014 an adjustment rides the existing accept `remark`, never a new field)" },
                 text: { type: "string" },
                 recommendation: { type: "string", description: "Required for a decision unless deferred behind research" },
-                deferred: { type: "boolean", description: "true when the decision is deferred behind research" }
+                deferred: { type: "boolean", description: "true when the decision is deferred behind research" },
+                proposed: { type: "object", description: `'confirm-or-adjust' only \u2014 the proposed default, e.g. { names: ["Saved Filters"] }. An empty names array is a meaningful proposal, never omit it.` }
               },
               required: ["kind", "text"]
             }
@@ -50323,7 +50341,7 @@ async function getPendingAcceptanceEvent(client, projectId, taskId) {
   }
   return event ?? null;
 }
-var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add", "knowledge_entry_content", "gate_slot", "supersede_decision"]);
+var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add", "knowledge_entry_content", "gate_slot", "supersede_decision", "implements_entities", "entity_link"]);
 function rawItemsOf(payload) {
   const withNestedPayload = payload;
   if (Array.isArray(withNestedPayload?.payload)) return withNestedPayload.payload;
@@ -50363,12 +50381,25 @@ async function applyAcceptanceEventPayload(client, event) {
     // repaired by the next accept (latest-accepted-per-gate), whereas a wrongly-promoted entry has
     // already superseded a real one.
     "gate_slot",
+    // B-997 sits right after gate_slot, before knowledge_entry_content: it lands the human-confirmed
+    // feature-entity name(s) onto the ticket's field_values — a durable, displayed-adjacent record,
+    // same reasoning as gate_slot just above (materialize before the entry promotion / decision
+    // retirement below, which are the more consequential, harder-to-undo writes).
+    "implements_entities",
     // B-843 sits after gate_slot, before label_add: it promotes the gate's knowledge entry and supersedes
     // the previous round's. Running it after every AC/child/checklist write means a payload that fails
     // partway leaves the knowledge base untouched rather than promoting a decision whose materialization
     // never landed.
     "knowledge_entry_content",
-    // B-941 sits right after knowledge_entry_content, before label_add: it retires an UPSTREAM decision
+    // B-997 sits right after knowledge_entry_content, before supersede_decision: it lands the
+    // already-resolved entity edge(s) a design/visual-handoff accept confirmed. Entity-NAME resolution
+    // happens HERE, in this dispatch, via resolveOrCreateEntity — never in SQL — so it must run after
+    // the entry promotion above (the same 'materialize before touching the knowledge base's terminal
+    // state' reasoning) and before supersede_decision below (a wholly separate decision retirement
+    // that must never be blocked by this write, or vice versa).
+    "entity_link",
+    // B-941 sits right after entity_link (B-997 inserted between it and knowledge_entry_content),
+    // before label_add: it retires an UPSTREAM decision
     // (harmony-revise-scope's supersede-list) — a wholly different decision from the one
     // knowledge_entry_content above may have just promoted, but the same "materialize before touching the
     // knowledge base's terminal state" reasoning applies, and it has nothing to do with label_add's
@@ -50470,6 +50501,40 @@ async function applyAcceptanceEventPayload(client, event) {
         });
         if (slotResult.substrate_absent) throw new WriteKindSubstrateAbsentError("gate_slot");
         result = { applied: slotResult.applied };
+      } else if (item.write_kind === "implements_entities") {
+        if (!Array.isArray(item.names)) {
+          throw new Error(`implements_entities item '${item.ref}' carries no names array \u2014 an EMPTY array is valid (it means the ticket was confirmed to implement zero named entities), an absent/non-array one is not`);
+        }
+        const { data, error: error2 } = await client.rpc("consume_implements_entities_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _names: item.names
+        });
+        if (error2) {
+          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("implements_entities");
+          throw new Error(error2.message);
+        }
+        result = data;
+      } else if (item.write_kind === "entity_link") {
+        const name = item.entity_name?.trim();
+        if (!name) throw new Error(`entity_link item '${item.ref}' names no entity_name \u2014 the entity being linked must be identified`);
+        const { data: taskRow, error: taskErr } = await client.from("tasks").select("project_id").eq("id", event.task_id).maybeSingle();
+        if (taskErr) throw new Error(taskErr.message);
+        const projectId = taskRow?.project_id;
+        if (!projectId) throw new Error(`entity_link item '${item.ref}' \u2014 task ${event.task_id} has no project_id, cannot resolve the entity`);
+        const workspaceId = await getWorkspaceId(client, projectId);
+        const entityId = await resolveOrCreateEntity(client, workspaceId, projectId, name, item.entity_kind ?? "feature");
+        const { data, error: error2 } = await client.rpc("consume_entity_link_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _entity_id: entityId,
+          _decision_id: item.decision_id ?? null
+        });
+        if (error2) {
+          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("entity_link");
+          throw new Error(error2.message);
+        }
+        result = data;
       } else if (item.write_kind === "supersede_decision") {
         const decisionId = item.decision_id;
         if (!decisionId) throw new Error(`supersede_decision item '${item.ref}' names no decision_id`);
@@ -50572,7 +50637,7 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId) {
 }
 var consumePendingAcceptanceEventTool = {
   name: "consume_pending_acceptance_event",
-  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ticket section, B-941 supersede-decision retires) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). B-888: the consumed result ALSO carries `reason` and `brief_id`, surfaced directly from the pending event row (no second `list_activity` round-trip needed) \u2014 when `reason === "clarification-draft"` this consume IS the clarification\'s AC-filing pass, and the caller (harmony-conduct \xA71c) MUST write the `AC-FILING-PASS brief_id=<brief_id> filed=<by_write_kind.acceptance_criterion ?? 0>` marker right here \u2014 its absence is what let the design gate\'s \xA72b self-heal conclude filing never ran and re-file the same acceptance criteria a second time. { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
+  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ticket section, B-941 supersede-decision retires, B-997 confirmed feature-entity name(s) + entity edges) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). B-888: the consumed result ALSO carries `reason` and `brief_id`, surfaced directly from the pending event row (no second `list_activity` round-trip needed) \u2014 when `reason === "clarification-draft"` this consume IS the clarification\'s AC-filing pass, and the caller (harmony-conduct \xA71c) MUST write the `AC-FILING-PASS brief_id=<brief_id> filed=<by_write_kind.acceptance_criterion ?? 0>` marker right here \u2014 its absence is what let the design gate\'s \xA72b self-heal conclude filing never ran and re-file the same acceptance criteria a second time. { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
   inputSchema: {
     type: "object",
     properties: {

@@ -129,6 +129,17 @@ Accepted `*-design` types vs the required set); otherwise `null`.
 > sibling sub-track's brief is open; you would silently overwrite it. (Same constraint `harmony-design-decide`
 > spells out for the Product/Technical tracks — it holds across the delegated ux-ui track too.)
 
+**Also author `doc.payload` with an `entity_link` item (B-997).** Read `field_values.implements_entities`
+off `get_task` (it may already be in context from earlier steps) — the array of feature-entity name(s)
+clarify's own accept confirmed:
+- **Present with one or more names** → one `entity_link` item PER NAME:
+  ```
+  { write_kind: "entity_link", ref: slugRef("entity", name), entity_name: name, decision_id: decision.id }
+  ```
+- **Absent entirely** (the PERMANENT state for every ticket already past clarify before B-977 shipped —
+  not a transition window that closes) or **present but an empty list** (`names: []` — a legitimate
+  "no linkable feature" answer) → author NO `entity_link` item at all. No throw, no warn, no empty-edge write.
+
 ```
 mcp__harmony__compose_brief({
   task_id,
@@ -141,6 +152,10 @@ mcp__harmony__compose_brief({
     why: ["Cross-team comparability needs one shared measure", "Lower first-run friction than explicit steps"],
     alternatives: [{ option: "Smart defaults (editable anytime)", rejection: "Optimises easy change; breaks comparability" }],
     items: [{ kind: "decision", text: "Setup-depth = fixed/standard", recommendation: "fixed/standard" }],
+    // one entity_link item per confirmed feature-entity name (B-997, see above) — [] when absent/empty
+    payload: [
+      { write_kind: "entity_link", ref: "entity-team-barometer", entity_name: "Team Barometer", decision_id: decision.id }
+    ]
   }
 })
 ```
@@ -154,17 +169,19 @@ mcp__harmony__compose_brief({
 - **accept** → `mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })`
   → promotes the decision
   Asserted→Accepted; if it carried `pending_activity: "designing"`, advances Decomposed→Designed. `accept`
-  binds to the **framed decision**, not every datum the surface depicted.
+  binds to the **framed decision**, not every datum the surface depicted. The response carries
+  `pending_acceptance_event_id` — non-null (B-904 extended B-797 to every design sub-track, ux-ui
+  included). This is NOT commit-only: the SAME event's payload carries the derived `knowledge_entry_content`
+  item (B-866/B-867) plus any `entity_link` item step 5 authored (B-997), neither of which this skill
+  materializes on its own. Call `mcp__harmony__consume_pending_acceptance_event({ task_id })` right away,
+  in this same turn, so those write kinds actually land.
 
-  **Link the ticket + decision to their implemented entities (B-977) — three-state handling.** Read
-  `field_values.implements_entities` off `get_task` (it may already be in context from earlier steps):
-  - **Present with one or more names** → `mcp__harmony__link_ticket_entities({ task_id, decision_id:
-    decision.id, entity_names: field_values.implements_entities.names })`.
-  - **Absent entirely** (the PERMANENT state for every ticket already past clarify before B-977
-    shipped — not a transition window that closes) → skip cleanly and silently. No throw, no warn, no
-    empty-edge write.
-  - **Present but an empty list** (`names: []`) → treat the same as absent — a legitimate "no linkable
-    feature" answer, not an error. Skip cleanly, no edges written.
+  **The ticket + decision's implemented-entity edges (B-977) already landed above (B-997).** Step 5's
+  `doc.payload` authored one `entity_link` item per confirmed name (three-state handling: present/absent/
+  empty — see step 5), and the `consume_pending_acceptance_event` call just above lands them — there is
+  nothing further to do here. This replaces what used to be a separate inline `link_ticket_entities` call
+  here — that call only ever ran in a same-session accept, so the wiring was measurably inert whenever the
+  accept happened over the web with no session running.
 
   Report whether the ticket is now Designed or still needs other sub-tracks, then return to
   `harmony-design-decide`.

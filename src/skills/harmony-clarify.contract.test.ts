@@ -107,9 +107,15 @@ describe('harmony-clarify: B-977 confirm-or-adjust entity naming', () => {
     expect(skill.body).toContain('implements_entities');
   });
 
-  it('writes field_values.implements_entities via update_task on accept, mirroring build_pr\'s structured-field pattern', () => {
-    expect(referencedHarmonyTools(skill.body)).toContain('update_task');
-    expect(skill.body).toContain('field_values: { implements_entities:');
-    expect(skill.body.toLowerCase()).toContain('build_pr');
+  // B-997: the inline update_task write is GONE — the write rides the SAME ledgered payload
+  // (consume_pending_acceptance_event) as the ACs/label, so it lands regardless of accept route.
+  it('B-997: authors an implements_entities payload item at compose, instead of an inline update_task write', () => {
+    expect(skill.body).toMatch(/write_kind:\s*"implements_entities"/);
+    expect(skill.body).not.toMatch(/mcp__harmony__update_task\(\{\s*task_id,\s*field_values:\s*\{\s*implements_entities:/);
+  });
+
+  it('B-997: an accept-time adjustment rides the existing resolve_brief remark channel — no new payload verb', () => {
+    expect(skill.body.toLowerCase()).toContain('pending_remark');
+    expect(skill.body).toMatch(/never a new field or write path|no new payload verb/i);
   });
 });

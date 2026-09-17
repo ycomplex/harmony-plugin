@@ -29,12 +29,23 @@ import {
 
 export interface BriefItem {
   /** §3.2 sort: a decision (always recommended), a content-input (only the human can supply it),
-   *  or a derived-constraint (already fixed elsewhere — belongs in Context, never an ask). */
-  kind: 'decision' | 'content-input' | 'derived-constraint';
+   *  a derived-constraint (already fixed elsewhere — belongs in Context, never an ask), or (B-997)
+   *  a confirm-or-adjust — a PROPOSED default the human confirms as-is or adjusts at accept, never a
+   *  naked fork (there is always a proposed answer) and never a plain decision (accepting it is NOT a
+   *  choice among alternatives — it is ratifying, or lightly amending, the one proposed answer). An
+   *  adjustment stated at accept time rides the EXISTING B-503/B-866 accept-remark light-amendment
+   *  path (`pending_remark.referent`) — there is no separate adjustment payload verb. */
+  kind: 'decision' | 'content-input' | 'derived-constraint' | 'confirm-or-adjust';
   text: string;
   recommendation?: string;
   /** true when the decision is deferred behind research (the load-bearing-gap path). */
   deferred?: boolean;
+  /** `confirm-or-adjust` only (B-997) — the proposed default, e.g. `{ names: ["Saved Filters"] }` for
+   *  clarify's feature-entity proposal. An open, kind-specific shape (today only `names` exists) rather
+   *  than a single string, since a confirm-or-adjust ask can propose a STRUCTURED default, not just
+   *  prose. `names: []` is a legitimate, meaningful proposal ("this proposes zero named entities") —
+   *  never omit `proposed` merely because it proposes nothing. */
+  proposed?: { names?: string[] };
 }
 
 export interface BriefAlternative {
@@ -815,6 +826,12 @@ function itemLines(doc: BriefDoc): string[] {
     } else if (item.kind === 'decision') {
       const rec = !item.deferred && item.recommendation ? ` — *recommend: ${item.recommendation}*` : '';
       out.push(`- [ ] ${item.text}${rec}`);
+    } else if (item.kind === 'confirm-or-adjust') {
+      // B-997 — always shows the proposed default; "confirm or adjust" states the doctrine inline
+      // (proposed = confirmed unless the human states an adjustment at accept).
+      const names = item.proposed?.names ?? [];
+      const proposedText = names.length ? names.join(', ') : '(none proposed)';
+      out.push(`- [ ] ${item.text} — *proposed: ${proposedText} (confirm or adjust)*`);
     }
   }
   return out;
@@ -864,6 +881,16 @@ function promisedWriteLine(item: AcceptanceEventPayloadItem): string | null {
       // rendered — the retirement itself is the promise, matching label_add's shape above.
       const label = text(item.title);
       return `- supersede decision — ${label ? `"${label}"` : (text(item.decision_id) ?? text(item.ref) ?? '(unnamed)')}, retired with no successor authored here`;
+    }
+    case 'implements_entities': {
+      // B-997 — the raw names array IS the promise; an empty array is a meaningful ratified-empty
+      // answer (same doctrine as gate_slot above), so it renders too, never silently as "nothing".
+      const names = Array.isArray(item.names) ? item.names : [];
+      return `- the confirmed feature-entity name(s) — ${names.length ? names.join(', ') : '(none)'} — landed on the ticket`;
+    }
+    case 'entity_link': {
+      const name = text(item.entity_name);
+      return name ? `- links this ticket${item.decision_id ? ' and this decision' : ''} to the entity "${name}"` : null;
     }
     default:
       return null;
@@ -1045,6 +1072,15 @@ export function entryProvenanceStamp(ctx?: EntryRenderContext): string {
 // `- [x] <text> — Decided: <recommendation>` — so the record states what was actually decided, not just
 // that *something* was.
 function decidedItemLine(item: BriefItem): string {
+  if (item.kind === 'confirm-or-adjust') {
+    // B-997 — the entry states what was actually confirmed, mirroring a decided decision's "Decided:"
+    // suffix; an adjustment stated at accept time rides the accept-remark path (see BriefItem's own
+    // doc comment), so this line always shows the PROPOSED default — the write it describes lands
+    // whatever the human actually confirmed, verbatim, which is this same proposed value absent a remark.
+    const names = item.proposed?.names ?? [];
+    const confirmedText = names.length ? names.join(', ') : '(none)';
+    return `- [x] ${item.text} — Confirmed: ${confirmedText}`;
+  }
   const decided = item.kind === 'decision' && !item.deferred && item.recommendation
     ? ` — Decided: ${item.recommendation}`
     : '';
@@ -1058,7 +1094,7 @@ function decidedItemLine(item: BriefItem): string {
 function decidedItems(doc: BriefDoc): Array<{ item: BriefItem; line: string }> {
   const out: Array<{ item: BriefItem; line: string }> = [];
   for (const item of doc.items ?? []) {
-    if (item.kind === 'content-input' || item.kind === 'decision') {
+    if (item.kind === 'content-input' || item.kind === 'decision' || item.kind === 'confirm-or-adjust') {
       out.push({ item, line: decidedItemLine(item) });
     }
   }
@@ -3054,10 +3090,11 @@ export const composeBriefTool = {
             items: {
               type: 'object',
               properties: {
-                kind: { type: 'string', description: "'decision' (always recommended) | 'content-input' (only the human can supply) | 'derived-constraint' (already fixed — belongs in Context, NOT an ask)" },
+                kind: { type: 'string', description: "'decision' (always recommended) | 'content-input' (only the human can supply) | 'derived-constraint' (already fixed — belongs in Context, NOT an ask) | 'confirm-or-adjust' (B-997: a PROPOSED default the human confirms as-is or adjusts at accept — an adjustment rides the existing accept `remark`, never a new field)" },
                 text: { type: 'string' },
                 recommendation: { type: 'string', description: 'Required for a decision unless deferred behind research' },
                 deferred: { type: 'boolean', description: 'true when the decision is deferred behind research' },
+                proposed: { type: 'object', description: "'confirm-or-adjust' only — the proposed default, e.g. { names: [\"Saved Filters\"] }. An empty names array is a meaningful proposal, never omit it." },
               },
               required: ['kind', 'text'],
             },

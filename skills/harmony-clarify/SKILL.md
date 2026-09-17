@@ -462,9 +462,11 @@ mcp__harmony__compose_brief({
       { kind: "content-input", text: "Confirm whether sort/grouping is part of the saved state" }
     ],
     // one item per proposed happy-path AC (step 3's derived set) — dedupeRefs(acs.map(ac =>
-    // ({ write_kind: "acceptance_criterion", ref: slugRef("ac", ac), content: ac })))
+    // ({ write_kind: "acceptance_criterion", ref: slugRef("ac", ac), content: ac }))), plus the
+    // implements_entities write below (B-997) — always present, alongside the ACs.
     payload: [
-      { write_kind: "acceptance_criterion", ref: "ac-a-saved-filter-persists-per-user", content: "A saved filter persists per-user across sessions" }
+      { write_kind: "acceptance_criterion", ref: "ac-a-saved-filter-persists-per-user", content: "A saved filter persists per-user across sessions" },
+      { write_kind: "implements_entities", ref: "entities-implements-entities", names: ["Saved Filters"] }
     ]
   }
 })
@@ -473,21 +475,42 @@ mcp__harmony__compose_brief({
 **Also propose candidate feature-entity name(s) for confirm-or-adjust (B-977).** Every clarify brief
 adds ONE MORE `doc.items` entry — a `kind: "confirm-or-adjust"` item — naming the feature-entity
 name(s) this ticket implements, derived from its title/description (a best-effort read, not a research
-task). The human accepts the proposed name(s) as-is or tells you the adjusted list when they accept; step
-5 below writes whatever the human actually confirmed, not necessarily this draft. An empty list
-(`proposed: { names: [] }`) is a legitimate answer for a ticket that implements no linkable feature (e.g.
-a pure bugfix or infra change) — never omit the item merely because you propose zero names; omitting it
-entirely is reserved for the field staying absent altogether (see step 5's three-state handling).
+task). An empty list (`proposed: { names: [] }`) is a legitimate answer for a ticket that implements no
+linkable feature (e.g. a pure bugfix or infra change) — never omit the item merely because you propose
+zero names; omitting it entirely is reserved for the field staying absent altogether (see step 5's
+three-state handling).
 ```
 { kind: "confirm-or-adjust", text: "Feature(s) this ticket implements — confirm or adjust", proposed: { names: ["Saved Filters"] } }
 ```
 This rides in the SAME `items` array as the `decision`/`content-input` entries above.
 
+**B-997: the write itself rides the SAME `doc.payload` — an `implements_entities` item, in the SAME
+`dedupeRefs(...)` call as the ACs/label below.** "Proposed = confirmed unless the accept carries a
+remark" — author the write with the SAME names as the confirm-or-adjust item above (never a separate,
+independently-derived list):
+```
+{ write_kind: "implements_entities", ref: slugRef("entities", "implements-entities"), names: ["Saved Filters"] }
+```
+An empty `names: []` lands exactly like a non-empty one — the confirm-or-adjust doctrine's
+"ratified-empty is not never-ratified" carries through to the write. This is the write step 5 used to
+make with an inline `update_task` call; it now rides the SAME `consume_pending_acceptance_event` call
+step 5 already makes for the ACs/label, so it lands whether the accept happens in THIS session or over
+the web with no session at all (the B-997 fix — the old inline call was measurably inert in the latter
+case). **If you did NOT propose a `confirm-or-adjust` item above (never happens per this step's own
+instruction, but kept explicit for a resumed/older brief), author no `implements_entities` payload item
+either — never invent a proposal at accept time that wasn't on the brief the human reviewed.** An
+adjustment the human states AT ACCEPT TIME (e.g. "actually call it X, not Y") rides the EXISTING
+`resolve_brief` `remark` parameter (B-503) — never a new field or write path; it surfaces as
+`pending_remark.referent` for the next leg to apply as a light amendment, exactly like any other
+accept-with-remark.
+
 A **capture-only** ticket (step 3 derived zero happy-path ACs — e.g. "Decide the default export format")
-proposes `label_add` INSTEAD of any `acceptance_criterion` items, in the same `dedupeRefs(...)` call:
+proposes `label_add` INSTEAD of any `acceptance_criterion` items, in the same `dedupeRefs(...)` call —
+the `implements_entities` write (B-997) still rides alongside it, same as the ordinary case:
 ```
 payload: dedupeRefs([
-  { write_kind: "label_add", ref: slugRef("label", "decision-only"), label_name: "decision-only" }
+  { write_kind: "label_add", ref: slugRef("label", "decision-only"), label_name: "decision-only" },
+  { write_kind: "implements_entities", ref: slugRef("entities", "implements-entities"), names: ["Saved Filters"] }
 ])
 ```
 
@@ -574,22 +597,15 @@ Show the rendered `content` verbatim. On the human's command:
   would double-file the ACs (once directly, once via `consume_ac_add_write`'s own ledgered insert). Skip
   straight to `resolve_brief` below; the ledgered apply call that follows it files the ACs itself.
 
-  **Write the confirmed feature-entity name(s) (B-977) — before `resolve_brief`, both branches.** If
-  step 4 proposed a `confirm-or-adjust` item, write the human's confirmed list (the proposed names
-  as-is, or whatever adjustment the human stated when accepting) to the ticket's `field_values`,
-  mirroring `start-work/SKILL.md`'s `field_values.build_pr` / `field_values.work_branch` structured-
-  field pattern:
-  ```
-  mcp__harmony__update_task({ task_id, field_values: { implements_entities: {
-    names: ["Saved Filters"], confirmed_at: "<ISO timestamp>"
-  } } })
-  ```
-  An empty confirmed list (`names: []`) is written exactly like any other value — it is a real answer,
-  not an omission. `update_task` merges `field_values` — other keys are preserved. **If step 4 proposed
-  NO `confirm-or-adjust` item at all (a resumed/older brief predating B-977), skip this write entirely —
-  never invent a proposal at accept time that wasn't on the brief the human reviewed.** This write is
-  what `harmony-design-decide`/`harmony-visual-handoff`'s accept step reads back to call
-  `link_ticket_entities` (see those skills' step 5/6 — three-state handling: present/absent/empty).
+  **The confirmed feature-entity name(s) land via the ledger, not an inline write (B-997).** Step 4's
+  `doc.payload` already carries the `implements_entities` write (alongside the ACs/label) when it also
+  proposed a `confirm-or-adjust` item — there is nothing to do here: `consume_pending_acceptance_event`,
+  below (both branches), lands it the SAME turn it lands the ACs/label, via that item's own ledgered RPC.
+  This replaces what used to be a separate inline `update_task` call here — that call only ever ran in a
+  same-session accept, so the B-977 wiring was measurably inert whenever the accept happened over the web
+  with no session running (`resolve_brief`'s route). `field_values.implements_entities` is what
+  `harmony-design-decide`/`harmony-visual-handoff`'s accept step reads back to author an `entity_link`
+  payload item of their own (see those skills' step 4/5 — three-state handling: present/absent/empty).
 
   Then, if the brief carries a
   **"De-scope — re-ticketed on accept:"** block (branches A and B both reach this step), re-ticket each

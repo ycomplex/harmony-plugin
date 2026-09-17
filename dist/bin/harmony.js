@@ -37374,6 +37374,10 @@ function itemLines(doc) {
     } else if (item.kind === "decision") {
       const rec = !item.deferred && item.recommendation ? ` \u2014 *recommend: ${item.recommendation}*` : "";
       out.push(`- [ ] ${item.text}${rec}`);
+    } else if (item.kind === "confirm-or-adjust") {
+      const names = item.proposed?.names ?? [];
+      const proposedText = names.length ? names.join(", ") : "(none proposed)";
+      out.push(`- [ ] ${item.text} \u2014 *proposed: ${proposedText} (confirm or adjust)*`);
     }
   }
   return out;
@@ -37409,6 +37413,14 @@ function promisedWriteLine(item) {
     case "supersede_decision": {
       const label = text(item.title);
       return `- supersede decision \u2014 ${label ? `"${label}"` : text(item.decision_id) ?? text(item.ref) ?? "(unnamed)"}, retired with no successor authored here`;
+    }
+    case "implements_entities": {
+      const names = Array.isArray(item.names) ? item.names : [];
+      return `- the confirmed feature-entity name(s) \u2014 ${names.length ? names.join(", ") : "(none)"} \u2014 landed on the ticket`;
+    }
+    case "entity_link": {
+      const name = text(item.entity_name);
+      return name ? `- links this ticket${item.decision_id ? " and this decision" : ""} to the entity "${name}"` : null;
     }
     default:
       return null;
@@ -37482,13 +37494,18 @@ function entryProvenanceStamp(ctx) {
   return `_${ENTRY_PROVENANCE_PREFIX}${gate}, ${when} \u2014 a mechanical projection of the brief the human approved, not separately authored prose. ${RATIFICATION_CONVENTION}_`;
 }
 function decidedItemLine(item) {
+  if (item.kind === "confirm-or-adjust") {
+    const names = item.proposed?.names ?? [];
+    const confirmedText = names.length ? names.join(", ") : "(none)";
+    return `- [x] ${item.text} \u2014 Confirmed: ${confirmedText}`;
+  }
   const decided = item.kind === "decision" && !item.deferred && item.recommendation ? ` \u2014 Decided: ${item.recommendation}` : "";
   return `- [x] ${item.text}${decided}`;
 }
 function decidedItems(doc) {
   const out = [];
   for (const item of doc.items ?? []) {
-    if (item.kind === "content-input" || item.kind === "decision") {
+    if (item.kind === "content-input" || item.kind === "decision" || item.kind === "confirm-or-adjust") {
       out.push({ item, line: decidedItemLine(item) });
     }
   }
@@ -37557,10 +37574,11 @@ var composeBriefTool = {
             items: {
               type: "object",
               properties: {
-                kind: { type: "string", description: "'decision' (always recommended) | 'content-input' (only the human can supply) | 'derived-constraint' (already fixed \u2014 belongs in Context, NOT an ask)" },
+                kind: { type: "string", description: "'decision' (always recommended) | 'content-input' (only the human can supply) | 'derived-constraint' (already fixed \u2014 belongs in Context, NOT an ask) | 'confirm-or-adjust' (B-997: a PROPOSED default the human confirms as-is or adjusts at accept \u2014 an adjustment rides the existing accept `remark`, never a new field)" },
                 text: { type: "string" },
                 recommendation: { type: "string", description: "Required for a decision unless deferred behind research" },
-                deferred: { type: "boolean", description: "true when the decision is deferred behind research" }
+                deferred: { type: "boolean", description: "true when the decision is deferred behind research" },
+                proposed: { type: "object", description: `'confirm-or-adjust' only \u2014 the proposed default, e.g. { names: ["Saved Filters"] }. An empty names array is a meaningful proposal, never omit it.` }
               },
               required: ["kind", "text"]
             }

@@ -34,8 +34,11 @@ function makeClient(opts: {
   const from = vi.fn((table: string) => {
     const queue = fromQueues[table] ?? [];
     const chain: any = {};
-    for (const m of ['select', 'eq', 'limit']) chain[m] = vi.fn(() => chain);
+    // B-997: `.neq`/`.insert`/`.update`/`.single` added for the entity_link dispatch's resolveOrCreateEntity/
+    // getWorkspaceId calls (knowledge.ts) — unused (and therefore harmless) by every pre-existing test here.
+    for (const m of ['select', 'eq', 'neq', 'limit', 'insert', 'update']) chain[m] = vi.fn(() => chain);
     chain.maybeSingle = vi.fn(async () => queue.shift() ?? { data: null, error: null });
+    chain.single = vi.fn(async () => queue.shift() ?? { data: null, error: null });
     // `.select('id').limit(0)` (the substrate probe) resolves via the thenable itself, not maybeSingle.
     chain.then = (resolve: (v: unknown) => unknown) => resolve(queue.shift() ?? { data: null, error: null });
     return chain;
@@ -163,6 +166,12 @@ const gateSlotItem = (ref: string, over: Partial<AcceptanceEventPayloadItem> = {
 });
 const supersedeDecisionItem = (ref: string, over: Partial<AcceptanceEventPayloadItem> = {}): AcceptanceEventPayloadItem => ({
   write_kind: 'supersede_decision', ref, decision_id: ref, ...over,
+});
+const implementsEntitiesItem = (ref: string, names: string[] = [], over: Partial<AcceptanceEventPayloadItem> = {}): AcceptanceEventPayloadItem => ({
+  write_kind: 'implements_entities', ref, names, ...over,
+});
+const entityLinkItem = (ref: string, entityName: string, over: Partial<AcceptanceEventPayloadItem> = {}): AcceptanceEventPayloadItem => ({
+  write_kind: 'entity_link', ref, entity_name: entityName, ...over,
 });
 
 function makeEvent(items: AcceptanceEventPayloadItem[]): PendingAcceptanceEvent {
@@ -649,6 +658,207 @@ describe('applyAcceptanceEventPayload', () => {
       'consume_knowledge_entry_content_write',
       'consume_label_add_write',
     ]);
+  });
+
+  // ── B-997: implements_entities — the human-confirmed feature-entity name(s), landed verbatim ──────
+  it('dispatches an implements_entities item to consume_implements_entities_write with the right args', async () => {
+    const client = makeClient({
+      rpcResponses: { consume_implements_entities_write: [{ data: { applied: true, result_id: 'task-1' } }] },
+    });
+    const event = makeEvent([implementsEntitiesItem('entities-1', ['Saved Filters'])]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.applied).toBe(1);
+    expect(result.by_write_kind).toEqual({ implements_entities: 1 });
+    expect(client.rpc).toHaveBeenCalledWith('consume_implements_entities_write', {
+      _event_id: 'event-1', _external_ref: 'entities-1', _names: ['Saved Filters'],
+    });
+  });
+
+  it('an EMPTY names array is a valid, meaningful confirm — dispatched exactly like a non-empty one', async () => {
+    const client = makeClient({
+      rpcResponses: { consume_implements_entities_write: [{ data: { applied: true } }] },
+    });
+    const event = makeEvent([implementsEntitiesItem('entities-1', [])]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.applied).toBe(1);
+    expect(client.rpc).toHaveBeenCalledWith('consume_implements_entities_write', {
+      _event_id: 'event-1', _external_ref: 'entities-1', _names: [],
+    });
+  });
+
+  it('throws a clear error when an implements_entities item carries no names array (never a silent no-op)', async () => {
+    const client = makeClient();
+    const event = makeEvent([{ write_kind: 'implements_entities', ref: 'entities-1' } as AcceptanceEventPayloadItem]);
+    await expect(applyAcceptanceEventPayload(client, event)).rejects.toThrow(/carries no names array/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('a retry where the implements_entities write already landed reports applied:false — counted as skipped, not duplicated', async () => {
+    const client = makeClient({
+      rpcResponses: { consume_implements_entities_write: [{ data: { applied: false } }] },
+    });
+    const result = await applyAcceptanceEventPayload(client, makeEvent([implementsEntitiesItem('entities-1', ['Saved Filters'])]));
+    expect(result.applied).toBe(0);
+    expect(result.skipped_already_done).toBe(1);
+  });
+
+  it('B-383 — a missing consume_implements_entities_write RPC degrades to substrate_absent_for, never throws', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_implements_entities_write: [{ data: null, error: { code: '42883', message: 'function consume_implements_entities_write(uuid, text, jsonb) does not exist' } }],
+      },
+    });
+    const result = await applyAcceptanceEventPayload(client, makeEvent([implementsEntitiesItem('entities-1', ['Saved Filters'])]));
+    expect(result.substrate_absent_for).toBe('implements_entities');
+    expect(result.applied).toBe(0);
+  });
+
+  it('propagates a REAL error from the implements_entities write — never swallowed as substrate-absent', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_implements_entities_write: [{ data: null, error: { code: 'P0001', message: 'implements_entities write entities-1 targets task xyz which does not exist' } }],
+      },
+    });
+    await expect(applyAcceptanceEventPayload(client, makeEvent([implementsEntitiesItem('entities-1', ['Saved Filters'])])))
+      .rejects.toThrow(/does not exist/);
+  });
+
+  // ── B-997: entity_link — entity-NAME resolution stays in the plugin, one RPC call per resolved id ──
+  it('dispatches an entity_link item: resolves-or-creates the entity, then calls consume_entity_link_write with the resolved id', async () => {
+    const client = makeClient({
+      fromResponses: {
+        tasks: [{ data: { project_id: 'proj-1' } }],
+        projects: [{ data: { workspace_id: 'ws-1' } }],
+        // resolveOrCreateEntity: (1) lookup by normalized name -> not found, (2) cross-kind collision
+        // check -> none, (3) insert -> the new entity's id.
+        knowledge_entities: [
+          { data: null },
+          { data: null },
+          { data: { id: 'entity-abc' } },
+        ],
+      },
+      rpcResponses: {
+        consume_entity_link_write: [{ data: { applied: true, entity_id: 'entity-abc' } }],
+      },
+    });
+    const event = makeEvent([entityLinkItem('entity-saved-filters', 'Saved Filters', { decision_id: 'dec-1' })]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.applied).toBe(1);
+    expect(result.by_write_kind).toEqual({ entity_link: 1 });
+    expect(client.rpc).toHaveBeenCalledWith('consume_entity_link_write', {
+      _event_id: 'event-1', _external_ref: 'entity-saved-filters', _entity_id: 'entity-abc', _decision_id: 'dec-1',
+    });
+  });
+
+  it('an entity_link item with no decision_id passes _decision_id: null (a bare clarify accept links no decision)', async () => {
+    const client = makeClient({
+      fromResponses: {
+        tasks: [{ data: { project_id: 'proj-1' } }],
+        projects: [{ data: { workspace_id: 'ws-1' } }],
+        knowledge_entities: [{ data: { id: 'entity-existing' } }],
+      },
+      rpcResponses: { consume_entity_link_write: [{ data: { applied: true } }] },
+    });
+    const event = makeEvent([entityLinkItem('entity-saved-filters', 'Saved Filters')]);
+    await applyAcceptanceEventPayload(client, event);
+    expect(client.rpc).toHaveBeenCalledWith('consume_entity_link_write', {
+      _event_id: 'event-1', _external_ref: 'entity-saved-filters', _entity_id: 'entity-existing', _decision_id: null,
+    });
+  });
+
+  it('throws a clear error when an entity_link item names no entity_name', async () => {
+    const client = makeClient();
+    const event = makeEvent([{ write_kind: 'entity_link', ref: 'entity-1' } as AcceptanceEventPayloadItem]);
+    await expect(applyAcceptanceEventPayload(client, event)).rejects.toThrow(/names no entity_name/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('a retry where the entity_link write already landed (entity already resolved) reports applied:false — counted as skipped, not duplicated', async () => {
+    const client = makeClient({
+      fromResponses: {
+        tasks: [{ data: { project_id: 'proj-1' } }],
+        projects: [{ data: { workspace_id: 'ws-1' } }],
+        // The entity already exists (created on the first attempt) — the lookup finds it directly, no
+        // collision check, no insert.
+        knowledge_entities: [{ data: { id: 'entity-abc' } }],
+      },
+      rpcResponses: { consume_entity_link_write: [{ data: { applied: false } }] },
+    });
+    const result = await applyAcceptanceEventPayload(client, makeEvent([entityLinkItem('entity-saved-filters', 'Saved Filters')]));
+    expect(result.applied).toBe(0);
+    expect(result.skipped_already_done).toBe(1);
+  });
+
+  it('B-383 — a missing consume_entity_link_write RPC degrades to substrate_absent_for, never throws', async () => {
+    const client = makeClient({
+      fromResponses: {
+        tasks: [{ data: { project_id: 'proj-1' } }],
+        projects: [{ data: { workspace_id: 'ws-1' } }],
+        knowledge_entities: [{ data: null }, { data: null }, { data: { id: 'entity-abc' } }],
+      },
+      rpcResponses: {
+        consume_entity_link_write: [{ data: null, error: { code: 'PGRST202', message: 'Could not find the function public.consume_entity_link_write in the schema cache' } }],
+      },
+    });
+    const result = await applyAcceptanceEventPayload(client, makeEvent([entityLinkItem('entity-saved-filters', 'Saved Filters')]));
+    expect(result.substrate_absent_for).toBe('entity_link');
+    expect(result.applied).toBe(0);
+  });
+
+  // ORDER (B-997): implements_entities sits after gate_slot, before knowledge_entry_content; entity_link
+  // sits after knowledge_entry_content, before supersede_decision — whatever order the payload authored.
+  it('applies implements_entities after gate_slot/before knowledge_entry_content, and entity_link after knowledge_entry_content/before supersede_decision', async () => {
+    const client = makeClient({
+      fromResponses: {
+        tasks: [{ data: { project_id: 'proj-1' } }],
+        projects: [{ data: { workspace_id: 'ws-1' } }],
+        knowledge_entities: [{ data: { id: 'entity-abc' } }],
+      },
+      rpcResponses: {
+        consume_gate_slot_write: [{ data: { applied: true, result_id: 'slot-1' } }],
+        consume_implements_entities_write: [{ data: { applied: true } }],
+        consume_knowledge_entry_content_write: [{ data: { applied: true } }],
+        consume_entity_link_write: [{ data: { applied: true } }],
+        consume_supersede_decision_write: [{ data: { applied: true } }],
+      },
+    });
+    const event = makeEvent([
+      supersedeDecisionItem('decision-1'), entityLinkItem('entity-1', 'Saved Filters'),
+      knowledgeEntryItem('entry-1'), implementsEntitiesItem('entities-1', ['Saved Filters']), gateSlotItem('slot-1'),
+    ]);
+    await applyAcceptanceEventPayload(client, event);
+    expect(client.rpcCalls.map((c: { name: string }) => c.name)).toEqual([
+      'consume_gate_slot_write',
+      'consume_implements_entities_write',
+      'consume_knowledge_entry_content_write',
+      'consume_entity_link_write',
+      'consume_supersede_decision_write',
+    ]);
+  });
+
+  // B-997 replay proof — mirrors B-1029's "no double-file" test above, extended to cover both new
+  // write_kinds: re-running applyAcceptanceEventPayload on a fully-applied event changes nothing. The
+  // entity already exists (created on a prior attempt) so resolveOrCreateEntity resolves it via a plain
+  // lookup — no insert, no duplicate entity — and each RPC reports its own idempotent no-op.
+  it('B-997 — re-running applyAcceptanceEventPayload with implements_entities/entity_link already applied is a no-op (no duplicate edges, no duplicate implements_entities record)', async () => {
+    const client = makeClient({
+      fromResponses: {
+        tasks: [{ data: { project_id: 'proj-1' } }],
+        projects: [{ data: { workspace_id: 'ws-1' } }],
+        knowledge_entities: [{ data: { id: 'entity-abc' } }],
+      },
+      rpcResponses: {
+        consume_implements_entities_write: [{ data: { applied: false } }],
+        consume_entity_link_write: [{ data: { applied: false } }],
+      },
+    });
+    const event = makeEvent([implementsEntitiesItem('entities-1', ['Saved Filters']), entityLinkItem('entity-1', 'Saved Filters')]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.applied).toBe(0);
+    expect(result.skipped_already_done).toBe(2);
+    expect(result.by_write_kind).toEqual({});
+    // No insert into knowledge_entities happened — only the single lookup response was consumed.
+    expect(client.rpc).toHaveBeenCalledTimes(2);
   });
 
   // B-1029 regression (b) — the no-double-file proof: calling applyAcceptanceEventPayload a SECOND time
