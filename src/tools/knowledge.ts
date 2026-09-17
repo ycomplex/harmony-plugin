@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { normalizeHtmlEntities } from './text-normalize.js';
 import { getConductionId, getLeg } from '../config/run-config.js';
+import { guardKnowledgeWriteProvenance } from './provenance.js';
 
 // ---------------------------------------------------------------------------
 // Interfaces
@@ -209,7 +210,7 @@ export const updateKnowledgeEntryTool = {
         description: 'Implementation/realization state (orthogonal to status); NULL ≡ live; "agreed" = decided-not-yet-built',
       },
       review_by: { type: 'string', description: 'ISO timestamp; freshness/decay date (knowledge-model-v1 §3)' },
-      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human\'s already-made decision). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED — that value is the web client\'s alone, and "agent-on-behalf:" accepts only the two closed suffixes above.' },
     },
   },
 };
@@ -231,7 +232,7 @@ export const supersedeKnowledgeEntryTool = {
         items: { type: 'string' },
         description: 'Tags for the replacement (defaults to tags of superseded entry)',
       },
-      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human\'s already-made decision). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED — that value is the web client\'s alone, and "agent-on-behalf:" accepts only the two closed suffixes above.' },
     },
     required: ['new_title', 'new_content'],
   },
@@ -675,6 +676,8 @@ export async function updateKnowledgeEntry(
 
   const newTitle = args.new_title !== undefined ? normalizeHtmlEntities(args.new_title.trim()) : undefined;
 
+  // B-1021: fence out human-in-browser / validate agent-on-behalf:* before the write.
+  guardKnowledgeWriteProvenance(args.provenance);
   const { data, error } = await client.rpc('knowledge_update_knowledge_entry', {
     p_project_id: projectId,
     p_entry_id: args.entry_id ?? null,
@@ -915,6 +918,8 @@ export async function recordDecision(
     realization = 'agreed';
   }
 
+  // B-1021: fence out human-in-browser / validate agent-on-behalf:* before the write.
+  guardKnowledgeWriteProvenance(args.provenance);
   const { data, error } = await client.rpc('knowledge_record_decision', {
     p_project_id: projectId,
     p_title: normalizeHtmlEntities(args.title.trim()),
@@ -1008,6 +1013,8 @@ export async function supersedeDecision(
     affectedIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name));
   }
 
+  // B-1021: fence out human-in-browser / validate agent-on-behalf:* before the write.
+  guardKnowledgeWriteProvenance(args.provenance);
   const { data, error } = await client.rpc('knowledge_supersede_decision', {
     p_old_decision_id: args.old_decision_id,
     p_project_id: projectId,
@@ -1048,7 +1055,7 @@ export const supersedeDecisionTool = {
       domain: { type: 'array', items: { type: 'string' }, description: 'Domains for the replacement (successor-mode only)' },
       affected_entity_names: { type: 'array', items: { type: 'string' }, description: 'Entities the replacement touches (successor-mode only)' },
       reason: { type: 'string', description: 'Why the old decision is being superseded' },
-      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human\'s already-made decision). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED — that value is the web client\'s alone, and "agent-on-behalf:" accepts only the two closed suffixes above.' },
     },
     required: ['old_decision_id'],
   },
@@ -1077,7 +1084,7 @@ export const recordDecisionTool = {
       review_by: { type: 'string', description: 'ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires.' },
       claim_provenance: { type: 'string', enum: ['human-stated', 'agent-inferred-human-validated', 'force-quit'], description: "B-645: how an elicitation claim was grounded. 'force-quit' claims are quarantined — never promoted on their brief's accept, never grounds for inference until validated. Omit for a non-claim decision." },
       underwriting_brief_id: { type: 'string', description: 'B-645: the brief (UUID) this Asserted claim underwrites — resolve_brief disposes coupled claims on accept/defer; compose_brief prunes dropped claims on iterate. Omit for a non-claim decision.' },
-      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human\'s already-made decision). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED — that value is the web client\'s alone, and "agent-on-behalf:" accepts only the two closed suffixes above.' },
     },
     required: ['type', 'title'],
   },
@@ -1206,6 +1213,8 @@ export async function createEntity(
   // handling: the RPC's own `ON CONFLICT (workspace_id, kind, name) DO NOTHING` + re-select already
   // resolves a racing create atomically inside the one transaction, so there is nothing left for a
   // client-side retry to do.
+  // B-1021: fence out human-in-browser / validate agent-on-behalf:* before the write.
+  guardKnowledgeWriteProvenance(args.provenance);
   const { data, error } = await client.rpc('knowledge_create_entity', {
     p_project_id: projectId,
     p_kind: kind,
@@ -1241,7 +1250,7 @@ export const createEntityTool = {
       name: { type: 'string', description: 'Entity name (unique within the workspace per kind)' },
       description: { type: 'string', description: 'A THIN one-line canonical identifier — not a document; depth belongs in the claims about the entity' },
       metadata: { type: 'object', description: 'Optional structured metadata (JSON object)' },
-      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human\'s already-made decision). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED — that value is the web client\'s alone, and "agent-on-behalf:" accepts only the two closed suffixes above.' },
     },
     required: ['kind', 'name'],
   },
@@ -1277,6 +1286,8 @@ export async function updateEntity(
 
   const description = args.description !== undefined ? normalizeHtmlEntities(args.description) : undefined;
 
+  // B-1021: fence out human-in-browser / validate agent-on-behalf:* before the write.
+  guardKnowledgeWriteProvenance(args.provenance);
   const { data, error } = await client.rpc('knowledge_update_entity', {
     p_project_id: projectId,
     p_entity_id: args.entity_id ?? null,
@@ -1319,7 +1330,7 @@ export const updateEntityTool = {
       new_kind: { type: 'string', description: 'New kind. For a stub→typed promotion that may collide, prefer reconcile_entity.' },
       description: { type: 'string', description: 'New thin one-line canonical description' },
       metadata: { type: 'object', description: 'New structured metadata (full-object replace)' },
-      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human\'s already-made decision). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED — that value is the web client\'s alone, and "agent-on-behalf:" accepts only the two closed suffixes above.' },
     },
   },
 };
@@ -1372,6 +1383,8 @@ export async function reconcileEntity(
   const fromKind = (args.from_kind ?? 'concept').trim();
   if (fromKind === toKind) throw new Error('from_kind and to_kind must differ (nothing to reconcile)');
 
+  // B-1021: fence out human-in-browser / validate agent-on-behalf:* before the write.
+  guardKnowledgeWriteProvenance(args.provenance);
   const { data, error } = await client.rpc('knowledge_reconcile_entity', {
     p_project_id: projectId,
     p_name: name,
@@ -1409,7 +1422,7 @@ export const reconcileEntityTool = {
       to_kind: { type: 'string', description: 'The richer target kind (e.g. component, feature, persona)' },
       from_kind: { type: 'string', description: "The stub's kind. Default 'concept'." },
       description: { type: 'string', description: 'Optional refreshed one-line description (applied on upgrade-in-place)' },
-      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human\'s already-made decision). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED — that value is the web client\'s alone, and "agent-on-behalf:" accepts only the two closed suffixes above.' },
     },
     required: ['name', 'to_kind'],
   },
@@ -1456,6 +1469,8 @@ export async function assertFact(
 
   const embedding = await embedText(client, `${args.subject_entity} ${args.predicate} ${JSON.stringify(args.object)}`);
 
+  // B-1021: fence out human-in-browser / validate agent-on-behalf:* before the write.
+  guardKnowledgeWriteProvenance(args.provenance);
   const { data, error } = await client.rpc('knowledge_assert_fact', {
     p_project_id: projectId,
     p_subject_entity: subjectName,
@@ -1492,7 +1507,7 @@ export const assertFactTool = {
       confidence: { type: 'number', description: '0..1 (default 1.0)' },
       domain: { type: 'array', items: { type: 'string' }, description: 'Domains this fact belongs to' },
       review_by: { type: 'string', description: 'ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires.' },
-      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human\'s already-made decision). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED — that value is the web client\'s alone, and "agent-on-behalf:" accepts only the two closed suffixes above.' },
     },
     required: ['subject_entity', 'predicate', 'object', 'source_type'],
   },
@@ -1510,6 +1525,8 @@ export async function invalidateFact(
   args: InvalidateFactArgs,
 ): Promise<KnowledgeFactFull> {
   if (!args.fact_id) throw new Error('fact_id is required');
+  // B-1021: fence out human-in-browser / validate agent-on-behalf:* before the write.
+  guardKnowledgeWriteProvenance(args.provenance);
   const { data, error } = await client.rpc('knowledge_invalidate_fact', {
     p_fact_id: args.fact_id,
     p_project_id: projectId,
@@ -1529,7 +1546,7 @@ export const invalidateFactTool = {
     properties: {
       fact_id: { type: 'string', description: 'UUID of the fact to invalidate' },
       reason: { type: 'string', description: 'Why it is no longer valid' },
-      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>"). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification.' },
+      provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human\'s already-made decision). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED — that value is the web client\'s alone, and "agent-on-behalf:" accepts only the two closed suffixes above.' },
     },
     required: ['fact_id'],
   },
@@ -1631,6 +1648,8 @@ export async function supersedeKnowledgeEntry(
 
   const workspaceId = await getWorkspaceId(client, projectId);
 
+  // B-1021: fence out human-in-browser / validate agent-on-behalf:* before the write.
+  guardKnowledgeWriteProvenance(args.provenance);
   const { data, error } = await client.rpc('knowledge_supersede_knowledge_entry', {
     p_project_id: projectId,
     p_new_title: normalizeHtmlEntities(args.new_title),

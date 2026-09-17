@@ -1001,6 +1001,23 @@ describe('updateKnowledgeEntry', () => {
     await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', new_title: 'x' });
     expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({ p_provenance: null }));
   });
+
+  // B-1021: the knowledge-write provenance fence — human-in-browser is fenced out, agent-on-behalf:* is closed.
+  it('B-1021: rejects human-in-browser and never calls the RPC', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: updatedEntry });
+    await expect(
+      updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', new_title: 'x', provenance: 'human-in-browser' }),
+    ).rejects.toThrow(/human-in-browser/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('B-1021: accepts both closed agent-on-behalf values', async () => {
+    for (const provenance of ['agent-on-behalf:human-in-session', 'agent-on-behalf:human-in-browser']) {
+      const { client } = buildWorkspaceAndQueryClient({ data: updatedEntry });
+      await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', new_title: 'x', provenance });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({ p_provenance: provenance }));
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1116,6 +1133,27 @@ describe('supersedeKnowledgeEntry', () => {
       expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_knowledge_entry', expect.objectContaining({ p_leg: 4 }));
     } finally {
       delete process.env.HARMONY_LEG;
+    }
+  });
+
+  // B-1021: the knowledge-write provenance fence — human-in-browser is fenced out, agent-on-behalf:* is closed.
+  it('B-1021: rejects human-in-browser and never calls the RPC', async () => {
+    const { client } = buildSupersedeClient();
+    await expect(
+      supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+        entry_id: 'ke-1', new_title: 'v2', new_content: 'c', provenance: 'human-in-browser',
+      }),
+    ).rejects.toThrow(/human-in-browser/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('B-1021: accepts both closed agent-on-behalf values', async () => {
+    for (const provenance of ['agent-on-behalf:human-in-session', 'agent-on-behalf:human-in-browser']) {
+      const { client } = buildSupersedeClient();
+      await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+        entry_id: 'ke-1', new_title: 'v2', new_content: 'c', provenance,
+      });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_knowledge_entry', expect.objectContaining({ p_provenance: provenance }));
     }
   });
 });
@@ -1458,6 +1496,30 @@ describe('createEntity', () => {
       delete process.env.HARMONY_LEG;
     }
   });
+
+  // B-1021: the knowledge-write provenance fence — human-in-browser is fenced out, agent-on-behalf:* is closed.
+  it('B-1021: rejects human-in-browser and never calls the RPC', async () => {
+    const { client } = buildGraphClient(
+      { knowledge_entities: [{ data: null }, { data: null }] },
+      { knowledge_create_entity: { data: sampleEntity } },
+    );
+    await expect(
+      createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Busy PM', provenance: 'human-in-browser' }),
+    ).rejects.toThrow(/human-in-browser/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('B-1021: accepts both closed agent-on-behalf values', async () => {
+    for (const provenance of ['agent-on-behalf:human-in-session', 'agent-on-behalf:human-in-browser']) {
+      const created = { ...sampleEntity };
+      const { client } = buildGraphClient(
+        { knowledge_entities: [{ data: null }, { data: null }] },
+        { knowledge_create_entity: { data: created } },
+      );
+      await createEntity(client, PROJECT_ID, { kind: 'persona', name: 'Busy PM', provenance });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_create_entity', expect.objectContaining({ p_provenance: provenance }));
+    }
+  });
 });
 
 describe('updateEntity', () => {
@@ -1529,6 +1591,24 @@ describe('updateEntity', () => {
       expect(client.rpc).toHaveBeenCalledWith('knowledge_update_entity', expect.objectContaining({ p_leg: 4 }));
     } finally {
       delete process.env.HARMONY_LEG;
+    }
+  });
+
+  // B-1021: the knowledge-write provenance fence — human-in-browser is fenced out, agent-on-behalf:* is closed.
+  it('B-1021: rejects human-in-browser and never calls the RPC', async () => {
+    const { client } = buildGraphClient({}, { knowledge_update_entity: { data: sampleEntity } });
+    await expect(
+      updateEntity(client, PROJECT_ID, { entity_id: 'ent-1', description: 'x', provenance: 'human-in-browser' }),
+    ).rejects.toThrow(/human-in-browser/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('B-1021: accepts both closed agent-on-behalf values', async () => {
+    for (const provenance of ['agent-on-behalf:human-in-session', 'agent-on-behalf:human-in-browser']) {
+      const updated = { ...sampleEntity };
+      const { client } = buildGraphClient({}, { knowledge_update_entity: { data: updated } });
+      await updateEntity(client, PROJECT_ID, { entity_id: 'ent-1', description: 'x', provenance });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_update_entity', expect.objectContaining({ p_provenance: provenance }));
     }
   });
 });
@@ -1739,6 +1819,23 @@ describe('reconcileEntity', () => {
       delete process.env.HARMONY_LEG;
     }
   });
+
+  // B-1021: the knowledge-write provenance fence — human-in-browser is fenced out, agent-on-behalf:* is closed.
+  it('B-1021: rejects human-in-browser and never calls the RPC', async () => {
+    const client = rpcClient({ data: { mode: 'upgrade-in-place', entity: typed } });
+    await expect(
+      reconcileEntity(client, PROJECT_ID, { name: 'Checkout', to_kind: 'component', provenance: 'human-in-browser' }),
+    ).rejects.toThrow(/human-in-browser/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('B-1021: accepts both closed agent-on-behalf values', async () => {
+    for (const provenance of ['agent-on-behalf:human-in-session', 'agent-on-behalf:human-in-browser']) {
+      const client = rpcClient({ data: { mode: 'upgrade-in-place', entity: typed } });
+      await reconcileEntity(client, PROJECT_ID, { name: 'Checkout', to_kind: 'component', provenance });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_reconcile_entity', expect.objectContaining({ p_provenance: provenance }));
+    }
+  });
 });
 
 describe('entity-authoring tool schemas (B-397)', () => {
@@ -1947,6 +2044,23 @@ describe('recordDecision', () => {
       delete process.env.HARMONY_LEG;
     }
   });
+
+  // B-1021: the knowledge-write provenance fence — human-in-browser is fenced out, agent-on-behalf:* is closed.
+  it('B-1021: rejects human-in-browser and never calls the RPC', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    await expect(
+      recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'x', provenance: 'human-in-browser' }),
+    ).rejects.toThrow(/human-in-browser/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('B-1021: accepts both closed agent-on-behalf values', async () => {
+    for (const provenance of ['agent-on-behalf:human-in-session', 'agent-on-behalf:human-in-browser']) {
+      const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
+      await recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'x', provenance });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_provenance: provenance }));
+    }
+  });
 });
 
 describe('recordDecisionTool schema — B-645 claim params', () => {
@@ -2088,6 +2202,29 @@ describe('supersedeDecision', () => {
       delete process.env.HARMONY_LEG;
     }
   });
+
+  // B-1021: the knowledge-write provenance fence — human-in-browser is fenced out, agent-on-behalf:* is closed.
+  it('B-1021: rejects human-in-browser and never calls the RPC', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: null });
+    await expect(
+      supersedeDecision(client, PROJECT_ID, USER_ID, {
+        old_decision_id: 'dec-1', type: 'business', title: 'v2', provenance: 'human-in-browser',
+      }),
+    ).rejects.toThrow(/human-in-browser/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('B-1021: accepts both closed agent-on-behalf values', async () => {
+    for (const provenance of ['agent-on-behalf:human-in-session', 'agent-on-behalf:human-in-browser']) {
+      const replacement = { id: 'dec-2', title: 'v2', status: 'Accepted', type: 'business' };
+      const supersededOld = { id: 'dec-1', status: 'Superseded', superseded_by: 'dec-2' };
+      const { client } = buildWorkspaceAndQueryClient({ data: { superseded: supersededOld, replacement } });
+      await supersedeDecision(client, PROJECT_ID, USER_ID, {
+        old_decision_id: 'dec-1', type: 'business', title: 'v2', provenance,
+      });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_decision', expect.objectContaining({ p_provenance: provenance }));
+    }
+  });
 });
 
 describe('supersedeDecisionTool schema (B-534 retire-mode)', () => {
@@ -2201,6 +2338,27 @@ describe('assertFact', () => {
       delete process.env.HARMONY_LEG;
     }
   });
+
+  // B-1021: the knowledge-write provenance fence — human-in-browser is fenced out, agent-on-behalf:* is closed.
+  it('B-1021: rejects human-in-browser and never calls the RPC', async () => {
+    const client = buildAssertFactClient({ id: 'ent-1' }, { id: 'fact-4' });
+    await expect(
+      assertFact(client, PROJECT_ID, USER_ID, {
+        subject_entity: 'board', predicate: 'uses', object: 'x', source_type: 'manual', provenance: 'human-in-browser',
+      }),
+    ).rejects.toThrow(/human-in-browser/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('B-1021: accepts both closed agent-on-behalf values', async () => {
+    for (const provenance of ['agent-on-behalf:human-in-session', 'agent-on-behalf:human-in-browser']) {
+      const client = buildAssertFactClient({ id: 'ent-1' }, { id: 'fact-4' });
+      await assertFact(client, PROJECT_ID, USER_ID, {
+        subject_entity: 'board', predicate: 'uses', object: 'x', source_type: 'manual', provenance,
+      });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_assert_fact', expect.objectContaining({ p_provenance: provenance }));
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2245,6 +2403,33 @@ describe('invalidateFact', () => {
   it('surfaces the RPC error message', async () => {
     const client: any = { rpc: vi.fn().mockResolvedValue({ data: null, error: { message: 'knowledge_invalidate_fact: fact x not found in this project' } }) };
     await expect(invalidateFact(client, PROJECT_ID, { fact_id: 'x' })).rejects.toThrow('not found in this project');
+  });
+
+  // B-1021: the knowledge-write provenance fence — human-in-browser is fenced out, agent-on-behalf:* is closed.
+  it('B-1021: rejects human-in-browser and never calls the RPC', async () => {
+    const client: any = { rpc: vi.fn() };
+    await expect(
+      invalidateFact(client, PROJECT_ID, { fact_id: 'fact-1', provenance: 'human-in-browser' }),
+    ).rejects.toThrow(/human-in-browser/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('B-1021: accepts both closed agent-on-behalf values', async () => {
+    for (const provenance of ['agent-on-behalf:human-in-session', 'agent-on-behalf:human-in-browser']) {
+      const client: any = { rpc: vi.fn().mockResolvedValue({ data: { id: 'fact-1' }, error: null }) };
+      await invalidateFact(client, PROJECT_ID, { fact_id: 'fact-1', provenance });
+      expect(client.rpc).toHaveBeenCalledWith('knowledge_invalidate_fact', expect.objectContaining({ p_provenance: provenance }));
+    }
+  });
+
+  // Plan-gate remark: guardKnowledgeWriteProvenance must reject an agent-on-behalf: value with any
+  // suffix OUTSIDE the closed pair — pinned here at a real call site, not just the unit in provenance.test.ts.
+  it('B-1021: rejects an agent-on-behalf: value whose suffix is outside the closed pair', async () => {
+    const client: any = { rpc: vi.fn() };
+    await expect(
+      invalidateFact(client, PROJECT_ID, { fact_id: 'fact-1', provenance: 'agent-on-behalf:something-else' }),
+    ).rejects.toThrow(/invalid provenance/);
+    expect(client.rpc).not.toHaveBeenCalled();
   });
 });
 
