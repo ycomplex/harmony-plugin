@@ -411,9 +411,28 @@ describe('searchTicketIntents', () => {
       _match_limit: 50,
     }));
     expect(result).toEqual([
-      { id: 'kd-intent-1', source_task_id: 'task-aaa', content: 'Add dark mode toggle\n\nUsers want a dark theme', score: 0.0333 },
-      { id: 'kd-intent-2', source_task_id: 'task-bbb', content: 'Theme switcher in settings\n\nLight/dark', score: 0.0163 },
+      { source_task_id: 'task-aaa', content: 'Add dark mode toggle\n\nUsers want a dark theme', score: 0.0333 },
+      { source_task_id: 'task-bbb', content: 'Theme switcher in settings\n\nLight/dark', score: 0.0163 },
     ]);
+  });
+
+  it('caps content to 400 chars with a truncation marker when the full body is longer, and leaves short content unchanged', async () => {
+    const longContent = 'x'.repeat(450);
+    const shortContent = 'a short ticket intent body';
+    const { client } = buildIntentSearchClient({
+      rpcData: [
+        { id: 'kd-intent-3', source_task_id: 'task-long', content: longContent, score: 0.05 },
+        { id: 'kd-intent-4', source_task_id: 'task-short', content: shortContent, score: 0.02 },
+      ],
+    });
+    const result = await searchTicketIntents(client, PROJECT_ID, { query: 'anything' });
+
+    expect(result[0].content.startsWith('x'.repeat(400))).toBe(true);
+    expect(result[0].content.length).toBeGreaterThan(400);
+    expect(result[0].content).not.toContain('x'.repeat(450));
+    expect(result[0].content).toMatch(/truncated/);
+
+    expect(result[1].content).toBe(shortContent);
   });
 
   it('passes the caller limit through as _match_limit', async () => {
