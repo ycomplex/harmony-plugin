@@ -21,6 +21,40 @@ what you're deciding about:
 
 The six domains: `engineering`, `operations`, `data`, `product`, `customer`, `process`.
 
+## Retrieval practice — fetch full bodies, sweep before concluding absence (B-741)
+
+The 2026-07-22 KB evaluation's single highest-yield finding: the biggest gap between what the
+knowledge base *has* and what an agent *retrieves* was never missing content — it was retrieval
+practice. `query_knowledge`'s `search` path returns titles ranked by relevance; a title surfacing is
+not the same as its content grounding your answer. Two habits close most of that gap for zero content
+cost:
+
+1. **Fetch the full body of every top hit before synthesizing from it.** `query_knowledge` results are
+   summaries (title, type, status, tags) — never rely on a title alone to decide what an entry says or
+   whether it applies. Call `get_knowledge_entry` on each candidate you intend to cite or rule out. A
+   title that *sounds* relevant can turn out to be about something adjacent; a title that sounds
+   generic can carry the exact fact you need. This one habit converts several "partial" answers to
+   "correct" with zero new content — B-741's own re-baseline reproduced it directly: a search for
+   "brief contract" surfaced the B-660/B-865/B-874 family but never the term "B-876" or "frame", so the
+   entire `doc.frame` requirement (added to five skill files, never folded into the declared
+   single-source-of-truth doc) went uncited — not because it was absent, but because the search terms
+   used didn't happen to match it. **When a decision has evolved across multiple tickets, search using
+   the CONCEPT you need, not just the ticket/section name you already know** — and if your first
+   answer feels complete, try one more search using different vocabulary before concluding it is.
+
+2. **Sweep the structured path — `status: "Asserted"`, `include_superseded: true` — before concluding
+   a fact is absent from the KB.** `query_knowledge`'s default (`status: "Accepted"`, semantic search)
+   only ever shows what's been ratified and what the ranker judged relevant. A fact can be genuinely
+   present but Asserted-not-yet-Accepted, or superseded-with-context-you-need (the superseding entry
+   references the superseded one's content). Before declaring "content-absent," run the structured
+   path: `query_knowledge({ status: "Asserted" })` and `query_knowledge({ include_superseded: true })`,
+   scoped by `domain`/`type`/`tags` rather than `search`, and check `query_entities`/`query_facts` too
+   — a fact modeled as a typed fact rather than a decision entry won't surface from a decision-only
+   search. Absence is a claim about the WHOLE store, not just the top-ranked semantic hits.
+
+Both habits are cheap relative to a wrong or incomplete answer, and both are things a closed-book
+agent can always do — neither requires new content in the KB.
+
 ## Contradiction discipline — read the FLOOR set before compose (B-838)
 
 A decision the system has since moved away from can sit at `Accepted` indefinitely — nothing fires
