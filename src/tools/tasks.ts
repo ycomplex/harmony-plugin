@@ -144,7 +144,7 @@ export async function listTasks(
 
   // Lean rows omit description (the ~80% of a broad listing's weight); view:'full' restores it.
   const baseCols =
-    'id, title, status, priority, task_number, assignee_id, epic_id, field_values, archived, due_date, workflow_state, awaiting_human_input, awaiting_human_reason, stale, milestone_id, cycle_id';
+    'id, title, status, priority, task_number, assignee_id, epic_id, field_values, archived, due_date, workflow_state, awaiting_human_input, awaiting_human_reason, stale, milestone_id, cycle_id, parent_task_id';
   const cols = args.view === 'full' ? `${baseCols}, description` : baseCols;
 
   let query = client

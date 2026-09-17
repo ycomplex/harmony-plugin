@@ -303,6 +303,20 @@ describe('queryTasks lean projection (B-690)', () => {
     }
   });
 
+  // B-931: parent_task_id was omitted from query_tasks's row shape, forcing an N+1 get_task per
+  // ticket to reconstruct hierarchy. Purely additive to baseCols.
+  it('B-931: includes parent_task_id in the select', async () => {
+    const { client, calls } = recordingClient([]);
+    await queryTasks(client, 'proj', {});
+    expect(calls.select).toContain('parent_task_id');
+  });
+
+  it('B-931: returned rows carry parent_task_id', async () => {
+    const client = createMockClient([{ ...baseTasks[0], parent_task_id: 'parent-uuid', task_labels: [] }]);
+    const result = await queryTasks(client, PROJECT_ID, {});
+    expect(result[0].parent_task_id).toBe('parent-uuid');
+  });
+
   it("view:'full' restores description in the select (and keeps the new fields)", async () => {
     const { client, calls } = recordingClient([]);
     await queryTasks(client, 'proj', { view: 'full' });
