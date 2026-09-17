@@ -37968,7 +37968,7 @@ async function listTasks(client, projectId, args) {
       );
     }
   }
-  const baseCols = "id, title, status, priority, task_number, assignee_id, epic_id, field_values, archived, due_date, workflow_state, awaiting_human_input, awaiting_human_reason, stale, milestone_id, cycle_id";
+  const baseCols = "id, title, status, priority, task_number, assignee_id, epic_id, field_values, archived, due_date, workflow_state, awaiting_human_input, awaiting_human_reason, stale, milestone_id, cycle_id, parent_task_id";
   const cols = args.view === "full" ? `${baseCols}, description` : baseCols;
   let query = client.from("tasks").select(`${cols}, task_labels(labels(id, name, color))`).eq("project_id", projectId).eq("archived", args.archived ?? false).order("position").range(offset, offset + limit - 1);
   if (args.status) query = query.eq("status", args.status);
@@ -38582,7 +38582,7 @@ async function queryTasks(client, projectId, args) {
       );
     }
   }
-  const baseCols = "id, title, status, priority, task_number, assignee_id, epic_id, field_values, archived, due_date, created_at, updated_at, workflow_state, workflow_activity, awaiting_human_input, awaiting_human_reason, awaiting_human_ref, stale";
+  const baseCols = "id, title, status, priority, task_number, assignee_id, epic_id, field_values, archived, due_date, created_at, updated_at, workflow_state, workflow_activity, awaiting_human_input, awaiting_human_reason, awaiting_human_ref, stale, parent_task_id";
   const cols = args.view === "full" ? `${baseCols}, description` : baseCols;
   let query = client.from("tasks").select(`${cols}, task_labels(labels(id, name, color))`).eq("project_id", projectId).eq("archived", args.archived ?? false);
   if (args.status) query = query.eq("status", args.status);
@@ -38788,6 +38788,125 @@ function registerActivityCommand(program3) {
         { key: "user_name", header: "User", transform: (v) => v ?? "" },
         { key: "event_type", header: "Type", transform: (_v, row) => row.type === "comment" ? "comment" : row.event_type ?? "" },
         { key: "timestamp", header: "Summary", transform: (_v, row) => buildActivitySummary(row) }
+      ])
+    );
+  });
+}
+
+// src/tools/workflow-transitions.ts
+var DEFAULT_FIELD_NAME = "workflow_state";
+var DEFAULT_LIMIT = 100;
+var MAX_LIMIT = 500;
+function chainSortWorkflowTransitions(rows) {
+  const groupOrder = [];
+  const groups = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const key = `${row.task_id}::${row.tx_id}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = [];
+      groups.set(key, group);
+      groupOrder.push(key);
+    }
+    group.push(row);
+  }
+  const result = [];
+  for (const key of groupOrder) {
+    const group = groups.get(key);
+    if (group.length === 1) {
+      result.push(group[0]);
+      continue;
+    }
+    result.push(...resolveChain(group));
+  }
+  return result;
+}
+function resolveChain(group) {
+  const newValues = group.map((r) => r.new_value);
+  const firstCandidates = group.filter((r) => !newValues.includes(r.old_value));
+  if (firstCandidates.length !== 1) return fallbackOrder(group);
+  const ordered = [firstCandidates[0]];
+  let remaining = group.filter((r) => r !== firstCandidates[0]);
+  let current = firstCandidates[0];
+  while (remaining.length > 0) {
+    const matches = remaining.filter((r) => r.old_value === current.new_value);
+    if (matches.length !== 1) return fallbackOrder(group);
+    const next = matches[0];
+    ordered.push(next);
+    remaining = remaining.filter((r) => r !== next);
+    current = next;
+  }
+  return ordered;
+}
+function fallbackOrder(group) {
+  return [...group].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).map((r) => ({ ...r, order: "fallback" }));
+}
+async function listWorkflowTransitions(client, projectId, args) {
+  if (!args.from || !args.to) {
+    throw new Error("list_workflow_transitions requires both `from` and `to` (ISO created_at range).");
+  }
+  const limit = Math.min(args.limit ?? DEFAULT_LIMIT, MAX_LIMIT);
+  const offset = args.offset ?? 0;
+  const fieldName = args.field_name ?? DEFAULT_FIELD_NAME;
+  const { data: project, error: projectError } = await client.from("projects").select("key").eq("id", projectId).single();
+  if (projectError) throw projectError;
+  const projectKey = project?.key ?? "?";
+  let query = client.from("activity_events").select(
+    "id, task_id, tx_id, old_value, new_value, created_at, tasks!inner(task_number, title, milestone_id, epic_id, parent_task_id)"
+  ).eq("project_id", projectId).eq("event_type", "field_change").eq("field_name", fieldName).gte("created_at", args.from).lt("created_at", args.to);
+  if (args.new_value !== void 0) query = query.eq("new_value", args.new_value);
+  if (args.old_value !== void 0) query = query.eq("old_value", args.old_value);
+  if (args.milestone_id !== void 0) query = query.eq("tasks.milestone_id", args.milestone_id);
+  if (args.epic_id !== void 0) query = query.eq("tasks.epic_id", args.epic_id);
+  const { data, error } = await query.order("created_at", { ascending: true }).order("tx_id", { ascending: true }).range(offset, offset + limit - 1);
+  if (error) throw new Error(error.message);
+  const rows = (data ?? []).map((r) => ({
+    id: r.id,
+    task_id: r.task_id,
+    tx_id: r.tx_id,
+    old_value: r.old_value,
+    new_value: r.new_value,
+    created_at: r.created_at,
+    task_number: r.tasks?.task_number,
+    title: r.tasks?.title
+  }));
+  const sorted = chainSortWorkflowTransitions(rows);
+  const full = args.view === "full";
+  return sorted.map((r) => {
+    const row = {
+      task_id: r.task_id,
+      visual_id: `${projectKey}-${r.task_number}`,
+      old_value: r.old_value,
+      new_value: r.new_value,
+      created_at: r.created_at
+    };
+    if (full) row.title = r.title;
+    if (r.order === "fallback") row.order = "fallback";
+    return row;
+  });
+}
+
+// src/cli/commands/workflow-transitions.ts
+function registerWorkflowTransitionsCommand(program3) {
+  program3.command("workflow-transitions").description("List workflow_state transitions across the whole project between two dates (one call instead of one per ticket)").requiredOption("--from <iso>", "Start of the created_at range (inclusive), ISO timestamp").requiredOption("--to <iso>", "End of the created_at range (exclusive), ISO timestamp").option("--state <workflow_state>", "Filter to transitions landing on this workflow_state (maps to new_value)").option("--milestone <id>", "Filter to tasks on this milestone").option("--epic <id>", "Filter to tasks on this epic").option("--full", "Include each transition's task title (rows are lean by default)", false).option("--limit <n>", "Max results (default 100, hard cap 500)", "100").option("--offset <n>", "Skip results", "0").action(async (opts) => {
+    await runCommand(
+      program3.opts(),
+      async (ctx) => listWorkflowTransitions(ctx.client, ctx.projectId, {
+        from: opts.from,
+        to: opts.to,
+        new_value: opts.state,
+        milestone_id: opts.milestone,
+        epic_id: opts.epic,
+        view: opts.full ? "full" : void 0,
+        limit: parseInt(opts.limit),
+        offset: parseInt(opts.offset)
+      }),
+      (data) => formatTable(data, [
+        { key: "created_at", header: "When", transform: (v) => formatDate(v) },
+        { key: "visual_id", header: "Ticket" },
+        { key: "old_value", header: "From", transform: (v) => v ?? "\u2014" },
+        { key: "new_value", header: "To", transform: (v) => v ?? "\u2014" },
+        { key: "order", header: "Order", transform: (v) => v ?? "" }
       ])
     );
   });
@@ -40916,6 +41035,7 @@ registerCommentCommands(program2);
 registerProjectCommands(program2);
 registerMemberCommands(program2);
 registerActivityCommand(program2);
+registerWorkflowTransitionsCommand(program2);
 registerEpicCommands(program2);
 registerLabelCommands(program2);
 registerMilestoneCommands(program2);

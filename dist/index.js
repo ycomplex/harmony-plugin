@@ -48523,7 +48523,7 @@ async function listTasks(client, projectId, args) {
       );
     }
   }
-  const baseCols = "id, title, status, priority, task_number, assignee_id, epic_id, field_values, archived, due_date, workflow_state, awaiting_human_input, awaiting_human_reason, stale, milestone_id, cycle_id";
+  const baseCols = "id, title, status, priority, task_number, assignee_id, epic_id, field_values, archived, due_date, workflow_state, awaiting_human_input, awaiting_human_reason, stale, milestone_id, cycle_id, parent_task_id";
   const cols = args.view === "full" ? `${baseCols}, description` : baseCols;
   let query = client.from("tasks").select(`${cols}, task_labels(labels(id, name, color))`).eq("project_id", projectId).eq("archived", args.archived ?? false).order("position").range(offset, offset + limit - 1);
   if (args.status) query = query.eq("status", args.status);
@@ -49135,7 +49135,7 @@ async function queryTasks(client, projectId, args) {
       );
     }
   }
-  const baseCols = "id, title, status, priority, task_number, assignee_id, epic_id, field_values, archived, due_date, created_at, updated_at, workflow_state, workflow_activity, awaiting_human_input, awaiting_human_reason, awaiting_human_ref, stale";
+  const baseCols = "id, title, status, priority, task_number, assignee_id, epic_id, field_values, archived, due_date, created_at, updated_at, workflow_state, workflow_activity, awaiting_human_input, awaiting_human_reason, awaiting_human_ref, stale, parent_task_id";
   const cols = args.view === "full" ? `${baseCols}, description` : baseCols;
   let query = client.from("tasks").select(`${cols}, task_labels(labels(id, name, color))`).eq("project_id", projectId).eq("archived", args.archived ?? false);
   if (args.status) query = query.eq("status", args.status);
@@ -49614,6 +49614,126 @@ async function listActivity(client, projectId, args) {
     }))
   ].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   return timeline;
+}
+
+// src/tools/workflow-transitions.ts
+var DEFAULT_FIELD_NAME = "workflow_state";
+var DEFAULT_LIMIT2 = 100;
+var MAX_LIMIT = 500;
+var listWorkflowTransitionsTool = {
+  name: "list_workflow_transitions",
+  description: `List workflow_state (or another field_change) transitions across the WHOLE project between two timestamps \u2014 "what did the board deliver last week" in one call instead of one list_activity call per ticket. Reads activity_events (event_type=field_change), project-scoped (implicit project). The from/to created_at range is REQUIRED. Rows are LEAN by default (task_id, visual_id, old_value, new_value, created_at); view:'full' adds title. Multi-hop transitions from a single accept (e.g. Deployed\u2192Built then Built\u2192Planned) are rendered in true causal order via a client-side chain-sort; a row whose group's chain couldn't be causally resolved is tagged order:'fallback' (id order).`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      from: { type: "string", description: "Start of the created_at range (inclusive), ISO timestamp. Required." },
+      to: { type: "string", description: "End of the created_at range (exclusive), ISO timestamp. Required." },
+      field_name: {
+        type: "string",
+        description: "activity_events.field_name to filter on. Default 'workflow_state' \u2014 override to read a different field_change stream."
+      },
+      new_value: { type: "string", description: "Filter to transitions landing on this value." },
+      old_value: { type: "string", description: "Filter to transitions leaving this value." },
+      milestone_id: { type: "string", description: "Filter to tasks on this milestone (embedded filter against tasks.milestone_id)." },
+      epic_id: { type: "string", description: "Filter to tasks on this epic (embedded filter against tasks.epic_id)." },
+      view: {
+        type: "string",
+        enum: ["lean", "full"],
+        description: "Row shape. Default 'lean' \u2014 task_id, visual_id, old_value, new_value, created_at. 'full' adds title."
+      },
+      limit: { type: "number", description: "Max results to return. Default 100, hard cap 500." },
+      offset: { type: "number", description: "Number of results to skip (for pagination). Default 0." }
+    },
+    required: ["from", "to"]
+  }
+};
+function chainSortWorkflowTransitions(rows) {
+  const groupOrder = [];
+  const groups = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const key = `${row.task_id}::${row.tx_id}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = [];
+      groups.set(key, group);
+      groupOrder.push(key);
+    }
+    group.push(row);
+  }
+  const result = [];
+  for (const key of groupOrder) {
+    const group = groups.get(key);
+    if (group.length === 1) {
+      result.push(group[0]);
+      continue;
+    }
+    result.push(...resolveChain(group));
+  }
+  return result;
+}
+function resolveChain(group) {
+  const newValues = group.map((r) => r.new_value);
+  const firstCandidates = group.filter((r) => !newValues.includes(r.old_value));
+  if (firstCandidates.length !== 1) return fallbackOrder(group);
+  const ordered = [firstCandidates[0]];
+  let remaining = group.filter((r) => r !== firstCandidates[0]);
+  let current = firstCandidates[0];
+  while (remaining.length > 0) {
+    const matches = remaining.filter((r) => r.old_value === current.new_value);
+    if (matches.length !== 1) return fallbackOrder(group);
+    const next = matches[0];
+    ordered.push(next);
+    remaining = remaining.filter((r) => r !== next);
+    current = next;
+  }
+  return ordered;
+}
+function fallbackOrder(group) {
+  return [...group].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).map((r) => ({ ...r, order: "fallback" }));
+}
+async function listWorkflowTransitions(client, projectId, args) {
+  if (!args.from || !args.to) {
+    throw new Error("list_workflow_transitions requires both `from` and `to` (ISO created_at range).");
+  }
+  const limit = Math.min(args.limit ?? DEFAULT_LIMIT2, MAX_LIMIT);
+  const offset = args.offset ?? 0;
+  const fieldName = args.field_name ?? DEFAULT_FIELD_NAME;
+  const { data: project, error: projectError } = await client.from("projects").select("key").eq("id", projectId).single();
+  if (projectError) throw projectError;
+  const projectKey = project?.key ?? "?";
+  let query = client.from("activity_events").select(
+    "id, task_id, tx_id, old_value, new_value, created_at, tasks!inner(task_number, title, milestone_id, epic_id, parent_task_id)"
+  ).eq("project_id", projectId).eq("event_type", "field_change").eq("field_name", fieldName).gte("created_at", args.from).lt("created_at", args.to);
+  if (args.new_value !== void 0) query = query.eq("new_value", args.new_value);
+  if (args.old_value !== void 0) query = query.eq("old_value", args.old_value);
+  if (args.milestone_id !== void 0) query = query.eq("tasks.milestone_id", args.milestone_id);
+  if (args.epic_id !== void 0) query = query.eq("tasks.epic_id", args.epic_id);
+  const { data, error: error2 } = await query.order("created_at", { ascending: true }).order("tx_id", { ascending: true }).range(offset, offset + limit - 1);
+  if (error2) throw new Error(error2.message);
+  const rows = (data ?? []).map((r) => ({
+    id: r.id,
+    task_id: r.task_id,
+    tx_id: r.tx_id,
+    old_value: r.old_value,
+    new_value: r.new_value,
+    created_at: r.created_at,
+    task_number: r.tasks?.task_number,
+    title: r.tasks?.title
+  }));
+  const sorted = chainSortWorkflowTransitions(rows);
+  const full = args.view === "full";
+  return sorted.map((r) => {
+    const row = {
+      task_id: r.task_id,
+      visual_id: `${projectKey}-${r.task_number}`,
+      old_value: r.old_value,
+      new_value: r.new_value,
+      created_at: r.created_at
+    };
+    if (full) row.title = r.title;
+    if (r.order === "fallback") row.order = "fallback";
+    return row;
+  });
 }
 
 // src/tools/milestones.ts
@@ -51571,6 +51691,7 @@ function registerTools(disabledFeatures) {
     listCommentsTool,
     addCommentTool,
     listActivityTool,
+    listWorkflowTransitionsTool,
     listMembersTool,
     queryKnowledgeTool,
     searchTicketIntentsTool,
@@ -51685,6 +51806,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "list_activity":
         result = await listActivity(client, projectId, args);
+        break;
+      case "list_workflow_transitions":
+        result = await listWorkflowTransitions(client, projectId, args);
         break;
       case "list_members":
         result = await listMembers(client, projectId);

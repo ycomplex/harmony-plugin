@@ -18,6 +18,7 @@ import { listCommentsTool, listComments, addCommentTool, addComment } from './co
 import { manageTaskLabelsTool, manageTaskLabels } from './task-labels.js';
 import { bulkUpdateTasksTool, bulkUpdateTasks } from './bulk-update.js';
 import { listActivityTool, listActivity } from './activity.js';
+import { listWorkflowTransitionsTool, listWorkflowTransitions } from './workflow-transitions.js';
 import { listMembersTool, listMembers } from './members.js';
 import {
   queryKnowledgeTool, queryKnowledge,
@@ -167,6 +168,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     findRelatedTicketsTool, subsumeTaskTool,
     listCommentsTool, addCommentTool,
     listActivityTool,
+    listWorkflowTransitionsTool,
     listMembersTool,
     queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
@@ -274,6 +276,9 @@ export async function handleToolCall(
         break;
       case 'list_activity':
         result = await listActivity(client, projectId, args as any);
+        break;
+      case 'list_workflow_transitions':
+        result = await listWorkflowTransitions(client, projectId, args as any);
         break;
       case 'list_members':
         result = await listMembers(client, projectId);
