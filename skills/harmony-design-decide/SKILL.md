@@ -194,8 +194,22 @@ Then, either way:
   (mechanism-register criteria belong here, not at clarify). You may **SHARPEN** a happy-path AC
   (update). **NEVER silently drop a clarify-authored AC** — a drop is an explicit decision item on the
   design brief that the human accepts.
-- The product track's AC writes (add/update/delete via `manage_acceptance_criteria`) land at ITS
-  brief's ACCEPT, symmetric with clarify — never at compose.
+- The product track's AC writes land at ITS brief's ACCEPT (§5), symmetric with clarify — never at
+  compose. **Which mechanism performs them there is a genuine branch (B-1034), because
+  `acceptance_criterion_update` / `acceptance_criterion_delete` are deliberately OUTSIDE
+  `KNOWN_WRITE_KINDS` (§4):**
+  - **This round's edits are ADD-only** (every proposed change is a plain new criterion — no SHARPEN,
+    no drop) — **do NOT call `manage_acceptance_criteria` for them yourself, at compose OR at accept.**
+    They ride as `acceptance_criterion` payload items (§4) and land SOLELY through §5's ledgered
+    `consume_pending_acceptance_event` call — a manual write first would double-file against that same
+    ledgered insert (the ledger's `ON CONFLICT` key on `(event_id, write_kind, external_ref)` can't see
+    a write it didn't make).
+  - **This round's edits carry a SHARPEN (update) or a drop (delete) — alongside any adds in the SAME
+    round** — the whole payload classifies `'unrecognized'` (one non-`KNOWN_WRITE_KINDS` item drags
+    every item in the round down with it, adds included; see §4), so the ledger will never auto-apply
+    ANY of it. This branch is **unchanged, intentionally**: execute every add/update/delete yourself via
+    `manage_acceptance_criteria`, at this track's brief ACCEPT (§5) — it is the only writer for this
+    round, and always was.
 
 ### 3. Draft the typed decision (Asserted)
 
@@ -410,13 +424,22 @@ Show the rendered `content`. On the human's command:
   derive a `knowledge_entry_content` payload item uniformly, per `GATE_REASON_FLOW`); none stay synchronous
   anymore. If non-null, the advance (if
   `pending_activity: "designing"` was carried — the last required sub-track) is DEFERRED to this event,
-  not applied yet. You already performed this track's AC add/update/delete writes above (step 2b), but
-  B-866/B-867 mean the SAME event's payload also carries `knowledge_entry_content` (and possibly
-  `gate_slot`) items this skill never materializes on its own — so this is NOT commit-only. Call
+  not applied yet. **This track's AC add/update/delete writes (§2b) branch on shape, per §2b/§4's
+  ADD-only-vs-mixed split (B-1034) — do not assume either half unconditionally:**
+  - **ADD-only this round** — nothing has been manually written for those items yet (§2b deliberately
+    skipped the manual call). The ledgered call below is their SOLE writer.
+  - **SHARPEN/drop carried this round (alongside any adds)** — you already performed those writes
+    directly above (§2b), unchanged, and this event's payload classifies `'unrecognized'` for that exact
+    reason (§4), so the ledgered call below will not re-touch them.
+
+  Either way, B-866/B-867 mean the SAME event's payload can ALSO carry `knowledge_entry_content` (and
+  possibly `gate_slot`) items this skill never materializes on its own — so this is NOT commit-only. Call
   `mcp__harmony__consume_pending_acceptance_event({ task_id })` right away, in this same turn (B-1029:
-  swapped from the commit-only `consume_acceptance_event`), so those write kinds actually land — the AC
-  writes you already made are idempotently skipped by their own ledger, so this does not double-file
-  anything.
+  swapped from the commit-only `consume_acceptance_event`). On an ADD-only round this call is what files
+  the new criteria — report the count from `by_write_kind.acceptance_criterion` — as well as landing
+  those other write kinds. On a mixed round, per §4's classification, this call sees an `'unrecognized'`
+  payload and never re-applies (or double-files) the AC edits you already made above — that branch's
+  behavior is unchanged by B-1034.
 
   **The ticket + decision's implemented-entity edges (B-977) already landed above (B-997).** Step 4's
   `doc.payload` authored one `entity_link` item per confirmed name (three-state handling: present/

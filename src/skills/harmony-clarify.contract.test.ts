@@ -58,8 +58,11 @@ describe('harmony-clarify skill contract', () => {
     // A prose-only match (e.g. "this clarification brief's id") is not enough — round 1 of this fix
     // said exactly that while plugging in `brief.decision_ref.id` (a DECISION id) underneath. Pin the
     // literal expression written into the marker, not just the surrounding prose.
+    // B-1034 removed the read-side "Match a line `AC-FILING-PASS brief_id=<brief.id> filed=<N>`"
+    // template (the pre-check it belonged to is gone — the ledger's own idempotency is the guard now),
+    // so only the WRITE-side literal is pinned here; the decision-id regression guard below is
+    // unaffected by that removal.
     expect(skill.body).toMatch(/AC-FILING-PASS brief_id=\$\{brief\.id\}/);
-    expect(skill.body).toMatch(/AC-FILING-PASS brief_id=<brief\.id> filed=<N>/);
     expect(skill.body).not.toMatch(/brief\.decision_ref\.id/);
   });
   it('every clarify-owned trigger is named in the resume allowlist sentence (B-796 — the code→prose arm)', () => {

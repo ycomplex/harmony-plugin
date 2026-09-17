@@ -121,31 +121,29 @@ what the human reads, the payload is what the accept materializes. Keep them in 
 each change bound to the feedback it answers. It renders under the **On accept:** line, below the frame.
 Every recompose that is NOT a send-back passes `revision_cause` — see `skills/harmony-shared/brief-authoring.md` §Stating the cause of a redraft (B-1017).
 
-On **accept** → **first materialize the plan's own steps as the ticket's checklist (B-797 — this is what
-closes specimen 6, B-800: the accepted plan's steps must be READABLE at build time, not just narrated in
-the brief), then resolve:**
-
-```
-mcp__harmony__manage_checklist_items({ task_id, add: [{ title: "<plan step 1>" }, { title: "<plan step 2>" }, ...] })
-```
-
-One item per concrete step of the plan you wrote above — this is the SAME list O3's build step will read
-as its authoritative work list, so keep it as granular as the plan itself, not a single vague summary
-item. Idempotent guard: skip items whose title already exists on the ticket's checklist (a re-run after a
-crash mid-accept must not duplicate).
+On **accept** → resolve, then apply the payload — **the plan's own steps land on the ticket's
+checklist (B-797 — this is what closes specimen 6, B-800: the accepted plan's steps must be READABLE
+at build time, not just narrated in the brief) EXCLUSIVELY through the ledgered apply below, never
+through a manual `manage_checklist_items` write first (B-1034)** — the pre-B-1034 manual call here
+double-filed against `consume_pending_acceptance_event`'s own ledgered insert (the ledger's
+`ON CONFLICT` key can't see a write it didn't make, so the earlier claim that it was "not double-filed"
+was false):
 
 ```
 mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-session" })
 ```
 
 advances Designed→Planned. **B-797 — finalize the deferred advance NOW, same session.** The response
-carries `pending_acceptance_event_id`. You just materialized the checklist yourself above, but B-866/
-B-867 mean the same event's payload can ALSO carry `gate_slot`/`knowledge_entry_content` items this
-skill never materializes on its own — so this is NOT commit-only. Call
+carries `pending_acceptance_event_id`. Call
 `mcp__harmony__consume_pending_acceptance_event({ task_id })` right away, in this same turn (B-1029:
-swapped from the commit-only `consume_acceptance_event`), so those write kinds actually land — the
-checklist items you already filed are idempotently skipped by their own ledger, so this does not
-double-file anything. The accept IS the "go" to build.
+swapped from the commit-only `consume_acceptance_event`). This is the SINGLE write that materializes the
+plan's steps onto the ticket's checklist — one item per concrete step of the plan you wrote above, at
+the SAME granularity as the plan (this is the SAME list O3's build step will read as its authoritative
+work list) — and it also lands any `gate_slot`/`knowledge_entry_content` items (B-866/B-867) this skill
+never materializes on its own. The ledger's own idempotency (keyed on `(event_id, write_kind,
+external_ref)`) is what makes a re-run after a crash mid-accept safe — report the applied checklist
+count from `by_write_kind.checklist_item`, never a count computed from a manual write's own item list
+(there is none). The accept IS the "go" to build.
 
 > **Provenance (B-734):** `human-in-session` is the human deciding *here* — a conductor-synthesized accept
 > carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
@@ -222,8 +220,14 @@ mcp__harmony__consume_pending_acceptance_event({ task_id })
 - **`payload-unrecognized`** → the result's `items` field (B-816) is the plan's own snapshotted
   `checklist_item` entries, verbatim — present THOSE as a confirm-then-materialize ask ("here is the
   plan you accepted — confirm this is still the work list, or adjust it"), never an open "what was the
-  plan?" question. On confirm, materialize via `manage_checklist_items` exactly as O2's accept step
-  does. **B-1029: also re-apply a missed `gate_slot` item from this SAME echoed payload** — the
+  plan?" question. On confirm, materialize directly here — this manual write is NOT the B-1034
+  double-write hazard, because `payload-unrecognized` means the ledger's own apply just failed to land
+  anything, so this is the only write that will ever happen for these items (O2's own accept step no
+  longer makes this call itself; see B-1034):
+  ```
+  mcp__harmony__manage_checklist_items({ task_id, add: [{ title: "<plan step 1>" }, { title: "<plan step 2>" }, ...] })
+  ```
+  **B-1029: also re-apply a missed `gate_slot` item from this SAME echoed payload** — the
   `payload-unrecognized`/`substrate_absent_for` degrade path (`acceptance-events.ts`) can leave a
   structured `gate_slot` item unapplied for the same reason the checklist can be unmaterialized; if
   `items` carries one, write it the same way `applyAcceptanceEventPayload` would (the gate's durable
