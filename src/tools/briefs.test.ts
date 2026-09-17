@@ -3101,9 +3101,11 @@ describe('B-876 gate frame', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────────────────────
-  // THE OTHER ACCEPTANCE CRITERION: every new rule is a WARNING. Nothing refuses a brief.
+  // THE OTHER ACCEPTANCE CRITERION: every new rule is a WARNING — with ONE exception (B-1016): a
+  // `release` frame missing `evidence_status` is a hard ERROR (see the dedicated describe block
+  // below). Every other rule, at every other frame kind, still only warns.
   // ─────────────────────────────────────────────────────────────────────────────────────────────
-  describe('every frame rule warns and none errors', () => {
+  describe('every frame rule warns and none errors (except the B-1016 release evidence_status reject)', () => {
     const FRAMED_REASONS = Object.keys(FRAME_KIND_FOR_REASON);
     const wellFormed: Record<string, GateFrame> = {
       'clarification-draft': clarifyFrame(),
@@ -3130,13 +3132,28 @@ describe('B-876 gate frame', () => {
       expect(r.warnings.join(' ')).toContain("but this brief's reason is");
     });
 
-    it.each(FRAMED_REASONS)('a MALFORMED frame at %s warns and never errors', (reason) => {
+    // B-1016: a bare `{ kind: 'release' }` is missing `evidence_status` too, which is now a hard
+    // reject (see below) — excluded here so this generic "never errors" sweep stays true for every
+    // OTHER framed reason, exactly as before.
+    it.each(FRAMED_REASONS.filter((r) => r !== 'release-decision-pending'))('a MALFORMED frame at %s warns and never errors', (reason) => {
       // The bare `kind` alone — every required sub-field missing.
       const doc = baseDoc({ frame: { kind: FRAME_KIND_FOR_REASON[reason] } as GateFrame });
       const r = lintBrief(doc, renderBrief(doc, null, { reason }), { reason });
       expect(r.errors).toEqual([]);
       expect(r.ok).toBe(true);
       expect(r.warnings.length).toBeGreaterThan(0);
+    });
+
+    it('a MALFORMED release frame ERRORS (missing evidence_status) but still warns on its other absent fields', () => {
+      // The bare `kind` alone — every required sub-field missing, including `evidence_status`.
+      const doc = baseDoc({ frame: { kind: 'release' } as GateFrame });
+      const r = lintBrief(doc, renderBrief(doc, null, { reason: 'release-decision-pending' }), { reason: 'release-decision-pending' });
+      expect(r.ok).toBe(false);
+      expect(r.errors.join(' ')).toContain('`frame.evidence_status` is absent on a release frame');
+      expect(r.errors.join(' ')).toContain('get_build_evidence_status');
+      // the OTHER release frame rules are unchanged — still warnings, not folded into the reject
+      expect(r.warnings.join(' ')).toContain('`frame.act` is absent');
+      expect(r.warnings.join(' ')).toContain('`frame.unproven` is absent');
     });
 
     it('a malformed frame still RENDERS without throwing at every framed reason', () => {
@@ -3193,6 +3210,30 @@ describe('B-876 gate frame', () => {
       const r = lintBrief(doc, renderBrief(doc), { reason: 'release-decision-pending' });
       expect(r.errors).toEqual([]);
       expect(r.warnings.join(' ')).toContain("`frame.act.ordering` is blank");
+    });
+
+    // B-1016 — the hard-reject and its two positive controls, pinned together so a regression in
+    // either the reject or its "unchanged elsewhere" half fails loudly.
+    it('REJECTS a release frame with evidence_status absent — refused, not merely warned, and the reason names the field', () => {
+      const doc = baseDoc({ frame: releaseFrame({ evidence_status: undefined }) });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'release-decision-pending' });
+      expect(r.ok).toBe(false);
+      expect(r.errors.join(' ')).toContain('`frame.evidence_status` is absent on a release frame');
+    });
+
+    it('ACCEPTS a release frame that carries evidence_status', () => {
+      const doc = baseDoc({ frame: releaseFrame() });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'release-decision-pending' });
+      expect(r.ok).toBe(true);
+      expect(r.errors).toEqual([]);
+    });
+
+    it('positive control: a verify frame with evidence_status absent is STILL only a warning, never an error', () => {
+      const doc = baseDoc({ frame: verifyFrame(1, { evidence_status: undefined }) });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
+      expect(r.ok).toBe(true);
+      expect(r.errors).toEqual([]);
+      expect(r.warnings.join(' ')).toContain('`frame.evidence_status` is blank');
     });
 
     it("warns when a 'walk' criterion names no step_ref", () => {
