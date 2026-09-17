@@ -26,6 +26,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
 import { writeGateSlot } from './gate-slots.js';
+import { getWorkspaceId, resolveOrCreateEntity } from './knowledge.js';
 
 /**
  * B-688 — the CONTRACT this module's `label_add` dispatch depends on from harmony-web's decision-only
@@ -97,7 +98,7 @@ export const DECISION_ONLY_LABEL_CONTRACT = {
  *  item (clarify); release and verify have no acceptance event to ride and reach the same helper through
  *  the `write_gate_slot` MCP tool. */
 export interface AcceptanceEventPayloadItem {
-  write_kind: 'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'gate_slot' | 'supersede_decision';
+  write_kind: 'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'gate_slot' | 'supersede_decision' | 'implements_entities' | 'entity_link';
   ref: string;
   content?: string;
   title?: string;
@@ -128,6 +129,25 @@ export interface AcceptanceEventPayloadItem {
    *  `gate`, `target_child_ref`). `title` (generic, above) MAY also be set, purely for the promise line's
    *  display text (`promisedWriteLine` in briefs.ts) — it carries no write-time meaning. */
   decision_id?: string;
+  /** `implements_entities` only (B-997) — the human-confirmed feature-entity name(s), landed VERBATIM
+   *  onto `tasks.field_values.implements_entities` by `consume_implements_entities_write`. An EMPTY
+   *  array is a valid, meaningful ratified-empty answer (same doctrine as `gate_slot.slot_content`
+   *  above) — it must be authored, never omitted, when a ticket implements zero named entities. Entity-
+   *  name resolution never touches this write_kind — it lands the raw names, not entity ids. */
+  names?: string[];
+  /** `entity_link` only (B-997) — ONE feature-entity name this write resolves-or-creates (the same
+   *  path `link_ticket_entities`/`recordDecision`'s `affected_entity_names` use) and links as edges:
+   *  `ticket_implements_entity` always, `decision_affects_entity` additionally when this item also
+   *  carries a `decision_id` (above). Author ONE `entity_link` item per confirmed name — never a
+   *  multi-name array here, unlike `implements_entities`. Entity-NAME resolution stays in the plugin
+   *  (`resolveOrCreateEntity`, carrying B-993 normalize/repair-at-touch); the RPC only does the
+   *  ledgered edge upserts for an ALREADY-RESOLVED entity_id. */
+  entity_name?: string;
+  /** `entity_link` only (B-997) — the entity kind used ONLY when the name resolves to a brand-new
+   *  entity (no existing entity of any kind carries it). Defaults to 'feature' at the dispatch site,
+   *  matching `link_ticket_entities`'s own default — never a different implicit default via this
+   *  field's absence. */
+  entity_kind?: string;
 }
 
 export interface PendingAcceptanceEvent {
@@ -246,7 +266,7 @@ export async function getPendingAcceptanceEvent(
   return (event as PendingAcceptanceEvent | null) ?? null;
 }
 
-const KNOWN_WRITE_KINDS = new Set(['acceptance_criterion', 'child_ticket', 'checklist_item', 'ac_transfer', 'label_add', 'knowledge_entry_content', 'gate_slot', 'supersede_decision']);
+const KNOWN_WRITE_KINDS = new Set(['acceptance_criterion', 'child_ticket', 'checklist_item', 'ac_transfer', 'label_add', 'knowledge_entry_content', 'gate_slot', 'supersede_decision', 'implements_entities', 'entity_link']);
 
 /** B-816 — the live snapshot shape from `resolve_brief` (which snapshots a brief's whole `doc` VERBATIM)
  *  is `event.payload.payload` (an array): B-810's `compose_brief` call sites author the structured
@@ -370,12 +390,25 @@ export async function applyAcceptanceEventPayload(
     // repaired by the next accept (latest-accepted-per-gate), whereas a wrongly-promoted entry has
     // already superseded a real one.
     'gate_slot',
+    // B-997 sits right after gate_slot, before knowledge_entry_content: it lands the human-confirmed
+    // feature-entity name(s) onto the ticket's field_values — a durable, displayed-adjacent record,
+    // same reasoning as gate_slot just above (materialize before the entry promotion / decision
+    // retirement below, which are the more consequential, harder-to-undo writes).
+    'implements_entities',
     // B-843 sits after gate_slot, before label_add: it promotes the gate's knowledge entry and supersedes
     // the previous round's. Running it after every AC/child/checklist write means a payload that fails
     // partway leaves the knowledge base untouched rather than promoting a decision whose materialization
     // never landed.
     'knowledge_entry_content',
-    // B-941 sits right after knowledge_entry_content, before label_add: it retires an UPSTREAM decision
+    // B-997 sits right after knowledge_entry_content, before supersede_decision: it lands the
+    // already-resolved entity edge(s) a design/visual-handoff accept confirmed. Entity-NAME resolution
+    // happens HERE, in this dispatch, via resolveOrCreateEntity — never in SQL — so it must run after
+    // the entry promotion above (the same 'materialize before touching the knowledge base's terminal
+    // state' reasoning) and before supersede_decision below (a wholly separate decision retirement
+    // that must never be blocked by this write, or vice versa).
+    'entity_link',
+    // B-941 sits right after entity_link (B-997 inserted between it and knowledge_entry_content),
+    // before label_add: it retires an UPSTREAM decision
     // (harmony-revise-scope's supersede-list) — a wholly different decision from the one
     // knowledge_entry_content above may have just promoted, but the same "materialize before touching the
     // knowledge base's terminal state" reasoning applies, and it has nothing to do with label_add's
@@ -486,6 +519,50 @@ export async function applyAcceptanceEventPayload(
         // live. Degrade SAFELY — never an opaque throw, never a consume on a partially-applied payload.
         if (slotResult.substrate_absent) throw new WriteKindSubstrateAbsentError('gate_slot');
         result = { applied: slotResult.applied };
+      } else if (item.write_kind === 'implements_entities') {
+        // B-997: the confirm-or-adjust doctrine — "proposed = confirmed unless the accept carries a
+        // remark" — means this write's `names` is authored VERBATIM at compose time; there is no
+        // separate adjustment payload verb. An adjustment stated at accept time rides the EXISTING
+        // B-503/B-866 accept-remark light-amendment path instead (see briefs.ts's `pending_remark`).
+        if (!Array.isArray(item.names)) {
+          throw new Error(`implements_entities item '${item.ref}' carries no names array — an EMPTY array is valid (it means the ticket was confirmed to implement zero named entities), an absent/non-array one is not`);
+        }
+        const { data, error } = await client.rpc('consume_implements_entities_write', {
+          _event_id: event.id, _external_ref: item.ref, _names: item.names,
+        });
+        if (error) {
+          // The SAME B-383 window as every other per-write-kind RPC here: the harmony-web migration
+          // that adds this RPC reaches prod only at the next promote. Degrade SAFELY.
+          if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError('implements_entities');
+          throw new Error(error.message);
+        }
+        result = data as { applied?: boolean };
+      } else if (item.write_kind === 'entity_link') {
+        // B-997: entity-NAME resolution stays in the plugin (never in SQL) — resolveOrCreateEntity
+        // carries the EXISTING B-993 normalize/repair-at-touch logic, which a duplicate SQL-side
+        // resolver would either have to reimplement or silently diverge from. `consume_entity_link_write`
+        // takes only an ALREADY-RESOLVED entity_id and does the ledgered edge upserts.
+        const name = item.entity_name?.trim();
+        if (!name) throw new Error(`entity_link item '${item.ref}' names no entity_name — the entity being linked must be identified`);
+        const { data: taskRow, error: taskErr } = await client
+          .from('tasks')
+          .select('project_id')
+          .eq('id', event.task_id)
+          .maybeSingle();
+        if (taskErr) throw new Error(taskErr.message);
+        const projectId = (taskRow as { project_id?: string } | null)?.project_id;
+        if (!projectId) throw new Error(`entity_link item '${item.ref}' — task ${event.task_id} has no project_id, cannot resolve the entity`);
+        const workspaceId = await getWorkspaceId(client, projectId);
+        const entityId = await resolveOrCreateEntity(client, workspaceId, projectId, name, item.entity_kind ?? 'feature');
+        const { data, error } = await client.rpc('consume_entity_link_write', {
+          _event_id: event.id, _external_ref: item.ref, _entity_id: entityId, _decision_id: item.decision_id ?? null,
+        });
+        if (error) {
+          // The SAME B-383 window as every other per-write-kind RPC here.
+          if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError('entity_link');
+          throw new Error(error.message);
+        }
+        result = data as { applied?: boolean };
       } else if (item.write_kind === 'supersede_decision') {
         // B-941: harmony-revise-scope's browser-accept gap — the decision a "back up" retires must
         // actually retire, whether the accept happens in a running session or (B-797) with none. The
@@ -739,7 +816,8 @@ export const consumePendingAcceptanceEventTool = {
     'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, ' +
     'decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only ' +
     'label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ' +
-    'ticket section, B-941 supersede-decision retires) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup — ' +
+    'ticket section, B-941 supersede-decision retires, B-997 confirmed feature-entity name(s) + entity edges) ' +
+    'BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup — ' +
     'mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an ' +
     'older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing ' +
     '(today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. ' +
