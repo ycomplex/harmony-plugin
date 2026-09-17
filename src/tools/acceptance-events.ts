@@ -97,7 +97,7 @@ export const DECISION_ONLY_LABEL_CONTRACT = {
  *  item (clarify); release and verify have no acceptance event to ride and reach the same helper through
  *  the `write_gate_slot` MCP tool. */
 export interface AcceptanceEventPayloadItem {
-  write_kind: 'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'gate_slot';
+  write_kind: 'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'gate_slot' | 'supersede_decision';
   ref: string;
   content?: string;
   title?: string;
@@ -118,6 +118,16 @@ export interface AcceptanceEventPayloadItem {
    *  prose. An EMPTY object is valid and meaningful: it says this gate ratified an empty answer, which
    *  is a different claim from never having ratified (that one is carried by the slot key's absence). */
   slot_content?: Record<string, unknown>;
+  /** `supersede_decision` only (B-941) — the id of the decision this write retires. The companion RPC
+   *  (`consume_supersede_decision_write`, harmony-web) is a SECURITY DEFINER retire-mode wrapper over
+   *  `knowledge_supersede_decision`: it ledgers on `(event_id, 'supersede_decision', external_ref)` where
+   *  `external_ref` IS the id of the decision being retired — the SAME value as `decision_id` below, by
+   *  convention (a decision's own id is inherently stable/idempotent, unlike an author-chosen slug, so
+   *  `ref` should be authored as that same id). Kept as a separate field — rather than reusing `ref`
+   *  directly at the call site — to match every other write_kind's own-target-field convention (`entry_id`,
+   *  `gate`, `target_child_ref`). `title` (generic, above) MAY also be set, purely for the promise line's
+   *  display text (`promisedWriteLine` in briefs.ts) — it carries no write-time meaning. */
+  decision_id?: string;
 }
 
 export interface PendingAcceptanceEvent {
@@ -236,7 +246,7 @@ export async function getPendingAcceptanceEvent(
   return (event as PendingAcceptanceEvent | null) ?? null;
 }
 
-const KNOWN_WRITE_KINDS = new Set(['acceptance_criterion', 'child_ticket', 'checklist_item', 'ac_transfer', 'label_add', 'knowledge_entry_content', 'gate_slot']);
+const KNOWN_WRITE_KINDS = new Set(['acceptance_criterion', 'child_ticket', 'checklist_item', 'ac_transfer', 'label_add', 'knowledge_entry_content', 'gate_slot', 'supersede_decision']);
 
 /** B-816 — the live snapshot shape from `resolve_brief` (which snapshots a brief's whole `doc` VERBATIM)
  *  is `event.payload.payload` (an array): B-810's `compose_brief` call sites author the structured
@@ -365,6 +375,12 @@ export async function applyAcceptanceEventPayload(
     // partway leaves the knowledge base untouched rather than promoting a decision whose materialization
     // never landed.
     'knowledge_entry_content',
+    // B-941 sits right after knowledge_entry_content, before label_add: it retires an UPSTREAM decision
+    // (harmony-revise-scope's supersede-list) — a wholly different decision from the one
+    // knowledge_entry_content above may have just promoted, but the same "materialize before touching the
+    // knowledge base's terminal state" reasoning applies, and it has nothing to do with label_add's
+    // decision-only guard below, so it must never sit behind that potentially-blocked write.
+    'supersede_decision',
     // B-1029: label_add moved LAST, deliberately after gate_slot/knowledge_entry_content (not before, as
     // it used to run). `consume_label_add_write` can be blocked two ways that are NOT transient: a
     // decision-only guard-block (a persistent business-rule refusal from the RPC itself) or the RPC being
@@ -470,6 +486,28 @@ export async function applyAcceptanceEventPayload(
         // live. Degrade SAFELY — never an opaque throw, never a consume on a partially-applied payload.
         if (slotResult.substrate_absent) throw new WriteKindSubstrateAbsentError('gate_slot');
         result = { applied: slotResult.applied };
+      } else if (item.write_kind === 'supersede_decision') {
+        // B-941: harmony-revise-scope's browser-accept gap — the decision a "back up" retires must
+        // actually retire, whether the accept happens in a running session or (B-797) with none. The
+        // RPC's own external_ref convention is that `_external_ref` IS the decision's id, so `ref` and
+        // `decision_id` are authored as the SAME value at compose time; `decision_id` is still read
+        // independently here (never derived from `ref`) so a future author who deliberately diverges
+        // them is not silently overridden.
+        const decisionId = item.decision_id;
+        if (!decisionId) throw new Error(`supersede_decision item '${item.ref}' names no decision_id`);
+        const { data, error } = await client.rpc('consume_supersede_decision_write', {
+          _event_id: event.id, _external_ref: item.ref, _decision_id: decisionId,
+        });
+        if (error) {
+          // The SAME B-383 window as every other per-write-kind RPC here: the harmony-web migration that
+          // adds this RPC reaches prod only at the next promote, so it can be genuinely absent while
+          // plugin `main` is live. Degrade SAFELY — never an opaque throw, never a consume on a
+          // partially-applied payload. A real failure (decision not found, already superseded with a
+          // DIFFERENT successor, etc.) is NOT this class and must propagate.
+          if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError('supersede_decision');
+          throw new Error(error.message);
+        }
+        result = data as { applied?: boolean };
       } else if (item.write_kind === 'label_add') {
         if (item.label_name === '') throw new Error(`label_add item '${item.ref}' has an empty label_name`);
         const labelName = item.label_name ?? 'decision-only';
@@ -701,7 +739,7 @@ export const consumePendingAcceptanceEventTool = {
     'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, ' +
     'decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only ' +
     'label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ' +
-    'ticket section) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup — ' +
+    'ticket section, B-941 supersede-decision retires) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup — ' +
     'mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an ' +
     'older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing ' +
     '(today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. ' +

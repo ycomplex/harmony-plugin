@@ -30862,6 +30862,10 @@ function promisedWriteLine(item) {
       return "- the linked decision entry, written from THIS brief (derived, never separately authored)";
     case "gate_slot":
       return `- the ${text(item.gate) ?? "gate"} section on the ticket \u2014 this brief's ratified content, kept visible after the gate closes`;
+    case "supersede_decision": {
+      const label2 = text(item.title);
+      return `- supersede decision \u2014 ${label2 ? `"${label2}"` : text(item.decision_id) ?? text(item.ref) ?? "(unnamed)"}, retired with no successor authored here`;
+    }
     default:
       return null;
   }

@@ -858,6 +858,13 @@ function promisedWriteLine(item: AcceptanceEventPayloadItem): string | null {
       // change the render that the content is derived from. Naming the section is the promise; the
       // section's own words are already on the page, in the frame this line points at.
       return `- the ${text(item.gate) ?? 'gate'} section on the ticket — this brief's ratified content, kept visible after the gate closes`;
+    case 'supersede_decision': {
+      // B-941 — `title` (generic, optional) carries the decision's own title purely for THIS line's
+      // display text; falls back to naming it by id when the author omitted a title. No content is
+      // rendered — the retirement itself is the promise, matching label_add's shape above.
+      const label = text(item.title);
+      return `- supersede decision — ${label ? `"${label}"` : (text(item.decision_id) ?? text(item.ref) ?? '(unnamed)')}, retired with no successor authored here`;
+    }
     default:
       return null;
   }

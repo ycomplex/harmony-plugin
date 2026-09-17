@@ -161,6 +161,9 @@ const knowledgeEntryItem = (ref: string, over: Partial<AcceptanceEventPayloadIte
 const gateSlotItem = (ref: string, over: Partial<AcceptanceEventPayloadItem> = {}): AcceptanceEventPayloadItem => ({
   write_kind: 'gate_slot', ref, gate: 'clarify', slot_content: { summary: `Slot ${ref}` }, ...over,
 });
+const supersedeDecisionItem = (ref: string, over: Partial<AcceptanceEventPayloadItem> = {}): AcceptanceEventPayloadItem => ({
+  write_kind: 'supersede_decision', ref, decision_id: ref, ...over,
+});
 
 function makeEvent(items: AcceptanceEventPayloadItem[]): PendingAcceptanceEvent {
   return {
@@ -493,6 +496,106 @@ describe('applyAcceptanceEventPayload', () => {
     });
     await expect(applyAcceptanceEventPayload(client, makeEvent([knowledgeEntryItem('entry-1')])))
       .rejects.toThrow(/no target entry/);
+  });
+
+  // ── B-941: supersede_decision — harmony-revise-scope's payload-driven decision retirement ────────
+  it('dispatches a supersede_decision item to consume_supersede_decision_write with the right args', async () => {
+    const client = makeClient({
+      rpcResponses: { consume_supersede_decision_write: [{ data: { applied: true, superseded: 'decision-1' } }] },
+    });
+    const event = makeEvent([supersedeDecisionItem('decision-1')]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.applied).toBe(1);
+    expect(result.by_write_kind).toEqual({ supersede_decision: 1 });
+    expect(client.rpc).toHaveBeenCalledWith('consume_supersede_decision_write', {
+      _event_id: 'event-1', _external_ref: 'decision-1', _decision_id: 'decision-1',
+    });
+  });
+
+  it('throws a clear error when a supersede_decision item names no decision_id', async () => {
+    const client = makeClient();
+    const event = makeEvent([{ write_kind: 'supersede_decision', ref: 'decision-1' } as AcceptanceEventPayloadItem]);
+    await expect(applyAcceptanceEventPayload(client, event)).rejects.toThrow(/names no decision_id/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  // Idempotent re-apply: applied:false on retry (mirrors TEST #10's / label_add's shape).
+  it('a retry where the supersede_decision write already landed reports applied:false — counted as skipped, not duplicated', async () => {
+    const client = makeClient({
+      rpcResponses: { consume_supersede_decision_write: [{ data: { applied: false } }] },
+    });
+    const result = await applyAcceptanceEventPayload(client, makeEvent([supersedeDecisionItem('decision-1')]));
+    expect(result.applied).toBe(0);
+    expect(result.skipped_already_done).toBe(1);
+  });
+
+  it('propagates a REAL error from the supersede write (e.g. decision not found) — never swallowed as substrate-absent', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_supersede_decision_write: [{ data: null, error: { code: 'P0001', message: 'knowledge_supersede_decision: decision missing not found in this project' } }],
+      },
+    });
+    await expect(applyAcceptanceEventPayload(client, makeEvent([supersedeDecisionItem('decision-1')])))
+      .rejects.toThrow(/not found in this project/);
+  });
+
+  // B-383/B-941: the companion harmony-web migration (consume_supersede_decision_write) may not be
+  // deployed/promoted yet on this DB — degrade SAFELY (never an opaque throw), exactly like every other
+  // per-write-kind RPC in this module.
+  it('B-383 — a missing consume_supersede_decision_write RPC (42883) degrades to substrate_absent_for, never throws', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_supersede_decision_write: [{ data: null, error: { code: '42883', message: 'function consume_supersede_decision_write(uuid, text, uuid) does not exist' } }],
+      },
+    });
+    const result = await applyAcceptanceEventPayload(client, makeEvent([supersedeDecisionItem('decision-1')]));
+    expect(result.substrate_absent_for).toBe('supersede_decision');
+    expect(result.applied).toBe(0);
+  });
+
+  it('B-383 — a missing consume_supersede_decision_write RPC via PGRST202 also degrades to substrate_absent_for', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_supersede_decision_write: [{ data: null, error: { code: 'PGRST202', message: 'Could not find the function public.consume_supersede_decision_write in the schema cache' } }],
+      },
+    });
+    const result = await applyAcceptanceEventPayload(client, makeEvent([supersedeDecisionItem('decision-1')]));
+    expect(result.substrate_absent_for).toBe('supersede_decision');
+  });
+
+  it('B-383 — writes that landed BEFORE the missing supersede_decision RPC are preserved in the result (not lost)', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_ac_add_write: [{ data: { applied: true } }],
+        consume_supersede_decision_write: [{ data: null, error: { code: '42883', message: 'function does not exist' } }],
+      },
+    });
+    const event = makeEvent([acItem('ac-1'), supersedeDecisionItem('decision-1')]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.substrate_absent_for).toBe('supersede_decision');
+    expect(result.applied).toBe(1);
+    expect(result.by_write_kind).toEqual({ acceptance_criterion: 1 });
+  });
+
+  // ORDER (B-941): supersede_decision sits after gate_slot/knowledge_entry_content, before label_add —
+  // same reasoning as the knowledge_entry_content-before-label_add ordering test just below.
+  it('applies supersede_decision BEFORE label_add but AFTER knowledge_entry_content, whatever order the payload authored it in', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_knowledge_entry_content_write: [{ data: { applied: true } }],
+        consume_supersede_decision_write: [{ data: { applied: true } }],
+        consume_label_add_write: [{ data: { applied: true } }],
+      },
+    });
+    const event = makeEvent([
+      labelAddItem('label-1'), supersedeDecisionItem('decision-1'), knowledgeEntryItem('entry-1'),
+    ]);
+    await applyAcceptanceEventPayload(client, event);
+    expect(client.rpcCalls.map((c: { name: string }) => c.name)).toEqual([
+      'consume_knowledge_entry_content_write',
+      'consume_supersede_decision_write',
+      'consume_label_add_write',
+    ]);
   });
 
   // ORDER: the knowledge promotion + per-gate supersede runs BEFORE label_add (B-1029 moved label_add

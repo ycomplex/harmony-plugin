@@ -228,6 +228,24 @@ describe('renderBrief — compose-time context (B-874)', () => {
       expect(md).not.toContain('label_add');
     });
 
+    // B-941 — the supersede_decision write_kind's promise line (harmony-revise-scope's payload-driven
+    // decision retirement). Named by title when the item carries one; falls back to the decision id.
+    it('renders a supersede_decision item by its title when present (B-941)', () => {
+      const md = renderBrief(baseDoc({
+        payload: [{ write_kind: 'supersede_decision', ref: 'decision-1', decision_id: 'decision-1', title: 'Clarify spec: filter persistence' }],
+      }), null, { reason: 'revise-scope-review', accept: null });
+      expect(md).toContain(`${PROMISED_WRITES_HEADING}
+- supersede decision — "Clarify spec: filter persistence", retired with no successor authored here`);
+    });
+
+    it('renders a supersede_decision item by its decision_id when no title is given (B-941)', () => {
+      const md = renderBrief(baseDoc({
+        payload: [{ write_kind: 'supersede_decision', ref: 'decision-1', decision_id: 'decision-1' }],
+      }), null, { reason: 'revise-scope-review', accept: null });
+      expect(md).toContain(`${PROMISED_WRITES_HEADING}
+- supersede decision — decision-1, retired with no successor authored here`);
+    });
+
     it('sits in the Context region — after Context, before You need to', () => {
       const md = renderBrief(withAcs({ context: ['B-187 shipped list-action icons'] }), null, { reason: 'clarification-draft', accept: null });
       expect(md.indexOf('**Context:**')).toBeLessThan(md.indexOf(PROPOSED_ACS_HEADING));

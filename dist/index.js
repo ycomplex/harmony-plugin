@@ -46462,6 +46462,10 @@ function promisedWriteLine(item) {
       return "- the linked decision entry, written from THIS brief (derived, never separately authored)";
     case "gate_slot":
       return `- the ${text(item.gate) ?? "gate"} section on the ticket \u2014 this brief's ratified content, kept visible after the gate closes`;
+    case "supersede_decision": {
+      const label = text(item.title);
+      return `- supersede decision \u2014 ${label ? `"${label}"` : text(item.decision_id) ?? text(item.ref) ?? "(unnamed)"}, retired with no successor authored here`;
+    }
     default:
       return null;
   }
@@ -50289,7 +50293,7 @@ async function getPendingAcceptanceEvent(client, projectId, taskId) {
   }
   return event ?? null;
 }
-var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add", "knowledge_entry_content", "gate_slot"]);
+var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add", "knowledge_entry_content", "gate_slot", "supersede_decision"]);
 function rawItemsOf(payload) {
   const withNestedPayload = payload;
   if (Array.isArray(withNestedPayload?.payload)) return withNestedPayload.payload;
@@ -50334,6 +50338,12 @@ async function applyAcceptanceEventPayload(client, event) {
     // partway leaves the knowledge base untouched rather than promoting a decision whose materialization
     // never landed.
     "knowledge_entry_content",
+    // B-941 sits right after knowledge_entry_content, before label_add: it retires an UPSTREAM decision
+    // (harmony-revise-scope's supersede-list) — a wholly different decision from the one
+    // knowledge_entry_content above may have just promoted, but the same "materialize before touching the
+    // knowledge base's terminal state" reasoning applies, and it has nothing to do with label_add's
+    // decision-only guard below, so it must never sit behind that potentially-blocked write.
+    "supersede_decision",
     // B-1029: label_add moved LAST, deliberately after gate_slot/knowledge_entry_content (not before, as
     // it used to run). `consume_label_add_write` can be blocked two ways that are NOT transient: a
     // decision-only guard-block (a persistent business-rule refusal from the RPC itself) or the RPC being
@@ -50430,6 +50440,19 @@ async function applyAcceptanceEventPayload(client, event) {
         });
         if (slotResult.substrate_absent) throw new WriteKindSubstrateAbsentError("gate_slot");
         result = { applied: slotResult.applied };
+      } else if (item.write_kind === "supersede_decision") {
+        const decisionId = item.decision_id;
+        if (!decisionId) throw new Error(`supersede_decision item '${item.ref}' names no decision_id`);
+        const { data, error: error2 } = await client.rpc("consume_supersede_decision_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _decision_id: decisionId
+        });
+        if (error2) {
+          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("supersede_decision");
+          throw new Error(error2.message);
+        }
+        result = data;
       } else if (item.write_kind === "label_add") {
         if (item.label_name === "") throw new Error(`label_add item '${item.ref}' has an empty label_name`);
         const labelName = item.label_name ?? "decision-only";
@@ -50519,7 +50542,7 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId) {
 }
 var consumePendingAcceptanceEventTool = {
   name: "consume_pending_acceptance_event",
-  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ticket section) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). B-888: the consumed result ALSO carries `reason` and `brief_id`, surfaced directly from the pending event row (no second `list_activity` round-trip needed) \u2014 when `reason === "clarification-draft"` this consume IS the clarification\'s AC-filing pass, and the caller (harmony-conduct \xA71c) MUST write the `AC-FILING-PASS brief_id=<brief_id> filed=<by_write_kind.acceptance_criterion ?? 0>` marker right here \u2014 its absence is what let the design gate\'s \xA72b self-heal conclude filing never ran and re-file the same acceptance criteria a second time. { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
+  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ticket section, B-941 supersede-decision retires) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). B-888: the consumed result ALSO carries `reason` and `brief_id`, surfaced directly from the pending event row (no second `list_activity` round-trip needed) \u2014 when `reason === "clarification-draft"` this consume IS the clarification\'s AC-filing pass, and the caller (harmony-conduct \xA71c) MUST write the `AC-FILING-PASS brief_id=<brief_id> filed=<by_write_kind.acceptance_criterion ?? 0>` marker right here \u2014 its absence is what let the design gate\'s \xA72b self-heal conclude filing never ran and re-file the same acceptance criteria a second time. { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
   inputSchema: {
     type: "object",
     properties: {
