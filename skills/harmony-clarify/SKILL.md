@@ -543,51 +543,17 @@ Show the rendered `content` verbatim. On the human's command:
 > accept carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
 > §Resolution provenance).
 
-- **accept** → **first file the proposed ACs (B-648) UNLESS this brief's payload carries a `label_add`
-  item (B-688 — see branch B below), then execute the de-scope block (B-518), then resolve.**
+- **accept** → execute the de-scope block (B-518), then resolve, then apply the accepted payload —
+  **the proposed ACs (B-648), and on branch B the `label_add`, are filed EXCLUSIVELY by the ledgered
+  `consume_pending_acceptance_event` call below, never by a manual write first (B-1034)** — the
+  pre-B-1034 direct `manage_acceptance_criteria` call in branch A double-filed against that same
+  ledgered insert (the ledger's `ON CONFLICT` key can't see a write it didn't make); branch B already
+  had this right.
 
-  **A. This brief's `doc.payload` has NO `label_add` item — the overwhelming majority of clarify briefs,
-  unchanged behavior.** **Idempotency (B-744, corrected — reopened after a verify rejection) — the
-  filing-pass RECORD is the marker, never a ticket-wide "has any AC" check.** A ticket-wide check is the
-  exact B-698 defect: some unrelated AC predating this clarification would silently read as "clarify
-  already ran" and drop the happy-path set this accept owes the ticket. The record is scoped to
-  **this clarification brief's own id** — `brief.id` (the `briefs` row id: what `compose_brief`
-  returns on a same-turn compose→accept, what `get_brief` returns on a resumed one, and the same id
-  `resolve_brief` later records as `brief_resolved`'s `metadata.brief_id`) — **never the brief's
-  `decision_ref.id`** (a different id space entirely: the Accepted `specification` DECISION
-  this clarification produced, not the brief that produced it). Using the decision id is exactly the
-  live-production defect this rework fixes (caught at verify against B-756 and B-691): the marker is
-  written under a `brief_id=` label but holds a decision id, so a later lookup keyed on the real
-  brief id never matches and the guard silently re-files the whole set. `brief.id` needs no
-  round-trip through `get_brief` to stay a usable key — once captured as plain text in the comment
-  at file-time, the value is permanent regardless of whether the brief later stops being queryable as
-  "active"; the earlier "the `briefs` row goes stale" reasoning does not actually favor the decision
-  id, since a plain-text UUID copied into a comment doesn't need the row to stay queryable at all.
-  This is the same id that lets the design-gate self-heal (`harmony-design-decide/SKILL.md` §2b)
-  recognize the SAME record under the SAME key even though it resolves a different brief (its own
-  product-design brief) entirely — see that section for how it recovers this clarification brief's
-  id without ever holding the brief object itself. Check first:
-  ```
-  mcp__harmony__list_comments({ task_id })
-  ```
-  Match a line `AC-FILING-PASS brief_id=<brief.id> filed=<N>` — an exact `brief_id`
-  match, never fuzzy text matching against rendered brief prose.
-  - **Found → skip the filing** (the legitimate same-accept-reapplied case — a web accept raced by
-    a running session's self-heal, or a re-conducted accept). No new write.
-  - **Not found → file the brief's full proposed happy-path set unconditionally** — regardless of
-    what other unrelated ACs already exist on the ticket — from the brief's structured proposed-ACs
-    data (step 3's derived set, not re-parsed from rendered markdown), onto the ticket unchecked:
-    ```
-    mcp__harmony__manage_acceptance_criteria({ task_id, add: [{ content: "..." }, ...] })
-    ```
-    then write the filing-pass record — **a zero-count pass still writes it** (a silent zero is
-    exactly the original bug's failure mode, so zero must be exactly as loud as N):
-    ```
-    mcp__harmony__add_comment({ task_id, content: `AC-FILING-PASS brief_id=${brief.id} filed=${N}` })
-    ```
-  This one comment IS the idempotency marker — no second mechanism, and never `brief_resolved` (it
-  fires the instant the human accepts, before filing runs, so a web-accepted-no-session clarification
-  reads as "already filed" while filing is still outstanding — the same bug under a new name).
+  **A. This brief's `doc.payload` has NO `label_add` item — the overwhelming majority of clarify briefs.**
+  Nothing to file here directly. Proceed straight to the de-scope block below (B-518), then
+  `resolve_brief`, then **A (continued)** — the ledgered apply there files the ACs, and the
+  filing-pass marker is written from that same call's own count.
 
   **B. This brief's `doc.payload` DOES carry a `label_add` item (B-688 — clarify proposed decision-only
   at step 4).** The ONLY thing that can safely apply a `label_add` write is `consume_label_add_write`
@@ -624,13 +590,46 @@ Show the rendered `content` verbatim. On the human's command:
   response carries `pending_acceptance_event_id` — capture it as `event_id` for what follows in both
   branches.
 
-  **A (continued) — finalize the deferred advance NOW, same session (B-797).** You just filed the
-  ACs (and any de-scope) yourself above, but B-866/B-867 mean the brief's payload can ALSO carry
-  `gate_slot`/`knowledge_entry_content` items this skill never materializes on its own — so this is NOT
-  commit-only. Call
-  `mcp__harmony__consume_pending_acceptance_event({ task_id })` right away, in this same turn, so those
-  two write kinds actually land (the AC/checklist items you already filed are idempotently skipped by
-  their own ledger, so this does not double-file anything).
+  **A (continued) — apply the payload and finalize the deferred advance NOW, same session (B-797,
+  B-1034).** Call
+  `mcp__harmony__consume_pending_acceptance_event({ task_id })` right away, in this same turn. This is
+  the SINGLE write that files the brief's proposed ACs — and any de-scope-carried
+  `gate_slot`/`knowledge_entry_content` items B-866/B-867 added — there is no earlier manual
+  `manage_acceptance_criteria` call to double it (B-1034 removed that call from this branch): the
+  ledger's own idempotency, keyed on `(event_id, write_kind, external_ref)`, is what makes a repeat
+  accept safe now — a repeat reports `by_write_kind.acceptance_criterion: 0` rather than re-filing.
+
+  **Idempotency (B-744, corrected — reopened after a verify rejection; re-keyed at B-1034 onto this
+  same ledgered call's own count) — the filing-pass RECORD is the marker, never a ticket-wide "has any
+  AC" check.** A ticket-wide check is the exact B-698 defect: some unrelated AC predating this
+  clarification would silently read as "clarify already ran" and drop the happy-path set this accept
+  owes the ticket. The record is scoped to **this clarification brief's own id** — `brief.id` (the
+  `briefs` row id: what `compose_brief` returns on a same-turn compose→accept, what `get_brief`
+  returns on a resumed one, and the same id `resolve_brief` later records as `brief_resolved`'s
+  `metadata.brief_id`) — **never the brief's `decision_ref.id`** (a different id space entirely: the
+  Accepted `specification` DECISION this clarification produced, not the brief that produced it).
+  Using the decision id is exactly the live-production defect this rework fixes (caught at verify
+  against B-756 and B-691): the marker is written under a `brief_id=` label but holds a decision id, so
+  a later lookup keyed on the real brief id never matches and the guard silently re-files the whole set.
+  `brief.id` needs no round-trip through `get_brief` to stay a usable key — once captured as plain
+  text in the comment at file-time, the value is permanent regardless of whether the brief later stops
+  being queryable as "active"; the earlier "the `briefs` row goes stale" reasoning does not actually
+  favor the decision id, since a plain-text UUID copied into a comment doesn't need the row to stay
+  queryable at all. This is the same id that lets the design-gate self-heal
+  (`harmony-design-decide/SKILL.md` §2b) recognize the SAME record under the SAME key even though it
+  resolves a different brief (its own product-design brief) entirely — see that section for how it
+  recovers this clarification brief's id without ever holding the brief object itself.
+
+  Write the filing-pass marker using the EXACT newly-applied AC count THIS call reports — never
+  re-derive it — **a zero-count pass still writes it** (a silent zero is exactly the original bug's
+  failure mode, so zero must be exactly as loud as N):
+  ```
+  mcp__harmony__add_comment({ task_id, content: `AC-FILING-PASS brief_id=${brief.id} filed=${by_write_kind.acceptance_criterion ?? 0}` })
+  ```
+  This one comment IS the idempotency marker — no second mechanism, and never `brief_resolved` (it
+  fires the instant the human accepts, before filing runs, so a web-accepted-no-session clarification
+  reads as "already filed" while filing is still outstanding — the same bug under a new name).
+
   **Decision-only fast-forward (B-681):** if the ticket ALREADY carried the `decision-only` label before
   this accept (the brief carried the completion line for that reason — branch A never proposes the label
   itself), run the trailing mechanical completion the accept just authorized:
