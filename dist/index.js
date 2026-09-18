@@ -43885,6 +43885,20 @@ function normalizeHtmlEntities(text) {
     (seg) => seg.code ? seg.text : seg.text.replace(ENTITY_PATTERN, (m) => ENTITY_MAP[m] ?? m)
   ).join("");
 }
+var TAG_LIKE_PATTERN = /<\/?[a-zA-Z][\w-]*(?:\s[^<>]*)?>/;
+var LINE_BREAK_PATTERN = /[\n\r]/;
+function validateTitle(title, cap = 200) {
+  if (title.length > cap) {
+    throw new Error(`Title exceeds 200 characters (received ${title.length}).`);
+  }
+  const markupMatch = title.match(TAG_LIKE_PATTERN);
+  if (markupMatch) {
+    throw new Error(`Title contains disallowed markup: \`${markupMatch[0]}\``);
+  }
+  if (LINE_BREAK_PATTERN.test(title)) {
+    throw new Error("Title cannot contain a line break.");
+  }
+}
 
 // src/tools/provenance.ts
 var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
@@ -48722,6 +48736,7 @@ async function createTask(client, projectId, userId, args) {
   const status = args.status ?? "Backlog";
   const { data: existing } = await client.from("tasks").select("position").eq("project_id", projectId).eq("status", status).order("position", { ascending: false }).limit(1);
   const nextPosition = (existing?.[0]?.position ?? -1) + 1;
+  validateTitle(args.title);
   const { data, error: error2 } = await client.from("tasks").insert({
     project_id: projectId,
     title: normalizeHtmlEntities(args.title),
@@ -48794,6 +48809,7 @@ async function updateTask(client, projectId, args) {
     updates.subsumed_by_task_id = updates.subsumed_by_task_id === null ? null : await resolveTaskId(client, projectId, updates.subsumed_by_task_id);
   }
   if (typeof updates.title === "string") {
+    validateTitle(updates.title);
     updates.title = normalizeHtmlEntities(updates.title);
   }
   if (typeof updates.description === "string") {
@@ -48894,7 +48910,12 @@ async function bulkCreateTasks(client, projectId, userId, args) {
     const { data: existing } = await client.from("tasks").select("position").eq("project_id", projectId).eq("status", status).order("position", { ascending: false }).limit(1);
     maxPositions[status] = existing?.[0]?.position ?? -1;
   }
-  const rows = args.tasks.map((task) => {
+  const rows = args.tasks.map((task, i) => {
+    try {
+      validateTitle(task.title);
+    } catch (err) {
+      throw new Error(`Task ${i + 1}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    }
     const status = task.status ?? "Backlog";
     const pos = (maxPositions[status] ?? -1) + 1;
     maxPositions[status] = pos;
