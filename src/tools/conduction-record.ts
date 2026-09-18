@@ -121,6 +121,12 @@ export interface ConductionRecord {
   worker_ref: string | null;
   last_worker_exit_code: number | null;
   last_worker_exit_class: string | null;
+  /** B-1040: when this conduction's most-recently-ended leg finished (clean pause / park / complete /
+   *  a retried dirty exit). Deliberately ABSENT from CONDUCTION_COLS below (hence optional here) for
+   *  the same B-846 reason `last_worker_output` was — the daemon runs plugin `main` against the PROD
+   *  board, so selecting a column that only exists once harmony-web's B-1040 migration has been
+   *  promoted would break every read in the window between the two. */
+  last_leg_ended_at?: string | null;
   current_pr_ref: string | null;
   /** B-720, RETIRED — NO LONGER WRITTEN BY ANYTHING. A bounded (64 KB) tail of the LAUNCH COMMAND's
    *  combined stdout/stderr, which the original B-720 wrote here at settlement while calling it
@@ -175,6 +181,22 @@ const CONDUCTION_COLS =
   'retry_count, ' +
   'worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, ' +
   'started_at, created_by, created_at, updated_at, run_config';
+
+/** B-1040 / B-383 — "this DB does not have the `last_leg_ended_at` column (yet)". Same idiom as
+ *  `isMissingBriefHistorySubstrate` (briefs.ts): 42703 = undefined_column, 42P01 = undefined_table,
+ *  PGRST204/PGRST205 = PostgREST "column/table not found in schema cache". It NEVER matches a
+ *  permission error, a transient network failure, or any other error class — those must propagate,
+ *  never be silently read as "substrate absent". */
+export const isMissingLastLegEndedAtColumn = (
+  err: { code?: string; message?: string } | null | undefined,
+): boolean => {
+  if (!err) return false;
+  const code = err.code ?? '';
+  if (code === '42703' || code === '42P01' || code === 'PGRST204' || code === 'PGRST205') return true;
+  const msg = err.message ?? '';
+  if (/last_leg_ended_at/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg)) return true;
+  return false;
+};
 
 // ---------------------------------------------------------------------------
 // createConduction — the atomic lease-acquisition primitive.
@@ -378,6 +400,7 @@ export const CONDUCTION_PATCHABLE_FIELDS = [
   'worker_ref',
   'last_worker_exit_code',
   'last_worker_exit_class',
+  'last_leg_ended_at',
   'current_pr_ref',
   // B-720, RETIRED: the old captured-output columns. NOTHING WRITES THESE ANY MORE — the daemon's
   // settlement write now inserts a `source='launcher'` row into `conduction_leg_output` instead

@@ -157,6 +157,7 @@ import type {
   StealConductionArgs,
   TakeoverConductionArgs,
 } from '../tools/conduction-record.js';
+import { isMissingLastLegEndedAtColumn } from '../tools/conduction-record.js';
 import type { RecordLegOutputArgs } from '../tools/leg-output-record.js';
 import type { Taskish } from '../conductor/poll-loop.js';
 import type { HintSource } from './hints.js';
@@ -771,6 +772,32 @@ async function writeIfHeld(
   return false;
 }
 
+/** B-1040: write `last_leg_ended_at` ISOLATED from whatever other patch already ran at this site — a
+ *  pre-promote prod DB lacking the column must never break the write it's isolated from (the exact
+ *  B-846 precedent, applied to a write this time). `extra` lets the WAIT branch (which has no
+ *  pre-existing write of its own to protect) bundle the exit-class/exit-code fields into this SAME
+ *  isolated call — there is nothing there yet for a substrate-absence failure to break.
+ *
+ *  Returns the SAME true/false contract as `writeIfHeld`: true = written (or degraded because the
+ *  column is absent — the lease is presumed still held, since a thrown Postgrest error is NOT the
+ *  lease-loss signal, which is a null return with no error), false = the lease was lost (writeIfHeld's
+ *  own null-return path already ran state.delete/keeper.stop). Any OTHER error propagates unchanged. */
+async function writeLastLegEndedAt(
+  deps: SchedulerDeps,
+  state: Map<string, WatchBaseline>,
+  keeper: HeartbeatKeeper,
+  row: ConductionRecord,
+  extra: ConductionPatch = {},
+): Promise<boolean> {
+  try {
+    return await writeIfHeld(deps, state, keeper, row, { ...extra, last_leg_ended_at: iso(deps.now()) });
+  } catch (err) {
+    if (!isMissingLastLegEndedAtColumn(err as { code?: string; message?: string })) throw err;
+    deps.log(`conduction ${row.id}: last_leg_ended_at column absent (pre-promote) — skipped this write`);
+    return true;
+  }
+}
+
 async function handleConduction(
   deps: SchedulerDeps,
   state: Map<string, WatchBaseline>,
@@ -1192,6 +1219,18 @@ async function settleTrackedLaunch(
   );
 
   if (outcome.action === 'wait') {
+    // B-1040: record the leg's clean-pause ending as a board fact. Nothing existed on this branch
+    // before this ticket, so bundling the exit-class/exit-code fields into this SAME isolated call is
+    // safe — a pre-promote substrate-absence failure degrades this whole new write to a no-op, which
+    // is no worse than today's total silence on this branch.
+    if (
+      !(await writeLastLegEndedAt(deps, state, keeper, row, {
+        last_worker_exit_class: 'clean-pause',
+        last_worker_exit_code: tracked.exitCode,
+      }))
+    ) {
+      return;
+    }
     state.set(row.id, captureBaseline(after));
     return;
   }
@@ -1201,6 +1240,8 @@ async function settleTrackedLaunch(
   if (outcome.action === 'park' && cls === 'dirty-exit' && tracked.retryCount < deps.config.retryCap) {
     const retryCount = tracked.retryCount + 1;
     if (!(await writeIfHeld(deps, state, keeper, row, { retry_count: retryCount }))) return;
+    // B-1040: last_leg_ended_at, isolated from the retry_count write above.
+    await writeLastLegEndedAt(deps, state, keeper, row);
     // B-717 item 4: EXPONENTIAL backoff (was a flat deps.config.retryBackoffMs) — a flat delay lets
     // N concurrently-dirty-exiting conductions pile every retry back onto a rate limit at the same
     // instant; the base config knob is unchanged, no new env var.
@@ -1231,6 +1272,9 @@ async function settleTrackedLaunch(
     last_worker_exit_code: tracked.exitCode,
     last_worker_exit_class: cls,
   });
+
+  // B-1040: last_leg_ended_at, isolated from the terminal status/exit-class write above.
+  await writeLastLegEndedAt(deps, state, keeper, row);
 
   // B-720: the captured LAUNCH-COMMAND output goes out as a SEPARATE, never-throwing write, AFTER
   // the terminal status patch above and never folded into it. See flushLaunchOutput.
