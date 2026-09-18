@@ -147,25 +147,33 @@ describe('harmony-orchestrate skill contract', () => {
   });
 
   describe('watch mechanics (§6)', () => {
-    it('daemon-log clean-pause + park greps are the primary signal, covering held/human-held tickets too', () => {
+    it('the board-watch subscriber is the primary signal, replacing the daemon log', () => {
+      expect(flat).toMatch(/your project's own board-watch subscriber/);
+      expect(flat).toMatch(/primary signal/);
+    });
+
+    it('documents the four leg-end line categories, covering held/human-held tickets too', () => {
       expect(flat).toMatch(/clean-pause/);
-      expect(flat).toContain('park|no-progress|error|failed');
+      expect(flat).toMatch(/park \(<reason>\)/);
+      expect(flat).toMatch(/complete \(terminal\)/);
+      expect(flat).toMatch(/dirty-exit/);
       expect(flat).toMatch(/including the held and human-held ones/);
     });
 
-    it('cursor advances to the last PROCESSED line, never to "now"', () => {
-      expect(flat).toMatch(/advanced to the last line you processed/);
-      expect(flat).toMatch(/never to "now"/);
+    it('an awaiting_human_input flip is documented as a HINT, never a pause', () => {
+      expect(flat).toMatch(/hint/);
+      expect(flat).toMatch(/never as a pause/);
+    });
+
+    it('documents the UNAVAILABLE exit and the fallback chain (daemon log, then polling)', () => {
+      expect(flat).toMatch(/unavailable/);
+      expect(flat).toMatch(/does not retry in-process/);
+      expect(flat).toMatch(/fall back to whatever log-tailing option the project's own guidance documents/);
     });
 
     it('the watch runs harness-backgrounded, never a shell `&` orphan', () => {
       expect(flat).toMatch(/run_in_background/);
       expect(flat).toMatch(/orphan dies with its shell/);
-    });
-
-    it('held/human-held briefs are excluded from awaiting-polls but always present in the parks-grep', () => {
-      expect(flat).toMatch(/never poll the awaiting flag of a brief you are deliberately holding/);
-      expect(flat).toMatch(/holds live in the parks-grep only/);
     });
   });
 
@@ -200,9 +208,8 @@ describe('harmony-orchestrate skill contract', () => {
       expect(flat).toMatch(/mechanizes the one-orchestrator-seat-per-board rule/);
     });
 
-    it('also records the two draft successor notes (repo-lane lock; awaiting-you feed), unchanged from the draft', () => {
+    it('records a successor note: a future daemon-enforced repo-lane lock supersedes this section (§4)', () => {
       expect(flat).toMatch(/a future daemon-enforced repo-lane lock supersedes this section'?s prose/);
-      expect(flat).toMatch(/a future daemon\/board "?awaiting-you"? feed supersedes this section'?s log-grep watching/);
     });
   });
 

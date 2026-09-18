@@ -201,39 +201,49 @@ package goes into the human's queue, with your independent findings summarized b
 
 ## 6. Watching effectively
 
-The primary signal is the daemon log; the board's awaiting flag is a trap (§2). Mechanics that
-survived a day of live fire:
+**The primary signal is your project's own board-watch subscriber** — a Realtime subscriber on
+the board's own private workspace topic, not the daemon's console log; if the project provides
+one, its own orchestration guidance names it and gives the exact invocation. It runs from any
+machine holding the right credentials; the board's `awaiting_human_input` flag is still a trap
+when read directly (§2) — the subscriber exists precisely so you never have to poll it yourself.
 
-- **Watch the log for two patterns**: `B-<n>.*clean-pause` for tickets whose ball can come to
-  you, and `B-<n>[^0-9].*(park|no-progress|error|failed)` for EVERY shepherded ticket including
-  the held and human-held ones — a park needs you regardless of whose queue the brief is in.
-- **Cursor discipline**: scan from a SINCE timestamp advanced to the last line you PROCESSED —
-  never to "now". Set it ahead of what you've handled and you skip real events (a 4-second gap
-  cost a 15-minute delay once); leave it behind and every re-arm insta-fires on old lines. After
-  handling an event, advance the cursor to that line +1s and re-arm.
-- **Run the watch under the harness** (`run_in_background`), never as a shell-`&` orphan — an
-  orphan dies with its shell and you wake up to a dead watch. If the harness reaps it repeatedly,
-  re-arm at most twice more, then degrade to a persistent Monitor or scheduled re-scans.
-- **Never poll the awaiting flag of a brief you are deliberately holding** or the human is
-  holding — it is permanently true and insta-fires the watch. Holds live in the parks-grep only.
-- **Timeouts are clean exits, not failures**: a 90-minute quiet timeout means re-check the board
-  once, then either re-arm (legs alive) or let the watch REST (everything human-held, nothing
-  running that could park) — say so and pick it back up on the next human action.
+- **Run it against the tickets you're shepherding, by key** (see the project's own orchestration
+  guidance for the concrete command). It should refetch (never trust the broadcast payload alone)
+  on every hint and print one line per ticket the moment its leg cleanly pauses, parks, or
+  finishes — `clean-pause`, `park (<reason>)`, `complete (terminal)`, or `dirty-exit` — covering
+  EVERY shepherded ticket, including the held and human-held ones. A park needs you regardless of
+  whose queue the brief is in.
+- **An `awaiting_human_input` flip prints as a `HINT` line, never as a pause** — the flag flips
+  mid-leg, so a HINT means "something moved, worth a look", not "the ball is here now". Re-read
+  the row before treating any signal as a resolved pause.
+- **Run it under the harness** (`run_in_background`), never as a shell-`&` orphan — an orphan
+  dies with its shell and you wake up to a dead watch.
+- **Adding a ticket mid-session**: same-session re-invocation is a **piggyback by design** (§2) —
+  fold the new key into the SAME subscriber's argument list (restart it) rather than leaving it
+  unwatched or starting a second one.
+- **`UNAVAILABLE` means the board channel itself could not be reached** (e.g. this project's
+  realtime layer is not live yet) — the subscriber says so in one unmistakable line and exits; it
+  does not retry in-process. Fall back to whatever log-tailing option the project's own guidance
+  documents (only if you happen to be co-located with the host running the leg) or to polling the
+  board (`list_conductions` heartbeat + `get_task` on every dispatched ticket) until it's resolved.
+- **A dropped-then-recovered connection reconnects on its own** — the library's own capped
+  rejoin is left to run unwrapped; you'll see one log line on the drop and one on the
+  re-subscribe, with no human action needed in between.
+- **Timeouts are clean exits, not failures**: if nothing has printed in a while, that means
+  nothing has happened — re-check the board once if you're unsure, but a quiet subscriber on a
+  quiet ticket set is the expected steady state, not a failure to diagnose.
 - **CI runs get their own until-loop polls** (`until status == completed; sleep 30`), one per
-  run, background — they are not the daemon watch's job.
-- **After a resolve, expect the wake within ~1 minute** in the log; a wake that doesn't come by
-  the next timeout is worth one manual re-read of the row and the pending-event marker before
-  suspecting the daemon.
+  run, background — they are not this watch's job.
+- **After a resolve, expect the wake within a couple of seconds**, not a minute — a wake that
+  doesn't come is worth one manual re-read of the row and the pending-event marker before
+  suspecting the subscriber.
 - **Re-invocation and the ONE watch loop (B-917).** A same-session "pick up B-x" folds the new
-  ticket straight into this loop's existing grep sets and cursor — never a second `run_in_background`
-  watch (§1). > **One orchestrator seat per board.** Before arming a watch at all, satisfy yourself
-  no other session already has one running against this board's daemon log — a second live watch
-  means two cursors racing the same log and two agents racing the same briefs. This is currently
-  enforced only by discipline (no mechanical lock exists yet, §1's successor note); when in doubt,
-  ask the human rather than assume the loop is yours alone to start.
-
-A future daemon/board "awaiting-you" feed supersedes this section's log-grep watching; prune it
-when that lands.
+  ticket straight into this loop's existing subscriber process — never a second
+  `run_in_background` watch (§1). > **One orchestrator seat per board.** Before arming a watch at
+  all, satisfy yourself no other session already has one running against this board — a second
+  live watch means two processes racing the same briefs. This is currently enforced only by
+  discipline (no mechanical lock exists yet, §1's successor note); when in doubt, ask the human
+  rather than assume the loop is yours alone to start.
 
 ## 7. Talking to the human
 
