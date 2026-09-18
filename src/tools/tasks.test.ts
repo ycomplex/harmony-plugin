@@ -236,6 +236,27 @@ describe('updateTask', () => {
       expect.objectContaining({ subsumed_by_task_id: 'umbrella-uuid' }),
     );
   });
+
+  // B-1033: guard against oversized/markup titles.
+  it('B-1033: rejects an oversized title and does not update', async () => {
+    const updatePayloadSpy = vi.fn();
+    const client = makeUpdatePayloadClient(updatePayloadSpy);
+
+    await expect(
+      updateTask(client, 'proj-1', { task_id: 'B-1', title: 'a'.repeat(201) }),
+    ).rejects.toThrow('Title exceeds 200 characters (received 201).');
+    expect(updatePayloadSpy).not.toHaveBeenCalled();
+  });
+
+  it('B-1033: rejects a title containing markup and does not update', async () => {
+    const updatePayloadSpy = vi.fn();
+    const client = makeUpdatePayloadClient(updatePayloadSpy);
+
+    await expect(
+      updateTask(client, 'proj-1', { task_id: 'B-1', title: '<title>Something</title>' }),
+    ).rejects.toThrow('Title contains disallowed markup: `<title>`');
+    expect(updatePayloadSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('createTask', () => {
@@ -311,6 +332,27 @@ describe('createTask', () => {
     await createTask(client, 'proj-1', 'user-1', { title: 'Standalone' });
 
     expect(insertSpy.mock.calls[0][0]).toMatchObject({ parent_task_id: null, epic_id: null });
+  });
+
+  // B-1033: guard against oversized/markup titles.
+  it('B-1033: rejects an oversized title and does not insert', async () => {
+    const insertSpy = vi.fn();
+    const client = makeClient(insertSpy, [], null);
+
+    await expect(
+      createTask(client, 'proj-1', 'user-1', { title: 'a'.repeat(201) }),
+    ).rejects.toThrow('Title exceeds 200 characters (received 201).');
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  it('B-1033: rejects a title containing markup and does not insert', async () => {
+    const insertSpy = vi.fn();
+    const client = makeClient(insertSpy, [], null);
+
+    await expect(
+      createTask(client, 'proj-1', 'user-1', { title: '</title>\n<parameter name="description">body' }),
+    ).rejects.toThrow('Title contains disallowed markup: `</title>`');
+    expect(insertSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -1208,6 +1250,37 @@ describe('bulkCreateTasks', () => {
         tasks: [{ title: 'a', parent_task_id: 'C-999' }],
       }),
     ).rejects.toThrow(/No task\(s\) with number/);
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  // B-1033: one bad title in a batch aborts the WHOLE call -- the per-item
+  // .map() runs fully before the single .insert(rows) call, so a throw
+  // anywhere in it means no row for the batch is ever inserted.
+  it('B-1033: rejects the whole call with a "Task {N}: " prefix and inserts nothing when one item has a bad title', async () => {
+    const insertSpy = vi.fn();
+    const client = makeBulkClient({ maxByStatus: { Backlog: -1 }, insertSpy });
+
+    await expect(
+      bulkCreateTasks(client, 'proj-1', 'user-1', {
+        tasks: [
+          { title: 'Good title one' },
+          { title: 'a'.repeat(201) },
+          { title: 'Good title three' },
+        ],
+      }),
+    ).rejects.toThrow('Task 2: Title exceeds 200 characters (received 201).');
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  it('B-1033: rejects a batch item with markup, prefixed with its 1-indexed position', async () => {
+    const insertSpy = vi.fn();
+    const client = makeBulkClient({ maxByStatus: { Backlog: -1 }, insertSpy });
+
+    await expect(
+      bulkCreateTasks(client, 'proj-1', 'user-1', {
+        tasks: [{ title: '<title>Something</title>' }],
+      }),
+    ).rejects.toThrow('Task 1: Title contains disallowed markup: `<title>`');
     expect(insertSpy).not.toHaveBeenCalled();
   });
 });
