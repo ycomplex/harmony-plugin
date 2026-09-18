@@ -687,6 +687,28 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
     expect(h.launches()).toHaveLength(1);
   });
 
+  it('B-1040: a clean-pause exit ALSO stamps last_leg_ended_at, isolated from the (nonexistent) status write — status stays untouched', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    await h.pass();
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    hooksOnLaunchPausesAgain(h);
+    await h.pass(); // fire
+
+    h.setNow(h.now() + 5_000); // a distinct clock value, active at settlement
+    await h.pass(); // settle → classify 'wait'
+
+    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
+      last_worker_exit_class: 'clean-pause',
+      last_worker_exit_code: 0,
+      last_leg_ended_at: iso(h.now()),
+    });
+    expect(h.getConduction('cond-1').last_leg_ended_at).toBe(iso(h.now()));
+    // The isolated write never touches status — proof of isolation from the (absent) status write
+    // on this branch.
+    expect(h.getConduction('cond-1').status).toBe('active');
+  });
+
   it("case 4 (B-659 class): a dirty exit parks with 'dirty-exit' and there is NO second fire on the next pass", async () => {
     const h = makeHarness({
       conductions: [conduction()],
@@ -705,6 +727,9 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
       last_worker_exit_class: 'dirty-exit',
     });
     expect(h.getConduction('cond-1').status).toBe('parked');
+    // B-1040: last_leg_ended_at also landed, isolated from the status write above, at the
+    // settle-time clock — read h.now() before any later h.pass() calls in this test mutate it.
+    expect(h.getConduction('cond-1').last_leg_ended_at).toBe(iso(h.now()));
 
     // Park-immediately means park-and-STOP: no auto-retry on any later pass.
     await h.pass();
@@ -731,6 +756,9 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
     expect(h.launches()).toHaveLength(1);
     expect(h.reaps()).toHaveLength(1);
     expect(h.getConduction('cond-1').retry_count).toBe(1);
+    // B-1040: the FIRST retry attempt's isolated write also landed last_leg_ended_at, at this
+    // settle-time clock — read before the later backoff/park passes advance the clock further.
+    expect(h.getConduction('cond-1').last_leg_ended_at).toBe(iso(h.now()));
     expect(h.deps.sleep).not.toHaveBeenCalled(); // B-717: no blocking sleep — a ready gate instead
     expect(h.ready()).toEqual(['cond-1']);
 
@@ -844,6 +872,8 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
       last_worker_exit_class: 'split-umbrella',
     });
     expect(h.getConduction('cond-1').status).toBe('completed');
+    // B-1040: last_leg_ended_at also landed, isolated from the terminal status write above.
+    expect(h.getConduction('cond-1').last_leg_ended_at).toBe(iso(h.now()));
   });
 
   it("case 6: a stale ticket parks the conduction with 'stale' (terminal-only stale constraint)", async () => {
