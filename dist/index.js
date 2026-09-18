@@ -45066,6 +45066,7 @@ var CONDUCTION_PATCHABLE_FIELDS = [
   "worker_ref",
   "last_worker_exit_code",
   "last_worker_exit_class",
+  "last_leg_ended_at",
   "current_pr_ref",
   // B-720, RETIRED: the old captured-output columns. NOTHING WRITES THESE ANY MORE — the daemon's
   // settlement write now inserts a `source='launcher'` row into `conduction_leg_output` instead

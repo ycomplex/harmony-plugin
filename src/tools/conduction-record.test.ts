@@ -24,6 +24,7 @@ import {
   isConductionLive,
   isConductionHumanOwned,
   isConductionTerminal,
+  isMissingLastLegEndedAtColumn,
   type ConductionRecord,
   type ConductionStatus,
 } from './conduction-record.js';
@@ -726,6 +727,32 @@ describe('the canonical status axis', () => {
 
   it('CONDUCTION_PATCHABLE_FIELDS includes reap_requested_at (B-740)', () => {
     expect(CONDUCTION_PATCHABLE_FIELDS).toContain('reap_requested_at');
+  });
+
+  it('CONDUCTION_PATCHABLE_FIELDS includes last_leg_ended_at (B-1040)', () => {
+    expect(CONDUCTION_PATCHABLE_FIELDS).toContain('last_leg_ended_at');
+  });
+});
+
+describe('isMissingLastLegEndedAtColumn (B-1040)', () => {
+  it('matches only schema-absence naming last_leg_ended_at, never another error class', () => {
+    expect(
+      isMissingLastLegEndedAtColumn({ message: "Could not find the 'last_leg_ended_at' column in the schema cache" }),
+    ).toBe(true);
+    expect(isMissingLastLegEndedAtColumn({ code: '42703', message: 'column conductions.last_leg_ended_at does not exist' })).toBe(
+      true,
+    );
+    expect(isMissingLastLegEndedAtColumn({ code: '42P01', message: 'relation does not exist' })).toBe(true);
+    expect(isMissingLastLegEndedAtColumn({ code: 'PGRST204', message: 'not found' })).toBe(true);
+    expect(isMissingLastLegEndedAtColumn({ code: 'PGRST205', message: 'not found' })).toBe(true);
+    // A permission error and a transient failure must never match. Note: a bare 42703/42P01/
+    // PGRST204/PGRST205 CODE is treated as substrate-absent regardless of which column the message
+    // names — same as isMissingBriefHistorySubstrate's own idiom — so the negative message-only
+    // check below deliberately omits a code.
+    expect(isMissingLastLegEndedAtColumn({ code: '42501', message: 'permission denied' })).toBe(false);
+    expect(isMissingLastLegEndedAtColumn({ message: "column conductions.run_config does not exist" })).toBe(false);
+    expect(isMissingLastLegEndedAtColumn({ message: 'fetch failed' })).toBe(false);
+    expect(isMissingLastLegEndedAtColumn(null)).toBe(false);
   });
 });
 

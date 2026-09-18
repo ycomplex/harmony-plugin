@@ -29951,6 +29951,14 @@ var CONDUCTION_STATUSES = [
   ...CONDUCTION_TERMINAL_STATUSES
 ];
 var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, reap_requested_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
+var isMissingLastLegEndedAtColumn = (err) => {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42703" || code === "42P01" || code === "PGRST204" || code === "PGRST205") return true;
+  const msg = err.message ?? "";
+  if (/last_leg_ended_at/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg)) return true;
+  return false;
+};
 async function getConduction(client, id) {
   if (!id) throw new Error("id is required");
   const { data, error } = await client.from("conductions").select(CONDUCTION_COLS).eq("id", id).maybeSingle();
@@ -29970,6 +29978,7 @@ var CONDUCTION_PATCHABLE_FIELDS = [
   "worker_ref",
   "last_worker_exit_code",
   "last_worker_exit_class",
+  "last_leg_ended_at",
   "current_pr_ref",
   // B-720, RETIRED: the old captured-output columns. NOTHING WRITES THESE ANY MORE — the daemon's
   // settlement write now inserts a `source='launcher'` row into `conduction_leg_output` instead
@@ -32172,6 +32181,15 @@ async function writeIfHeld(deps, state, keeper, row, patch) {
   state.delete(row.id);
   return false;
 }
+async function writeLastLegEndedAt(deps, state, keeper, row, extra = {}) {
+  try {
+    return await writeIfHeld(deps, state, keeper, row, { ...extra, last_leg_ended_at: iso(deps.now()) });
+  } catch (err) {
+    if (!isMissingLastLegEndedAtColumn(err)) throw err;
+    deps.log(`conduction ${row.id}: last_leg_ended_at column absent (pre-promote) \u2014 skipped this write`);
+    return true;
+  }
+}
 async function handleConduction(deps, state, keeper, excluded, runtime, row, stealCandidates, waitingCandidates) {
   if (row.lease_holder !== deps.leaseHolder) {
     await handleForeignConduction(deps, state, keeper, excluded, runtime, row, stealCandidates, waitingCandidates);
@@ -32387,12 +32405,19 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
     `${label(row, after, deps.projectKey)}: worker exit code=${tracked.exitCode ?? "null"} \u2192 ${outcome.action} (${cls})`
   );
   if (outcome.action === "wait") {
+    if (!await writeLastLegEndedAt(deps, state, keeper, row, {
+      last_worker_exit_class: "clean-pause",
+      last_worker_exit_code: tracked.exitCode
+    })) {
+      return;
+    }
     state.set(row.id, captureBaseline(after));
     return;
   }
   if (outcome.action === "park" && cls === "dirty-exit" && tracked.retryCount < deps.config.retryCap) {
     const retryCount = tracked.retryCount + 1;
     if (!await writeIfHeld(deps, state, keeper, row, { retry_count: retryCount })) return;
+    await writeLastLegEndedAt(deps, state, keeper, row);
     const backoffMs = deps.config.retryBackoffMs * 2 ** (retryCount - 1);
     deps.log(
       `${label(row, after, deps.projectKey)}: dirty exit \u2014 retrying (attempt ${retryCount}/${deps.config.retryCap}) after reap + ${backoffMs}ms backoff`
@@ -32413,6 +32438,7 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
     last_worker_exit_code: tracked.exitCode,
     last_worker_exit_class: cls
   });
+  await writeLastLegEndedAt(deps, state, keeper, row);
   await flushLaunchOutput(deps, row, tracked);
 }
 async function flushLaunchOutput(deps, row, tracked) {
