@@ -25,12 +25,30 @@ local file edit — and drops only `NotebookEdit`, which this seat never has cau
 
 ## 1. The contract (non-negotiable defaults; the human can widen or narrow per session)
 
-- **You resolve forward gates** (clarify / decompose / design / plan) with
-  `mcp__harmony__resolve_brief {command:'accept', provenance:'agent-synthesized:<your-mode>'}`.
-  **Release and verify accepts are the human's** — the hard floor. Exception: when the human says
-  the merge is already done, record their decision with
-  `mcp__harmony__resolve_brief {command:'accept', provenance:'human-in-session'}` and a remark
-  telling the release leg the merge is DONE — confirm, don't re-merge.
+- **Precedence.** The authority tier this seat holds for a run is given by the operator at
+  startup — never assumed, never carried over from a previous session. The session grant
+  answered at startup overrides this project's own written policy (its workspace method
+  document, its CLAUDE.md files), which overrides this skill's generic defaults below; this
+  skill asserts no default tier of its own.
+- **Absent a grant, the seat is review-only.** With a forward-gate grant, resolve clarify /
+  decompose / design / plan with `mcp__harmony__resolve_brief {command:'accept',
+  provenance:'agent-synthesized:<your-mode>'}`. Absent a grant, review each brief per §3 and hand
+  your recommendation to the human instead of resolving it.
+- **A per-ticket hold is honored, never resolved.** A project may mark individual tickets whose
+  clarify a human resolves. When a ticket carries such a hold, review its brief exactly as any
+  other (§3), then hand it to the human instead of accepting it — reviewed and handed over, never
+  resolved, regardless of the session's forward-gate grant.
+- **Release and verify accepts are the human's — the hard floor.** Release and verify accepts
+  are never delegable to this seat, on any repository, regardless of any flag or prior
+  authorization; any exception is a project's own explicit, written ruling, never an inference
+  from a trial or another agent's grant. Exception: when the human says the merge is already
+  done, record their decision with `mcp__harmony__resolve_brief {command:'accept',
+  provenance:'human-in-session'}` and a remark telling the release leg the merge is DONE —
+  confirm, don't re-merge.
+- **Release recording is limited to verifiable facts.** When recording a merge the human already
+  performed, cite only the PR, its merge sha, the merge time, and the run id of the deploy it
+  triggered — each verified against the repo host before stamping it on the ticket. Never merge
+  yourself, and never record a fact you have not independently checked.
 - **Elicitations**: answer with `mcp__harmony__submit_elicitation_answers`, never
   `mcp__harmony__conclude_elicitation` (the conclude is the owning leg's). Answer from board
   evidence. When a question was explicitly reserved for the human (in the ticket text or a
@@ -43,9 +61,9 @@ local file edit — and drops only `NotebookEdit`, which this seat never has cau
   filing word.
 - **Disclose every direct board write** (comments, entry heals, corrections) in your next message.
 - **Remark vs detail vs iterate**: a `remark` rides an accept and is consumed by EXACTLY ONE next
-  leg — use it for forward instructions (build gotchas, fresh-main notes, version targets).
-  `detail` is inert. Ordering/precondition feedback is an `iterate`, never a remark — a remark
-  cannot reshape the artifact it rides past.
+  leg — use it for forward instructions (build gotchas, a freshly-pulled-base note, version or
+  target details). `detail` is inert. Ordering/precondition feedback is an `iterate`, never a
+  remark — a remark cannot reshape the artifact it rides past.
 - **Re-invocation semantics (B-917 design gate).** Being asked to pick up another ticket, or
   re-invoked in a fresh session, means something different depending on which session is asking:
   - **SAME-SESSION re-invocation** ("pick up B-x" while this session is already orchestrating) is
@@ -85,7 +103,7 @@ Iron rules, each bought with a real failure:
 - **Re-read the row immediately before EVERY resolve verb** and match BOTH the brief id in
   `awaiting_human_ref` AND the reason against what you reviewed. `resolve_brief` targets the
   ACTIVE brief by task id — if the state moved under you (a browser accept, a recompose), your
-  verb lands on the wrong brief. A founder message like "I merged it" is a tripwire: re-read
+  verb lands on the wrong brief. A message from whoever holds release authority, like "I merged it", is a tripwire: re-read
   before touching anything.
 - **One leg wakes per marker.** After a resolve/answer, the daemon wakes the leg on its next
   pass (~1 min). Never double-drive: while a leg is running, make no writes against that ticket.
@@ -135,20 +153,24 @@ codebase read.
 ## 4. PR-pipeline serialization
 
 The plan brief's `scope.repos` is where a ticket's footprint becomes fact — classify there, and
-treat the plan gate as the throttle:
+treat the plan gate as the throttle. Lanes are per repository:
 
-- **One ticket building per repo at a time.** A web ticket and a plugin ticket may build
-  concurrently; two web tickets may not. A both-repo ticket needs BOTH lanes.
+- **Builds run in parallel across repositories**, and a build in one repository never blocks a
+  build in another. Within a single repository, merges are serial: rebase onto the latest merged
+  head between merges, so two PRs from the same repository never land on diverged bases. A project
+  may declare a narrower width in its own guidance (e.g. one build at a time in a given
+  repository) — read that guidance before assuming parallel-within-repo is safe.
 - **Hold = don't resolve the plan brief.** The brief stays active; nothing runs; nothing is lost.
-  Release = accept it, usually with a remark: build from freshly-pulled main, the plugin version
-  to target, any same-file interplay ("main now carries X's changes to the file you touch").
-- **Plugin lane specifics**: every plugin PR bumps `.claude-plugin/plugin.json`; two open PRs
-  bumping to the SAME version merge cleanly and the second silently never ships — so exactly one
-  unmerged plugin PR at a time, and the next plan releases only after the previous PR merges.
-- **Same-file interplay outranks lane freedom**: a ticket whose diff overlaps another's merged-
-  but-recent surface builds AFTER that merge, on top of it, even if its lane is technically free.
-- **Order both-repo tickets last**, and between two of them prefer the elder or the one other
-  work depends on. State the queue to the human whenever it changes.
+  Release = accept it, usually with a remark: build from a freshly-pulled base, any version or
+  target to build against, any same-file interplay ("the base now carries X's changes to the file
+  you touch").
+- **A plan is held only for same-file overlap with an open PR** — a ticket whose diff overlaps
+  another's merged-but-recent surface, or another's still-open PR touching the same files, builds
+  AFTER that PR lands, on top of it, even when its repository lane is otherwise free. Same-file
+  interplay is the only thing that outranks lane freedom.
+- **Order a multi-repository ticket's lanes together**, and between two same-repository tickets
+  prefer the elder or the one other work depends on. State the queue to the human whenever it
+  changes.
 
 A future daemon-enforced repo-lane lock supersedes this section's prose; prune it when that lands.
 
@@ -161,10 +183,10 @@ Independently verify — never from the brief's own claims:
 - **CI by conclusion**: `gh run view --json conclusion` (never watch exit codes, never
   `--exit-status`). If a run is in progress, poll it in a background until-loop and finish the
   review when it settles.
-- **Branch state**: `gh` / `git compare main...<head>` — ahead/behind (behind ⇒ the strict
+- **Branch state**: `gh` / `git compare <base>...<head>` — ahead/behind (behind ⇒ the strict
   up-to-date floor applies; ahead-only with an emptied diff ⇒ a gutted rebase — check the diff
   stat).
-- **Plugin bump freshness**: branch manifest version vs main's, every time.
+- **Version-manifest freshness, if the project tracks one**: branch manifest version vs the base's, every time.
 - **Files vs plan**: the PR's file list against the accepted plan's surfaces; investigate any
   surplus or missing file.
 - **Evidence block**: executed tests vs walk-at-verify vs unproven — deferred-to-verify items are
