@@ -148,7 +148,7 @@ describe('harmony-orchestrate skill contract', () => {
 
   describe('watch mechanics (§6)', () => {
     it('the board-watch subscriber is the primary signal, replacing the daemon log', () => {
-      expect(flat).toMatch(/tools\/orchestrator\/watch-board\.mjs/);
+      expect(flat).toMatch(/your project's own board-watch subscriber/);
       expect(flat).toMatch(/primary signal/);
     });
 
@@ -168,7 +168,7 @@ describe('harmony-orchestrate skill contract', () => {
     it('documents the UNAVAILABLE exit and the fallback chain (daemon log, then polling)', () => {
       expect(flat).toMatch(/unavailable/);
       expect(flat).toMatch(/does not retry in-process/);
-      expect(flat).toMatch(/fall back to the daemon.s console log/);
+      expect(flat).toMatch(/fall back to whatever log-tailing option the project's own guidance documents/);
     });
 
     it('the watch runs harness-backgrounded, never a shell `&` orphan', () => {

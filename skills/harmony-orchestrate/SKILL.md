@@ -201,20 +201,18 @@ package goes into the human's queue, with your independent findings summarized b
 
 ## 6. Watching effectively
 
-**The primary signal is `tools/orchestrator/watch-board.mjs` (B-1041)** — a Realtime subscriber on
-the board's own private workspace topic, not the daemon's console log. It runs from any machine
-with the `harmony-workspace` repo checked out; the board's `awaiting_human_input` flag is still a
-trap when read directly (§2) — the subscriber exists precisely so you never have to poll it
-yourself.
+**The primary signal is your project's own board-watch subscriber** — a Realtime subscriber on
+the board's own private workspace topic, not the daemon's console log; if the project provides
+one, its own orchestration guidance names it and gives the exact invocation. It runs from any
+machine holding the right credentials; the board's `awaiting_human_input` flag is still a trap
+when read directly (§2) — the subscriber exists precisely so you never have to poll it yourself.
 
-- **Run it against the tickets you're shepherding, by key**:
-  ```bash
-  HARMONY_API_TOKEN=<token> node tools/orchestrator/watch-board.mjs B-123 B-456
-  ```
-  It refetches (never trusts the broadcast payload) on every hint and prints one line per ticket
-  the moment its leg cleanly pauses, parks, or finishes — `clean-pause`, `park (<reason>)`,
-  `complete (terminal)`, or `dirty-exit` — covering EVERY shepherded ticket, including the held
-  and human-held ones. A park needs you regardless of whose queue the brief is in.
+- **Run it against the tickets you're shepherding, by key** (see the project's own orchestration
+  guidance for the concrete command). It should refetch (never trust the broadcast payload alone)
+  on every hint and print one line per ticket the moment its leg cleanly pauses, parks, or
+  finishes — `clean-pause`, `park (<reason>)`, `complete (terminal)`, or `dirty-exit` — covering
+  EVERY shepherded ticket, including the held and human-held ones. A park needs you regardless of
+  whose queue the brief is in.
 - **An `awaiting_human_input` flip prints as a `HINT` line, never as a pause** — the flag flips
   mid-leg, so a HINT means "something moved, worth a look", not "the ball is here now". Re-read
   the row before treating any signal as a resolved pause.
@@ -224,10 +222,10 @@ yourself.
   fold the new key into the SAME subscriber's argument list (restart it) rather than leaving it
   unwatched or starting a second one.
 - **`UNAVAILABLE` means the board channel itself could not be reached** (e.g. this project's
-  Realtime RLS is not live yet) — the subscriber says so in one unmistakable line and exits; it
-  does not retry in-process. Fall back to the daemon's console log (only if you happen to be
-  co-located with the daemon host) or to polling the board (`list_conductions` heartbeat +
-  `get_task` on every dispatched ticket) until it's resolved.
+  realtime layer is not live yet) — the subscriber says so in one unmistakable line and exits; it
+  does not retry in-process. Fall back to whatever log-tailing option the project's own guidance
+  documents (only if you happen to be co-located with the host running the leg) or to polling the
+  board (`list_conductions` heartbeat + `get_task` on every dispatched ticket) until it's resolved.
 - **A dropped-then-recovered connection reconnects on its own** — the library's own capped
   rejoin is left to run unwrapped; you'll see one log line on the drop and one on the
   re-subscribe, with no human action needed in between.
