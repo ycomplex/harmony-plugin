@@ -63,19 +63,51 @@ describe('harmony-orchestrate skill contract', () => {
     expect(flat).toMatch(/disclose every direct board write/);
   });
 
+  it('states the generic precedence sentence: the session grant answered at startup overrides workspace policy, which overrides the skill\'s generic defaults', () => {
+    expect(flat).toMatch(/the session grant answered at startup overrides this project'?s own written policy/);
+    expect(flat).toMatch(/overrides this skill'?s generic defaults/);
+  });
+
+  it('states the generic never-delegate rule for release/verify, on any repository, with no Harmony-specific fact named', () => {
+    expect(flat).toMatch(/release and verify accepts are never delegable to this seat, on any repository/);
+    expect(flat).not.toMatch(/b-944/);
+    expect(flat).not.toMatch(/ios (operator )?wave/);
+  });
+
+  it('honors a per-ticket hold generically — reviewed and handed over, never resolved, without naming a specific label', () => {
+    expect(flat).toMatch(/a project may mark individual tickets whose clarify a human resolves/);
+    expect(flat).toMatch(/reviewed and handed over, never resolved/);
+    expect(flat).not.toMatch(/`?oversight`?/);
+  });
+
+  it('release recording is limited to verifiable facts, verified against the repo host, and never merges', () => {
+    expect(flat).toMatch(/release recording is limited to verifiable facts/);
+    expect(flat).toMatch(/verified against the repo host/);
+    expect(flat).toMatch(/never merge yourself/);
+  });
+
   describe('PR-pipeline serialization (§4)', () => {
-    it('one ticket building per repo at a time; a both-repo ticket needs both lanes', () => {
-      expect(flat).toMatch(/one ticket building per repo at a time/);
-      expect(flat).toMatch(/both.repo ticket needs both lanes/);
+    it('lanes are per repository: builds run in parallel across repositories, merges are serial within one', () => {
+      expect(flat).toMatch(/builds run in parallel across repositories/);
+      expect(flat).toMatch(/merges are serial/);
     });
 
     it('hold means not resolving the plan brief', () => {
       expect(flat).toMatch(/hold = don'?t resolve the plan brief/);
     });
 
-    it('the identical-bump trap: exactly one unmerged plugin PR at a time', () => {
-      expect(flat).toMatch(/same version merge cleanly and the second silently never ships/);
-      expect(flat).toMatch(/exactly one unmerged plugin pr at a time/);
+    it('a plan is held only for same-file overlap with an open PR', () => {
+      expect(flat).toMatch(/a plan is held only for same-file overlap with an open pr/);
+    });
+
+    it('a project may declare a narrower lane width in its own guidance', () => {
+      expect(flat).toMatch(/a project may declare a narrower width in its own guidance/);
+    });
+
+    it('the stale plugin-lane phrases are gone', () => {
+      expect(flat).not.toMatch(/every plugin pr bumps/);
+      expect(flat).not.toMatch(/one ticket building per repo/);
+      expect(flat).not.toMatch(/exactly one unmerged/);
     });
   });
 
@@ -87,14 +119,15 @@ describe('harmony-orchestrate skill contract', () => {
       expect(skill.body).toContain('--exit-status');
     });
 
-    it('branch ahead/behind + gutted-rebase-by-diff-stat check', () => {
+    it('branch ahead/behind + gutted-rebase-by-diff-stat check, expressed generically', () => {
       expect(flat).toMatch(/ahead\/behind/);
       expect(flat).toMatch(/gutted rebase/);
       expect(flat).toMatch(/diff stat/);
+      expect(skill.body).toContain('git compare <base>...<head>');
     });
 
-    it('plugin bump freshness checked every time', () => {
-      expect(flat).toMatch(/plugin bump freshness/);
+    it('version-manifest freshness checked every time, if the project tracks one', () => {
+      expect(flat).toMatch(/version-manifest freshness, if the project tracks one/);
     });
 
     it('files vs plan surfaces investigated for surplus or missing files', () => {
@@ -176,5 +209,33 @@ describe('harmony-orchestrate skill contract', () => {
   it('§3 (reviewing a brief) explicitly disclaims being an enumeration/checklist — it is a discretion norm, not a checklist to pin', () => {
     expect(flat).toMatch(/illustrations of the kind of scrutiny, not an enumeration to walk/);
     expect(flat).toMatch(/each brief earns its own questions from its own content/);
+  });
+
+  describe('file-wide project-neutrality denylist (B-1042)', () => {
+    // Six categories of project-specific instruction that must never appear anywhere in this
+    // skill — project facts belong in the adopting project's own guidance, never hardcoded here.
+    // Checked line-by-line (not against `flat`) so a hit reports its own line number.
+    const DENYLIST: { category: string; patterns: RegExp[] }[] = [
+      { category: 'repository/organisation names', patterns: [/ycomplex/i, /harmony-web/i, /harmony-plugin/i, /harmony-workspace/i] },
+      { category: 'branch topology', patterns: [/\bmain\b/i, /\bstaging\b/i, /\bprod\b/i] },
+      { category: 'version-manifest behaviour', patterns: [/\.claude-plugin\//i, /\bdist\//i, /plugin-version-check/i, /\bbump\w*\b/i] },
+      { category: 'label names/ids', patterns: [/\boversight\b/i, /cf539452-d080-40b0-ad9c-a56365f9e8eb/i] },
+      { category: 'workspace file paths', patterns: [/orchestrating-a-milestone/i, /\bdocs\//i, /container\//i, /src\/tools/i] },
+      { category: 'named person/role', patterns: [/\bfounder\b/i] },
+    ];
+
+    const lines = skill.body.split('\n');
+
+    for (const { category, patterns } of DENYLIST) {
+      it(`carries no ${category}`, () => {
+        const hits: string[] = [];
+        lines.forEach((line, i) => {
+          for (const pattern of patterns) {
+            if (pattern.test(line)) hits.push(`line ${i + 1} (${pattern}): ${line.trim()}`);
+          }
+        });
+        expect(hits, hits.join('\n')).toEqual([]);
+      });
+    }
   });
 });
