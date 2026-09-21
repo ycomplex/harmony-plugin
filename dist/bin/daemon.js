@@ -32678,11 +32678,17 @@ function describe(status, err) {
   const detail = err instanceof Error ? err.message : err == null ? "" : String(err);
   return detail ? `${status} (${detail})` : status;
 }
+function isExpiredJwtError(err) {
+  const message = err instanceof Error ? err.message : err == null ? "" : String(err);
+  const lower = message.toLowerCase();
+  return lower.includes("invalidjwttoken") || lower.includes("token has expired");
+}
 function createHintLifecycle(opts) {
   let subscribedOnce = false;
   let dead = false;
   let live = false;
   let lastStatus = null;
+  let reauthedThisOutage = false;
   return {
     onStatus(status, err) {
       if (dead) return { kind: "none" };
@@ -32692,6 +32698,7 @@ function createHintLifecycle(opts) {
         const first = !subscribedOnce;
         subscribedOnce = true;
         live = true;
+        reauthedThisOutage = false;
         if (repeat) return { kind: "none" };
         return {
           kind: "log",
@@ -32706,6 +32713,13 @@ function createHintLifecycle(opts) {
           line: `hint channel unavailable (${describe(status, err)}) on ${opts.topic} \u2014 continuing on the poll interval alone; not retried in this process`
         };
       }
+      if (status === "CHANNEL_ERROR" && isExpiredJwtError(err) && !reauthedThisOutage) {
+        reauthedThisOutage = true;
+        return {
+          kind: "log-and-reauth",
+          line: `hint channel ${describe(status, err)} on ${opts.topic} \u2014 token expired, re-authenticating`
+        };
+      }
       if (repeat) return { kind: "none" };
       return {
         kind: "log",
@@ -32714,7 +32728,8 @@ function createHintLifecycle(opts) {
     },
     acceptsMessages: () => live && !dead,
     isDead: () => dead,
-    everSubscribed: () => subscribedOnce
+    everSubscribed: () => subscribedOnce,
+    isDown: () => subscribedOnce && !live && !dead
   };
 }
 
@@ -32729,20 +32744,53 @@ function startHintSubscription(deps) {
     debounceMs: deps.debounceMs
   });
   const lifecycle = createHintLifecycle({ topic });
+  const downCadenceMs = deps.downCadenceMs ?? 3e5;
   let channel = null;
+  let downTimerCancel = null;
+  const cancelDownTimer = () => {
+    if (downTimerCancel) {
+      downTimerCancel();
+      downTimerCancel = null;
+    }
+  };
+  const armDownTimer = (delayMs, elapsedAtFire) => {
+    downTimerCancel = deps.startTimeout(delayMs, () => {
+      downTimerCancel = null;
+      if (!lifecycle.isDown()) return;
+      deps.log(`hint channel down ${Math.round(elapsedAtFire / 1e3)}s, awaiting rejoin`);
+      armDownTimer(downCadenceMs, elapsedAtFire + downCadenceMs);
+    });
+  };
+  const checkDownTimer = () => {
+    if (lifecycle.isDown()) {
+      if (downTimerCancel) return;
+      armDownTimer(deps.pollMs, deps.pollMs);
+    } else {
+      cancelDownTimer();
+    }
+  };
   const apply = (status, err) => {
     const action = lifecycle.onStatus(status, err);
-    if (action.kind === "none") return;
-    deps.log(action.line);
-    if (action.kind === "log-and-teardown" && channel) {
-      const doomed = channel;
-      channel = null;
-      try {
-        void Promise.resolve(deps.removeChannel(doomed)).catch(() => {
+    if (action.kind !== "none") {
+      deps.log(action.line);
+      if (action.kind === "log-and-teardown" && channel) {
+        const doomed = channel;
+        channel = null;
+        try {
+          void Promise.resolve(deps.removeChannel(doomed)).catch(() => {
+          });
+        } catch {
+        }
+      } else if (action.kind === "log-and-reauth") {
+        deps.forceRefresh().then(() => deps.setAuth()).catch((refreshErr) => {
+          const message = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
+          deps.log(
+            `hint channel re-auth failed (${message}) \u2014 staying on the poll interval until the client's own rejoin recovers`
+          );
         });
-      } catch {
       }
     }
+    checkDownTimer();
   };
   const onMessage = (message) => {
     if (!lifecycle.acceptsMessages()) return;
@@ -32768,6 +32816,7 @@ function startHintSubscription(deps) {
     source: coalescer,
     isDead: () => lifecycle.isDead(),
     close: async () => {
+      cancelDownTimer();
       const open = channel;
       channel = null;
       if (!open) return;
@@ -32986,7 +33035,13 @@ ${err instanceof Error ? err.message : String(err)}
     leaseHolder,
     debounceMs: config.hintDebounceMs,
     startTimeout,
-    log
+    log,
+    // B-1045: recover from a post-subscribed CHANNEL_ERROR whose token has expired — same
+    // HarmonyAuth instance SchedulerDeps.forceRefresh already reuses, same client the
+    // `.channel()`/`.removeChannel()` calls above already use.
+    forceRefresh: () => auth.forceRefresh(),
+    setAuth: () => client.realtime.setAuth(),
+    pollMs: config.pollMs
   }) : null;
   const deps = {
     now: Date.now,

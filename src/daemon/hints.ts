@@ -216,6 +216,13 @@ export type HintLifecycleAction =
   /** (B)/(C): log this ONE line and do nothing else. Crucially NOT a teardown — the library's own
    *  capped rejoin is left to run unwrapped. */
   | { kind: 'log'; line: string }
+  /** (B) ONLY, and at most once per outage (B-1045): the drop's error names an expired/invalid
+   *  session JWT. Log this ONE line and re-authenticate — `auth.forceRefresh()` then
+   *  `client.realtime.setAuth()` with NO argument, never the earlier draft's `setAuth(token)` (a
+   *  manually-passed token permanently opts the realtime client out of future callback-based
+   *  refreshes). The channel itself is untouched — the library's own capped rejoin picks up the
+   *  corrected auth on its next attempt. */
+  | { kind: 'log-and-reauth'; line: string }
   /** Nothing to say: a repeat of the status already reported, or a status after (A) latched. */
   | { kind: 'none' };
 
@@ -228,11 +235,24 @@ export interface HintLifecycle {
   isDead(): boolean;
   /** Has a first SUBSCRIBED ever been seen? (the discriminator itself) */
   everSubscribed(): boolean;
+  /** Is the channel down RIGHT NOW — subscribed at least once, not live, and not permanently dead
+   *  (state A)? True exactly for the span an outage-visibility timer should be armed. */
+  isDown(): boolean;
 }
 
 function describe(status: HintStatus, err: unknown): string {
   const detail = err instanceof Error ? err.message : err == null ? '' : String(err);
   return detail ? `${status} (${detail})` : status;
+}
+
+/** B-1045: does this error's message name an expired/invalid session JWT? Case-insensitive
+ *  substring match against the same message extraction `describe()` uses. Matches Supabase
+ *  Realtime's own wording for both shapes it has been observed to send (`InvalidJWTToken` and
+ *  `token has expired`). PURE — never re-authenticates itself; only names the condition. */
+export function isExpiredJwtError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : err == null ? '' : String(err);
+  const lower = message.toLowerCase();
+  return lower.includes('invalidjwttoken') || lower.includes('token has expired');
 }
 
 /** The latched `everSubscribed` discriminator and the three rules it selects.
@@ -261,6 +281,9 @@ export function createHintLifecycle(opts: { topic: string }): HintLifecycle {
   let dead = false;
   let live = false;
   let lastStatus: HintStatus | null = null;
+  // B-1045: latched at most once per outage. Set the moment a JWT-expiry reauth fires; reset on
+  // every SUBSCRIBED (first or repeat) so a LATER outage can trigger it again.
+  let reauthedThisOutage = false;
 
   return {
     onStatus(status, err) {
@@ -272,6 +295,7 @@ export function createHintLifecycle(opts: { topic: string }): HintLifecycle {
         const first = !subscribedOnce;
         subscribedOnce = true;
         live = true;
+        reauthedThisOutage = false;
         if (repeat) return { kind: 'none' };
         return {
           kind: 'log',
@@ -293,6 +317,13 @@ export function createHintLifecycle(opts: { topic: string }): HintLifecycle {
         };
       }
       // (B) — the library's own rejoin owns recovery from here.
+      if (status === 'CHANNEL_ERROR' && isExpiredJwtError(err) && !reauthedThisOutage) {
+        reauthedThisOutage = true;
+        return {
+          kind: 'log-and-reauth',
+          line: `hint channel ${describe(status, err)} on ${opts.topic} — token expired, re-authenticating`,
+        };
+      }
       if (repeat) return { kind: 'none' };
       return {
         kind: 'log',
@@ -303,5 +334,6 @@ export function createHintLifecycle(opts: { topic: string }): HintLifecycle {
     acceptsMessages: () => live && !dead,
     isDead: () => dead,
     everSubscribed: () => subscribedOnce,
+    isDown: () => subscribedOnce && !live && !dead,
   };
 }
