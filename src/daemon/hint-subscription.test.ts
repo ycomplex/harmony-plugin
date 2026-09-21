@@ -36,6 +36,9 @@ function fakeChannel() {
 
 interface HarnessOpts {
   createChannel?: (topic: string) => HintChannelLike;
+  pollMs?: number;
+  downCadenceMs?: number;
+  forceRefresh?: () => Promise<void>;
 }
 
 function makeHarness(opts: HarnessOpts = {}) {
@@ -44,6 +47,8 @@ function makeHarness(opts: HarnessOpts = {}) {
   const timers: Array<{ ms: number; fn: () => void }> = [];
   const removed: HintChannelLike[] = [];
   const topics: string[] = [];
+  const forceRefreshCalls: number[] = [];
+  const setAuthCalls: unknown[][] = [];
   const sub = startHintSubscription({
     createChannel: (topic) => {
       topics.push(topic);
@@ -65,6 +70,15 @@ function makeHarness(opts: HarnessOpts = {}) {
       };
     },
     log: (line) => logs.push(line),
+    forceRefresh: (...args: unknown[]) => {
+      forceRefreshCalls.push(args.length);
+      return opts.forceRefresh ? opts.forceRefresh() : Promise.resolve();
+    },
+    setAuth: (...args: unknown[]) => {
+      setAuthCalls.push(args);
+    },
+    pollMs: opts.pollMs ?? 25_000,
+    downCadenceMs: opts.downCadenceMs,
   });
   return {
     sub,
@@ -73,10 +87,18 @@ function makeHarness(opts: HarnessOpts = {}) {
     topics,
     removed,
     timers,
+    forceRefreshCalls,
+    setAuthCalls,
     /** Fire every armed debounce window (there is at most one at a time). */
     fireTimers: () => {
       const due = timers.splice(0, timers.length);
       for (const t of due) t.fn();
+    },
+    /** Fire the OLDEST still-armed timer only (used for the down-visibility timer, which may
+     *  coexist with a debounce window timer). */
+    fireOldestTimer: () => {
+      const entry = timers.shift();
+      entry?.fn();
     },
   };
 }
@@ -200,6 +222,9 @@ describe('startHintSubscription — (A) PRE-SUBSCRIBED failure', () => {
       debounceMs: 1_000,
       startTimeout: () => () => {},
       log: (l) => logs.push(l),
+      forceRefresh: () => Promise.resolve(),
+      setAuth: () => {},
+      pollMs: 25_000,
     });
     expect(() => channel.status('CHANNEL_ERROR')).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
@@ -240,10 +265,12 @@ describe('startHintSubscription — (B) POST-SUBSCRIBED drop', () => {
     h.channel.status('SUBSCRIBED');
     h.channel.status('CHANNEL_ERROR');
 
-    // While down, a message is not a wake...
+    // While down, a message is not a wake — no DEBOUNCE window is opened by it. (A down-
+    // visibility timer, B-1045, is legitimately armed at this point; that is a separate concern
+    // from the debounce window this assertion guards.)
     const wake = h.sub.source.next();
     h.channel.emit('task_change', { record: { id: 'task-1' } });
-    expect(h.timers).toHaveLength(0);
+    expect(h.timers.map((t) => t.ms)).not.toContain(1_000);
     expect(await settled(wake)).toBe(false);
 
     // ...and the library's own rejoin (unwrapped, never re-implemented here) brings it back.
@@ -254,6 +281,100 @@ describe('startHintSubscription — (B) POST-SUBSCRIBED drop', () => {
     expect(await settled(wake)).toBe(true);
     expect(h.removed).toEqual([]);
     expect(h.channel.subscribeCalls()).toBe(1); // we never re-subscribe by hand either
+  });
+});
+
+describe('startHintSubscription — B-1045 JWT-expiry reauth', () => {
+  it('forceRefresh() is called exactly once, and setAuth() is called once with NO arguments once it resolves', async () => {
+    const h = makeHarness();
+    h.channel.status('SUBSCRIBED');
+    h.channel.status('CHANNEL_ERROR', new Error('InvalidJWTToken'));
+    expect(h.forceRefreshCalls).toEqual([0]); // called with zero arguments, exactly once
+    expect(h.setAuthCalls).toEqual([]); // not yet — forceRefresh hasn't resolved
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.setAuthCalls).toEqual([[]]); // resolved: setAuth() called once, with no arguments
+    expect(h.logs.some((l) => l.includes('token expired, re-authenticating'))).toBe(true);
+  });
+
+  it('when forceRefresh() rejects, setAuth() is never called and a failure line is logged — no throw escapes', async () => {
+    const h = makeHarness({ forceRefresh: () => Promise.reject(new Error('refresh denied')) });
+    h.channel.status('SUBSCRIBED');
+    expect(() =>
+      h.channel.status('CHANNEL_ERROR', new Error('InvalidJWTToken')),
+    ).not.toThrow();
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.setAuthCalls).toEqual([]);
+    expect(
+      h.logs.some((l) => l.includes('hint channel re-auth failed (refresh denied)')),
+    ).toBe(true);
+  });
+
+  it('a non-expired-JWT CHANNEL_ERROR never calls forceRefresh or setAuth', () => {
+    const h = makeHarness();
+    h.channel.status('SUBSCRIBED');
+    h.channel.status('CHANNEL_ERROR', new Error('websocket closed'));
+    expect(h.forceRefreshCalls).toEqual([]);
+    expect(h.setAuthCalls).toEqual([]);
+  });
+});
+
+describe('startHintSubscription — B-1045 outage-visibility timer', () => {
+  it('logs nothing until the FIRST timer (armed at pollMs) fires', () => {
+    const h = makeHarness({ pollMs: 10_000 });
+    h.channel.status('SUBSCRIBED');
+    h.channel.status('CHANNEL_ERROR');
+    expect(h.logs.some((l) => l.includes('hint channel down'))).toBe(false);
+    expect(h.timers.map((t) => t.ms)).toEqual([10_000]);
+  });
+
+  it('the first firing logs one down-line; later firings repeat at the downCadenceMs cadence', () => {
+    const h = makeHarness({ pollMs: 10_000, downCadenceMs: 60_000 });
+    h.channel.status('SUBSCRIBED');
+    h.channel.status('CHANNEL_ERROR');
+
+    h.fireTimers();
+    expect(h.logs.filter((l) => l.includes('hint channel down'))).toEqual([
+      'hint channel down 10s, awaiting rejoin',
+    ]);
+    expect(h.timers.map((t) => t.ms)).toEqual([60_000]); // re-armed at the cadence, not pollMs
+
+    h.fireTimers();
+    expect(h.logs.filter((l) => l.includes('hint channel down'))).toEqual([
+      'hint channel down 10s, awaiting rejoin',
+      'hint channel down 70s, awaiting rejoin',
+    ]);
+    expect(h.timers.map((t) => t.ms)).toEqual([60_000]);
+  });
+
+  it('a re-SUBSCRIBED cancels the down-timer — no further down-line, and nothing left armed', () => {
+    const h = makeHarness({ pollMs: 10_000 });
+    h.channel.status('SUBSCRIBED');
+    h.channel.status('CHANNEL_ERROR');
+    expect(h.timers).toHaveLength(1);
+
+    h.channel.status('SUBSCRIBED');
+    expect(h.timers).toHaveLength(0); // cancelled on recovery — nothing left to fire
+
+    h.fireTimers(); // no-op: nothing armed
+    expect(h.logs.some((l) => l.includes('hint channel down'))).toBe(false);
+  });
+});
+
+describe('startHintSubscription — B-1045 integration: a token-expiry-shaped cycle', () => {
+  it('re-authenticates on an expired-JWT drop, and hints resume on the next SUBSCRIBED', async () => {
+    const h = makeHarness();
+    h.channel.status('SUBSCRIBED');
+    h.channel.status('CHANNEL_ERROR', new Error('InvalidJWTToken'));
+    expect(h.forceRefreshCalls).toEqual([0]);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.setAuthCalls).toEqual([[]]);
+
+    h.channel.status('SUBSCRIBED');
+    expect(h.logs[h.logs.length - 1]).toContain('re-subscribed');
+    expect(h.sub.isDead()).toBe(false);
+    expect(h.removed).toEqual([]); // never torn down — this was always state (B)
   });
 });
 
@@ -278,6 +399,9 @@ describe('startHintSubscription — close()', () => {
       debounceMs: 1_000,
       startTimeout: () => () => {},
       log: vi.fn(),
+      forceRefresh: () => Promise.resolve(),
+      setAuth: () => {},
+      pollMs: 25_000,
     });
     channel.status('SUBSCRIBED');
     const closing = sub.close();

@@ -438,6 +438,12 @@ async function main(): Promise<void> {
         debounceMs: config.hintDebounceMs,
         startTimeout,
         log,
+        // B-1045: recover from a post-subscribed CHANNEL_ERROR whose token has expired — same
+        // HarmonyAuth instance SchedulerDeps.forceRefresh already reuses, same client the
+        // `.channel()`/`.removeChannel()` calls above already use.
+        forceRefresh: () => auth.forceRefresh(),
+        setAuth: () => client.realtime.setAuth(),
+        pollMs: config.pollMs,
       })
     : null;
 

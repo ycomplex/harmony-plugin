@@ -55,6 +55,18 @@ export interface HintSubscriptionDeps {
   /** The scheduler's injected one-shot timer — never a global setTimeout. */
   startTimeout(ms: number, fn: () => void): () => void;
   log(line: string): void;
+  /** B-1045: `auth.forceRefresh()` — the existing single-flight session refresh in src/auth.ts.
+   *  Called on a `log-and-reauth` action, BEFORE `setAuth()`. */
+  forceRefresh(): Promise<void>;
+  /** B-1045: `client.realtime.setAuth()` — called with NO argument. A manually-passed token
+   *  permanently opts the realtime client out of future callback-based refreshes; see
+   *  createHintLifecycle's `log-and-reauth` doc comment for the citation. */
+  setAuth(): void;
+  /** The scheduler's poll interval — the outage-visibility timer's first delay. */
+  pollMs: number;
+  /** The outage-visibility timer's steady-state cadence after the first firing. Defaults to five
+   *  minutes when not supplied. */
+  downCadenceMs?: number;
 }
 
 export interface HintSubscription {
@@ -86,25 +98,76 @@ export function startHintSubscription(deps: HintSubscriptionDeps): HintSubscript
     debounceMs: deps.debounceMs,
   });
   const lifecycle = createHintLifecycle({ topic });
+  const downCadenceMs = deps.downCadenceMs ?? 300_000;
   let channel: HintChannelLike | null = null;
+
+  // B-1045: outage-visibility timer. Armed the moment the channel goes down (post-subscribed
+  // drop), disarmed the moment it recovers or goes permanently dead. Elapsed time is tracked by
+  // ACCUMULATING the scheduled interval durations — never by reading a clock — using the very same
+  // injected `startTimeout` seam the debounce window already uses, so this stays fake-clock
+  // testable with no new dependency.
+  let downTimerCancel: (() => void) | null = null;
+
+  const cancelDownTimer = (): void => {
+    if (downTimerCancel) {
+      downTimerCancel();
+      downTimerCancel = null;
+    }
+  };
+
+  /** `elapsedAtFire` is the total down-time this timer instance represents WHEN IT FIRES —
+   *  computed by the caller by accumulating scheduled durations, never by reading a clock. */
+  const armDownTimer = (delayMs: number, elapsedAtFire: number): void => {
+    downTimerCancel = deps.startTimeout(delayMs, () => {
+      downTimerCancel = null;
+      if (!lifecycle.isDown()) return; // recovered (or went dead) — nothing to say
+      deps.log(`hint channel down ${Math.round(elapsedAtFire / 1000)}s, awaiting rejoin`);
+      armDownTimer(downCadenceMs, elapsedAtFire + downCadenceMs);
+    });
+  };
+
+  const checkDownTimer = (): void => {
+    if (lifecycle.isDown()) {
+      if (downTimerCancel) return; // already armed
+      armDownTimer(deps.pollMs, deps.pollMs);
+    } else {
+      cancelDownTimer();
+    }
+  };
 
   const apply = (status: Parameters<typeof lifecycle.onStatus>[0], err?: unknown): void => {
     const action = lifecycle.onStatus(status, err);
-    if (action.kind === 'none') return;
-    deps.log(action.line);
-    if (action.kind === 'log-and-teardown' && channel) {
-      // (A) ONLY. A post-subscribe error must NEVER reach here: removing the channel would destroy
-      // the library's own rejoin and turn a blip into a permanent loss of hints.
-      const doomed = channel;
-      channel = null;
-      try {
-        void Promise.resolve(deps.removeChannel(doomed)).catch(() => {
-          // Best-effort teardown — the daemon is already degrading to poll-only.
-        });
-      } catch {
-        // Same: never let a teardown failure escape into the daemon.
+    if (action.kind !== 'none') {
+      deps.log(action.line);
+      if (action.kind === 'log-and-teardown' && channel) {
+        // (A) ONLY. A post-subscribe error must NEVER reach here: removing the channel would
+        // destroy the library's own rejoin and turn a blip into a permanent loss of hints.
+        const doomed = channel;
+        channel = null;
+        try {
+          void Promise.resolve(deps.removeChannel(doomed)).catch(() => {
+            // Best-effort teardown — the daemon is already degrading to poll-only.
+          });
+        } catch {
+          // Same: never let a teardown failure escape into the daemon.
+        }
+      } else if (action.kind === 'log-and-reauth') {
+        // B-1045: fire-and-forget — apply() stays synchronous. The latch in createHintLifecycle
+        // guarantees this fires at most once per outage, so there is no spin to guard against here.
+        deps
+          .forceRefresh()
+          .then(() => deps.setAuth())
+          .catch((refreshErr: unknown) => {
+            const message =
+              refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
+            deps.log(
+              `hint channel re-auth failed (${message}) — staying on the poll interval until ` +
+                "the client's own rejoin recovers",
+            );
+          });
       }
     }
+    checkDownTimer();
   };
 
   const onMessage = (message: { event?: string; payload?: unknown }): void => {
@@ -137,6 +200,7 @@ export function startHintSubscription(deps: HintSubscriptionDeps): HintSubscript
     source: coalescer,
     isDead: () => lifecycle.isDead(),
     close: async () => {
+      cancelDownTimer();
       const open = channel;
       channel = null;
       if (!open) return;
