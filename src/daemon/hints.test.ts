@@ -3,6 +3,7 @@ import {
   createHintCoalescer,
   createHintLifecycle,
   hintDropReason,
+  isExpiredJwtError,
   type HintMessage,
 } from './hints.js';
 
@@ -266,5 +267,77 @@ describe('createHintLifecycle — the latched everSubscribed discriminator', () 
     expect(kinds).not.toContain('log-and-teardown');
     expect(l.isDead()).toBe(false);
     expect(l.acceptsMessages()).toBe(true);
+  });
+});
+
+describe('isExpiredJwtError — B-1045', () => {
+  it('matches both observed Realtime wordings, case-insensitively', () => {
+    expect(isExpiredJwtError(new Error('InvalidJWTToken'))).toBe(true);
+    expect(isExpiredJwtError(new Error('invalidjwttoken: bad signature'))).toBe(true);
+    expect(isExpiredJwtError(new Error('the token has expired'))).toBe(true);
+    expect(isExpiredJwtError(new Error('TOKEN HAS EXPIRED'))).toBe(true);
+  });
+
+  it('does not match an unrelated error, or no error at all', () => {
+    expect(isExpiredJwtError(new Error('websocket closed'))).toBe(false);
+    expect(isExpiredJwtError(undefined)).toBe(false);
+    expect(isExpiredJwtError(null)).toBe(false);
+    expect(isExpiredJwtError('permission denied')).toBe(false);
+  });
+});
+
+describe('createHintLifecycle — B-1045 JWT-expiry reauth latch', () => {
+  const topic = 'workspace:ws-uuid';
+
+  it('an expired-JWT CHANNEL_ERROR after SUBSCRIBED fires log-and-reauth exactly once per outage', () => {
+    const l = createHintLifecycle({ topic });
+    l.onStatus('SUBSCRIBED');
+    const first = l.onStatus('CHANNEL_ERROR', new Error('InvalidJWTToken'));
+    expect(first.kind).toBe('log-and-reauth');
+    expect(first.kind === 'log-and-reauth' && first.line).toContain('token expired');
+
+    // A second CHANNEL_ERROR in the SAME outage — JWT-shaped or not — never re-fires it.
+    const second = l.onStatus('CHANNEL_ERROR', new Error('InvalidJWTToken'));
+    expect(second.kind).not.toBe('log-and-reauth');
+    const third = l.onStatus('TIMED_OUT', new Error('InvalidJWTToken'));
+    expect(third.kind).not.toBe('log-and-reauth');
+  });
+
+  it('a non-JWT-shaped error in state B is unaffected — the ordinary log line', () => {
+    const l = createHintLifecycle({ topic });
+    l.onStatus('SUBSCRIBED');
+    const a = l.onStatus('CHANNEL_ERROR', new Error('websocket closed'));
+    expect(a.kind).toBe('log');
+    expect(a.kind === 'log' && a.line).toContain("awaiting the client's own rejoin");
+  });
+
+  it('a re-SUBSCRIBED resets the latch, so a LATER outage can trigger log-and-reauth again', () => {
+    const l = createHintLifecycle({ topic });
+    l.onStatus('SUBSCRIBED');
+    expect(l.onStatus('CHANNEL_ERROR', new Error('InvalidJWTToken')).kind).toBe('log-and-reauth');
+    l.onStatus('SUBSCRIBED');
+    expect(l.onStatus('CHANNEL_ERROR', new Error('InvalidJWTToken')).kind).toBe('log-and-reauth');
+  });
+});
+
+describe('createHintLifecycle — isDown()', () => {
+  const topic = 'workspace:ws-uuid';
+
+  it('is false before any SUBSCRIBED, false while live, true on a post-subscribed drop, false again on re-SUBSCRIBED', () => {
+    const l = createHintLifecycle({ topic });
+    expect(l.isDown()).toBe(false);
+    l.onStatus('SUBSCRIBED');
+    expect(l.isDown()).toBe(false);
+    l.onStatus('CHANNEL_ERROR');
+    expect(l.isDown()).toBe(true);
+    l.onStatus('SUBSCRIBED');
+    expect(l.isDown()).toBe(false);
+  });
+
+  it('is false for a permanently-dead (state A) channel', () => {
+    const l = createHintLifecycle({ topic });
+    l.onStatus('CHANNEL_ERROR');
+    expect(l.isDead()).toBe(true);
+    expect(l.isDown()).toBe(false);
   });
 });
