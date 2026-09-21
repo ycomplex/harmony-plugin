@@ -214,17 +214,25 @@ export type HintLifecycleAction =
    *  of the process lifetime. The next boot retries; this process does not. */
   | { kind: 'log-and-teardown'; line: string }
   /** (B)/(C): log this ONE line and do nothing else. Crucially NOT a teardown — the library's own
-   *  capped rejoin is left to run unwrapped. */
+   *  capped rejoin is left to run unwrapped. `onStatus()` NEVER decides a recovery action itself
+   *  (B-1045 round 2) — a post-subscribed drop is always just this. */
   | { kind: 'log'; line: string }
-  /** (B) ONLY, and at most once per outage (B-1045): the drop's error names an expired/invalid
-   *  session JWT. Log this ONE line and re-authenticate — `auth.forceRefresh()` then
-   *  `client.realtime.setAuth()` with NO argument, never the earlier draft's `setAuth(token)` (a
-   *  manually-passed token permanently opts the realtime client out of future callback-based
-   *  refreshes). The channel itself is untouched — the library's own capped rejoin picks up the
-   *  corrected auth on its next attempt. */
-  | { kind: 'log-and-reauth'; line: string }
   /** Nothing to say: a repeat of the status already reported, or a status after (A) latched. */
   | { kind: 'none' };
+
+/** B-1045 round 2: the ONE recovery action `armRecovery()` hands back to the down-timer's first
+ *  tick. Which action depends on what the pinned `@supabase/realtime-js`/`@supabase/phoenix`
+ *  source does with each status once it has dropped a channel that WAS subscribed:
+ *   - 'reauth'   — CHANNEL_ERROR / TIMED_OUT still have a LIVE scheduled rejoin in the library; a
+ *                  stale session JWT is the dominant real-world cause, so `forceRefresh()` then
+ *                  `setAuth()` (no argument) corrects it and the library's own rejoin does the rest.
+ *   - 'recreate' — CLOSED cancels the library's own scheduled rejoin and de-lists the channel at
+ *                  BOTH the phoenix layer and the realtime-js wrapper layer — there is no scheduled
+ *                  rejoin left for `setAuth()` to correct, so the only way back is to discard the
+ *                  dead channel reference and re-run the exact create+wire+subscribe sequence boot
+ *                  itself uses.
+ *   - 'none'     — nothing tracked worth recovering (latched-out, or a status outside the two above). */
+export type RecoveryAction = 'reauth' | 'recreate' | 'none';
 
 export interface HintLifecycle {
   /** Feed a status from the subscribe callback; get the ONE thing to do about it. */
@@ -238,6 +246,12 @@ export interface HintLifecycle {
   /** Is the channel down RIGHT NOW — subscribed at least once, not live, and not permanently dead
    *  (state A)? True exactly for the span an outage-visibility timer should be armed. */
   isDown(): boolean;
+  /** B-1045 round 2: a PURE query, never called from `onStatus()` — the down-timer's first tick is
+   *  the only caller. Returns which recovery action to run based on the currently-tracked last
+   *  status, and LATCHES: at most once per outage, reset on the next SUBSCRIBED (mirrors the
+   *  round-1 `reauthedThisOutage` flag exactly, just triggered from a different call site). A
+   *  second call within the same outage — from a later down-timer tick — returns 'none'. */
+  armRecovery(): RecoveryAction;
 }
 
 function describe(status: HintStatus, err: unknown): string {
@@ -267,7 +281,10 @@ export function isExpiredJwtError(err: unknown): boolean {
  *       ordinary network blip on a subscription that demonstrably WORKS. Do NOT `removeChannel`:
  *       that would destroy the library's own rejoin and turn a blip into a permanent loss of
  *       hints. One log line per transition, the dep stays present, hints resume on re-SUBSCRIBED.
- *       (This was an earlier draft's defect — tests assert against it directly.)
+ *       (This was an earlier draft's defect — tests assert against it directly.) `onStatus()`
+ *       itself never reacts further (B-1045 round 2) — `armRecovery()` below is a separate PURE
+ *       query the down-timer's first tick calls once the drop has persisted past one poll
+ *       interval, and it is what picks 'reauth' vs 'recreate' vs 'none'.
  *
  *   (C) SUBSCRIBED — steady state; messages flow to the coalescer.
  *
@@ -281,9 +298,11 @@ export function createHintLifecycle(opts: { topic: string }): HintLifecycle {
   let dead = false;
   let live = false;
   let lastStatus: HintStatus | null = null;
-  // B-1045: latched at most once per outage. Set the moment a JWT-expiry reauth fires; reset on
-  // every SUBSCRIBED (first or repeat) so a LATER outage can trigger it again.
-  let reauthedThisOutage = false;
+  // B-1045 round 2: latched at most once per outage. Set the moment `armRecovery()` hands back a
+  // real action (not 'none'); reset on every SUBSCRIBED (first or repeat) so a LATER outage can
+  // trigger it again. This replaces round 1's `reauthedThisOutage`, which `onStatus()` itself set —
+  // round 2 moves the arming decision entirely out of `onStatus()` and into this latch.
+  let recoveryArmedThisOutage = false;
 
   return {
     onStatus(status, err) {
@@ -295,7 +314,7 @@ export function createHintLifecycle(opts: { topic: string }): HintLifecycle {
         const first = !subscribedOnce;
         subscribedOnce = true;
         live = true;
-        reauthedThisOutage = false;
+        recoveryArmedThisOutage = false;
         if (repeat) return { kind: 'none' };
         return {
           kind: 'log',
@@ -316,19 +335,27 @@ export function createHintLifecycle(opts: { topic: string }): HintLifecycle {
             'continuing on the poll interval alone; not retried in this process',
         };
       }
-      // (B) — the library's own rejoin owns recovery from here.
-      if (status === 'CHANNEL_ERROR' && isExpiredJwtError(err) && !reauthedThisOutage) {
-        reauthedThisOutage = true;
-        return {
-          kind: 'log-and-reauth',
-          line: `hint channel ${describe(status, err)} on ${opts.topic} — token expired, re-authenticating`,
-        };
-      }
+      // (B) — onStatus() ONLY logs (round 2); the down-timer's first tick is what decides and
+      // triggers a recovery action, via armRecovery() below. The library's own rejoin (for
+      // CHANNEL_ERROR/TIMED_OUT) or the recreate path (for CLOSED) owns recovery from here.
       if (repeat) return { kind: 'none' };
       return {
         kind: 'log',
         line: `hint channel ${describe(status, err)} on ${opts.topic} — awaiting the client's own rejoin`,
       };
+    },
+
+    armRecovery() {
+      if (recoveryArmedThisOutage) return 'none';
+      if (lastStatus === 'CHANNEL_ERROR' || lastStatus === 'TIMED_OUT') {
+        recoveryArmedThisOutage = true;
+        return 'reauth';
+      }
+      if (lastStatus === 'CLOSED') {
+        recoveryArmedThisOutage = true;
+        return 'recreate';
+      }
+      return 'none';
     },
 
     acceptsMessages: () => live && !dead,
