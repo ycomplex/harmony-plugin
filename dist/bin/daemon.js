@@ -32678,17 +32678,12 @@ function describe(status, err) {
   const detail = err instanceof Error ? err.message : err == null ? "" : String(err);
   return detail ? `${status} (${detail})` : status;
 }
-function isExpiredJwtError(err) {
-  const message = err instanceof Error ? err.message : err == null ? "" : String(err);
-  const lower = message.toLowerCase();
-  return lower.includes("invalidjwttoken") || lower.includes("token has expired");
-}
 function createHintLifecycle(opts) {
   let subscribedOnce = false;
   let dead = false;
   let live = false;
   let lastStatus = null;
-  let reauthedThisOutage = false;
+  let recoveryArmedThisOutage = false;
   return {
     onStatus(status, err) {
       if (dead) return { kind: "none" };
@@ -32698,7 +32693,7 @@ function createHintLifecycle(opts) {
         const first = !subscribedOnce;
         subscribedOnce = true;
         live = true;
-        reauthedThisOutage = false;
+        recoveryArmedThisOutage = false;
         if (repeat) return { kind: "none" };
         return {
           kind: "log",
@@ -32713,18 +32708,23 @@ function createHintLifecycle(opts) {
           line: `hint channel unavailable (${describe(status, err)}) on ${opts.topic} \u2014 continuing on the poll interval alone; not retried in this process`
         };
       }
-      if (status === "CHANNEL_ERROR" && isExpiredJwtError(err) && !reauthedThisOutage) {
-        reauthedThisOutage = true;
-        return {
-          kind: "log-and-reauth",
-          line: `hint channel ${describe(status, err)} on ${opts.topic} \u2014 token expired, re-authenticating`
-        };
-      }
       if (repeat) return { kind: "none" };
       return {
         kind: "log",
         line: `hint channel ${describe(status, err)} on ${opts.topic} \u2014 awaiting the client's own rejoin`
       };
+    },
+    armRecovery() {
+      if (recoveryArmedThisOutage) return "none";
+      if (lastStatus === "CHANNEL_ERROR" || lastStatus === "TIMED_OUT") {
+        recoveryArmedThisOutage = true;
+        return "reauth";
+      }
+      if (lastStatus === "CLOSED") {
+        recoveryArmedThisOutage = true;
+        return "recreate";
+      }
+      return "none";
     },
     acceptsMessages: () => live && !dead,
     isDead: () => dead,
@@ -32758,7 +32758,8 @@ function startHintSubscription(deps) {
       downTimerCancel = null;
       if (!lifecycle.isDown()) return;
       deps.log(`hint channel down ${Math.round(elapsedAtFire / 1e3)}s, awaiting rejoin`);
-      armDownTimer(downCadenceMs, elapsedAtFire + downCadenceMs);
+      runRecovery();
+      if (!downTimerCancel) armDownTimer(downCadenceMs, elapsedAtFire + downCadenceMs);
     });
   };
   const checkDownTimer = () => {
@@ -32781,13 +32782,6 @@ function startHintSubscription(deps) {
           });
         } catch {
         }
-      } else if (action.kind === "log-and-reauth") {
-        deps.forceRefresh().then(() => deps.setAuth()).catch((refreshErr) => {
-          const message = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
-          deps.log(
-            `hint channel re-auth failed (${message}) \u2014 staying on the poll interval until the client's own rejoin recovers`
-          );
-        });
       }
     }
     checkDownTimer();
@@ -32798,20 +32792,41 @@ function startHintSubscription(deps) {
     if (action.action !== "open-window") return;
     deps.startTimeout(action.debounceMs, coalescer.closeWindow);
   };
-  try {
-    channel = deps.createChannel(topic);
-    for (const event of HINT_EVENTS) channel.on("broadcast", { event }, onMessage);
-    channel.subscribe((status, err) => {
-      apply(
-        ["SUBSCRIBED", "CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].find(
-          (s) => s === status
-        ) ?? "CHANNEL_ERROR",
-        err
-      );
-    });
-  } catch (err) {
-    apply("SETUP_FAILED", err);
-  }
+  const logRefreshFailure = (refreshErr) => {
+    const message = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
+    deps.log(
+      `hint channel re-auth failed (${message}) \u2014 staying on the poll interval until the client's own rejoin recovers`
+    );
+  };
+  const subscribeChannel = () => {
+    try {
+      const newChannel = deps.createChannel(topic);
+      channel = newChannel;
+      for (const event of HINT_EVENTS) newChannel.on("broadcast", { event }, onMessage);
+      newChannel.subscribe((status, err) => {
+        apply(
+          ["SUBSCRIBED", "CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].find(
+            (s) => s === status
+          ) ?? "CHANNEL_ERROR",
+          err
+        );
+      });
+    } catch (err) {
+      apply("SETUP_FAILED", err);
+    }
+  };
+  const runRecovery = () => {
+    const action = lifecycle.armRecovery();
+    if (action === "reauth") {
+      deps.forceRefresh().then(() => deps.setAuth()).catch(logRefreshFailure);
+    } else if (action === "recreate") {
+      deps.forceRefresh().then(() => {
+        channel = null;
+        subscribeChannel();
+      }).catch(logRefreshFailure);
+    }
+  };
+  subscribeChannel();
   return {
     source: coalescer,
     isDead: () => lifecycle.isDead(),

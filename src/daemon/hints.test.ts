@@ -286,37 +286,76 @@ describe('isExpiredJwtError — B-1045', () => {
   });
 });
 
-describe('createHintLifecycle — B-1045 JWT-expiry reauth latch', () => {
+describe('createHintLifecycle — B-1045 round 2: onStatus() no longer decides recovery', () => {
   const topic = 'workspace:ws-uuid';
 
-  it('an expired-JWT CHANNEL_ERROR after SUBSCRIBED fires log-and-reauth exactly once per outage', () => {
+  it.each(['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'] as const)(
+    'onStatus() never returns a reauth-flavoured action for a post-subscribed %s — always a plain log/none, repeat-suppressed',
+    (status) => {
+      const l = createHintLifecycle({ topic });
+      l.onStatus('SUBSCRIBED');
+      // Even a JWT-shaped error no longer triggers anything from onStatus() itself — that
+      // decision moved entirely to armRecovery(), called by the down-timer, never by onStatus().
+      const first = l.onStatus(status, new Error('InvalidJWTToken'));
+      expect(first.kind).toBe('log');
+      expect(first.kind === 'log' ? first.line : '').not.toContain('re-authenticating');
+
+      // A repeat of the same status is silent — exactly like round 1's CLOSED handling already was.
+      expect(l.onStatus(status, new Error('InvalidJWTToken')).kind).toBe('none');
+    },
+  );
+});
+
+describe('createHintLifecycle — B-1045 round 2: armRecovery()', () => {
+  const topic = 'workspace:ws-uuid';
+
+  it.each(['CHANNEL_ERROR', 'TIMED_OUT'] as const)(
+    "armRecovery() returns 'reauth' when the tracked last status is %s",
+    (status) => {
+      const l = createHintLifecycle({ topic });
+      l.onStatus('SUBSCRIBED');
+      l.onStatus(status);
+      expect(l.armRecovery()).toBe('reauth');
+    },
+  );
+
+  it("armRecovery() returns 'recreate' when the tracked last status is CLOSED", () => {
     const l = createHintLifecycle({ topic });
     l.onStatus('SUBSCRIBED');
-    const first = l.onStatus('CHANNEL_ERROR', new Error('InvalidJWTToken'));
-    expect(first.kind).toBe('log-and-reauth');
-    expect(first.kind === 'log-and-reauth' && first.line).toContain('token expired');
-
-    // A second CHANNEL_ERROR in the SAME outage — JWT-shaped or not — never re-fires it.
-    const second = l.onStatus('CHANNEL_ERROR', new Error('InvalidJWTToken'));
-    expect(second.kind).not.toBe('log-and-reauth');
-    const third = l.onStatus('TIMED_OUT', new Error('InvalidJWTToken'));
-    expect(third.kind).not.toBe('log-and-reauth');
+    l.onStatus('CLOSED');
+    expect(l.armRecovery()).toBe('recreate');
   });
 
-  it('a non-JWT-shaped error in state B is unaffected — the ordinary log line', () => {
+  it("is latched: a second call within the same outage (before the next SUBSCRIBED) returns 'none'", () => {
     const l = createHintLifecycle({ topic });
     l.onStatus('SUBSCRIBED');
-    const a = l.onStatus('CHANNEL_ERROR', new Error('websocket closed'));
-    expect(a.kind).toBe('log');
-    expect(a.kind === 'log' && a.line).toContain("awaiting the client's own rejoin");
+    l.onStatus('CHANNEL_ERROR');
+    expect(l.armRecovery()).toBe('reauth');
+    expect(l.armRecovery()).toBe('none');
+    expect(l.armRecovery()).toBe('none');
+
+    // A later status change within the SAME outage does not un-latch it either.
+    l.onStatus('CHANNEL_ERROR');
+    expect(l.armRecovery()).toBe('none');
   });
 
-  it('a re-SUBSCRIBED resets the latch, so a LATER outage can trigger log-and-reauth again', () => {
+  it('the latch resets after the next SUBSCRIBED — a later outage can arm armRecovery() again', () => {
     const l = createHintLifecycle({ topic });
     l.onStatus('SUBSCRIBED');
-    expect(l.onStatus('CHANNEL_ERROR', new Error('InvalidJWTToken')).kind).toBe('log-and-reauth');
+    l.onStatus('CHANNEL_ERROR');
+    expect(l.armRecovery()).toBe('reauth');
+    expect(l.armRecovery()).toBe('none');
+
+    l.onStatus('SUBSCRIBED'); // recovered — resets the latch
+    l.onStatus('CLOSED'); // a later, different outage
+    expect(l.armRecovery()).toBe('recreate');
+  });
+
+  it("returns 'none' when there is nothing tracked worth recovering (never dropped, or SUBSCRIBED)", () => {
+    const l = createHintLifecycle({ topic });
+    expect(l.armRecovery()).toBe('none'); // no status at all yet
     l.onStatus('SUBSCRIBED');
-    expect(l.onStatus('CHANNEL_ERROR', new Error('InvalidJWTToken')).kind).toBe('log-and-reauth');
+    expect(l.armRecovery()).toBe('none'); // live, not down
   });
 });
 
