@@ -56,11 +56,13 @@ export interface HintSubscriptionDeps {
   startTimeout(ms: number, fn: () => void): () => void;
   log(line: string): void;
   /** B-1045: `auth.forceRefresh()` — the existing single-flight session refresh in src/auth.ts.
-   *  Called on a `log-and-reauth` action, BEFORE `setAuth()`. */
+   *  Called by the down-timer's recovery path (round 2: `runRecovery()`), BEFORE `setAuth()` on
+   *  the 'reauth' action or before recreating the channel on the 'recreate' action. */
   forceRefresh(): Promise<void>;
   /** B-1045: `client.realtime.setAuth()` — called with NO argument. A manually-passed token
-   *  permanently opts the realtime client out of future callback-based refreshes; see
-   *  createHintLifecycle's `log-and-reauth` doc comment for the citation. */
+   *  permanently opts the realtime client out of future callback-based refreshes. Called ONLY on
+   *  the 'reauth' recovery action (CHANNEL_ERROR/TIMED_OUT) — NEVER on 'recreate' (CLOSED), where
+   *  the library has already self-removed the channel and there is no live rejoin left to prime. */
   setAuth(): void;
   /** The scheduler's poll interval — the outage-visibility timer's first delay. */
   pollMs: number;
@@ -116,13 +118,23 @@ export function startHintSubscription(deps: HintSubscriptionDeps): HintSubscript
   };
 
   /** `elapsedAtFire` is the total down-time this timer instance represents WHEN IT FIRES —
-   *  computed by the caller by accumulating scheduled durations, never by reading a clock. */
+   *  computed by the caller by accumulating scheduled durations, never by reading a clock.
+   *
+   *  B-1045 round 2: the FIRST firing (armed at `deps.pollMs`) is also the sole trigger for a
+   *  recovery action — `runRecovery()` asks the lifecycle's `armRecovery()` what to do, and that
+   *  call latches, so every later firing (the `downCadenceMs`-cadenced ones) calls it too but gets
+   *  'none' back and is a no-op beyond the down-line log. This is what keeps the arming logic
+   *  entirely OUT of `onStatus()`/`apply()` — see the module header. */
   const armDownTimer = (delayMs: number, elapsedAtFire: number): void => {
     downTimerCancel = deps.startTimeout(delayMs, () => {
       downTimerCancel = null;
       if (!lifecycle.isDown()) return; // recovered (or went dead) — nothing to say
       deps.log(`hint channel down ${Math.round(elapsedAtFire / 1000)}s, awaiting rejoin`);
-      armDownTimer(downCadenceMs, elapsedAtFire + downCadenceMs);
+      runRecovery();
+      // runRecovery() may have synchronously re-armed the timer itself (a synchronous
+      // createChannel() throw inside the recreate path routes through apply() -> checkDownTimer()
+      // -> armDownTimer()) — never stack a second live timer on top of that one.
+      if (!downTimerCancel) armDownTimer(downCadenceMs, elapsedAtFire + downCadenceMs);
     });
   };
 
@@ -151,20 +163,6 @@ export function startHintSubscription(deps: HintSubscriptionDeps): HintSubscript
         } catch {
           // Same: never let a teardown failure escape into the daemon.
         }
-      } else if (action.kind === 'log-and-reauth') {
-        // B-1045: fire-and-forget — apply() stays synchronous. The latch in createHintLifecycle
-        // guarantees this fires at most once per outage, so there is no spin to guard against here.
-        deps
-          .forceRefresh()
-          .then(() => deps.setAuth())
-          .catch((refreshErr: unknown) => {
-            const message =
-              refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
-            deps.log(
-              `hint channel re-auth failed (${message}) — staying on the poll interval until ` +
-                "the client's own rejoin recovers",
-            );
-          });
       }
     }
     checkDownTimer();
@@ -180,21 +178,65 @@ export function startHintSubscription(deps: HintSubscriptionDeps): HintSubscript
     deps.startTimeout(action.debounceMs, coalescer.closeWindow);
   };
 
-  try {
-    channel = deps.createChannel(topic);
-    for (const event of HINT_EVENTS) channel.on('broadcast', { event }, onMessage);
-    channel.subscribe((status, err) => {
-      apply(
-        (['SUBSCRIBED', 'CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'] as const).find(
-          (s) => s === status,
-        ) ?? 'CHANNEL_ERROR',
-        err,
-      );
-    });
-  } catch (err) {
-    // No channel to report a status — synthesise one. Same tolerant (A) outcome.
-    apply('SETUP_FAILED', err);
-  }
+  const logRefreshFailure = (refreshErr: unknown): void => {
+    const message = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
+    deps.log(
+      `hint channel re-auth failed (${message}) — staying on the poll interval until ` +
+        "the client's own rejoin recovers",
+    );
+  };
+
+  /** The EXACT create+wire+subscribe sequence boot uses — extracted so the recreate path (B-1045
+   *  round 2, CLOSED) can re-run it verbatim instead of duplicating the wiring. SYNCHRONOUS and
+   *  NON-BLOCKING, same as boot: never awaits the join, and a synchronous createChannel() throw is
+   *  routed through the same SETUP_FAILED/state-(A) tolerant path. */
+  const subscribeChannel = (): void => {
+    try {
+      const newChannel = deps.createChannel(topic);
+      channel = newChannel;
+      for (const event of HINT_EVENTS) newChannel.on('broadcast', { event }, onMessage);
+      newChannel.subscribe((status, err) => {
+        apply(
+          (['SUBSCRIBED', 'CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'] as const).find(
+            (s) => s === status,
+          ) ?? 'CHANNEL_ERROR',
+          err,
+        );
+      });
+    } catch (err) {
+      // No channel to report a status — synthesise one. Same tolerant (A) outcome.
+      apply('SETUP_FAILED', err);
+    }
+  };
+
+  /** B-1045 round 2: what the down-timer's first tick runs, once `lifecycle.armRecovery()` says
+   *  there is something to do. Never called from `apply()`/`onStatus()` directly — see
+   *  `armRecovery()`'s doc comment on why the trigger moved to the down-timer. */
+  const runRecovery = (): void => {
+    const action = lifecycle.armRecovery();
+    if (action === 'reauth') {
+      // CHANNEL_ERROR / TIMED_OUT: the library's own scheduled rejoin is still live — correct the
+      // auth it will use on its next attempt. NEVER touch the channel itself.
+      deps.forceRefresh().then(() => deps.setAuth()).catch(logRefreshFailure);
+    } else if (action === 'recreate') {
+      // CLOSED: the library has already self-removed this channel from both its own registries —
+      // there is no scheduled rejoin left to correct. Refresh first, THEN discard the dead
+      // reference and re-run the exact same wiring boot used, never removeChannel/setAuth on the
+      // discarded channel (both are meaningless at best against an already-self-removed channel).
+      deps
+        .forceRefresh()
+        .then(() => {
+          // Guard against two live channels for one topic: drop the stale reference BEFORE the
+          // replacement is created.
+          channel = null;
+          subscribeChannel();
+        })
+        .catch(logRefreshFailure);
+    }
+    // 'none': already armed this outage, or a status outside the two recoverable ones — nothing to do.
+  };
+
+  subscribeChannel();
 
   return {
     source: coalescer,

@@ -284,25 +284,99 @@ describe('startHintSubscription — (B) POST-SUBSCRIBED drop', () => {
   });
 });
 
-describe('startHintSubscription — B-1045 JWT-expiry reauth', () => {
-  it('forceRefresh() is called exactly once, and setAuth() is called once with NO arguments once it resolves', async () => {
-    const h = makeHarness();
+describe('startHintSubscription — B-1045 round 2: recovery is armed by the down-timer, not the status callback', () => {
+  it('a CHANNEL_ERROR/TIMED_OUT/CLOSED status by itself — before any down-timer tick — never calls forceRefresh, setAuth, or createChannel again', () => {
+    for (const status of ['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED']) {
+      const h = makeHarness();
+      h.channel.status('SUBSCRIBED');
+      h.channel.status(status, new Error('InvalidJWTToken'));
+      expect(h.forceRefreshCalls).toEqual([]);
+      expect(h.setAuthCalls).toEqual([]);
+      expect(h.topics).toEqual([TOPIC]); // createChannel not called again
+    }
+  });
+
+  it('down-timer FIRST tick with CHANNEL_ERROR as the last status: forceRefresh() once, then setAuth() once, and createChannel is NOT called again', async () => {
+    const h = makeHarness({ pollMs: 10_000 });
     h.channel.status('SUBSCRIBED');
-    h.channel.status('CHANNEL_ERROR', new Error('InvalidJWTToken'));
+    h.channel.status('CHANNEL_ERROR');
+    h.fireTimers(); // the first (and only armed) timer is the down-timer's pollMs tick
     expect(h.forceRefreshCalls).toEqual([0]); // called with zero arguments, exactly once
     expect(h.setAuthCalls).toEqual([]); // not yet — forceRefresh hasn't resolved
 
     await new Promise((r) => setTimeout(r, 0));
     expect(h.setAuthCalls).toEqual([[]]); // resolved: setAuth() called once, with no arguments
-    expect(h.logs.some((l) => l.includes('token expired, re-authenticating'))).toBe(true);
+    expect(h.topics).toEqual([TOPIC]); // createChannel never called again for a reauth recovery
   });
 
-  it('when forceRefresh() rejects, setAuth() is never called and a failure line is logged — no throw escapes', async () => {
-    const h = makeHarness({ forceRefresh: () => Promise.reject(new Error('refresh denied')) });
+  it('down-timer FIRST tick with TIMED_OUT as the last status also reauths', async () => {
+    const h = makeHarness({ pollMs: 10_000 });
     h.channel.status('SUBSCRIBED');
-    expect(() =>
-      h.channel.status('CHANNEL_ERROR', new Error('InvalidJWTToken')),
-    ).not.toThrow();
+    h.channel.status('TIMED_OUT');
+    h.fireTimers();
+    expect(h.forceRefreshCalls).toEqual([0]);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.setAuthCalls).toEqual([[]]);
+    expect(h.topics).toEqual([TOPIC]);
+  });
+
+  it('down-timer FIRST tick with CLOSED as the last status: forceRefresh() once, createChannel(topic) called AGAIN producing a NEW channel wired the same way — setAuth and removeChannel are NOT called on the discarded channel', async () => {
+    const originalChannel = fakeChannel();
+    const freshChannel = fakeChannel();
+    let createCalls = 0;
+    const h = makeHarness({
+      pollMs: 10_000,
+      createChannel: () => {
+        createCalls += 1;
+        return createCalls === 1 ? originalChannel : freshChannel;
+      },
+    });
+    originalChannel.status('SUBSCRIBED');
+    originalChannel.status('CLOSED');
+    h.fireTimers();
+    expect(h.forceRefreshCalls).toEqual([0]);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.topics).toEqual([TOPIC, TOPIC]); // createChannel(topic) called again
+    expect(createCalls).toBe(2);
+    expect(freshChannel.events()).toEqual(['task_change', 'conduction_change']);
+    expect(freshChannel.subscribeCalls()).toBe(1);
+
+    // Critically: never call setAuth or removeChannel on (or at all around) the discarded channel —
+    // the library has already self-removed CLOSED from both its own registries.
+    expect(h.setAuthCalls).toEqual([]);
+    expect(h.removed).toEqual([]);
+  });
+
+  it('a SECOND down-timer tick within the same outage does nothing further — no additional forceRefresh/createChannel/setAuth, only the ordinary down-line log', async () => {
+    const h = makeHarness({ pollMs: 10_000, downCadenceMs: 60_000 });
+    h.channel.status('SUBSCRIBED');
+    h.channel.status('CHANNEL_ERROR');
+
+    h.fireTimers(); // first tick — arms reauth
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.forceRefreshCalls).toEqual([0]);
+    expect(h.setAuthCalls).toEqual([[]]);
+
+    h.fireTimers(); // second tick, same outage (no intervening SUBSCRIBED)
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.forceRefreshCalls).toEqual([0]); // no additional call
+    expect(h.setAuthCalls).toEqual([[]]); // no additional call
+    expect(h.topics).toEqual([TOPIC]); // no additional createChannel
+    expect(h.logs.filter((l) => l.includes('hint channel down'))).toEqual([
+      'hint channel down 10s, awaiting rejoin',
+      'hint channel down 70s, awaiting rejoin',
+    ]);
+  });
+
+  it('a forceRefresh() rejection on the reauth branch stays down, logs a failure line, and never throws out of the timer callback', async () => {
+    const h = makeHarness({
+      pollMs: 10_000,
+      forceRefresh: () => Promise.reject(new Error('refresh denied')),
+    });
+    h.channel.status('SUBSCRIBED');
+    h.channel.status('CHANNEL_ERROR');
+    expect(() => h.fireTimers()).not.toThrow();
 
     await new Promise((r) => setTimeout(r, 0));
     expect(h.setAuthCalls).toEqual([]);
@@ -311,12 +385,56 @@ describe('startHintSubscription — B-1045 JWT-expiry reauth', () => {
     ).toBe(true);
   });
 
-  it('a non-expired-JWT CHANNEL_ERROR never calls forceRefresh or setAuth', () => {
-    const h = makeHarness();
+  it('a forceRefresh() rejection on the recreate branch stays down, logs a failure line, never recreates the channel, and never throws out of the timer callback', async () => {
+    const h = makeHarness({
+      pollMs: 10_000,
+      forceRefresh: () => Promise.reject(new Error('refresh denied')),
+    });
     h.channel.status('SUBSCRIBED');
-    h.channel.status('CHANNEL_ERROR', new Error('websocket closed'));
-    expect(h.forceRefreshCalls).toEqual([]);
+    h.channel.status('CLOSED');
+    expect(() => h.fireTimers()).not.toThrow();
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.topics).toEqual([TOPIC]); // no second createChannel call
     expect(h.setAuthCalls).toEqual([]);
+    expect(
+      h.logs.some((l) => l.includes('hint channel re-auth failed (refresh denied)')),
+    ).toBe(true);
+  });
+});
+
+describe('startHintSubscription — B-1045 round 2 fake-clock integration: CLOSED recreates the channel and re-subscribes', () => {
+  it('SUBSCRIBED -> CLOSED (no error) -> silence -> first down-timer tick at pollMs recreates the channel, which reaches SUBSCRIBED — setAuth is never called on the original channel anywhere in the sequence', async () => {
+    const originalChannel = fakeChannel();
+    const freshChannel = fakeChannel();
+    let createCalls = 0;
+    const h = makeHarness({
+      pollMs: 25_000,
+      createChannel: () => {
+        createCalls += 1;
+        return createCalls === 1 ? originalChannel : freshChannel;
+      },
+    });
+
+    originalChannel.status('SUBSCRIBED');
+    originalChannel.status('CLOSED'); // no error at all — the real-world failure mode
+
+    // Silence: nothing else happens until the down-timer's first tick, armed at pollMs.
+    expect(h.timers.map((t) => t.ms)).toEqual([25_000]);
+
+    h.fireTimers(); // the first down-timer tick
+    await new Promise((r) => setTimeout(r, 0)); // let forceRefresh()'s promise resolve
+
+    expect(createCalls).toBe(2);
+    expect(freshChannel.events()).toEqual(['task_change', 'conduction_change']);
+    expect(freshChannel.subscribeCalls()).toBe(1);
+
+    // Simulate the new channel's join completing.
+    freshChannel.status('SUBSCRIBED');
+    expect(h.logs.some((l) => l.includes('re-subscribed'))).toBe(true);
+
+    expect(h.setAuthCalls).toEqual([]); // never called anywhere in this sequence
+    expect(h.removed).toEqual([]); // the original was discarded, never removeChannel()'d
   });
 });
 
@@ -363,10 +481,11 @@ describe('startHintSubscription — B-1045 outage-visibility timer', () => {
 });
 
 describe('startHintSubscription — B-1045 integration: a token-expiry-shaped cycle', () => {
-  it('re-authenticates on an expired-JWT drop, and hints resume on the next SUBSCRIBED', async () => {
-    const h = makeHarness();
+  it('re-authenticates on an expired-JWT-shaped CHANNEL_ERROR drop once the down-timer fires, and hints resume on the next SUBSCRIBED', async () => {
+    const h = makeHarness({ pollMs: 10_000 });
     h.channel.status('SUBSCRIBED');
     h.channel.status('CHANNEL_ERROR', new Error('InvalidJWTToken'));
+    h.fireTimers(); // the down-timer's first tick is what arms the reauth (round 2)
     expect(h.forceRefreshCalls).toEqual([0]);
     await new Promise((r) => setTimeout(r, 0));
     expect(h.setAuthCalls).toEqual([[]]);
