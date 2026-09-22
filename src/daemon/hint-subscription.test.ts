@@ -39,6 +39,7 @@ interface HarnessOpts {
   pollMs?: number;
   downCadenceMs?: number;
   forceRefresh?: () => Promise<void>;
+  setAuth?: () => Promise<void>;
 }
 
 function makeHarness(opts: HarnessOpts = {}) {
@@ -76,6 +77,7 @@ function makeHarness(opts: HarnessOpts = {}) {
     },
     setAuth: (...args: unknown[]) => {
       setAuthCalls.push(args);
+      return opts.setAuth ? opts.setAuth() : Promise.resolve();
     },
     pollMs: opts.pollMs ?? 25_000,
     downCadenceMs: opts.downCadenceMs,
@@ -101,6 +103,16 @@ function makeHarness(opts: HarnessOpts = {}) {
       entry?.fn();
     },
   };
+}
+
+/** A controllable promise — used to prove an `await` is real by holding a promise pending until
+ *  the test manually resolves it, then asserting nothing downstream ran in the meantime. */
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
 }
 
 /** Did the scheduler's hint promise resolve? */
@@ -223,7 +235,7 @@ describe('startHintSubscription — (A) PRE-SUBSCRIBED failure', () => {
       startTimeout: () => () => {},
       log: (l) => logs.push(l),
       forceRefresh: () => Promise.resolve(),
-      setAuth: () => {},
+      setAuth: () => Promise.resolve(),
       pollMs: 25_000,
     });
     expect(() => channel.status('CHANNEL_ERROR')).not.toThrow();
@@ -301,6 +313,7 @@ describe('startHintSubscription — B-1045 round 2: recovery is armed by the dow
     h.channel.status('SUBSCRIBED');
     h.channel.status('CHANNEL_ERROR');
     h.fireTimers(); // the first (and only armed) timer is the down-timer's pollMs tick
+    expect(h.logs).toContain('hint channel recovery: reauth'); // decided the moment the tick fires
     expect(h.forceRefreshCalls).toEqual([0]); // called with zero arguments, exactly once
     expect(h.setAuthCalls).toEqual([]); // not yet — forceRefresh hasn't resolved
 
@@ -320,53 +333,80 @@ describe('startHintSubscription — B-1045 round 2: recovery is armed by the dow
     expect(h.topics).toEqual([TOPIC]);
   });
 
-  it('down-timer FIRST tick with CLOSED as the last status: forceRefresh() once, createChannel(topic) called AGAIN producing a NEW channel wired the same way — setAuth and removeChannel are NOT called on the discarded channel', async () => {
+  it('down-timer FIRST tick with CLOSED as the last status: forceRefresh() once, AWAITED setAuth() once, THEN createChannel(topic) called AGAIN producing a NEW channel wired the same way — removeChannel is NOT called on the discarded channel', async () => {
     const originalChannel = fakeChannel();
     const freshChannel = fakeChannel();
     let createCalls = 0;
+    const setAuthDeferred = deferred<void>();
     const h = makeHarness({
       pollMs: 10_000,
       createChannel: () => {
         createCalls += 1;
         return createCalls === 1 ? originalChannel : freshChannel;
       },
+      setAuth: () => setAuthDeferred.promise,
     });
     originalChannel.status('SUBSCRIBED');
     originalChannel.status('CLOSED');
     h.fireTimers();
+    expect(h.logs).toContain('hint channel recovery: recreate'); // decided the moment the tick fires
     expect(h.forceRefreshCalls).toEqual([0]);
 
-    await new Promise((r) => setTimeout(r, 0));
-    expect(h.topics).toEqual([TOPIC, TOPIC]); // createChannel(topic) called again
+    await new Promise((r) => setTimeout(r, 0)); // let forceRefresh() resolve
+    expect(h.setAuthCalls).toEqual([[]]); // setAuth() called once, with no arguments
+    // The ordering assertion this test exists for: the replacement channel's join must not begin
+    // until setAuth()'s promise has resolved — with it still pending, createChannel is NOT called
+    // again yet.
+    expect(createCalls).toBe(1);
+    expect(h.topics).toEqual([TOPIC]);
+
+    setAuthDeferred.resolve();
+    await new Promise((r) => setTimeout(r, 0)); // let setAuth()'s .then() run
+
+    expect(h.topics).toEqual([TOPIC, TOPIC]); // createChannel(topic) called again, only now
     expect(createCalls).toBe(2);
     expect(freshChannel.events()).toEqual(['task_change', 'conduction_change']);
     expect(freshChannel.subscribeCalls()).toBe(1);
 
-    // Critically: never call setAuth or removeChannel on (or at all around) the discarded channel —
-    // the library has already self-removed CLOSED from both its own registries.
-    expect(h.setAuthCalls).toEqual([]);
+    // setAuth is a socket-level call with no channel argument — there is no notion of "which
+    // channel" it was called on. It was never removeChannel()'d either: the library had already
+    // self-removed CLOSED from both its own registries.
     expect(h.removed).toEqual([]);
   });
 
-  it('a SECOND down-timer tick within the same outage does nothing further — no additional forceRefresh/createChannel/setAuth, only the ordinary down-line log', async () => {
+  it('B-1045 round 3: down-timer ticks 2 and 3 within the same outage RE-ATTEMPT (capped at 3); a 4th tick is genuinely a no-op', async () => {
     const h = makeHarness({ pollMs: 10_000, downCadenceMs: 60_000 });
     h.channel.status('SUBSCRIBED');
     h.channel.status('CHANNEL_ERROR');
 
-    h.fireTimers(); // first tick — arms reauth
+    h.fireTimers(); // tick 1 — attempt 1
     await new Promise((r) => setTimeout(r, 0));
     expect(h.forceRefreshCalls).toEqual([0]);
     expect(h.setAuthCalls).toEqual([[]]);
 
-    h.fireTimers(); // second tick, same outage (no intervening SUBSCRIBED)
+    h.fireTimers(); // tick 2, same outage — attempt 2, still within the cap
     await new Promise((r) => setTimeout(r, 0));
-    expect(h.forceRefreshCalls).toEqual([0]); // no additional call
-    expect(h.setAuthCalls).toEqual([[]]); // no additional call
+    expect(h.forceRefreshCalls).toEqual([0, 0]); // one more call
+    expect(h.setAuthCalls).toEqual([[], []]); // one more call
+    expect(h.topics).toEqual([TOPIC]); // reauth never touches createChannel
+
+    h.fireTimers(); // tick 3, same outage — attempt 3, still within the cap
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.forceRefreshCalls).toEqual([0, 0, 0]);
+    expect(h.setAuthCalls).toEqual([[], [], []]);
+
+    h.fireTimers(); // tick 4, same outage — the cap is exhausted: genuinely a no-op
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.forceRefreshCalls).toEqual([0, 0, 0]); // no additional call
+    expect(h.setAuthCalls).toEqual([[], [], []]); // no additional call
     expect(h.topics).toEqual([TOPIC]); // no additional createChannel
     expect(h.logs.filter((l) => l.includes('hint channel down'))).toEqual([
       'hint channel down 10s, awaiting rejoin',
       'hint channel down 70s, awaiting rejoin',
+      'hint channel down 130s, awaiting rejoin',
+      'hint channel down 190s, awaiting rejoin',
     ]);
+    expect(h.logs.filter((l) => l === 'hint channel recovery: reauth')).toHaveLength(3);
   });
 
   it('a forceRefresh() rejection on the reauth branch stays down, logs a failure line, and never throws out of the timer callback', async () => {
@@ -403,17 +443,19 @@ describe('startHintSubscription — B-1045 round 2: recovery is armed by the dow
   });
 });
 
-describe('startHintSubscription — B-1045 round 2 fake-clock integration: CLOSED recreates the channel and re-subscribes', () => {
-  it('SUBSCRIBED -> CLOSED (no error) -> silence -> first down-timer tick at pollMs recreates the channel, which reaches SUBSCRIBED — setAuth is never called on the original channel anywhere in the sequence', async () => {
+describe('startHintSubscription — B-1045 round 3 fake-clock integration: CLOSED awaits setAuth() before recreating the channel, then re-subscribes', () => {
+  it('SUBSCRIBED -> CLOSED (no error) -> silence -> first down-timer tick at pollMs: forceRefresh() resolves, setAuth() is called and resolves, THEN a new channel is created+wired+subscribed, which reaches SUBSCRIBED — call order is forceRefresh -> setAuth -> the new channel\'s subscribe()', async () => {
     const originalChannel = fakeChannel();
     const freshChannel = fakeChannel();
     let createCalls = 0;
+    const setAuthDeferred = deferred<void>();
     const h = makeHarness({
       pollMs: 25_000,
       createChannel: () => {
         createCalls += 1;
         return createCalls === 1 ? originalChannel : freshChannel;
       },
+      setAuth: () => setAuthDeferred.promise,
     });
 
     originalChannel.status('SUBSCRIBED');
@@ -425,6 +467,15 @@ describe('startHintSubscription — B-1045 round 2 fake-clock integration: CLOSE
     h.fireTimers(); // the first down-timer tick
     await new Promise((r) => setTimeout(r, 0)); // let forceRefresh()'s promise resolve
 
+    // ORDERING: setAuth() has been called, but its promise is still pending — the replacement
+    // channel must NOT have been created/subscribed yet.
+    expect(h.setAuthCalls).toEqual([[]]);
+    expect(createCalls).toBe(1);
+    expect(freshChannel.subscribeCalls()).toBe(0);
+
+    setAuthDeferred.resolve();
+    await new Promise((r) => setTimeout(r, 0)); // let setAuth()'s .then() run
+
     expect(createCalls).toBe(2);
     expect(freshChannel.events()).toEqual(['task_change', 'conduction_change']);
     expect(freshChannel.subscribeCalls()).toBe(1);
@@ -433,7 +484,6 @@ describe('startHintSubscription — B-1045 round 2 fake-clock integration: CLOSE
     freshChannel.status('SUBSCRIBED');
     expect(h.logs.some((l) => l.includes('re-subscribed'))).toBe(true);
 
-    expect(h.setAuthCalls).toEqual([]); // never called anywhere in this sequence
     expect(h.removed).toEqual([]); // the original was discarded, never removeChannel()'d
   });
 });
@@ -519,7 +569,7 @@ describe('startHintSubscription — close()', () => {
       startTimeout: () => () => {},
       log: vi.fn(),
       forceRefresh: () => Promise.resolve(),
-      setAuth: () => {},
+      setAuth: () => Promise.resolve(),
       pollMs: 25_000,
     });
     channel.status('SUBSCRIBED');

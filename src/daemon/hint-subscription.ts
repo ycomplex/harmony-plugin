@@ -60,10 +60,13 @@ export interface HintSubscriptionDeps {
    *  the 'reauth' action or before recreating the channel on the 'recreate' action. */
   forceRefresh(): Promise<void>;
   /** B-1045: `client.realtime.setAuth()` — called with NO argument. A manually-passed token
-   *  permanently opts the realtime client out of future callback-based refreshes. Called ONLY on
-   *  the 'reauth' recovery action (CHANNEL_ERROR/TIMED_OUT) — NEVER on 'recreate' (CLOSED), where
-   *  the library has already self-removed the channel and there is no live rejoin left to prime. */
-  setAuth(): void;
+   *  permanently opts the realtime client out of future callback-based refreshes. Called on BOTH
+   *  recovery actions (round 3): on 'reauth' (CHANNEL_ERROR/TIMED_OUT) to correct the auth the
+   *  library's own live rejoin will use, and on 'recreate' (CLOSED) — AWAITED — before the
+   *  replacement channel's `subscribe()` runs, because `subscribe()` reads the socket's cached
+   *  `accessTokenValue` into its join payload (verified at source, realtime-js@2.100.0): without an
+   *  awaited `setAuth()` first, the replacement channel would join with the stale/expired token. */
+  setAuth(): Promise<void>;
   /** The scheduler's poll interval — the outage-visibility timer's first delay. */
   pollMs: number;
   /** The outage-visibility timer's steady-state cadence after the first firing. Defaults to five
@@ -120,11 +123,13 @@ export function startHintSubscription(deps: HintSubscriptionDeps): HintSubscript
   /** `elapsedAtFire` is the total down-time this timer instance represents WHEN IT FIRES —
    *  computed by the caller by accumulating scheduled durations, never by reading a clock.
    *
-   *  B-1045 round 2: the FIRST firing (armed at `deps.pollMs`) is also the sole trigger for a
-   *  recovery action — `runRecovery()` asks the lifecycle's `armRecovery()` what to do, and that
-   *  call latches, so every later firing (the `downCadenceMs`-cadenced ones) calls it too but gets
-   *  'none' back and is a no-op beyond the down-line log. This is what keeps the arming logic
-   *  entirely OUT of `onStatus()`/`apply()` — see the module header. */
+   *  B-1045 round 2/3: EVERY firing — the first, armed at `deps.pollMs`, and each
+   *  `downCadenceMs`-cadenced one after it — calls `runRecovery()`, which asks the lifecycle's
+   *  `armRecovery()` what to do. Round 3 widened that from a once-per-outage latch to a counter
+   *  capped at 3 attempts, so up to the first 3 firings each trigger a real recovery action; a 4th
+   *  (or later) firing within the same outage gets 'none' back from `armRecovery()` and is a no-op
+   *  beyond the down-line log. This is what keeps the arming logic entirely OUT of
+   *  `onStatus()`/`apply()` — see the module header. */
   const armDownTimer = (delayMs: number, elapsedAtFire: number): void => {
     downTimerCancel = deps.startTimeout(delayMs, () => {
       downTimerCancel = null;
@@ -209,31 +214,39 @@ export function startHintSubscription(deps: HintSubscriptionDeps): HintSubscript
     }
   };
 
-  /** B-1045 round 2: what the down-timer's first tick runs, once `lifecycle.armRecovery()` says
-   *  there is something to do. Never called from `apply()`/`onStatus()` directly — see
-   *  `armRecovery()`'s doc comment on why the trigger moved to the down-timer. */
+  /** B-1045 round 2/3: what the down-timer's every tick runs (up to the 3-attempt cap), once
+   *  `lifecycle.armRecovery()` says there is something to do. Never called from
+   *  `apply()`/`onStatus()` directly — see `armRecovery()`'s doc comment on why the trigger moved
+   *  to the down-timer. */
   const runRecovery = (): void => {
     const action = lifecycle.armRecovery();
     if (action === 'reauth') {
+      deps.log('hint channel recovery: reauth');
       // CHANNEL_ERROR / TIMED_OUT: the library's own scheduled rejoin is still live — correct the
       // auth it will use on its next attempt. NEVER touch the channel itself.
       deps.forceRefresh().then(() => deps.setAuth()).catch(logRefreshFailure);
     } else if (action === 'recreate') {
+      deps.log('hint channel recovery: recreate');
       // CLOSED: the library has already self-removed this channel from both its own registries —
-      // there is no scheduled rejoin left to correct. Refresh first, THEN discard the dead
-      // reference and re-run the exact same wiring boot used, never removeChannel/setAuth on the
-      // discarded channel (both are meaningless at best against an already-self-removed channel).
+      // there is no scheduled rejoin left to correct. Refresh, THEN await setAuth() (round 3 —
+      // subscribe() reads the socket's cached accessTokenValue into its join payload, so the
+      // replacement channel must not begin its join before setAuth() has resolved), THEN discard
+      // the dead reference and re-run the exact same wiring boot used. Never removeChannel/setAuth
+      // is aimed at the discarded channel itself — setAuth is socket-level, not channel-level.
       deps
         .forceRefresh()
+        .then(() => deps.setAuth())
         .then(() => {
           // Guard against two live channels for one topic: drop the stale reference BEFORE the
-          // replacement is created.
+          // replacement is created. This runs only after setAuth() has resolved, so the
+          // replacement's subscribe() always reads the freshly-set auth.
           channel = null;
           subscribeChannel();
         })
         .catch(logRefreshFailure);
     }
-    // 'none': already armed this outage, or a status outside the two recoverable ones — nothing to do.
+    // 'none': the cap is exhausted for this outage, or a status outside the two recoverable ones —
+    // nothing to do.
   };
 
   subscribeChannel();
