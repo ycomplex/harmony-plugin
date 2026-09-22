@@ -5,8 +5,9 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { HarmonyAuth } from './auth.js';
 import { createAuthenticatedClient } from './supabase.js';
 import { registerTools, handleToolCall } from './tools/index.js';
+import { harmonyEnv } from './env.js';
 
-const apiToken = process.env.HARMONY_API_TOKEN;
+const apiToken = harmonyEnv('HARMONY_API_TOKEN');
 if (!apiToken) {
   console.error('HARMONY_API_TOKEN environment variable is required');
   process.exit(1);
