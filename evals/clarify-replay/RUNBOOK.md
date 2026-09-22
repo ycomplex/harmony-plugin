@@ -123,7 +123,153 @@ falls inside that window (open the kept trace). If a run grows long enough that 
 the case's prompt ask the skill to also render the final brief to a workspace file and point the
 judge's `focus` at `{ source: file, path: <that file> }`.
 
-## 8. Out of scope
+## 8. B-1037 — CI wiring: what runs automatically, and what a founder/orchestrator must still do
 
-CI wiring (B-1037); other gates' suites; the KB eval cadence (B-678); creating or resetting the
-fixture (founder-run precondition (a)).
+B-1037 wires this suite into CI as a PR check on `skills/**` / `evals/clarify-replay/**` changes.
+The workflow YAML itself is **not** in this repo yet — Edit/Write under `.github/workflows/**` is
+denied at the harness level for every build context, so it was written to
+`evals/clarify-replay/ci/skill-eval.yml.proposed` (a normal, non-workflow path) and must be
+hand-carried into `.github/workflows/skill-eval.yml` by a human. Read that file's own header
+comment first — it explains the non-blocking mechanism (NOT `continue-on-error` on the eval step
+itself — that would violate AC6) and lists the exact secrets a human must add
+(`HARMONY_CLARIFY_EVAL_LABEL_TOKEN`, `ANTHROPIC_API_KEY`).
+
+### 8a. The derived tool inventory + its CI check
+
+`evals/clarify-replay/reference-tool-calls.json` is a COMMITTED, one-time extraction of the 15
+tool names the real B-1036 hand-run traces actually called (9 reads + 6 writes — see the file
+itself). `evals/clarify-replay/scripts/check-mock-inventory.mjs` diffs it against the mock
+directory (`mocks/plugin_harmony-plugin_harmony/*.md`, excluding `_server.md`, `_tools.json`,
+`fixtures/`, `.replay/`) and exits non-zero, NAMING every manifest tool with no mock file. It runs
+as its own fast CI step before the mocked eval run (no sandbox, no cost). If the clarify skill
+starts calling a 16th tool, update `reference-tool-calls.json` by hand (there is no live-trace
+re-derivation mechanism — traces are gitignored) and author its mock.
+
+### 8b. Hand-authored mocks for the 9 reads + 6 writes
+
+`evals/clarify-replay/mocks/plugin_harmony-plugin_harmony/*.md` — one file per tool, in the real
+`claude plugin eval` mock format (frontmatter `type`/`expect`, body with `{{input.<field>}}`
+substitution). The 6 write mocks (`record_decision`, `reference_knowledge`, `compose_brief`,
+`start_elicitation`, `file_elicitation_round`, `conclude_elicitation`) are canned-success,
+id-bearing stand-ins — enough for the skill's flow to reach `compose_brief`, which every
+deterministic grader inspects. The 9 read mocks are mostly STATIC (empty results) because the
+isolated FX fixture project is a near-empty board by design (`query_knowledge`, `query_entities`,
+`search_tasks`, `list_comments`, `find_related_tickets`, `get_brief`, `get_elicitation`,
+`get_project` all return a fixed, generic body) — only `get_task` carries real ticket text, and
+even that is currently a GENERIC placeholder ticket, not per-ticket real content (see 8c for why,
+and the founder TODO to improve it).
+
+### 8c. Wiring per-ticket `get_task` content (a documented gap, not a bug)
+
+The mock format's two documented substitutions are `{{input.<field>}}` and
+`{{file:fixtures/<literal-name>}}` — this build did **not** assume NESTED substitution
+(`{{file:fixtures/{{input.task_id}}.json}}`) works, because it could not be verified live (no
+`claude plugin eval` access in this build container). So the suite-level `get_task.md` mock
+returns one fixed, generic-but-plausible ticket body for every case — good enough for the SMOKE
+subset's purpose (catching a skill-prose regression in the frame/ACs/word-budget shape), but not
+real per-ticket content.
+
+**Founder/orchestrator TODO, once real `claude plugin eval` access is available:** confirm whether
+nested `{{file:...{{input...}}...}}` substitution is supported. If yes, wire
+`mocks/plugin_harmony-plugin_harmony/get_task.md` to read
+`fixtures/{{input.task_id}}.json` directly. If no, author a per-case override at
+`cases/<TICKET>/mocks/plugin_harmony-plugin_harmony/get_task.md` for each of the 15 real cases
+(case-local mocks override the suite's file-by-file — see the ticket's own "Mock file format"
+notes) pointing at that ticket's own exported fixture.
+
+### 8d. Exporting read fixtures from FX (fixture-export.mjs) — start with a reset
+
+`evals/clarify-replay/scripts/fixture-export.mjs` is a READ-ONLY, founder/orchestrator-run script
+(no FX credentials exist in a build container) that exports one stripped JSON fixture per case
+ticket into `mocks/plugin_harmony-plugin_harmony/fixtures/` (gitignored). **Before every export
+pass**, re-run the fixture SQL (`scratchpad/b1036-fixture.sql`, founder-held) to reset FX — the
+B-1036 hand run already wrote briefs, ACs and decisions onto the 15 fixture tickets, so FX is
+**not** pre-clarify state today. The script REFUSES (loud, named, non-zero exit) to export any
+ticket whose `field_values.gate_slots.clarify` is populated, whose `acceptance_criteria` is
+non-empty, or that already has a brief — see `checkTicketIsPreClarify` (unit-tested at
+`src/fixture-export-refusal.test.ts`, no live board needed). A REFUSED entry means: reset FX, then
+re-run.
+
+```bash
+# after resetting FX via scratchpad/b1036-fixture.sql:
+HARMONY_SUPABASE_URL=<staging url> HARMONY_SUPABASE_ANON_KEY=<staging anon key> \
+  HARMONY_API_TOKEN=<FX token> node evals/clarify-replay/scripts/fixture-export.mjs
+```
+
+### 8e. Generating `_tools.json` (optional, not yet generated)
+
+See `mocks/plugin_harmony-plugin_harmony/TOOLS_JSON_TODO.md` — capture the real MCP server's
+`tools/list` response during a real (§5) hand-pass run and save it there; delete the TODO file once
+done. Its absence does not block a mocked run.
+
+### 8f. Judge calibration: the two control cases (AC2)
+
+Two case directories exist with NO fetchable production ticket of their own —
+`cases/ctrl-positive-known-good/` and `cases/ctrl-negative-boundary-flip/`. They calibrate the
+**judge**, not the skill: neither touches the Harmony MCP server at all (their `prompt.md` has the
+agent copy a pre-seeded `fixtures/fresh-brief.md` verbatim into the workspace via `Read`+`Write`);
+their judge (`graders/judge.md`, `focus: { source: file, path: fresh-brief.md }`, gitignored) is
+the SAME rubric+label as an ordinary case's judge — only the fresh artifact differs:
+
+- **Positive control**: the fresh artifact IS the source ticket's ratified label, rendered
+  verbatim. Expected **PASS** on every check.
+- **Negative control**: the fresh artifact is the SAME rendering with one `in_scope` item moved to
+  `not_solving` (a genuine boundary miss, per the rubric's own check-2 definition). Expected
+  **FAIL, specifically on check 2** (SAME BOUNDARIES) — checks 1/3/4 must still read PASS.
+
+Both cases also carry a second, weight-0 `graders/judge-reasoning.md` grader (same rubric plus an
+instruction to name PASS/FAIL per numbered check explicitly) — today's judge votes carry no
+per-check reasoning, so this exists to make a run's report legible to a human without re-deriving
+it from a bare verdict.
+
+**Generate both cases' fixtures/judge files** (gitignored, exactly like every other case's
+`graders/judge.md`) with:
+
+```bash
+HARMONY_API_TOKEN=<production token> node evals/clarify-replay/scripts/fetch-labels.mjs --controls B-293
+```
+
+(`B-293` — the Test-epic case — is this build's default source ticket; pass a different visual id
+to use another already-fetched label instead.)
+
+**AC2's calibration gate, in order:**
+1. Run the command above.
+2. Run the suite against just the two control cases (`--case ctrl-positive-known-good --case
+   ctrl-negative-boundary-flip`, mocked or real — both work, since neither touches the MCP server).
+3. Confirm the positive control PASSES and the negative control FAILS on check 2 specifically. If
+   either disagrees, the judge/rubric is miscalibrated — fix it before deriving a threshold from
+   any other case's score.
+4. Only THEN derive `EVAL_SCORE_THRESHOLD` from real scores and consider flipping the check
+   `required` in branch protection (a separate, deliberate, post-merge founder action — never part
+   of this build; see `evals/clarify-replay/ci/skill-eval.yml.proposed`'s own header).
+
+**Also walk-at-build/verify (plan build notes item 2, carried forward, NOT done here):** the 10
+fresh briefs from the original hand run already exist in the traces
+(`results/result2.json` `tracePaths` → the last `compose_brief` call per trace) — re-judging THOSE
+stored briefs against their labels with the rendered-brief focus (judge calls only, no clarify
+runs) is a cheaper, more targeted calibration than a fresh clarify run, and its agreement with the
+deterministic graders belongs in the PR that flips this check to required. `results/result2.json`
+is gitignored and lives on the orchestrator's machine — not reproducible in a build container.
+
+### 8g. Smoke subset vs full 15
+
+Every PR run (`pull_request` trigger) runs a SMOKE SUBSET of 4-5 cases plus the two control cases,
+under a cost ceiling — see the placeholders in `skill-eval.yml.proposed`'s own header (case list,
+threshold, cost ceiling — all founder-set at release, not invented in this build). The full 15 runs
+on demand via `workflow_dispatch` with `full_suite: true`.
+
+### 8h. Secrets discipline (applies to every step above run in CI)
+
+Every credential the CI workflow needs is a repo secret referenced by NAME only
+(`secrets.HARMONY_CLARIFY_EVAL_LABEL_TOKEN`, `secrets.ANTHROPIC_API_KEY`) — the same regime as
+`.github/workflows/model-catalog-liveness.yml`. No step ever echoes a token or label text to a log,
+the job summary, or an uploaded artifact; `fetch-labels.mjs`'s own stdout is ticket-id +
+revision-count only (never the label's content), and the uploaded eval-result artifact is always
+the SANITISED copy (see AC4 in the workflow's own comments) — the raw JSON (with full grader
+rubrics, i.e. full label content) never leaves the runner.
+
+## 9. Out of scope
+
+Other gates' suites; the KB eval cadence (B-678); creating or resetting the fixture (founder-run
+precondition (a)); flipping the CI check to a required, blocking gate (post-merge, post-calibration
+founder action — see §8f).

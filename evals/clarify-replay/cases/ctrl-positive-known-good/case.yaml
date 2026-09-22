@@ -1,0 +1,35 @@
+schema_version: "1.1"
+name: clarify-replay-ctrl-positive-known-good
+description: >
+  B-1037 judge-calibration POSITIVE control (ratified plan step 2, AC2). This case does NOT run
+  the clarify skill -- it exists solely to prove the judge agrees with a KNOWN-GOOD answer before
+  the suite's score/threshold is trusted to gate a PR. Its "fresh" artifact is the ratified brief
+  ITSELF, rendered verbatim to a workspace file by `scripts/fetch-labels.mjs --controls` from a
+  real production label (see RUNBOOK.md "Judge calibration: the two control cases") -- the agent's
+  only job is to copy that content into the run's own workspace, byte for byte, so the judge's
+  `focus: { source: file, ... }` reads exactly what the label itself says. Expected: PASS on every
+  check. A FAIL here means the judge or its rubric is broken, not the skill -- the suite's release
+  gate must not go from non-blocking to required until this case passes for real (walk-at-verify,
+  see the plan's build notes item 4).
+tags: [clarify-replay, judge-calibration, control, B-1037]
+context:
+  add_dirs: ["fixtures"]
+runs: 1
+execution:
+  # Deliberately far below the real clarify cases (max_turns 150 / 1800s) -- this is a trivial
+  # verbatim copy, not a clarify run, so the runner defaults are already generous for it.
+  max_turns: 10
+  timeout_seconds: 300
+  allowed_tools:
+    - Read
+    - Write
+# No deterministic graders here (there is no compose_brief tool call to inspect -- this case never
+# touches the MCP server at all, on purpose: it isolates the JUDGE, not the plugin). The actual
+# grading is the auto-discovered graders/judge.md + graders/judge-reasoning.md (both GENERATED,
+# gitignored -- see RUNBOOK.md), exactly the same auto-discovery mechanism every other case in this
+# suite already relies on for its one llm grader.
+graders: []
+expected_outcome: >
+  PASS on every check (SAME PROBLEM STATEMENT / SAME BOUNDARIES / SAME RECOMMENDATION / NO INVENTED
+  ACS) -- the fresh artifact IS the ratified label's own content, verbatim, so there is no daylight
+  between "fresh" and "label" for the judge to catch.
