@@ -1,0 +1,23 @@
+{
+  "$comment": "B-1037: the clarify-replay suite's OBSERVED MCP tool inventory -- counted from the real B-1036 hand-run traces (results/result2.json tracePaths), NOT SKILL.md's prose guess of the clarify skill's tool set. This is the one-time extraction into a committed manifest; evals/clarify-replay/scripts/check-mock-inventory.mjs diffs it against the mock directory on every PR so a skill change that starts calling a 16th tool is caught before the mocked eval run silently no-ops on the missing mock. Server key: plugin_harmony-plugin_harmony. Do not hand-edit without re-deriving from a real trace -- see RUNBOOK.md.",
+  "server": "plugin_harmony-plugin_harmony",
+  "reads": [
+    "query_knowledge",
+    "search_tasks",
+    "list_comments",
+    "query_entities",
+    "get_task",
+    "get_project",
+    "find_related_tickets",
+    "get_brief",
+    "get_elicitation"
+  ],
+  "writes": [
+    "record_decision",
+    "reference_knowledge",
+    "compose_brief",
+    "start_elicitation",
+    "file_elicitation_round",
+    "conclude_elicitation"
+  ]
+}
