@@ -35269,9 +35269,14 @@ var StdioServerTransport = class {
   }
 };
 
+// src/env.ts
+function harmonyEnv(name, env = process.env) {
+  return env[name] ?? env[`EVAL_${name}`];
+}
+
 // src/auth.ts
-var SUPABASE_URL = process.env.HARMONY_SUPABASE_URL ?? "https://eioxsunvhakmelhanmnn.supabase.co";
-var SUPABASE_ANON_KEY = process.env.HARMONY_SUPABASE_ANON_KEY ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
+var SUPABASE_URL = harmonyEnv("HARMONY_SUPABASE_URL") ?? "https://eioxsunvhakmelhanmnn.supabase.co";
+var SUPABASE_ANON_KEY = harmonyEnv("HARMONY_SUPABASE_ANON_KEY") ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
 var TokenExchangeError = class extends Error {
   endpoint;
   status;
@@ -43570,8 +43575,8 @@ function shouldShowDeprecationWarning() {
 if (shouldShowDeprecationWarning()) console.warn("\u26A0\uFE0F  Node.js 18 and below are deprecated and will no longer be supported in future versions of @supabase/supabase-js. Please upgrade to Node.js 20 or later. For more information, visit: https://github.com/orgs/supabase/discussions/37217");
 
 // src/supabase.ts
-var SUPABASE_URL2 = process.env.HARMONY_SUPABASE_URL ?? "https://eioxsunvhakmelhanmnn.supabase.co";
-var SUPABASE_ANON_KEY2 = process.env.HARMONY_SUPABASE_ANON_KEY ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
+var SUPABASE_URL2 = harmonyEnv("HARMONY_SUPABASE_URL") ?? "https://eioxsunvhakmelhanmnn.supabase.co";
+var SUPABASE_ANON_KEY2 = harmonyEnv("HARMONY_SUPABASE_ANON_KEY") ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
 async function createAuthenticatedClient(auth2) {
   await auth2.getAccessToken();
   return createClient(SUPABASE_URL2, SUPABASE_ANON_KEY2, {
@@ -45316,7 +45321,7 @@ function readEnvRunConfig(env) {
   }
 }
 async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url, client) {
-  const supabase_url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
+  const supabase_url = harmonyEnv("HARMONY_SUPABASE_URL", env) ?? DEFAULT_SUPABASE_URL;
   let supabase_project_ref = "";
   try {
     supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
@@ -52026,7 +52031,7 @@ async function handleToolCall(name, args, client, projectId, userId) {
 }
 
 // src/index.ts
-var apiToken = process.env.HARMONY_API_TOKEN;
+var apiToken = harmonyEnv("HARMONY_API_TOKEN");
 if (!apiToken) {
   console.error("HARMONY_API_TOKEN environment variable is required");
   process.exit(1);

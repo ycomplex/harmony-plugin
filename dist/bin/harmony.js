@@ -23003,9 +23003,14 @@ var chalk = createChalk();
 var chalkStderr = createChalk({ level: stderrColor ? stderrColor.level : 0 });
 var source_default = chalk;
 
+// src/env.ts
+function harmonyEnv(name, env2 = process.env) {
+  return env2[name] ?? env2[`EVAL_${name}`];
+}
+
 // src/auth.ts
-var SUPABASE_URL = process.env.HARMONY_SUPABASE_URL ?? "https://eioxsunvhakmelhanmnn.supabase.co";
-var SUPABASE_ANON_KEY = process.env.HARMONY_SUPABASE_ANON_KEY ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
+var SUPABASE_URL = harmonyEnv("HARMONY_SUPABASE_URL") ?? "https://eioxsunvhakmelhanmnn.supabase.co";
+var SUPABASE_ANON_KEY = harmonyEnv("HARMONY_SUPABASE_ANON_KEY") ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
 var TokenExchangeError = class extends Error {
   endpoint;
   status;
@@ -31304,8 +31309,8 @@ function shouldShowDeprecationWarning() {
 if (shouldShowDeprecationWarning()) console.warn("\u26A0\uFE0F  Node.js 18 and below are deprecated and will no longer be supported in future versions of @supabase/supabase-js. Please upgrade to Node.js 20 or later. For more information, visit: https://github.com/orgs/supabase/discussions/37217");
 
 // src/supabase.ts
-var SUPABASE_URL2 = process.env.HARMONY_SUPABASE_URL ?? "https://eioxsunvhakmelhanmnn.supabase.co";
-var SUPABASE_ANON_KEY2 = process.env.HARMONY_SUPABASE_ANON_KEY ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
+var SUPABASE_URL2 = harmonyEnv("HARMONY_SUPABASE_URL") ?? "https://eioxsunvhakmelhanmnn.supabase.co";
+var SUPABASE_ANON_KEY2 = harmonyEnv("HARMONY_SUPABASE_ANON_KEY") ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
 async function createAuthenticatedClient(auth) {
   await auth.getAccessToken();
   return createClient(SUPABASE_URL2, SUPABASE_ANON_KEY2, {
@@ -36395,7 +36400,7 @@ function readEnvRunConfig(env2) {
   }
 }
 async function resolveEnvironment(env2 = process.env, moduleUrl = import.meta.url, client) {
-  const supabase_url = env2.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL2;
+  const supabase_url = harmonyEnv("HARMONY_SUPABASE_URL", env2) ?? DEFAULT_SUPABASE_URL2;
   let supabase_project_ref = "";
   try {
     supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";

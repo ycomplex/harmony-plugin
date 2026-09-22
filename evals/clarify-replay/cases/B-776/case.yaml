@@ -1,0 +1,74 @@
+schema_version: "1.1"
+name: clarify-replay-B-776
+description: >
+  Replays the clarify gate (skills/harmony-clarify) against the fixture-project copy of
+  production ticket B-776 and grades the fresh brief against the ratified v1.4 label pulled
+  from field_values.gate_slots.clarify (+ retained brief revisions where present, B-843/B-867).
+  A Conductor-epic ticket.
+tags: [clarify-replay, gate-regression, B-1036]
+context:
+  add_dirs: []
+runs: 1
+execution:
+  # A full clarify needs far more than the runner defaults (10 turns / 300 s) — B-1036 hand pass.
+  max_turns: 150
+  timeout_seconds: 1800
+  allowed_tools:
+    - Skill
+    - mcp__plugin_harmony-plugin_harmony__*
+    - Read
+    - Grep
+    - Glob
+graders:
+  # Deterministic must-have #1 (brief-authoring.md section Clarify "must-haves"): the frame
+  # carries all three required sections. Order-independent (the agent's own tool-call JSON key
+  # order is not pinned) via lookaheads against the WHOLE trace (tool calls + assistant text), so
+  # this survives the render/tool-call boundary either way.
+  - type: regex
+    name: frame-sections-present
+    target: trace
+    pattern: '(?=[\s\S]*"solving")(?=[\s\S]*"in_scope")(?=[\s\S]*"not_solving")'
+    match: contains
+    weight: 2
+
+  # Deterministic must-have #2: the happy-path ACs ride the brief as doc.payload
+  # acceptance_criterion items (B-810), not as prose only -- checked against compose_brief's own
+  # tool-call input.
+  - type: tool_used
+    name: acs-authored-as-payload
+    tool: mcp__plugin_harmony-plugin_harmony__compose_brief
+    input_match: '"write_kind"\s*:\s*"acceptance_criterion"'
+    min: 1
+    weight: 2
+
+  # Deterministic must-have #3: the soft, tier-aware word budget (src/tools/briefs.ts
+  # WORD_BUDGET_BASE/PER_UNIT/MAX) was respected -- compose_brief's own lint emits this exact
+  # sentence in its warnings when the render exceeds it, so its ABSENCE from the trace is the
+  # positive signal.
+  - type: regex
+    name: word-budget-respected
+    target: trace
+    pattern: 'Brief renders to \d+ words \(soft budget \d+'
+    match: not_contains
+    weight: 1
+
+  # Deterministic must-have #4: related tickets cited. NEUTRAL, NEVER A MISS (B-1036 build
+  # detail) -- the isolated fixture project will not contain the tickets a production clarify
+  # could legitimately cite, so an absent citation must never fail this case. arm: with-only
+  # makes this an indicator in the report rather than part of the score under the default
+  # --ablation with-without (see the eval CLI's own --ablation help text).
+  - type: tool_used
+    name: related-tickets-queried
+    tool: mcp__plugin_harmony-plugin_harmony__find_related_tickets
+    min: 1
+    weight: 1
+    arm: with-only
+
+  # The one LLM judge grader (B-1036 step 4) lives in graders/judge.md, GENERATED per case by
+  # scripts/fetch-labels.mjs at hand-pass time with the ratified label embedded in its rubric, and
+  # gitignored — a `baseline` grader cannot take a JSON label (it wants a .jsonl transcript), and an
+  # `llm` grader's rubric is the only place a label can reach the judge without committing it.
+expected_outcome: >
+  A clarify brief whose frame.solving / frame.in_scope / frame.not_solving restate the same
+  problem, the same boundaries, and the same recommendation as the ratified label (see
+  baseline_file), with no invented acceptance criteria, filed within the soft word budget.
