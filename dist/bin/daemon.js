@@ -32678,12 +32678,13 @@ function describe(status, err) {
   const detail = err instanceof Error ? err.message : err == null ? "" : String(err);
   return detail ? `${status} (${detail})` : status;
 }
+var MAX_RECOVERY_ATTEMPTS = 3;
 function createHintLifecycle(opts) {
   let subscribedOnce = false;
   let dead = false;
   let live = false;
   let lastStatus = null;
-  let recoveryArmedThisOutage = false;
+  let recoveryAttemptsThisOutage = 0;
   return {
     onStatus(status, err) {
       if (dead) return { kind: "none" };
@@ -32693,7 +32694,7 @@ function createHintLifecycle(opts) {
         const first = !subscribedOnce;
         subscribedOnce = true;
         live = true;
-        recoveryArmedThisOutage = false;
+        recoveryAttemptsThisOutage = 0;
         if (repeat) return { kind: "none" };
         return {
           kind: "log",
@@ -32715,13 +32716,13 @@ function createHintLifecycle(opts) {
       };
     },
     armRecovery() {
-      if (recoveryArmedThisOutage) return "none";
+      if (recoveryAttemptsThisOutage >= MAX_RECOVERY_ATTEMPTS) return "none";
       if (lastStatus === "CHANNEL_ERROR" || lastStatus === "TIMED_OUT") {
-        recoveryArmedThisOutage = true;
+        recoveryAttemptsThisOutage += 1;
         return "reauth";
       }
       if (lastStatus === "CLOSED") {
-        recoveryArmedThisOutage = true;
+        recoveryAttemptsThisOutage += 1;
         return "recreate";
       }
       return "none";
@@ -32818,9 +32819,11 @@ function startHintSubscription(deps) {
   const runRecovery = () => {
     const action = lifecycle.armRecovery();
     if (action === "reauth") {
+      deps.log("hint channel recovery: reauth");
       deps.forceRefresh().then(() => deps.setAuth()).catch(logRefreshFailure);
     } else if (action === "recreate") {
-      deps.forceRefresh().then(() => {
+      deps.log("hint channel recovery: recreate");
+      deps.forceRefresh().then(() => deps.setAuth()).then(() => {
         channel = null;
         subscribeChannel();
       }).catch(logRefreshFailure);

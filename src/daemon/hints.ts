@@ -246,11 +246,12 @@ export interface HintLifecycle {
   /** Is the channel down RIGHT NOW — subscribed at least once, not live, and not permanently dead
    *  (state A)? True exactly for the span an outage-visibility timer should be armed. */
   isDown(): boolean;
-  /** B-1045 round 2: a PURE query, never called from `onStatus()` — the down-timer's first tick is
-   *  the only caller. Returns which recovery action to run based on the currently-tracked last
-   *  status, and LATCHES: at most once per outage, reset on the next SUBSCRIBED (mirrors the
-   *  round-1 `reauthedThisOutage` flag exactly, just triggered from a different call site). A
-   *  second call within the same outage — from a later down-timer tick — returns 'none'. */
+  /** B-1045 round 2/3: a PURE query, never called from `onStatus()` — the down-timer's first tick
+   *  (and every subsequent tick, per the cadence) is the only caller. Returns which recovery action
+   *  to run based on the currently-tracked last status, and is CAPPED: at most 3 attempts per
+   *  outage, counted by a counter reset on the next SUBSCRIBED (round 3 widened round 1's
+   *  `reauthedThisOutage` flag, then round 2's once-per-outage latch, into this capped counter — same
+   *  call site as round 2). A 4th (or later) call within the same outage returns 'none'. */
   armRecovery(): RecoveryAction;
 }
 
@@ -293,16 +294,21 @@ export function isExpiredJwtError(err: unknown): boolean {
  *  [1s,2s,5s]→flat 10s (node_modules/@supabase/phoenix/assets/js/phoenix/socket.js:127-131, reached
  *  via RealtimeChannel's channelAdapter) and the socket's RECONNECT_INTERVALS [1s,2s,5s,10s]→flat
  *  10s (node_modules/@supabase/realtime-js/dist/main/RealtimeClient.js:16, :568-571). */
+/** B-1045 round 3: the cap on recovery attempts per outage — see `armRecovery()`'s doc. */
+const MAX_RECOVERY_ATTEMPTS = 3;
+
 export function createHintLifecycle(opts: { topic: string }): HintLifecycle {
   let subscribedOnce = false;
   let dead = false;
   let live = false;
   let lastStatus: HintStatus | null = null;
-  // B-1045 round 2: latched at most once per outage. Set the moment `armRecovery()` hands back a
-  // real action (not 'none'); reset on every SUBSCRIBED (first or repeat) so a LATER outage can
-  // trigger it again. This replaces round 1's `reauthedThisOutage`, which `onStatus()` itself set —
-  // round 2 moves the arming decision entirely out of `onStatus()` and into this latch.
-  let recoveryArmedThisOutage = false;
+  // B-1045 round 3: capped at MAX_RECOVERY_ATTEMPTS (3) attempts per outage, one per down-timer
+  // tick (reusing the existing pollMs-then-downCadenceMs cadence — no new timer). Incremented the
+  // moment `armRecovery()` hands back a real action (not 'none'); reset to 0 on every SUBSCRIBED
+  // (first or repeat) so a LATER outage can trigger it again for up to 3 more attempts. This widens
+  // round 2's once-per-outage latch, which itself replaced round 1's `reauthedThisOutage` flag that
+  // `onStatus()` used to set — the arming decision stays entirely out of `onStatus()`.
+  let recoveryAttemptsThisOutage = 0;
 
   return {
     onStatus(status, err) {
@@ -314,7 +320,7 @@ export function createHintLifecycle(opts: { topic: string }): HintLifecycle {
         const first = !subscribedOnce;
         subscribedOnce = true;
         live = true;
-        recoveryArmedThisOutage = false;
+        recoveryAttemptsThisOutage = 0;
         if (repeat) return { kind: 'none' };
         return {
           kind: 'log',
@@ -346,13 +352,13 @@ export function createHintLifecycle(opts: { topic: string }): HintLifecycle {
     },
 
     armRecovery() {
-      if (recoveryArmedThisOutage) return 'none';
+      if (recoveryAttemptsThisOutage >= MAX_RECOVERY_ATTEMPTS) return 'none';
       if (lastStatus === 'CHANNEL_ERROR' || lastStatus === 'TIMED_OUT') {
-        recoveryArmedThisOutage = true;
+        recoveryAttemptsThisOutage += 1;
         return 'reauth';
       }
       if (lastStatus === 'CLOSED') {
-        recoveryArmedThisOutage = true;
+        recoveryAttemptsThisOutage += 1;
         return 'recreate';
       }
       return 'none';
