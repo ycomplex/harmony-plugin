@@ -1,0 +1,27 @@
+schema_version: "1.1"
+name: clarify-replay-ctrl-negative-boundary-flip
+description: >
+  B-1037 judge-calibration NEGATIVE control (ratified plan step 2, AC2). Sibling of
+  ctrl-positive-known-good -- same mechanism, same source label, same rubric+judge -- but its
+  rendered "fresh" artifact has ONE rubric boundary deliberately flipped by
+  `scripts/fetch-labels.mjs --controls` (one in_scope item moved to not_solving, adapted from the
+  rubric's own worked negative example -- see scripts/judge-rubric.md's "Worked negative example").
+  Targets check 2 "SAME BOUNDARIES" SPECIFICALLY: the problem statement, recommendation and ACs are
+  left untouched, so checks 1/3/4 must still PASS and only check 2 must FAIL. Expected: FAIL,
+  naming check 2. If the judge scores this PASS, or FAILs a DIFFERENT check instead of check 2, the
+  judge/rubric is miscalibrated and the suite's gate must not be trusted until that is fixed.
+tags: [clarify-replay, judge-calibration, control, B-1037]
+context:
+  add_dirs: ["fixtures"]
+runs: 1
+execution:
+  max_turns: 10
+  timeout_seconds: 300
+  allowed_tools:
+    - Read
+    - Write
+graders: []
+expected_outcome: >
+  FAIL, and specifically on check 2 (SAME BOUNDARIES) -- checks 1 (SAME PROBLEM STATEMENT), 3 (SAME
+  RECOMMENDATION) and 4 (NO INVENTED ACS) must still read PASS, since nothing about the problem,
+  recommendation or ACs was touched -- only one in_scope/not_solving boundary line was moved.
