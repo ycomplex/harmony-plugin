@@ -19,3 +19,16 @@ coverage/
 # .gitignore is shared across branches, which is why the generation script stages it with
 # `git add -f`. scripts/check-generated-artifacts.sh is the PR gate that keeps `main` clean.
 dist/
+
+# B-1036: the clarify-replay eval's label-fetch script (evals/clarify-replay/scripts/fetch-labels.mjs)
+# writes the ratified clarify labels it reads from the PRODUCTION board here. Never committed — the
+# labels must be pulled fresh at hand-pass time (a committed copy would drift from the board), and the
+# script is read-only against Supabase, so nothing here is ever the record of anything. See
+# evals/clarify-replay/RUNBOOK.md.
+evals/clarify-replay/labels/
+
+# B-1036 (same suite): `claude plugin eval`'s own default output — aggregate-result.json /
+# --json / --report — lands under evals/clarify-replay/results/ by default. Confirmed live during
+# this build's zero-cost dry run: it writes there even with no --output-dir override. Hand-pass
+# output, never suite source; never committed. See RUNBOOK.md step 6.
+evals/clarify-replay/results/

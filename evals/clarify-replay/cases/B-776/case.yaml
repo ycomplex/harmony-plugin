@@ -1,0 +1,110 @@
+schema_version: "1.0"
+name: clarify-replay-B-776
+description: >
+  Replays the clarify gate (skills/harmony-clarify) against the fixture-project copy of
+  production ticket B-776 and grades the fresh brief against the ratified v1.4 label pulled
+  from field_values.gate_slots.clarify (+ retained brief revisions where present, B-843/B-867).
+  A Conductor-epic ticket.
+tags: [clarify-replay, gate-regression, B-1036]
+context:
+  add_dirs: []
+runs: 1
+execution:
+  allowed_tools:
+    - Skill
+    - mcp__harmony__*
+    - Read
+    - Grep
+    - Glob
+    - WebSearch
+    - WebFetch
+graders:
+  # Deterministic must-have #1 (brief-authoring.md section Clarify "must-haves"): the frame
+  # carries all three required sections. Order-independent (the agent's own tool-call JSON key
+  # order is not pinned) via lookaheads against the WHOLE trace (tool calls + assistant text), so
+  # this survives the render/tool-call boundary either way.
+  - type: regex
+    name: frame-sections-present
+    target: trace
+    pattern: '(?=[\s\S]*"solving")(?=[\s\S]*"in_scope")(?=[\s\S]*"not_solving")'
+    match: contains
+    weight: 2
+
+  # Deterministic must-have #2: the happy-path ACs ride the brief as doc.payload
+  # acceptance_criterion items (B-810), not as prose only -- checked against compose_brief's own
+  # tool-call input.
+  - type: tool_used
+    name: acs-authored-as-payload
+    tool: mcp__harmony__compose_brief
+    input_match: '"write_kind"\s*:\s*"acceptance_criterion"'
+    min: 1
+    weight: 2
+
+  # Deterministic must-have #3: the soft, tier-aware word budget (src/tools/briefs.ts
+  # WORD_BUDGET_BASE/PER_UNIT/MAX) was respected -- compose_brief's own lint emits this exact
+  # sentence in its warnings when the render exceeds it, so its ABSENCE from the trace is the
+  # positive signal.
+  - type: regex
+    name: word-budget-respected
+    target: trace
+    pattern: 'Brief renders to \d+ words \(soft budget \d+'
+    match: not_contains
+    weight: 1
+
+  # Deterministic must-have #4: related tickets cited. NEUTRAL, NEVER A MISS (B-1036 build
+  # detail) -- the isolated fixture project will not contain the tickets a production clarify
+  # could legitimately cite, so an absent citation must never fail this case. arm: with-only
+  # makes this an indicator in the report rather than part of the score under the default
+  # --ablation with-without (see the eval CLI's own --ablation help text).
+  - type: tool_used
+    name: related-tickets-queried
+    tool: mcp__harmony__find_related_tickets
+    min: 1
+    weight: 1
+    arm: with-only
+
+  # The one LLM judge grader (B-1036 step 4): a 4-check substance rubric against the ratified
+  # label, pinned to a judge model DISTINCT from the authoring model via the run's --judge-model
+  # flag (never this file -- see RUNBOOK.md's run config). baseline_file is populated by
+  # scripts/fetch-labels.mjs at hand-pass time; it is gitignored and does not exist in this
+  # checkout until that script runs.
+  - type: baseline
+    name: judge-substance-match
+    baseline_file: ../../labels/B-776.json
+    weight: 4
+    criteria: |
+      Compare the FRESH clarify brief this run produced (its frame.solving / frame.in_scope /
+      frame.not_solving, its `recommend`, and the acceptance_criterion items in its doc.payload) against
+      the RATIFIED label in baseline_file (field_values.gate_slots.clarify, plus every retained brief
+      revision where present — for a multi-revision lineage, the LAST retained revision is the one that
+      converged and is the one to compare against). Score PASS only if all four checks below hold;
+      otherwise FAIL, and name every check that broke.
+      
+      1. SAME PROBLEM STATEMENT — frame.solving states substantially the same outcome-shaped problem as
+         the label's ratified intent. Paraphrase, different wording, and different emphasis are fine; a
+         materially different problem is not.
+      2. SAME BOUNDARIES — frame.in_scope / frame.not_solving draw the same in/out line the label drew.
+         Different wording for the same boundary is fine. Something the label excluded that the fresh
+         brief now includes (or the reverse) is a boundary miss and fails this check.
+      3. SAME RECOMMENDATION — the fresh brief's `recommend` reaches the same call the label's ratified
+         recommendation reached.
+      4. NO INVENTED ACS — every acceptance_criterion payload item in the fresh brief is traceable to
+         something the label or the ticket body actually asked for. An AC describing a requirement
+         neither the label nor the ticket body supports is an invention, and fails this check even when
+         checks 1-3 all pass.
+      
+      Ignore heading order, section labels, prose length, and formatting differences entirely: score
+      substance only, never template or structural similarity (a holistic/template-similarity score
+      hides real differences — see the accepted design this suite implements).
+      
+      Worked negative example (fails check 4 only, checks 1-3 pass): the label's ratified brief says
+      "the export button produces a PDF that matches the on-screen layout" and files one AC — "the
+      exported PDF preserves column order." A fresh brief that also adds an AC reading "the export
+      includes a digitally-signed hash of the PDF for tamper detection" — a real, plausible-sounding
+      capability, but one the label and the ticket body never asked for — FAILS check 4, even though the
+      problem statement, boundaries, and recommendation all match cleanly, because the brief now
+      promises something nobody ratified.
+expected_outcome: >
+  A clarify brief whose frame.solving / frame.in_scope / frame.not_solving restate the same
+  problem, the same boundaries, and the same recommendation as the ratified label (see
+  baseline_file), with no invented acceptance criteria, filed within the soft word budget.
