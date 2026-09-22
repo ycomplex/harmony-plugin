@@ -12,12 +12,10 @@ runs: 1
 execution:
   allowed_tools:
     - Skill
-    - mcp__harmony__*
+    - mcp__plugin_harmony-plugin_harmony__*
     - Read
     - Grep
     - Glob
-    - WebSearch
-    - WebFetch
 graders:
   # Deterministic must-have #1 (brief-authoring.md section Clarify "must-haves"): the frame
   # carries all three required sections. Order-independent (the agent's own tool-call JSON key
@@ -35,7 +33,7 @@ graders:
   # tool-call input.
   - type: tool_used
     name: acs-authored-as-payload
-    tool: mcp__harmony__compose_brief
+    tool: mcp__plugin_harmony-plugin_harmony__compose_brief
     input_match: '"write_kind"\s*:\s*"acceptance_criterion"'
     min: 1
     weight: 2
@@ -58,7 +56,7 @@ graders:
   # --ablation with-without (see the eval CLI's own --ablation help text).
   - type: tool_used
     name: related-tickets-queried
-    tool: mcp__harmony__find_related_tickets
+    tool: mcp__plugin_harmony-plugin_harmony__find_related_tickets
     min: 1
     weight: 1
     arm: with-only

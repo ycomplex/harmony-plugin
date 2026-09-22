@@ -113,7 +113,7 @@ From the repo root, environment from step 1's "Step 4" block:
 claude plugin eval . \
   --eval-dir evals/clarify-replay \
   --mocks off --allow-real-servers \
-  --allow-tools 'mcp__harmony__*' \
+  --allow-tools 'mcp__plugin_harmony-plugin_harmony__*' \
   --runs 1 \
   --model claude-sonnet-5 \
   --judge-model claude-opus-5 \
@@ -140,7 +140,7 @@ Notes on each pinned flag (per the accepted design, B-1036 step 5):
 - **`--max-cost-usd 20`** — a real ceiling, not a placeholder: 15 cases × one judge call each, at
   list price, comfortably inside this (the July KB eval's cost note: "tens of dollars at list
   price per run").
-- **`--allow-tools 'mcp__harmony__*'`** — the operator grant real MCP tool calls need under
+- **`--allow-tools 'mcp__plugin_harmony-plugin_harmony__*'`** — the operator grant real MCP tool calls need under
   `--mocks off`.
 
 If the run hits `--max-cost-usd` and aborts (exit 2), the partial JSON/HTML still reports whatever
@@ -181,12 +181,15 @@ agent turn or MCP server launch, so nothing real was ever called or spent):
   own mock-warning message confirms `--mocks record` (the default) would withhold the plugin's MCP
   server entirely, validating the `--mocks off --allow-real-servers` choice in step 5.
 - **Still unverified — no cheap way to check without a real run:**
-  1. **`execution.allowed_tools: [mcp__harmony__*, ...]`** — the wildcard form assumed to follow
-     Claude Code's ordinary MCP-tool wildcard convention (the same syntax `harmony-clarify`'s own
-     skill frontmatter uses). Case-load accepted it with no parse error, but that does not prove
-     the wildcard actually grants every `mcp__harmony__*` tool at run time. If a run reports MCP
-     tools withheld despite `--allow-tools 'mcp__harmony__*'`, try listing each MCP tool name the
-     clarify skill actually calls explicitly instead of the wildcard.
+  1. **MCP tool naming — CONFIRMED live (orchestrator, 2026-09-22, $0 dry run at head 9595ba5).**
+     The eval loads this plugin by path under the server key `plugin_harmony-plugin_harmony`, so
+     every real tool name is `mcp__plugin_harmony-plugin_harmony__<tool>` — NOT `mcp__harmony__<tool>`,
+     which the first draft of this suite used and which would have matched nothing (both
+     `tool_used` graders would have scored zero and the `--allow-tools` grant would have been empty).
+     With the corrected prefix the dry run's "not granted" line disappears. Whether the wildcard
+     grants every tool at run time is still only proven by a real run, but the name it must match is
+     no longer in question. `WebSearch`/`WebFetch` were removed from `allowed_tools` at the same time:
+     the prompt forbids outside context, and the web is a label-leakage vector.
   2. **`baseline_file: ../../labels/<TICKET>.json`** — assumed relative to the case directory
      (`cases/<TICKET>/`), landing on `evals/clarify-replay/labels/<TICKET>.json`. The tool's own
      error text confirms the path must be relative and must resolve "inside the suite or the
