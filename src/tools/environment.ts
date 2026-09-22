@@ -45,8 +45,10 @@ export interface EnvironmentInfo {
   auto_approve_gates: string[] | null;
 }
 
-// Must mirror src/supabase.ts exactly: env override, else the prod project.
-const DEFAULT_SUPABASE_URL = 'https://eioxsunvhakmelhanmnn.supabase.co';
+// Must mirror src/supabase.ts exactly: env override, else the prod project. Exported so B-1035's
+// `harmony doctor auth-hook` can reuse the SAME default-target precedence for its own --project-ref
+// default, rather than re-declaring the literal a third time.
+export const DEFAULT_SUPABASE_URL = 'https://eioxsunvhakmelhanmnn.supabase.co';
 
 // The two Supabase projects this workspace deploys to; anything else is 'custom'. B-800: a
 // deployment config's launcher.supabase_refs is MERGED OVER these (never replaces them), so the
