@@ -24,16 +24,18 @@
 //   HARMONY_API_TOKEN=<production token> node evals/clarify-replay/scripts/fetch-labels.mjs
 //   HARMONY_API_TOKEN=<production token> node evals/clarify-replay/scripts/fetch-labels.mjs B-818 B-904
 //
-// Output: evals/clarify-replay/labels/<TICKET>.json (created / overwritten; directory is
-// gitignored — see .gitignore's B-1036 entry).
+// Output: evals/clarify-replay/labels/<TICKET>.json AND evals/clarify-replay/cases/<TICKET>/graders/judge.md
+// (both created / overwritten; both gitignored — see .gitignore's B-1036 entries).
 
 import { createClient } from '@supabase/supabase-js';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LABELS_DIR = join(HERE, '..', 'labels');
+const CASES_DIR = join(HERE, '..', 'cases');
+const RUBRIC = readFileSync(join(HERE, 'judge-rubric.md'), 'utf8');
 
 // Same production defaults src/auth.ts / src/supabase.ts fall back to — this script reads
 // production ON PURPOSE (see header), so falling back to the same defaults those files use is
@@ -50,6 +52,54 @@ const DEFAULT_TICKETS = [
   'B-847', // Core Task Features epic
   'B-720', 'B-776', 'B-785', 'B-809', 'B-861', 'B-871', 'B-881', 'B-894', 'B-919', 'B-929', // Conductor epic
 ];
+
+// B-1036: the per-case LLM judge. `claude plugin eval`'s `baseline` grader wants a .jsonl
+// transcript, and an `llm` grader can only see the run (last_message / trace / a workspace
+// file) plus its own rubric — so the ratified label has to travel INSIDE the rubric. This writes
+// cases/<TICKET>/graders/judge.md (gitignored) from the committed rubric template plus the label
+// just fetched. focus: trace, because the fresh brief is the compose_brief tool-call input.
+function renderLabelSection(label) {
+  const c = label.gate_slots_clarify?.content ?? label.gate_slots_clarify ?? {};
+  const revs = Array.isArray(label.brief_revisions) ? label.brief_revisions : [];
+  const last = revs.length > 0 ? revs[revs.length - 1] : null;
+  const doc = last?.doc ?? {};
+  const recommend = doc.recommend?.text ?? doc.recommend ?? null;
+  const acs = Array.isArray(doc.payload)
+    ? doc.payload.filter((x) => x?.write_kind === 'acceptance_criterion').map((x) => x.content)
+    : [];
+  const list = (xs) => (Array.isArray(xs) && xs.length > 0 ? xs.map((x) => `- ${typeof x === 'string' ? x : JSON.stringify(x)}`).join('\n') : '- (none recorded)');
+  const notSolving = Array.isArray(c.not_solving)
+    ? c.not_solving.map((x) => (typeof x === 'string' ? x : `${x.item} — lands: ${x.lands ?? '?'}`))
+    : [];
+  return [
+    `## THE RATIFIED LABEL — ${label.ticket}: ${label.title}`,
+    '',
+    `Fetched from production ${label.fetched_at}; ${revs.length} retained clarify brief revision(s), the LAST is the converged one.`,
+    '',
+    '### Solving',
+    c.solving ?? '(none recorded)',
+    '',
+    '### In scope',
+    list(c.in_scope),
+    '',
+    '### Not solving',
+    list(notSolving),
+    '',
+    '### Ratified recommendation (last retained revision)',
+    recommend ? String(recommend) : '(none recorded)',
+    '',
+    '### Acceptance criteria the ratified brief filed',
+    list(acs),
+    '',
+  ].join('\n');
+}
+
+function writeJudge(label) {
+  const dir = join(CASES_DIR, label.ticket, 'graders');
+  mkdirSync(dir, { recursive: true });
+  const body = ['---', 'type: llm', 'focus: trace', 'weight: 4', '---', RUBRIC.trim(), '', renderLabelSection(label)].join('\n');
+  writeFileSync(join(dir, 'judge.md'), `${body}\n`);
+}
 
 function parseVisualId(id) {
   const m = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/.exec(id.trim());
@@ -133,6 +183,7 @@ async function main() {
       };
 
       writeFileSync(join(LABELS_DIR, `${key}-${taskNumber}.json`), `${JSON.stringify(label, null, 2)}\n`);
+      writeJudge(label);
       console.log(`OK   ${key}-${taskNumber} -> labels/${key}-${taskNumber}.json (${briefRevisions?.length ?? 0} retained brief revision(s))`);
     } catch (err) {
       failures += 1;

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { harmonyEnv } from '../env.js';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -129,7 +130,7 @@ export async function resolveEnvironment(
   moduleUrl: string = import.meta.url,
   client?: SupabaseClient | null,
 ): Promise<EnvironmentInfo> {
-  const supabase_url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
+  const supabase_url = harmonyEnv('HARMONY_SUPABASE_URL', env) ?? DEFAULT_SUPABASE_URL;
 
   let supabase_project_ref = '';
   try {

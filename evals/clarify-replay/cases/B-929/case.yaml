@@ -1,4 +1,4 @@
-schema_version: "1.0"
+schema_version: "1.1"
 name: clarify-replay-B-929
 description: >
   Replays the clarify gate (skills/harmony-clarify) against the fixture-project copy of
@@ -10,6 +10,9 @@ context:
   add_dirs: []
 runs: 1
 execution:
+  # A full clarify needs far more than the runner defaults (10 turns / 300 s) — B-1036 hand pass.
+  max_turns: 150
+  timeout_seconds: 1800
   allowed_tools:
     - Skill
     - mcp__plugin_harmony-plugin_harmony__*
@@ -61,47 +64,10 @@ graders:
     weight: 1
     arm: with-only
 
-  # The one LLM judge grader (B-1036 step 4): a 4-check substance rubric against the ratified
-  # label, pinned to a judge model DISTINCT from the authoring model via the run's --judge-model
-  # flag (never this file -- see RUNBOOK.md's run config). baseline_file is populated by
-  # scripts/fetch-labels.mjs at hand-pass time; it is gitignored and does not exist in this
-  # checkout until that script runs.
-  - type: baseline
-    name: judge-substance-match
-    baseline_file: ../../labels/B-929.json
-    weight: 4
-    criteria: |
-      Compare the FRESH clarify brief this run produced (its frame.solving / frame.in_scope /
-      frame.not_solving, its `recommend`, and the acceptance_criterion items in its doc.payload) against
-      the RATIFIED label in baseline_file (field_values.gate_slots.clarify, plus every retained brief
-      revision where present — for a multi-revision lineage, the LAST retained revision is the one that
-      converged and is the one to compare against). Score PASS only if all four checks below hold;
-      otherwise FAIL, and name every check that broke.
-      
-      1. SAME PROBLEM STATEMENT — frame.solving states substantially the same outcome-shaped problem as
-         the label's ratified intent. Paraphrase, different wording, and different emphasis are fine; a
-         materially different problem is not.
-      2. SAME BOUNDARIES — frame.in_scope / frame.not_solving draw the same in/out line the label drew.
-         Different wording for the same boundary is fine. Something the label excluded that the fresh
-         brief now includes (or the reverse) is a boundary miss and fails this check.
-      3. SAME RECOMMENDATION — the fresh brief's `recommend` reaches the same call the label's ratified
-         recommendation reached.
-      4. NO INVENTED ACS — every acceptance_criterion payload item in the fresh brief is traceable to
-         something the label or the ticket body actually asked for. An AC describing a requirement
-         neither the label nor the ticket body supports is an invention, and fails this check even when
-         checks 1-3 all pass.
-      
-      Ignore heading order, section labels, prose length, and formatting differences entirely: score
-      substance only, never template or structural similarity (a holistic/template-similarity score
-      hides real differences — see the accepted design this suite implements).
-      
-      Worked negative example (fails check 4 only, checks 1-3 pass): the label's ratified brief says
-      "the export button produces a PDF that matches the on-screen layout" and files one AC — "the
-      exported PDF preserves column order." A fresh brief that also adds an AC reading "the export
-      includes a digitally-signed hash of the PDF for tamper detection" — a real, plausible-sounding
-      capability, but one the label and the ticket body never asked for — FAILS check 4, even though the
-      problem statement, boundaries, and recommendation all match cleanly, because the brief now
-      promises something nobody ratified.
+  # The one LLM judge grader (B-1036 step 4) lives in graders/judge.md, GENERATED per case by
+  # scripts/fetch-labels.mjs at hand-pass time with the ratified label embedded in its rubric, and
+  # gitignored — a `baseline` grader cannot take a JSON label (it wants a .jsonl transcript), and an
+  # `llm` grader's rubric is the only place a label can reach the judge without committing it.
 expected_outcome: >
   A clarify brief whose frame.solving / frame.in_scope / frame.not_solving restate the same
   problem, the same boundaries, and the same recommendation as the ratified label (see
