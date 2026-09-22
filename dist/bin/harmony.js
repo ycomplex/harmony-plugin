@@ -40543,6 +40543,10 @@ function readCapture(path2) {
     return null;
   }
 }
+function resolveWorkerStoredText(captured) {
+  const parsed = parseClaudeResultJson(captured);
+  return parsed?.result !== null && parsed?.result !== void 0 ? parsed.result : captured;
+}
 function registerLegOutputCommands(program3) {
   const legOutput = program3.command("leg-output").description(
     "B-720 worker-output capture \u2014 the ONE place container/provision.sh records what a leg's `claude` invocation actually wrote, from inside the container where it is genuinely the WORKER's output on every launch profile. Capture for DISPLAY only: nothing the daemon decides ever reads these rows."
@@ -40566,8 +40570,9 @@ function registerLegOutputCommands(program3) {
       const parts = [readCapture(opts.file)];
       if (opts.stderrFile) parts.push(readCapture(opts.stderrFile));
       const captured = parts.filter((p) => p !== null).join("");
-      const totalBytes = Buffer.byteLength(captured, "utf8");
-      const tail = boundedTail(captured, LEG_OUTPUT_TAIL_BYTES);
+      const storedText = source === "worker" ? resolveWorkerStoredText(captured) : captured;
+      const totalBytes = Buffer.byteLength(storedText, "utf8");
+      const tail = boundedTail(storedText, LEG_OUTPUT_TAIL_BYTES);
       const client = await getClient2();
       const context = await resolveLegCostContext(client, conductionId);
       await recordLegOutput(client, {

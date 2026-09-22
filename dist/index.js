@@ -45072,15 +45072,7 @@ var CONDUCTION_PATCHABLE_FIELDS = [
   "last_worker_exit_code",
   "last_worker_exit_class",
   "last_leg_ended_at",
-  "current_pr_ref",
-  // B-720, RETIRED: the old captured-output columns. NOTHING WRITES THESE ANY MORE — the daemon's
-  // settlement write now inserts a `source='launcher'` row into `conduction_leg_output` instead
-  // (scheduler.ts's flushLaunchOutput), and the worker writes its own `source='worker'` row from
-  // inside the container. The allowlist entries stay so an older daemon build's patch is still
-  // accepted; removing them (and the columns) is a separate tracked follow-up.
-  "last_worker_output",
-  "last_worker_output_at",
-  "last_worker_output_bytes"
+  "current_pr_ref"
 ];
 function assertPatchable(patch) {
   const keys = Object.keys(patch ?? {});

@@ -1297,9 +1297,10 @@ async function settleTrackedLaunch(
  *  between the two BY SOURCE — never by inspecting the content, which is precisely the thing that
  *  cannot identify itself.
  *
- *  The three `conductions.last_worker_output*` columns are no longer written by anything. They are
- *  deliberately left in place (and left in CONDUCTION_PATCHABLE_FIELDS) — dropping them is a
- *  separate tracked follow-up, so that a daemon still running older code cannot fail its writes.
+ *  The three `conductions.last_worker_output*` columns were never written by anything after this
+ *  replacement landed, and B-947 has since dropped their ConductionRecord/CONDUCTION_PATCHABLE_
+ *  FIELDS declarations (src/tools/conduction-record.ts) — the DB columns themselves are a separate,
+ *  still-tracked follow-up.
  *
  *  WHY SEPARATE, and why this must not be "simplified" into the terminal patch above: this daemon
  *  runs plugin `main` against the PROD board, but `conduction_leg_output` only exists there once
