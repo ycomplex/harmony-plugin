@@ -34,6 +34,7 @@ import {
   LEG_OUTPUT_TAIL_BYTES,
   type LegOutputSource,
 } from '../../tools/leg-output-record.js';
+import { parseClaudeResultJson } from '../../tools/claude-result-parse.js';
 import { getAuthenticatedContext } from '../auth.js';
 
 /** Best-effort authenticated client, or null when this process has no login/config to authenticate
@@ -65,6 +66,17 @@ function readCapture(path: string): string | null {
     );
     return null;
   }
+}
+
+/** B-947: the WORKER-only path's extraction of the result envelope's prose. When `captured` parses
+ *  as a Claude CLI result envelope (via `parseClaudeResultJson`, the same recognition
+ *  `leg-cost.ts` uses) AND its `.result` field is a non-null string, that extracted prose is what
+ *  gets stored — never the raw envelope. Falls back to `captured` unchanged when the text is not a
+ *  recognizable envelope (an older CLI, a stub, a crash before any output), so a non-JSON capture
+ *  behaves exactly as it always has. Exported for direct unit coverage. */
+export function resolveWorkerStoredText(captured: string): string {
+  const parsed = parseClaudeResultJson(captured);
+  return parsed?.result !== null && parsed?.result !== undefined ? parsed.result : captured;
 }
 
 export function registerLegOutputCommands(program: Command): void {
@@ -131,10 +143,19 @@ export function registerLegOutputCommands(program: Command): void {
         if (opts.stderrFile) parts.push(readCapture(opts.stderrFile));
         const captured = parts.filter((p): p is string => p !== null).join('');
 
-        // The TOTAL is what the invocation emitted, not what is retained — their difference is
-        // exactly the "showing the last N of M bytes" signal, so it is computed BEFORE bounding.
-        const totalBytes = Buffer.byteLength(captured, 'utf8');
-        const tail = boundedTail(captured, LEG_OUTPUT_TAIL_BYTES);
+        // WORKER rows only: extract the result envelope's PROSE before bounding. `result` sits near
+        // the START of a `claude --output-format json` envelope, so today's tail-bounding (which
+        // keeps the END of the string) would cut a long agent output off entirely once the envelope
+        // crosses the 64 KB bound. Bounding the extracted prose instead keeps it. The LAUNCHER path
+        // is untouched — its capture is never a claude result envelope (it is gcloud/launch-command
+        // chatter), and extracting from it would be a category error.
+        //
+        // `total_bytes` is deliberately computed over whatever text is actually STORED (the
+        // extracted prose when parsing succeeds, else the raw captured text) — never over the raw
+        // envelope — so it stays directly comparable to `tail`'s own length.
+        const storedText = source === 'worker' ? resolveWorkerStoredText(captured) : captured;
+        const totalBytes = Buffer.byteLength(storedText, 'utf8');
+        const tail = boundedTail(storedText, LEG_OUTPUT_TAIL_BYTES);
 
         const client = await getClient();
         // Reuses B-916's context read verbatim (ONE query for the owning task) rather than

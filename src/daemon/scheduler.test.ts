@@ -3104,15 +3104,16 @@ describe('B-720 captured launcher output', () => {
     expect(h.legOutputWrites().map((r) => r.source)).toEqual(['launcher']);
     expect(h.legOutputWrites().some((r) => r.source === 'worker')).toBe(false);
 
-    // The three retired columns are LEFT IN THE SCHEMA and in CONDUCTION_PATCHABLE_FIELDS, but
-    // nothing here writes them any more.
+    // B-947: the three retired columns are now fully gone from ConductionRecord and
+    // CONDUCTION_PATCHABLE_FIELDS (src/tools/conduction-record.ts) — nothing here writes them, and
+    // nothing could even NAME them in a typed patch any more. The runtime string check below still
+    // guards the shape of what the daemon actually sends on the wire.
     const patches = (h.deps.updateConductionIfHeld as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
       (c) => c[2] as Record<string, unknown>,
     );
     expect(patches.some((p) => 'last_worker_output' in p)).toBe(false);
     expect(patches.some((p) => 'last_worker_output_at' in p)).toBe(false);
     expect(patches.some((p) => 'last_worker_output_bytes' in p)).toBe(false);
-    expect(h.getConduction('cond-1').last_worker_output).toBeUndefined();
   });
 
   it('(a) the output write is SEPARATE from — and lands after — the terminal status patch', async () => {
