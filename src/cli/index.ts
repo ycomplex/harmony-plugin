@@ -30,6 +30,7 @@ import { registerLegCostCommands } from './commands/leg-cost.js';
 import { registerLegOutputCommands } from './commands/leg-output.js';
 import { registerGatesCommands } from './commands/gates.js';
 import { registerNotifyCommands } from './commands/notify.js';
+import { registerDoctorCommands } from './commands/doctor.js';
 
 const program = new Command();
 
@@ -66,5 +67,6 @@ registerLegCostCommands(program);
 registerLegOutputCommands(program);
 registerGatesCommands(program);
 registerNotifyCommands(program);
+registerDoctorCommands(program);
 
 program.parse();

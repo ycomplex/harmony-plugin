@@ -41049,6 +41049,143 @@ function registerNotifyCommands(program3) {
   });
 }
 
+// src/cli/commands/doctor.ts
+var PG_FUNCTIONS_URI = /^pg-functions:\/\/postgres\/([^/]+)\/([^/]+)$/;
+function resolveDefaultProjectRef(input) {
+  const url = input.activeProjectSupabaseUrl ?? input.envSupabaseUrl ?? DEFAULT_SUPABASE_URL2;
+  try {
+    const ref = new URL(url).hostname.split(".")[0];
+    return ref ? ref : null;
+  } catch {
+    return null;
+  }
+}
+function errMessage(err) {
+  return err?.message ?? String(err);
+}
+async function runDoctorAuthHookCommand(deps) {
+  const token = deps.accessToken;
+  const redact = (line) => token ? line.split(token).join("<redacted>") : line;
+  const log = (line) => deps.log(redact(line));
+  const error = (line) => deps.error(redact(line));
+  const projectRef = deps.projectRefFlag ?? deps.resolveDefaultProjectRef() ?? void 0;
+  if (!projectRef) {
+    error(
+      "harmony doctor auth-hook: CANNOT DETERMINE \u2014 no --project-ref given and no default project could be resolved (no active `harmony login` project, and HARMONY_SUPABASE_URL is unset). Pass --project-ref <ref> explicitly; this command never guesses which project to check."
+    );
+    return 2;
+  }
+  if (!deps.accessToken) {
+    error(
+      `harmony doctor auth-hook: CANNOT DETERMINE (project ${projectRef}) \u2014 SUPABASE_ACCESS_TOKEN is not set. Set it to a Supabase personal access token with the auth:read (auth_config_read) scope (see https://supabase.com/dashboard/account/tokens).`
+    );
+    return 2;
+  }
+  let result;
+  try {
+    result = await deps.fetchAuthConfig(projectRef, deps.accessToken);
+  } catch (err) {
+    error(
+      `harmony doctor auth-hook: CANNOT DETERMINE (project ${projectRef}) \u2014 network error calling the Supabase Management API: ${errMessage(err)}`
+    );
+    return 2;
+  }
+  if (result.status === 401 || result.status === 403) {
+    error(
+      `harmony doctor auth-hook: CANNOT DETERMINE (project ${projectRef}) \u2014 HTTP ${result.status} from the Supabase Management API. SUPABASE_ACCESS_TOKEN is invalid or lacks the auth:read (auth_config_read) scope.`
+    );
+    return 2;
+  }
+  if (result.status === 404) {
+    error(
+      `harmony doctor auth-hook: CANNOT DETERMINE (project ${projectRef}) \u2014 HTTP 404 from the Supabase Management API: project not found. Check --project-ref.`
+    );
+    return 2;
+  }
+  if (result.status !== 200) {
+    error(
+      `harmony doctor auth-hook: CANNOT DETERMINE (project ${projectRef}) \u2014 unexpected HTTP ${result.status} from the Supabase Management API.`
+    );
+    return 2;
+  }
+  const body = result.body;
+  if (typeof body !== "object" || body === null || typeof body.hook_custom_access_token_enabled !== "boolean") {
+    error(
+      `harmony doctor auth-hook: CANNOT DETERMINE (project ${projectRef}) \u2014 the response did not parse into the expected shape (missing or non-boolean hook_custom_access_token_enabled).`
+    );
+    return 2;
+  }
+  const enabled = body.hook_custom_access_token_enabled;
+  const rawUri = body.hook_custom_access_token_uri;
+  const uri = typeof rawUri === "string" ? rawUri : void 0;
+  const uriDisplay = uri ?? "<none>";
+  if (!enabled) {
+    error(
+      `harmony doctor auth-hook: NOT REGISTERED (project ${projectRef}) \u2014 hook_custom_access_token_enabled=false, hook_custom_access_token_uri=${uriDisplay}. Fix: register the hook at Supabase Dashboard -> Authentication -> Hooks, or via the Management API.`
+    );
+    return 1;
+  }
+  const match = uri ? PG_FUNCTIONS_URI.exec(uri) : null;
+  if (!match) {
+    error(
+      `harmony doctor auth-hook: CANNOT DETERMINE (project ${projectRef}) \u2014 hook_custom_access_token_enabled=true but hook_custom_access_token_uri=${uriDisplay} does not match any recognizable pg-functions://postgres/<schema>/<function> shape.`
+    );
+    return 2;
+  }
+  const [, schema, fn] = match;
+  if (schema === "public" && fn === "custom_access_token_hook") {
+    log(
+      `harmony doctor auth-hook: REGISTERED (project ${projectRef}) \u2014 hook_custom_access_token_enabled=true, hook_custom_access_token_uri=${uri} resolves to public.custom_access_token_hook.`
+    );
+    return 0;
+  }
+  error(
+    `harmony doctor auth-hook: NOT REGISTERED (project ${projectRef}) \u2014 hook_custom_access_token_enabled=true but hook_custom_access_token_uri=${uri} points at ${schema}.${fn}, not public.custom_access_token_hook. Fix: register the hook at Supabase Dashboard -> Authentication -> Hooks, or via the Management API.`
+  );
+  return 1;
+}
+function registerDoctorCommands(program3) {
+  const doctor = program3.command("doctor").description("Read-only operator diagnostics (no board writes, no plugin-tracked state).");
+  doctor.command("auth-hook").description(
+    "Report whether the actor-claim custom access-token hook (public.custom_access_token_hook, B-978) is registered on a Supabase project, by reading the Supabase Management API (GoTrue auth config is platform state, not DB state \u2014 a DB-only check would be a false green). Requires SUPABASE_ACCESS_TOKEN (the Supabase CLI's own personal-access-token env var) with the auth:read (auth_config_read) scope. --project-ref defaults to the Supabase project this CLI session is already configured against (active `harmony login` project's Supabase URL, else HARMONY_SUPABASE_URL, else the hardcoded prod project every session targets absent an override) when omitted \u2014 pass it explicitly to check a different project. Exit 0 = registered, 1 = not registered, 2 = cannot determine."
+  ).option(
+    "--project-ref <ref>",
+    "Supabase project ref to check (defaults to this CLI session's configured project; see description above)"
+  ).action(async (opts) => {
+    const exitCode = await runDoctorAuthHookCommand({
+      projectRefFlag: opts.projectRef,
+      resolveDefaultProjectRef: () => {
+        let activeProjectSupabaseUrl;
+        try {
+          activeProjectSupabaseUrl = getActiveProject().supabaseUrl;
+        } catch {
+          activeProjectSupabaseUrl = void 0;
+        }
+        return resolveDefaultProjectRef({
+          activeProjectSupabaseUrl,
+          envSupabaseUrl: process.env.HARMONY_SUPABASE_URL
+        });
+      },
+      accessToken: process.env.SUPABASE_ACCESS_TOKEN,
+      fetchAuthConfig: async (projectRef, accessToken) => {
+        const res = await fetch(`https://api.supabase.com/v1/projects/${projectRef}/config/auth`, {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        let body;
+        try {
+          body = await res.json();
+        } catch {
+          body = void 0;
+        }
+        return { status: res.status, body };
+      },
+      log: (line) => console.log(line),
+      error: (line) => console.error(line)
+    });
+    process.exit(exitCode);
+  });
+}
+
 // src/cli/index.ts
 var require2 = createRequire(import.meta.url);
 var { version: version3 } = require2("../../package.json");
@@ -41081,4 +41218,5 @@ registerLegCostCommands(program2);
 registerLegOutputCommands(program2);
 registerGatesCommands(program2);
 registerNotifyCommands(program2);
+registerDoctorCommands(program2);
 program2.parse();
