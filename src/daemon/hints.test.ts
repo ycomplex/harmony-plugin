@@ -326,29 +326,45 @@ describe('createHintLifecycle — B-1045 round 2: armRecovery()', () => {
     expect(l.armRecovery()).toBe('recreate');
   });
 
-  it("is latched: a second call within the same outage (before the next SUBSCRIBED) returns 'none'", () => {
+  it("is capped at 3 attempts per outage: a 2nd and 3rd call each still return a real action", () => {
     const l = createHintLifecycle({ topic });
     l.onStatus('SUBSCRIBED');
     l.onStatus('CHANNEL_ERROR');
-    expect(l.armRecovery()).toBe('reauth');
-    expect(l.armRecovery()).toBe('none');
-    expect(l.armRecovery()).toBe('none');
+    expect(l.armRecovery()).toBe('reauth'); // attempt 1
+    expect(l.armRecovery()).toBe('reauth'); // attempt 2 — still within the cap
+    expect(l.armRecovery()).toBe('reauth'); // attempt 3 — still within the cap
+  });
 
-    // A later status change within the SAME outage does not un-latch it either.
+  it("a 4th call within the same outage returns 'none' — the cap is exhausted", () => {
+    const l = createHintLifecycle({ topic });
+    l.onStatus('SUBSCRIBED');
     l.onStatus('CHANNEL_ERROR');
+    expect(l.armRecovery()).toBe('reauth'); // attempt 1
+    expect(l.armRecovery()).toBe('reauth'); // attempt 2
+    expect(l.armRecovery()).toBe('reauth'); // attempt 3
+    expect(l.armRecovery()).toBe('none'); // 4th — cap exhausted
+    expect(l.armRecovery()).toBe('none'); // stays exhausted
+
+    // A later status change within the SAME (still-exhausted) outage does not re-arm it either.
+    l.onStatus('CLOSED');
     expect(l.armRecovery()).toBe('none');
   });
 
-  it('the latch resets after the next SUBSCRIBED — a later outage can arm armRecovery() again', () => {
+  it('the counter resets after the next SUBSCRIBED — a later outage can arm armRecovery() again for up to 3 more attempts', () => {
     const l = createHintLifecycle({ topic });
     l.onStatus('SUBSCRIBED');
     l.onStatus('CHANNEL_ERROR');
-    expect(l.armRecovery()).toBe('reauth');
-    expect(l.armRecovery()).toBe('none');
+    expect(l.armRecovery()).toBe('reauth'); // attempt 1
+    expect(l.armRecovery()).toBe('reauth'); // attempt 2
+    expect(l.armRecovery()).toBe('reauth'); // attempt 3
+    expect(l.armRecovery()).toBe('none'); // exhausted for this outage
 
-    l.onStatus('SUBSCRIBED'); // recovered — resets the latch
+    l.onStatus('SUBSCRIBED'); // recovered — resets the counter to 0
     l.onStatus('CLOSED'); // a later, different outage
-    expect(l.armRecovery()).toBe('recreate');
+    expect(l.armRecovery()).toBe('recreate'); // attempt 1 of the new outage
+    expect(l.armRecovery()).toBe('recreate'); // attempt 2
+    expect(l.armRecovery()).toBe('recreate'); // attempt 3
+    expect(l.armRecovery()).toBe('none'); // capped again
   });
 
   it("returns 'none' when there is nothing tracked worth recovering (never dropped, or SUBSCRIBED)", () => {
