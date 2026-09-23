@@ -88,6 +88,7 @@ import {
   consumeAcceptanceEventTool, consumeAcceptanceEventToolHandler,
 } from './acceptance-events.js';
 import { writeGateSlotTool, writeGateSlotToolHandler } from './gate-slots.js';
+import { recordTool, recordToolHandler } from './record-walk.js';
 
 // B-692 Phase 2: the conduction record's shared-core accessors + canonical status axis. Deliberately
 // NOT registered as an MCP tool and NOT wired into src/cli/commands/ — the future conductor daemon
@@ -188,6 +189,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     consumePendingAcceptanceEventTool,
     consumeAcceptanceEventTool,
     writeGateSlotTool,
+    recordTool,
   ];
 
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
@@ -408,6 +410,9 @@ export async function handleToolCall(
         break;
       case 'write_gate_slot':
         result = await writeGateSlotToolHandler(client, projectId, args as any);
+        break;
+      case 'record':
+        result = await recordToolHandler(client, projectId, userId, args as any);
         break;
       case 'flag_release_approval_pending':
         result = await flagReleaseApprovalPending(client, projectId, args as any);

@@ -224,6 +224,14 @@ export interface SchedulerDeps extends WriteRetryDeps {
    *  It is a WAKE, NOT DATA: it carries no value and nothing in this module reads one. A hint-
    *  driven pass is a FULL pass — the same reads, the same decisions, just sooner. */
   hints?: HintSource;
+  /** B-1062 — OPTIONAL one-request-per-pass drain for `recorded_walk_requests` (B-1063's sibling
+   *  table; docs/recorded-walk-contract.md is the contract both repos build against). Wired ONLY in
+   *  production (src/bin/daemon.ts); absent in every existing test fixture, so every existing test is
+   *  byte-for-byte unaffected — mirrors `hints`' own "absent ⇒ behaves exactly as it does today"
+   *  convention just above. Runs the SAME zero-worker-leg gate-walk core `harmony record` uses
+   *  (src/tools/record-walk.ts) directly in-process; see recorded-walk-drain.ts's own header for why
+   *  it is tolerant of the table not existing yet, and never throws. */
+  drainRecordedWalkRequests?: () => Promise<void>;
   /** Run a rendered launch/reap/probe command to completion.
    *
    *  CONTROL vs DISPLAY (amended by B-720, corrected by its replacement capture). The exit code
@@ -1695,6 +1703,19 @@ export async function runScheduler(deps: SchedulerDeps, keeper: HeartbeatKeeper)
     consecutiveAuthFailingPasses = authFailingPass ? consecutiveAuthFailingPasses + 1 : 0;
     if (consecutiveAuthFailingPasses >= AUTH_FAILURE_PASS_LIMIT) {
       throw new PersistentAuthFailure(consecutiveAuthFailingPasses);
+    }
+    // B-1062: the recorded-walk drain — a SEPARATE, independently-isolated step from the conduction
+    // pass above. Absent in every existing deployment/test until src/bin/daemon.ts wires the real one
+    // in (see SchedulerDeps.drainRecordedWalkRequests's doc comment); when present it is ALREADY
+    // internally never-throwing (recorded-walk-drain.ts's own contract), but this call is wrapped
+    // anyway — a daemon loop must never die because ONE optional side step misbehaved, mirroring the
+    // per-row isolation `runSchedulerPass` already applies to every conduction.
+    if (deps.drainRecordedWalkRequests) {
+      try {
+        await deps.drainRecordedWalkRequests();
+      } catch (err) {
+        deps.log(`recorded-walk drain pass failed: ${formatDaemonError(err)}`);
+      }
     }
     // B-1011: the ONE line that was the daemon's whole reaction latency. With no hint source it is
     // untouched, byte for byte. With one, it is RACED — the poll interval itself is unchanged, so
