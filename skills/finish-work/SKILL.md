@@ -366,6 +366,7 @@ shown.
 
 **The release frame (B-876) — author `doc.frame` on every release brief you compose or re-compose.**
 Every recompose that is NOT a send-back passes `revision_cause` — see `skills/harmony-shared/brief-authoring.md` §Stating the cause of a redraft (B-1017).
+A lint-warning-driven recompose is capped at one per lineage per leg — see the same file's §Fixing a lint warning in the leg that raised it (B-1054).
 Release is the one gate with a measured wrong accept, and it had no field at all for the act it
 authorizes; one author faked one with an ALL-CAPS header inside a `context[]` string. The frame renders
 **below DECIDE and above Recommend** — the object of the decision named before an opinion is offered
