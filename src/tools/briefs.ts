@@ -2902,23 +2902,44 @@ export async function composeBrief(
     const briefId = (existing as { id: string }).id;
     // B-1017 — the cause rides the RPC as `_revision_cause`, ALWAYS sent (null when the caller states
     // none) so a DB that has the argument stores an honest null rather than seeing the key omitted.
+    // B-1054 / B-1000: `p_conduction_id`/`p_leg` name the running conduction/leg, when this call is
+    // conductor-driven. Both params are already live on prod (B-980 shipped them as trailing DEFAULT
+    // NULL, same as resolveBrief's own resolve_brief call above), so no tolerance guard is needed for
+    // these two — unlike `_revision_cause` and `p_lint_warnings` below.
     const baseArgs = {
       _task_id: taskId,
       _patch: revisionPatch,
       _iterate_feedback: args.iterate_feedback ?? null,
       _created_by: userId,
+      p_conduction_id: getConductionId() ?? null,
+      p_leg: getLeg() ?? null,
     };
     const withCause = { ...baseArgs, _revision_cause: args.revision_cause ?? null };
-    let { data: revision, error: revisionErr } = await client.rpc('compose_brief_revision', withCause);
+    // B-1054 — the compose-time §3.2 lint warnings ride the RPC as `p_lint_warnings`, so a residual
+    // warning survives a cap-hit revision instead of being visible only in this call's own return value.
+    // The companion harmony-web migration (PR #508) adds the trailing `p_lint_warnings jsonb DEFAULT
+    // NULL` argument; until it is promoted to whichever DB this build talks to, sending the key 404s the
+    // same way an unrecognized `_revision_cause` does (PostgREST resolves an RPC by argument NAMES), so
+    // this gets the SAME staged-retry treatment, layered as a new OUTER rung ahead of B-1017's own.
+    const withLintWarnings = { ...withCause, p_lint_warnings: lint.warnings };
+    let { data: revision, error: revisionErr } = await client.rpc('compose_brief_revision', withLintWarnings);
     if (revisionErr && isMissingComposeBriefRevision(revisionErr)) {
-      // B-1017 rung 1: the function may exist but PREDATE `_revision_cause` (PostgREST resolves a function
-      // by its argument NAMES, so an unknown name is reported as "function not found" — the same PGRST202
-      // an absent function gives). Retry the SAME call WITHOUT the key: on that DB the revision is still
-      // RETAINED, only the cause is dropped. Falling straight to the in-place UPDATE here would lose B-843
-      // retention on every DB between the two migrations — the one regression this rung exists to prevent.
-      ({ data: revision, error: revisionErr } = await client.rpc('compose_brief_revision', baseArgs));
+      // B-1054 rung: the function may exist but PREDATE `p_lint_warnings`. Retry the SAME call WITHOUT
+      // that one key — `_revision_cause`/`p_conduction_id`/`p_leg` are untouched, since they are not new.
+      ({ data: revision, error: revisionErr } = await client.rpc('compose_brief_revision', withCause));
       if (!revisionErr) {
-        lint.warnings.push('revision_cause not stored — this database\'s compose_brief_revision predates it (B-1017); the revision was retained with a null cause.');
+        lint.warnings.push('lint_warnings not stored — this database\'s compose_brief_revision predates it (B-1054); the residual warning is not recorded, but the leg still proceeds.');
+      } else if (isMissingComposeBriefRevision(revisionErr)) {
+        // B-1017 rung 1 (unchanged): the function may ALSO predate `_revision_cause` (PostgREST resolves
+        // a function by its argument NAMES, so an unknown name is reported as "function not found" — the
+        // same PGRST202 an absent function gives). Retry the SAME call WITHOUT the key: on that DB the
+        // revision is still RETAINED, only the cause is dropped. Falling straight to the in-place UPDATE
+        // here would lose B-843 retention on every DB between the two migrations — the one regression
+        // this rung exists to prevent.
+        ({ data: revision, error: revisionErr } = await client.rpc('compose_brief_revision', baseArgs));
+        if (!revisionErr) {
+          lint.warnings.push('revision_cause not stored — this database\'s compose_brief_revision predates it (B-1017); the revision was retained with a null cause.');
+        }
       }
     }
 

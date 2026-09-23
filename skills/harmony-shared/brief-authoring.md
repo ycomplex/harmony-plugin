@@ -156,6 +156,31 @@ send-back already wrote (B-896). Never both `iterate_feedback` and `revision_cau
 redraft genuinely answers a send-back AND something else; then `revision_cause` wins and the words ride in
 its `lines`. `doc.revision` (what YOU changed) and this (WHY the revision exists) are not substitutes.
 
+## Fixing a lint warning in the leg that raised it (B-1054)
+
+**Fix in the same leg, not a fresh one.** When `compose_brief` returns non-empty `lint.warnings`
+with `lint.ok` still true (this is about warnings, never errors — a lint error already forces a
+recompose today via the thrown exception, unchanged), the calling leg reads them and, if the fix is
+reasonably self-contained, revises the doc and recomposes ONCE, in the same turn — it never ends the
+turn and relies on a fresh leg being launched later just to redraft the same brief. That one
+recompose passes `revision_cause: { source: 'lint-self-review', lines: <the returned lint.warnings,
+verbatim> }` — the table row above already covers this; do not duplicate it here.
+
+**The cap: at most one lint-driven recompose per lineage, per leg.** If `compose_brief`'s result
+still carries non-empty `lint.warnings` after that one recompose, the leg does NOT recompose again
+for that reason — it proceeds with the brief as composed. The cap holds even when a warning
+persists; a second lint-driven recompose in the same leg for the same lineage is exactly the
+behavior this rule forbids.
+
+**A residual warning past the cap is never a human-facing concern.** `lint.warnings` is a
+diagnostic returned to the calling agent only — it was never part of the brief's rendered `content`,
+and this rule does not change that. It is also never grounds to end the turn, file a
+`worker-question`, or otherwise block progress — the leg surfaces the brief (or advances the loop)
+exactly as it would with a clean lint result.
+
+Countable after the fact: the compose's own `p_lint_warnings` persists into the `brief_revised`
+audit event, so this cap's use is measurable without any new mechanism (B-1054).
+
 ## Per-gate contracts
 
 ### Clarify (Proposed → Clarified — high-engagement)

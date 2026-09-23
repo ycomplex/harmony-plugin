@@ -120,6 +120,7 @@ what the human reads, the payload is what the accept materializes. Keep them in 
 **On an iterate (round 2+), also author `doc.revision`** — `{ round, changes: [{ change, responds_to }] }`,
 each change bound to the feedback it answers. It renders under the **On accept:** line, below the frame.
 Every recompose that is NOT a send-back passes `revision_cause` — see `skills/harmony-shared/brief-authoring.md` §Stating the cause of a redraft (B-1017).
+A lint-warning-driven recompose is capped at one per lineage per leg — see the same file's §Fixing a lint warning in the leg that raised it (B-1054).
 
 On **accept** → resolve, then apply the payload — **the plan's own steps land on the ticket's
 checklist (B-797 — this is what closes specimen 6, B-800: the accepted plan's steps must be READABLE
