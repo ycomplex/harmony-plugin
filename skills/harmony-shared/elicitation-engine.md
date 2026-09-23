@@ -48,7 +48,7 @@ Split every question by how much a wrong answer steers the work:
 - Filing a round hands the ball to the human: the task flags `awaiting_human_input` with reason
   `elicitation-round`. Then WAIT (arm the conductor watch where one is running) — never answer your
   own round.
-- Don't front-load: ask the highest-leverage residual first and let the answers shape round N+1.
+- **Front-load what you already know:** file every load-bearing unknown you can already name in round 1 — up to the unchanged ≤5 cap and the one-context-line rule. Round N+1 exists only for residual the round 1 answers surface, never for a question you could have asked in round 1.
 
 ## Consuming answers
 

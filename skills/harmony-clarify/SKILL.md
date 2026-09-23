@@ -149,6 +149,7 @@ needs the human's validation.** Otherwise — an all-low-stakes residual — **d
 step 3, folding the low-stakes validation candidates into the brief's decision items as today (the
 "much lighter approve").
 
+- **Front-load the round (per the amended engine rule):** when opening the exchange, file EVERY load-bearing item already identified in step 2's residual census into round 1's `questions` (up to the engine's ≤5 cap) — never hold one back for round N+1 that you could already name now. Round N+1 exists only for residual that round 1's answers surface, never for a census item you already had.
 - **Phase-split probe trigger (B-518):** a detected now-vs-later bundle (step 2) is such a
   load-bearing unknown. When it is the **sole** load-bearing residual — everything else inferable,
   where draft-directly would otherwise fire — still open the exchange, with
