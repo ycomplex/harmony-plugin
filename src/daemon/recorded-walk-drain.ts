@@ -41,6 +41,11 @@ export interface RecordedWalkRequestRow {
   status: 'pending' | 'processing' | 'done' | 'error';
   processed_at: string | null;
   error: string | null;
+  /** B-1062 follow-up (iterate): the full `RecordWalkResult` — eligibility report, gates landed,
+   *  refused flag — written on every terminal status (done or error). Null only if the walk threw
+   *  before producing a result at all (see the write-back below). Lets a web consumer render the
+   *  five eligibility verdicts (`result.eligibility.items`) instead of parsing `error`'s prose. */
+  result: RecordWalkResult | null;
 }
 
 /** The B-383/B-846-class schema-drift predicate for THIS table specifically — never matches a
@@ -78,7 +83,7 @@ export async function runRecordedWalkDrainPass(deps: RecordedWalkDrainDeps): Pro
   try {
     const { data, error } = await client
       .from(RECORDED_WALK_REQUESTS_TABLE)
-      .select('id, task_id, summary, evidence_links, attest_walk, requested_by, requested_at, status, processed_at, error')
+      .select('id, task_id, summary, evidence_links, attest_walk, requested_by, requested_at, status, processed_at, error, result')
       .eq('status', 'pending')
       .order('requested_at', { ascending: true })
       .limit(1);
@@ -139,7 +144,7 @@ export async function runRecordedWalkDrainPass(deps: RecordedWalkDrainDeps): Pro
   const finalStatus: RecordedWalkRequestRow['status'] = failureMessage ? 'error' : 'done';
   const { error: writeBackErr } = await client
     .from(RECORDED_WALK_REQUESTS_TABLE)
-    .update({ status: finalStatus, processed_at: new Date().toISOString(), error: failureMessage ?? null })
+    .update({ status: finalStatus, processed_at: new Date().toISOString(), error: failureMessage ?? null, result: result ?? null })
     .eq('id', request.id);
   if (writeBackErr) {
     // The walk's own outcome is already decided; a failure to WRITE BACK the status is reported but

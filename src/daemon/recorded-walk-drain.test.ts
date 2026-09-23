@@ -109,10 +109,11 @@ describe('runRecordedWalkDrainPass — processing a fake pending row', () => {
   };
 
   it('claims the row, runs the SAME gate-walk core, and writes back status=done on success', async () => {
-    mocks.runRecordedWalk.mockResolvedValue({
+    const fakeResult = {
       task_id: 'resolved-B-2000', eligibility: { items: [], eligible: true }, refused: false,
       gates: [{ gate: 'clarify', landed: true }, { gate: 'release', landed: true }], attestation_recorded: true,
-    });
+    };
+    mocks.runRecordedWalk.mockResolvedValue(fakeResult);
     const client = makeClient({ selectResult: { data: [pendingRow], error: null } });
     const logs: string[] = [];
     const processed = await runRecordedWalkDrainPass({ client, projectId: PROJECT_ID, userId: USER_ID, log: (l) => logs.push(l) });
@@ -127,19 +128,22 @@ describe('runRecordedWalkDrainPass — processing a fake pending row', () => {
     const writeBack = client.updates.find((u: any) => u.payload.status === 'done');
     expect(writeBack).toBeDefined();
     expect(writeBack.payload.error).toBeNull();
+    expect(writeBack.payload.result).toEqual(fakeResult);
     expect(logs.some((l) => l.includes('recorded — 2 gate(s) landed'))).toBe(true);
   });
 
   it('writes back status=error, with the refusal reason, when the walk refuses (ineligible)', async () => {
-    mocks.runRecordedWalk.mockResolvedValue({
+    const fakeResult = {
       task_id: 'resolved-B-2000', eligibility: { items: [], eligible: false }, refused: true,
       refusal_reason: 'harmony record refuses — 1 of 5 eligibility item(s) did not pass', gates: [], attestation_recorded: false,
-    });
+    };
+    mocks.runRecordedWalk.mockResolvedValue(fakeResult);
     const client = makeClient({ selectResult: { data: [pendingRow], error: null } });
     const processed = await runRecordedWalkDrainPass({ client, projectId: PROJECT_ID, userId: USER_ID, log: () => {} });
     expect(processed).toBe(1);
     const writeBack = client.updates.find((u: any) => u.payload.status === 'error');
     expect(writeBack.payload.error).toContain('refuses');
+    expect(writeBack.payload.result).toEqual(fakeResult);
   });
 
   it('writes back status=error when the gate-walk core throws — never crashes the drain', async () => {
@@ -149,6 +153,8 @@ describe('runRecordedWalkDrainPass — processing a fake pending row', () => {
     expect(processed).toBe(1);
     const writeBack = client.updates.find((u: any) => u.payload.status === 'error');
     expect(writeBack.payload.error).toContain('boom: unexpected failure');
+    // The walk threw before producing a `RecordWalkResult` at all — write-back records `result: null`.
+    expect(writeBack.payload.result).toBeNull();
   });
 
   it('loses the claim race cleanly (a peer daemon already claimed it) — no double-processing', async () => {

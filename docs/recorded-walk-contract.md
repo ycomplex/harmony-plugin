@@ -159,7 +159,8 @@ create table recorded_walk_requests (
   status         text not null default 'pending'
                    check (status in ('pending', 'processing', 'done', 'error')),
   processed_at   timestamptz,
-  error          text
+  error          text,
+  result         jsonb                                 -- see column notes below
 );
 ```
 
@@ -179,18 +180,22 @@ create table recorded_walk_requests (
   `UPDATE ... SET status = 'processing' WHERE id = $1 AND status = 'pending'` and checks whether the
   update actually matched a row — Postgres's own row-level atomicity is the whole claim mechanism. A
   peer daemon racing the same row loses cleanly (0 rows affected) rather than double-processing.
-- **`done` does NOT mean "every gate passed eligibility."** `error IS NULL` on a `done` row can still
-  mean the walk **refused** (ineligible) — read `error` either way: `NULL` = walk ran to completion
-  (whether it landed all six gates or refused up front is inside the plugin's own richer
-  `RecordWalkResult`, which this table does not project field-for-field; a consumer that needs the full
-  breakdown should read the ticket's own gate slots / activity log after `status = 'done'`, not infer it
-  from this table alone). A non-`NULL` `error` on a `done` OR `error` row is a genuine failure message
-  (a refusal reason or a mid-walk exception) — **this table's `error` column is set for BOTH a refusal
-  and a thrown exception**; there is no separate `refused` boolean column here (unlike the plugin's own
-  in-process `RecordWalkResult.refused`), so a consumer that must distinguish "refused, byte-identical
-  ticket" from "attempted, partially landed, then failed" should parse `error`'s leading text — a
-  refusal's message always begins `"harmony record refuses —"` (see `describeIneligibility`,
-  `src/tools/record-walk.ts`); anything else is a mid-walk failure.
+- **`result`** is nullable jsonb holding the drain's full `RecordWalkResult` (eligibility report,
+  gates landed, the `refused` flag) — written on EVERY terminal status (`done` or `error`), null only
+  if the walk threw before producing a result at all. This is what lets a web consumer render the five
+  eligibility verdicts (`result.eligibility.items`, each `{item, label, verdict, value, detail?}` per
+  §3) instead of parsing `error`'s prose.
+- **`done` always means the walk ran to completion** — it landed some or all six gates, with
+  `error IS NULL`. A refusal (ineligible — the ticket left byte-identical) never lands on `done`; the
+  code sets `status = 'error'` for a refusal exactly like it does for a thrown mid-walk exception (see
+  `recorded-walk-drain.ts`'s write-back: `if (result.refused) failureMessage = result.refusal_reason`
+  unconditionally routes to `finalStatus = 'error'`).
+- **`error` status covers BOTH a refusal and a mid-walk exception.** Distinguishing the two: with the
+  `result` column above present, `result.refused` (boolean) is the PRIMARY signal — read it directly,
+  no string-prefix parsing needed. As a fallback (e.g. `result` is null because the walk threw before
+  producing one), a refusal's `error` message still always begins with the literal prefix
+  `"harmony record refuses —"` (see `describeIneligibility`, `src/tools/record-walk.ts`) — anything
+  else on an `error` row is a mid-walk failure.
 
 **RLS / who may write:** left to B-1063's own migration — this contract fixes only the column shape and
 semantics above, not the row-level security policy.
