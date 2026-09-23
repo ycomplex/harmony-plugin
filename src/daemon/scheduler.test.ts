@@ -2739,6 +2739,176 @@ describe('B-740: archived-ticket pre-fire decline (settle instead of silently de
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-1052: the terminal-ticket pre-fire decline. A NEW fire against a ticket that already reached a
+// TICKET_TERMINAL_STATES workflow_state (Verified/Cancelled/Parked) settles straight to
+// 'completed'/'terminal-no-leg' via the SAME writeIfHeld path the B-740 archived-ticket decline just
+// above uses — never reaches classifyWorkerExit (there is no worker exit to classify: this is a
+// pre-fire decline), and never fires a leg on a dead ticket.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('B-1052: terminal-ticket pre-fire decline (held path)', () => {
+  it('a terminal ticket held by this daemon fires NO leg and closes with terminal-no-leg', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: true }) },
+    });
+
+    await h.pass(); // baseline
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    (h.tasks['task-1'] as DaemonTask).workflow_state = 'Verified';
+    await h.pass();
+
+    expect(h.launches()).toEqual([]); // never fired
+    expect(h.ready()).toEqual([]);
+    expect(h.statusWrites()).toEqual([
+      { status: 'completed', last_worker_exit_code: null, last_worker_exit_class: 'terminal-no-leg' },
+    ]);
+    expect(h.getConduction('cond-1').status).toBe('completed');
+    expect(
+      h.logs.some((l) => l.includes('ticket already terminal (Verified) — declining fire, closing conduction')),
+    ).toBe(true);
+  });
+
+  it('RE-ENTRANCY: a second pass over an already-completed (terminal-declined) conduction is a silent no-op — never a second close write, never a throw', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: true }) },
+    });
+    await h.pass(); // baseline
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    (h.tasks['task-1'] as DaemonTask).workflow_state = 'Verified';
+    await h.pass(); // declines + closes
+    expect(h.statusWrites()).toHaveLength(1);
+
+    // The row is now 'completed' in the fake conductions table — listConductions(status:'active')
+    // no longer returns it, exactly like the B-740 archived-decline's transition-only-logging test.
+    await expect(h.pass()).resolves.not.toThrow();
+    await expect(h.pass()).resolves.not.toThrow();
+
+    expect(h.statusWrites()).toHaveLength(1); // still exactly one close write — no double-close
+    expect(h.launches()).toEqual([]);
+  });
+
+  it('CONCURRENCY: a lease that moved to another daemon in the gap between the ticket read and the terminal-decline write is rejected — only one close write ever lands (the same writeIfHeld CAS every other decline/park write already relies on)', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: true }) },
+    });
+    await h.pass(); // baseline
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    (h.tasks['task-1'] as DaemonTask).workflow_state = 'Verified';
+
+    // Simulate a SECOND fire path (a peer daemon's own takeover, or this daemon's own steal path in
+    // a concurrent tick) winning the lease in the gap between THIS pass's getTaskMeta read and its
+    // writeIfHeld call — the same shape as the existing B-739 "SUPPRESSES the outcome write when the
+    // lease was taken over mid-launch" test, applied to this new decline site.
+    (h.deps.getTaskMeta as ReturnType<typeof vi.fn>).mockImplementationOnce(async (taskId: string) => {
+      h.getConduction('cond-1').lease_holder = 'other-daemon:9:zzzz'; // the peer won first
+      return { ...(h.tasks[taskId] as DaemonTask) };
+    });
+
+    await h.pass();
+
+    const row = h.getConduction('cond-1');
+    expect(row.lease_holder).toBe('other-daemon:9:zzzz'); // untouched beyond the simulated race
+    expect(row.status).toBe('active'); // our decline write was REJECTED by the CAS — no clobber
+    expect(row.last_worker_exit_class).toBeNull();
+    expect(h.commands).toEqual([]); // never fired a leg either
+    expect(h.logs.join(' ')).toMatch(/lease lost to another daemon/);
+  });
+});
+
+describe('B-1052: terminal-ticket pre-fire decline (steal path)', () => {
+  it('a terminal ticket discovered via the foreign/steal path also declines and closes — never fires a leg', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({ lease_holder: 'peer-host:2:bbbb2222', last_heartbeat_at: iso(T0 - 1_000), leg_started_at: null }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false, workflow_state: 'Verified' }) },
+    });
+
+    await h.pass(); // first sight of the foreign row — baseline only, no verdict yet
+    expect(h.deps.stealConduction).not.toHaveBeenCalled();
+
+    await h.pass(); // first-pickup wake detected → steal attempted + won → terminal decline, not a fire
+    expect(h.deps.stealConduction).toHaveBeenCalledWith({
+      id: 'cond-1',
+      observed_lease_holder: 'peer-host:2:bbbb2222',
+      new_lease_holder: ME,
+    });
+
+    const row = h.getConduction('cond-1');
+    expect(row.lease_holder).toBe(ME); // the steal genuinely won…
+    expect(row.status).toBe('completed'); // …but closes instead of firing
+    expect(row.last_worker_exit_code).toBeNull();
+    expect(row.last_worker_exit_class).toBe('terminal-no-leg');
+    expect(h.commands).toEqual([]); // never fired a leg
+    expect(h.running()).toEqual([]);
+    expect(
+      h.logs.some((l) => l.includes('ticket already terminal (Verified) — declining stolen fire, closing conduction')),
+    ).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-1052 contract: (a) the brief-less umbrella-auto-verify sentinel belt in handleHeldConduction
+// never lets a leg fire for that exact shape — even adversarially, independent of the wake gate;
+// (b) the terminal-decline logic must never mistake a LIVE split-umbrella parent (Decomposed, ≥1
+// non-archived child in flight, no terminal workflow_state of its own) for a terminal ticket. Pins
+// both directions so a future change to either shape is caught here first.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('B-1052 contract: umbrella-auto-verify sentinel belt + live split-umbrella non-regression', () => {
+  it('never fires a leg for the brief-less umbrella-auto-verify sentinel shape, even when awaiting_human_input is (adversarially) false — the belt holds independent of the wake gate', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: {
+        'task-1': pausedTask({
+          awaiting_human_input: false, // adversarial: would otherwise first-pickup-wake
+          workflow_state: 'Deployed',
+          awaiting_human_reason: 'verification-ack-pending',
+          awaiting_human_ref: { kind: 'umbrella-auto-verify' },
+        }),
+      },
+    });
+
+    await h.pass();
+    await h.pass();
+    await h.pass();
+
+    expect(h.launches()).toEqual([]);
+    expect(h.ready()).toEqual([]);
+    expect(h.statusWrites()).toEqual([]);
+    expect(h.logs.some((l) => l.includes('umbrella-auto-verify sentinel awaiting human ack'))).toBe(true);
+  });
+
+  it('a LIVE Decomposed split-umbrella parent (non-archived children in flight, no build_pr of its own) is NOT declined by the terminal check — Decomposed is not in TICKET_TERMINAL_STATES — and its children keep firing normally alongside it', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({ id: 'cond-parent', task_id: 'task-parent' }),
+        conduction({ id: 'cond-child', task_id: 'task-child' }),
+      ],
+      tasks: {
+        'task-parent': pausedTask({ workflow_state: 'Decomposed', awaiting_human_input: true }),
+        'task-child': pausedTask(),
+      },
+      childCount: 1, // ≥1 non-archived child in flight for the parent
+    });
+    await h.pass(); // baseline both
+
+    (h.tasks['task-parent'] as DaemonTask).awaiting_human_input = false; // ball returns to the agent
+    (h.tasks['task-child'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+
+    expect(h.launches().sort()).toEqual(['launch cond-child task-child', 'launch cond-parent task-parent']);
+    expect(h.statusWrites()).toEqual([]); // neither was declined/closed
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // B-742 — leg_started_at: stamped fresh immediately before every launch attempt (retries
 // included), cleared ONLY at tracked-settlement classification (B-717 correction — see this
 // module's header). Every write lease-guarded via the same writeIfHeld/updateConductionIfHeld path.

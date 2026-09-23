@@ -32224,6 +32224,12 @@ async function handleHeldConduction(deps, state, keeper, excluded, runtime, row)
   keeper.ensure(row.id);
   if (runtime.ready.has(row.id)) return;
   const current = await deps.getTaskMeta(row.task_id);
+  if (current.workflow_state === "Deployed" && current.awaiting_human_reason === "verification-ack-pending" && current.awaiting_human_ref?.kind === "umbrella-auto-verify") {
+    deps.log(
+      `${label(row, current, deps.projectKey)}: umbrella-auto-verify sentinel awaiting human ack \u2014 not queuing`
+    );
+    return;
+  }
   const baseline = state.get(row.id);
   if (!baseline) {
     state.set(row.id, captureBaseline(current));
@@ -32232,6 +32238,19 @@ async function handleHeldConduction(deps, state, keeper, excluded, runtime, row)
   const wake = detectWake(baseline, current);
   if (wake === null) {
     state.set(row.id, captureBaseline(current));
+    return;
+  }
+  if (TICKET_TERMINAL_STATES.includes(current.workflow_state ?? "")) {
+    deps.log(
+      `${label(row, current, deps.projectKey)}: ticket already terminal (${current.workflow_state}) \u2014 declining fire, closing conduction`
+    );
+    state.delete(row.id);
+    keeper.stop(row.id);
+    await writeIfHeld(deps, state, keeper, row, {
+      status: "completed",
+      last_worker_exit_code: null,
+      last_worker_exit_class: "terminal-no-leg"
+    });
     return;
   }
   if (current.archived === true) {
@@ -32504,6 +32523,17 @@ async function fireStealCandidates(deps, state, keeper, runtime, candidates) {
       deps.log(`${label(row, current, deps.projectKey)}: stole ready work from ${row.lease_holder}`);
       state.delete(row.id);
       keeper.ensure(row.id);
+      if (TICKET_TERMINAL_STATES.includes(current.workflow_state ?? "")) {
+        deps.log(
+          `${label(row, current, deps.projectKey)}: ticket already terminal (${current.workflow_state}) \u2014 declining stolen fire, closing conduction`
+        );
+        await writeIfHeld(deps, state, keeper, stolen, {
+          status: "completed",
+          last_worker_exit_code: null,
+          last_worker_exit_class: "terminal-no-leg"
+        });
+        continue;
+      }
       await fireLaunch(deps, state, keeper, runtime, stolen, current, stolen.retry_count);
     } catch (err) {
       if (isAuthShapedError(err)) authShapedFailures += 1;

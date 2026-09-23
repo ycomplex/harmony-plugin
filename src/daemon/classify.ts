@@ -151,8 +151,12 @@ export function classifyWorkerExit(args: ClassifyArgs): ExitOutcome {
   // shared verbatim with the interactive Stop gate (B-870 AC7). Order and behaviour are unchanged:
   //   1. awaiting_human_input=true                       ⇒ 'clean-pause'    ⇒ wait
   //   2. workflow_state ∈ TICKET_TERMINAL_STATES         ⇒ 'terminal'       ⇒ complete
-  //      (Deliberate: terminal-ticket launches are NOT short-circuited here — see B-740, the launch
-  //      is a CLAUDE.md verify-gate extension point.)
+  //      (A worker LAUNCH on an already-terminal ticket is no longer possible to observe here at
+  //      all: B-1052 added a pre-fire decline in the SCHEDULER — handleHeldConduction and
+  //      fireStealCandidates, both in scheduler.ts — that closes the conduction with
+  //      last_worker_exit_class 'terminal-no-leg' before a leg ever fires. This classifier's own
+  //      branch 2 is therefore now reached only via the OTHER route to 'terminal': a worker that
+  //      itself drove the ticket terminal during its own run, which is unaffected by B-1052.)
   //   3. Decomposed + ≥1 non-archived child + flag false ⇒ 'split-umbrella' ⇒ complete
   const cleanKind = classifyCleanRowShape(row, nonArchivedChildCount);
   if (cleanKind === 'clean-pause') return { action: 'wait' };
