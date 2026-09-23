@@ -94,6 +94,42 @@ mcp__harmony__find_related_tickets({ task_id })   // top ~5; pass limit to widen
   legitimate elicitation material — "this overlaps <ticket> — how is your intent different?"), and the
   full card renders with the draft brief at step 3c. The disposition surface is unchanged.
 
+### 1d. Retrospective detection (B-913, folded by B-1062) — is this ticket's own record already the answer?
+
+Before forming the residual assessment (step 2), check whether this ticket is being clarified
+**retrospectively** — its own record already shows the work was executed, rather than proposed. The
+signal is mechanical, not a guess: the ticket carries a `harmony record` gate-walk marker (a
+`gate_slots` entry stamped `ratified_by: 'recorded'` — `get_task`/`list_activity` surface this), OR the
+ticket's evidence trail (linked PRs, `build_pr`/`work_branch` field_values, a release already landed)
+already accounts for the change, with no live conduction driving it forward. **Sized/technical
+complexity is never this signal** — same discipline as the phase-split detector above: only "the work
+already happened" trips it, never "this ticket is big."
+
+**When retrospective, the residual assessment (step 2) and any round questions (step 2c) are reframed —
+validate-against-the-evidence, never future-work elicitation:**
+
+- **Drivers / behaviour / solution-shape / scope boundaries** are mined the SAME way (ticket body,
+  Accepted KB, non-marker comments, and now the evidence trail itself), but every question the residual
+  would otherwise open asks **"this is what the record says happened — is that right?"**, never **"what
+  should this ticket do?"**. A load-bearing unknown on a live (prospective) ticket asks the human to
+  DECIDE; the same unknown on a retrospective ticket asks the human to CONFIRM a decision the evidence
+  already implies.
+- **Phase-split detection does not apply retrospectively** — there is no "later phase" to bundle out of
+  work that already shipped as one change. Skip it; do not open a phase-split probe on a retrospective
+  ticket.
+- **The exchange trigger (step 2b) is unchanged in mechanics** — a retrospective ticket with
+  load-bearing gaps in the evidence trail still opens an exchange exactly like a prospective one; only
+  the QUESTION FRAMING (this section) changes, never whether one opens.
+- **Not retrospective** (the ordinary case — no recorded-walk marker, no already-landed evidence, a
+  live conduction driving the ticket forward): everything below proceeds exactly as written, unchanged.
+
+This is prose guidance for a LIVE clarify pass (a human/agent running this skill), not a mechanical
+gate — the `harmony record` gate-walk core itself (a separate, zero-worker-leg mechanical path; see
+`docs/recorded-walk-contract.md` in this repo) never invokes this skill or opens an exchange at all.
+This fold exists for the case a clarify pass runs LIVE against a ticket whose intent is already
+retrospective — e.g. a re-clarify on a previously-recorded ticket, or a human choosing to walk
+`harmony-clarify` interactively over already-completed work instead of using `harmony record`.
+
 ### 2. KB-inference attempt — infer first, interrogate only the residual (rule 1)
 
 Query the relevant domains. For most clarifications that's `product` (feature semantics, business
@@ -178,7 +214,12 @@ Rounds follow the engine contract (≤5 questions, stakes-split — a load-beari
   lint enforces open). NAME the bundle, WITHHOLD your split candidate — *"The ticket asks for X and
   also Y — which of these is in immediate scope now?"*, never *"I think Y is later."* Its answer feeds
   exactly one disposition: **de-scope** (step 3's de-scope block); an "all of it now" answer changes
-  nothing — no split at clarify, decompose decides structure later.
+  nothing — no split at clarify, decompose decides structure later. **Skip entirely on a retrospective
+  ticket** (step 1d) — there is no later phase to bundle out of work that already shipped.
+- **Retrospective framing (B-913, step 1d):** on a retrospective ticket, every filed question restates
+  the evidence and asks for confirmation/correction (*"the record says X — confirm?"*) rather than
+  eliciting a fresh decision (*"what should X be?"*) — the `context_line` and each question's phrasing
+  both carry this, not just an internal note the human never sees.
 - **In a conducted session:** return control to the conductor — it arms the §4c watch and re-invokes
   this skill when the poll classifies **`answers-landed`** (a web submit) or the human answers in the
   terminal. Never leave a filed round without an armed watch in a conducted run.

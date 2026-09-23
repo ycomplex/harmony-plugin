@@ -218,6 +218,17 @@ export interface WriteGateSlotArgs {
   /** The section's fields. An EMPTY object is valid and meaningful (ratified-empty). */
   content: GateSlotContent;
   target: GateSlotTarget;
+  /** B-1062 — OPTIONAL override for the stamped `ratified_by`. Defaults to `gate` when omitted, so
+   *  every EXISTING caller (release/verify's `write_gate_slot` tool, the `acceptance-event` route) is
+   *  byte-for-byte unaffected. The ONE known caller of this override today is the `harmony record`
+   *  gate-walk core (src/tools/record-walk.ts), which stamps `'recorded'` on every slot it writes — a
+   *  ticket recorded from a human summary/evidence trail rather than conducted through a live gate, so
+   *  the slot's own provenance must say so rather than borrowing the gate's name. Only meaningful on the
+   *  `task` route: the `acceptance-event` route's RPC (`consume_gate_slot_write`) stamps `ratified_by`
+   *  itself, server-side, from `_gate` — this override cannot reach that route at all (see `writeGateSlot`
+   *  below), which is why the gate-walk core always writes clarify's slot through the `task` route
+   *  directly rather than relying on the payload-riding write clarify's accept would otherwise take. */
+  ratified_by?: string;
 }
 
 export interface GateSlotWriteResult {
@@ -336,7 +347,9 @@ export async function writeGateSlot(
     ...fieldValues,
     [GATE_SLOT_FIELD_KEY]: {
       ...existingSlots,
-      [gate]: { content, ratified_by: gate, ratified_at },
+      // B-1062: `ratified_by` defaults to `gate` (unchanged behavior) unless the caller overrides it —
+      // see `WriteGateSlotArgs.ratified_by`'s doc comment for the one caller that does.
+      [gate]: { content, ratified_by: args.ratified_by ?? gate, ratified_at },
     },
   };
 

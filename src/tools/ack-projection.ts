@@ -354,6 +354,8 @@ export const ACK_PASS_THROUGH: Record<string, string> = {
     'B-797: already a compact server-computed ack ({event_id, task_id, status, workflow_state, idempotent}) — the only caller arg is the event_id identifier, so there is no caller-sent body to strip.',
   write_gate_slot:
     'B-867: already a compact server-computed ack ({task_id, gate, written, applied?, keys?, brief_id?, reason?}). There is no caller-sent body to strip BY CONSTRUCTION — the tool takes only the task_id and gate identifiers and DERIVES the section content from the gate\'s own brief, so nothing the caller sent can be echoed back. `keys` names the content fields landed (never their values) and `reason` explains a written:false no-op; both are the ack, not an echo.',
+  record:
+    'B-1062: already a compact server-computed ack ({task_id, eligibility, refused, refusal_reason?, gates, attestation_recorded, error?}) — no caller-sent DOC body to strip. The caller sends `summary`/`evidence`/`attest_walk`; none of the three is echoed back verbatim — `eligibility.items[].value` is a server-computed READING of them (e.g. a word count, a derived repo list), not a copy, and `gates`/`refusal_reason`/`error` are entirely server-authored outcome reporting.',
 };
 
 /**

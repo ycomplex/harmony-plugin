@@ -30,7 +30,24 @@ export const PROVENANCE_AGENT_ON_BEHALF = 'agent-on-behalf';
 export const PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_IN_SESSION}`;
 export const PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_WEB_ONLY}`;
 
-const AGENT_ON_BEHALF_CLOSED_SUFFIXES: readonly string[] = [PROVENANCE_HUMAN_IN_SESSION, PROVENANCE_WEB_ONLY];
+// ——— B-1062: a THIRD closed suffix — a human's decision recorded rather than conducted ————————————
+//
+// `harmony record` (src/tools/record-walk.ts) walks a ticket's gates from a human-supplied summary +
+// evidence trail, with ZERO worker legs. Every knowledge write that gate-walk core makes is an agent's
+// hand carrying a human's ALREADY-MADE (and already-executed) decision — exactly the `agent-on-behalf`
+// shape B-1021 defined — but the human never typed in a live session (`human-in-session`) and never
+// clicked in the browser (`human-in-browser`, which the plugin may never claim anyway). `human-recorded`
+// names that third, genuinely different provenance: recorded from an out-of-band account of work already
+// done, not decided live through either existing channel. It joins the closed suffix set rather than
+// replacing either existing member — both of B-1021's original two stay exactly as valid as before.
+export const PROVENANCE_HUMAN_RECORDED = 'human-recorded';
+export const PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_RECORDED}`;
+
+const AGENT_ON_BEHALF_CLOSED_SUFFIXES: readonly string[] = [
+  PROVENANCE_HUMAN_IN_SESSION,
+  PROVENANCE_WEB_ONLY,
+  PROVENANCE_HUMAN_RECORDED,
+];
 
 /**
  * Fence a knowledge-write RPC's `provenance` param (B-1021 — the write side of the seven-row bug where
@@ -56,7 +73,8 @@ export function guardKnowledgeWriteProvenance(provenance: string | null | undefi
       `and accepting it here would let an agent claim a human clicked. Use '${PROVENANCE_HUMAN_IN_SESSION}' ` +
       `when the human decided in this session, or '${PROVENANCE_AGENT_ON_BEHALF}:<human-provenance>' when ` +
       `an agent is writing on a human's already-made decision (accepted: ` +
-      `'${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}' or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}').`,
+      `'${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', ` +
+      `or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}').`,
     );
   }
 
@@ -65,8 +83,9 @@ export function guardKnowledgeWriteProvenance(provenance: string | null | undefi
     if (AGENT_ON_BEHALF_CLOSED_SUFFIXES.includes(suffix)) return;
     throw new Error(
       `invalid provenance '${provenance}' — '${PROVENANCE_AGENT_ON_BEHALF}:' accepts only ` +
-      `'${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}' or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', ` +
-      `never any other suffix — an unrecognised suffix would render as an unattributed/unrecognised tag forever.`,
+      `'${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', ` +
+      `or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}', never any other suffix — an unrecognised suffix ` +
+      `would render as an unattributed/unrecognised tag forever.`,
     );
   }
 }

@@ -55,6 +55,7 @@ import {
 // B-720 (replacement capture): the launcher half of the per-leg output record — the daemon WRITES
 // `source='launcher'` rows and never reads one back (the agent-neutrality seam).
 import { recordLegOutput } from '../tools/leg-output-record.js';
+import { runRecordedWalkDrainPass } from '../daemon/recorded-walk-drain.js';
 import { createHeartbeatKeeper } from '../daemon/heartbeat.js';
 import { formatDaemonError } from '../daemon/error-format.js';
 import { loadDaemonConfig, selectNamedProfile } from '../daemon/config.js';
@@ -496,6 +497,13 @@ async function main(): Promise<void> {
     // machine with no ~/.harmony/deployment.json, which leaves this undefined and lets
     // templateVars fall back to the schema default — never a throw, never a launch blocked.
     workerImage: deploymentConfig?.worker_image,
+    // B-1062: the recorded-walk drain, ONE request per pass, running the SAME zero-worker-leg
+    // gate-walk core `harmony record` uses (src/tools/record-walk.ts) directly in-process. Attributed
+    // to this daemon's own authenticated service-account user id — see recorded-walk-drain.ts's own
+    // header for the tolerant-absence contract (the table may not exist yet).
+    drainRecordedWalkRequests: async () => {
+      await runRecordedWalkDrainPass({ client, projectId, userId: auth.getUserId(), log });
+    },
   };
 
   const keeper = createHeartbeatKeeper({
