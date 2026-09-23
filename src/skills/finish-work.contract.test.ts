@@ -634,4 +634,74 @@ describe('finish-work skill contract (evolved)', () => {
     expect(o1).not.toMatch(/this release runs against \*\*staging\*\*/);
   });
 
+  // B-1052: closing out a finished conduction costs no worker leg — the landing-step's mergeability
+  // poll must take the CONFIRM path (no merge call, record the merge commit, no remark) the moment
+  // `gh pr view` reports `state: 'MERGED'`, in BOTH the places that poll runs: O2 step 1c (opinionated
+  // mode) and §3.5 (manual mode, also O2's build_pr-absent fallback).
+  it('B-1052: O2 step 1c reads `state` and takes the MERGED-first confirm path — no merge call, records the merge commit, verifies the deploy, skips any remark', () => {
+    const o2 = o2Section2(skill.body);
+    // `state` rides the SAME extended read as mergeable/mergeStateStatus/statusCheckRollup/headRefOid —
+    // no second gh pr view call.
+    expect(o2).toContain('gh pr view <pr_number> --json mergeable,mergeStateStatus,statusCheckRollup,headRefOid,state');
+    expect(o2).toContain('B-1052');
+    expect(o2.toLowerCase()).toMatch(/`state === 'merged'` is checked first/);
+    // Skips the merge call entirely.
+    expect(o2.toLowerCase()).toMatch(/skip the merge call entirely/);
+    // Records the merge commit via mergeCommit, never re-derived from headRefOid.
+    expect(o2).toContain('gh pr view <pr_number> --json mergeCommit');
+    expect(o2.toLowerCase()).toMatch(/never re-derive it from `headrefoid`/);
+    // Routes into the EXISTING post-merge deploy confirmation — no second mechanism invented.
+    expect(o2.toLowerCase()).toMatch(/confirm the post-merge deploy.{0,40}below/s);
+    expect(o2.toLowerCase()).toMatch(/do not invent a second\s+deploy-verification mechanism/);
+    // Advances Built->Deployed and skips any human-remark requirement.
+    expect(o2.toLowerCase()).toMatch(/advance `built → deployed`/);
+    expect(o2.toLowerCase()).toMatch(/skip any human-remark requirement/);
+    // The MERGED check happens BEFORE the capability-denial/mergeable branches — order matters.
+    const mergedIdx = o2.toLowerCase().indexOf("`state === 'merged'` is checked first");
+    const cleanBranchIdx = o2.indexOf('**`CLEAN`**');
+    expect(mergedIdx).toBeGreaterThan(-1);
+    expect(cleanBranchIdx).toBeGreaterThan(-1);
+    expect(mergedIdx).toBeLessThan(cleanBranchIdx);
+  });
+
+  it('B-1052: O2 step 1c re-checks `state` inside the bounded UNKNOWN re-poll loop — a mid-poll MERGED transition is caught there too', () => {
+    const o2 = o2Section2(skill.body);
+    const unknownIdx = o2.indexOf('**`UNKNOWN`**');
+    expect(unknownIdx).toBeGreaterThan(-1);
+    // The re-poll bullet itself (not just the top-of-step check) mentions re-checking state/MERGED.
+    const unknownBullet = o2.slice(unknownIdx, unknownIdx + 700);
+    expect(unknownBullet).toContain('B-1052');
+    expect(unknownBullet.toLowerCase()).toMatch(/re-check `state`/);
+    expect(unknownBullet).toContain('MERGED');
+  });
+
+  it('B-1052: §3.5 (manual mode / O2 fallback) carries the SAME MERGED-first confirm branch before its own squash-merge step', () => {
+    const body = skill.body;
+    const idx35 = body.indexOf('### 3.5 Pre-merge mergeability check');
+    const squashIdx = body.indexOf('### 4. Squash merge the PR');
+    expect(idx35).toBeGreaterThan(-1);
+    expect(squashIdx).toBeGreaterThan(idx35);
+    const section = body.slice(idx35, squashIdx);
+    expect(section).toContain('gh pr view <PR-number> --json mergeable,mergeStateStatus,statusCheckRollup,state');
+    expect(section).toContain('B-1052');
+    expect(section.toLowerCase()).toMatch(/`state === 'merged'` is checked first/);
+    expect(section.toLowerCase()).toMatch(/skip step 4's merge call entirely/);
+    expect(section).toContain('gh pr view <PR-number> --json mergeCommit');
+    expect(section.toLowerCase()).toMatch(/skip any human-remark requirement/);
+    // Re-checked inside the bounded re-poll here too.
+    expect(section.toLowerCase()).toMatch(/re-check `state` too \(b-1052\)/);
+  });
+
+  it('B-1052: the O1 release-brief CI-evidence read also carries `state`, and the release frame branches doc.decide/act.lands_in on it', () => {
+    const o1 = o1Section(skill.body);
+    expect(o1).toContain('gh pr view <pr_number> --json author,statusCheckRollup,headRefOid,state');
+    expect(o1).toContain('B-1052');
+    expect(o1.toLowerCase()).toMatch(/already `merged`/);
+    // The MERGED-at-compose branch phrases the decision as a CONFIRM, not an execute…
+    expect(o1.toLowerCase()).toMatch(/confirms a merge that already happened/);
+    expect(o1).toMatch(/confirm release <ticket>/i);
+    // …and lands_in takes the merged-main literal, never the ordinary not-yet-landed value.
+    expect(o1).toContain('act.lands_in: "merged-main"');
+    expect(o1.toLowerCase()).toMatch(/literal\s+`landingshape\['lands_in'\]` member/);
+  });
 });

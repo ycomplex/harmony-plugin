@@ -317,14 +317,16 @@ CLAUDE.md → "Sharpest case"), not staging:
 4. **The fetch itself errored** → state the error explicitly in the attention line, never silently omit
    it (same discipline as the CI-evidence fetch failure below).
 
-**One `gh pr view` call, three uses: bot-approval + CI evidence + per-PR check status (B-732, B-765 AC4,
-B-861).** Before showing the brief, make a single call for the `build_pr` PR, extended with
-`statusCheckRollup` so the brief's CI evidence is FETCHED from the PR's checks rather than asserted from
-local/partial evidence, and with `headRefOid` so the check-status section below can stamp each entry with
-the commit its checks were read for:
+**One `gh pr view` call, four uses: bot-approval + CI evidence + per-PR check status + MERGED-at-compose
+detection (B-732, B-765 AC4, B-861, B-1052).** Before showing the brief, make a single call for the
+`build_pr` PR, extended with `statusCheckRollup` so the brief's CI evidence is FETCHED from the PR's
+checks rather than asserted from local/partial evidence, with `headRefOid` so the check-status section
+below can stamp each entry with the commit its checks were read for, and with `state` so the release
+frame's `doc.decide`/`act.lands_in` branch (B-1052, see "The release frame" below) knows whether this PR
+already merged before this brief was even composed:
 
 ```
-gh pr view <pr_number> --json author,statusCheckRollup,headRefOid
+gh pr view <pr_number> --json author,statusCheckRollup,headRefOid,state
 ```
 
 Make this call **once per pull request** the defensive `field_values.build_pr` read below names — the
@@ -400,6 +402,22 @@ merge to `main` (2/14 briefs misstated the environment). `irreversible` names th
 a `supabase db push` is forward-only and can only be repaired by a second migration — separated from the
 parts that are merely git-revertable; a blanket "this is irreversible" is not the same claim.
 
+**B-1052: MERGED-at-compose-time is a CONFIRM, not an execute — branch `doc.decide` and `act.lands_in` on
+it.** The `gh pr view` call above ("One `gh pr view` call…") already names this PR; add `state` to its
+`--json` field list (a fourth use of that one read) and check it before authoring either field:
+- **Not yet `MERGED`** (the ordinary case) — author exactly as shown above: `doc.decide` describes the
+  merge as something this accept is about to CAUSE (e.g. *"Release <ticket> — merge PR <pr_number> and
+  deploy to staging?"*), and `act.lands_in` is the ordinary not-yet-landed value (`"staging"` /
+  `"production"` / `"both"`).
+- **Already `MERGED`** — someone (a human via the web UI, a prior leg) merged this PR before this brief was
+  even composed. The accept this brief asks for CONFIRMS a merge that already happened; it does not cause
+  one. Phrase `doc.decide` as a confirm, e.g. *"Confirm release <ticket> — PR <pr_number> is already merged
+  to `main`; acknowledge and verify the deploy?"*, and set `act.lands_in: "merged-main"` — the literal
+  `LandingShape['lands_in']` member for exactly this shape (`src/tools/briefs.ts`'s `LandingShape`
+  interface), never the ordinary `"staging"` value, which would misstate an act that already landed as one
+  still pending. This is the SAME `state === 'MERGED'` signal O2's own pre-merge read branches on (§O2 step
+  1c above) — compose-time and merge-time read the same fact, just at two different moments.
+
 **The PR reference rides `doc.context`, NOT a typed field (B-876).** Read `field_values.build_pr` and put
 a PR line in `doc.context`, e.g. `"PR: <pr_url> (branch <branch>, head <head_sha>, reviewDecision
 <reviewDecision>)"`. Do **not** invent a new typed `doc` field for it: the shipped web cards renderer
@@ -435,7 +453,7 @@ concern — this gate's job is to make sure the human was told.)
 <!-- deployment-specific: begin -->
 > **On this deployment, the concrete read is…** — a fact about this deployment, not part of the contract
 > above. Resolve the disposition from the **PARSED PAYLOAD** of the `gh pr view <pr_number> --json
-> author,statusCheckRollup,headRefOid` call above, **never from a command's exit status**: `gh run watch
+> author,statusCheckRollup,headRefOid,state` call above, **never from a command's exit status**: `gh run watch
 > --exit-status` has exited zero here on a run that concluded `failure` (workspace CLAUDE.md → "Deploy
 > gotchas"), so an exit status proves nothing.
 >
@@ -674,8 +692,26 @@ paths:
      call:
 
      ```
-     gh pr view <pr_number> --json mergeable,mergeStateStatus,statusCheckRollup,headRefOid
+     gh pr view <pr_number> --json mergeable,mergeStateStatus,statusCheckRollup,headRefOid,state
      ```
+
+     **B-1052: `state === 'MERGED'` is checked FIRST, before anything else in this step.** This is the
+     confirm path, not the execute-a-merge path — someone (a human via the web UI, a prior leg, a retried
+     run) already merged this PR. Skip the merge call entirely and skip any human-remark requirement:
+     1. Record the merge commit that actually landed — `gh pr view <pr_number> --json mergeCommit` (the
+        `mergeCommit.oid` field) — never re-derive it from `headRefOid`, which names the PR's head branch
+        commit, not the squash commit that landed on `main`.
+     2. Verify the deploy through the SAME post-merge deploy confirmation this gate already runs after
+        executing a merge itself (**"Confirm the post-merge deploy"** below) — do not invent a second
+        deploy-verification mechanism; route into that one exactly as if this leg had just performed the
+        merge.
+     3. Advance `Built → Deployed` exactly as that section's own advance call does, once the deploy is
+        confirmed (or legitimately inferred, per that section's own fallback).
+     4. Land the release trail comment as usual, phrased as a **confirm**, not an execute: e.g. "confirms
+        merge PR <pr_number> is on `main` (<merge_sha>) — deploy succeeded (<run-id/url>)."
+
+     Only when `state` is **not** `MERGED` does the rest of this step apply — the capability-denial
+     resolution and the `mergeable` branches below are exclusively about a PR that has **not yet** merged.
 
      **`headRefOid`: state a divergence from the head the brief named IN WORDS (B-861).** This is the one
      place a divergence is actually observable — the release brief's check-status section was stamped with
@@ -703,7 +739,11 @@ paths:
      **Otherwise** (step 1 read CI cleanly — success, no denial) — continue directly into the `mergeable`
      branches below, UNCHANGED, just with `statusCheckRollup` now also available:
 
-     - **`UNKNOWN`** → re-poll at a few-second interval, **bounded at ~60s total**, until it resolves.
+     - **`UNKNOWN`** → re-poll at a few-second interval, **bounded at ~60s total**, until it resolves. **On
+       every re-poll, re-check `state` too (B-1052)** — a PR can transition straight to `MERGED` while this
+       loop is running (someone merges it by hand mid-poll), and that is caught here, not just at the
+       initial read above: the moment `state` reads `MERGED`, stop polling `mergeable` and take the
+       MERGED-first branch above instead.
        - Resolves within the bound → fall through to the `MERGEABLE`/`CONFLICTING` branches below.
        - **Still `UNKNOWN` at the ~60s bound** → never guess in either direction. File a `worker-question`
          round: `mcp__harmony__start_elicitation({ task_id, trigger: 'worker-question' })` then
@@ -1198,8 +1238,22 @@ the moment this check runs. Read all three fields in one call — extended with 
 step-3 capability denial can resolve through this same read (no duplicated call):
 
 ```bash
-gh pr view <PR-number> --json mergeable,mergeStateStatus,statusCheckRollup
+gh pr view <PR-number> --json mergeable,mergeStateStatus,statusCheckRollup,state
 ```
+
+**B-1052: `state === 'MERGED'` is checked FIRST, before anything else in this step** — the same
+MERGED-first branch as opinionated mode's O2 step 1c above, adapted to this sequence's own shape (there is
+no separate Built→Deployed advance in manual mode — the ticket moves straight to Done at step 8 below):
+1. Skip step 4's merge call entirely — this PR is already merged.
+2. Record the merge commit that actually landed — `gh pr view <PR-number> --json mergeCommit` (the
+   `mergeCommit.oid` field), never re-derived from `headRefOid`.
+3. Verify the deploy through this same gate's existing post-merge deploy confirmation (opinionated mode's
+   **"Confirm the post-merge deploy"** procedure above) before continuing — do not invent a second
+   deploy-verification mechanism.
+4. Continue directly to step 5 below (switch to main, cleanup) exactly as if step 4's merge had just
+   succeeded, and skip any human-remark requirement.
+
+Only when `state` is **not** `MERGED` does the rest of this step apply.
 
 **If step 3 above hit a capability denial reading CI**, resolve it here via `mergeStateStatus` first:
 `CLEAN` → proceed to the mergeable branches below as usual (and note the inference on the trail, matching
@@ -1208,7 +1262,9 @@ and report the CI-read failure plus the current `mergeStateStatus` value (or fil
 under opinionated mode's O2 fallback). Otherwise (step 3 read CI cleanly), continue directly into the
 `mergeable` branches below, UNCHANGED:
 
-- **`UNKNOWN`** → re-poll at a few-second interval, **bounded at ~60s total**, until it resolves.
+- **`UNKNOWN`** → re-poll at a few-second interval, **bounded at ~60s total**, until it resolves. **On
+  every re-poll, re-check `state` too (B-1052)** — a PR can transition straight to `MERGED` mid-poll; the
+  moment it does, stop polling `mergeable` and take the MERGED-first branch above instead.
   - Resolves within the bound → fall through to the branches below.
   - **Still `UNKNOWN` at the ~60s bound** → never guess. If running under opinionated mode's O2 fallback,
     file a `worker-question` round (`mcp__harmony__start_elicitation({ task_id, trigger: 'worker-question' })`

@@ -132,7 +132,7 @@
 // executed proof this reasoning rests on.
 
 import { captureBaseline, detectWake, type WatchBaseline } from './watch.js';
-import { classifyWorkerExit, exitClass, type ClassifyArgs } from './classify.js';
+import { classifyWorkerExit, exitClass, TICKET_TERMINAL_STATES, type ClassifyArgs } from './classify.js';
 import { renderQuietReapOutcome } from './quiet-reap.js';
 import { exchangeWentInactive } from '../conductor/ball-axis.js';
 import { renderTemplate, type DaemonConfig } from './config.js';
@@ -179,6 +179,13 @@ export type DaemonTask = Taskish & {
    *  flag. Gates ONLY a new fire (see handleHeldConduction's wake-detection block) — an already-
    *  tracked in-flight conduction is unaffected. */
   archived?: boolean | null;
+  /** B-1052: already part of the `getTask view:'meta'` projection (src/tools/tasks.ts) — read here
+   *  ONLY for the brief-less umbrella-auto-verify sentinel belt (handleHeldConduction), never for
+   *  anything else on this axis (the daemon's clean-pause detection stays keyed on
+   *  `awaiting_human_input` alone, per ball-axis.ts's header). */
+  awaiting_human_reason?: string | null;
+  /** B-1052: ditto — only `.kind` is ever read, and only for the sentinel belt above. */
+  awaiting_human_ref?: { kind?: string | null } | null;
 };
 
 export interface SchedulerDeps extends WriteRetryDeps {
@@ -873,6 +880,31 @@ async function handleHeldConduction(
   // ── (b) neither tracked nor ready — today's watch logic, unchanged, except a wake QUEUES rather
   //        than fires. ─────────────────────────────────────────────────────────────────────────────
   const current = await deps.getTaskMeta(row.task_id);
+
+  // B-1052: a thin BELT, not the load-bearing check (that is the TICKET_TERMINAL_STATES decline
+  // below, after the wake gate) — matches ONLY the brief-less umbrella-auto-verify sentinel shape
+  // (see src/tools/briefs.ts's accept-brief handling: Deployed + awaiting verification-ack-pending +
+  // ref.kind='umbrella-auto-verify' means a split umbrella's auto-composed verify brief is pending a
+  // human ack with NO underlying brief row). Matched purely from meta fields already on `current` —
+  // no extra `getTask` for `build_pr` is needed to disambiguate this shape, so none is made. Placed
+  // BEFORE the wake gate deliberately: on a match, this pass must not queue a leg AT ALL — not even
+  // the no-wake baseline roll below, since the human has not acked yet and the conduction must stay
+  // exactly as it is. Believed DEAD CODE today: `detectWake` never wakes a leg for this shape in the
+  // first place (awaiting_human_input stays true throughout the sentinel's life, so `ballWithHuman`
+  // holds and nothing here ever fires) — verified via an executed probe at the design/plan gates, and
+  // pinned by a contract test (scheduler.test.ts) so a future change to detectWake or the sentinel
+  // shape cannot silently start firing a leg here without the test noticing.
+  if (
+    current.workflow_state === 'Deployed' &&
+    current.awaiting_human_reason === 'verification-ack-pending' &&
+    current.awaiting_human_ref?.kind === 'umbrella-auto-verify'
+  ) {
+    deps.log(
+      `${label(row, current, deps.projectKey)}: umbrella-auto-verify sentinel awaiting human ack — not queuing`,
+    );
+    return;
+  }
+
   const baseline = state.get(row.id);
   if (!baseline) {
     state.set(row.id, captureBaseline(current));
@@ -883,6 +915,30 @@ async function handleHeldConduction(
     // B-691: ROLL the baseline on a no-wake pass — see watch.ts's own header for the defect class
     // this prevents.
     state.set(row.id, captureBaseline(current));
+    return;
+  }
+
+  // B-1052: the TICKET's workflow_state already reached a terminal state (the SAME allowlist
+  // classify.ts's worker-exit classifier uses — never a hand-written state list) — decline to fire a
+  // NEW leg. Same shape as the B-740 archived-ticket decline just below (pre-fire DECLINE, bypasses
+  // classifyWorkerExit entirely, closes via the SAME writeIfHeld path), placed adjacently since both
+  // are "the ticket is already done, don't fire" checks; the one difference is the outcome status —
+  // this ticket already reached a real terminal state, so the conduction is 'completed', not
+  // 'parked'. See classify.ts's header (branch 2) for why a worker LAUNCH used to reach this state
+  // uncontested before this ticket (B-740's note there): the launch was a CLAUDE.md verify-gate
+  // extension point, so classify.ts never short-circuited it — this scheduler-level pre-fire decline
+  // is the new, correct place to catch it, before a leg ever fires.
+  if ((TICKET_TERMINAL_STATES as readonly string[]).includes(current.workflow_state ?? '')) {
+    deps.log(
+      `${label(row, current, deps.projectKey)}: ticket already terminal (${current.workflow_state}) — declining fire, closing conduction`,
+    );
+    state.delete(row.id);
+    keeper.stop(row.id);
+    await writeIfHeld(deps, state, keeper, row, {
+      status: 'completed',
+      last_worker_exit_code: null,
+      last_worker_exit_class: 'terminal-no-leg',
+    });
     return;
   }
 
@@ -1020,6 +1076,13 @@ async function handleForeignConduction(
 
   if (wake === null) return;
   if (current.conductor_excluded_at) return; // never steal a ticket a human took away from the conductor
+  // B-1052: deliberately NOT declined here, unlike handleHeldConduction's TICKET_TERMINAL_STATES
+  // check — this function never holds this row's lease (it runs for rows `row.lease_holder !==
+  // deps.leaseHolder`), so there is no writeIfHeld it could use to close a terminal ticket from here;
+  // any attempted write would just log a spurious "lease lost" (we never had it). A terminal ticket
+  // is therefore still pushed to `stealCandidates` below like any other wake — the actual decline+
+  // close for the steal path lives in `fireStealCandidates`, immediately after the steal CAS
+  // succeeds and this daemon genuinely holds the lease it needs to write the close.
   // The steal precondition is safe BY CONSTRUCTION only because leg_started_at now clears ONLY at
   // tracked-settlement classification (see this module's header) — non-null here would mean a
   // worker might genuinely still be running, on some daemon, right now.
@@ -1420,6 +1483,26 @@ async function fireStealCandidates(
       deps.log(`${label(row, current, deps.projectKey)}: stole ready work from ${row.lease_holder}`);
       state.delete(row.id);
       keeper.ensure(row.id);
+
+      // B-1052: the SAME terminal-ticket decline as handleHeldConduction's, adapted to this site's
+      // own shape — this is the ONE place in the steal path that actually HOLDS the lease (the CAS
+      // just above won it), so it is the ONE place that can legitimately close it. `current` is the
+      // same pre-steal snapshot `handleForeignConduction` collected when it queued this candidate
+      // (deliberately not re-read here — the steal CAS itself is the freshness check that matters:
+      // a genuinely-changed ticket would have raced the CAS window, not this classification). A
+      // stolen conduction on an already-terminal ticket closes here instead of firing a leg.
+      if ((TICKET_TERMINAL_STATES as readonly string[]).includes(current.workflow_state ?? '')) {
+        deps.log(
+          `${label(row, current, deps.projectKey)}: ticket already terminal (${current.workflow_state}) — declining stolen fire, closing conduction`,
+        );
+        await writeIfHeld(deps, state, keeper, stolen, {
+          status: 'completed',
+          last_worker_exit_code: null,
+          last_worker_exit_class: 'terminal-no-leg',
+        });
+        continue;
+      }
+
       // On a win, fire IMMEDIATELY in the same pass — skip the cold-start baseline-capture pass,
       // since eligibility (the wake) was already established when this candidate was collected.
       await fireLaunch(deps, state, keeper, runtime, stolen, current, stolen.retry_count);
