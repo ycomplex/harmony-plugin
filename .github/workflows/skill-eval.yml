@@ -1,0 +1,238 @@
+# B-1037 — clarify-replay eval CI wiring. Hand-carried verbatim by the orchestrator on 2026-09-23
+# from evals/clarify-replay/ci/skill-eval.yml.proposed (the build leg could not write under
+# .github/workflows/**). The .proposed file stays as the reviewed source; this file is the live one.
+# NON-BLOCKING until a human adds this job to the branch-protection required checks (see below).
+#
+#
+# ============================================================================================
+# WHY THIS CHECK IS NON-BLOCKING FOR NOW, AND HOW THAT WAS BUILT (read before flipping required)
+# ============================================================================================
+# The ratified plan/build-notes text offered `continue-on-error: true` (or an "equivalent") as the
+# non-blocking mechanism. This file deliberately does NOT use continue-on-error on the eval step —
+# doing so would make the job report SUCCESS even when the eval genuinely failed to run (wrong
+# creds, early-access off, a `claude plugin eval` crash), which directly violates AC6 ("the check
+# fails loudly ... it never reports green without having genuinely evaluated"). The chosen
+# "equivalent": the JOB's own conclusion stays fully truthful (red on any real failure — no
+# continue-on-error anywhere in the eval/verify chain), and "non-blocking" is achieved the way
+# GitHub Actions actually supports it — by NOT adding this job's name to the repo's branch
+# protection "required status checks" list. A new job on a new workflow file is not required by
+# default, so merges are unaffected until a human deliberately adds it — exactly the "post-merge,
+# post-calibration founder action" the plan's build notes describe (item 4). See AC2/AC3/AC6.
+#
+# ============================================================================================
+# SECRETS THIS WORKFLOW NEEDS (a human must add these — see the B-881 model-catalog-liveness.yml
+# precedent for the exact regime: repo secrets, NAMES only, never a value in this file):
+#   - HARMONY_CLARIFY_EVAL_LABEL_TOKEN   an ORDINARY PRODUCTION Harmony API token, READ-ONLY scope
+#                                        preferred — used ONLY by fetch-labels.mjs (SELECTs from
+#                                        `tasks` and `briefs`; never writes). Label TEXT is never
+#                                        echoed to a log, the job summary, or any uploaded artifact
+#                                        — fetch-labels.mjs's own stdout is ticket-id + revision-
+#                                        count only (see its source).
+#   - ANTHROPIC_API_KEY                  needed by the `claude` CLI itself to invoke the pinned
+#                                        model + judge-model (same secret name as
+#                                        model-catalog-liveness.yml's own precedent).
+# Until both exist, this job goes RED (AC6 fail-loud) — there is no silent-skip path.
+#
+# ============================================================================================
+# SMOKE SUBSET vs FULL 15 (plan build notes item 3 — cost) — PLACEHOLDERS, founder sets at release
+# ============================================================================================
+# The hand run cost $20.10 for 14 cases at --runs 1. On every PR this workflow runs a SMOKE SUBSET
+# (cheap, representative) plus the two (near-zero-cost) judge-calibration control cases; the full
+# 15 is available on demand via workflow_dispatch. The exact smoke case list, the score threshold,
+# and the cost ceiling are ALL placeholders below — the plan explicitly reserves these numbers for
+# the founder to set at release (build notes item 3; do not invent them — see RUNBOOK.md's own
+# calibration section for how the threshold gets derived, per AC2).
+#
+#   TODO(founder, release gate): SMOKE_CASES — 4-5 representative case names. This build's own best
+#   guess (NOT ratified — swap freely): B-293 (smallest, Test epic — fast signal), B-818 (a
+#   multi-revision lineage — exercises brief iteration), B-847 (Core Task Features epic), B-785 and
+#   B-871 (two more Conductor-epic cases for topic spread). Picked for size + epic/lineage variety,
+#   not for any measured signal — there is no hand-pass per-case cost/signal breakdown available in
+#   this build to pick from.
+#   TODO(founder, release gate): EVAL_SCORE_THRESHOLD — derive ONLY after AC2's calibration run
+#   (RUNBOOK.md "Judge calibration") passes for real. Do not set before that.
+#   TODO(founder, release gate): EVAL_MAX_COST_USD — a per-PR ceiling for the smoke subset (a small
+#   fraction of the $20.10/14-case hand-run rate — e.g. proportionally ~$1.50 for 5 cases plus
+#   headroom, but this is this build's arithmetic guess, not a ratified number).
+
+name: Skill Eval (clarify-replay)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'skills/**'
+      - 'evals/clarify-replay/**'
+  workflow_dispatch:
+    inputs:
+      full_suite:
+        description: 'Run the full 15-case suite instead of the smoke subset'
+        type: boolean
+        default: false
+
+jobs:
+  eval:
+    name: clarify-replay eval
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      # Fast, static, no sandbox, no cost — runs BEFORE the mocked eval so a skill change that
+      # starts calling a 16th tool (or drops one the manifest still lists) is caught immediately,
+      # never silently falling through to an unmocked-call failure deep in the eval run.
+      - name: Derived-inventory check (mock coverage)
+        run: node evals/clarify-replay/scripts/check-mock-inventory.mjs
+
+      # main is source-only (B-1007) — the MCP server the sandbox spawns needs a real dist/index.js.
+      # This PR must not commit anything under dist/ (see CLAUDE.md's Versioning section /
+      # scripts/check-generated-artifacts.sh) — this build is local-to-the-job and untracked.
+      - name: Build the plugin under test
+        run: npm run build
+
+      - name: Install claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      # Read-only, production, secret NAME only — see the header. Regenerates the gitignored
+      # graders/judge.md files fresh on every run (never committed — see .gitignore's B-1036/B-1037
+      # entries) for exactly the cases this run will grade, plus the two control cases every run
+      # (they are near-zero-cost and directly serve AC6 — a judge that silently drifted off
+      # calibration is caught here before it can silently pass or silently fail a real PR).
+      - name: Fetch fresh clarify labels + judge-calibration controls (production, read-only)
+        env:
+          HARMONY_API_TOKEN: ${{ secrets.HARMONY_CLARIFY_EVAL_LABEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.inputs.full_suite }}" = "true" ]; then
+            node evals/clarify-replay/scripts/fetch-labels.mjs
+          else
+            # TODO(founder, release gate): SMOKE_CASES placeholder — see header.
+            node evals/clarify-replay/scripts/fetch-labels.mjs B-293 B-818 B-847 B-785 B-871
+          fi
+          node evals/clarify-replay/scripts/fetch-labels.mjs --controls B-293
+
+      # The mocked run itself. --mocks record (hand-authored mocks, no live servers) + --runs 1 per
+      # case, per the ratified design. Model/judge-model pinned (never "latest"). NEVER
+      # --allow-real-servers — the whole point of this job is to run with zero board access and
+      # zero flakiness. NOT wrapped in continue-on-error — see the header's AC6 discussion.
+      - name: Run the clarify-replay eval (mocked)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # TODO(founder, release gate): EVAL_MAX_COST_USD placeholder — see header.
+          MAX_COST_USD: '5'
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.inputs.full_suite }}" = "true" ]; then
+            CASE_FILTER=()
+          else
+            # TODO(founder, release gate): SMOKE_CASES placeholder — must match the fetch step above,
+            # PLUS the two control cases (always run — see the fetch step's comment).
+            CASE_FILTER=(--case B-293 --case B-818 --case B-847 --case B-785 --case B-871 --case ctrl-positive-known-good --case ctrl-negative-boundary-flip)
+          fi
+          claude plugin eval . \
+            --eval-dir evals/clarify-replay \
+            --mocks record \
+            --runs 1 \
+            --model claude-sonnet-5 \
+            --judge-model claude-opus-5 \
+            --max-cost-usd "${MAX_COST_USD:-5}" \
+            --trust-plugin --no-publish \
+            "${CASE_FILTER[@]}" \
+            --json evals/clarify-replay/results/result.json
+
+      # AC6: the eval step above already fails the job on a non-zero `claude plugin eval` exit (no
+      # continue-on-error anywhere in this chain — see header). This step is the SECOND, independent
+      # check: even a zero-exit run that produced no REAL result (e.g. a silent early-access-off
+      # no-op) must not read as green. A missing file or a non-numeric overallScore/casesPassed is a
+      # loud, named failure here.
+      - name: Verify the eval genuinely ran (AC6 — never silently green)
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("node:fs");
+            const path = "evals/clarify-replay/results/result.json";
+            if (!fs.existsSync(path)) { console.error("AC6: no result.json at " + path + " — the eval did not genuinely run."); process.exit(1); }
+            const r = JSON.parse(fs.readFileSync(path, "utf8"));
+            if (typeof r.overallScore !== "number" || typeof r.casesPassed !== "number") {
+              console.error("AC6: result.json is missing a numeric overallScore/casesPassed — treating as a non-genuine run.");
+              process.exit(1);
+            }
+            console.log("AC6: genuine run confirmed — overallScore=" + r.overallScore + " casesPassed=" + r.casesPassed);
+          '
+
+      # AC3: score/cost gate (thresholds are founder-set placeholders — see header; this step is a
+      # no-op pass-through until they are set for real, but the SHAPE is wired now).
+      - name: Enforce score threshold + cost ceiling (AC3)
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("node:fs");
+            const r = JSON.parse(fs.readFileSync("evals/clarify-replay/results/result.json", "utf8"));
+            // TODO(founder, release gate): EVAL_SCORE_THRESHOLD / EVAL_MAX_COST_USD placeholders —
+            // see header. Until set, this step only reports the numbers, never fails on them.
+            const threshold = process.env.EVAL_SCORE_THRESHOLD ? Number(process.env.EVAL_SCORE_THRESHOLD) : null;
+            const maxCost = process.env.EVAL_MAX_COST_USD ? Number(process.env.EVAL_MAX_COST_USD) : null;
+            console.log("overallScore=" + r.overallScore + " threshold=" + threshold);
+            console.log("costUsd=" + r.costUsd + " maxCost=" + maxCost);
+            if (threshold !== null && r.overallScore < threshold) { console.error("AC3: overallScore below threshold."); process.exit(1); }
+            if (maxCost !== null && r.costUsd > maxCost) { console.error("AC3: costUsd exceeded the ceiling."); process.exit(1); }
+          '
+        env:
+          EVAL_SCORE_THRESHOLD: ${{ vars.EVAL_SCORE_THRESHOLD }}
+          EVAL_MAX_COST_USD: ${{ vars.EVAL_MAX_COST_USD }}
+
+      # AC4 (amended): sanitize BEFORE anything is uploaded or summarized — strip every grader's
+      # criteria/graderMarkdown/config.criteria, then PROVE it with a zero-count grep for judge.md's
+      # exact marker heading (see scripts/fetch-labels.mjs's writeJudge). The job FAILS on any hit —
+      # this is the load-bearing proof step, not the strip itself.
+      - name: Sanitize eval result for upload (AC4)
+        run: |
+          set -euo pipefail
+          node evals/clarify-replay/scripts/sanitize-eval-result.mjs \
+            evals/clarify-replay/results/result.json \
+            evals/clarify-replay/results/result.sanitized.json
+          HITS="$(grep -c '## THE RATIFIED LABEL' evals/clarify-replay/results/result.sanitized.json || true)"
+          if [ "${HITS:-0}" -ne 0 ]; then
+            echo "AC4: sanitized result STILL contains ${HITS} judge.md marker-heading hit(s) — refusing to upload. This is a sanitizer bug, not a warning." >&2
+            exit 1
+          fi
+          echo "AC4: sanitized result has zero judge.md marker-heading hits — safe to upload."
+
+      # AC4: the SANITISED JSON only — never the HTML report (it embeds grader criteria in full and
+      # is never produced by this job — no --report flag above).
+      - name: Upload sanitized eval result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clarify-replay-eval-result-sanitized
+          path: evals/clarify-replay/results/result.sanitized.json
+          if-no-files-found: warn
+
+      # AC4: score / cases-passed / cost visible in the job summary — guarded by the SAME marker
+      # check as the upload (this step only runs after the sanitize-and-prove step above succeeded,
+      # so a marker hit already failed the job before we get here).
+      - name: Job summary
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f evals/clarify-replay/results/result.sanitized.json ]; then
+            node -e '
+              const fs = require("node:fs");
+              const r = JSON.parse(fs.readFileSync("evals/clarify-replay/results/result.sanitized.json", "utf8"));
+              const lines = [
+                "## clarify-replay eval",
+                "",
+                "| overallScore | casesPassed | costUsd |",
+                "|---|---|---|",
+                "| " + r.overallScore + " | " + r.casesPassed + " | " + r.costUsd + " |",
+              ];
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
+            '
+          fi
