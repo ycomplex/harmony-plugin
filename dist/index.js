@@ -43912,19 +43912,25 @@ var PROVENANCE_WEB_ONLY = "human-in-browser";
 var PROVENANCE_AGENT_ON_BEHALF = "agent-on-behalf";
 var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_IN_SESSION}`;
 var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_WEB_ONLY}`;
-var AGENT_ON_BEHALF_CLOSED_SUFFIXES = [PROVENANCE_HUMAN_IN_SESSION, PROVENANCE_WEB_ONLY];
+var PROVENANCE_HUMAN_RECORDED = "human-recorded";
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_RECORDED}`;
+var AGENT_ON_BEHALF_CLOSED_SUFFIXES = [
+  PROVENANCE_HUMAN_IN_SESSION,
+  PROVENANCE_WEB_ONLY,
+  PROVENANCE_HUMAN_RECORDED
+];
 function guardKnowledgeWriteProvenance(provenance) {
   if (provenance === null || provenance === void 0) return;
   if (provenance === PROVENANCE_WEB_ONLY) {
     throw new Error(
-      `provenance '${PROVENANCE_WEB_ONLY}' is the web client's alone \u2014 the plugin is never the browser, and accepting it here would let an agent claim a human clicked. Use '${PROVENANCE_HUMAN_IN_SESSION}' when the human decided in this session, or '${PROVENANCE_AGENT_ON_BEHALF}:<human-provenance>' when an agent is writing on a human's already-made decision (accepted: '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}' or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}').`
+      `provenance '${PROVENANCE_WEB_ONLY}' is the web client's alone \u2014 the plugin is never the browser, and accepting it here would let an agent claim a human clicked. Use '${PROVENANCE_HUMAN_IN_SESSION}' when the human decided in this session, or '${PROVENANCE_AGENT_ON_BEHALF}:<human-provenance>' when an agent is writing on a human's already-made decision (accepted: '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}').`
     );
   }
   if (provenance.startsWith(`${PROVENANCE_AGENT_ON_BEHALF}:`)) {
     const suffix = provenance.slice(PROVENANCE_AGENT_ON_BEHALF.length + 1);
     if (AGENT_ON_BEHALF_CLOSED_SUFFIXES.includes(suffix)) return;
     throw new Error(
-      `invalid provenance '${provenance}' \u2014 '${PROVENANCE_AGENT_ON_BEHALF}:' accepts only '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}' or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', never any other suffix \u2014 an unrecognised suffix would render as an unattributed/unrecognised tag forever.`
+      `invalid provenance '${provenance}' \u2014 '${PROVENANCE_AGENT_ON_BEHALF}:' accepts only '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}', never any other suffix \u2014 an unrecognised suffix would render as an unattributed/unrecognised tag forever.`
     );
   }
 }
@@ -44045,7 +44051,7 @@ var updateKnowledgeEntryTool = {
         description: 'Implementation/realization state (orthogonal to status); NULL \u2261 live; "agreed" = decided-not-yet-built'
       },
       review_by: { type: "string", description: "ISO timestamp; freshness/decay date (knowledge-model-v1 \xA73)" },
-      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the two closed suffixes above.` }
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser"/"agent-on-behalf:human-recorded" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021 (widened B-1062): bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the three closed suffixes above.` }
     }
   }
 };
@@ -44065,7 +44071,7 @@ var supersedeKnowledgeEntryTool = {
         items: { type: "string" },
         description: "Tags for the replacement (defaults to tags of superseded entry)"
       },
-      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the two closed suffixes above.` }
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser"/"agent-on-behalf:human-recorded" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021 (widened B-1062): bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the three closed suffixes above.` }
     },
     required: ["new_title", "new_content"]
   }
@@ -44442,7 +44448,7 @@ var supersedeDecisionTool = {
       domain: { type: "array", items: { type: "string" }, description: "Domains for the replacement (successor-mode only)" },
       affected_entity_names: { type: "array", items: { type: "string" }, description: "Entities the replacement touches (successor-mode only)" },
       reason: { type: "string", description: "Why the old decision is being superseded" },
-      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the two closed suffixes above.` }
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser"/"agent-on-behalf:human-recorded" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021 (widened B-1062): bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the three closed suffixes above.` }
     },
     required: ["old_decision_id"]
   }
@@ -44469,7 +44475,7 @@ var recordDecisionTool = {
       review_by: { type: "string", description: "ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires." },
       claim_provenance: { type: "string", enum: ["human-stated", "agent-inferred-human-validated", "force-quit"], description: "B-645: how an elicitation claim was grounded. 'force-quit' claims are quarantined \u2014 never promoted on their brief's accept, never grounds for inference until validated. Omit for a non-claim decision." },
       underwriting_brief_id: { type: "string", description: "B-645: the brief (UUID) this Asserted claim underwrites \u2014 resolve_brief disposes coupled claims on accept/defer; compose_brief prunes dropped claims on iterate. Omit for a non-claim decision." },
-      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the two closed suffixes above.` }
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser"/"agent-on-behalf:human-recorded" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021 (widened B-1062): bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the three closed suffixes above.` }
     },
     required: ["type", "title"]
   }
@@ -44547,7 +44553,7 @@ var createEntityTool = {
       name: { type: "string", description: "Entity name (unique within the workspace per kind)" },
       description: { type: "string", description: "A THIN one-line canonical identifier \u2014 not a document; depth belongs in the claims about the entity" },
       metadata: { type: "object", description: "Optional structured metadata (JSON object)" },
-      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the two closed suffixes above.` }
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser"/"agent-on-behalf:human-recorded" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021 (widened B-1062): bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the three closed suffixes above.` }
     },
     required: ["kind", "name"]
   }
@@ -44596,7 +44602,7 @@ var updateEntityTool = {
       new_kind: { type: "string", description: "New kind. For a stub\u2192typed promotion that may collide, prefer reconcile_entity." },
       description: { type: "string", description: "New thin one-line canonical description" },
       metadata: { type: "object", description: "New structured metadata (full-object replace)" },
-      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the two closed suffixes above.` }
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser"/"agent-on-behalf:human-recorded" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021 (widened B-1062): bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the three closed suffixes above.` }
     }
   }
 };
@@ -44636,7 +44642,7 @@ var reconcileEntityTool = {
       to_kind: { type: "string", description: "The richer target kind (e.g. component, feature, persona)" },
       from_kind: { type: "string", description: "The stub's kind. Default 'concept'." },
       description: { type: "string", description: "Optional refreshed one-line description (applied on upgrade-in-place)" },
-      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the two closed suffixes above.` }
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser"/"agent-on-behalf:human-recorded" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021 (widened B-1062): bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the three closed suffixes above.` }
     },
     required: ["name", "to_kind"]
   }
@@ -44685,7 +44691,7 @@ var assertFactTool = {
       confidence: { type: "number", description: "0..1 (default 1.0)" },
       domain: { type: "array", items: { type: "string" }, description: "Domains this fact belongs to" },
       review_by: { type: "string", description: "ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires." },
-      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the two closed suffixes above.` }
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser"/"agent-on-behalf:human-recorded" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021 (widened B-1062): bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the three closed suffixes above.` }
     },
     required: ["subject_entity", "predicate", "object", "source_type"]
   }
@@ -44711,7 +44717,7 @@ var invalidateFactTool = {
     properties: {
       fact_id: { type: "string", description: "UUID of the fact to invalidate" },
       reason: { type: "string", description: "Why it is no longer valid" },
-      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021: bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the two closed suffixes above.` }
+      provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser"/"agent-on-behalf:human-recorded" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021 (widened B-1062): bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the three closed suffixes above.` }
     },
     required: ["fact_id"]
   }
@@ -50386,7 +50392,9 @@ async function writeGateSlot(client, args) {
     ...fieldValues,
     [GATE_SLOT_FIELD_KEY]: {
       ...existingSlots,
-      [gate]: { content, ratified_by: gate, ratified_at }
+      // B-1062: `ratified_by` defaults to `gate` (unchanged behavior) unless the caller overrides it —
+      // see `WriteGateSlotArgs.ratified_by`'s doc comment for the one caller that does.
+      [gate]: { content, ratified_by: args.ratified_by ?? gate, ratified_at }
     }
   };
   const { error: writeErr } = await client.from("tasks").update({ field_values: nextFieldValues }).eq("id", taskId);
@@ -51697,6 +51705,371 @@ function projectAck(toolName, result, args) {
   return projection ? projection(result, args) : result;
 }
 
+// src/tools/record-eligibility.ts
+function evaluateMultiRepoItem(evidence) {
+  const repos = Array.from(new Set(evidence.map((e) => e.repo).filter((r) => !!r)));
+  const value = `repos: ${repos.length} (${repos.join(", ") || "none determined"})`;
+  if (repos.length > 1) {
+    return {
+      item: "multi_repo",
+      label: "Single repo",
+      verdict: "fail",
+      value,
+      detail: `evidence spans ${repos.length} repos \u2014 a recorded walk covers exactly one repo's worth of change; split multi-repo work into a ticket per repo, or use harmony conduct instead.`
+    };
+  }
+  return { item: "multi_repo", label: "Single repo", verdict: "pass", value };
+}
+var MIGRATION_GLOB_REGEXES = PATH_GLOB_TABLE["data-migration"].map(globToRegExp);
+function evaluateMigrationItem(evidence) {
+  const allPaths = evidence.flatMap((e) => e.paths ?? []);
+  const migrationPaths = allPaths.filter((p) => MIGRATION_GLOB_REGEXES.some((re) => re.test(p)));
+  const value = `migration paths: ${migrationPaths.length} (${migrationPaths.slice(0, 5).join(", ") || "none"})`;
+  if (migrationPaths.length > 0) {
+    return {
+      item: "migration",
+      label: "No migration",
+      verdict: "fail",
+      value,
+      detail: "evidence touches a DB migration path \u2014 a schema change is exactly the class this floor exists to catch; use harmony conduct instead."
+    };
+  }
+  return { item: "migration", label: "No migration", verdict: "pass", value };
+}
+var GATED_RISK_CLASSES = ["auth", "irreversible-destructive", "shared-core"];
+function evaluateRiskClassItem(summary, evidence) {
+  const changedPaths = evidence.flatMap((e) => e.paths ?? []);
+  const classes = detectRiskClasses({ text: summary, changedPaths });
+  const gated = classes.filter((c) => GATED_RISK_CLASSES.includes(c));
+  const value = `risk_classes: [${classes.join(", ")}]`;
+  if (gated.length > 0) {
+    return {
+      item: "risk_class",
+      label: "No auth/shared-core/irreversible-destructive risk",
+      verdict: "fail",
+      value,
+      detail: `tripped: ${gated.join(", ")} \u2014 a high-consequence risk class is the conductor's own non-discretionary floor (B-493); a recorded walk carries no live gate to pause on it, so it refuses instead. Use harmony conduct.`
+    };
+  }
+  return { item: "risk_class", label: "No auth/shared-core/irreversible-destructive risk", verdict: "pass", value };
+}
+var SENTENCE_WORD_LIMIT2 = 50;
+function isSingleSentenceShaped(summary) {
+  const trimmed = summary.trim();
+  if (!trimmed) return false;
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length > SENTENCE_WORD_LIMIT2) return false;
+  const withoutTrailingTerminator = trimmed.replace(/[.!?]+\s*$/, "");
+  return !/[.!?]/.test(withoutTrailingTerminator);
+}
+function evaluateSingleSentenceItem(summary) {
+  const trimmed = summary.trim();
+  const wordCount = trimmed ? trimmed.split(/\s+/).filter(Boolean).length : 0;
+  const value = `summary: ${wordCount} words, ${trimmed ? '"' + (trimmed.length > 80 ? trimmed.slice(0, 77) + "..." : trimmed) + '"' : "(empty)"}`;
+  if (!isSingleSentenceShaped(summary)) {
+    return {
+      item: "single_sentence_change",
+      label: "Single-sentence-statable change",
+      verdict: "fail",
+      value,
+      detail: `not readable as one sentence (either >${SENTENCE_WORD_LIMIT2} words, or more than one sentence-terminator run) \u2014 a recorded walk needs a change a human can state in one sentence; use harmony conduct for anything that needs more room.`
+    };
+  }
+  return { item: "single_sentence_change", label: "Single-sentence-statable change", verdict: "pass", value };
+}
+function evaluateVerifyWalkItem(attestWalk) {
+  const trimmed = typeof attestWalk === "string" ? attestWalk.trim() : "";
+  if (!trimmed) {
+    return {
+      item: "verify_walk_attestation",
+      label: "Verify walk (5+ min) attested",
+      verdict: "unattested",
+      value: "verify-walk: UNATTESTED (no --attest-walk given)"
+    };
+  }
+  return {
+    item: "verify_walk_attestation",
+    label: "Verify walk (5+ min) attested",
+    verdict: "pass",
+    value: `verify-walk: ATTESTED ("${trimmed.length > 80 ? trimmed.slice(0, 77) + "..." : trimmed}")`
+  };
+}
+function evaluateEligibility(input) {
+  const items = [
+    evaluateMultiRepoItem(input.evidence),
+    evaluateMigrationItem(input.evidence),
+    evaluateRiskClassItem(input.summary, input.evidence),
+    evaluateSingleSentenceItem(input.summary),
+    evaluateVerifyWalkItem(input.attestWalk)
+  ];
+  return { items, eligible: items.every((i) => i.verdict === "pass") };
+}
+
+// src/tools/record-walk.ts
+var RATIFIED_BY_RECORDED = "recorded";
+var RESOLVE_BRIEF_PROVENANCE_RECORDED = "agent-synthesized:recorded";
+var GATE_REASONS = {
+  clarify: "clarification-draft",
+  decompose: "decomposition-proposal",
+  design: "design-decision-draft",
+  plan: "plan-draft",
+  release: "release-decision-pending"
+};
+var PAYLOAD_CARRYING_REASONS = /* @__PURE__ */ new Set([
+  "clarification-draft",
+  "decomposition-proposal",
+  "design-decision-draft",
+  "plan-draft"
+]);
+function trimmedOrEmpty(s) {
+  return typeof s === "string" ? s.trim() : "";
+}
+function deriveSolving(summary) {
+  const trimmed = trimmedOrEmpty(summary).replace(/[.!?]+$/, "");
+  return trimmed ? `${trimmed}.` : summary;
+}
+function describeIneligibility(report) {
+  const bad = report.items.filter((i) => i.verdict !== "pass");
+  const lines = bad.map((i) => `  - ${i.label}: ${i.verdict.toUpperCase()} (${i.value}${i.detail ? " \u2014 " + i.detail : ""})`);
+  return `harmony record refuses \u2014 ${bad.length} of 5 eligibility item(s) did not pass:
+` + lines.join("\n") + `
+Nothing was written. Use \`harmony conduct <ticket>\` instead to walk this ticket's gates live.`;
+}
+function renderAttestationComment(args) {
+  const when = (/* @__PURE__ */ new Date()).toISOString();
+  return `RECORDED-WALK-ATTESTATION
+who/what was walked: ${trimmedOrEmpty(args.attest_walk)}
+when: ${when}
+summary: ${trimmedOrEmpty(args.summary)}
+evidence: ${args.evidence.map((e) => e.url).join(", ") || "(none)"}`;
+}
+function buildAttestation(args) {
+  return {
+    who: null,
+    what_was_walked: trimmedOrEmpty(args.attest_walk),
+    when: (/* @__PURE__ */ new Date()).toISOString(),
+    evidence: args.evidence.map((e) => e.url)
+  };
+}
+async function composeAndAccept(client, projectId, userId, taskId, args) {
+  await composeBrief(client, projectId, userId, {
+    task_id: taskId,
+    reason: args.reason,
+    pending_activity: args.pendingActivity ?? void 0,
+    changed_paths: args.changedPaths,
+    doc: {
+      decide: args.decide,
+      why: args.why,
+      items: [],
+      frame: args.frame
+    }
+  });
+  await resolveBrief(client, projectId, {
+    task_id: taskId,
+    command: "accept",
+    provenance: RESOLVE_BRIEF_PROVENANCE_RECORDED
+  });
+  if (PAYLOAD_CARRYING_REASONS.has(args.reason)) {
+    const consumed = await consumePendingAcceptanceEvent(client, projectId, taskId);
+    if (consumed.status !== "consumed" && consumed.status !== "none" && consumed.status !== "substrate-absent") {
+      throw new Error(
+        `recorded walk: ${args.reason} accept deferred a payload this core could not apply cleanly (status: ${consumed.status}) \u2014 a human must resume this gate by hand, e.g. via consume_pending_acceptance_event / the owning gate skill's self-heal route.`
+      );
+    }
+  }
+}
+async function runRecordedWalk(client, projectId, userId, args) {
+  const eligibility = evaluateEligibility({
+    summary: args.summary,
+    evidence: args.evidence,
+    attestWalk: args.attest_walk
+  });
+  if (!eligibility.eligible) {
+    return {
+      task_id: args.task_id,
+      eligibility,
+      refused: true,
+      refusal_reason: describeIneligibility(eligibility),
+      gates: [],
+      attestation_recorded: false
+    };
+  }
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const gates = [];
+  let attestationRecorded = false;
+  const summary = trimmedOrEmpty(args.summary);
+  const solving = deriveSolving(summary);
+  const repos = Array.from(new Set(args.evidence.map((e) => e.repo).filter((r) => !!r)));
+  const changedPaths = args.evidence.flatMap((e) => e.paths ?? []);
+  try {
+    await composeAndAccept(client, projectId, userId, taskId, {
+      reason: GATE_REASONS.clarify,
+      pendingActivity: "clarifying",
+      decide: `Record ${args.task_id}'s intent from the supplied summary and evidence (recorded, not conducted).`,
+      why: [summary],
+      frame: {
+        kind: "clarify",
+        solving,
+        in_scope: [summary],
+        not_solving: []
+      }
+    });
+    gates.push({ gate: "clarify", reason: GATE_REASONS.clarify, landed: true });
+    const clarifyContent = {
+      solving,
+      in_scope: [summary],
+      not_solving: [],
+      attestation: buildAttestation(args)
+    };
+    await writeGateSlot(client, {
+      gate: "clarify",
+      content: clarifyContent,
+      target: { via: "task", task_id: taskId },
+      ratified_by: RATIFIED_BY_RECORDED
+    });
+    if (trimmedOrEmpty(args.attest_walk)) {
+      await addComment(client, projectId, userId, { task_id: taskId, content: renderAttestationComment(args) });
+      attestationRecorded = true;
+    }
+    await composeAndAccept(client, projectId, userId, taskId, {
+      reason: GATE_REASONS.decompose,
+      pendingActivity: "decomposing",
+      decide: `Confirm ${args.task_id} does not split (recorded walk).`,
+      frame: {
+        kind: "decompose",
+        elements: [],
+        coverage: "Recorded walk \u2014 no decomposition; the work is recorded as a single ticket from the supplied summary and evidence.",
+        existing_children_checked: true
+      }
+    });
+    gates.push({ gate: "decompose", reason: GATE_REASONS.decompose, landed: true });
+    await composeAndAccept(client, projectId, userId, taskId, {
+      reason: GATE_REASONS.design,
+      pendingActivity: "designing",
+      decide: `Confirm ${args.task_id} needs no new design decision (recorded walk).`,
+      frame: {
+        kind: "design",
+        track: "technical-design",
+        tracks: [
+          { track: "product-design", status: "not-required", note: "Recorded walk \u2014 no product-design decision to ratify." },
+          { track: "technical-design", status: "not-required", note: "Recorded walk \u2014 no technical-design decision to ratify." },
+          { track: "ux-ui-design", status: "not-required", note: "Recorded walk \u2014 no ux-ui-design decision to ratify." }
+        ],
+        reach: []
+      }
+    });
+    gates.push({ gate: "design", reason: GATE_REASONS.design, landed: true });
+    await composeAndAccept(client, projectId, userId, taskId, {
+      reason: GATE_REASONS.plan,
+      pendingActivity: "planning",
+      decide: `Record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not conducted).`,
+      frame: {
+        kind: "plan",
+        scope: { repos: repos.length > 0 ? repos : ["(unknown \u2014 no repo derived from evidence)"], surfaces: [], has_migration: false },
+        steps: [summary],
+        attestation: { base_verified: "recorded walk \u2014 no live base-verify run; ratified from supplied evidence" },
+        carried_unproven: [],
+        ac_coverage: "Recorded from the supplied summary and evidence; this walk files no acceptance criteria."
+      }
+    });
+    gates.push({ gate: "plan", reason: GATE_REASONS.plan, landed: true });
+    await advanceWorkflow(client, projectId, { task_id: taskId, activity: "building" });
+    gates.push({ gate: "build", landed: true });
+    await composeAndAccept(client, projectId, userId, taskId, {
+      reason: GATE_REASONS.release,
+      // pending_activity: null — Built->Deployed is SYSTEM-on-deploy-success, never this accept's own
+      // doing (mirrors finish-work's own release compose — see skills/finish-work/SKILL.md).
+      pendingActivity: null,
+      decide: `Record what ${args.task_id} shipped, from the supplied summary and evidence (recorded, not conducted).`,
+      frame: {
+        kind: "release",
+        act: {
+          repos: repos.length > 0 ? repos : [],
+          pr_count: args.evidence.length,
+          lands_in: "merged-main",
+          atomicity: repos.length > 1 ? "together" : "single",
+          irreversible: []
+        },
+        unproven: [],
+        evidence_status: {
+          proven_by_run: 0,
+          walk_at_verify: 0,
+          unproven: 0,
+          total: 0,
+          detail: "Recorded walk \u2014 evidence linked from the supplied links, not independently re-verified at this accept."
+        },
+        risk_classes: []
+        // overwritten by compose_brief from changedPaths (B-876) — authored value is never trusted.
+      },
+      changedPaths
+    });
+    const releaseContent = {
+      shipped: solving,
+      lands_in: "merged-main",
+      prs: args.evidence.map((e) => ({ url: e.url, repo: e.repo })),
+      unproven: [],
+      evidence_status: "Recorded walk \u2014 evidence linked, not independently re-verified."
+    };
+    await writeGateSlot(client, {
+      gate: "release",
+      content: releaseContent,
+      target: { via: "task", task_id: taskId },
+      ratified_by: RATIFIED_BY_RECORDED
+    });
+    gates.push({ gate: "release", reason: GATE_REASONS.release, landed: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      task_id: taskId,
+      eligibility,
+      refused: false,
+      gates,
+      attestation_recorded: attestationRecorded,
+      error: `recorded walk failed after landing ${gates.length} gate(s) (${gates.map((g) => g.gate).join(", ") || "none"}) \u2014 ${message} \u2014 resume by hand from the next unlanded gate, or via harmony conduct.`
+    };
+  }
+  return { task_id: taskId, eligibility, refused: false, gates, attestation_recorded: attestationRecorded };
+}
+var recordTool = {
+  name: "record",
+  description: "B-1062 \u2014 walk a non-conducted ticket's gates (clarify -> decompose -> design -> plan -> build -> release) from a human-supplied summary + evidence links, with ZERO worker legs \u2014 producing the same gate-slot/knowledge-entry trail a conducted ticket would get, marked 'recorded, not conducted' (ratified_by: 'recorded' on every gate slot; agent-on-behalf:human-recorded provenance on every knowledge write). Refuses BEFORE any write if any of five eligibility items (multi-repo, migration, auth/shared-core/irreversible-destructive risk, single-sentence-statable change, a 5+ minute verify-walk attestation) fails or is unattested \u2014 the ticket is left byte-identical on a refusal. The verify-walk item is NEVER auto-passed: supply `attest_walk` (\"<who/what was walked>\") or it reports unattested and the walk refuses. On a genuine mid-walk failure, reports exactly which gates already landed (never a silent half-apply) so a human can resume by hand, or via `create_conduction`/`harmony conduct` instead. `evidence` entries carry `repo`/`paths` when already known (e.g. from `gh pr diff`); omit them and this tool evaluates eligibility from `url` alone.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)" },
+      summary: { type: "string", description: "A one-sentence-statable account of the change this ticket records" },
+      evidence: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            url: { type: "string" },
+            repo: { type: "string", description: "owner/repo, when already known" },
+            paths: { type: "array", items: { type: "string" }, description: "Changed file paths this evidence touches, when already known" }
+          },
+          required: ["url"]
+        },
+        description: "Evidence links backing the recorded change (e.g. merged PR URLs)."
+      },
+      attest_walk: {
+        type: "string",
+        description: "Attest a 5+ minute verify walk \u2014 who/what was walked. Never auto-passed; omit to leave this eligibility item UNATTESTED (which refuses the walk)."
+      }
+    },
+    required: ["task_id", "summary", "evidence"]
+  }
+};
+async function recordToolHandler(client, projectId, userId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  if (!args.summary?.trim()) throw new Error("summary is required");
+  return runRecordedWalk(client, projectId, userId, {
+    task_id: args.task_id,
+    summary: args.summary,
+    evidence: args.evidence ?? [],
+    attest_walk: args.attest_walk
+  });
+}
+
 // src/tools/leg-output-record.ts
 var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
 
@@ -51757,7 +52130,8 @@ function registerTools(disabledFeatures) {
     requestConductionReapTool,
     consumePendingAcceptanceEventTool,
     consumeAcceptanceEventTool,
-    writeGateSlotTool
+    writeGateSlotTool,
+    recordTool
   ];
   if (!disabledFeatures?.epics) tools.push(listEpicsTool, createEpicTool, updateEpicTool);
   if (!disabledFeatures?.labels) tools.push(listLabelsTool, createLabelTool, manageTaskLabelsTool);
@@ -51965,6 +52339,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "write_gate_slot":
         result = await writeGateSlotToolHandler(client, projectId, args);
+        break;
+      case "record":
+        result = await recordToolHandler(client, projectId, userId, args);
         break;
       case "flag_release_approval_pending":
         result = await flagReleaseApprovalPending(client, projectId, args);

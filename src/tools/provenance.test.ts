@@ -6,6 +6,8 @@ import {
   PROVENANCE_AGENT_ON_BEHALF,
   PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION,
   PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER,
+  PROVENANCE_HUMAN_RECORDED,
+  PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED,
   guardKnowledgeWriteProvenance,
 } from './provenance.js';
 
@@ -20,6 +22,12 @@ describe('provenance.ts constants (B-1021)', () => {
     expect(PROVENANCE_AGENT_ON_BEHALF).toBe('agent-on-behalf');
     expect(PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION).toBe('agent-on-behalf:human-in-session');
     expect(PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER).toBe('agent-on-behalf:human-in-browser');
+  });
+
+  // B-1062: a THIRD closed suffix — a human's decision RECORDED (harmony record), never conducted live.
+  it('B-1062: the third closed agent-on-behalf suffix is human-recorded', () => {
+    expect(PROVENANCE_HUMAN_RECORDED).toBe('human-recorded');
+    expect(PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED).toBe('agent-on-behalf:human-recorded');
   });
 });
 
@@ -37,6 +45,17 @@ describe('guardKnowledgeWriteProvenance (B-1021)', () => {
   it('accepts both closed agent-on-behalf values', () => {
     expect(() => guardKnowledgeWriteProvenance('agent-on-behalf:human-in-session')).not.toThrow();
     expect(() => guardKnowledgeWriteProvenance('agent-on-behalf:human-in-browser')).not.toThrow();
+  });
+
+  // B-1062: the widened fence accepts the new third suffix...
+  it('B-1062: accepts the widened agent-on-behalf:human-recorded value', () => {
+    expect(() => guardKnowledgeWriteProvenance('agent-on-behalf:human-recorded')).not.toThrow();
+  });
+
+  // ...while STILL REJECTING bare human-in-browser — a negative test proving the fence did not
+  // become permissive generally, it only grew one more named suffix.
+  it('B-1062: still rejects bare human-in-browser after the widening', () => {
+    expect(() => guardKnowledgeWriteProvenance('human-in-browser')).toThrow(/human-in-browser/);
   });
 
   it('rejects an agent-on-behalf: value with any suffix outside the closed pair', () => {

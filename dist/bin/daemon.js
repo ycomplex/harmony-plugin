@@ -29938,6 +29938,54 @@ function resolveGatePhase(workflow_state, workflow_activity) {
   return GATE_BY_WORKFLOW_STATE[workflow_state] ?? null;
 }
 
+// src/tools/text-normalize.ts
+var ENTITY_MAP = {
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&quot;": '"',
+  "&#39;": "'"
+};
+var ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/g;
+var HAS_ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/;
+function splitCodeSpans(text) {
+  const segments = [];
+  let i = 0;
+  let plainStart = 0;
+  while (i < text.length) {
+    if (text.startsWith("```", i)) {
+      const close = text.indexOf("```", i + 3);
+      const codeEnd = close === -1 ? text.length : close + 3;
+      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
+      segments.push({ code: true, text: text.slice(i, codeEnd) });
+      i = codeEnd;
+      plainStart = i;
+      continue;
+    }
+    if (text[i] === "`") {
+      const close = text.indexOf("`", i + 1);
+      if (close === -1) {
+        i += 1;
+        continue;
+      }
+      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
+      segments.push({ code: true, text: text.slice(i, close + 1) });
+      i = close + 1;
+      plainStart = i;
+      continue;
+    }
+    i += 1;
+  }
+  if (plainStart < text.length) segments.push({ code: false, text: text.slice(plainStart) });
+  return segments;
+}
+function normalizeHtmlEntities(text) {
+  if (!text || !HAS_ENTITY_PATTERN.test(text)) return text;
+  return splitCodeSpans(text).map(
+    (seg) => seg.code ? seg.text : seg.text.replace(ENTITY_PATTERN, (m) => ENTITY_MAP[m] ?? m)
+  ).join("");
+}
+
 // src/tools/provenance.ts
 var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
 var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
@@ -29945,6 +29993,194 @@ var PROVENANCE_WEB_ONLY = "human-in-browser";
 var PROVENANCE_AGENT_ON_BEHALF = "agent-on-behalf";
 var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_IN_SESSION}`;
 var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_WEB_ONLY}`;
+var PROVENANCE_HUMAN_RECORDED = "human-recorded";
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_RECORDED}`;
+
+// src/tools/knowledge.ts
+async function getWorkspaceId(client, projectId) {
+  const { data, error } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
+  if (error) throw new Error(`Could not resolve workspace: ${error.message}`);
+  return data.workspace_id;
+}
+async function embedText(client, text) {
+  try {
+    const { data, error } = await client.functions.invoke("embed-knowledge", { body: { text } });
+    if (error || !data?.embedding) return null;
+    return `[${data.embedding.join(",")}]`;
+  } catch {
+    return null;
+  }
+}
+async function queryKnowledge(client, projectId, args) {
+  const workspaceId = await getWorkspaceId(client, projectId);
+  if (args.search) {
+    const incompatible = [];
+    if (args.status) incompatible.push("status");
+    if (args.include_superseded) incompatible.push("include_superseded");
+    if (args.type) incompatible.push("type");
+    if (args.tags && args.tags.length > 0) incompatible.push("tags");
+    if (args.as_of) incompatible.push("as_of");
+    if (args.offset) incompatible.push("offset");
+    if (incompatible.length > 0) {
+      throw new Error(
+        `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(", ")}. Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". Omit "search" to use the structured filters.`
+      );
+    }
+    const queryEmbedding = await embedText(client, args.search);
+    const { data: data2, error: error2 } = await client.rpc("knowledge_search_rrf", {
+      _workspace_id: workspaceId,
+      _project_id: projectId,
+      _query_embedding: queryEmbedding,
+      _query_text: args.search,
+      _domain: args.domain && args.domain.length > 0 ? args.domain : null,
+      _match_limit: args.limit ?? 50
+    });
+    if (error2) throw new Error(error2.message);
+    return (data2 ?? []).map((d) => ({
+      id: d.id,
+      title: d.title,
+      type: d.type,
+      status: d.status,
+      domain: d.domain,
+      tags: d.tags,
+      project_id: d.project_id,
+      updated_at: d.updated_at
+    }));
+  }
+  let query = client.from("knowledge_decisions").select("id, title, type, status, domain, tags, project_id, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId);
+  if (args.status) {
+    query = query.eq("status", args.status);
+  } else if (!args.include_superseded) {
+    query = query.eq("status", "Accepted");
+  }
+  if (args.type) query = query.eq("type", args.type);
+  if (args.domain && args.domain.length > 0) query = query.overlaps("domain", args.domain);
+  if (args.as_of) query = query.lte("valid_from", args.as_of);
+  if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
+  query = query.order("type", { ascending: true });
+  const limit = args.limit ?? 50;
+  const offset = args.offset ?? 0;
+  const { data, error } = await query.range(offset, offset + limit - 1);
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+async function findCrossKindCollision(client, workspaceId, name, kind) {
+  const { data, error } = await client.from("knowledge_entities").select("id, kind").eq("workspace_id", workspaceId).eq("name", name).neq("kind", kind).limit(1).maybeSingle();
+  if (error || !data) return null;
+  return data;
+}
+function collisionWarning(name, requestedKind, existing) {
+  return {
+    entity_id: existing.id,
+    kind: existing.kind,
+    message: `An entity named "${name}" already exists under kind "${existing.kind}" (id ${existing.id}). This write created/resolved a SEPARATE node under kind "${requestedKind}" instead of merging. If this was unintended, use reconcile_entity to merge them.`
+  };
+}
+async function resolveOrCreateEntity(client, workspaceId, projectId, name, kind = "concept") {
+  const rawName = name;
+  const normalizedName = normalizeHtmlEntities(rawName);
+  const { data: existing, error: lookupErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).eq("kind", kind).eq("name", normalizedName).maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+  if (existing) return existing.id;
+  if (normalizedName !== rawName) {
+    const { data: legacy, error: legacyErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).eq("kind", kind).eq("name", rawName).maybeSingle();
+    if (legacyErr) throw new Error(legacyErr.message);
+    if (legacy) {
+      const { data: renamed, error: renameErr } = await client.from("knowledge_entities").update({ name: normalizedName }).eq("workspace_id", workspaceId).eq("id", legacy.id).select("id").single();
+      if (renameErr) throw new Error(renameErr.message);
+      return renamed.id;
+    }
+  }
+  const collision = await findCrossKindCollision(client, workspaceId, normalizedName, kind);
+  if (collision) {
+    console.error(
+      `[knowledge] entity collision: ${collisionWarning(normalizedName, kind, collision).message}`
+    );
+  }
+  const { data, error } = await client.from("knowledge_entities").insert({ workspace_id: workspaceId, project_id: projectId, kind, name: normalizedName }).select("id").single();
+  if (error) throw new Error(error.message);
+  return data.id;
+}
+
+// src/tools/workflow.ts
+var UNIVERSAL = {
+  parking: "Parked",
+  cancelling: "Cancelled"
+};
+function deriveToState(fromState, activity, transitions) {
+  if (activity === "researching") return fromState;
+  if (activity in UNIVERSAL) return UNIVERSAL[activity];
+  const row = transitions.find((t) => t.from_state === fromState && t.activity === activity);
+  if (!row) {
+    throw new Error(
+      `No workflow transition from '${fromState ?? "(none)"}' via activity '${activity}'`
+    );
+  }
+  return row.to_state;
+}
+async function advanceWorkflow(client, projectId, args) {
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const { data: task, error: e1 } = await client.from("tasks").select("workflow_state, stale, parked_from").eq("id", id).eq("project_id", projectId).single();
+  if (e1) throw e1;
+  const taskRow = task;
+  const isStaleExempt = args.activity.startsWith("revising-") || args.activity === "researching" || args.activity in UNIVERSAL;
+  if (taskRow.stale === true && !isStaleExempt) {
+    throw new Error(
+      `Task is stale (tasks.stale=true) \u2014 cannot apply forward activity '${args.activity}'. Route through harmony-stale-patch (files a 'stale-patch-review' brief) or a 'revising-*' backflow first.`
+    );
+  }
+  const { data: transitions, error: e2 } = await client.from("workflow_transitions").select("from_state, activity, to_state");
+  if (e2) throw e2;
+  const fromState = taskRow.workflow_state;
+  const toState = args.activity === "unparking" ? args.resume_to ?? taskRow.parked_from ?? "Proposed" : deriveToState(fromState, args.activity, transitions ?? []);
+  const patch = args.activity === "researching" ? { workflow_activity: args.activity } : args.activity === "unparking" ? { workflow_state: toState, workflow_activity: null } : { workflow_state: toState, workflow_activity: args.activity };
+  const { data: updated, error: e3 } = await client.from("tasks").update(patch).eq("id", id).eq("project_id", projectId).select("id, workflow_state, workflow_activity").single();
+  if (e3) throw e3;
+  return {
+    task_id: id,
+    from_state: fromState,
+    to_state: toState,
+    activity: args.activity,
+    task: updated
+  };
+}
+async function listTicketKnowledge(client, projectId, args) {
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const { data, error } = await client.from("ticket_references_knowledge").select("decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content)").eq("task_id", id);
+  if (error) throw error;
+  const rows = data ?? [];
+  const affectedByDecision = await fetchAffectedEntities(client, rows.map((r) => r.decision_id));
+  return rows.map((r) => ({
+    decision_id: r.decision_id,
+    ...r.knowledge_decisions ?? {},
+    affected_entities: affectedByDecision[r.decision_id] ?? []
+  }));
+}
+async function fetchAffectedEntities(client, decisionIds) {
+  if (decisionIds.length === 0) return {};
+  const { data, error } = await client.from("decision_affects_entity").select("decision_id, entity_id, knowledge_entities(name, kind)").in("decision_id", decisionIds);
+  if (error) throw error;
+  const map = {};
+  for (const row of data ?? []) {
+    const entity = row.knowledge_entities;
+    if (!entity?.name) continue;
+    const list = map[row.decision_id] ?? (map[row.decision_id] = []);
+    list.push({ entity_id: row.entity_id, name: entity.name, kind: entity.kind ?? "" });
+  }
+  return map;
+}
+
+// src/tools/comments.ts
+async function addComment(client, projectId, userId, args) {
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const { data, error } = await client.from("task_comments").insert({
+    task_id: taskId,
+    user_id: userId,
+    content: normalizeHtmlEntities(args.content.replace(/\\n/g, "\n"))
+  }).select().single();
+  if (error) throw error;
+  return data;
+}
 
 // src/tools/conduction-record.ts
 var CONDUCTION_LIVE_STATUSES = ["active"];
@@ -30100,6 +30336,12 @@ function envValue(env, key) {
 }
 function getConductionId(env = process.env) {
   return envValue(env, "HARMONY_CONDUCTION_ID");
+}
+function getLeg(env = process.env) {
+  const raw = envValue(env, "HARMONY_LEG");
+  if (raw === void 0) return void 0;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : void 0;
 }
 function getRunConfig(env = process.env, deps = {}) {
   const readFile = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
@@ -30606,6 +30848,16 @@ function detectRiskClasses(input) {
   return RISK_CLASSES.filter((cls) => hits.has(cls));
 }
 
+// src/tools/payload-refs.ts
+function kebabSlug(text, maxLen) {
+  const full = text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return full.slice(0, maxLen).replace(/-+$/g, "");
+}
+function slugRef(prefix, text, maxLen = 40) {
+  const slug = kebabSlug(text ?? "", maxLen) || "item";
+  return `${prefix}-${slug}`;
+}
+
 // src/tools/revision-cause.ts
 var REVISION_CAUSE_SOURCES = [
   "human-send-back",
@@ -30616,13 +30868,143 @@ var REVISION_CAUSE_SOURCES = [
   "accept-remark",
   "refreshed-inputs"
 ];
+function isRevisionCause(x) {
+  if (!x || typeof x !== "object") return false;
+  const { source, lines } = x;
+  return typeof source === "string" && REVISION_CAUSE_SOURCES.includes(source) && Array.isArray(lines) && lines.every((l) => typeof l === "string");
+}
+
+// src/tools/knowledge-contradiction.ts
+var MAX_REMOVED_LINES_SCANNED = 2e3;
+var MAX_TIER_SEARCH_TERMS = 20;
+var TIER_CANDIDATE_LIMIT = 20;
+var MIN_INLINE_CODE_SPAN_LENGTH = 6;
+var MIN_QUOTED_STRING_LENGTH = 8;
+var GENERATED_VENDORED_EXCLUDE = [
+  /(^|\/)dist\//,
+  // build output
+  /(^|^.*\/)package-lock\.json$/,
+  // npm lockfile
+  /\.min\.[^/]+$/,
+  // any minified asset (*.min.js, *.min.css, ...)
+  /\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|gz|tgz|tar|woff2?|ttf|eot|mp4|mov|bin)$/i
+  // binary/attachment paths
+];
+function isExcludedPath(path) {
+  return GENERATED_VENDORED_EXCLUDE.some((re) => re.test(path));
+}
+function extractCandidateValues(text) {
+  if (!text) return [];
+  const values = [];
+  const fenceRe = /```[a-zA-Z0-9_-]*\n([\s\S]*?)```/g;
+  let working = text.replace(fenceRe, (_match, body) => {
+    for (const line of body.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.length >= MIN_INLINE_CODE_SPAN_LENGTH) values.push(trimmed);
+    }
+    return " ";
+  });
+  const spanRe = /`([^`\n]+)`/g;
+  let m;
+  while ((m = spanRe.exec(working)) !== null) {
+    const val = m[1].trim();
+    if (val.length >= MIN_INLINE_CODE_SPAN_LENGTH) values.push(val);
+  }
+  working = working.replace(spanRe, " ");
+  const quoteRe = /"([^"\n]+)"|'([^'\n]+)'/g;
+  while ((m = quoteRe.exec(working)) !== null) {
+    const val = (m[1] ?? m[2] ?? "").trim();
+    if (val.length >= MIN_QUOTED_STRING_LENGTH) values.push(val);
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const v of values) {
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+function deriveSearchTerms(removedLines) {
+  return extractCandidateValues(removedLines.join("\n")).slice(0, MAX_TIER_SEARCH_TERMS);
+}
+function parseDiff(diffContent) {
+  if (!diffContent) return { removedLines: [], addedLines: [] };
+  const lines = diffContent.split("\n");
+  const removedLines = [];
+  const addedLines = [];
+  let currentExcluded = false;
+  let truncatedAtIndex = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const header = /^diff --git a\/(\S+) b\/(\S+)/.exec(line);
+    if (header) {
+      const path = header[2] ?? header[1];
+      currentExcluded = isExcludedPath(path);
+      continue;
+    }
+    if (currentExcluded) continue;
+    if (line.startsWith("--- ") || line.startsWith("+++ ") || line === "---" || line === "+++") continue;
+    if (line.startsWith("-")) {
+      if (removedLines.length >= MAX_REMOVED_LINES_SCANNED) {
+        truncatedAtIndex = i;
+        break;
+      }
+      removedLines.push(line.slice(1));
+    } else if (line.startsWith("+")) {
+      addedLines.push(line.slice(1));
+    }
+  }
+  if (truncatedAtIndex < 0) return { removedLines, addedLines };
+  const remainingLines = lines.length - truncatedAtIndex;
+  const remainingFiles = lines.slice(truncatedAtIndex).filter((l) => l.startsWith("diff --git ")).length;
+  return {
+    removedLines,
+    addedLines,
+    truncated: `contradiction scan truncated: ${remainingFiles} files / ${remainingLines} lines not scanned`
+  };
+}
+function matchEntryAgainstDiff(entryContent, removedLines, addedLines) {
+  const values = extractCandidateValues(entryContent);
+  if (values.length === 0) return null;
+  const removedText = removedLines.join("\n");
+  const addedText = addedLines.join("\n");
+  const contradicted = [];
+  const benign = [];
+  for (const v of values) {
+    if (!removedText.includes(v)) continue;
+    if (addedText.includes(v)) benign.push(v);
+    else contradicted.push(v);
+  }
+  if (contradicted.length > 0) return { state: "fires-and-contradicted", matchedValues: contradicted };
+  if (benign.length > 0) return { state: "fires-but-benign", matchedValues: benign };
+  return null;
+}
 
 // src/config/project-manifest.ts
 var import_yaml = __toESM(require_dist(), 1);
+import { existsSync as nodeExistsSync2, readFileSync as nodeReadFileSync2 } from "node:fs";
+import { join as nodeJoin, resolve as nodeResolve } from "node:path";
+var PROJECT_MANIFEST_RELATIVE_PATH = ".harmony/project.yml";
 var SUPPORTED_MANIFEST_VERSION = 1;
+var DECLARABLE_TRANSITIONS = [
+  "reaching Proposed",
+  "reaching Clarified",
+  "reaching Decomposed",
+  "reaching Designed",
+  "reaching Planned",
+  "reaching Built",
+  "reaching Deployed",
+  "reaching Verified",
+  "reaching Parked",
+  "reaching Cancelled"
+];
 var RunStepSchema = external_exports.object({ run: external_exports.string().min(1) }).strict();
 var AgentTaskStepSchema = external_exports.object({ agent_task: external_exports.string().min(1) }).strict();
 var StepSchema = external_exports.union([RunStepSchema, AgentTaskStepSchema]);
+function isAgentTaskStep(step) {
+  return "agent_task" in step;
+}
 var NotifyEntrySchema = external_exports.object({ on: external_exports.string().min(1), endpoint: external_exports.string().url() }).strict();
 var AppliesToSchema = external_exports.object({
   /** Globs (`**`, `*`, `?` — `globToRegExp`, src/tools/risk-class.ts) matched against the BUILD'S
@@ -30648,8 +31030,323 @@ var ProjectManifestBodySchema = external_exports.object({
   verify: VerifyGateSchema.optional(),
   notify: external_exports.array(NotifyEntrySchema).optional()
 }).strict();
+var KNOWN_TOP_LEVEL_KEYS = ["version", "preconditions", "build", "release", "verify", "notify"];
+function isPlainObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function firstToken(command) {
+  return command.trim().split(/\s+/, 1)[0] ?? "";
+}
+function looksLikeScriptPath(token) {
+  return token.includes("/");
+}
+function validateSteps(file, extensionPoint, steps, projectRoot, existsSync2) {
+  if (!steps) return void 0;
+  for (const step of steps) {
+    if (isAgentTaskStep(step)) {
+      return {
+        file,
+        reason: "unsupported-agent-task",
+        message: `${file}: ${extensionPoint} declares an 'agent_task:' step ('${step.agent_task}') \u2014 the v1 'harmony gates run' runner does not execute agent_task steps. This extension point runs NO steps until the manifest is updated; other extension points are unaffected.`
+      };
+    }
+    const token = firstToken(step.run);
+    if (looksLikeScriptPath(token)) {
+      const resolved = nodeResolve(projectRoot, token);
+      if (!existsSync2(resolved)) {
+        return {
+          file,
+          reason: "missing-script",
+          message: `${file}: ${extensionPoint}'s run step '${step.run}' names a script that does not exist on disk (looked for ${resolved}). This extension point runs NO steps until the manifest is fixed; other extension points are unaffected.`
+        };
+      }
+    }
+  }
+  return void 0;
+}
+function loadProjectManifest(projectRoot, deps = {}) {
+  const existsSync2 = deps.existsSync ?? nodeExistsSync2;
+  const readFileSync4 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
+  const file = nodeJoin(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
+  if (!existsSync2(file)) return { kind: "absent" };
+  const raw = readFileSync4(file);
+  let parsed;
+  try {
+    parsed = (0, import_yaml.parse)(raw);
+  } catch (err) {
+    return {
+      kind: "malformed",
+      problem: {
+        file,
+        reason: "invalid-yaml",
+        message: `${file}: invalid YAML \u2014 ${err?.message ?? String(err)}`
+      }
+    };
+  }
+  if (parsed === void 0 || parsed === null) parsed = {};
+  if (!isPlainObject2(parsed)) {
+    return {
+      kind: "malformed",
+      problem: {
+        file,
+        reason: "not-a-mapping",
+        message: `${file}: the manifest's top level must be a YAML mapping (object), got ${Array.isArray(parsed) ? "a sequence/array" : typeof parsed}`
+      }
+    };
+  }
+  const unknownKeys = Object.keys(parsed).filter(
+    (k) => !KNOWN_TOP_LEVEL_KEYS.includes(k)
+  );
+  if (unknownKeys.length > 0) {
+    return {
+      kind: "malformed",
+      problem: {
+        file,
+        reason: "unknown-key",
+        message: `${file}: unrecognized top-level key(s): ${unknownKeys.join(", ")} \u2014 recognized keys are ${KNOWN_TOP_LEVEL_KEYS.join(", ")}`
+      }
+    };
+  }
+  if (!("version" in parsed)) {
+    return {
+      kind: "malformed",
+      problem: {
+        file,
+        reason: "missing-version",
+        message: `${file}: missing required 'version' key`
+      }
+    };
+  }
+  if (parsed.version !== SUPPORTED_MANIFEST_VERSION) {
+    return {
+      kind: "malformed",
+      problem: {
+        file,
+        reason: "unrecognized-version",
+        message: `${file}: unrecognized version ${JSON.stringify(parsed.version)} \u2014 this runner supports version ${SUPPORTED_MANIFEST_VERSION}`
+      }
+    };
+  }
+  const shapeResult = ProjectManifestBodySchema.safeParse(parsed);
+  if (!shapeResult.success) {
+    return {
+      kind: "malformed",
+      problem: {
+        file,
+        reason: "invalid-shape",
+        message: `${file}: ${shapeResult.error.message}`
+      }
+    };
+  }
+  const manifest = shapeResult.data;
+  for (const entry of manifest.notify ?? []) {
+    if (!DECLARABLE_TRANSITIONS.includes(entry.on)) {
+      return {
+        kind: "malformed",
+        problem: {
+          file,
+          reason: "unknown-transition",
+          message: `${file}: notify declares an unrecognized transition ${JSON.stringify(entry.on)} \u2014 recognized transitions are: ${DECLARABLE_TRANSITIONS.join(", ")}`
+        }
+      };
+    }
+  }
+  const evidenceKeys = (manifest.verify?.evidence ?? []).map((e) => e.key);
+  const duplicateKeys = [...new Set(evidenceKeys.filter((k, i) => evidenceKeys.indexOf(k) !== i))];
+  if (duplicateKeys.length > 0) {
+    return {
+      kind: "malformed",
+      problem: {
+        file,
+        reason: "duplicate-evidence-key",
+        message: `${file}: verify.evidence declares duplicate key(s): ${duplicateKeys.join(", ")} \u2014 each entry's \`key\` must be unique, because an 'ATTESTED: <key>' marker names exactly one entry.`
+      }
+    };
+  }
+  const stepErrors = {};
+  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync2);
+  if (buildErr) stepErrors["build.before_pr"] = buildErr;
+  const releaseErr = validateSteps(
+    file,
+    "release.before_merge",
+    manifest.release?.before_merge,
+    projectRoot,
+    existsSync2
+  );
+  if (releaseErr) stepErrors["release.before_merge"] = releaseErr;
+  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync2);
+  if (verifyErr) stepErrors["verify.before_ack"] = verifyErr;
+  return { kind: "ok", file, manifest, stepErrors };
+}
+function getDeclaredEvidence(manifest) {
+  return manifest.verify?.evidence ?? [];
+}
+
+// src/config/manifest-evidence.ts
+var MANIFEST_EVIDENCE_AC_PREFIX = "manifest:";
+var ATTESTED_MARKER = "ATTESTED:";
+function nonEmpty(list) {
+  return Array.isArray(list) && list.length > 0;
+}
+function matchesPaths(globs, changedPaths) {
+  const regexes = globs.map(globToRegExp);
+  return changedPaths.some((p) => typeof p === "string" && regexes.some((re) => re.test(p)));
+}
+function matchesLabels(wanted, labels) {
+  const set = new Set(wanted.map((l) => l.trim().toLowerCase()));
+  return labels.some((l) => typeof l === "string" && set.has(l.trim().toLowerCase()));
+}
+function resolveApplicability(entry, ctx) {
+  const at = entry.applies_to;
+  const hasPaths = nonEmpty(at?.paths);
+  const hasLabels = nonEmpty(at?.labels);
+  if (!hasPaths && !hasLabels) return { applies: true };
+  if (hasLabels && matchesLabels(at.labels, ctx.labels ?? [])) return { applies: true };
+  if (hasPaths) {
+    if (ctx.changedPaths === void 0) return { applies: false, reason: "unevaluable-paths" };
+    if (matchesPaths(at.paths, ctx.changedPaths)) return { applies: true };
+  }
+  return { applies: false, reason: "no-match" };
+}
+function attestationHint(key) {
+  return `type ${ATTESTED_MARKER} ${key} in the accept remark box or resolve_brief detail`;
+}
+function parseAttestedKeys(details) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const detail of details) {
+    if (typeof detail !== "string" || !detail.includes(":")) continue;
+    const re = /^[^\S\r\n]*ATTESTED:[^\S\r\n]*(.+)$/gim;
+    let match;
+    while ((match = re.exec(detail)) !== null) {
+      for (const raw of match[1].split(",")) {
+        const key = raw.trim();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(key);
+      }
+    }
+  }
+  return out;
+}
+function plural(n, singular, pluralForm) {
+  return `${n} ${n === 1 ? singular : pluralForm}`;
+}
+function resolveManifestEvidence(entries, ctx = {}) {
+  const attestedKeys = ctx.attestedKeys ?? [];
+  const declaredKeys = new Set(entries.map((e) => e.key));
+  const resolutions = [];
+  const rows = [];
+  const outstanding = [];
+  const attested = [];
+  const not_evaluated = [];
+  for (const entry of entries) {
+    const applicability = resolveApplicability(entry, ctx);
+    if (!applicability.applies) {
+      resolutions.push({
+        key: entry.key,
+        prompt: entry.prompt,
+        state: "not-applicable",
+        not_applicable_reason: applicability.reason
+      });
+      if (applicability.reason === "unevaluable-paths") not_evaluated.push(entry.key);
+      continue;
+    }
+    const isAttested = attestedKeys.includes(entry.key);
+    resolutions.push({
+      key: entry.key,
+      prompt: entry.prompt,
+      state: isAttested ? "declared-attested" : "declared-unattested"
+    });
+    rows.push({
+      ac_id: `${MANIFEST_EVIDENCE_AC_PREFIX}${entry.key}`,
+      text: entry.prompt,
+      checked: isAttested,
+      disposition: isAttested ? "manifest-attested" : "manifest-declared",
+      backed_by: isAttested ? `${ATTESTED_MARKER} ${entry.key}` : attestationHint(entry.key)
+    });
+    if (isAttested) attested.push(entry.key);
+    else outstanding.push(entry.key);
+  }
+  const unknown_attested_keys = attestedKeys.filter((k) => !declaredKeys.has(k));
+  const parts = [];
+  if (outstanding.length) parts.push(`${plural(outstanding.length, "outstanding", "outstanding")}: ${outstanding.join(", ")}`);
+  if (attested.length) parts.push(`${attested.length} attested: ${attested.join(", ")}`);
+  if (not_evaluated.length) {
+    parts.push(
+      `${plural(not_evaluated.length, "path-narrowed entry", "path-narrowed entries")} not evaluated \u2014 no diff available: ${not_evaluated.join(", ")}`
+    );
+  }
+  if (unknown_attested_keys.length) {
+    parts.push(
+      `\u26A0\uFE0F ${ATTESTED_MARKER} names no declared entry: ${unknown_attested_keys.join(", ")} \u2014 nothing was attested by it`
+    );
+  }
+  return {
+    entries: resolutions,
+    rows,
+    outstanding,
+    attested,
+    not_evaluated,
+    unknown_attested_keys,
+    clause: parts.length ? `Declared evidence \u2014 ${parts.join(" \xB7 ")}` : null
+  };
+}
+function malformedEvidenceClause(problem) {
+  return `\u26A0\uFE0F Declared verify evidence NOT read (${problem.reason}) \u2014 ${problem.message}`;
+}
+function malformedEvidenceWarning(problem) {
+  return `The project manifest declares verify evidence that could NOT be read (${problem.reason}): ${problem.message} No declared-evidence rows were overlaid onto this brief \u2014 fix the manifest and re-compose, or accept knowing the declared evidence was not checked.`;
+}
+function readDeclaredEvidence(manifestRoot, deps) {
+  if (typeof manifestRoot !== "string" || manifestRoot.trim().length === 0) return { kind: "none" };
+  const result = loadProjectManifest(manifestRoot, deps ?? {});
+  if (result.kind === "absent") return { kind: "none" };
+  if (result.kind === "malformed") return { kind: "malformed", problem: result.problem };
+  const entries = getDeclaredEvidence(result.manifest);
+  if (entries.length === 0) return { kind: "none" };
+  return { kind: "entries", file: result.file, entries };
+}
 
 // src/tools/briefs.ts
+var FRAME_KIND_FOR_REASON = {
+  "clarification-draft": "clarify",
+  "decomposition-proposal": "decompose",
+  "design-decision-draft": "design",
+  "plan-draft": "plan",
+  "release-decision-pending": "release",
+  "verification-ack-pending": "verify"
+};
+var WORD_BUDGET_BASE = 600;
+var WORD_BUDGET_PER_UNIT = 75;
+var WORD_BUDGET_MAX = 1400;
+function frameUnits(frame) {
+  if (!frame) return 0;
+  switch (frame.kind) {
+    case "clarify":
+      return (frame.in_scope?.length ?? 0) + (frame.not_solving?.length ?? 0);
+    case "decompose":
+      return frame.elements?.length ?? 0;
+    case "design":
+      return (frame.tracks?.length ?? 0) + (frame.reach?.length ?? 0) + (frame.not_reopened?.length ?? 0) + (frame.derisk?.run.length ?? 0) + (frame.derisk?.not_run.length ?? 0) + (frame.files_on_accept?.length ?? 0);
+    case "plan":
+      return (frame.steps?.length ?? 0) + (frame.carried_unproven?.length ?? 0) + landingUnits(frame.landing);
+    case "release":
+      return (frame.unproven?.length ?? 0) + landingUnits(frame.act);
+    case "verify":
+      return frame.criteria?.length ?? 0;
+    default:
+      return 0;
+  }
+}
+function landingUnits(landing) {
+  if (!landing) return 0;
+  return (landing.repos?.length ?? 0) + (landing.irreversible?.length ?? 0);
+}
+function softWordBudget(doc) {
+  const units = doc.items.length + (doc.alternatives?.length ?? 0) + frameUnits(doc.frame);
+  return Math.min(WORD_BUDGET_BASE + WORD_BUDGET_PER_UNIT * units, WORD_BUDGET_MAX);
+}
 var DEFAULT_TAIL = "Type `accept`, `edit`, `iterate <feedback>`, or `defer`.";
 var STALE_PATCH_TAIL = "`accept` applies this patch and clears the stale flag (state unchanged). `defer` REJECTS it \u2014 the flag clears anyway, the divergence is recorded, and the ticket proceeds on the retired decision; this is not a park and cannot be undone. Or `edit` / `iterate <feedback>`.";
 var PROPOSED_ACS_HEADING = "Proposed acceptance criteria (happy path) \u2014 filed on accept:";
@@ -30659,6 +31356,48 @@ var RATIFICATION_CONVENTION = `Every element below appeared in that brief, excep
 var ENTRY_PROVENANCE_PREFIX = "Derived from the ratified brief";
 function tailForReason(reason) {
   return reason === "stale-patch-review" ? STALE_PATCH_TAIL : void 0;
+}
+var SENTENCE_WORD_LIMIT = 50;
+function stripForLegibility(content) {
+  return content.replace(/```[\s\S]*?```/g, " ").replace(/`[^`\n]+`/g, " ").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\(\s*https?:\/\/[^)]*\)/g, " ").replace(/https?:\/\/\S+/g, " ").split("\n").filter(
+    (line) => !/^\s*>/.test(line) && !/^\s*- \[[ xX]\]/.test(line) && !/^\s*\|/.test(line) && (!/^\s*\*\*[^*]+:\*\*/.test(line) || /^\s*\*\*Recommend\b/.test(line))
+  ).join("\n");
+}
+function countProseWords(s) {
+  return s.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
+}
+function analyzeLegibility(content) {
+  const text = stripForLegibility(content);
+  const sentences = text.split("\n").flatMap((line) => line.split(/(?<=[.!?;:])\s+/)).map((s) => s.trim()).filter((s) => countProseWords(s) > 0);
+  const measured = sentences.map((s) => ({ words: countProseWords(s), sentence: s }));
+  const longSentences = measured.filter((m) => m.words > SENTENCE_WORD_LIMIT).sort((a, b) => b.words - a.words).map((m) => ({
+    words: m.words,
+    excerpt: m.sentence.split(/\s+/).slice(0, 8).join(" ")
+  }));
+  let nestedParens = 0;
+  let adjacentParens = 0;
+  for (const line of text.split("\n")) {
+    let depth = 0;
+    let prevClose = -1;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === "(") {
+        depth++;
+        if (depth >= 2) nestedParens++;
+        if (prevClose >= 0 && /^\s*$/.test(line.slice(prevClose + 1, i))) adjacentParens++;
+      } else if (ch === ")") {
+        if (depth > 0) depth--;
+        prevClose = i;
+      }
+    }
+  }
+  return {
+    sentenceCount: sentences.length,
+    maxSentenceWords: measured.reduce((mx, m) => Math.max(mx, m.words), 0),
+    longSentences,
+    nestedParens,
+    adjacentParens
+  };
 }
 function renderLanding(landing) {
   const repos = landing.repos?.length ? landing.repos.join(", ") : "no repo named";
@@ -31020,7 +31759,865 @@ function renderEntry(doc, ctx) {
   if (changes.length) out.push("**Changed in the final round:**", ...markAll(changes), "");
   return out.join("\n").trimEnd();
 }
+function deriveEntryTitle(doc, reason, ctx) {
+  const recommendation = doc.recommend?.text;
+  if (!recommendation || !ctx.visualId) return void 0;
+  if (reason === "decomposition-proposal") {
+    return `${ctx.visualId}: decomposition \u2014 ${recommendation}`;
+  }
+  if (reason === "design-decision-draft") {
+    const type = ctx.decisionRef?.type;
+    if (!type) return void 0;
+    const subTrackDisplay = type.replace(/-design$/, " design");
+    return `${ctx.visualId}: ${subTrackDisplay} \u2014 ${recommendation}`;
+  }
+  return void 0;
+}
+var GATE_SLOT_NAMES = ["clarify", "release", "verify"];
+function criterionSlotRow(row) {
+  const how = [row.step_ref ? `runbook step ${row.step_ref}` : null, row.backed_by ?? null].filter((part) => typeof part === "string" && part.trim().length > 0).join(" \xB7 ");
+  const out = { text: row.text, disposition: dispositionLabel(row) };
+  if (row.ac_id !== void 0) out.ac_id = row.ac_id;
+  if (how) out.how = how;
+  return out;
+}
+function renderSlot(doc, gate) {
+  const frame = doc.frame;
+  if (!frame) return null;
+  const out = {};
+  switch (gate) {
+    case "clarify": {
+      if (frame.kind !== "clarify") return null;
+      if (frame.solving !== void 0) out.solving = frame.solving;
+      if (frame.in_scope !== void 0) out.in_scope = [...frame.in_scope];
+      if (frame.not_solving !== void 0) {
+        out.not_solving = frame.not_solving.map((e) => ({ item: e.item, lands: e.lands }));
+      }
+      return out;
+    }
+    case "release": {
+      if (frame.kind !== "release") return null;
+      if (frame.act) {
+        out.shipped = renderLanding(frame.act);
+        out.lands_in = frame.act.lands_in;
+      }
+      if (frame.unproven !== void 0) out.unproven = frame.unproven.map(unprovenText);
+      if (frame.evidence_status !== void 0) {
+        out.evidence_status = evidenceSummaryText(frame.evidence_status);
+      }
+      return out;
+    }
+    case "verify": {
+      if (frame.kind !== "verify") return null;
+      if (frame.environment !== void 0) out.environment = frame.environment;
+      if (frame.criteria !== void 0) out.criteria = frame.criteria.map(criterionSlotRow);
+      if (frame.evidence_status !== void 0) out.evidence_status = frame.evidence_status;
+      if (frame.exempt_reason !== void 0) out.exempt_reason = frame.exempt_reason;
+      if (frame.bounded_accept !== void 0) {
+        out.bounded_accept = {
+          open_ac_ids: [...frame.bounded_accept.open_ac_ids ?? []],
+          closes_when: frame.bounded_accept.closes_when
+        };
+      }
+      return out;
+    }
+    default:
+      return null;
+  }
+}
+function isPrShaped(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const v = value;
+  return typeof v.pr_url === "string" || typeof v.pr_number === "number";
+}
+function toPrReference(key, value) {
+  const ref = { key };
+  if (typeof value.pr_url === "string") ref.pr_url = value.pr_url;
+  if (typeof value.pr_number === "number") ref.pr_number = value.pr_number;
+  if (typeof value.author_is_bot === "boolean") ref.author_is_bot = value.author_is_bot;
+  if (typeof value.branch === "string") ref.branch = value.branch;
+  if (typeof value.head_sha === "string") ref.head_sha = value.head_sha;
+  return ref;
+}
+function readBuildPrReferences(fieldValues) {
+  const refs = [];
+  try {
+    if (!fieldValues || typeof fieldValues !== "object" || Array.isArray(fieldValues)) return refs;
+    const fv = fieldValues;
+    const seen = /* @__PURE__ */ new Set();
+    const push = (key, value) => {
+      if (!isPrShaped(value)) return;
+      const ref = toPrReference(key, value);
+      const identity = `${ref.pr_url ?? ""}#${ref.pr_number ?? ""}`;
+      if (seen.has(identity)) return;
+      seen.add(identity);
+      refs.push(ref);
+    };
+    const primary = fv.build_pr;
+    push("build_pr", primary);
+    if (primary && typeof primary === "object" && !Array.isArray(primary)) {
+      for (const [k, v] of Object.entries(primary)) {
+        push(`build_pr.${k}`, v);
+      }
+    }
+    for (const [k, v] of Object.entries(fv)) {
+      if (k === "build_pr") continue;
+      push(k, v);
+    }
+  } catch {
+    return refs;
+  }
+  return refs;
+}
+function readBuildPr(fieldValues) {
+  try {
+    if (!fieldValues || typeof fieldValues !== "object" || Array.isArray(fieldValues)) return void 0;
+    const value = fieldValues.build_pr;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return void 0;
+    return value;
+  } catch {
+    return void 0;
+  }
+}
+function mentionsApprovalRequirement(content) {
+  const c = content.toLowerCase();
+  if (/reviewdecision|review_required/.test(c)) return true;
+  const APPROVAL = /\bapprov\w*/;
+  const REQUIREMENT = /\brequir\w*|\bneed\w*|\bmust\b|\bbefore\b|\buntil\b|\bcannot\b|\bcan't\b|\bunable\b/;
+  return c.split(/[.!?\n]+/).some((sentence) => APPROVAL.test(sentence) && REQUIREMENT.test(sentence));
+}
+var blank = (value) => typeof value !== "string" || value.trim().length === 0;
+function isBoundedAcceptShaped(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const v = value;
+  return Array.isArray(v.open_ac_ids) && typeof v.closes_when === "string";
+}
+function lintFrame(doc, ctx, errors, warnings) {
+  const expected = ctx.reason ? FRAME_KIND_FOR_REASON[ctx.reason] : void 0;
+  if (!expected) return;
+  const frame = doc.frame;
+  if (!frame) {
+    warnings.push(
+      `This ${ctx.reason} brief carries no \`doc.frame\`. The gate's own must-haves have no other typed home, so they degrade into \`context[]\` and stop being read \u2014 author the \`${expected}\` frame (see skills/harmony-shared/brief-authoring.md).`
+    );
+    return;
+  }
+  if (frame.kind !== expected) {
+    warnings.push(
+      `\`doc.frame.kind\` is '${frame.kind}' but this brief's reason is '${ctx.reason}', which expects the '${expected}' frame. The render positions the frame by kind, so a mismatched frame lands in the wrong place.`
+    );
+    return;
+  }
+  if (frame.kind !== "verify") {
+    const floorCount = ctx.floorCount ?? 0;
+    const reviewed = frame.floor_reviewed;
+    if (floorCount > 0 && (!Array.isArray(reviewed) || reviewed.length === 0)) {
+      warnings.push(
+        `${floorCount} Accepted entries linked to this ticket were not confirmed reviewed for contradiction. Read the FLOOR set (\`list_ticket_knowledge\`, Accepted only) and author \`frame.floor_reviewed\` with the ids you checked before this brief is accepted.`
+      );
+    }
+  }
+  switch (frame.kind) {
+    case "clarify":
+      if (blank(frame.solving)) {
+        warnings.push("`frame.solving` is blank. It is the OUTCOME \u2014 what becomes true for the product when this ships \u2014 never a restatement of the problem.");
+      }
+      if (!Array.isArray(frame.not_solving)) {
+        warnings.push("`frame.not_solving` is absent. The KEY is required even when nothing is excluded \u2014 `[]` is a legal, meaningful answer; absence is not.");
+      } else {
+        for (const entry of frame.not_solving) {
+          if (blank(entry?.lands)) {
+            warnings.push(`Excluded item "${entry?.item ?? "(unnamed)"}" names no destination. Every exclusion resolves somewhere \u2014 a ticket id, a later phase, or the explicit "nowhere \u2014 nobody is tracking this".`);
+          }
+        }
+      }
+      break;
+    case "decompose":
+      if (!frame.elements?.length) {
+        warnings.push("`frame.elements` is empty. The gate decides whether these elements ship as one unit or N children \u2014 with no inventory the fork cannot be priced.");
+      }
+      if (blank(frame.coverage)) {
+        warnings.push("`frame.coverage` is blank. State the attestation against the accepted clarification: no gaps, no overlaps.");
+      }
+      if (!doc.alternatives?.length) {
+        warnings.push("This decomposition brief carries no `alternatives`. Name the rejected cut and price it by independent shippability \u2014 1/14 briefs did, and the un-split default is the expensive-to-detect error.");
+      }
+      break;
+    case "design":
+      if (blank(frame.track)) {
+        warnings.push("`frame.track` is absent. One gate reason serves three sub-tracks; the reader cannot otherwise tell which of three serialized decisions they are holding.");
+      }
+      for (const entry of frame.tracks ?? []) {
+        if (entry?.status === "not-required" && blank(entry.note)) {
+          warnings.push(`Track '${entry.track}' is declared not-required with no note. Declaring a track away is a decision \u2014 say why, so a reader can contest it.`);
+        }
+      }
+      if (!Array.isArray(frame.reach)) {
+        warnings.push('`frame.reach` is absent. The KEY is required: `[]` ("this reaches nothing beyond the ticket") is a real answer, and a negative reach claim is often what carries the recommendation.');
+      }
+      if (!doc.alternatives?.length && frame.track !== "ux-ui-design") {
+        warnings.push("This design brief carries no `alternatives`. Name the real options and why each lost. (The ux-ui-design track is exempt: `visual-handoff.md` \xA7D2 forbids auto-generating a guessed variant.)");
+      }
+      break;
+    case "plan":
+      if (blank(frame.attestation?.base_verified)) {
+        warnings.push('`frame.attestation.base_verified` is blank. The plan reader is the only one who can judge "safe to build from" \u2014 say what was verified against real code, not from memory.');
+      }
+      if (!Array.isArray(frame.carried_unproven)) {
+        warnings.push('`frame.carried_unproven` is absent. The KEY is required: `[]` = "nothing carried unproven", which is a different claim from silence.');
+      }
+      if (blank(frame.ac_coverage)) {
+        warnings.push("`frame.ac_coverage` is blank. Say whether the plan covers the ticket\u2019s acceptance criteria.");
+      }
+      if (!frame.landing && ((frame.scope?.repos?.length ?? 0) > 1 || frame.scope?.has_migration === true)) {
+        warnings.push("`frame.landing` is absent on a multi-repo or migration-carrying plan. The release topology is FIXED here and merely executed at release \u2014 an unstated ordering is exactly the risk that is invisible from the diff.");
+      }
+      break;
+    case "release":
+      if (!frame.act) {
+        warnings.push("`frame.act` is absent. The release gate has no field for the act it authorizes unless this is filled \u2014 name the repos, the PR count, the environment, and the atomicity.");
+      } else if (frame.act.atomicity === "ordered" && blank(frame.act.ordering)) {
+        warnings.push("`frame.act.atomicity` is 'ordered' but `frame.act.ordering` is blank. An ordered landing with no stated order is not executable.");
+      }
+      if (!Array.isArray(frame.unproven)) {
+        warnings.push('`frame.unproven` is absent. The KEY is required: the ship decision IS accepting this residue, and `[]` ("nothing") is the answer a clean release gives.');
+      }
+      if (!frame.evidence_status) {
+        errors.push("`frame.evidence_status` is absent on a release frame. Call `get_build_evidence_status` and carry its mechanical, executed-aware counts \u2014 a release brief cannot be stored without it.");
+      }
+      break;
+    case "verify":
+      if (!frame.criteria?.length && blank(frame.exempt_reason)) {
+        warnings.push("`frame.criteria` is empty and no `exempt_reason` is given. This is the gate whose whole contract is confirming reality against the filed criteria \u2014 an empty ledger acks against nothing.");
+      }
+      for (const row of frame.criteria ?? []) {
+        if (row?.disposition === "walk" && blank(row.step_ref)) {
+          warnings.push(`Criterion "${row?.text ?? row?.ac_id ?? "(unnamed)"}" is dispositioned 'walk' but names no \`step_ref\`. A walk with no step is not a runbook step the human can follow.`);
+        }
+        if (!CRITERION_DISPOSITIONS.includes(row?.disposition)) {
+          warnings.push(
+            `Criterion "${row?.text ?? row?.ac_id ?? "(unnamed)"}" carries disposition '${String(row?.disposition)}', which is not one of ${CRITERION_DISPOSITIONS.join(" | ")}. The ledger looks its mark up by this value, so an unrecognised one renders the literal string "undefined"; and the headline counts only 'walk', so the brief also under-reports how much you can confirm today.`
+          );
+        }
+      }
+      if (frame.bounded_accept !== void 0 && !isBoundedAcceptShaped(frame.bounded_accept)) {
+        warnings.push(
+          '`frame.bounded_accept` is present but is not shaped `{ open_ac_ids: string[], closes_when: string }`. The render walks those two keys, so a malformed value renders "criteria left open \u2014 none. Closes when undefined" \u2014 name the criteria this accept leaves open and what closes them.'
+        );
+      }
+      if (blank(frame.evidence_status)) {
+        warnings.push("`frame.evidence_status` is blank. It is mechanical by construction and present on every verify brief \u2014 supporting confidence, never the thing being acked.");
+      }
+      break;
+  }
+}
+function mentionsPullRequest(content, refs) {
+  if (/\/pull\/\d+/.test(content)) return true;
+  for (const ref of refs) {
+    if (ref.pr_url && content.includes(ref.pr_url)) return true;
+    if (typeof ref.pr_number === "number" && new RegExp(`#${ref.pr_number}\\b`).test(content)) return true;
+  }
+  return false;
+}
+function lintBrief(doc, content, ctx = {}) {
+  const errors = [];
+  const warnings = [];
+  if (ctx.manifestEvidenceWarning) warnings.push(ctx.manifestEvidenceWarning);
+  const research = doc.research ?? [];
+  if (ctx.reason === "release-decision-pending" && ctx.buildPr?.author_is_bot === true) {
+    if (!mentionsApprovalRequirement(content)) {
+      errors.push(
+        `This release brief is for a BOT-AUTHORED pull request${ctx.buildPr.pr_url ? ` (${ctx.buildPr.pr_url})` : ""}, which GitHub will not let the worker merge until a human approves it. The brief must SAY so \u2014 name the pull request, state that your approval on GitHub is required before the merge, and surface its current reviewDecision. Without that, accepting this brief starts a release that cannot proceed.`
+      );
+    }
+  }
+  if (ctx.reason === "release-decision-pending" && ctx.buildPrRefs?.length) {
+    if (!mentionsPullRequest(content, ctx.buildPrRefs)) {
+      const named = ctx.buildPrRefs.map((r) => r.pr_url ?? (typeof r.pr_number === "number" ? `#${r.pr_number}` : r.key)).join(", ");
+      warnings.push(
+        `This task records a pushed pull request (${named}) but the brief names no PR reference. Put it on the brief \u2014 the release reader must be able to open the thing they are authorizing a merge of.`
+      );
+    }
+  }
+  lintFrame(doc, ctx, errors, warnings);
+  if (!doc.revision && ctx.iteration !== void 0 && ctx.iteration > 1) {
+    warnings.push(`This brief is being composed as round ${ctx.iteration} but carries no \`doc.revision\`. An iterated brief owes the reader a record of what changed and which feedback each change answers \u2014 without it they must diff two renders to find out what moved.`);
+  }
+  if (ctx.iteration !== void 0 && ctx.iteration >= 2 && ctx.statesCause === false) {
+    warnings.push('This revision states no cause. Pass `revision_cause` ({ source, lines }) \u2014 the previous compose\'s lint.warnings for a lint self-review, or your one-line reason for a self-review \u2014 or `iterate_feedback` for a send-back. The revision is retained with a null cause and the history will read "No cause recorded" (B-1017).');
+  }
+  if (doc.revision) {
+    if (typeof doc.revision.round === "number" && doc.revision.round < 2) {
+      warnings.push(`\`doc.revision.round\` is ${doc.revision.round}. The revision block is a round-2+ artefact \u2014 a first-round brief has no prior feedback to answer.`);
+    }
+    for (const change of doc.revision.changes ?? []) {
+      if (blank(change?.responds_to)) {
+        warnings.push(`Revision change "${change?.change ?? "(unnamed)"}" names no feedback it responds to. Bind each change to the feedback it answers, so an "already reflected" claim has a falsifiable form.`);
+      }
+    }
+  }
+  for (const item of doc.items) {
+    if (item.kind === "derived-constraint") {
+      errors.push(
+        `Item "${item.text}" is a derived constraint already fixed elsewhere \u2014 move it to Context, do not ask the human to confirm it.`
+      );
+      continue;
+    }
+    if (item.kind === "decision" && !item.deferred && !item.recommendation?.trim()) {
+      errors.push(
+        `Decision "${item.text}" has no recommendation (naked fork). Recommend a default (mark it cede-able if it's a values call), or defer it behind research.`
+      );
+    }
+  }
+  if (doc.load_bearing_gap) {
+    if (research.length === 0) {
+      errors.push("Load-bearing knowledge gap declared but no research supplied \u2014 lead with the research, do not guess.");
+    }
+    if (doc.items.some((i) => i.kind === "decision" && !i.deferred)) {
+      errors.push("Load-bearing gap declared but a substantive decision is still being asked \u2014 defer the recommendation until research returns.");
+    }
+  }
+  const words = content.trim().split(/\s+/).filter(Boolean).length;
+  const budget = softWordBudget(doc);
+  if (words > budget) {
+    warnings.push(
+      `Brief renders to ${words} words (soft budget ${budget}, tier-aware). Trim noise \u2014 but don't amputate reasoning; expose detail via expand instead.`
+    );
+  }
+  const legibility = analyzeLegibility(content);
+  if (legibility.longSentences.length > 0) {
+    const worst = legibility.longSentences[0];
+    warnings.push(
+      `${legibility.longSentences.length} sentence(s) run past ${SENTENCE_WORD_LIMIT} words (longest: ${worst.words} \u2014 "${worst.excerpt}\u2026"). One idea per sentence \u2014 five clauses means five sentences (brief-authoring.md, legibility contract).`
+    );
+  }
+  const stackedParens = legibility.nestedParens + legibility.adjacentParens;
+  if (stackedParens > 0) {
+    warnings.push(
+      `Stacked parentheticals at ${stackedParens} spot(s) \u2014 an aside inside (or immediately against) an aside. Unstack these: lift the inner aside into its own sentence (brief-authoring.md, legibility contract).`
+    );
+  }
+  if (doc.recommend && !doc.recommend.cede && !doc.recommend.confidence) {
+    warnings.push(
+      "Recommendation has no confidence level \u2014 set an explicit `confidence` (high | medium | low) so the signal carries information; do not leave it unmarked or reflexively low."
+    );
+  }
+  return { ok: errors.length === 0, errors, warnings };
+}
 var BRIEF_COLS = "id, task_id, reason, doc, content, expand_sections, related, pending_activity, decision_ref, status, iteration, resolved_command, resolved_detail, resolved_at, created_by, created_at, updated_at";
+var VALID_REASONS = [
+  "clarification-draft",
+  "decomposition-proposal",
+  "design-decision-draft",
+  "plan-draft",
+  "release-decision-pending",
+  "verification-ack-pending",
+  "stale-patch-review",
+  "revise-scope-review"
+];
+var GATE_REASON_FLOW = {
+  "clarification-draft": {
+    carries_decision_ref: true,
+    derives_entry_content: true,
+    carries_writes: true,
+    writes_slot: true,
+    note: "Promotes the clarified-intent specification entry, whose body this gate records as a PLACEHOLDER moments before composing \u2014 so deriving it replaces a seat, never ratified prose. Promises the happy-path acceptance criteria (and any de-scope re-tickets). WRITES THE `clarify` SLOT (B-867) \u2014 through its own accept payload, since this reason defers into an acceptance event; the item is derived at compose from the doc's clarify frame, never hand-authored."
+  },
+  "decomposition-proposal": {
+    carries_decision_ref: true,
+    derives_entry_content: true,
+    carries_writes: true,
+    writes_slot: false,
+    note: "Promotes the decomposition rationale entry, recorded as a placeholder by this same gate. Promises the child tickets and any AC transfers. Writes NO slot: the ticket's durable face carries what this ticket is solving, what shipped and what was verified \u2014 a decomposition's answer is the child tickets themselves, which are already on the board and need no second copy."
+  },
+  "design-decision-draft": {
+    carries_decision_ref: true,
+    derives_entry_content: true,
+    carries_writes: true,
+    writes_slot: false,
+    note: "Promotes the design decision entry (technical / product / ux-ui track), recorded as a placeholder by this same gate; its `madr` block keeps its own authored value, only the body is projected. Promises the product track's AC manifest and the decision-only label. Writes NO slot: its durable record is the design decision ENTRY it promotes (and the AC manifest it files); a section restating that on the ticket would be a third copy of one decision."
+  },
+  "stale-patch-review": {
+    carries_decision_ref: true,
+    derives_entry_content: false,
+    carries_writes: false,
+    writes_slot: false,
+    note: "POINTER-ONLY, BY CONSTRUCTION \u2014 a NAMED, PRINCIPLED EXEMPTION, not a gap. It DOES carry a decision_ref, so the depth-pointer still renders and the accept still promotes the entry; today's stale-patch behaviour is unchanged, which is the point. But its decision_ref names `stale_ref.superseded_by`: ANOTHER GATE'S ALREADY-RATIFIED ENTRY, not a placeholder this gate recorded. Projecting the patch-review brief onto it would DESTROY ratified content \u2014 the inverse of this ticket's guarantee, aimed at an artefact the human ratified elsewhere. So content derivation stops here. (A null-successor brief omits decision_ref entirely and carries neither half.) Promises no structured writes. Writes NO slot, for the same reason it derives no content: everything it ratifies belongs to the gate whose entry it points at, and a durable section here would be that borrowed ratification wearing this ticket's face."
+  },
+  "revise-scope-review": {
+    carries_decision_ref: true,
+    derives_entry_content: true,
+    carries_writes: false,
+    writes_slot: false,
+    note: "Promotes the B-763 rationale record, recorded as a placeholder by this same gate; its trigger / supersede-list / keep-list / broadened-scope / AC-axis content now rides the brief's `doc.context`, where the human ratifies it. Promises no structured writes. Writes NO slot today: a re-scope changes what the CLARIFY slot should say, and the honest fix is for the re-clarify to rewrite that slot (latest-accepted-per-gate) rather than for this gate to open a competing section."
+  },
+  "plan-draft": {
+    carries_decision_ref: false,
+    derives_entry_content: false,
+    carries_writes: true,
+    writes_slot: false,
+    note: "WRITES HALF ONLY \u2014 composes no decision_ref, so its accept promotes no knowledge entry and there is no entry prose to derive. It does promise the plan-step checklist. Writes NO slot \u2014 note it DOES carry writes, so this column is not a restatement of the one before it: a plan is superseded by what actually shipped, and the release slot is where that lands."
+  },
+  "release-decision-pending": {
+    carries_decision_ref: false,
+    derives_entry_content: false,
+    carries_writes: false,
+    writes_slot: true,
+    note: "NEITHER HALF \u2014 the accept executes a landing (merge + deploy); it promotes no entry and promises no structured writes. WRITES THE `release` SLOT (B-867) \u2014 what shipped, where it landed, the PRs it landed through, and what is live but unproven. NOT through a payload: this accept creates no acceptance event, so finish-work calls the `write_gate_slot` MCP tool at the accept, reaching the same helper the payload dispatch reaches."
+  },
+  "verification-ack-pending": {
+    carries_decision_ref: false,
+    derives_entry_content: false,
+    carries_writes: false,
+    writes_slot: true,
+    note: "NEITHER HALF \u2014 the accept acknowledges observed reality against the criteria ledger; it promotes no entry and promises no structured writes. WRITES THE `verify` SLOT (B-867) \u2014 the criteria runbook, the environment it covers and the evidence behind it, kept for the reader who asks months later what 'Verified' actually meant here. Same route as release: no acceptance event exists, so the accept calls `write_gate_slot`."
+  }
+};
+function derivesEntryContent(reason) {
+  return !!reason && GATE_REASON_FLOW[reason]?.derives_entry_content === true;
+}
+var GATE_SLOT_FOR_PAYLOAD_REASON = {
+  "clarification-draft": "clarify"
+};
+function withDerivedGateSlot(doc, reason) {
+  const gate = GATE_SLOT_FOR_PAYLOAD_REASON[reason];
+  if (!gate) return doc;
+  const content = renderSlot(doc, gate);
+  if (!content) return doc;
+  const others = (doc.payload ?? []).filter((p) => !(p.write_kind === "gate_slot" && p.gate === gate));
+  const item = {
+    write_kind: "gate_slot",
+    ref: slugRef("slot", gate),
+    gate,
+    slot_content: content
+  };
+  return { ...doc, payload: [...others, item] };
+}
+function withDerivedEntryContent(doc, reason, decisionRef, ctx) {
+  if (!derivesEntryContent(reason)) return doc;
+  if (!decisionRef?.id) return doc;
+  const others = (doc.payload ?? []).filter((p) => p.write_kind !== "knowledge_entry_content");
+  const ref = slugRef("entry", decisionRef.id);
+  const stub = { write_kind: "knowledge_entry_content", ref, entry_id: decisionRef.id };
+  const staged = { ...doc, payload: [...others, stub] };
+  const content = renderEntry(staged, { ...ctx, decisionRef });
+  const title = deriveEntryTitle(staged, reason, { ...ctx, decisionRef });
+  return { ...staged, payload: [...others, { ...stub, content, ...title ? { title } : {} }] };
+}
+function withDiffDerivedRiskClasses(doc, changedPaths, priorRiskClasses) {
+  if (doc.frame?.kind !== "release") return doc;
+  if (changedPaths === void 0 && priorRiskClasses !== void 0) {
+    return { ...doc, frame: { ...doc.frame, risk_classes: [...priorRiskClasses] } };
+  }
+  const paths = Array.isArray(changedPaths) ? changedPaths.filter((x) => typeof x === "string") : [];
+  const risk_classes = paths.length > 0 ? detectRiskClasses({ changedPaths: paths }) : [];
+  return { ...doc, frame: { ...doc.frame, risk_classes } };
+}
+function withEvidenceClause(doc, clause) {
+  if (doc.frame?.kind !== "verify") return doc;
+  const current = typeof doc.frame.evidence_status === "string" ? doc.frame.evidence_status.trim() : "";
+  return {
+    ...doc,
+    frame: { ...doc.frame, evidence_status: current ? `${current} \xB7 ${clause}` : clause }
+  };
+}
+async function readTaskLabelNames(client, taskId) {
+  try {
+    const { data, error } = await client.from("task_labels").select("labels(name)").eq("task_id", taskId);
+    if (error) return [];
+    const rows = data ?? [];
+    return rows.map((r) => r.labels?.name).filter((n) => typeof n === "string");
+  } catch {
+    return [];
+  }
+}
+async function readAttestedKeys(client, taskId) {
+  const details = [];
+  try {
+    let rows = null;
+    const full = await client.from("briefs").select("resolved_detail, pending_resolution").eq("task_id", taskId).eq("reason", "verification-ack-pending");
+    if (full.error) {
+      const narrowed = await client.from("briefs").select("resolved_detail").eq("task_id", taskId).eq("reason", "verification-ack-pending");
+      if (narrowed.error) return [];
+      rows = narrowed.data ?? [];
+    } else {
+      rows = full.data ?? [];
+    }
+    for (const row of rows ?? []) {
+      if (typeof row.resolved_detail === "string") details.push(row.resolved_detail);
+      const pending = row.pending_resolution;
+      if (pending && typeof pending === "object" && typeof pending.detail === "string") {
+        details.push(pending.detail);
+      }
+    }
+  } catch {
+    return [];
+  }
+  return parseAttestedKeys(details);
+}
+async function withManifestEvidence(client, taskId, doc, args) {
+  if (doc.frame?.kind !== "verify") return { doc };
+  const read = readDeclaredEvidence(args.manifest_root);
+  if (read.kind === "none") return { doc };
+  if (read.kind === "malformed") {
+    return {
+      doc: withEvidenceClause(doc, malformedEvidenceClause(read.problem)),
+      warning: malformedEvidenceWarning(read.problem)
+    };
+  }
+  const needsLabels = read.entries.some((e) => (e.applies_to?.labels?.length ?? 0) > 0);
+  const labels = needsLabels ? await readTaskLabelNames(client, taskId) : [];
+  const attestedKeys = await readAttestedKeys(client, taskId);
+  const result = resolveManifestEvidence(read.entries, {
+    changedPaths: args.changed_paths,
+    labels,
+    attestedKeys
+  });
+  if (result.rows.length === 0 && result.clause === null) return { doc };
+  const frame = doc.frame;
+  const withRows = {
+    ...doc,
+    frame: { ...frame, criteria: [...frame.criteria ?? [], ...result.rows] }
+  };
+  return { doc: result.clause ? withEvidenceClause(withRows, result.clause) : withRows };
+}
+var NOT_COMPUTED_SIGNAL = {
+  status: "not-computed",
+  message: "not computed \u2014 no diff supplied",
+  entries: []
+};
+async function fetchContentByIds(client, projectId, ids) {
+  if (ids.length === 0) return {};
+  try {
+    const workspaceId = await getWorkspaceId(client, projectId);
+    const { data, error } = await client.from("knowledge_decisions").select("id, content").eq("workspace_id", workspaceId).eq("project_id", projectId).in("id", ids);
+    if (error) return {};
+    const map = {};
+    for (const row of data ?? []) {
+      map[row.id] = row.content ?? "";
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+async function withContradictionSignal(doc, client, projectId, taskId, diffContent) {
+  if (doc.frame?.kind !== "release") return doc;
+  if (diffContent === void 0) {
+    return { ...doc, frame: { ...doc.frame, contradiction_signal: NOT_COMPUTED_SIGNAL } };
+  }
+  const parsed = parseDiff(diffContent);
+  const searchTerms = deriveSearchTerms(parsed.removedLines);
+  if (searchTerms.length === 0) {
+    const signal2 = { status: "no-candidates", message: "no TIER candidates", entries: [] };
+    if (parsed.truncated) signal2.truncated = parsed.truncated;
+    return { ...doc, frame: { ...doc.frame, contradiction_signal: signal2 } };
+  }
+  let floorRows = [];
+  try {
+    floorRows = await listTicketKnowledge(client, projectId, { task_id: taskId });
+  } catch {
+    floorRows = [];
+  }
+  const floorAccepted = floorRows.filter((r) => r.status === "Accepted");
+  let tierRows = [];
+  try {
+    tierRows = await queryKnowledge(client, projectId, {
+      search: searchTerms.join(" "),
+      limit: TIER_CANDIDATE_LIMIT
+    });
+  } catch {
+    tierRows = [];
+  }
+  const tierIds = tierRows.map((r) => r.id).filter((id) => typeof id === "string");
+  const tierContentById = await fetchContentByIds(client, projectId, tierIds);
+  const seen = /* @__PURE__ */ new Set();
+  const entries = [];
+  const consider = (id, title, content, source) => {
+    if (!id || seen.has(id) || typeof content !== "string" || content.length === 0) return;
+    seen.add(id);
+    const match = matchEntryAgainstDiff(content, parsed.removedLines, parsed.addedLines);
+    if (!match) return;
+    entries.push({
+      entry_id: id,
+      title: title ?? "(untitled)",
+      state: match.state,
+      matched_values: match.matchedValues,
+      source
+    });
+  };
+  for (const row of floorAccepted) consider(row.id ?? row.decision_id, row.title, row.content, "floor");
+  for (const row of tierRows) consider(row.id, row.title, row.id ? tierContentById[row.id] : void 0, "tier");
+  const signal = {
+    status: "computed",
+    message: entries.length === 0 ? "does-not-fire \u2014 nothing linked/matched was touched" : `${entries.length} Accepted entr${entries.length === 1 ? "y" : "ies"} touched by this diff`,
+    entries
+  };
+  if (parsed.truncated) signal.truncated = parsed.truncated;
+  return { ...doc, frame: { ...doc.frame, contradiction_signal: signal } };
+}
+function mergeBriefDoc(prior, patch) {
+  if (!prior || typeof prior !== "object") return patch;
+  const merged = { ...prior };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === void 0) continue;
+    merged[key] = value;
+  }
+  return merged;
+}
+var isMissingComposeBriefRevision = (err) => {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42883" || code === "PGRST202") return true;
+  const msg = err.message ?? "";
+  return /compose_brief_revision/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg);
+};
+var isMissingComposeBriefInitial = (err) => {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42883" || code === "PGRST202") return true;
+  const msg = err.message ?? "";
+  return /compose_brief_initial/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg);
+};
+async function composeBrief(client, projectId, userId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  if (!VALID_REASONS.includes(args.reason)) {
+    throw new Error(`reason must be one of: ${VALID_REASONS.join(", ")}`);
+  }
+  if (!args.doc?.decide?.trim()) throw new Error("doc.decide is required");
+  if (args.revision_cause !== void 0 && !isRevisionCause(args.revision_cause)) {
+    throw new Error(`compose_brief: revision_cause must be { source: <one of ${REVISION_CAUSE_SOURCES.join(" | ")}>, lines: string[] }`);
+  }
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  let buildPr;
+  let buildPrRefs;
+  if (args.reason === "release-decision-pending") {
+    const { data: taskRow } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
+    const fv = taskRow?.field_values;
+    buildPr = readBuildPr(fv);
+    buildPrRefs = readBuildPrReferences(fv);
+  }
+  const { data: existing, error: lookupErr } = await client.from("briefs").select("id, iteration, decision_ref, doc, pending_activity").eq("task_id", taskId).eq("status", "active").maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+  const existingRow = existing;
+  const mergedDecisionRef = args.decision_ref !== void 0 ? args.decision_ref ?? null : existingRow?.decision_ref ?? null;
+  const priorDoc = existingRow?.doc ?? null;
+  const mergedDoc = mergeBriefDoc(priorDoc, args.doc);
+  const priorRiskClasses = priorDoc?.frame?.kind === "release" ? priorDoc.frame.risk_classes : void 0;
+  const pendingActivity = typeof args.pending_activity === "string" && args.pending_activity.trim().toLowerCase() === "null" ? null : args.pending_activity;
+  const mergedPendingActivity = args.pending_activity !== void 0 ? pendingActivity ?? null : existingRow?.pending_activity ?? null;
+  let accept = null;
+  if (mergedPendingActivity) {
+    const { data: task, error: tErr } = await client.from("tasks").select("workflow_state, stale").eq("id", taskId).single();
+    if (tErr) throw new Error(tErr.message);
+    const taskRow = task;
+    const fromState = taskRow?.workflow_state ?? null;
+    if (taskRow?.stale === true && args.reason !== "stale-patch-review" && args.reason !== "revise-scope-review") {
+      throw new Error(
+        `Task is stale (tasks.stale=true) \u2014 cannot compose a state-advancing brief (reason '${args.reason}'). Route through harmony-stale-patch (files a 'stale-patch-review' brief) or harmony-revise-scope first.`
+      );
+    }
+    let q = client.from("workflow_transitions").select("to_state").eq("activity", mergedPendingActivity);
+    q = fromState === null ? q.is("from_state", null) : q.eq("from_state", fromState);
+    const { data: tr, error: trErr } = await q.maybeSingle();
+    if (trErr) throw new Error(trErr.message);
+    if (!tr) {
+      throw new Error(`pending_activity '${mergedPendingActivity}' has no valid transition from state '${fromState ?? "NULL"}'`);
+    }
+    accept = { from: fromState, to: tr.to_state };
+  } else if (args.reason === "plan-draft") {
+    throw new Error(
+      "A 'plan-draft' brief must carry a real pending_activity (e.g. 'planning') \u2014 its accept always advances Designed \u2192 Planned, so it cannot advance no state."
+    );
+  }
+  let visualId;
+  if (args.reason === "decomposition-proposal" || args.reason === "design-decision-draft") {
+    try {
+      const [{ data: taskRow }, project] = await Promise.all([
+        client.from("tasks").select("task_number").eq("id", taskId).maybeSingle(),
+        getProject(client, projectId)
+      ]);
+      const taskNumber = taskRow?.task_number;
+      if (taskNumber != null && project?.key) {
+        visualId = `${project.key}-${taskNumber}`;
+      }
+    } catch {
+    }
+  }
+  const renderCtx = { reason: args.reason, accept, visualId };
+  const docWithContradiction = await withContradictionSignal(
+    withDiffDerivedRiskClasses(mergedDoc, args.changed_paths, priorRiskClasses),
+    client,
+    projectId,
+    taskId,
+    args.diff_content
+  );
+  const manifestEvidence = await withManifestEvidence(client, taskId, docWithContradiction, args);
+  const doc = withDerivedEntryContent(
+    withDerivedGateSlot(manifestEvidence.doc, args.reason),
+    args.reason,
+    mergedDecisionRef,
+    renderCtx
+  );
+  let floorCount;
+  const expectedFrameKind = FRAME_KIND_FOR_REASON[args.reason];
+  if (expectedFrameKind && expectedFrameKind !== "verify") {
+    try {
+      const floorRows = await listTicketKnowledge(client, projectId, { task_id: taskId });
+      floorCount = floorRows.filter((r) => r.status === "Accepted").length;
+    } catch {
+      floorCount = void 0;
+    }
+  }
+  const content = renderBrief(doc, mergedDecisionRef, renderCtx);
+  const lint = lintBrief(doc, content, {
+    reason: args.reason,
+    buildPr,
+    buildPrRefs,
+    // The POST-increment iteration — identical to the value the update below writes, so the lint judges the
+    // round the human will actually read. No active brief means this compose is round 1.
+    iteration: existing ? (existing.iteration ?? 1) + 1 : 1,
+    floorCount,
+    // B-974 — present ONLY when the manifest declaring verify evidence could not be read.
+    manifestEvidenceWarning: manifestEvidence.warning,
+    // B-1017 — an explicit cause, or a send-back the DB derives one from.
+    statesCause: args.revision_cause !== void 0 || args.iterate_feedback != null
+  });
+  if (!lint.ok) {
+    throw new Error(`Brief failed the \xA73.2 pre-send lint:
+- ${lint.errors.join("\n- ")}`);
+  }
+  const payload = {
+    reason: args.reason,
+    doc,
+    content,
+    expand_sections: args.expand_sections ?? {},
+    related: args.related ?? [],
+    // B-901: the MERGED activity (see above). The non-RPC fallback below is a wholesale UPDATE, so
+    // writing this call's own argument would NULL an activity the row carries forward — the same
+    // destructive-write shape B-866 closed for `decision_ref` — and would contradict the **On accept:**
+    // line rendered just above from the merged value.
+    pending_activity: mergedPendingActivity,
+    // B-866: the MERGED ref (see above), so the non-RPC fallback UPDATE below no longer nulls a
+    // carried-forward pointer that the rendered content still advertises. On the INSERT path there is no
+    // prior revision, so this is exactly `args.decision_ref ?? null` — unchanged.
+    decision_ref: mergedDecisionRef,
+    // B-485 Phase 2 (release-review fix): composing/iterating a brief CONSUMES any browser-submitted
+    // reshape, so null out `pending_resolution` as part of the write. The conductor owns no brief-write
+    // tool; a browser `reshape` writes `pending_resolution`, then the running conductor re-composes via
+    // compose_brief (§4d) — this in-place iterate IS the consume moment, so clearing it here is the natural
+    // place. Without it the marker would linger and risk an ambiguous row (a stale reshape coexisting with a
+    // later state-advance). compose_brief is skill-only (the web never composes — see the NOTE below), so
+    // this never clobbers a reshape the web means to keep: on the iterate re-compose the agent IS consuming
+    // it; on a first compose there is no active brief yet, so the write is a harmless no-op. Safe against
+    // schema drift: per the prod-gate the column is present whenever this code runs (web-migration-first,
+    // §3), and the update is wrapped in a guarded fallback below so an older DB degrades instead of 400-ing.
+    pending_resolution: null
+  };
+  const isMissingPendingResolution = (msg) => !!msg && /pending_resolution/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
+  const revisionPatch = { reason: args.reason, doc, content };
+  if (args.expand_sections !== void 0) revisionPatch.expand_sections = args.expand_sections;
+  if (args.related !== void 0) revisionPatch.related = args.related;
+  if (args.pending_activity !== void 0) revisionPatch.pending_activity = pendingActivity ?? null;
+  if (args.decision_ref !== void 0) revisionPatch.decision_ref = args.decision_ref ?? null;
+  let brief;
+  if (existing) {
+    const briefId = existing.id;
+    const baseArgs = {
+      _task_id: taskId,
+      _patch: revisionPatch,
+      _iterate_feedback: args.iterate_feedback ?? null,
+      _created_by: userId,
+      p_conduction_id: getConductionId() ?? null,
+      p_leg: getLeg() ?? null
+    };
+    const withCause = { ...baseArgs, _revision_cause: args.revision_cause ?? null };
+    const withLintWarnings = { ...withCause, p_lint_warnings: lint.warnings };
+    let { data: revision, error: revisionErr } = await client.rpc("compose_brief_revision", withLintWarnings);
+    if (revisionErr && isMissingComposeBriefRevision(revisionErr)) {
+      ({ data: revision, error: revisionErr } = await client.rpc("compose_brief_revision", withCause));
+      if (!revisionErr) {
+        lint.warnings.push("lint_warnings not stored \u2014 this database's compose_brief_revision predates it (B-1054); the residual warning is not recorded, but the leg still proceeds.");
+      } else if (isMissingComposeBriefRevision(revisionErr)) {
+        ({ data: revision, error: revisionErr } = await client.rpc("compose_brief_revision", baseArgs));
+        if (!revisionErr) {
+          lint.warnings.push("revision_cause not stored \u2014 this database's compose_brief_revision predates it (B-1017); the revision was retained with a null cause.");
+        }
+      }
+    }
+    if (!revisionErr) {
+      brief = revision;
+    } else if (isMissingComposeBriefRevision(revisionErr)) {
+      const updateRow = { ...payload, iteration: (existing.iteration ?? 1) + 1 };
+      const { data, error } = await client.from("briefs").update(updateRow).eq("id", briefId).select(BRIEF_COLS).single();
+      if (error) {
+        if (!isMissingPendingResolution(error.message)) throw new Error(error.message);
+        const { pending_resolution: _drop, ...fallback } = updateRow;
+        const { data: data2, error: error2 } = await client.from("briefs").update(fallback).eq("id", briefId).select(BRIEF_COLS).single();
+        if (error2) throw new Error(error2.message);
+        brief = data2;
+      } else {
+        brief = data;
+      }
+    } else {
+      throw new Error(revisionErr.message);
+    }
+    if (args.underwriting_claim_ids !== void 0) {
+      const kept = args.underwriting_claim_ids;
+      let prune = client.from("knowledge_decisions").update({ status: "Archived" }).eq("underwriting_brief_id", briefId).eq("status", "Asserted");
+      if (kept.length > 0) {
+        prune = prune.not("id", "in", `(${kept.join(",")})`);
+      }
+      const { error: pruneErr } = await prune;
+      if (pruneErr) {
+        const missingClaimColumn = /underwriting_brief_id/.test(pruneErr.message ?? "") && /(does not exist|could not find|schema cache|column)/i.test(pruneErr.message ?? "");
+        if (!missingClaimColumn) throw new Error(pruneErr.message);
+      }
+    }
+  } else {
+    const insertBriefRow = async () => {
+      const insertRow = { task_id: taskId, created_by: userId, ...payload };
+      const { data, error } = await client.from("briefs").insert(insertRow).select(BRIEF_COLS).single();
+      if (error) {
+        if (!isMissingPendingResolution(error.message)) throw new Error(error.message);
+        const { pending_resolution: _drop, ...fallback } = insertRow;
+        const { data: data2, error: error2 } = await client.from("briefs").insert(fallback).select(BRIEF_COLS).single();
+        if (error2) throw new Error(error2.message);
+        return data2;
+      }
+      return data;
+    };
+    if (args.couple_claim_ids !== void 0) {
+      const { data: initialData, error: initialErr } = await client.rpc("compose_brief_initial", {
+        _task_id: taskId,
+        _payload: payload,
+        _claim_ids: args.couple_claim_ids,
+        _created_by: userId
+      });
+      if (!initialErr) {
+        brief = initialData;
+      } else if (isMissingComposeBriefInitial(initialErr)) {
+        brief = await insertBriefRow();
+        if (args.couple_claim_ids.length > 0) {
+          const briefId = brief.id;
+          const { error: coupleErr } = await client.from("knowledge_decisions").update({ underwriting_brief_id: briefId }).in("id", args.couple_claim_ids).eq("status", "Asserted");
+          if (coupleErr) throw new Error(coupleErr.message);
+        }
+      } else {
+        throw new Error(initialErr.message);
+      }
+    } else {
+      brief = await insertBriefRow();
+    }
+  }
+  const { error: taskErr } = await client.from("tasks").update({
+    awaiting_human_input: true,
+    awaiting_human_reason: args.reason,
+    awaiting_human_ref: { type: "brief", id: brief.id }
+  }).eq("id", taskId);
+  if (taskErr) throw new Error(taskErr.message);
+  return { brief, lint };
+}
 var composeBriefTool = {
   name: "compose_brief",
   description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). On a FIRST compose only (when no active brief exists yet), pass `couple_claim_ids` (B-736) = the ids of elicitation claims minted just before this call \u2014 compose atomically couples them (`underwriting_brief_id`) to the brief it creates via `compose_brief_initial`, tolerantly falling back to a bare insert plus a separate coupling update on a DB that does not yet have that RPC; omit it when no exchange ran. Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING, with one exception (B-1016): a `release` frame missing `evidence_status` is REFUSED outright \u2014 call `get_build_evidence_status` and carry its counts. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose \u2014 compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing \u2014 an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal. B-1017: pass `revision_cause` on every redraft that is not a send-back \u2014 see skills/harmony-shared/brief-authoring.md \xA7Stating the cause of a redraft.",
@@ -31203,9 +32800,90 @@ async function fetchPendingRemark(client, taskId) {
     return null;
   }
 }
+var isMissingRemarkParam = (msg) => !!msg && /p_remark/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
 var BRIEF_HISTORY_COLS = `${BRIEF_COLS}, lineage_id, iterate_feedback, revision_cause`;
 var BRIEF_HISTORY_COLS_NO_CAUSE = `${BRIEF_COLS}, lineage_id, iterate_feedback`;
 var ACCEPTED_PROVENANCE = `'${PROVENANCE_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_SYNTHESIZED}', or '${PROVENANCE_AGENT_SYNTHESIZED}:<mode>'`;
+function validateResolutionProvenance(raw) {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  if (!value) {
+    throw new Error(`provenance is required \u2014 declare who decided this: ${ACCEPTED_PROVENANCE}`);
+  }
+  if (value === PROVENANCE_HUMAN_IN_SESSION) return value;
+  if (value === PROVENANCE_AGENT_SYNTHESIZED) return value;
+  if (value.startsWith(`${PROVENANCE_AGENT_SYNTHESIZED}:`)) {
+    const mode = value.slice(PROVENANCE_AGENT_SYNTHESIZED.length + 1).trim();
+    if (mode) return `${PROVENANCE_AGENT_SYNTHESIZED}:${mode}`;
+    throw new Error(
+      `invalid provenance '${value}' \u2014 '${PROVENANCE_AGENT_SYNTHESIZED}:' must name a delegation mode (e.g. '${PROVENANCE_AGENT_SYNTHESIZED}:unattended'), or use bare '${PROVENANCE_AGENT_SYNTHESIZED}'`
+    );
+  }
+  if (value === PROVENANCE_WEB_ONLY) {
+    throw new Error(
+      `provenance '${PROVENANCE_WEB_ONLY}' is the web client's alone \u2014 the plugin is never the browser, and accepting it here would let an agent claim a human clicked. Use '${PROVENANCE_HUMAN_IN_SESSION}' when the human decided in this session, or '${PROVENANCE_AGENT_SYNTHESIZED}[:<mode>]' when the conductor synthesized it.`
+    );
+  }
+  throw new Error(
+    `unrecognised provenance '${value}' \u2014 accepted values are ${ACCEPTED_PROVENANCE}. Rejected rather than stored: an unrecognised value renders as unattributed forever, so a near-miss (e.g. the British 'agent-synthesised') would look like a data problem instead of a typo.`
+  );
+}
+async function resolveBrief(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  if (args.command !== "accept" && args.command !== "defer") {
+    throw new Error("resolve_brief handles only accept/defer; edit/iterate are skill-side, expand/related are reads on get_brief");
+  }
+  const provenance = validateResolutionProvenance(args.provenance);
+  const remark = typeof args.remark === "string" ? args.remark.trim() : "";
+  if (remark && args.command === "defer") {
+    throw new Error(
+      "a remark cannot accompany 'defer': the remark channel rides on accept, and a deferred ticket parks, so the remark would never be consumed. Drop the remark, or accept instead \u2014 for a defer reason use `detail`."
+    );
+  }
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const { data: active, error: lookupErr } = await client.from("briefs").select("id").eq("task_id", taskId).eq("status", "active").maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+  if (!active) {
+    if (args.command === "accept") {
+      const { data: task, error: taskErr } = await client.from("tasks").select("workflow_state, awaiting_human_reason, awaiting_human_ref").eq("id", taskId).maybeSingle();
+      if (taskErr) throw new Error(taskErr.message);
+      const row = task;
+      if (row?.workflow_state === "Deployed" && row.awaiting_human_reason === "verification-ack-pending" && row.awaiting_human_ref?.kind === "umbrella-auto-verify") {
+        const { data: data2, error: error2 } = await client.rpc("ack_umbrella_verify", { _task_id: taskId });
+        if (error2) throw new Error(error2.message);
+        return data2;
+      }
+    }
+    throw new Error(`no active brief for task ${args.task_id}`);
+  }
+  const rpcArgs = {
+    _brief_id: active.id,
+    _command: args.command,
+    _detail: args.detail ?? null,
+    // B-734: the decision entry's attribution. Validated above — never a caller's raw string.
+    p_provenance: provenance,
+    // B-1000: name the running conduction/leg, when this call is conductor-driven. Both params are
+    // already live on prod (B-994 shipped them as trailing DEFAULT NULL), so no tolerance guard is
+    // needed here — unlike reshapeBrief's log_brief_decision_event call below, which threads params
+    // this SAME ticket's own (not-yet-promoted) migration adds.
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: getLeg() ?? null
+  };
+  const { data, error } = await client.rpc(
+    "resolve_brief",
+    remark ? { ...rpcArgs, p_remark: remark } : rpcArgs
+  );
+  if (!error) return remark ? withRemarkRecorded(data, true) : data;
+  if (remark && isMissingRemarkParam(error.message)) {
+    const { data: retried, error: retryErr } = await client.rpc("resolve_brief", rpcArgs);
+    if (retryErr) throw new Error(retryErr.message);
+    return withRemarkRecorded(retried, false);
+  }
+  throw new Error(error.message);
+}
+function withRemarkRecorded(data, recorded) {
+  const base = data && typeof data === "object" ? data : {};
+  return { ...base, remark_recorded: recorded };
+}
 
 // src/elicitation/engine.ts
 var MAX_QUESTIONS_PER_ROUND = 5;
@@ -31413,6 +33091,7 @@ async function getTask(client, projectId, args) {
 }
 
 // src/tools/gate-slots.ts
+var GATE_SLOT_FIELD_KEY = "gate_slots";
 var ExcludedSlotSchema = external_exports.object({
   item: external_exports.string(),
   lands: external_exports.string()
@@ -31447,6 +33126,418 @@ var VerifySlotSchema = external_exports.object({
   evidence_status: external_exports.string().optional()
 }).passthrough();
 var UnknownGateSlotSchema = external_exports.record(external_exports.unknown());
+var GATE_SLOT_SCHEMAS = {
+  clarify: ClarifySlotSchema,
+  release: ReleaseSlotSchema,
+  verify: VerifySlotSchema
+};
+function isGateSlotName(gate) {
+  return GATE_SLOT_NAMES.includes(gate);
+}
+function parseGateSlotContent(gate, content) {
+  const schema = isGateSlotName(gate) ? GATE_SLOT_SCHEMAS[gate] : UnknownGateSlotSchema;
+  const parsed = schema.safeParse(content);
+  if (!parsed.success) {
+    const detail = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
+    throw new Error(`gate_slot content for gate '${gate}' does not match the pinned shape \u2014 ${detail}`);
+  }
+  return parsed.data;
+}
+var isPlainObject3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function isMissingGateSlotRpc(err) {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42P01" || code === "42883" || code === "PGRST202" || code === "PGRST205") return true;
+  const msg = err.message ?? "";
+  return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
+}
+function ratifiedAtStamp(now) {
+  return `${now.toISOString().slice(0, 19)}Z`;
+}
+async function writeGateSlot(client, args) {
+  const gate = (args.gate ?? "").trim();
+  if (!gate) throw new Error("gate_slot write names no gate \u2014 the slot is keyed by the gate that ratified it");
+  if (!isPlainObject3(args.content)) {
+    throw new Error(
+      `gate_slot write for gate '${gate}' must carry a content OBJECT (an EMPTY object is valid \u2014 it means the gate ratified an empty answer)`
+    );
+  }
+  const content = parseGateSlotContent(gate, args.content);
+  const keys = Object.keys(content);
+  if (args.target.via === "acceptance-event") {
+    const { data, error } = await client.rpc("consume_gate_slot_write", {
+      _event_id: args.target.event_id,
+      _external_ref: args.target.external_ref,
+      _gate: gate,
+      // ONLY the content. `ratified_by` / `ratified_at` are stamped INSIDE the function, from `_gate`
+      // and `now()` — sending them would let a replayed payload back-date a slot.
+      _content: content
+    });
+    if (error) {
+      if (isMissingGateSlotRpc(error)) return { gate, applied: false, keys, substrate_absent: true };
+      throw new Error(error.message);
+    }
+    const row = data ?? {};
+    return { gate, applied: row.applied === true, keys, result_id: row.result_id };
+  }
+  const taskId = args.target.task_id;
+  const { data: taskRow, error: readErr } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
+  if (readErr) throw new Error(readErr.message);
+  if (!taskRow) throw new Error(`gate_slot write for gate '${gate}' targets task ${taskId}, which does not exist`);
+  const fieldValues = isPlainObject3(taskRow.field_values) ? taskRow.field_values : {};
+  const existingSlots = isPlainObject3(fieldValues[GATE_SLOT_FIELD_KEY]) ? fieldValues[GATE_SLOT_FIELD_KEY] : {};
+  const ratified_at = ratifiedAtStamp(/* @__PURE__ */ new Date());
+  const nextFieldValues = {
+    ...fieldValues,
+    [GATE_SLOT_FIELD_KEY]: {
+      ...existingSlots,
+      // B-1062: `ratified_by` defaults to `gate` (unchanged behavior) unless the caller overrides it —
+      // see `WriteGateSlotArgs.ratified_by`'s doc comment for the one caller that does.
+      [gate]: { content, ratified_by: args.ratified_by ?? gate, ratified_at }
+    }
+  };
+  const { error: writeErr } = await client.from("tasks").update({ field_values: nextFieldValues }).eq("id", taskId);
+  if (writeErr) throw new Error(writeErr.message);
+  return { gate, applied: true, keys, result_id: taskId };
+}
+
+// src/tools/acceptance-events.ts
+function isMissingRelationOrFunction(err) {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42P01" || code === "42883" || code === "PGRST202" || code === "PGRST205") return true;
+  const msg = err.message ?? "";
+  return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
+}
+var isMissingTitleParam = (msg) => !!msg && /_title/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
+function isShippedMilestoneGuardError(error) {
+  if (!error) return false;
+  if (error.code !== "23514") return false;
+  const msg = error.message ?? "";
+  return /was shipped/i.test(msg) && /cannot be assigned to it/i.test(msg);
+}
+var ShippedMilestoneGuardError = class extends Error {
+  constructor(guardMessage) {
+    super(guardMessage);
+    this.name = "ShippedMilestoneGuardError";
+  }
+};
+async function probeAcceptanceEventSubstrate(client) {
+  const { error } = await client.from("pending_acceptance_events").select("id").limit(0);
+  if (!error) return "present";
+  if (isMissingRelationOrFunction(error)) return "absent";
+  throw new Error(`acceptance-event substrate probe failed (not a schema-absence error \u2014 do not degrade): ${error.message}`);
+}
+async function getPendingAcceptanceEvent(client, projectId, taskId) {
+  const resolvedId = await resolveTaskId(client, projectId, taskId);
+  const { data: task, error: taskErr } = await client.from("tasks").select("pending_acceptance_event_id").eq("id", resolvedId).maybeSingle();
+  if (taskErr) {
+    if (isMissingRelationOrFunction(taskErr)) return null;
+    throw new Error(taskErr.message);
+  }
+  const eventId = task?.pending_acceptance_event_id;
+  if (!eventId) return null;
+  const { data: event, error: eventErr } = await client.from("pending_acceptance_events").select("id, task_id, brief_id, reason, payload, pending_activity, status").eq("id", eventId).maybeSingle();
+  if (eventErr) {
+    if (isMissingRelationOrFunction(eventErr)) return null;
+    throw new Error(eventErr.message);
+  }
+  return event ?? null;
+}
+var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add", "knowledge_entry_content", "gate_slot", "supersede_decision", "implements_entities", "entity_link"]);
+function rawItemsOf(payload) {
+  const withNestedPayload = payload;
+  if (Array.isArray(withNestedPayload?.payload)) return withNestedPayload.payload;
+  if (Array.isArray(payload)) return payload;
+  const withItems = payload;
+  return Array.isArray(withItems?.items) ? withItems.items : [];
+}
+function itemsOf(payload) {
+  return rawItemsOf(payload);
+}
+function classifyPayload(payload) {
+  const raw = rawItemsOf(payload);
+  if (raw.length === 0) return "empty";
+  const allStructured = raw.every(
+    (i) => typeof i === "object" && i !== null && KNOWN_WRITE_KINDS.has(i.write_kind)
+  );
+  return allStructured ? "structured" : "unrecognized";
+}
+var WriteKindSubstrateAbsentError = class extends Error {
+  constructor(writeKind) {
+    super(`substrate absent for write_kind '${writeKind}' (RPC not found \u2014 B-383 pre-migration window)`);
+    this.writeKind = writeKind;
+  }
+  writeKind;
+};
+async function applyAcceptanceEventPayload(client, event) {
+  const items = itemsOf(event.payload);
+  const order = [
+    "child_ticket",
+    "checklist_item",
+    "acceptance_criterion",
+    "ac_transfer",
+    // B-867 sits HERE — after every concrete materialization, before the entry promotion. Same reasoning
+    // as the line below, one notch weaker: the slot is the ticket's DISPLAYED record of what this accept
+    // did, so a payload that fails partway must not leave a section on the ticket announcing writes that
+    // never landed. It stays AHEAD of the entry promotion because a slot is a projection of the brief,
+    // repaired by the next accept (latest-accepted-per-gate), whereas a wrongly-promoted entry has
+    // already superseded a real one.
+    "gate_slot",
+    // B-997 sits right after gate_slot, before knowledge_entry_content: it lands the human-confirmed
+    // feature-entity name(s) onto the ticket's field_values — a durable, displayed-adjacent record,
+    // same reasoning as gate_slot just above (materialize before the entry promotion / decision
+    // retirement below, which are the more consequential, harder-to-undo writes).
+    "implements_entities",
+    // B-843 sits after gate_slot, before label_add: it promotes the gate's knowledge entry and supersedes
+    // the previous round's. Running it after every AC/child/checklist write means a payload that fails
+    // partway leaves the knowledge base untouched rather than promoting a decision whose materialization
+    // never landed.
+    "knowledge_entry_content",
+    // B-997 sits right after knowledge_entry_content, before supersede_decision: it lands the
+    // already-resolved entity edge(s) a design/visual-handoff accept confirmed. Entity-NAME resolution
+    // happens HERE, in this dispatch, via resolveOrCreateEntity — never in SQL — so it must run after
+    // the entry promotion above (the same 'materialize before touching the knowledge base's terminal
+    // state' reasoning) and before supersede_decision below (a wholly separate decision retirement
+    // that must never be blocked by this write, or vice versa).
+    "entity_link",
+    // B-941 sits right after entity_link (B-997 inserted between it and knowledge_entry_content),
+    // before label_add: it retires an UPSTREAM decision
+    // (harmony-revise-scope's supersede-list) — a wholly different decision from the one
+    // knowledge_entry_content above may have just promoted, but the same "materialize before touching the
+    // knowledge base's terminal state" reasoning applies, and it has nothing to do with label_add's
+    // decision-only guard below, so it must never sit behind that potentially-blocked write.
+    "supersede_decision",
+    // B-1029: label_add moved LAST, deliberately after gate_slot/knowledge_entry_content (not before, as
+    // it used to run). `consume_label_add_write` can be blocked two ways that are NOT transient: a
+    // decision-only guard-block (a persistent business-rule refusal from the RPC itself) or the RPC being
+    // altogether absent on this DB (B-383 pre-migration window, surfaced as `substrate_absent_for`).
+    // Either one throws/degrades and stops the loop — so with label_add anywhere earlier in this order, a
+    // decision-only-shaped ticket's label write would PERMANENTLY block gate_slot/knowledge_entry_content
+    // from ever landing on that payload, even though those two writes have nothing to do with the label
+    // guard rule. Running label_add last means every other write in the payload lands first, and only the
+    // genuinely-blocked label write is left pending — it never blocks the more consequential writes.
+    "label_add"
+  ];
+  const ordered = order.flatMap((kind) => items.filter((i) => i.write_kind === kind));
+  let applied = 0;
+  let skipped = 0;
+  const byKind = {};
+  try {
+    for (const item of ordered) {
+      if (!item.ref) throw new Error(`payload item of write_kind '${item.write_kind}' is missing its stable 'ref' \u2014 cannot derive an idempotent external_ref`);
+      let result = null;
+      if (item.write_kind === "acceptance_criterion") {
+        if (!item.content) throw new Error(`acceptance_criterion item '${item.ref}' is missing content`);
+        const { data, error } = await client.rpc("consume_ac_add_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _content: item.content
+        });
+        if (error) throw new Error(error.message);
+        result = data;
+      } else if (item.write_kind === "child_ticket") {
+        if (!item.title) throw new Error(`child_ticket item '${item.ref}' is missing title`);
+        const { data, error } = await client.rpc("consume_child_mint_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _title: item.title,
+          _description: item.description ?? null
+        });
+        if (error) {
+          if (isShippedMilestoneGuardError(error)) throw new ShippedMilestoneGuardError(error.message);
+          throw new Error(error.message);
+        }
+        result = data;
+      } else if (item.write_kind === "checklist_item") {
+        if (!item.title) throw new Error(`checklist_item item '${item.ref}' is missing title`);
+        const { data, error } = await client.rpc("consume_checklist_item_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _title: item.title
+        });
+        if (error) throw new Error(error.message);
+        result = data;
+      } else if (item.write_kind === "ac_transfer") {
+        if (!item.content) throw new Error(`ac_transfer item '${item.ref}' is missing content`);
+        if (!item.target_child_ref) throw new Error(`ac_transfer item '${item.ref}' is missing target_child_ref`);
+        const { data, error } = await client.rpc("consume_ac_transfer_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _content: item.content,
+          _target_child_external_ref: item.target_child_ref,
+          _from_ac_id: item.from_ac_id ?? null
+        });
+        if (error) throw new Error(error.message);
+        result = data;
+      } else if (item.write_kind === "knowledge_entry_content") {
+        if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content \u2014 the payload CARRIES the entry text; it is never synthesized from doc fields`);
+        let { data, error } = await client.rpc("consume_knowledge_entry_content_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _content: item.content,
+          _entry_id: item.entry_id ?? null,
+          _title: item.title ?? null
+        });
+        if (error && isMissingTitleParam(error.message)) {
+          ({ data, error } = await client.rpc("consume_knowledge_entry_content_write", {
+            _event_id: event.id,
+            _external_ref: item.ref,
+            _content: item.content,
+            _entry_id: item.entry_id ?? null
+          }));
+        }
+        if (error) {
+          if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError("knowledge_entry_content");
+          throw new Error(error.message);
+        }
+        result = data;
+      } else if (item.write_kind === "gate_slot") {
+        if (!item.gate?.trim()) throw new Error(`gate_slot item '${item.ref}' names no gate \u2014 the slot is keyed by the gate that ratified it`);
+        if (!item.slot_content || typeof item.slot_content !== "object" || Array.isArray(item.slot_content)) {
+          throw new Error(`gate_slot item '${item.ref}' for gate '${item.gate}' carries no slot_content object \u2014 an EMPTY object is valid (the gate ratified an empty answer), an absent one is not`);
+        }
+        const slotResult = await writeGateSlot(client, {
+          gate: item.gate,
+          content: item.slot_content,
+          target: { via: "acceptance-event", event_id: event.id, external_ref: item.ref }
+        });
+        if (slotResult.substrate_absent) throw new WriteKindSubstrateAbsentError("gate_slot");
+        result = { applied: slotResult.applied };
+      } else if (item.write_kind === "implements_entities") {
+        if (!Array.isArray(item.names)) {
+          throw new Error(`implements_entities item '${item.ref}' carries no names array \u2014 an EMPTY array is valid (it means the ticket was confirmed to implement zero named entities), an absent/non-array one is not`);
+        }
+        const { data, error } = await client.rpc("consume_implements_entities_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _names: item.names
+        });
+        if (error) {
+          if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError("implements_entities");
+          throw new Error(error.message);
+        }
+        result = data;
+      } else if (item.write_kind === "entity_link") {
+        const name = item.entity_name?.trim();
+        if (!name) throw new Error(`entity_link item '${item.ref}' names no entity_name \u2014 the entity being linked must be identified`);
+        const { data: taskRow, error: taskErr } = await client.from("tasks").select("project_id").eq("id", event.task_id).maybeSingle();
+        if (taskErr) throw new Error(taskErr.message);
+        const projectId = taskRow?.project_id;
+        if (!projectId) throw new Error(`entity_link item '${item.ref}' \u2014 task ${event.task_id} has no project_id, cannot resolve the entity`);
+        const workspaceId = await getWorkspaceId(client, projectId);
+        const entityId = await resolveOrCreateEntity(client, workspaceId, projectId, name, item.entity_kind ?? "feature");
+        const { data, error } = await client.rpc("consume_entity_link_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _entity_id: entityId,
+          _decision_id: item.decision_id ?? null
+        });
+        if (error) {
+          if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError("entity_link");
+          throw new Error(error.message);
+        }
+        result = data;
+      } else if (item.write_kind === "supersede_decision") {
+        const decisionId = item.decision_id;
+        if (!decisionId) throw new Error(`supersede_decision item '${item.ref}' names no decision_id`);
+        const { data, error } = await client.rpc("consume_supersede_decision_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _decision_id: decisionId
+        });
+        if (error) {
+          if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError("supersede_decision");
+          throw new Error(error.message);
+        }
+        result = data;
+      } else if (item.write_kind === "label_add") {
+        if (item.label_name === "") throw new Error(`label_add item '${item.ref}' has an empty label_name`);
+        const labelName = item.label_name ?? "decision-only";
+        const { data, error } = await client.rpc("consume_label_add_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _label_name: labelName
+        });
+        if (error) {
+          if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError("label_add");
+          throw new Error(error.message);
+        }
+        result = data;
+      }
+      if (result?.applied) {
+        applied += 1;
+        byKind[item.write_kind] = (byKind[item.write_kind] ?? 0) + 1;
+      } else {
+        skipped += 1;
+      }
+    }
+  } catch (err) {
+    if (err instanceof WriteKindSubstrateAbsentError) {
+      return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind, substrate_absent_for: err.writeKind };
+    }
+    throw err;
+  }
+  return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind };
+}
+var RACED_EVENT_ERROR_SUBSTRING = "no longer matches event";
+async function consumeAcceptanceEvent(client, eventId) {
+  const { data, error } = await client.rpc("consume_acceptance_event", { _event_id: eventId });
+  if (!error) return data;
+  if (!error.message.includes(RACED_EVENT_ERROR_SUBSTRING)) {
+    throw new Error(error.message);
+  }
+  const { data: staleEventRow, error: staleEventErr } = await client.from("pending_acceptance_events").select("task_id").eq("id", eventId).maybeSingle();
+  if (staleEventErr || !staleEventRow) {
+    throw new Error(error.message);
+  }
+  const { data: taskRow, error: taskErr } = await client.from("tasks").select("pending_acceptance_event_id").eq("id", staleEventRow.task_id).maybeSingle();
+  if (taskErr || !taskRow) {
+    throw new Error(error.message);
+  }
+  const currentEventId = taskRow.pending_acceptance_event_id;
+  if (!currentEventId || currentEventId === eventId) {
+    throw new Error(error.message);
+  }
+  const { data: retryData, error: retryError } = await client.rpc("consume_acceptance_event", { _event_id: currentEventId });
+  if (retryError) throw new Error(retryError.message);
+  return { ...retryData, retried_from_event_id: eventId };
+}
+async function consumePendingAcceptanceEvent(client, projectId, taskId) {
+  const probe = await probeAcceptanceEventSubstrate(client);
+  if (probe === "absent") return { status: "substrate-absent" };
+  const event = await getPendingAcceptanceEvent(client, projectId, taskId);
+  if (!event) return { status: "none" };
+  if (event.status === "consumed") return { status: "none" };
+  if (classifyPayload(event.payload) === "unrecognized") {
+    return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
+  }
+  const applyResult = await applyAcceptanceEventPayload(client, event);
+  if (applyResult.substrate_absent_for) {
+    return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
+  }
+  const consumeResult = await consumeAcceptanceEvent(client, event.id);
+  let effectiveReason = event.reason;
+  let effectiveBriefId = event.brief_id;
+  if (consumeResult.event_id && consumeResult.event_id !== event.id) {
+    const { data: actualEventRow } = await client.from("pending_acceptance_events").select("reason, brief_id").eq("id", consumeResult.event_id).maybeSingle();
+    if (actualEventRow) {
+      const actual = actualEventRow;
+      effectiveReason = actual.reason;
+      effectiveBriefId = actual.brief_id;
+    }
+  }
+  return {
+    status: "consumed",
+    event_id: consumeResult.event_id,
+    applied: applyResult.applied,
+    skipped_already_done: applyResult.skipped_already_done,
+    by_write_kind: applyResult.by_write_kind,
+    workflow_state: consumeResult.workflow_state,
+    reason: effectiveReason,
+    brief_id: effectiveBriefId
+  };
+}
 
 // src/tools/decomposition.ts
 async function listSubtasks(client, projectId, args) {
@@ -31501,6 +33592,397 @@ async function recordLegOutput(client, args) {
     warn(`writing the ${args.source} output row threw (${errText(err)}) \u2014 the leg itself is unaffected`);
     return false;
   }
+}
+
+// src/tools/record-eligibility.ts
+function evaluateMultiRepoItem(evidence) {
+  const repos = Array.from(new Set(evidence.map((e) => e.repo).filter((r) => !!r)));
+  const value = `repos: ${repos.length} (${repos.join(", ") || "none determined"})`;
+  if (repos.length > 1) {
+    return {
+      item: "multi_repo",
+      label: "Single repo",
+      verdict: "fail",
+      value,
+      detail: `evidence spans ${repos.length} repos \u2014 a recorded walk covers exactly one repo's worth of change; split multi-repo work into a ticket per repo, or use harmony conduct instead.`
+    };
+  }
+  return { item: "multi_repo", label: "Single repo", verdict: "pass", value };
+}
+var MIGRATION_GLOB_REGEXES = PATH_GLOB_TABLE["data-migration"].map(globToRegExp);
+function evaluateMigrationItem(evidence) {
+  const allPaths = evidence.flatMap((e) => e.paths ?? []);
+  const migrationPaths = allPaths.filter((p) => MIGRATION_GLOB_REGEXES.some((re) => re.test(p)));
+  const value = `migration paths: ${migrationPaths.length} (${migrationPaths.slice(0, 5).join(", ") || "none"})`;
+  if (migrationPaths.length > 0) {
+    return {
+      item: "migration",
+      label: "No migration",
+      verdict: "fail",
+      value,
+      detail: "evidence touches a DB migration path \u2014 a schema change is exactly the class this floor exists to catch; use harmony conduct instead."
+    };
+  }
+  return { item: "migration", label: "No migration", verdict: "pass", value };
+}
+var GATED_RISK_CLASSES = ["auth", "irreversible-destructive", "shared-core"];
+function evaluateRiskClassItem(summary, evidence) {
+  const changedPaths = evidence.flatMap((e) => e.paths ?? []);
+  const classes = detectRiskClasses({ text: summary, changedPaths });
+  const gated = classes.filter((c) => GATED_RISK_CLASSES.includes(c));
+  const value = `risk_classes: [${classes.join(", ")}]`;
+  if (gated.length > 0) {
+    return {
+      item: "risk_class",
+      label: "No auth/shared-core/irreversible-destructive risk",
+      verdict: "fail",
+      value,
+      detail: `tripped: ${gated.join(", ")} \u2014 a high-consequence risk class is the conductor's own non-discretionary floor (B-493); a recorded walk carries no live gate to pause on it, so it refuses instead. Use harmony conduct.`
+    };
+  }
+  return { item: "risk_class", label: "No auth/shared-core/irreversible-destructive risk", verdict: "pass", value };
+}
+var SENTENCE_WORD_LIMIT2 = 50;
+function isSingleSentenceShaped(summary) {
+  const trimmed = summary.trim();
+  if (!trimmed) return false;
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length > SENTENCE_WORD_LIMIT2) return false;
+  const withoutTrailingTerminator = trimmed.replace(/[.!?]+\s*$/, "");
+  return !/[.!?]/.test(withoutTrailingTerminator);
+}
+function evaluateSingleSentenceItem(summary) {
+  const trimmed = summary.trim();
+  const wordCount = trimmed ? trimmed.split(/\s+/).filter(Boolean).length : 0;
+  const value = `summary: ${wordCount} words, ${trimmed ? '"' + (trimmed.length > 80 ? trimmed.slice(0, 77) + "..." : trimmed) + '"' : "(empty)"}`;
+  if (!isSingleSentenceShaped(summary)) {
+    return {
+      item: "single_sentence_change",
+      label: "Single-sentence-statable change",
+      verdict: "fail",
+      value,
+      detail: `not readable as one sentence (either >${SENTENCE_WORD_LIMIT2} words, or more than one sentence-terminator run) \u2014 a recorded walk needs a change a human can state in one sentence; use harmony conduct for anything that needs more room.`
+    };
+  }
+  return { item: "single_sentence_change", label: "Single-sentence-statable change", verdict: "pass", value };
+}
+function evaluateVerifyWalkItem(attestWalk) {
+  const trimmed = typeof attestWalk === "string" ? attestWalk.trim() : "";
+  if (!trimmed) {
+    return {
+      item: "verify_walk_attestation",
+      label: "Verify walk (5+ min) attested",
+      verdict: "unattested",
+      value: "verify-walk: UNATTESTED (no --attest-walk given)"
+    };
+  }
+  return {
+    item: "verify_walk_attestation",
+    label: "Verify walk (5+ min) attested",
+    verdict: "pass",
+    value: `verify-walk: ATTESTED ("${trimmed.length > 80 ? trimmed.slice(0, 77) + "..." : trimmed}")`
+  };
+}
+function evaluateEligibility(input) {
+  const items = [
+    evaluateMultiRepoItem(input.evidence),
+    evaluateMigrationItem(input.evidence),
+    evaluateRiskClassItem(input.summary, input.evidence),
+    evaluateSingleSentenceItem(input.summary),
+    evaluateVerifyWalkItem(input.attestWalk)
+  ];
+  return { items, eligible: items.every((i) => i.verdict === "pass") };
+}
+
+// src/tools/record-walk.ts
+var RATIFIED_BY_RECORDED = "recorded";
+var RESOLVE_BRIEF_PROVENANCE_RECORDED = "agent-synthesized:recorded";
+var GATE_REASONS = {
+  clarify: "clarification-draft",
+  decompose: "decomposition-proposal",
+  design: "design-decision-draft",
+  plan: "plan-draft",
+  release: "release-decision-pending"
+};
+var PAYLOAD_CARRYING_REASONS = /* @__PURE__ */ new Set([
+  "clarification-draft",
+  "decomposition-proposal",
+  "design-decision-draft",
+  "plan-draft"
+]);
+function trimmedOrEmpty(s) {
+  return typeof s === "string" ? s.trim() : "";
+}
+function deriveSolving(summary) {
+  const trimmed = trimmedOrEmpty(summary).replace(/[.!?]+$/, "");
+  return trimmed ? `${trimmed}.` : summary;
+}
+function describeIneligibility(report) {
+  const bad = report.items.filter((i) => i.verdict !== "pass");
+  const lines = bad.map((i) => `  - ${i.label}: ${i.verdict.toUpperCase()} (${i.value}${i.detail ? " \u2014 " + i.detail : ""})`);
+  return `harmony record refuses \u2014 ${bad.length} of 5 eligibility item(s) did not pass:
+` + lines.join("\n") + `
+Nothing was written. Use \`harmony conduct <ticket>\` instead to walk this ticket's gates live.`;
+}
+function renderAttestationComment(args) {
+  const when = (/* @__PURE__ */ new Date()).toISOString();
+  return `RECORDED-WALK-ATTESTATION
+who/what was walked: ${trimmedOrEmpty(args.attest_walk)}
+when: ${when}
+summary: ${trimmedOrEmpty(args.summary)}
+evidence: ${args.evidence.map((e) => e.url).join(", ") || "(none)"}`;
+}
+function buildAttestation(args) {
+  return {
+    who: null,
+    what_was_walked: trimmedOrEmpty(args.attest_walk),
+    when: (/* @__PURE__ */ new Date()).toISOString(),
+    evidence: args.evidence.map((e) => e.url)
+  };
+}
+async function composeAndAccept(client, projectId, userId, taskId, args) {
+  await composeBrief(client, projectId, userId, {
+    task_id: taskId,
+    reason: args.reason,
+    pending_activity: args.pendingActivity ?? void 0,
+    changed_paths: args.changedPaths,
+    doc: {
+      decide: args.decide,
+      why: args.why,
+      items: [],
+      frame: args.frame
+    }
+  });
+  await resolveBrief(client, projectId, {
+    task_id: taskId,
+    command: "accept",
+    provenance: RESOLVE_BRIEF_PROVENANCE_RECORDED
+  });
+  if (PAYLOAD_CARRYING_REASONS.has(args.reason)) {
+    const consumed = await consumePendingAcceptanceEvent(client, projectId, taskId);
+    if (consumed.status !== "consumed" && consumed.status !== "none" && consumed.status !== "substrate-absent") {
+      throw new Error(
+        `recorded walk: ${args.reason} accept deferred a payload this core could not apply cleanly (status: ${consumed.status}) \u2014 a human must resume this gate by hand, e.g. via consume_pending_acceptance_event / the owning gate skill's self-heal route.`
+      );
+    }
+  }
+}
+async function runRecordedWalk(client, projectId, userId, args) {
+  const eligibility = evaluateEligibility({
+    summary: args.summary,
+    evidence: args.evidence,
+    attestWalk: args.attest_walk
+  });
+  if (!eligibility.eligible) {
+    return {
+      task_id: args.task_id,
+      eligibility,
+      refused: true,
+      refusal_reason: describeIneligibility(eligibility),
+      gates: [],
+      attestation_recorded: false
+    };
+  }
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const gates = [];
+  let attestationRecorded = false;
+  const summary = trimmedOrEmpty(args.summary);
+  const solving = deriveSolving(summary);
+  const repos = Array.from(new Set(args.evidence.map((e) => e.repo).filter((r) => !!r)));
+  const changedPaths = args.evidence.flatMap((e) => e.paths ?? []);
+  try {
+    await composeAndAccept(client, projectId, userId, taskId, {
+      reason: GATE_REASONS.clarify,
+      pendingActivity: "clarifying",
+      decide: `Record ${args.task_id}'s intent from the supplied summary and evidence (recorded, not conducted).`,
+      why: [summary],
+      frame: {
+        kind: "clarify",
+        solving,
+        in_scope: [summary],
+        not_solving: []
+      }
+    });
+    gates.push({ gate: "clarify", reason: GATE_REASONS.clarify, landed: true });
+    const clarifyContent = {
+      solving,
+      in_scope: [summary],
+      not_solving: [],
+      attestation: buildAttestation(args)
+    };
+    await writeGateSlot(client, {
+      gate: "clarify",
+      content: clarifyContent,
+      target: { via: "task", task_id: taskId },
+      ratified_by: RATIFIED_BY_RECORDED
+    });
+    if (trimmedOrEmpty(args.attest_walk)) {
+      await addComment(client, projectId, userId, { task_id: taskId, content: renderAttestationComment(args) });
+      attestationRecorded = true;
+    }
+    await composeAndAccept(client, projectId, userId, taskId, {
+      reason: GATE_REASONS.decompose,
+      pendingActivity: "decomposing",
+      decide: `Confirm ${args.task_id} does not split (recorded walk).`,
+      frame: {
+        kind: "decompose",
+        elements: [],
+        coverage: "Recorded walk \u2014 no decomposition; the work is recorded as a single ticket from the supplied summary and evidence.",
+        existing_children_checked: true
+      }
+    });
+    gates.push({ gate: "decompose", reason: GATE_REASONS.decompose, landed: true });
+    await composeAndAccept(client, projectId, userId, taskId, {
+      reason: GATE_REASONS.design,
+      pendingActivity: "designing",
+      decide: `Confirm ${args.task_id} needs no new design decision (recorded walk).`,
+      frame: {
+        kind: "design",
+        track: "technical-design",
+        tracks: [
+          { track: "product-design", status: "not-required", note: "Recorded walk \u2014 no product-design decision to ratify." },
+          { track: "technical-design", status: "not-required", note: "Recorded walk \u2014 no technical-design decision to ratify." },
+          { track: "ux-ui-design", status: "not-required", note: "Recorded walk \u2014 no ux-ui-design decision to ratify." }
+        ],
+        reach: []
+      }
+    });
+    gates.push({ gate: "design", reason: GATE_REASONS.design, landed: true });
+    await composeAndAccept(client, projectId, userId, taskId, {
+      reason: GATE_REASONS.plan,
+      pendingActivity: "planning",
+      decide: `Record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not conducted).`,
+      frame: {
+        kind: "plan",
+        scope: { repos: repos.length > 0 ? repos : ["(unknown \u2014 no repo derived from evidence)"], surfaces: [], has_migration: false },
+        steps: [summary],
+        attestation: { base_verified: "recorded walk \u2014 no live base-verify run; ratified from supplied evidence" },
+        carried_unproven: [],
+        ac_coverage: "Recorded from the supplied summary and evidence; this walk files no acceptance criteria."
+      }
+    });
+    gates.push({ gate: "plan", reason: GATE_REASONS.plan, landed: true });
+    await advanceWorkflow(client, projectId, { task_id: taskId, activity: "building" });
+    gates.push({ gate: "build", landed: true });
+    await composeAndAccept(client, projectId, userId, taskId, {
+      reason: GATE_REASONS.release,
+      // pending_activity: null — Built->Deployed is SYSTEM-on-deploy-success, never this accept's own
+      // doing (mirrors finish-work's own release compose — see skills/finish-work/SKILL.md).
+      pendingActivity: null,
+      decide: `Record what ${args.task_id} shipped, from the supplied summary and evidence (recorded, not conducted).`,
+      frame: {
+        kind: "release",
+        act: {
+          repos: repos.length > 0 ? repos : [],
+          pr_count: args.evidence.length,
+          lands_in: "merged-main",
+          atomicity: repos.length > 1 ? "together" : "single",
+          irreversible: []
+        },
+        unproven: [],
+        evidence_status: {
+          proven_by_run: 0,
+          walk_at_verify: 0,
+          unproven: 0,
+          total: 0,
+          detail: "Recorded walk \u2014 evidence linked from the supplied links, not independently re-verified at this accept."
+        },
+        risk_classes: []
+        // overwritten by compose_brief from changedPaths (B-876) — authored value is never trusted.
+      },
+      changedPaths
+    });
+    const releaseContent = {
+      shipped: solving,
+      lands_in: "merged-main",
+      prs: args.evidence.map((e) => ({ url: e.url, repo: e.repo })),
+      unproven: [],
+      evidence_status: "Recorded walk \u2014 evidence linked, not independently re-verified."
+    };
+    await writeGateSlot(client, {
+      gate: "release",
+      content: releaseContent,
+      target: { via: "task", task_id: taskId },
+      ratified_by: RATIFIED_BY_RECORDED
+    });
+    gates.push({ gate: "release", reason: GATE_REASONS.release, landed: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      task_id: taskId,
+      eligibility,
+      refused: false,
+      gates,
+      attestation_recorded: attestationRecorded,
+      error: `recorded walk failed after landing ${gates.length} gate(s) (${gates.map((g) => g.gate).join(", ") || "none"}) \u2014 ${message} \u2014 resume by hand from the next unlanded gate, or via harmony conduct.`
+    };
+  }
+  return { task_id: taskId, eligibility, refused: false, gates, attestation_recorded: attestationRecorded };
+}
+
+// src/daemon/recorded-walk-drain.ts
+var RECORDED_WALK_REQUESTS_TABLE = "recorded_walk_requests";
+function isMissingRecordedWalkRequestsTable(err) {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42P01" || code === "PGRST205" || code === "PGRST204") return true;
+  const msg = err.message ?? "";
+  return new RegExp(RECORDED_WALK_REQUESTS_TABLE).test(msg) && /(does not exist|could not find|schema cache)/i.test(msg);
+}
+var LOG_PREFIX = "[recorded-walk-drain]";
+async function runRecordedWalkDrainPass(deps) {
+  const { client, projectId, userId, log } = deps;
+  let pending;
+  try {
+    const { data, error } = await client.from(RECORDED_WALK_REQUESTS_TABLE).select("id, task_id, summary, evidence_links, attest_walk, requested_by, requested_at, status, processed_at, error, result").eq("status", "pending").order("requested_at", { ascending: true }).limit(1);
+    if (error) {
+      if (isMissingRecordedWalkRequestsTable(error)) {
+        log(`${LOG_PREFIX} ${RECORDED_WALK_REQUESTS_TABLE} table not found \u2014 skipping this pass (B-1063 not yet merged)`);
+        return 0;
+      }
+      throw new Error(error.message);
+    }
+    pending = data ?? [];
+  } catch (err) {
+    log(`${LOG_PREFIX} read failed \u2014 skipping this pass (${err instanceof Error ? err.message : String(err)})`);
+    return 0;
+  }
+  if (pending.length === 0) return 0;
+  const request = pending[0];
+  const { data: claimed, error: claimErr } = await client.from(RECORDED_WALK_REQUESTS_TABLE).update({ status: "processing" }).eq("id", request.id).eq("status", "pending").select("id").maybeSingle();
+  if (claimErr) {
+    log(`${LOG_PREFIX} claim failed for request ${request.id} \u2014 skipping this pass (${claimErr.message})`);
+    return 0;
+  }
+  if (!claimed) {
+    return 0;
+  }
+  const args = {
+    task_id: request.task_id,
+    summary: request.summary,
+    evidence: request.evidence_links ?? [],
+    attest_walk: request.attest_walk ?? void 0
+  };
+  let result;
+  let failureMessage;
+  try {
+    result = await runRecordedWalk(client, projectId, userId, args);
+    if (result.refused) failureMessage = result.refusal_reason;
+    else if (result.error) failureMessage = result.error;
+  } catch (err) {
+    failureMessage = err instanceof Error ? err.message : String(err);
+  }
+  const finalStatus = failureMessage ? "error" : "done";
+  const { error: writeBackErr } = await client.from(RECORDED_WALK_REQUESTS_TABLE).update({ status: finalStatus, processed_at: (/* @__PURE__ */ new Date()).toISOString(), error: failureMessage ?? null, result: result ?? null }).eq("id", request.id);
+  if (writeBackErr) {
+    log(`${LOG_PREFIX} write-back failed for request ${request.id} \u2014 it stays 'processing' (${writeBackErr.message})`);
+  }
+  if (failureMessage) {
+    log(`${LOG_PREFIX} request ${request.id} (task ${request.task_id}) failed: ${failureMessage}`);
+  } else {
+    log(`${LOG_PREFIX} request ${request.id} (task ${request.task_id}) recorded \u2014 ${result?.gates.length ?? 0} gate(s) landed`);
+  }
+  return 1;
 }
 
 // src/daemon/error-format.ts
@@ -32626,6 +35108,13 @@ async function runScheduler(deps, keeper) {
     if (consecutiveAuthFailingPasses >= AUTH_FAILURE_PASS_LIMIT) {
       throw new PersistentAuthFailure(consecutiveAuthFailingPasses);
     }
+    if (deps.drainRecordedWalkRequests) {
+      try {
+        await deps.drainRecordedWalkRequests();
+      } catch (err) {
+        deps.log(`recorded-walk drain pass failed: ${formatDaemonError(err)}`);
+      }
+    }
     if (deps.hints) {
       await Promise.race([deps.sleep(deps.config.pollMs), deps.hints.next()]);
       deps.hints.abandon();
@@ -33132,7 +35621,14 @@ ${err instanceof Error ? err.message : String(err)}
     // lifetime (same pin-at-boot discipline as projectKey above). `deploymentConfig` is null on every
     // machine with no ~/.harmony/deployment.json, which leaves this undefined and lets
     // templateVars fall back to the schema default — never a throw, never a launch blocked.
-    workerImage: deploymentConfig?.worker_image
+    workerImage: deploymentConfig?.worker_image,
+    // B-1062: the recorded-walk drain, ONE request per pass, running the SAME zero-worker-leg
+    // gate-walk core `harmony record` uses (src/tools/record-walk.ts) directly in-process. Attributed
+    // to this daemon's own authenticated service-account user id — see recorded-walk-drain.ts's own
+    // header for the tolerant-absence contract (the table may not exist yet).
+    drainRecordedWalkRequests: async () => {
+      await runRecordedWalkDrainPass({ client, projectId, userId: auth.getUserId(), log });
+    }
   };
   const keeper = createHeartbeatKeeper({
     now: Date.now,
