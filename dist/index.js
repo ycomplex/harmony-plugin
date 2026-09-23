@@ -47424,14 +47424,22 @@ async function composeBrief(client, projectId, userId, args) {
       _task_id: taskId,
       _patch: revisionPatch,
       _iterate_feedback: args.iterate_feedback ?? null,
-      _created_by: userId
+      _created_by: userId,
+      p_conduction_id: getConductionId() ?? null,
+      p_leg: getLeg() ?? null
     };
     const withCause = { ...baseArgs, _revision_cause: args.revision_cause ?? null };
-    let { data: revision, error: revisionErr } = await client.rpc("compose_brief_revision", withCause);
+    const withLintWarnings = { ...withCause, p_lint_warnings: lint.warnings };
+    let { data: revision, error: revisionErr } = await client.rpc("compose_brief_revision", withLintWarnings);
     if (revisionErr && isMissingComposeBriefRevision(revisionErr)) {
-      ({ data: revision, error: revisionErr } = await client.rpc("compose_brief_revision", baseArgs));
+      ({ data: revision, error: revisionErr } = await client.rpc("compose_brief_revision", withCause));
       if (!revisionErr) {
-        lint.warnings.push("revision_cause not stored \u2014 this database's compose_brief_revision predates it (B-1017); the revision was retained with a null cause.");
+        lint.warnings.push("lint_warnings not stored \u2014 this database's compose_brief_revision predates it (B-1054); the residual warning is not recorded, but the leg still proceeds.");
+      } else if (isMissingComposeBriefRevision(revisionErr)) {
+        ({ data: revision, error: revisionErr } = await client.rpc("compose_brief_revision", baseArgs));
+        if (!revisionErr) {
+          lint.warnings.push("revision_cause not stored \u2014 this database's compose_brief_revision predates it (B-1017); the revision was retained with a null cause.");
+        }
       }
     }
     if (!revisionErr) {
