@@ -543,6 +543,18 @@ export async function runRecordedWalk(
       step_ref: '1',
     }));
     const verifyEvidenceSummary = args.evidence.map((e) => e.url).join(', ') || '(none)';
+    // B-1068 — a REAL step 1, not a bare pointer: one action + one expected observation, covering
+    // every filed criterion (a recorded walk audits the record itself against ALL of them at once, so
+    // one step legitimately covers all ids). Without this, record-walk's own self-composed verify
+    // brief would fail the runbook-integrity checks it is now held to, same as any other verify brief.
+    const verifySteps = verifyCriteria.length
+      ? [{
+          ref: '1',
+          action: `Open the linked evidence (${verifyEvidenceSummary}) and compare it against the recorded summary — "${solving}".`,
+          expect: 'The linked PRs/commits exist and their content matches what was recorded, for every criterion below.',
+          covers: verifyCriteria.map((c) => c.ac_id),
+        }]
+      : [];
     await composeBrief(client, projectId, userId, {
       task_id: taskId,
       reason: 'verification-ack-pending',
@@ -567,6 +579,7 @@ export async function runRecordedWalk(
           // merged PR/commit, not yet promoted anywhere — never guess 'production' without confirmation.
           environment: 'merged-main',
           criteria: verifyCriteria,
+          steps: verifySteps,
           evidence_status:
             `Recorded walk — evidence linked from the supplied links (${verifyEvidenceSummary}); ` +
             'verify walk attestation on file.',

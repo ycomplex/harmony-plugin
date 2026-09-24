@@ -381,14 +381,32 @@ not what the human scans for at the ship decision.
 **The question.** Does real-world behavior match what we intended?
 
 **The must-haves.** The brief is the human's **verification runbook**, built from the
-ticket's acceptance criteria:
-- Hand-checkable ACs become do-X → expect-Y steps the human walks to confirm reality.
+ticket's acceptance criteria. Since B-1068, the walk is a STRUCTURED field, not prose scattered
+across why-bullets — a verify brief cannot compose without it:
+- Hand-checkable ACs become do-X → expect-Y steps the human walks to confirm reality, authored
+  directly as `frame.steps: [{ ref, action, expect, covers }]` — one ordered array on the frame,
+  never a freeform "RUNBOOK step N" reference buried in prose. `action` and `expect` are two
+  SEPARATE fields, not one free-text field with an `EXPECT:` habit: `action` is the ONE thing to
+  do, `expect` is the ONE observation that confirms it worked, each concrete enough to follow
+  with no other context (e.g. `action`: "Click Record on a ticket with no active brief.",
+  `expect`: "A dialog titled 'Record a walk' opens with three inputs."), and `covers` names the
+  acceptance-criterion ids that step discharges. Each hand-checkable criterion then carries
+  `disposition: "walk"` and a `step_ref` pointing at the `ref` of the step that walks it.
 - Non-hand-checkable ACs are stated honestly ("this can't be hand-verified"), backed by what
-  the agent ran and a query or command the human can run themselves.
+  the agent ran and a query or command the human can run themselves — these carry no
+  `step_ref` and need no `frame.steps` entry of their own.
 - The build-evidence line sits underneath as supporting confidence — it is NOT the thing
   being acked.
 
-The runbook is memory-free: the human confirms reality, not the agent's claim.
+**Compose refuses, it does not merely warn, when the runbook is broken** (B-1068): a `walk`
+criterion with no `frame.steps` at all; a `step_ref` matching no declared step; a declared step
+covering no filed criterion; a `walk` criterion naming no `step_ref`; or a step whose `action` or
+`expect` is blank (checked independently — either one blank trips the same refusal). Author the
+whole runbook before composing — there is no partial-credit path.
+
+The runbook is memory-free: the human confirms reality, not the agent's claim. It renders as a
+numbered **Walk** section above the criteria table, so the human reads the steps before the
+ledger that cross-references them.
 
 **An umbrella is not a different mode.** Its ACs are integration-level — do the assembled
 pieces work together — so its runbook is that integration check. The mechanical roll-up (all
