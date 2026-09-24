@@ -116,6 +116,10 @@ jobs:
             # TODO(founder, release gate): SMOKE_CASES placeholder — see header.
             node evals/clarify-replay/scripts/fetch-labels.mjs B-293 B-818
           fi
+          # B-1081: point every replay case at its FX fixture ticket (prompt.md is committed with the
+          # literal __FIXTURE_TICKET_ID__; without this step the skill is asked about a ticket by that
+          # name — observed on the first genuinely completed run, 36025867254). Working tree only.
+          node evals/clarify-replay/scripts/substitute-fixture-ids.mjs
           node evals/clarify-replay/scripts/fetch-labels.mjs --controls B-293
 
       # The mocked run itself. --mocks record (hand-authored mocks, no live servers) + --runs 1 per
@@ -157,8 +161,12 @@ jobs:
             --ablation none \
             --threshold 0 \
             --allow-tools Write \
+            --scaffold \
             "${CASE_FILTER[@]}" \
             --json evals/clarify-replay/results/result.json || EVAL_RC=$?
+          # --scaffold: runs each case's scaffold_script (only the two controls have one) in the empty run
+          #   workspace before the agent starts — it copies the generated fixture to the path prompt.md names.
+          #   add_dirs alone only grants read access at a path the agent cannot discover (B-1081).
           # --allow-tools Write: the two control cases copy a fixture to a file, and the runner WITHHOLDS a
           #   gated tool (Bash/Write/Edit/...) from every run unless the operator grants it here — a case's
           #   own allowed_tools is necessary but not sufficient ("grader ... cannot pass with the granted
