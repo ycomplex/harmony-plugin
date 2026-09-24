@@ -3065,7 +3065,7 @@ describe('B-876 gate frame', () => {
     const criteria = (over.criteria as CriterionRow[] | undefined) ?? Array.from({ length: rows }, (_, i) => criterionRow(i + 1));
     const defaultSteps = criteria
       .filter((r) => r?.disposition === 'walk' && typeof r.step_ref === 'string' && r.step_ref.trim().length > 0)
-      .map((r) => ({ ref: r.step_ref as string, text: `Walk step ${r.step_ref} — check "${r.text}". EXPECT: it holds.`, covers: [r.ac_id] }));
+      .map((r) => ({ ref: r.step_ref as string, action: `Walk step ${r.step_ref} — check "${r.text}".`, expect: 'it holds.', covers: [r.ac_id] }));
     return {
       kind: 'verify',
       environment: 'staging',
@@ -3556,7 +3556,7 @@ describe('B-876 gate frame', () => {
           frame: {
             kind: 'verify', environment: 'staging',
             criteria: [walkCriterion({ step_ref: 'nope' })],
-            steps: [{ ref: '1', text: 'Click Record. EXPECT: a dialog opens.', covers: ['ac-1'] }],
+            steps: [{ ref: '1', action: 'Click Record.', expect: 'A dialog opens.', covers: ['ac-1'] }],
             evidence_status: '✓ complete',
           } as GateFrame,
         });
@@ -3570,7 +3570,7 @@ describe('B-876 gate frame', () => {
           frame: {
             kind: 'verify', environment: 'staging',
             criteria: [walkCriterion()],
-            steps: [{ ref: '1', text: 'Click Record. EXPECT: a dialog opens.', covers: ['ac-unrelated'] }],
+            steps: [{ ref: '1', action: 'Click Record.', expect: 'A dialog opens.', covers: ['ac-unrelated'] }],
             evidence_status: '✓ complete',
           } as GateFrame,
         });
@@ -3584,7 +3584,7 @@ describe('B-876 gate frame', () => {
           frame: {
             kind: 'verify', environment: 'staging',
             criteria: [walkCriterion({ step_ref: undefined })],
-            steps: [{ ref: '1', text: 'Click Record. EXPECT: a dialog opens.', covers: ['ac-1'] }],
+            steps: [{ ref: '1', action: 'Click Record.', expect: 'A dialog opens.', covers: ['ac-1'] }],
             evidence_status: '✓ complete',
           } as GateFrame,
         });
@@ -3593,18 +3593,32 @@ describe('B-876 gate frame', () => {
         expect(r.errors.join(' ')).toContain('names no `step_ref`');
       });
 
-      it('(e) REFUSES a step with blank text — no action or no expected observation', () => {
+      it('(e) REFUSES a step with a blank `action` — checked independently of `expect`', () => {
         const doc = baseDoc({
           frame: {
             kind: 'verify', environment: 'staging',
             criteria: [walkCriterion()],
-            steps: [{ ref: '1', text: '   ', covers: ['ac-1'] }],
+            steps: [{ ref: '1', action: '   ', expect: 'A dialog opens.', covers: ['ac-1'] }],
             evidence_status: '✓ complete',
           } as GateFrame,
         });
         const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
         expect(r.ok).toBe(false);
-        expect(r.errors.join(' ')).toContain('has blank `text`');
+        expect(r.errors.join(' ')).toContain('has blank `action`');
+      });
+
+      it('(e) REFUSES a step with a blank `expect` — checked independently of `action`', () => {
+        const doc = baseDoc({
+          frame: {
+            kind: 'verify', environment: 'staging',
+            criteria: [walkCriterion()],
+            steps: [{ ref: '1', action: 'Click Record.', expect: '   ', covers: ['ac-1'] }],
+            evidence_status: '✓ complete',
+          } as GateFrame,
+        });
+        const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
+        expect(r.ok).toBe(false);
+        expect(r.errors.join(' ')).toContain('has blank `expect`');
       });
 
       it("REFUSES items[].kind === 'step' (closed dead path, B-983/B-925)", () => {
@@ -3613,7 +3627,7 @@ describe('B-876 gate frame', () => {
           frame: {
             kind: 'verify', environment: 'staging',
             criteria: [walkCriterion()],
-            steps: [{ ref: '1', text: 'Click Record. EXPECT: a dialog opens.', covers: ['ac-1'] }],
+            steps: [{ ref: '1', action: 'Click Record.', expect: 'A dialog opens.', covers: ['ac-1'] }],
             evidence_status: '✓ complete',
           } as GateFrame,
         });
@@ -3627,7 +3641,7 @@ describe('B-876 gate frame', () => {
           frame: {
             kind: 'verify', environment: 'staging',
             criteria: [walkCriterion()],
-            steps: [{ ref: '1', text: 'Click Record. EXPECT: a dialog opens.', covers: ['ac-1'] }],
+            steps: [{ ref: '1', action: 'Click Record.', expect: 'A dialog opens.', covers: ['ac-1'] }],
             runbook: 'freeform prose',
             evidence_status: '✓ complete',
           } as unknown as GateFrame,
@@ -3647,8 +3661,8 @@ describe('B-876 gate frame', () => {
               walkCriterion({ ac_id: 'ac-3', step_ref: '2' }),
             ],
             steps: [
-              { ref: '1', text: 'Click Record on a ticket with no active brief. EXPECT: a dialog titled "Record a walk" opens with three inputs.', covers: ['ac-1', 'ac-2'] },
-              { ref: '2', text: 'Submit the dialog with a summary and one evidence link. EXPECT: the ticket advances through every gate to Verified.', covers: ['ac-3'] },
+              { ref: '1', action: 'Click Record on a ticket with no active brief.', expect: 'A dialog titled "Record a walk" opens with three inputs.', covers: ['ac-1', 'ac-2'] },
+              { ref: '2', action: 'Submit the dialog with a summary and one evidence link.', expect: 'The ticket advances through every gate to Verified.', covers: ['ac-3'] },
             ],
             evidence_status: '✓ complete',
           } as GateFrame,
@@ -3657,10 +3671,10 @@ describe('B-876 gate frame', () => {
         expect(r.ok).toBe(true);
         expect(r.errors).toEqual([]);
         const md = renderBrief(doc, null, { reason: 'verification-ack-pending' });
-        expect(md).toContain('**Walk:**');
-        expect(md).toContain('1. Click Record on a ticket with no active brief. EXPECT: a dialog titled "Record a walk" opens with three inputs.');
-        expect(md).toContain('2. Submit the dialog with a summary and one evidence link. EXPECT: the ticket advances through every gate to Verified.');
-        expect(md.indexOf('**Walk:**')).toBeLessThan(md.indexOf('**Verifying against'));
+        expect(md).toContain('**Walk**');
+        expect(md).toContain('1. Click Record on a ticket with no active brief. — expect: A dialog titled "Record a walk" opens with three inputs. (covers: #ac-1, #ac-2)');
+        expect(md).toContain('2. Submit the dialog with a summary and one evidence link. — expect: The ticket advances through every gate to Verified. (covers: #ac-3)');
+        expect(md.indexOf('**Walk**')).toBeLessThan(md.indexOf('**Verifying against'));
       });
     });
 
@@ -4926,7 +4940,7 @@ verify:
           { ac_id: 'ac-1', text: 'The saved view persists across a reload', checked: false, disposition: 'walk', step_ref: '1' },
         ],
         steps: [
-          { ref: '1', text: 'Reload the page with a saved view active. EXPECT: the same view is still applied.', covers: ['ac-1'] },
+          { ref: '1', action: 'Reload the page with a saved view active.', expect: 'The same view is still applied.', covers: ['ac-1'] },
         ],
         evidence_status: '✓ complete',
       } as GateFrame,

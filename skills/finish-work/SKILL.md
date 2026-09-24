@@ -1070,11 +1070,13 @@ frame: {
       carried_to: "<ticket>", backed_by: "<the tests that do cover it>" }
   ],
   // The ordered runbook itself (B-1068) — ONE entry per distinct walk step, not per criterion: several
-  // criteria may share a step (`covers` lists every ac_id it discharges). `text` is ONE action plus ONE
-  // expected observation, concrete enough to follow with no other context.
+  // criteria may share a step (`covers` lists every ac_id it discharges). `action` and `expect` are two
+  // SEPARATE fields, not one free-text field with an `EXPECT:` habit — `action` is the ONE thing to do,
+  // `expect` is the ONE observable result that confirms it worked.
   steps: [
     { ref: "1",
-      text: "<Do one concrete thing. EXPECT: <the observable result>.>",
+      action: "<Do one concrete thing.>",
+      expect: "<The observable result.>",
       covers: ["<id>"] }             // every ac_id this step discharges — REQUIRED, non-empty
   ],
   // exempt_reason: "<umbrella — carried by children / decision-only>"  — when the ticket has no ACs of its own
@@ -1090,9 +1092,10 @@ closes it permanently, and the human should see that as a row, not infer it from
 
 **Compose REFUSES, not merely warns, when the runbook is broken (B-1068):** a `walk` criterion with no
 `frame.steps` at all; a `step_ref` matching no declared `frame.steps[].ref`; a declared step whose `covers`
-names no filed criterion; a `walk` criterion naming no `step_ref`; or a step whose `text` is blank. Author
-every hand-checkable criterion's step before calling `compose_brief` — there is no partial-credit path, and
-a refused compose leaves the prior brief (if any) untouched.
+names no filed criterion; a `walk` criterion naming no `step_ref`; or a step whose `action` or `expect` is
+blank (checked independently — either one blank trips the same refusal). Author every hand-checkable
+criterion's step before calling `compose_brief` — there is no partial-credit path, and a refused compose
+leaves the prior brief (if any) untouched.
 
 ```
 mcp__harmony__compose_brief({

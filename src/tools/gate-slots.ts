@@ -126,7 +126,8 @@ export const CriterionSlotSchema = z.object({
  *  just a step number pointing at a brief that has since scrolled off. */
 export const VerifyStepSlotSchema = z.object({
   ref: z.string().optional(),
-  text: z.string().optional(),
+  action: z.string().optional(),
+  expect: z.string().optional(),
   covers: z.array(z.string()).optional(),
 }).passthrough();
 

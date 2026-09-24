@@ -237,8 +237,8 @@ describe('runRecordedWalk — advances to Deployed and composes (never accepts) 
     expect(lint.errors).toEqual([]);
     expect(lint.ok).toBe(true);
     // and the walk really does render, above the criteria table
-    expect(md).toContain('**Walk:**');
-    expect(md.indexOf('**Walk:**')).toBeLessThan(md.indexOf('**Verifying against'));
+    expect(md).toContain('**Walk**');
+    expect(md.indexOf('**Walk**')).toBeLessThan(md.indexOf('**Verifying against'));
   });
 
   it('the verify brief is COMPOSED but NEVER accepted — resolve_brief is never called for it', async () => {

@@ -550,10 +550,8 @@ export async function runRecordedWalk(
     const verifySteps = verifyCriteria.length
       ? [{
           ref: '1',
-          text:
-            `Open the linked evidence (${verifyEvidenceSummary}) and compare it against the recorded ` +
-            `summary — "${solving}". EXPECT: the linked PRs/commits exist and their content matches ` +
-            'what was recorded, for every criterion below.',
+          action: `Open the linked evidence (${verifyEvidenceSummary}) and compare it against the recorded summary — "${solving}".`,
+          expect: 'The linked PRs/commits exist and their content matches what was recorded, for every criterion below.',
           covers: verifyCriteria.map((c) => c.ac_id),
         }]
       : [];
