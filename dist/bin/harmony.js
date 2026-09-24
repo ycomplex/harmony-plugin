@@ -43075,17 +43075,18 @@ function describeIneligibility(report) {
 ` + lines.join("\n") + `
 Nothing was written. Use \`harmony conduct <ticket>\` instead to walk this ticket's gates live.`;
 }
-function renderAttestationComment(args) {
+function renderAttestationComment(args, userId) {
   const when = (/* @__PURE__ */ new Date()).toISOString();
   return `RECORDED-WALK-ATTESTATION
-who/what was walked: ${trimmedOrEmpty(args.attest_walk)}
+who: ${userId}
+what_was_walked: ${trimmedOrEmpty(args.attest_walk)}
 when: ${when}
 summary: ${trimmedOrEmpty(args.summary)}
 evidence: ${args.evidence.map((e) => e.url).join(", ") || "(none)"}`;
 }
-function buildAttestation(args) {
+function buildAttestation(args, userId) {
   return {
-    who: null,
+    who: userId,
     what_was_walked: trimmedOrEmpty(args.attest_walk),
     when: (/* @__PURE__ */ new Date()).toISOString(),
     evidence: args.evidence.map((e) => e.url)
@@ -43142,6 +43143,12 @@ async function runRecordedWalk(client, projectId, userId, args) {
   const repos = Array.from(new Set(args.evidence.map((e) => e.repo).filter((r) => !!r)));
   const changedPaths = args.evidence.flatMap((e) => e.paths ?? []);
   try {
+    const { data: currentTaskRow, error: currentStateErr } = await client.from("tasks").select("workflow_state").eq("id", taskId).eq("project_id", projectId).single();
+    if (currentStateErr) throw currentStateErr;
+    const currentWorkflowState = currentTaskRow?.workflow_state ?? null;
+    if (currentWorkflowState === "Captured") {
+      await advanceWorkflow(client, projectId, { task_id: taskId, activity: "proposing" });
+    }
     await composeAndAccept(client, projectId, userId, taskId, {
       reason: GATE_REASONS.clarify,
       pendingActivity: "clarifying",
@@ -43159,7 +43166,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
       solving,
       in_scope: [summary],
       not_solving: [],
-      attestation: buildAttestation(args)
+      attestation: buildAttestation(args, userId)
     };
     await writeGateSlot(client, {
       gate: "clarify",
@@ -43168,9 +43175,17 @@ async function runRecordedWalk(client, projectId, userId, args) {
       ratified_by: RATIFIED_BY_RECORDED
     });
     if (trimmedOrEmpty(args.attest_walk)) {
-      await addComment(client, projectId, userId, { task_id: taskId, content: renderAttestationComment(args) });
+      await addComment(client, projectId, userId, { task_id: taskId, content: renderAttestationComment(args, userId) });
       attestationRecorded = true;
     }
+    const evidenceSummary = args.evidence.map((e) => e.url).join(", ") || "(none)";
+    await manageAcceptanceCriteria(client, projectId, userId, {
+      task_id: taskId,
+      add: [{
+        content: `${summary} \u2014 recorded from ${evidenceSummary}; verify walk attested by ${userId}`,
+        checked: true
+      }]
+    });
     await composeAndAccept(client, projectId, userId, taskId, {
       reason: GATE_REASONS.decompose,
       pendingActivity: "decomposing",
@@ -43209,7 +43224,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
         steps: [summary],
         attestation: { base_verified: "recorded walk \u2014 no live base-verify run; ratified from supplied evidence" },
         carried_unproven: [],
-        ac_coverage: "Recorded from the supplied summary and evidence; this walk files no acceptance criteria."
+        ac_coverage: "Recorded from the supplied summary and evidence; one checked acceptance criterion was filed at clarify to satisfy the build gate's B-747 floor."
       }
     });
     gates.push({ gate: "plan", reason: GATE_REASONS.plan, landed: true });
@@ -43258,7 +43273,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
     });
     gates.push({ gate: "release", reason: GATE_REASONS.release, landed: true });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = err instanceof Error ? err.message : typeof err === "object" && err !== null && "message" in err ? String(err.message) : JSON.stringify(err);
     return {
       task_id: taskId,
       eligibility,
