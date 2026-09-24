@@ -66,14 +66,18 @@ only ever `SELECT`s from `tasks` and `briefs`.
 
 ## 4. Substitute the fixture ids into each case's prompt
 
-`prompt.md` carries `__FIXTURE_TICKET_ID__`. With key `FX` and preserved numbers:
+`prompt.md` carries `__FIXTURE_TICKET_ID__`. With key `FX` and preserved numbers, case `B-293`
+targets `FX-293`:
 
 ```bash
-for d in evals/clarify-replay/cases/B-*/; do n=$(basename "$d"); n=${n#B-}
-  sed -i '' "s/__FIXTURE_TICKET_ID__/FX-${n}/g" "$d/prompt.md"; done     # GNU sed: sed -i
+node evals/clarify-replay/scripts/substitute-fixture-ids.mjs            # all B-* cases
+node evals/clarify-replay/scripts/substitute-fixture-ids.mjs B-293 B-818 # a subset
 ```
 
-Working tree only — restore afterwards: `git checkout -- evals/clarify-replay/cases/*/prompt.md`.
+Idempotent; the `ctrl-*` controls carry no placeholder and are skipped. CI runs this step right
+after fetch-labels (B-1081 — until then no CI run had ever substituted, so the skill was asked about
+a ticket literally named `__FIXTURE_TICKET_ID__`). Working tree only — restore afterwards:
+`git checkout -- evals/clarify-replay/cases/*/prompt.md`.
 
 ## 5. Build, then run
 
@@ -196,11 +200,13 @@ HARMONY_SUPABASE_URL=<staging url> HARMONY_SUPABASE_ANON_KEY=<staging anon key> 
   HARMONY_API_TOKEN=<FX token> node evals/clarify-replay/scripts/fixture-export.mjs
 ```
 
-### 8e. Generating `_tools.json` (optional, not yet generated)
+### 8e. `_tools.json` (committed — re-capture when the tool surface changes)
 
-See `mocks/plugin_harmony-plugin_harmony/TOOLS_JSON_TODO.md` — capture the real MCP server's
-`tools/list` response during a real (§5) hand-pass run and save it there; delete the TODO file once
-done. Its absence does not block a mocked run.
+`mocks/plugin_harmony-plugin_harmony/_tools.json` is the real MCP server's `tools/list` response,
+captured by `node evals/clarify-replay/scripts/capture-tools.mjs` after `npm run build` (B-1081).
+Without it the runner serves every mocked tool "with a permissive schema and no description". Tool
+schemas are the server's public contract, not IP, so the file is committed; re-run the capture
+whenever a tool is added, removed or its schema changes.
 
 ### 8f. Judge calibration: the two control cases (AC2)
 
@@ -235,8 +241,10 @@ to use another already-fetched label instead.)
 
 **AC2's calibration gate, in order:**
 1. Run the command above.
-2. Run the suite against just the two control cases (`--case 'clarify-replay-ctrl-*'`, mocked or
-   real — both work, since neither touches the MCP server). `--case` is a single glob on the case.yaml
+2. Run the suite against just the two control cases (`--case 'clarify-replay-ctrl-*' --scaffold
+   --allow-tools Write`, mocked or real — both work, since neither touches the MCP server; `--scaffold`
+   runs each control's scaffold.sh, which copies its generated fixture into the run workspace, and
+   `--allow-tools Write` lets the agent write the copy the judge grades — B-1081). `--case` is a single glob on the case.yaml
    `name` (which carries the `clarify-replay-` prefix — the bare directory name matches nothing), and
    it is NOT repeatable: a second `--case` replaces the first. To select a fixed set, use `--tag`.
 3. Confirm the positive control PASSES and the negative control FAILS on check 2 specifically. If

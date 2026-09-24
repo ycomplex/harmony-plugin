@@ -12,7 +12,11 @@ description: >
   judge/rubric is miscalibrated and the suite's gate must not be trusted until that is fixed.
 tags: [clarify-replay, judge-calibration, control, B-1037, smoke]
 context:
+  # add_dirs only grants READ access at an undocumented absolute path; scaffold.sh copies the
+  # generated fixture into the workspace so `fixtures/fresh-brief.md` exists where prompt.md says
+  # (B-1081; needs --scaffold on the runner call).
   add_dirs: ["fixtures"]
+  scaffold_script: scaffold.sh
 runs: 1
 execution:
   max_turns: 10
