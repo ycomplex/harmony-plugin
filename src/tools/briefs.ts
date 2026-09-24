@@ -131,11 +131,30 @@ export interface CriterionRow {
     | 'unproven'
     | 'manifest-declared'
     | 'manifest-attested';
-  /** REQUIRED when `disposition === 'walk'` — a walk step the human cannot find is not a runbook. */
+  /** REQUIRED when `disposition === 'walk'` — a walk step the human cannot find is not a runbook. It
+   *  MUST resolve to a `ref` declared in the frame's own `steps[]` (B-1068) — a `step_ref` matching no
+   *  declared step is refused at compose, not merely warned. */
   step_ref?: string;
   blocked_reason?: string;
   carried_to?: string;
   backed_by?: string;
+}
+
+/** B-1068 — one step of verify's WALK, the ordered runbook itself. A verify brief cannot compose a
+ *  `walk`-kind criterion without this: `step_ref` on a `CriterionRow` is a pointer, and this is what it
+ *  must point AT. `action` and `expect` are two SEPARATE fields, not one free-text field with an
+ *  `EXPECT:` habit — `action` is the ONE thing to do, `expect` is the ONE observation that confirms it
+ *  worked, e.g. `action`: "Click Record on a ticket with no active brief.", `expect`: "A dialog titled
+ *  'Record a walk' opens with three inputs (summary, evidence links, repos)." Splitting them is what
+ *  makes them independently checkable at compose — a blank `action` or a blank `expect` is refused, so
+ *  the expected observation can never silently live only in prose. `covers` names the acceptance-
+ *  criterion ids this step discharges; every declared step must cover at least one filed criterion (an
+ *  uncovering step is dead weight in the runbook — refused at compose, not warned). */
+export interface VerifyStep {
+  ref: string;
+  action: string;
+  expect: string;
+  covers: string[];
 }
 
 /** Design's three sub-tracks. Declared as its own alias rather than inlined: an indexed access like
@@ -249,6 +268,10 @@ export type GateFrame =
       kind: 'verify';
       environment: 'staging' | 'production' | 'merged-main' | 'local';
       criteria: CriterionRow[];
+      /** B-1068 — the ordered runbook itself. REQUIRED (refused at compose) when any criterion above is
+       *  dispositioned 'walk'; optional/absent otherwise (a brief with no walk criteria has nothing to
+       *  walk). See `VerifyStep`'s own doc comment for the cross-checks the lint enforces. */
+      steps?: VerifyStep[];
       exempt_reason?: string;
       evidence_status: string;
       bounded_accept?: { open_ac_ids: string[]; closes_when: string };
@@ -647,6 +670,22 @@ function cell(value: string | undefined): string {
   return (value ?? '—').replace(/\|/g, '\\|').replace(/\n+/g, ' ').trim() || '—';
 }
 
+/** B-1068 — the Walk itself, as Markdown lines: `**Walk**` followed by one numbered line per declared
+ *  step, `<action> — expect: <expect> (covers: #<ac_id>, ...)`. Shared by `renderFrame`'s verify case
+ *  so there is exactly one place that turns `frame.steps` into prose. `[]` when `frame.steps` is absent
+ *  or empty — nothing to walk, nothing rendered, byte-identical to pre-B-1068 output. */
+function walkLines(frame: Extract<GateFrame, { kind: 'verify' }>): string[] {
+  const steps = frame.steps ?? [];
+  if (!steps.length) return [];
+  const out: string[] = ['**Walk**', ''];
+  steps.forEach((s, i) => {
+    const covers = (s.covers ?? []).map((id) => `#${id}`).join(', ');
+    out.push(`${i + 1}. ${s.action} — expect: ${s.expect} (covers: ${covers})`);
+  });
+  out.push('');
+  return out;
+}
+
 /** The frame block for one gate, as Markdown lines (no trailing blank — the caller adds it). */
 function renderFrame(frame: GateFrame): string[] {
   const out: string[] = [];
@@ -734,6 +773,11 @@ function renderFrame(frame: GateFrame): string[] {
     }
     case 'verify': {
       const rows = frame.criteria ?? [];
+      // B-1068 — the Walk: the ordered runbook itself, rendered as a numbered section ABOVE the
+      // criteria table (the table cross-references it by `step_ref`, so the human needs to have read
+      // it first). Absent/empty on a brief with no `walk`-kind criteria — nothing to walk, nothing
+      // rendered, byte-identical to pre-B-1068 output.
+      out.push(...walkLines(frame));
       // B-974 — an UNATTESTED declared-evidence entry is precisely a thing the human can confirm at
       // THIS gate, so it counts exactly like a walk step. A brief carrying no declared rows renders
       // identically either way, which is what keeps the no-manifest floor byte-for-byte.
@@ -1329,6 +1373,12 @@ export function renderSlot(doc: BriefDoc, gate: GateSlotName): GateSlotContent |
       if (frame.kind !== 'verify') return null;
       if (frame.environment !== undefined) out.environment = frame.environment;
       if (frame.criteria !== undefined) out.criteria = frame.criteria.map(criterionSlotRow);
+      // B-1068 — carry the runbook itself onto the durable section, verbatim: a reader who opens the
+      // gate slot months later must see what was actually walked, not just a step number pointing at a
+      // brief that has since scrolled off.
+      if (frame.steps !== undefined) {
+        out.steps = frame.steps.map((s) => ({ ref: s.ref, action: s.action, expect: s.expect, covers: [...(s.covers ?? [])] }));
+      }
       if (frame.evidence_status !== undefined) out.evidence_status = frame.evidence_status;
       if (frame.exempt_reason !== undefined) out.exempt_reason = frame.exempt_reason;
       if (frame.bounded_accept !== undefined) {
@@ -1507,11 +1557,17 @@ function isBoundedAcceptShaped(value: unknown): boolean {
   return Array.isArray(v.open_ac_ids) && typeof v.closes_when === 'string';
 }
 
-/** Frame rules for the gate this brief is being composed for. Appends WARNINGS by default — the one
- *  exception is a `kind: 'release'` frame missing `evidence_status` (B-1016): it is mechanical by
- *  construction (`get_build_evidence_status`) and required on every honest release brief, so its
- *  absence is a hard ERROR that refuses the brief. Every other frame rule, and every other frame
- *  kind, still only warns. */
+/** Frame rules for the gate this brief is being composed for. Appends WARNINGS by default. TWO frame
+ *  kinds carry hard ERRORS that refuse the brief instead:
+ *   - `kind: 'release'` missing `evidence_status` (B-1016) — mechanical by construction
+ *     (`get_build_evidence_status`) and required on every honest release brief.
+ *   - `kind: 'verify'` (B-1068) — the runbook-integrity checks: a `walk` criterion with no
+ *     `frame.steps` at all; a `step_ref` matching no declared step; a step covering no filed
+ *     criterion; a `walk` criterion naming no `step_ref`; a step with a blank `action` or `expect`
+ *     (checked independently); and the two
+ *     off-contract paths `items[].kind === 'step'` and a raw `frame.runbook` key. A verify brief
+ *     literally cannot compose without the walk written out as a structured field.
+ *  Every other frame rule, and every other frame kind, still only warns. */
 function lintFrame(doc: BriefDoc, ctx: BriefLintContext, errors: string[], warnings: string[]): void {
   const expected = ctx.reason ? FRAME_KIND_FOR_REASON[ctx.reason] : undefined;
   // stale-patch-review (n=1) and revise-scope-review (n=4, unanalysed) have no frame variant: `frame` is
@@ -1626,13 +1682,31 @@ function lintFrame(doc: BriefDoc, ctx: BriefLintContext, errors: string[], warni
       }
       break;
 
-    case 'verify':
-      if (!frame.criteria?.length && blank(frame.exempt_reason)) {
+    case 'verify': {
+      const rows = frame.criteria ?? [];
+      const steps = frame.steps ?? [];
+      const walkRows = rows.filter((row) => row?.disposition === 'walk');
+
+      if (!rows.length && blank(frame.exempt_reason)) {
         warnings.push('`frame.criteria` is empty and no `exempt_reason` is given. This is the gate whose whole contract is confirming reality against the filed criteria — an empty ledger acks against nothing.');
       }
-      for (const row of frame.criteria ?? []) {
+
+      // B-1068(a) — HARD REFUSAL: a `walk`-kind criterion with no runbook written at all. A brief
+      // asserting "walk this" while declaring zero steps is not a runbook, it is a promise.
+      if (walkRows.length && !steps.length) {
+        errors.push("This verify frame carries a 'walk' criterion but declares no `frame.steps`. A verify brief cannot compose without the walk written out as a structured field — author the ordered action+expectation steps (`frame.steps: [{ ref, action, expect, covers }]`) the human follows.");
+      }
+
+      for (const row of rows) {
+        // B-1068(d) — HARD REFUSAL (was a warning): a 'walk' criterion naming no step_ref is not a
+        // runbook step the human can follow — there is nothing to resolve it against.
         if (row?.disposition === 'walk' && blank(row.step_ref)) {
-          warnings.push(`Criterion "${row?.text ?? row?.ac_id ?? '(unnamed)'}" is dispositioned 'walk' but names no \`step_ref\`. A walk with no step is not a runbook step the human can follow.`);
+          errors.push(`Criterion "${row?.text ?? row?.ac_id ?? '(unnamed)'}" is dispositioned 'walk' but names no \`step_ref\`. A walk with no step is not a runbook step the human can follow.`);
+        }
+        // B-1068(b) — HARD REFUSAL: a step_ref that matches no declared step. A pointer to nothing is
+        // not a runbook the human can follow, whatever text discusses it elsewhere on the brief.
+        if (!blank(row?.step_ref) && !steps.some((s) => s?.ref === row.step_ref)) {
+          errors.push(`Criterion "${row?.text ?? row?.ac_id ?? '(unnamed)'}" names \`step_ref\` "${row.step_ref}", which matches no declared \`frame.steps[].ref\`. Every step_ref must resolve to a written step.`);
         }
         // B-903 — an out-of-enum disposition is invisible to the author and doubly wrong on the page: the
         // ledger indexes `DISPOSITION_MARK` by this value, so a miss concatenates to the literal string
@@ -1644,6 +1718,40 @@ function lintFrame(doc: BriefDoc, ctx: BriefLintContext, errors: string[], warni
           );
         }
       }
+
+      // B-1068(c) — HARD REFUSAL: a declared step that covers no filed criterion. A step nobody's
+      // criterion points at is dead weight in the runbook, and dead weight in a runbook nobody trusts
+      // the live parts of either.
+      const criterionIds = new Set(rows.map((r) => r?.ac_id).filter((id): id is string => typeof id === 'string'));
+      for (const step of steps) {
+        const covers = Array.isArray(step?.covers) ? step.covers : [];
+        if (!covers.some((id) => criterionIds.has(id))) {
+          errors.push(`Runbook step "${step?.ref ?? '(no ref)'}" covers no filed criterion — its \`covers\` names no id on \`frame.criteria\`. Every declared step must cover at least one filed acceptance criterion.`);
+        }
+        // B-1068(e) — HARD REFUSAL: a step's `action` or `expect` is blank, checked INDEPENDENTLY —
+        // either one being blank leaves the human without the action to take or the observation that
+        // confirms it worked, so either alone trips the same refusal.
+        if (blank(step?.action)) {
+          errors.push(`Runbook step "${step?.ref ?? '(no ref)'}" has blank \`action\`. Every step needs one action the human can follow, e.g. "Click Record on a ticket with no active brief."`);
+        }
+        if (blank(step?.expect)) {
+          errors.push(`Runbook step "${step?.ref ?? '(no ref)'}" has blank \`expect\`. Every step needs one expected observation the human can confirm, e.g. "A dialog titled 'Record a walk' opens."`);
+        }
+      }
+
+      // B-1068 — two dead/off-contract paths from earlier tickets (B-983, B-925), closed here:
+      // `items[].kind === 'step'` was never a valid BriefItem kind (the walk belongs in `frame.steps`,
+      // never the BLUF "you need to" items), and a raw `frame.runbook` key predates this ticket's
+      // typed `frame.steps` field — both are refused rather than silently accepted and ignored.
+      for (const item of doc.items ?? []) {
+        if ((item as { kind?: unknown })?.kind === 'step') {
+          errors.push("`items[].kind === 'step'` is not a valid brief item kind. Author the walk in `frame.steps` (B-1068), never as a BLUF \"you need to\" item.");
+        }
+      }
+      if (frame && typeof frame === 'object' && 'runbook' in (frame as Record<string, unknown>)) {
+        errors.push('`frame.runbook` is not a field of the verify frame. Author the walk in `frame.steps` (B-1068) — `{ ref, action, expect, covers }[]`.');
+      }
+
       // B-903 — `bounded_accept` is only renderable in its declared shape. A bare string (the observed
       // malformation) renders as "criteria left open — none. Closes when undefined", which reads as a
       // finished sentence and is a false statement about what stays open.
@@ -1656,6 +1764,7 @@ function lintFrame(doc: BriefDoc, ctx: BriefLintContext, errors: string[], warni
         warnings.push('`frame.evidence_status` is blank. It is mechanical by construction and present on every verify brief — supporting confidence, never the thing being acked.');
       }
       break;
+    }
   }
 }
 
@@ -3089,7 +3198,7 @@ export const composeBriefTool = {
   description:
     "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the §3.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange — a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one — so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief — coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). On a FIRST compose only (when no active brief exists yet), pass `couple_claim_ids` (B-736) = the ids of elicitation claims minted just before this call — compose atomically couples them (`underwriting_brief_id`) to the brief it creates via `compose_brief_initial`, tolerantly falling back to a bare insert plus a separate coupling update on a DB that does not yet have that RPC; omit it when no exchange ran. Each gate's brief contract — the one question it answers, its must-haves, and the engagement depth it owes the human — lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref — do not hand-write it. " +
     "B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately — put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. " +
-    "B-876: also author `doc.frame` — the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING, with one exception (B-1016): a `release` frame missing `evidence_status` is REFUSED outright — call `get_build_evidence_status` and carry its counts. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) — compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose — compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing — an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal. " +
+    "B-876: also author `doc.frame` — the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger/steps runbook). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright — call `get_build_evidence_status` and carry its counts; (B-1068) a `verify` frame fails its runbook-integrity checks — see `frame.steps` below. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) — compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose — compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing — an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal. " +
     "B-1017: pass `revision_cause` on every redraft that is not a send-back — see skills/harmony-shared/brief-authoring.md §Stating the cause of a redraft.",
   inputSchema: {
     type: 'object' as const,
@@ -3126,7 +3235,7 @@ export const composeBriefTool = {
           frame: {
             type: 'object',
             description:
-              "B-876 — the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, floor_reviewed?[] } | 'release' { act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only — never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[] }. Every rule over this field is a WARNING, with one exception (B-1016): a `release` frame missing `evidence_status` is REFUSED outright; omit the frame entirely and the render is byte-identical to the pre-B-876 output.",
+              "B-876 — the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, floor_reviewed?[] } | 'release' { act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], steps?[{ref,action,expect,covers[]}], exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only — never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[] }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present — author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output.",
           },
           revision: {
             type: 'object',

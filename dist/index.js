@@ -46337,6 +46337,17 @@ function dispositionLabel(row) {
 function cell(value) {
   return (value ?? "\u2014").replace(/\|/g, "\\|").replace(/\n+/g, " ").trim() || "\u2014";
 }
+function walkLines(frame) {
+  const steps = frame.steps ?? [];
+  if (!steps.length) return [];
+  const out = ["**Walk**", ""];
+  steps.forEach((s, i) => {
+    const covers = (s.covers ?? []).map((id) => `#${id}`).join(", ");
+    out.push(`${i + 1}. ${s.action} \u2014 expect: ${s.expect} (covers: ${covers})`);
+  });
+  out.push("");
+  return out;
+}
 function renderFrame(frame) {
   const out = [];
   switch (frame.kind) {
@@ -46418,6 +46429,7 @@ function renderFrame(frame) {
     }
     case "verify": {
       const rows = frame.criteria ?? [];
+      out.push(...walkLines(frame));
       const confirmable = rows.filter(
         (r) => r.disposition === "walk" || r.disposition === "manifest-declared"
       ).length;
@@ -46714,6 +46726,9 @@ function renderSlot(doc, gate) {
       if (frame.kind !== "verify") return null;
       if (frame.environment !== void 0) out.environment = frame.environment;
       if (frame.criteria !== void 0) out.criteria = frame.criteria.map(criterionSlotRow);
+      if (frame.steps !== void 0) {
+        out.steps = frame.steps.map((s) => ({ ref: s.ref, action: s.action, expect: s.expect, covers: [...s.covers ?? []] }));
+      }
       if (frame.evidence_status !== void 0) out.evidence_status = frame.evidence_status;
       if (frame.exempt_reason !== void 0) out.exempt_reason = frame.exempt_reason;
       if (frame.bounded_accept !== void 0) {
@@ -46889,19 +46904,49 @@ function lintFrame(doc, ctx, errors, warnings) {
         errors.push("`frame.evidence_status` is absent on a release frame. Call `get_build_evidence_status` and carry its mechanical, executed-aware counts \u2014 a release brief cannot be stored without it.");
       }
       break;
-    case "verify":
-      if (!frame.criteria?.length && blank(frame.exempt_reason)) {
+    case "verify": {
+      const rows = frame.criteria ?? [];
+      const steps = frame.steps ?? [];
+      const walkRows = rows.filter((row) => row?.disposition === "walk");
+      if (!rows.length && blank(frame.exempt_reason)) {
         warnings.push("`frame.criteria` is empty and no `exempt_reason` is given. This is the gate whose whole contract is confirming reality against the filed criteria \u2014 an empty ledger acks against nothing.");
       }
-      for (const row of frame.criteria ?? []) {
+      if (walkRows.length && !steps.length) {
+        errors.push("This verify frame carries a 'walk' criterion but declares no `frame.steps`. A verify brief cannot compose without the walk written out as a structured field \u2014 author the ordered action+expectation steps (`frame.steps: [{ ref, action, expect, covers }]`) the human follows.");
+      }
+      for (const row of rows) {
         if (row?.disposition === "walk" && blank(row.step_ref)) {
-          warnings.push(`Criterion "${row?.text ?? row?.ac_id ?? "(unnamed)"}" is dispositioned 'walk' but names no \`step_ref\`. A walk with no step is not a runbook step the human can follow.`);
+          errors.push(`Criterion "${row?.text ?? row?.ac_id ?? "(unnamed)"}" is dispositioned 'walk' but names no \`step_ref\`. A walk with no step is not a runbook step the human can follow.`);
+        }
+        if (!blank(row?.step_ref) && !steps.some((s) => s?.ref === row.step_ref)) {
+          errors.push(`Criterion "${row?.text ?? row?.ac_id ?? "(unnamed)"}" names \`step_ref\` "${row.step_ref}", which matches no declared \`frame.steps[].ref\`. Every step_ref must resolve to a written step.`);
         }
         if (!CRITERION_DISPOSITIONS.includes(row?.disposition)) {
           warnings.push(
             `Criterion "${row?.text ?? row?.ac_id ?? "(unnamed)"}" carries disposition '${String(row?.disposition)}', which is not one of ${CRITERION_DISPOSITIONS.join(" | ")}. The ledger looks its mark up by this value, so an unrecognised one renders the literal string "undefined"; and the headline counts only 'walk', so the brief also under-reports how much you can confirm today.`
           );
         }
+      }
+      const criterionIds = new Set(rows.map((r) => r?.ac_id).filter((id) => typeof id === "string"));
+      for (const step of steps) {
+        const covers = Array.isArray(step?.covers) ? step.covers : [];
+        if (!covers.some((id) => criterionIds.has(id))) {
+          errors.push(`Runbook step "${step?.ref ?? "(no ref)"}" covers no filed criterion \u2014 its \`covers\` names no id on \`frame.criteria\`. Every declared step must cover at least one filed acceptance criterion.`);
+        }
+        if (blank(step?.action)) {
+          errors.push(`Runbook step "${step?.ref ?? "(no ref)"}" has blank \`action\`. Every step needs one action the human can follow, e.g. "Click Record on a ticket with no active brief."`);
+        }
+        if (blank(step?.expect)) {
+          errors.push(`Runbook step "${step?.ref ?? "(no ref)"}" has blank \`expect\`. Every step needs one expected observation the human can confirm, e.g. "A dialog titled 'Record a walk' opens."`);
+        }
+      }
+      for (const item of doc.items ?? []) {
+        if (item?.kind === "step") {
+          errors.push("`items[].kind === 'step'` is not a valid brief item kind. Author the walk in `frame.steps` (B-1068), never as a BLUF \"you need to\" item.");
+        }
+      }
+      if (frame && typeof frame === "object" && "runbook" in frame) {
+        errors.push("`frame.runbook` is not a field of the verify frame. Author the walk in `frame.steps` (B-1068) \u2014 `{ ref, action, expect, covers }[]`.");
       }
       if (frame.bounded_accept !== void 0 && !isBoundedAcceptShaped(frame.bounded_accept)) {
         warnings.push(
@@ -46912,6 +46957,7 @@ function lintFrame(doc, ctx, errors, warnings) {
         warnings.push("`frame.evidence_status` is blank. It is mechanical by construction and present on every verify brief \u2014 supporting confidence, never the thing being acked.");
       }
       break;
+    }
   }
 }
 function mentionsPullRequest(content, refs) {
@@ -47523,7 +47569,7 @@ async function composeBrief(client, projectId, userId, args) {
 }
 var composeBriefTool = {
   name: "compose_brief",
-  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). On a FIRST compose only (when no active brief exists yet), pass `couple_claim_ids` (B-736) = the ids of elicitation claims minted just before this call \u2014 compose atomically couples them (`underwriting_brief_id`) to the brief it creates via `compose_brief_initial`, tolerantly falling back to a bare insert plus a separate coupling update on a DB that does not yet have that RPC; omit it when no exchange ran. Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING, with one exception (B-1016): a `release` frame missing `evidence_status` is REFUSED outright \u2014 call `get_build_evidence_status` and carry its counts. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose \u2014 compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing \u2014 an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal. B-1017: pass `revision_cause` on every redraft that is not a send-back \u2014 see skills/harmony-shared/brief-authoring.md \xA7Stating the cause of a redraft.",
+  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). On a FIRST compose only (when no active brief exists yet), pass `couple_claim_ids` (B-736) = the ids of elicitation claims minted just before this call \u2014 compose atomically couples them (`underwriting_brief_id`) to the brief it creates via `compose_brief_initial`, tolerantly falling back to a bare insert plus a separate coupling update on a DB that does not yet have that RPC; omit it when no exchange ran. Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger/steps runbook). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright \u2014 call `get_build_evidence_status` and carry its counts; (B-1068) a `verify` frame fails its runbook-integrity checks \u2014 see `frame.steps` below. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose \u2014 compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing \u2014 an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal. B-1017: pass `revision_cause` on every redraft that is not a send-back \u2014 see skills/harmony-shared/brief-authoring.md \xA7Stating the cause of a redraft.",
   inputSchema: {
     type: "object",
     properties: {
@@ -47558,7 +47604,7 @@ var composeBriefTool = {
           tail: { type: "string", description: "Optional custom command tail line; defaults to the standard one" },
           frame: {
             type: "object",
-            description: "B-876 \u2014 the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, floor_reviewed?[] } | 'release' { act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only \u2014 never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[] }. Every rule over this field is a WARNING, with one exception (B-1016): a `release` frame missing `evidence_status` is REFUSED outright; omit the frame entirely and the render is byte-identical to the pre-B-876 output."
+            description: "B-876 \u2014 the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, floor_reviewed?[] } | 'release' { act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], steps?[{ref,action,expect,covers[]}], exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only \u2014 never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[] }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present \u2014 author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output."
           },
           revision: {
             type: "object",
@@ -50296,6 +50342,12 @@ var CriterionSlotSchema = external_exports.object({
   how: external_exports.string().optional(),
   disposition: external_exports.string().optional()
 }).passthrough();
+var VerifyStepSlotSchema = external_exports.object({
+  ref: external_exports.string().optional(),
+  action: external_exports.string().optional(),
+  expect: external_exports.string().optional(),
+  covers: external_exports.array(external_exports.string()).optional()
+}).passthrough();
 var ClarifySlotSchema = external_exports.object({
   solving: external_exports.string().optional(),
   in_scope: external_exports.array(external_exports.string()).optional(),
@@ -50311,6 +50363,8 @@ var ReleaseSlotSchema = external_exports.object({
 var VerifySlotSchema = external_exports.object({
   environment: external_exports.string().optional(),
   criteria: external_exports.array(CriterionSlotSchema).optional(),
+  // B-1068 — the ordered runbook steps themselves, alongside the criteria they discharge.
+  steps: external_exports.array(VerifyStepSlotSchema).optional(),
   evidence_status: external_exports.string().optional()
 }).passthrough();
 var UnknownGateSlotSchema = external_exports.record(external_exports.unknown());
@@ -52172,6 +52226,12 @@ async function runRecordedWalk(client, projectId, userId, args) {
       step_ref: "1"
     }));
     const verifyEvidenceSummary = args.evidence.map((e) => e.url).join(", ") || "(none)";
+    const verifySteps = verifyCriteria.length ? [{
+      ref: "1",
+      action: `Open the linked evidence (${verifyEvidenceSummary}) and compare it against the recorded summary \u2014 "${solving}".`,
+      expect: "The linked PRs/commits exist and their content matches what was recorded, for every criterion below.",
+      covers: verifyCriteria.map((c) => c.ac_id)
+    }] : [];
     await composeBrief(client, projectId, userId, {
       task_id: taskId,
       reason: "verification-ack-pending",
@@ -52194,6 +52254,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
           // merged PR/commit, not yet promoted anywhere — never guess 'production' without confirmation.
           environment: "merged-main",
           criteria: verifyCriteria,
+          steps: verifySteps,
           evidence_status: `Recorded walk \u2014 evidence linked from the supplied links (${verifyEvidenceSummary}); verify walk attestation on file.`
         }
       }
