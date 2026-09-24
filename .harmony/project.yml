@@ -60,8 +60,8 @@ notify:
 # today's verify brief unchanged.
 verify:
   evidence:
-    - key: staging-channel-smoke
-      prompt: "Ran the changed skill or tool once from the staging channel (claude --plugin-dir against the staging board) and it behaved as the ticket describes."
+    - key: live-smoke
+      prompt: "Exercised the changed skill or tool once live — from the staging channel (claude --plugin-dir against the staging board) or on production after a promote — and it behaved as the ticket describes. Say which environment in the attestation."
       applies_to:
         paths:
           - "skills/**"
