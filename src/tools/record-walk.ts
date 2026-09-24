@@ -51,6 +51,7 @@ import { consumePendingAcceptanceEvent } from './acceptance-events.js';
 import { writeGateSlot, type GateSlotContent } from './gate-slots.js';
 import { advanceWorkflow } from './workflow.js';
 import { addComment } from './comments.js';
+import { manageAcceptanceCriteria } from './acceptance-criteria.js';
 import { PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED } from './provenance.js';
 import {
   evaluateEligibility,
@@ -137,20 +138,26 @@ export function describeIneligibility(report: EligibilityReport): string {
   );
 }
 
-function renderAttestationComment(args: RecordWalkArgs): string {
+function renderAttestationComment(args: RecordWalkArgs, userId: string): string {
   const when = new Date().toISOString();
   return (
     `RECORDED-WALK-ATTESTATION\n` +
-    `who/what was walked: ${trimmedOrEmpty(args.attest_walk)}\n` +
+    `who: ${userId}\n` +
+    `what_was_walked: ${trimmedOrEmpty(args.attest_walk)}\n` +
     `when: ${when}\n` +
     `summary: ${trimmedOrEmpty(args.summary)}\n` +
     `evidence: ${args.evidence.map((e) => e.url).join(', ') || '(none)'}`
   );
 }
 
-function buildAttestation(args: RecordWalkArgs): Record<string, unknown> {
+/** AC c44227c9 — who/when/what, all populated. `who` is resolved from the ACTING user (the
+ *  `userId` this whole walk is issuing writes as — the same identity `composeAndAccept`/`addComment`
+ *  already thread through every other write below; no separate lookup invented). `what_was_walked`
+ *  keeps the free-text `attest_walk` content unchanged (it was previously bare `who`/`what`-conflated
+ *  free text with `who` always null — this field's CONTENT is untouched, only its neighbor is now real). */
+function buildAttestation(args: RecordWalkArgs, userId: string): Record<string, unknown> {
   return {
-    who: null,
+    who: userId,
     what_was_walked: trimmedOrEmpty(args.attest_walk),
     when: new Date().toISOString(),
     evidence: args.evidence.map((e) => e.url),
@@ -245,6 +252,25 @@ export async function runRecordedWalk(
   const changedPaths = args.evidence.flatMap((e) => e.paths ?? []);
 
   try {
+    // ——— Captured -> Proposed, brief-less plumbing (B-1062 verify-round fix 1) ——————————————————
+    // EVERY ticket eligible for `harmony record` starts life in `Captured` (the post-B-474 inbox
+    // state) — without this, clarify's own compose_brief would refuse (no
+    // ('Captured','clarifying','Clarified') edge exists; only ('Proposed','clarifying','Clarified')
+    // does). Mirrors `harmony-conduct`'s own Captured self-advance EXACTLY (SKILL.md loop step 4:
+    // `advance_workflow({ task_id, activity: 'proposing' })`, Captured->Proposed, framed as plumbing —
+    // never a pause). A ticket already past Captured (e.g. re-run after a partial walk) skips this.
+    const { data: currentTaskRow, error: currentStateErr } = await client
+      .from('tasks')
+      .select('workflow_state')
+      .eq('id', taskId)
+      .eq('project_id', projectId)
+      .single();
+    if (currentStateErr) throw currentStateErr;
+    const currentWorkflowState = (currentTaskRow as { workflow_state: string | null } | null)?.workflow_state ?? null;
+    if (currentWorkflowState === 'Captured') {
+      await advanceWorkflow(client, projectId, { task_id: taskId, activity: 'proposing' });
+    }
+
     // ——— CLARIFY ———————————————————————————————————————————————————————————————————————————
     await composeAndAccept(client, projectId, userId, taskId, {
       reason: GATE_REASONS.clarify!,
@@ -269,7 +295,7 @@ export async function runRecordedWalk(
       solving,
       in_scope: [summary],
       not_solving: [],
-      attestation: buildAttestation(args),
+      attestation: buildAttestation(args, userId),
     };
     await writeGateSlot(client, {
       gate: 'clarify',
@@ -278,9 +304,24 @@ export async function runRecordedWalk(
       ratified_by: RATIFIED_BY_RECORDED,
     });
     if (trimmedOrEmpty(args.attest_walk)) {
-      await addComment(client, projectId, userId, { task_id: taskId, content: renderAttestationComment(args) });
+      await addComment(client, projectId, userId, { task_id: taskId, content: renderAttestationComment(args, userId) });
       attestationRecorded = true;
     }
+
+    // B-747 build-gate floor (B-1062 verify-round fix 2): the floor correctly refuses Planned->Built
+    // on zero acceptance criteria — a recorded walk has no live clarify leg to file one, so nothing
+    // ever would without this. File exactly one checked AC here, at clarify, before the walk proceeds
+    // any further, so the floor never blocks this walk's own BUILD step below. Same provenance
+    // discipline as the rest of this walk's writes (see this file's header): the content names the
+    // recorded-not-conducted origin and the attesting user, never presented as a live-clarified AC.
+    const evidenceSummary = args.evidence.map((e) => e.url).join(', ') || '(none)';
+    await manageAcceptanceCriteria(client, projectId, userId, {
+      task_id: taskId,
+      add: [{
+        content: `${summary} — recorded from ${evidenceSummary}; verify walk attested by ${userId}`,
+        checked: true,
+      }],
+    });
 
     // ——— DECOMPOSE (no-split shape — see this file's header SCOPE NOTE) —————————————————————————
     await composeAndAccept(client, projectId, userId, taskId, {
@@ -325,7 +366,7 @@ export async function runRecordedWalk(
         steps: [summary],
         attestation: { base_verified: 'recorded walk — no live base-verify run; ratified from supplied evidence' },
         carried_unproven: [],
-        ac_coverage: 'Recorded from the supplied summary and evidence; this walk files no acceptance criteria.',
+        ac_coverage: 'Recorded from the supplied summary and evidence; one checked acceptance criterion was filed at clarify to satisfy the build gate\'s B-747 floor.',
       },
     });
     gates.push({ gate: 'plan', reason: GATE_REASONS.plan, landed: true });
@@ -377,7 +418,12 @@ export async function runRecordedWalk(
     });
     gates.push({ gate: 'release', reason: GATE_REASONS.release, landed: true });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message =
+      err instanceof Error
+        ? err.message
+        : (typeof err === 'object' && err !== null && 'message' in err
+            ? String((err as { message: unknown }).message)
+            : JSON.stringify(err));
     return {
       task_id: taskId,
       eligibility,
