@@ -1486,7 +1486,10 @@ already drafted. This section covers the opposite direction: **the running sessi
 conductor loop, or a gate skill it is currently delegating to — hits genuine mid-run uncertainty with
 no gate brief that fits: a load-bearing judgment call it cannot safely make alone, or a capability
 denial it correctly declines to route around (e.g. an `Edit` denial on a repo outside this skill's
-remit — never quietly route around a denial with a different tool). **Never write the question to
+remit — never quietly route around a denial with a different tool). **"Should I build?" is never a
+worker-question (B-1067):** an accepted `plan-draft` brief authorises the build gate — worktree,
+commits, push, PR — in the same leg; the only build-gate worker-questions are a capability denial
+(B-784) or a plan step that cannot be executed as written. **Never write the question to
 stdout and end the turn.** File a `worker-question` elicitation round instead, per
 `skills/harmony-shared/elicitation-engine.md` §The worker-question trigger — the SAME B-645 substrate
 every other trigger in this skill already uses, reused unchanged. `harmony-build`-delegated build work
