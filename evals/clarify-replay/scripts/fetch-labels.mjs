@@ -182,16 +182,17 @@ export function renderFreshBriefMarkdown(label, { flipBoundary = false } = {}) {
   ].join('\n');
 }
 
-/** The weight-0 reasoning grader (build notes item: "today's judge votes have none" — this grader
+/** The (near-)weightless reasoning grader (build notes item: "today's judge votes have none" — this grader
  *  forces the judge to name PASS/FAIL per numbered check explicitly, even when the overall vote is
  *  PASS, so a human reviewing a run can see WHICH check(s) drove a given score without re-deriving
- *  it from a bare verdict). Never affects the score (weight: 0) — it exists to make a failing run's
+ *  it from a bare verdict). Barely affects the score (weight: 0.1 vs the judge's 4 — the runner
+ *  rejects a literal 0) — it exists to make a failing run's
  *  report legible, not to grade it a second time. */
 function renderReasoningRubric() {
   return [
     RUBRIC.trim(),
     '',
-    '## Additionally (B-1037 weight-0 reasoning grader)',
+    '## Additionally (B-1037 reasoning grader)',
     '',
     'Regardless of your overall PASS/FAIL verdict above, ALSO output one line per numbered check',
     '(1 SAME PROBLEM STATEMENT, 2 SAME BOUNDARIES, 3 SAME RECOMMENDATION, 4 NO INVENTED ACS) in the',
@@ -210,7 +211,11 @@ function writeControlJudge(caseDir, label, fileName, rubricBody) {
     'focus:',
     '  source: file',
     '  path: fresh-brief.md',
-    fileName === 'judge.md' ? 'weight: 4' : 'weight: 0',
+    // weight 0.1, not 0: the runner's case schema requires every grader weight to be > 0 (a
+    // generated `weight: 0` failed CI's case load on 2026-09-24 — "graders.1.weight: Number must
+    // be greater than 0"). At 0.1 against the judge's 4 it is a rounding term on the score; its
+    // purpose is still the per-check reasoning trail, not a second verdict.
+    fileName === 'judge.md' ? 'weight: 4' : 'weight: 0.1',
     '---',
     rubricBody,
     '',
