@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   createConduction: vi.fn(),
   assertNotExcluded: vi.fn(),
   reviveParkedTicketIfNeeded: vi.fn(),
+  getProjectConductionDefaults: vi.fn(),
 }));
 
 vi.mock('../auth.js', () => ({ getAuthenticatedContext: mocks.getAuthenticatedContext }));
@@ -27,6 +28,17 @@ vi.mock('../../tools/conduction-record.js', async (importOriginal) => {
     createConduction: mocks.createConduction,
     assertNotExcluded: mocks.assertNotExcluded,
     reviveParkedTicketIfNeeded: mocks.reviveParkedTicketIfNeeded,
+  };
+});
+// B-925: getProjectConductionDefaults is mocked here (defaults to `{}` — no project defaults) so
+// every pre-B-925 test in this file, which asserts createConduction is called with NO run_config
+// key at all, stays true unchanged; fillRunConfigDefaults itself is the REAL implementation, since
+// it is pure and cheap to exercise for real through these CLI-level tests.
+vi.mock('../../config/conduction-defaults.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../config/conduction-defaults.js')>();
+  return {
+    ...actual,
+    getProjectConductionDefaults: mocks.getProjectConductionDefaults,
   };
 });
 
@@ -67,6 +79,7 @@ beforeEach(() => {
   mocks.createConduction.mockResolvedValue(conductionRow);
   // B-964: a no-op by default, exactly like a non-Parked ticket.
   mocks.reviveParkedTicketIfNeeded.mockResolvedValue(undefined);
+  mocks.getProjectConductionDefaults.mockResolvedValue({});
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
@@ -196,5 +209,76 @@ describe('harmony conduct <ticket> --unpark (B-964)', () => {
     await run(['conduct', 'B-696', '--unpark']);
     expect(exitSpy).not.toHaveBeenCalled();
     expect(mocks.createConduction).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B-925 — project conduction defaults filled into `harmony conduct`'s run_config
+// ---------------------------------------------------------------------------
+
+describe('harmony conduct <ticket> --model / --session-resume / --auto-approve-gates (B-925)', () => {
+  it('passing neither --session-resume nor --no-session-resume produces no session_resume key at all', async () => {
+    await run(['conduct', 'B-696']);
+
+    const call = mocks.createConduction.mock.calls[0][1] as Record<string, unknown>;
+    expect('run_config' in call).toBe(false);
+  });
+
+  it('--no-session-resume produces the explicit session_resume: {enabled: false} encoding, never an omitted key', async () => {
+    await run(['conduct', 'B-696', '--no-session-resume']);
+
+    const call = mocks.createConduction.mock.calls[0][1] as { run_config?: unknown };
+    expect(call.run_config).toEqual({ session_resume: { enabled: false } });
+  });
+
+  it('--session-resume produces the explicit session_resume: {enabled: true} encoding', async () => {
+    await run(['conduct', 'B-696', '--session-resume']);
+
+    const call = mocks.createConduction.mock.calls[0][1] as { run_config?: unknown };
+    expect(call.run_config).toEqual({ session_resume: { enabled: true } });
+  });
+
+  it('--no-auto-approve-gates produces the explicit auto_approve_gates: [] encoding, never an omitted key', async () => {
+    await run(['conduct', 'B-696', '--no-auto-approve-gates']);
+
+    const call = mocks.createConduction.mock.calls[0][1] as { run_config?: unknown };
+    expect(call.run_config).toEqual({ auto_approve_gates: [] });
+  });
+
+  it('--auto-approve-gates parses a comma-separated list', async () => {
+    await run(['conduct', 'B-696', '--auto-approve-gates', 'clarify,plan']);
+
+    const call = mocks.createConduction.mock.calls[0][1] as { run_config?: unknown };
+    expect(call.run_config).toEqual({ auto_approve_gates: ['clarify', 'plan'] });
+  });
+
+  it('--model fills run_config.model.default', async () => {
+    await run(['conduct', 'B-696', '--model', 'claude-opus-5']);
+
+    const call = mocks.createConduction.mock.calls[0][1] as { run_config?: unknown };
+    expect(call.run_config).toEqual({ model: { default: 'claude-opus-5' } });
+  });
+
+  it('fills an unset field from the project default, and leaves an explicitly-set field alone', async () => {
+    mocks.getProjectConductionDefaults.mockResolvedValue({
+      model: 'claude-sonnet-5',
+      session_resume: { enabled: true },
+    });
+
+    await run(['conduct', 'B-696', '--no-session-resume']);
+
+    const call = mocks.createConduction.mock.calls[0][1] as { run_config?: unknown };
+    // session_resume was explicit (false) -> untouched by the default (which says true); model was
+    // never passed -> filled in from the project default.
+    expect(call.run_config).toEqual({
+      session_resume: { enabled: false },
+      model: { default: 'claude-sonnet-5' },
+    });
+  });
+
+  it('fetches the project defaults for this project id, after resolving the task', async () => {
+    await run(['conduct', 'B-696']);
+
+    expect(mocks.getProjectConductionDefaults).toHaveBeenCalledWith(ctx.client, 'proj-1');
   });
 });
