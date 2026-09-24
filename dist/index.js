@@ -50970,6 +50970,17 @@ var RELEASE_APPROVAL_REASON = "release-approval-pending";
 async function flagReleaseApprovalPending(client, projectId, args) {
   if (!args.pr_url) throw new Error("pr_url is required \u2014 the pause must name the PR to approve");
   const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const { data: activeBrief, error: briefErr } = await client.from("briefs").select("id, reason, iteration").eq("task_id", taskId).eq("status", "active").maybeSingle();
+  if (briefErr) throw new Error(briefErr.message);
+  if (activeBrief) {
+    const row = activeBrief;
+    return {
+      refused: true,
+      reason: "active-brief",
+      active_brief: { id: row.id, reason: row.reason, iteration: row.iteration },
+      task_id: taskId
+    };
+  }
   const ref = {
     kind: "release-approval",
     ...args.pr_number === void 0 ? {} : { pr_number: args.pr_number },
@@ -50991,7 +51002,7 @@ async function flagReleaseApprovalPending(client, projectId, args) {
 }
 var flagReleaseApprovalPendingTool = {
   name: "flag_release_approval_pending",
-  description: "B-732: pause a release leg on the founder's GitHub approval of a bot-authored PR. Once daemon PRs are authored by the harmony-daemon App, GitHub forbids the author approving its own PR, so the worker cannot merge until a human approves \u2014 and a GitHub approval touches no ticket row, so without this the ticket would sit at Built in nobody's queue with nothing to wake the daemon. Sets awaiting_human_input with reason 'release-approval-pending' and an awaiting_human_ref naming the PR, so the ticket enters the human's queue with the PR linked and its resolution produces the true\u2192false flip the daemon wakes on. Never touches workflow_state \u2014 the ticket legitimately stays Built until the deploy succeeds. Idempotent: re-flagging rewrites the same triple. Use ONLY for the modeled release-approval pause; an ad-hoc worker question belongs in an elicitation round instead.",
+  description: "B-732: pause a release leg on the founder's GitHub approval of a bot-authored PR. Once daemon PRs are authored by the harmony-daemon App, GitHub forbids the author approving its own PR, so the worker cannot merge until a human approves \u2014 and a GitHub approval touches no ticket row, so without this the ticket would sit at Built in nobody's queue with nothing to wake the daemon. Sets awaiting_human_input with reason 'release-approval-pending' and an awaiting_human_ref naming the PR, so the ticket enters the human's queue with the PR linked and its resolution produces the true\u2192false flip the daemon wakes on. Never touches workflow_state \u2014 the ticket legitimately stays Built until the deploy succeeds. Idempotent: re-flagging rewrites the same triple. Use ONLY for the modeled release-approval pause; an ad-hoc worker question belongs in an elicitation round instead. B-1071: REFUSES (returns `{ refused: true, reason: 'active-brief', active_brief, task_id }`, does NOT throw and does NOT write) when the task still has an active brief \u2014 a verify send-back must ALWAYS resolve its own release brief via the finish-work backflow (revert Deployed\u2192Built, fix, compose an ordinary release-decision-pending brief) before calling this tool; a refusal here means a genuinely stale brief is active and needs a worker-question, not a retry.",
   inputSchema: {
     type: "object",
     properties: {

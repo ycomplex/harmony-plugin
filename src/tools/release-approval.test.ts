@@ -28,19 +28,39 @@ vi.mock('./resolve-task-id.js', () => ({
   resolveTaskId: async (_c: unknown, _p: string, id: string) => `uuid-for-${id}`,
 }));
 
-function clientCapturing(captured: { update?: Record<string, unknown>; id?: string }) {
+// B-1071: the guard adds a pre-write SELECT against `briefs` (task_id + status='active') ahead of
+// the `tasks` UPDATE this mock already captured. `activeBrief` defaults to null — no active brief —
+// so every pre-existing test in this file (written before the guard existed) keeps exercising the
+// unguarded write path unchanged.
+function clientCapturing(
+  captured: { update?: Record<string, unknown>; id?: string },
+  activeBrief: { id: string; reason: string; iteration?: number } | null = null,
+) {
   return {
-    from: () => ({
-      update: (patch: Record<string, unknown>) => {
-        captured.update = patch;
+    from: (table: string) => {
+      if (table === 'briefs') {
         return {
-          eq: (_col: string, value: string) => {
-            captured.id = value;
-            return Promise.resolve({ error: null });
-          },
+          select: (_cols: string) => ({
+            eq: (_col1: string, _val1: string) => ({
+              eq: (_col2: string, _val2: string) => ({
+                maybeSingle: () => Promise.resolve({ data: activeBrief, error: null }),
+              }),
+            }),
+          }),
         };
-      },
-    }),
+      }
+      return {
+        update: (patch: Record<string, unknown>) => {
+          captured.update = patch;
+          return {
+            eq: (_col: string, value: string) => {
+              captured.id = value;
+              return Promise.resolve({ error: null });
+            },
+          };
+        },
+      };
+    },
   } as never;
 }
 
@@ -164,6 +184,64 @@ describe('flagReleaseApprovalPending', () => {
     expect(captured.update?.awaiting_human_ref).toEqual({
       kind: 'release-approval',
       pr_url: 'https://example.test/pr/1',
+    });
+  });
+
+  // --- B-1071: defense-in-depth guard against stomping an active brief's visibility ---------------
+  //
+  // The 2026-09-24 incident: a verify send-back opened a PR and called this tool WHILE the ticket's
+  // verify-send-back brief was still active, overwriting the awaiting_* triple and hiding that brief.
+  // These two tests pin both halves of the guard: it REFUSES (no write) when a brief is active, and
+  // it PROCEEDS exactly as before when the only brief row is resolved or there is no brief at all.
+
+  it('B-1071: REFUSES — does NOT write the sentinel — when an active brief exists for the task', async () => {
+    const captured: { update?: Record<string, unknown>; id?: string } = {};
+    const activeBrief = { id: 'brief-1', reason: 'verify-send-back-review', iteration: 2 };
+
+    const result = await flagReleaseApprovalPending(clientCapturing(captured, activeBrief), 'proj', {
+      task_id: 'B-732',
+      pr_number: 124,
+      pr_url: 'https://github.com/ycomplex/harmony-plugin/pull/124',
+    });
+
+    expect(result).toEqual({
+      refused: true,
+      reason: 'active-brief',
+      active_brief: activeBrief,
+      task_id: 'uuid-for-B-732',
+    });
+    expect(captured.update).toBeUndefined();
+    expect(captured.id).toBeUndefined();
+  });
+
+  it('B-1071: PROCEEDS — writes the sentinel as normal — when the task has no active brief (resolved-only or none)', async () => {
+    const captured: { update?: Record<string, unknown>; id?: string } = {};
+
+    const result = await flagReleaseApprovalPending(clientCapturing(captured, null), 'proj', {
+      task_id: 'B-732',
+      pr_number: 124,
+      pr_url: 'https://github.com/ycomplex/harmony-plugin/pull/124',
+    });
+
+    expect(captured.update).toEqual({
+      awaiting_human_input: true,
+      awaiting_human_reason: 'release-approval-pending',
+      awaiting_human_ref: {
+        kind: 'release-approval',
+        pr_number: 124,
+        pr_url: 'https://github.com/ycomplex/harmony-plugin/pull/124',
+      },
+    });
+    expect(captured.id).toBe('uuid-for-B-732');
+    expect(result).toEqual({
+      task_id: 'uuid-for-B-732',
+      awaiting_human_input: true,
+      awaiting_human_reason: 'release-approval-pending',
+      awaiting_human_ref: {
+        kind: 'release-approval',
+        pr_number: 124,
+        pr_url: 'https://github.com/ycomplex/harmony-plugin/pull/124',
+      },
     });
   });
 });
