@@ -11,7 +11,7 @@ description: >
   check. A FAIL here means the judge or its rubric is broken, not the skill -- the suite's release
   gate must not go from non-blocking to required until this case passes for real (walk-at-verify,
   see the plan's build notes item 4).
-tags: [clarify-replay, judge-calibration, control, B-1037]
+tags: [clarify-replay, judge-calibration, control, B-1037, smoke]
 context:
   add_dirs: ["fixtures"]
 runs: 1
@@ -28,7 +28,16 @@ execution:
 # grading is the auto-discovered graders/judge.md + graders/judge-reasoning.md (both GENERATED,
 # gitignored -- see RUNBOOK.md), exactly the same auto-discovery mechanism every other case in this
 # suite already relies on for its one llm grader.
-graders: []
+graders:
+  # The runner REQUIRES a non-empty graders list in case.yaml (`graders: []` fails schema validation
+  # and omitting the key fails "graders: Required" — reproduced locally 2026-09-24). This weight-1
+  # grader only records that the verbatim-copy step happened (the runner rejects weight 0); the judge carries the verdict.
+  # The actual grading is still the auto-discovered graders/judge.md + graders/judge-reasoning.md.
+  - type: tool_used
+    name: fresh-brief-written
+    tool: Write
+    min: 1
+    weight: 0.1
 expected_outcome: >
   PASS on every check (SAME PROBLEM STATEMENT / SAME BOUNDARIES / SAME RECOMMENDATION / NO INVENTED
   ACS) -- the fresh artifact IS the ratified label's own content, verbatim, so there is no daylight

@@ -217,7 +217,8 @@ the SAME rubric+label as an ordinary case's judge — only the fresh artifact di
   `not_solving` (a genuine boundary miss, per the rubric's own check-2 definition). Expected
   **FAIL, specifically on check 2** (SAME BOUNDARIES) — checks 1/3/4 must still read PASS.
 
-Both cases also carry a second, weight-0 `graders/judge-reasoning.md` grader (same rubric plus an
+Both cases also carry a second, weight-0.1 `graders/judge-reasoning.md` grader (the runner rejects a
+weight of 0; same rubric plus an
 instruction to name PASS/FAIL per numbered check explicitly) — today's judge votes carry no
 per-check reasoning, so this exists to make a run's report legible to a human without re-deriving
 it from a bare verdict.
@@ -234,8 +235,10 @@ to use another already-fetched label instead.)
 
 **AC2's calibration gate, in order:**
 1. Run the command above.
-2. Run the suite against just the two control cases (`--case ctrl-positive-known-good --case
-   ctrl-negative-boundary-flip`, mocked or real — both work, since neither touches the MCP server).
+2. Run the suite against just the two control cases (`--case 'clarify-replay-ctrl-*'`, mocked or
+   real — both work, since neither touches the MCP server). `--case` is a single glob on the case.yaml
+   `name` (which carries the `clarify-replay-` prefix — the bare directory name matches nothing), and
+   it is NOT repeatable: a second `--case` replaces the first. To select a fixed set, use `--tag`.
 3. Confirm the positive control PASSES and the negative control FAILS on check 2 specifically. If
    either disagrees, the judge/rubric is miscalibrated — fix it before deriving a threshold from
    any other case's score.
