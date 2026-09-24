@@ -46,14 +46,53 @@ export interface FlagReleaseApprovalResult {
   awaiting_human_ref: { kind: 'release-approval'; pr_number?: number; pr_url: string; review_decision?: string };
 }
 
+// B-1071: defense in depth against stomping an ACTIVE brief's visibility. The 2026-09-24 incident:
+// a verify send-back fixed forward from Deployed by opening a PR and calling this tool WHILE the
+// ticket's verify-send-back brief was still active — overwriting the awaiting_* triple out from
+// under it and hiding that brief from the human. The documented (and now mandatory — see
+// skills/finish-work/SKILL.md) fix-forward pattern avoids this by ALWAYS resolving the ticket's own
+// release brief before this tool ever runs, but this guard exists so a future code path that skips
+// that rule fails safe instead of silently stomping.
+//
+// The predicate below is copy-verbatim from composeBrief's own active-brief lookup (briefs.ts:
+// `.eq('task_id', taskId).eq('status', 'active').maybeSingle()`) — deliberately, so this guard and
+// the writer it is guarding against always agree on what "active" means. It does NOT key off
+// `awaiting_human_ref.type`: that is a projection on the TASK row, not the brief row, and cannot
+// reliably distinguish a still-open brief from a modeled non-brief pause (e.g. an elicitation round)
+// — only the briefs table itself can answer "is a brief active right now".
+export interface FlagReleaseApprovalRefusal {
+  refused: true;
+  reason: 'active-brief';
+  active_brief: { id: string; reason: string; iteration?: number };
+  task_id: string;
+}
+
 export async function flagReleaseApprovalPending(
   client: SupabaseClient,
   projectId: string,
   args: FlagReleaseApprovalArgs,
-): Promise<FlagReleaseApprovalResult> {
+): Promise<FlagReleaseApprovalResult | FlagReleaseApprovalRefusal> {
   if (!args.pr_url) throw new Error('pr_url is required — the pause must name the PR to approve');
 
   const taskId = await resolveTaskId(client, projectId, args.task_id);
+
+  const { data: activeBrief, error: briefErr } = await client
+    .from('briefs')
+    .select('id, reason, iteration')
+    .eq('task_id', taskId)
+    .eq('status', 'active')
+    .maybeSingle();
+  if (briefErr) throw new Error(briefErr.message);
+
+  if (activeBrief) {
+    const row = activeBrief as { id: string; reason: string; iteration?: number };
+    return {
+      refused: true,
+      reason: 'active-brief',
+      active_brief: { id: row.id, reason: row.reason, iteration: row.iteration },
+      task_id: taskId,
+    };
+  }
 
   const ref = {
     kind: 'release-approval' as const,
@@ -85,7 +124,7 @@ export async function flagReleaseApprovalPending(
 export const flagReleaseApprovalPendingTool = {
   name: 'flag_release_approval_pending',
   description:
-    "B-732: pause a release leg on the founder's GitHub approval of a bot-authored PR. Once daemon PRs are authored by the harmony-daemon App, GitHub forbids the author approving its own PR, so the worker cannot merge until a human approves — and a GitHub approval touches no ticket row, so without this the ticket would sit at Built in nobody's queue with nothing to wake the daemon. Sets awaiting_human_input with reason 'release-approval-pending' and an awaiting_human_ref naming the PR, so the ticket enters the human's queue with the PR linked and its resolution produces the true→false flip the daemon wakes on. Never touches workflow_state — the ticket legitimately stays Built until the deploy succeeds. Idempotent: re-flagging rewrites the same triple. Use ONLY for the modeled release-approval pause; an ad-hoc worker question belongs in an elicitation round instead.",
+    "B-732: pause a release leg on the founder's GitHub approval of a bot-authored PR. Once daemon PRs are authored by the harmony-daemon App, GitHub forbids the author approving its own PR, so the worker cannot merge until a human approves — and a GitHub approval touches no ticket row, so without this the ticket would sit at Built in nobody's queue with nothing to wake the daemon. Sets awaiting_human_input with reason 'release-approval-pending' and an awaiting_human_ref naming the PR, so the ticket enters the human's queue with the PR linked and its resolution produces the true→false flip the daemon wakes on. Never touches workflow_state — the ticket legitimately stays Built until the deploy succeeds. Idempotent: re-flagging rewrites the same triple. Use ONLY for the modeled release-approval pause; an ad-hoc worker question belongs in an elicitation round instead. B-1071: REFUSES (returns `{ refused: true, reason: 'active-brief', active_brief, task_id }`, does NOT throw and does NOT write) when the task still has an active brief — a verify send-back must ALWAYS resolve its own release brief via the finish-work backflow (revert Deployed→Built, fix, compose an ordinary release-decision-pending brief) before calling this tool; a refusal here means a genuinely stale brief is active and needs a worker-question, not a retry.",
   inputSchema: {
     type: 'object' as const,
     properties: {

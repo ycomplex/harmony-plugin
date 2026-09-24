@@ -675,6 +675,23 @@ paths:
      never moves `workflow_state`, because the ticket legitimately stays at `Built` until the deploy
      succeeds. It is idempotent, so a retried leg re-flags safely.
 
+     **B-1071: this call can REFUSE instead of writing the sentinel.** Before writing, the tool checks
+     whether the ticket still has an ACTIVE brief (the same predicate `compose_brief` itself uses:
+     `briefs` rows with `task_id` = this ticket and `status = 'active'`) — a defense-in-depth backstop
+     against stomping that brief's visibility, added after the 2026-09-24 incident this rule (and the
+     mandatory post-release backflow at the end of O3) exists to prevent. On the CORRECTED flow this
+     skill now documents — the mandatory post-release backflow always resolves/accepts THIS release
+     cycle's own brief in O1 before O2 ever runs — **this refusal path should be DEAD CODE**: a refusal
+     here can only mean a genuinely stale, DIFFERENT brief is active, never this cycle's own. If the
+     call nonetheless returns `{ refused: true, reason: 'active-brief', active_brief, task_id }`:
+     - Do **NOT** treat it as success, do **NOT** silently retry it, and do **NOT** fall through to the
+       `add_comment` call above as if the flag had been set.
+     - Open a `worker-question` elicitation round instead — `mcp__harmony__start_elicitation({ task_id,
+       trigger: 'worker-question' })` then `mcp__harmony__file_elicitation_round` — naming the stale
+       active brief (`active_brief.id`, `active_brief.reason`, `active_brief.iteration`) and asking the
+       human how to proceed. Never park silently on a refusal, and never assume it is safe to overwrite.
+     - End the leg without advancing `workflow_state`.
+
      The ticket now appears in the human's queue with the PR linked, and their resolution produces the
      `true → false` flag flip the daemon already wakes on. Under `--one-shot` this is a clean human pause:
      **exit here**. In an interactive session, surface the PR URL and wait. Either way, when the run resumes
@@ -1158,9 +1175,28 @@ audited at O2.)
 
 Report completion.
 
-> If post-release the human finds a problem, flag a human-authorised backflow:
-> `mcp__harmony__advance_workflow({ task_id, activity: "revising-building" })` (Deployed → Built) and
-> hand back to `/harmony-plugin:start-work`.
+**MANDATORY post-release backflow for a verify send-back that needs a code fix (B-1071) — the ONLY
+accepted way to fix forward, not an optional aside.** If post-release (at or after this Deployed→Verified
+gate) the human finds a problem that needs a code change, this sequence is required, every time, before
+any merge-approval flow (O2's `flag_release_approval_pending`) runs again for this ticket:
+
+1. `mcp__harmony__advance_workflow({ task_id, activity: "revising-building" })` — Deployed → Built,
+   reverting the ticket back into the build gate. This is a human-authorised backflow, not something a
+   worker decides on its own.
+2. Hand back to `/harmony-plugin:start-work` to build the fix.
+3. Once the fix is built, compose an ORDINARY `release-decision-pending` brief for the fix PR — the same
+   composition O1 above uses for a fresh Built ticket (or its re-fire form, §O1 step 4) — **before** the
+   ticket is allowed anywhere near O2's approval flow.
+
+**Why this is mandatory and not discretionary.** A 2026-09-24 incident fixed forward from Deployed by
+opening a PR and calling `flag_release_approval_pending` directly, WHILE the ticket's verify-send-back
+brief was still the active brief — silently overwriting the `awaiting_*` triple that brief owned and
+hiding it from the human, even though this exact backflow was available and was used correctly by a
+different ticket the same day. Skipping steps 1–3 above and reaching straight for the release-approval
+flow is precisely the failure mode this rule exists to foreclose: it always stomps whatever brief is
+currently active on the ticket. The `flag_release_approval_pending` tool itself now carries a
+defense-in-depth guard that refuses rather than stomps when a brief is still active (see O2 step 1b
+above) — but that guard is a backstop, not a substitute for following this sequence.
 
 ---
 
