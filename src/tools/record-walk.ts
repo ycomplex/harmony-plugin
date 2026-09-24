@@ -58,6 +58,9 @@ import {
   type EligibilityReport,
   type EligibilityEvidenceLink,
 } from './record-eligibility.js';
+import { recordDecision, queryKnowledge, type KnowledgeDecisionFull } from './knowledge.js';
+import { referenceKnowledge } from './workflow.js';
+import { slugRef } from './payload-refs.js';
 
 /** B-1062: the `ratified_by` value stamped on every gate slot this core writes — never the gate's own
  *  name, which is what a live accept would stamp (gate-slots.ts's `WriteGateSlotArgs.ratified_by`). */
@@ -173,6 +176,14 @@ interface ComposeAndAcceptArgs {
   /** B-876 — ONLY meaningful on the release frame: compose_brief derives `frame.risk_classes` from
    *  this (overwriting whatever the frame above authored there). Omitted everywhere else. */
   changedPaths?: string[];
+  /** The Asserted knowledge entry this gate's accept promotes (B-1062 fix-forward round 3). Omit for a
+   *  gate that promotes no entry (decompose's shared no-split convention entry is coupled separately and
+   *  never set here). */
+  decisionRef?: { type: string; id: string };
+  /** Hand-authored payload items ONLY for a reason compose_brief does NOT auto-derive
+   *  (`derivesEntryContent(reason) === false`, e.g. plan-draft) — for clarify/decompose/design, leave
+   *  this undefined; compose_brief derives and REPLACES anything supplied here for those three reasons. */
+  payload?: Array<{ write_kind: 'knowledge_entry_content'; ref: string; content: string; entry_id?: string | null }>;
 }
 
 /** compose_brief -> resolve_brief(accept) -> (payload-carrying reasons only) consume the deferred
@@ -190,11 +201,13 @@ async function composeAndAccept(
     reason: args.reason,
     pending_activity: args.pendingActivity ?? undefined,
     changed_paths: args.changedPaths,
+    decision_ref: args.decisionRef,
     doc: {
       decide: args.decide,
       why: args.why,
       items: [],
       frame: args.frame,
+      payload: args.payload ?? [],
     },
   });
   await resolveBrief(client, projectId, {
@@ -212,6 +225,47 @@ async function composeAndAccept(
       );
     }
   }
+}
+
+const DECOMPOSE_NO_SPLIT_TAG = 'decompose-no-split';
+
+/** Mirrors skills/harmony-decompose/SKILL.md's no-split shared-convention-entry shape exactly:
+ *  query-or-create-once (never per-ticket, never amend from this mechanical walk — B-849), always
+ *  couple. Returns nothing; decompose's compose_brief call passes no decision_ref, matching the live
+ *  skill's own no-split behavior. */
+async function coupleDecomposeNoSplitConvention(
+  client: SupabaseClient,
+  projectId: string,
+  userId: string,
+  taskId: string,
+): Promise<void> {
+  const existing = await queryKnowledge(client, projectId, {
+    type: 'convention',
+    tags: [DECOMPOSE_NO_SPLIT_TAG],
+    status: 'Accepted',
+  });
+  let entryId = existing[0]?.id;
+  if (!entryId) {
+    const created: KnowledgeDecisionFull = await recordDecision(client, projectId, userId, {
+      type: 'convention',
+      title: 'Decompose: when a ticket does not split',
+      content:
+        'Decision: a ticket that does not need to split into children records no split rationale of ' +
+        "its own. Why: per-ticket \"no split\" entries crowd out load-bearing knowledge with " +
+        'near-duplicate prose (264 were retired for this — B-849). How to apply: query this shared ' +
+        'entry, couple the ticket to it via reference_knowledge, and record nothing further unless the ' +
+        "reasoning introduces a genuinely new pattern this entry doesn't yet state. Scope: every " +
+        "no-split decompose accept, conducted or recorded.",
+      tags: [DECOMPOSE_NO_SPLIT_TAG],
+      domain: ['product', 'process'],
+      status: 'Accepted',
+      source_task_id: taskId,
+      source_activity: 'decompose',
+      provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+    });
+    entryId = created.id;
+  }
+  await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: entryId });
 }
 
 /**
@@ -272,6 +326,18 @@ export async function runRecordedWalk(
     }
 
     // ——— CLARIFY ———————————————————————————————————————————————————————————————————————————
+    const clarifyDecision = await recordDecision(client, projectId, userId, {
+      type: 'specification',
+      title: `${args.task_id}: clarified intent (recorded)`,
+      content: `<placeholder — one line: 'clarified intent for ${args.task_id}; body derived from the ratified brief'>`,
+      domain: ['product'],
+      source_type: 'manual',
+      source_activity: 'clarify',
+      source_task_id: taskId,
+      provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+    });
+    await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: clarifyDecision.id });
+
     await composeAndAccept(client, projectId, userId, taskId, {
       reason: GATE_REASONS.clarify!,
       pendingActivity: 'clarifying',
@@ -283,6 +349,7 @@ export async function runRecordedWalk(
         in_scope: [summary],
         not_solving: [],
       },
+      decisionRef: { type: 'specification', id: clarifyDecision.id },
     });
     gates.push({ gate: 'clarify', reason: GATE_REASONS.clarify, landed: true });
 
@@ -324,6 +391,7 @@ export async function runRecordedWalk(
     });
 
     // ——— DECOMPOSE (no-split shape — see this file's header SCOPE NOTE) —————————————————————————
+    await coupleDecomposeNoSplitConvention(client, projectId, userId, taskId);
     await composeAndAccept(client, projectId, userId, taskId, {
       reason: GATE_REASONS.decompose!,
       pendingActivity: 'decomposing',
@@ -338,6 +406,18 @@ export async function runRecordedWalk(
     gates.push({ gate: 'decompose', reason: GATE_REASONS.decompose, landed: true });
 
     // ——— DESIGN (no track requires a fresh decision — see this file's header SCOPE NOTE) ————————
+    const designDecision = await recordDecision(client, projectId, userId, {
+      type: 'technical-design',
+      title: `${args.task_id}: technical-design — no new decision needed (recorded)`,
+      content: `<placeholder — one line: 'technical-design decision for ${args.task_id}; body derived from the ratified brief'>`,
+      domain: ['engineering'],
+      source_type: 'manual',
+      source_activity: 'design-decide',
+      source_task_id: taskId,
+      provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+    });
+    await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: designDecision.id });
+
     await composeAndAccept(client, projectId, userId, taskId, {
       reason: GATE_REASONS.design!,
       pendingActivity: 'designing',
@@ -352,10 +432,26 @@ export async function runRecordedWalk(
         ],
         reach: [],
       },
+      decisionRef: { type: 'technical-design', id: designDecision.id },
     });
     gates.push({ gate: 'design', reason: GATE_REASONS.design, landed: true });
 
     // ——— PLAN ——————————————————————————————————————————————————————————————————————————————
+    const planEntryContent =
+      `Decision: record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not ` +
+      `conducted). Why: ${summary} Scope: this ticket only.`;
+    const planDecision = await recordDecision(client, projectId, userId, {
+      type: 'specification',
+      title: `${args.task_id}: recorded plan`,
+      content: planEntryContent,
+      domain: ['process'],
+      source_type: 'manual',
+      source_activity: 'plan',
+      source_task_id: taskId,
+      provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+    });
+    await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: planDecision.id });
+
     await composeAndAccept(client, projectId, userId, taskId, {
       reason: GATE_REASONS.plan!,
       pendingActivity: 'planning',
@@ -368,6 +464,13 @@ export async function runRecordedWalk(
         carried_unproven: [],
         ac_coverage: 'Recorded from the supplied summary and evidence; one checked acceptance criterion was filed at clarify to satisfy the build gate\'s B-747 floor.',
       },
+      decisionRef: { type: 'specification', id: planDecision.id },
+      payload: [{
+        write_kind: 'knowledge_entry_content',
+        ref: slugRef('plan-entry', planEntryContent),
+        content: planEntryContent,
+        entry_id: planDecision.id,
+      }],
     });
     gates.push({ gate: 'plan', reason: GATE_REASONS.plan, landed: true });
 

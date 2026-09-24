@@ -10,22 +10,26 @@ const mocks = vi.hoisted(() => ({
   resolveTaskId: vi.fn(async (_client: unknown, _projectId: string, input: string) => `resolved-${input}`),
   manageAcceptanceCriteria: vi.fn(async () => ({ added: [{ id: 'ac-1' }], updated: [], deleted: [] })),
   listAcceptanceCriteria: vi.fn(async () => ([{ id: 'ac-1', content: 'the recorded AC', checked: true, position: 0, created_by: 'user-1', created_at: '2026-01-01T00:00:00Z' }])),
+  recordDecision: vi.fn(async (_c: unknown, _p: string, args: any) => ({ id: `decision-${args.type}-${args.source_activity}`, ...args })),
+  queryKnowledge: vi.fn(async () => ([] as any[])),
+  referenceKnowledge: vi.fn(async () => ({ linked: true })),
 }));
 const {
   composeBrief, resolveBrief, consumePendingAcceptanceEvent, writeGateSlot, advanceWorkflow, addComment,
-  resolveTaskId, manageAcceptanceCriteria, listAcceptanceCriteria,
+  resolveTaskId, manageAcceptanceCriteria, listAcceptanceCriteria, recordDecision, queryKnowledge, referenceKnowledge,
 } = mocks;
 
 vi.mock('./briefs.js', () => ({ composeBrief: mocks.composeBrief, resolveBrief: mocks.resolveBrief }));
 vi.mock('./acceptance-events.js', () => ({ consumePendingAcceptanceEvent: mocks.consumePendingAcceptanceEvent }));
 vi.mock('./gate-slots.js', () => ({ writeGateSlot: mocks.writeGateSlot }));
-vi.mock('./workflow.js', () => ({ advanceWorkflow: mocks.advanceWorkflow }));
+vi.mock('./workflow.js', () => ({ advanceWorkflow: mocks.advanceWorkflow, referenceKnowledge: mocks.referenceKnowledge }));
 vi.mock('./comments.js', () => ({ addComment: mocks.addComment }));
 vi.mock('./resolve-task-id.js', () => ({ resolveTaskId: mocks.resolveTaskId }));
 vi.mock('./acceptance-criteria.js', () => ({
   manageAcceptanceCriteria: mocks.manageAcceptanceCriteria,
   listAcceptanceCriteria: mocks.listAcceptanceCriteria,
 }));
+vi.mock('./knowledge.js', () => ({ recordDecision: mocks.recordDecision, queryKnowledge: mocks.queryKnowledge }));
 
 import { runRecordedWalk, RATIFIED_BY_RECORDED, RESOLVE_BRIEF_PROVENANCE_RECORDED, KNOWLEDGE_WRITE_PROVENANCE_RECORDED } from './record-walk.js';
 import { PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED } from './provenance.js';
@@ -72,6 +76,9 @@ beforeEach(() => {
   resolveTaskId.mockImplementation(async (_c: unknown, _p: string, input: string) => `resolved-${input}`);
   manageAcceptanceCriteria.mockResolvedValue({ added: [{ id: 'ac-1' }], updated: [], deleted: [] } as any);
   listAcceptanceCriteria.mockResolvedValue([{ id: 'ac-1', content: 'the recorded AC', checked: true, position: 0, created_by: 'user-1', created_at: '2026-01-01T00:00:00Z' }] as any);
+  recordDecision.mockImplementation(async (_c: unknown, _p: string, _u: string, args: any) => ({ id: `decision-${args.type}-${args.source_activity}`, ...args }));
+  queryKnowledge.mockResolvedValue([] as any[]);
+  referenceKnowledge.mockResolvedValue({ linked: true } as any);
 });
 
 describe('runRecordedWalk — refuse-before-write (B-1062)', () => {
@@ -309,6 +316,83 @@ describe('runRecordedWalk — attestation carries a populated who (B-1062 fix 4,
     expect(commentBody).toContain(`who: ${USER_ID}`);
     expect(commentBody).toContain('what_was_walked: walked the poller locally');
     expect(commentBody).toMatch(/when: \d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+describe('runRecordedWalk — mints/couples the same knowledge-entry shape a conducted gate would (B-1062 fix-forward round 3)', () => {
+  it('records and couples a knowledge entry at clarify, decompose (no-split create path), design, and plan', async () => {
+    const client = makeClient('Proposed');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, eligibleArgs());
+
+    expect(result.error).toBeUndefined();
+
+    // Exactly 4 mints: clarify, decompose's shared convention (create path — queryKnowledge returns
+    // [] by default in beforeEach), design, plan.
+    expect(recordDecision).toHaveBeenCalledTimes(4);
+    const pairs = recordDecision.mock.calls.map((c: any) => [c[3].type, c[3].source_activity]);
+    expect(pairs).toEqual([
+      ['specification', 'clarify'],
+      ['convention', 'decompose'],
+      ['technical-design', 'design-decide'],
+      ['specification', 'plan'],
+    ]);
+    for (const call of recordDecision.mock.calls) {
+      expect(call[3].provenance).toBe(KNOWLEDGE_WRITE_PROVENANCE_RECORDED);
+    }
+
+    // Every minted/coupled entry is referenced onto the resolved task_id, in gate order.
+    expect(referenceKnowledge).toHaveBeenCalledTimes(4);
+    const refCalls = referenceKnowledge.mock.calls.map((c: any) => c[2]);
+    expect(refCalls).toEqual([
+      { task_id: 'resolved-B-2000', decision_id: 'decision-specification-clarify' },
+      { task_id: 'resolved-B-2000', decision_id: 'decision-convention-decompose' },
+      { task_id: 'resolved-B-2000', decision_id: 'decision-technical-design-design-decide' },
+      { task_id: 'resolved-B-2000', decision_id: 'decision-specification-plan' },
+    ]);
+
+    const composeCalls = composeBrief.mock.calls;
+    const clarifyCompose = composeCalls.find((c: any) => c[3].reason === 'clarification-draft')!;
+    const decomposeCompose = composeCalls.find((c: any) => c[3].reason === 'decomposition-proposal')!;
+    const designCompose = composeCalls.find((c: any) => c[3].reason === 'design-decision-draft')!;
+    const planCompose = composeCalls.find((c: any) => c[3].reason === 'plan-draft')!;
+
+    // clarify/design/plan carry a decision_ref matching what recordDecision returned for that gate.
+    expect(clarifyCompose[3].decision_ref).toEqual({ type: 'specification', id: 'decision-specification-clarify' });
+    expect(designCompose[3].decision_ref).toEqual({ type: 'technical-design', id: 'decision-technical-design-design-decide' });
+    expect(planCompose[3].decision_ref).toEqual({ type: 'specification', id: 'decision-specification-plan' });
+
+    // decompose's no-split shape never sets a decision_ref — mirrors the live no-split skill exactly.
+    expect(decomposeCompose[3].decision_ref).toBeUndefined();
+
+    // Only plan-draft carries a hand-authored payload (compose_brief does not auto-derive it).
+    expect(planCompose[3].doc.payload).toHaveLength(1);
+    const planPayloadItem = planCompose[3].doc.payload[0];
+    expect(planPayloadItem.write_kind).toBe('knowledge_entry_content');
+    expect(planPayloadItem.entry_id).toBe('decision-specification-plan');
+    expect(planPayloadItem.content).toBeTruthy();
+
+    // clarify/design are auto-derived by compose_brief — never hand-authored here.
+    expect(clarifyCompose[3].doc.payload).toEqual([]);
+    expect(designCompose[3].doc.payload).toEqual([]);
+  });
+
+  it('couples the EXISTING shared no-split convention entry without minting a new one when queryKnowledge finds it', async () => {
+    queryKnowledge.mockResolvedValueOnce([{
+      id: 'existing-convention-1',
+      title: 'Decompose: when a ticket does not split',
+      type: 'convention',
+      status: 'Accepted',
+      domain: [],
+      tags: ['decompose-no-split'],
+      project_id: null,
+      updated_at: '2026-01-01T00:00:00Z',
+    }] as any);
+    const client = makeClient('Proposed');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, eligibleArgs());
+
+    expect(result.error).toBeUndefined();
+    expect(recordDecision.mock.calls.some((c: any) => c[3].type === 'convention')).toBe(false);
+    expect(referenceKnowledge).toHaveBeenCalledWith(client, PROJECT_ID, { task_id: 'resolved-B-2000', decision_id: 'existing-convention-1' });
   });
 });
 
