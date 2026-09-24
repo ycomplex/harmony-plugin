@@ -51,7 +51,7 @@ import { consumePendingAcceptanceEvent } from './acceptance-events.js';
 import { writeGateSlot, type GateSlotContent } from './gate-slots.js';
 import { advanceWorkflow } from './workflow.js';
 import { addComment } from './comments.js';
-import { manageAcceptanceCriteria } from './acceptance-criteria.js';
+import { manageAcceptanceCriteria, listAcceptanceCriteria } from './acceptance-criteria.js';
 import { PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED } from './provenance.js';
 import {
   evaluateEligibility,
@@ -72,7 +72,7 @@ export const RESOLVE_BRIEF_PROVENANCE_RECORDED = 'agent-synthesized:recorded';
  *  widened B-1021 fence's third closed suffix (provenance.ts, B-1062 step 6). */
 export const KNOWLEDGE_WRITE_PROVENANCE_RECORDED = PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED;
 
-export type RecordWalkGateName = 'clarify' | 'decompose' | 'design' | 'plan' | 'build' | 'release';
+export type RecordWalkGateName = 'clarify' | 'decompose' | 'design' | 'plan' | 'build' | 'release' | 'deploy' | 'verify';
 
 const GATE_REASONS: Partial<Record<RecordWalkGateName, string>> = {
   clarify: 'clarification-draft',
@@ -417,6 +417,60 @@ export async function runRecordedWalk(
       ratified_by: RATIFIED_BY_RECORDED,
     });
     gates.push({ gate: 'release', reason: GATE_REASONS.release, landed: true });
+
+    // ——— DEPLOY — brief-less SYSTEM/AGENT advance (Built -> Deployed), mirrors the BUILD step above.
+    // A live conducted ticket reaches Deployed via a real deploy succeeding; a recorded walk has no
+    // live deploy to wait on, so this walk advances the state itself, exactly like it already does
+    // for BUILD (Planned -> Built) above.
+    await advanceWorkflow(client, projectId, { task_id: taskId, activity: 'deploying' });
+    gates.push({ gate: 'deploy', landed: true });
+
+    // ——— VERIFY — compose ONLY, never accept. This is the ticket's actual human-ack point: verify is
+    // the hard floor, and only a live human may accept it (exactly like every conducted ticket) — this
+    // walk's job ends at "brief composed, awaiting_human_input set", never resolve_brief. Uses the raw
+    // `composeBrief` import directly (NOT `composeAndAccept`, which would immediately auto-accept).
+    const criteriaRows = await listAcceptanceCriteria(client, projectId, { task_id: taskId });
+    const verifyCriteria = (criteriaRows ?? []).map((ac: { id: string; content: string; checked: boolean }) => ({
+      ac_id: ac.id,
+      text: ac.content,
+      checked: ac.checked,
+      disposition: 'walk' as const,
+      // A recorded ticket's "walk" is auditing the record itself, not re-doing the work — one
+      // mechanical acknowledgment step, never a multi-step runbook.
+      step_ref: '1',
+    }));
+    const verifyEvidenceSummary = args.evidence.map((e) => e.url).join(', ') || '(none)';
+    await composeBrief(client, projectId, userId, {
+      task_id: taskId,
+      reason: 'verification-ack-pending',
+      pending_activity: 'verifying',
+      // manifest_root omitted deliberately: this function runs against an arbitrary project's Supabase
+      // client, not necessarily a real git worktree, so "the repo of record's absolute root" is not
+      // available at this layer (unlike finish-work, which runs inside one and can read process.cwd()).
+      // Per compose_brief's own contract, omitting it means "no manifest-declared evidence overlay" —
+      // degrades gracefully to today's behavior, never breaks.
+      doc: {
+        decide: `Does ${args.task_id}'s recorded work behave as described — acknowledge verified?`,
+        why: [
+          'This is a recorded (not conducted) walk — verification means confirming the record matches ' +
+            'what actually happened, not re-doing the work.',
+          `An attestation was already recorded at clarify (who: ${userId}); this ack is the human ` +
+            'confirmation that record matches reality.',
+        ],
+        items: [{ kind: 'decision', text: 'Acknowledge verified', recommendation: 'verify once confirmed' }],
+        frame: {
+          kind: 'verify',
+          // 'merged-main' is the safe, honest default for a freshly-recorded walk: the evidence is a
+          // merged PR/commit, not yet promoted anywhere — never guess 'production' without confirmation.
+          environment: 'merged-main',
+          criteria: verifyCriteria,
+          evidence_status:
+            `Recorded walk — evidence linked from the supplied links (${verifyEvidenceSummary}); ` +
+            'verify walk attestation on file.',
+        },
+      },
+    });
+    gates.push({ gate: 'verify', reason: 'verification-ack-pending', landed: true });
   } catch (err) {
     const message =
       err instanceof Error

@@ -9,10 +9,11 @@ const mocks = vi.hoisted(() => ({
   addComment: vi.fn(async () => ({ id: 'comment-1' })),
   resolveTaskId: vi.fn(async (_client: unknown, _projectId: string, input: string) => `resolved-${input}`),
   manageAcceptanceCriteria: vi.fn(async () => ({ added: [{ id: 'ac-1' }], updated: [], deleted: [] })),
+  listAcceptanceCriteria: vi.fn(async () => ([{ id: 'ac-1', content: 'the recorded AC', checked: true, position: 0, created_by: 'user-1', created_at: '2026-01-01T00:00:00Z' }])),
 }));
 const {
   composeBrief, resolveBrief, consumePendingAcceptanceEvent, writeGateSlot, advanceWorkflow, addComment,
-  resolveTaskId, manageAcceptanceCriteria,
+  resolveTaskId, manageAcceptanceCriteria, listAcceptanceCriteria,
 } = mocks;
 
 vi.mock('./briefs.js', () => ({ composeBrief: mocks.composeBrief, resolveBrief: mocks.resolveBrief }));
@@ -21,7 +22,10 @@ vi.mock('./gate-slots.js', () => ({ writeGateSlot: mocks.writeGateSlot }));
 vi.mock('./workflow.js', () => ({ advanceWorkflow: mocks.advanceWorkflow }));
 vi.mock('./comments.js', () => ({ addComment: mocks.addComment }));
 vi.mock('./resolve-task-id.js', () => ({ resolveTaskId: mocks.resolveTaskId }));
-vi.mock('./acceptance-criteria.js', () => ({ manageAcceptanceCriteria: mocks.manageAcceptanceCriteria }));
+vi.mock('./acceptance-criteria.js', () => ({
+  manageAcceptanceCriteria: mocks.manageAcceptanceCriteria,
+  listAcceptanceCriteria: mocks.listAcceptanceCriteria,
+}));
 
 import { runRecordedWalk, RATIFIED_BY_RECORDED, RESOLVE_BRIEF_PROVENANCE_RECORDED, KNOWLEDGE_WRITE_PROVENANCE_RECORDED } from './record-walk.js';
 import { PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED } from './provenance.js';
@@ -67,6 +71,7 @@ beforeEach(() => {
   addComment.mockResolvedValue({ id: 'comment-1' } as any);
   resolveTaskId.mockImplementation(async (_c: unknown, _p: string, input: string) => `resolved-${input}`);
   manageAcceptanceCriteria.mockResolvedValue({ added: [{ id: 'ac-1' }], updated: [], deleted: [] } as any);
+  listAcceptanceCriteria.mockResolvedValue([{ id: 'ac-1', content: 'the recorded AC', checked: true, position: 0, created_by: 'user-1', created_at: '2026-01-01T00:00:00Z' }] as any);
 });
 
 describe('runRecordedWalk — refuse-before-write (B-1062)', () => {
@@ -113,22 +118,25 @@ describe('runRecordedWalk — the happy path (B-1062)', () => {
 
     expect(result.refused).toBe(false);
     expect(result.error).toBeUndefined();
-    expect(result.gates.map((g) => g.gate)).toEqual(['clarify', 'decompose', 'design', 'plan', 'build', 'release']);
+    expect(result.gates.map((g) => g.gate)).toEqual(['clarify', 'decompose', 'design', 'plan', 'build', 'release', 'deploy', 'verify']);
     expect(result.gates.every((g) => g.landed)).toBe(true);
     expect(result.attestation_recorded).toBe(true);
 
     // Every resolve_brief accept uses the SAME recorded provenance — never a gate-name/human one.
-    expect(resolveBrief).toHaveBeenCalledTimes(5); // clarify, decompose, design, plan, release (build has no brief)
+    // Still exactly 5: clarify, decompose, design, plan, release (build has no brief; verify is
+    // COMPOSED but never accepted — see the dedicated describe block below for that assertion).
+    expect(resolveBrief).toHaveBeenCalledTimes(5);
     for (const call of resolveBrief.mock.calls) {
       expect(call[2]).toMatchObject({ command: 'accept', provenance: RESOLVE_BRIEF_PROVENANCE_RECORDED });
     }
 
-    // compose_brief reasons, in order.
+    // compose_brief reasons, in order — including the new verify compose at the end.
     expect(composeBrief.mock.calls.map((c: any) => c[3].reason)).toEqual([
-      'clarification-draft', 'decomposition-proposal', 'design-decision-draft', 'plan-draft', 'release-decision-pending',
+      'clarification-draft', 'decomposition-proposal', 'design-decision-draft', 'plan-draft',
+      'release-decision-pending', 'verification-ack-pending',
     ]);
 
-    // The payload-carrying reasons (all but release) each get drained.
+    // The payload-carrying reasons (all but release/verify) each get drained.
     expect(consumePendingAcceptanceEvent).toHaveBeenCalledTimes(4);
 
     // Both slot-bearing gates (clarify, release) are written DIRECTLY via write_gate_slot, stamped
@@ -153,11 +161,75 @@ describe('runRecordedWalk — the happy path (B-1062)', () => {
 
     // No Captured->Proposed advance on an already-Proposed ticket.
     expect(advanceWorkflow.mock.calls.some((c: any) => c[2].activity === 'proposing')).toBe(false);
+
+    // deploy is a brief-less advance_workflow('deploying') — no brief, mirrors build.
+    expect(advanceWorkflow).toHaveBeenCalledWith(client, PROJECT_ID, { task_id: 'resolved-B-2000', activity: 'deploying' });
   });
 
   it('KNOWLEDGE_WRITE_PROVENANCE_RECORDED is the widened B-1021 agent-on-behalf:human-recorded value', () => {
     expect(KNOWLEDGE_WRITE_PROVENANCE_RECORDED).toBe(PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED);
     expect(KNOWLEDGE_WRITE_PROVENANCE_RECORDED).toBe('agent-on-behalf:human-recorded');
+  });
+});
+
+describe('runRecordedWalk — advances to Deployed and composes (never accepts) the verify brief (B-1062 round 2)', () => {
+  it('advances Built->Deployed via advance_workflow, brief-less, like build', async () => {
+    const client = makeClient('Proposed');
+    await runRecordedWalk(client, PROJECT_ID, USER_ID, eligibleArgs());
+
+    expect(advanceWorkflow).toHaveBeenCalledWith(client, PROJECT_ID, { task_id: 'resolved-B-2000', activity: 'deploying' });
+  });
+
+  it('composes the verify brief with reason verification-ack-pending and pending_activity verifying', async () => {
+    const client = makeClient('Proposed');
+    await runRecordedWalk(client, PROJECT_ID, USER_ID, eligibleArgs());
+
+    const verifyCall = composeBrief.mock.calls.find((c: any) => c[3].reason === 'verification-ack-pending');
+    expect(verifyCall).toBeDefined();
+    const composeArgs = verifyCall![3];
+    expect(composeArgs.pending_activity).toBe('verifying');
+    expect(composeArgs.task_id).toBe('resolved-B-2000');
+    expect(composeArgs.doc.frame).toMatchObject({ kind: 'verify', environment: 'merged-main' });
+    // manifest_root is deliberately omitted — this layer has no notion of "the repo of record".
+    expect(composeArgs.manifest_root).toBeUndefined();
+  });
+
+  it('reads the ticket\'s CURRENT acceptance criteria (via list_acceptance_criteria) onto the verify frame\'s criteria ledger', async () => {
+    listAcceptanceCriteria.mockResolvedValueOnce([
+      { id: 'ac-1', content: 'the recorded AC', checked: true, position: 0, created_by: USER_ID, created_at: '2026-01-01T00:00:00Z' },
+      { id: 'ac-2', content: 'a second AC', checked: false, position: 1, created_by: USER_ID, created_at: '2026-01-01T00:00:00Z' },
+    ] as any);
+    const client = makeClient('Proposed');
+    await runRecordedWalk(client, PROJECT_ID, USER_ID, eligibleArgs());
+
+    expect(listAcceptanceCriteria).toHaveBeenCalledWith(client, PROJECT_ID, { task_id: 'resolved-B-2000' });
+    const verifyCall = composeBrief.mock.calls.find((c: any) => c[3].reason === 'verification-ack-pending')!;
+    const criteria = verifyCall[3].doc.frame.criteria;
+    expect(criteria).toEqual([
+      { ac_id: 'ac-1', text: 'the recorded AC', checked: true, disposition: 'walk', step_ref: '1' },
+      { ac_id: 'ac-2', text: 'a second AC', checked: false, disposition: 'walk', step_ref: '1' },
+    ]);
+  });
+
+  it('the verify brief is COMPOSED but NEVER accepted — resolve_brief is never called for it', async () => {
+    const client = makeClient('Proposed');
+    await runRecordedWalk(client, PROJECT_ID, USER_ID, eligibleArgs());
+
+    // Exactly 5 resolve_brief calls total (clarify, decompose, design, plan, release) — none for verify.
+    expect(resolveBrief).toHaveBeenCalledTimes(5);
+    // consume_pending_acceptance_event is never called for verify either (it mints no event, like release).
+    expect(consumePendingAcceptanceEvent).toHaveBeenCalledTimes(4);
+  });
+
+  it('the returned gates array reports deploy and verify landed, in order, after release', async () => {
+    const client = makeClient('Proposed');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, eligibleArgs());
+
+    expect(result.gates).toContainEqual({ gate: 'deploy', landed: true });
+    expect(result.gates).toContainEqual({ gate: 'verify', reason: 'verification-ack-pending', landed: true });
+    const gateNames = result.gates.map((g) => g.gate);
+    expect(gateNames.indexOf('release')).toBeLessThan(gateNames.indexOf('deploy'));
+    expect(gateNames.indexOf('deploy')).toBeLessThan(gateNames.indexOf('verify'));
   });
 });
 
@@ -168,7 +240,7 @@ describe('runRecordedWalk — Captured ticket auto-advances proposing before cla
 
     expect(result.refused).toBe(false);
     expect(result.error).toBeUndefined();
-    expect(result.gates.map((g) => g.gate)).toEqual(['clarify', 'decompose', 'design', 'plan', 'build', 'release']);
+    expect(result.gates.map((g) => g.gate)).toEqual(['clarify', 'decompose', 'design', 'plan', 'build', 'release', 'deploy', 'verify']);
 
     // The proposing advance happened, brief-less, exactly like the conductor's own Captured self-advance.
     expect(advanceWorkflow).toHaveBeenCalledWith(client, PROJECT_ID, { task_id: 'resolved-B-2000', activity: 'proposing' });
