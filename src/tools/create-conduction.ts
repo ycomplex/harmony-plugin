@@ -29,6 +29,7 @@ import {
   type ConductionRecord,
 } from './conduction-record.js';
 import { RunConfigSchema, type RunConfig } from '../config/run-config.js';
+import { getProjectConductionDefaults, fillRunConfigDefaults } from '../config/conduction-defaults.js';
 
 export interface CreateConductionArgs {
   task_id: string;
@@ -75,6 +76,11 @@ export async function createConduction(
   // caller bug that should fail fast, not after an otherwise-wasted network call.
   const runConfig =
     args.run_config !== undefined ? RunConfigSchema.parse(args.run_config) : undefined;
+  // B-925: fill in whichever run_config field the caller left absent from this project's own
+  // stored conduction defaults (settings, web-side) — field-by-field, never overriding a field the
+  // caller explicitly set. Tolerant of the column not existing yet (see getProjectConductionDefaults).
+  const defaults = await getProjectConductionDefaults(client, projectId);
+  const filledRunConfig = fillRunConfigDefaults(runConfig, defaults);
   const taskId = await resolveTaskId(client, projectId, args.task_id);
 
   try {
@@ -96,7 +102,7 @@ export async function createConduction(
       // CLI both send it; this dispatch used to drop it, which is the defect B-894 closes. userId
       // is threaded in from handleToolCall exactly as ~19 sibling write tools already do.
       created_by: userId,
-      ...(runConfig !== undefined ? { run_config: runConfig } : {}),
+      ...(filledRunConfig !== undefined ? { run_config: filledRunConfig } : {}),
     });
     return {
       conduction,
