@@ -16,6 +16,14 @@
 // so it always runs first, ahead of the excluded/duplicate guards, and is the CLI's half of the same
 // shared mechanics the `create_conduction` MCP tool uses. Never inferred: a human must pass
 // `--unpark` explicitly (AC5) — this command never revives on its own.
+//
+// B-925: `--model`, `--session-resume`/`--no-session-resume`, `--auto-approve-gates`/
+// `--no-auto-approve-gates` build a `run_config` for THIS run, which is then filled in from this
+// project's own stored conduction defaults (settings, web-side) for whichever of those three
+// fields the caller left unset — the CLI's half of the same fill create-conduction.ts (the MCP
+// tool) applies. This command has no `run_config` option at all before B-925 and does not go
+// through create-conduction.ts's wrapper; it reuses the same fill helper + RunConfigSchema import
+// directly against the thin conduction-record.ts insert primitive.
 
 import { Command } from 'commander';
 import { resolveTaskId } from '../../tools/resolve-task-id.js';
@@ -28,6 +36,8 @@ import {
   TicketParkedError,
   TicketStaleReviveRefusedError,
 } from '../../tools/conduction-record.js';
+import { RunConfigSchema, type RunConfig } from '../../config/run-config.js';
+import { getProjectConductionDefaults, fillRunConfigDefaults } from '../../config/conduction-defaults.js';
 import { runCommand } from '../run-command.js';
 
 export function registerConductCommand(program: Command): void {
@@ -37,7 +47,21 @@ export function registerConductCommand(program: Command): void {
     .argument('<ticket>', 'Task ID (UUID, number, or B-123)')
     .option('--unpark', 'Revive a Parked ticket and hand it to the conductor in this same call (B-964)', false)
     .option('--resume-to <state>', 'Target workflow_state override when reviving a Parked ticket (defaults to the ticket\'s own parked_from, else Proposed)')
-    .action(async (ticket: string, opts: { unpark?: boolean; resumeTo?: string }) => {
+    .option('--model <alias>', 'B-925: explicit model alias for this run (fills run_config.model.default)')
+    .option('--session-resume', 'B-925: explicitly enable session-resume for this run')
+    .option('--no-session-resume', 'B-925: explicitly disable session-resume for this run')
+    .option('--auto-approve-gates <gates>', 'B-925: comma-separated forward gates to auto-approve for this run')
+    .option('--no-auto-approve-gates', 'B-925: explicitly auto-approve no gates for this run')
+    .action(async (
+      ticket: string,
+      opts: {
+        unpark?: boolean;
+        resumeTo?: string;
+        model?: string;
+        sessionResume?: boolean;
+        autoApproveGates?: string | false;
+      },
+    ) => {
       await runCommand(
         program.opts(),
         async (ctx) => {
@@ -52,10 +76,40 @@ export function registerConductCommand(program: Command): void {
               revived_by: `human via CLI (harmony conduct --unpark), acting user ${ctx.userId}`,
             });
             await assertNotExcluded(ctx.client, taskId);
+
+            // B-925: build a run_config from whichever of --model / --session-resume /
+            // --no-session-resume / --auto-approve-gates / --no-auto-approve-gates flags were
+            // actually passed — a flag NOT passed is omitted entirely (never defaulted to
+            // false/empty), so "not passed" stays distinguishable from "explicitly off" all the
+            // way into RunConfigSchema.parse and fillRunConfigDefaults.
+            const runConfigInput: Record<string, unknown> = {};
+            if (opts.model !== undefined) {
+              runConfigInput.model = { default: opts.model };
+            }
+            if (opts.sessionResume !== undefined) {
+              runConfigInput.session_resume = { enabled: opts.sessionResume };
+            }
+            if (opts.autoApproveGates !== undefined) {
+              runConfigInput.auto_approve_gates =
+                opts.autoApproveGates === false
+                  ? []
+                  : opts.autoApproveGates
+                      .split(',')
+                      .map((g) => g.trim())
+                      .filter(Boolean);
+            }
+            const callerRunConfig: RunConfig | undefined =
+              Object.keys(runConfigInput).length > 0
+                ? RunConfigSchema.parse(runConfigInput)
+                : undefined;
+            const defaults = await getProjectConductionDefaults(ctx.client, ctx.projectId);
+            const filledRunConfig = fillRunConfigDefaults(callerRunConfig, defaults);
+
             return await createConduction(ctx.client, {
               task_id: taskId,
               mode: 'controlled',
               created_by: ctx.userId,
+              ...(filledRunConfig !== undefined ? { run_config: filledRunConfig } : {}),
             });
           } catch (err) {
             if (err instanceof TicketParkedError || err instanceof TicketStaleReviveRefusedError) {

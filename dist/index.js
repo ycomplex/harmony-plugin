@@ -51386,11 +51386,56 @@ async function readCriteriaPresence(client, taskId, localPresence) {
   return presence;
 }
 
+// src/config/conduction-defaults.ts
+var isMissingConductionDefaultsColumn = (err) => {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42703" || code === "42P01" || code === "PGRST204" || code === "PGRST205") return true;
+  const msg = err.message ?? "";
+  if (/conduction_defaults/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg)) {
+    return true;
+  }
+  return false;
+};
+async function getProjectConductionDefaults(client, projectId) {
+  const { data, error: error2 } = await client.from("projects").select("conduction_defaults").eq("id", projectId).single();
+  if (error2) {
+    if (isMissingConductionDefaultsColumn(error2)) {
+      console.warn(
+        "harmony conduction_defaults: WARNING \u2014 the projects.conduction_defaults column is absent (pre-promote \u2014 B-383) \u2014 degrading to no project conduction defaults for this run."
+      );
+      return {};
+    }
+    throw new Error(error2.message);
+  }
+  const row = data;
+  return row?.conduction_defaults ?? {};
+}
+function fillRunConfigDefaults(callerRunConfig, defaults) {
+  const merged = { ...callerRunConfig };
+  let changed = false;
+  if (!("model" in merged) && defaults.model !== void 0) {
+    merged.model = { ...callerRunConfig?.model, default: defaults.model };
+    changed = true;
+  }
+  if (!("session_resume" in merged) && defaults.session_resume !== void 0) {
+    merged.session_resume = defaults.session_resume;
+    changed = true;
+  }
+  if (!("auto_approve_gates" in merged) && defaults.auto_approve_gates !== void 0) {
+    merged.auto_approve_gates = [...defaults.auto_approve_gates];
+    changed = true;
+  }
+  return changed ? merged : callerRunConfig;
+}
+
 // src/tools/create-conduction.ts
 var HANDOFF_CONTRACT_NOTE = "the duplicate-guard can only detect an active conduction record \u2014 it can't see an in-progress terminal session, so make sure any in-session work on this ticket has stopped before handing it off.";
 async function createConduction2(client, projectId, userId, args) {
   if (!args.task_id) throw new Error("task_id is required");
   const runConfig = args.run_config !== void 0 ? RunConfigSchema.parse(args.run_config) : void 0;
+  const defaults = await getProjectConductionDefaults(client, projectId);
+  const filledRunConfig = fillRunConfigDefaults(runConfig, defaults);
   const taskId = await resolveTaskId(client, projectId, args.task_id);
   try {
     await reviveParkedTicketIfNeeded(client, projectId, userId, taskId, {
@@ -51407,7 +51452,7 @@ async function createConduction2(client, projectId, userId, args) {
       // CLI both send it; this dispatch used to drop it, which is the defect B-894 closes. userId
       // is threaded in from handleToolCall exactly as ~19 sibling write tools already do.
       created_by: userId,
-      ...runConfig !== void 0 ? { run_config: runConfig } : {}
+      ...filledRunConfig !== void 0 ? { run_config: filledRunConfig } : {}
     });
     return {
       conduction,

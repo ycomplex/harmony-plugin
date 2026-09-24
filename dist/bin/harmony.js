@@ -41766,9 +41766,52 @@ function registerBriefCommands(program3) {
   });
 }
 
+// src/config/conduction-defaults.ts
+var isMissingConductionDefaultsColumn = (err) => {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42703" || code === "42P01" || code === "PGRST204" || code === "PGRST205") return true;
+  const msg = err.message ?? "";
+  if (/conduction_defaults/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg)) {
+    return true;
+  }
+  return false;
+};
+async function getProjectConductionDefaults(client, projectId) {
+  const { data, error } = await client.from("projects").select("conduction_defaults").eq("id", projectId).single();
+  if (error) {
+    if (isMissingConductionDefaultsColumn(error)) {
+      console.warn(
+        "harmony conduction_defaults: WARNING \u2014 the projects.conduction_defaults column is absent (pre-promote \u2014 B-383) \u2014 degrading to no project conduction defaults for this run."
+      );
+      return {};
+    }
+    throw new Error(error.message);
+  }
+  const row = data;
+  return row?.conduction_defaults ?? {};
+}
+function fillRunConfigDefaults(callerRunConfig, defaults) {
+  const merged = { ...callerRunConfig };
+  let changed = false;
+  if (!("model" in merged) && defaults.model !== void 0) {
+    merged.model = { ...callerRunConfig?.model, default: defaults.model };
+    changed = true;
+  }
+  if (!("session_resume" in merged) && defaults.session_resume !== void 0) {
+    merged.session_resume = defaults.session_resume;
+    changed = true;
+  }
+  if (!("auto_approve_gates" in merged) && defaults.auto_approve_gates !== void 0) {
+    merged.auto_approve_gates = [...defaults.auto_approve_gates];
+    changed = true;
+  }
+  return changed ? merged : callerRunConfig;
+}
+
 // src/cli/commands/conduct.ts
 function registerConductCommand(program3) {
-  program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor daemon picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").option("--unpark", "Revive a Parked ticket and hand it to the conductor in this same call (B-964)", false).option("--resume-to <state>", "Target workflow_state override when reviving a Parked ticket (defaults to the ticket's own parked_from, else Proposed)").action(async (ticket, opts) => {
+  program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor daemon picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").option("--unpark", "Revive a Parked ticket and hand it to the conductor in this same call (B-964)", false).option("--resume-to <state>", "Target workflow_state override when reviving a Parked ticket (defaults to the ticket's own parked_from, else Proposed)").option("--model <alias>", "B-925: explicit model alias for this run (fills run_config.model.default)").option("--session-resume", "B-925: explicitly enable session-resume for this run").option("--no-session-resume", "B-925: explicitly disable session-resume for this run").option("--auto-approve-gates <gates>", "B-925: comma-separated forward gates to auto-approve for this run").option("--no-auto-approve-gates", "B-925: explicitly auto-approve no gates for this run").action(async (ticket, opts) => {
     await runCommand(
       program3.opts(),
       async (ctx) => {
@@ -41780,10 +41823,24 @@ function registerConductCommand(program3) {
             revived_by: `human via CLI (harmony conduct --unpark), acting user ${ctx.userId}`
           });
           await assertNotExcluded(ctx.client, taskId);
+          const runConfigInput = {};
+          if (opts.model !== void 0) {
+            runConfigInput.model = { default: opts.model };
+          }
+          if (opts.sessionResume !== void 0) {
+            runConfigInput.session_resume = { enabled: opts.sessionResume };
+          }
+          if (opts.autoApproveGates !== void 0) {
+            runConfigInput.auto_approve_gates = opts.autoApproveGates === false ? [] : opts.autoApproveGates.split(",").map((g) => g.trim()).filter(Boolean);
+          }
+          const callerRunConfig = Object.keys(runConfigInput).length > 0 ? RunConfigSchema.parse(runConfigInput) : void 0;
+          const defaults = await getProjectConductionDefaults(ctx.client, ctx.projectId);
+          const filledRunConfig = fillRunConfigDefaults(callerRunConfig, defaults);
           return await createConduction(ctx.client, {
             task_id: taskId,
             mode: "controlled",
-            created_by: ctx.userId
+            created_by: ctx.userId,
+            ...filledRunConfig !== void 0 ? { run_config: filledRunConfig } : {}
           });
         } catch (err) {
           if (err instanceof TicketParkedError || err instanceof TicketStaleReviveRefusedError) {

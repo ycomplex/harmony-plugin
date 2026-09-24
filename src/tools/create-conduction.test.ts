@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   assertNotExcluded: vi.fn(),
   insertConduction: vi.fn(),
   reviveParkedTicketIfNeeded: vi.fn(),
+  getProjectConductionDefaults: vi.fn(),
 }));
 
 vi.mock('./resolve-task-id.js', () => ({ resolveTaskId: mocks.resolveTaskId }));
@@ -30,6 +31,16 @@ vi.mock('./conduction-record.js', async (importOriginal) => {
     assertNotExcluded: mocks.assertNotExcluded,
     createConduction: mocks.insertConduction,
     reviveParkedTicketIfNeeded: mocks.reviveParkedTicketIfNeeded,
+  };
+});
+// B-925: getProjectConductionDefaults is mocked here (defaults to `{}` — no project defaults) so
+// every pre-B-925 test in this file, which asserts the insert is called with NO run_config key at
+// all, stays true unchanged; fillRunConfigDefaults itself is the REAL implementation.
+vi.mock('../config/conduction-defaults.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config/conduction-defaults.js')>();
+  return {
+    ...actual,
+    getProjectConductionDefaults: mocks.getProjectConductionDefaults,
   };
 });
 
@@ -52,6 +63,7 @@ beforeEach(() => {
   // B-964: a no-op by default, exactly like a non-Parked ticket — most tests here don't care
   // about the revive path at all.
   mocks.reviveParkedTicketIfNeeded.mockResolvedValue(undefined);
+  mocks.getProjectConductionDefaults.mockResolvedValue({});
 });
 
 describe('createConduction (create_conduction MCP tool handler)', () => {
@@ -279,5 +291,44 @@ describe('createConductionTool (MCP tool descriptor)', () => {
     expect(createConductionTool.inputSchema.properties).toHaveProperty('unpark');
     expect(createConductionTool.inputSchema.properties).toHaveProperty('resume_to');
     expect(createConductionTool.inputSchema.properties).toHaveProperty('revived_by');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B-925 — project conduction defaults filled into the create_conduction insert
+// ---------------------------------------------------------------------------
+
+describe('createConduction (create_conduction MCP tool handler) — B-925 project conduction defaults', () => {
+  it('fetches the project defaults for this project id and fills an absent run_config field from them', async () => {
+    mocks.getProjectConductionDefaults.mockResolvedValue({ model: 'claude-sonnet-5' });
+
+    await createConduction(client, 'proj-1', 'user-7', { task_id: 'B-925' });
+
+    expect(mocks.getProjectConductionDefaults).toHaveBeenCalledWith(client, 'proj-1');
+    expect(mocks.insertConduction).toHaveBeenCalledWith(client, {
+      task_id: 'uuid-1',
+      mode: 'controlled',
+      created_by: 'user-7',
+      run_config: { model: { default: 'claude-sonnet-5' } },
+    });
+  });
+
+  it('never overrides a caller-supplied explicit field with a project default', async () => {
+    mocks.getProjectConductionDefaults.mockResolvedValue({ session_resume: { enabled: true } });
+
+    await createConduction(client, 'proj-1', 'user-7', {
+      task_id: 'B-925',
+      run_config: { session_resume: { enabled: false } },
+    });
+
+    const call = mocks.insertConduction.mock.calls[0][1] as { run_config?: unknown };
+    expect(call.run_config).toEqual({ session_resume: { enabled: false } });
+  });
+
+  it('omits run_config from the insert entirely when neither the caller nor the project default supply anything', async () => {
+    await createConduction(client, 'proj-1', 'user-7', { task_id: 'B-925' });
+
+    const call = mocks.insertConduction.mock.calls[0][1] as Record<string, unknown>;
+    expect('run_config' in call).toBe(false);
   });
 });
