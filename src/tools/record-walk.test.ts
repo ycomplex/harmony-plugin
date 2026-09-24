@@ -218,6 +218,29 @@ describe('runRecordedWalk — advances to Deployed and composes (never accepts) 
     ]);
   });
 
+  it("B-1068 — the composed verify frame's own `steps` satisfy the real lintBrief's runbook-integrity checks", async () => {
+    // `./briefs.js` is mocked wholesale in this file (composeBrief/resolveBrief are fakes) — reach past
+    // the mock for the REAL renderBrief/lintBrief so this is a genuine check against the shipped lint,
+    // not a hand-rolled reimplementation of it that could drift from the real rules.
+    const real = await vi.importActual<typeof import('./briefs.js')>('./briefs.js');
+    listAcceptanceCriteria.mockResolvedValueOnce([
+      { id: 'ac-1', content: 'the recorded AC', checked: true, position: 0, created_by: USER_ID, created_at: '2026-01-01T00:00:00Z' },
+      { id: 'ac-2', content: 'a second AC', checked: false, position: 1, created_by: USER_ID, created_at: '2026-01-01T00:00:00Z' },
+    ] as any);
+    const client = makeClient('Proposed');
+    await runRecordedWalk(client, PROJECT_ID, USER_ID, eligibleArgs());
+
+    const verifyCall = composeBrief.mock.calls.find((c: any) => c[3].reason === 'verification-ack-pending')!;
+    const doc = verifyCall[3].doc;
+    const md = real.renderBrief(doc, null, { reason: 'verification-ack-pending' });
+    const lint = real.lintBrief(doc, md, { reason: 'verification-ack-pending' });
+    expect(lint.errors).toEqual([]);
+    expect(lint.ok).toBe(true);
+    // and the walk really does render, above the criteria table
+    expect(md).toContain('**Walk:**');
+    expect(md.indexOf('**Walk:**')).toBeLessThan(md.indexOf('**Verifying against'));
+  });
+
   it('the verify brief is COMPOSED but NEVER accepted — resolve_brief is never called for it', async () => {
     const client = makeClient('Proposed');
     await runRecordedWalk(client, PROJECT_ID, USER_ID, eligibleArgs());

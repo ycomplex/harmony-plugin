@@ -121,6 +121,15 @@ export const CriterionSlotSchema = z.object({
   disposition: z.string().optional(),
 }).passthrough();
 
+/** B-1068 — verify's WALK, one row per declared runbook step. Carried onto the durable section
+ *  verbatim so a reader who opens the gate slot months later sees what was actually walked, not
+ *  just a step number pointing at a brief that has since scrolled off. */
+export const VerifyStepSlotSchema = z.object({
+  ref: z.string().optional(),
+  text: z.string().optional(),
+  covers: z.array(z.string()).optional(),
+}).passthrough();
+
 /** clarify — what this ticket is, and is not, solving. */
 export const ClarifySlotSchema = z.object({
   solving: z.string().optional(),
@@ -141,6 +150,8 @@ export const ReleaseSlotSchema = z.object({
 export const VerifySlotSchema = z.object({
   environment: z.string().optional(),
   criteria: z.array(CriterionSlotSchema).optional(),
+  // B-1068 — the ordered runbook steps themselves, alongside the criteria they discharge.
+  steps: z.array(VerifyStepSlotSchema).optional(),
   evidence_status: z.string().optional(),
 }).passthrough();
 
@@ -157,6 +168,7 @@ export type ClarifySlot = z.infer<typeof ClarifySlotSchema>;
 export type ReleaseSlot = z.infer<typeof ReleaseSlotSchema>;
 export type VerifySlot = z.infer<typeof VerifySlotSchema>;
 export type PullRequestSlot = z.infer<typeof PullRequestSlotSchema>;
+export type VerifyStepSlot = z.infer<typeof VerifyStepSlotSchema>;
 
 export function isGateSlotName(gate: string): gate is GateSlotName {
   return (GATE_SLOT_NAMES as readonly string[]).includes(gate);

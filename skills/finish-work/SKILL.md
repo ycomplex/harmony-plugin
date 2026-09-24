@@ -1041,11 +1041,16 @@ at the two edges where cost turns irreversible, never a second definition. As th
 so the refusal is answerable: the substrate guard would refuse by RAISING, which reaches a daemon leg as a
 dirty exit and an operator page.
 
-**4. The verify frame (B-876) — author `doc.frame` as the criteria LEDGER.** This is the gate whose whole
-contract is "confirm reality against these criteria", and the criterion text appeared in **0/14** rendered
-briefs — the reader had to trust a bare list of digits. The frame puts every filed criterion on the page,
-**verbatim from step 1's `list_acceptance_criteria` read**, one row each, with its disposition and the
-runbook step that discharges it:
+**4. The verify frame (B-876) — author `doc.frame` as the criteria LEDGER, and `frame.steps` as the
+RUNBOOK itself.** This is the gate whose whole contract is "confirm reality against these criteria", and
+the criterion text appeared in **0/14** rendered briefs — the reader had to trust a bare list of digits.
+The frame puts every filed criterion on the page, **verbatim from step 1's `list_acceptance_criteria`
+read**, one row each, with its disposition and a `step_ref` naming the runbook step that discharges it.
+
+**Since B-1068, the walk is authored directly as `frame.steps`** — a `step_ref` is a pointer, and
+`frame.steps` is what it must point AT. There is no other convention for writing the walk down (the old
+"RUNBOOK step N" language buried in `why[]` bullets is retired): every hand-checkable criterion's step
+lives in this one ordered array, nowhere else.
 
 ```
 frame: {
@@ -1058,11 +1063,19 @@ frame: {
       disposition: "walk",            // 'walk' | 'blocked' | 'test-proven' | 'not-hand-checkable' | 'carried' | 'unproven'
                                       // (+ 'manifest-declared' / 'manifest-attested' — B-974, SYNTHETIC:
                                       //  compose overlays those two itself; never author them by hand)
-      step_ref: "1" },                // REQUIRED on a 'walk' — the runbook step the human follows
+      step_ref: "1" },                // REQUIRED on a 'walk' — must resolve to a `frame.steps[].ref` below
     { ac_id: "<id>", text: "<...>", checked: false, disposition: "blocked",
       blocked_reason: "<why it cannot be exercised here>" },
     { ac_id: "<id>", text: "<...>", checked: false, disposition: "carried",
       carried_to: "<ticket>", backed_by: "<the tests that do cover it>" }
+  ],
+  // The ordered runbook itself (B-1068) — ONE entry per distinct walk step, not per criterion: several
+  // criteria may share a step (`covers` lists every ac_id it discharges). `text` is ONE action plus ONE
+  // expected observation, concrete enough to follow with no other context.
+  steps: [
+    { ref: "1",
+      text: "<Do one concrete thing. EXPECT: <the observable result>.>",
+      covers: ["<id>"] }             // every ac_id this step discharges — REQUIRED, non-empty
   ],
   // exempt_reason: "<umbrella — carried by children / decision-only>"  — when the ticket has no ACs of its own
   evidence_status: "<the B-560 line from get_build_evidence_status, verbatim>",
@@ -1075,6 +1088,12 @@ number the reader previously had to derive by reconciling ten context bullets ag
 Use `carried` (with `carried_to`) for a criterion this ack deliberately closes OUT of the ticket: accepting
 closes it permanently, and the human should see that as a row, not infer it from prose.
 
+**Compose REFUSES, not merely warns, when the runbook is broken (B-1068):** a `walk` criterion with no
+`frame.steps` at all; a `step_ref` matching no declared `frame.steps[].ref`; a declared step whose `covers`
+names no filed criterion; a `walk` criterion naming no `step_ref`; or a step whose `text` is blank. Author
+every hand-checkable criterion's step before calling `compose_brief` — there is no partial-credit path, and
+a refused compose leaves the prior brief (if any) untouched.
+
 ```
 mcp__harmony__compose_brief({
   task_id, reason: "verification-ack-pending", pending_activity: "verifying",
@@ -1082,6 +1101,7 @@ mcp__harmony__compose_brief({
   changed_paths: [/* the merged PR's changed files — see below */],
   doc: { decide: "Does production behaviour match the design?",
     frame: { kind: "verify", environment: "staging", criteria: [/* one row per filed criterion, verbatim */],
+             steps: [/* one entry per distinct walk step — see above */],
              evidence_status: "<the B-560 line, verbatim>" },
     items: [{ kind: "decision", text: "Acknowledge verified", recommendation: "verify once confirmed" }] }
 })

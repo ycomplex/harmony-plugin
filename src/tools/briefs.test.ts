@@ -3057,13 +3057,24 @@ describe('B-876 gate frame', () => {
     ...over,
   });
 
-  const verifyFrame = (rows = 3, over: Record<string, unknown> = {}): GateFrame => ({
-    kind: 'verify',
-    environment: 'staging',
-    criteria: Array.from({ length: rows }, (_, i) => criterionRow(i + 1)),
-    evidence_status: '✓ complete',
-    ...over,
-  } as GateFrame);
+  // B-1068 — one runbook step per default criterion row, ref-matched to its `step_ref` and covering
+  // its own `ac_id`, so `verifyFrame`'s own output satisfies the new runbook-integrity checks out of
+  // the box. Computed from the FINAL criteria (honoring an `over.criteria` override), never from `rows`
+  // alone, so a caller that replaces `criteria` still gets matching default steps.
+  const verifyFrame = (rows = 3, over: Record<string, unknown> = {}): GateFrame => {
+    const criteria = (over.criteria as CriterionRow[] | undefined) ?? Array.from({ length: rows }, (_, i) => criterionRow(i + 1));
+    const defaultSteps = criteria
+      .filter((r) => r?.disposition === 'walk' && typeof r.step_ref === 'string' && r.step_ref.trim().length > 0)
+      .map((r) => ({ ref: r.step_ref as string, text: `Walk step ${r.step_ref} — check "${r.text}". EXPECT: it holds.`, covers: [r.ac_id] }));
+    return {
+      kind: 'verify',
+      environment: 'staging',
+      criteria,
+      steps: defaultSteps,
+      evidence_status: '✓ complete',
+      ...over,
+    } as GateFrame;
+  };
 
   // ─────────────────────────────────────────────────────────────────────────────────────────────
   // THE ACCEPTANCE CRITERION: a frame-less doc renders EXACTLY today's bytes.
@@ -3313,11 +3324,12 @@ describe('B-876 gate frame', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────────────────────
-  // THE OTHER ACCEPTANCE CRITERION: every new rule is a WARNING — with ONE exception (B-1016): a
-  // `release` frame missing `evidence_status` is a hard ERROR (see the dedicated describe block
-  // below). Every other rule, at every other frame kind, still only warns.
+  // THE OTHER ACCEPTANCE CRITERION: every new rule is a WARNING — with TWO exceptions: (B-1016) a
+  // `release` frame missing `evidence_status` is a hard ERROR, and (B-1068) a `verify` frame's
+  // runbook-integrity checks are hard ERRORS (see their own dedicated describe blocks below). Every
+  // other rule, at every other frame kind, still only warns.
   // ─────────────────────────────────────────────────────────────────────────────────────────────
-  describe('every frame rule warns and none errors (except the B-1016 release evidence_status reject)', () => {
+  describe('every frame rule warns and none errors (except the B-1016 release / B-1068 verify hard refusals)', () => {
     const FRAMED_REASONS = Object.keys(FRAME_KIND_FOR_REASON);
     const wellFormed: Record<string, GateFrame> = {
       'clarification-draft': clarifyFrame(),
@@ -3448,18 +3460,23 @@ describe('B-876 gate frame', () => {
       expect(r.warnings.join(' ')).toContain('`frame.evidence_status` is blank');
     });
 
-    it("warns when a 'walk' criterion names no step_ref", () => {
+    // B-1068 — this rule was a warning; it is now a HARD REFUSAL (moved out of this "never errors"
+    // describe block's own sweep by asserting r.ok === false here instead).
+    it("REFUSES when a 'walk' criterion names no step_ref (B-1068 — was a warning, now an error)", () => {
       const doc = baseDoc({ frame: verifyFrame(1, { criteria: [criterionRow(1, { step_ref: undefined })] }) });
       const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
-      expect(r.errors).toEqual([]);
-      expect(r.warnings.join(' ')).toContain("names no `step_ref`");
+      expect(r.ok).toBe(false);
+      expect(r.errors.join(' ')).toContain("names no `step_ref`");
     });
 
     // B-903 — an out-of-enum disposition is doubly wrong on the page: the ledger renders the literal
     // string "undefined" for the mark, and the headline (which counts only 'walk') under-reports.
     it('warns on a disposition outside the enum, and never errors', () => {
       const doc = baseDoc({
-        frame: verifyFrame(1, { criteria: [criterionRow(1, { disposition: 'verified' as unknown as CriterionRow['disposition'] })] }),
+        // step_ref cleared: this fixture is only exercising the disposition-enum rule, and a stray
+        // step_ref pointing at no declared step would otherwise ALSO trip the B-1068 step_ref-resolves
+        // hard refusal, which is a different rule with its own dedicated tests below.
+        frame: verifyFrame(1, { criteria: [criterionRow(1, { disposition: 'verified' as unknown as CriterionRow['disposition'], step_ref: undefined })] }),
       });
       const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
       expect(r.errors).toEqual([]);
@@ -3506,6 +3523,145 @@ describe('B-876 gate frame', () => {
       const exempt = baseDoc({ frame: verifyFrame(0, { exempt_reason: 'umbrella — carried by children' }) });
       expect(lintBrief(exempt, renderBrief(exempt), { reason: 'verification-ack-pending' }).warnings.join(' '))
         .not.toContain('acks against nothing');
+    });
+
+    // ───────────────────────────────────────────────────────────────────────────────────────────
+    // B-1068 — the verify runbook-integrity checks flip from WARNING to HARD REFUSAL: a verify brief
+    // literally cannot compose without the walk written out as a structured `frame.steps` field. Five
+    // refusal fixtures (a-e, matching the accepted plan's own lettering), the two closed dead/
+    // off-contract paths (B-983/B-925), and one passing fixture with two steps covering three
+    // criteria.
+    // ───────────────────────────────────────────────────────────────────────────────────────────
+    describe('B-1068 — verify runbook-integrity checks are hard refusals', () => {
+      const walkCriterion = (over: Partial<CriterionRow> = {}): CriterionRow => ({
+        ac_id: 'ac-1',
+        text: 'Clicking Record opens the dialog',
+        checked: false,
+        disposition: 'walk',
+        step_ref: '1',
+        ...over,
+      });
+
+      it('(a) REFUSES a walk criterion with no `frame.steps` declared at all', () => {
+        const doc = baseDoc({
+          frame: { kind: 'verify', environment: 'staging', criteria: [walkCriterion()], evidence_status: '✓ complete' } as GateFrame,
+        });
+        const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
+        expect(r.ok).toBe(false);
+        expect(r.errors.join(' ')).toContain('declares no `frame.steps`');
+      });
+
+      it('(b) REFUSES a step_ref that matches no declared step', () => {
+        const doc = baseDoc({
+          frame: {
+            kind: 'verify', environment: 'staging',
+            criteria: [walkCriterion({ step_ref: 'nope' })],
+            steps: [{ ref: '1', text: 'Click Record. EXPECT: a dialog opens.', covers: ['ac-1'] }],
+            evidence_status: '✓ complete',
+          } as GateFrame,
+        });
+        const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
+        expect(r.ok).toBe(false);
+        expect(r.errors.join(' ')).toContain('matches no declared `frame.steps[].ref`');
+      });
+
+      it('(c) REFUSES a declared step that covers no filed criterion', () => {
+        const doc = baseDoc({
+          frame: {
+            kind: 'verify', environment: 'staging',
+            criteria: [walkCriterion()],
+            steps: [{ ref: '1', text: 'Click Record. EXPECT: a dialog opens.', covers: ['ac-unrelated'] }],
+            evidence_status: '✓ complete',
+          } as GateFrame,
+        });
+        const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
+        expect(r.ok).toBe(false);
+        expect(r.errors.join(' ')).toContain('covers no filed criterion');
+      });
+
+      it('(d) REFUSES a walk criterion with no step_ref', () => {
+        const doc = baseDoc({
+          frame: {
+            kind: 'verify', environment: 'staging',
+            criteria: [walkCriterion({ step_ref: undefined })],
+            steps: [{ ref: '1', text: 'Click Record. EXPECT: a dialog opens.', covers: ['ac-1'] }],
+            evidence_status: '✓ complete',
+          } as GateFrame,
+        });
+        const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
+        expect(r.ok).toBe(false);
+        expect(r.errors.join(' ')).toContain('names no `step_ref`');
+      });
+
+      it('(e) REFUSES a step with blank text — no action or no expected observation', () => {
+        const doc = baseDoc({
+          frame: {
+            kind: 'verify', environment: 'staging',
+            criteria: [walkCriterion()],
+            steps: [{ ref: '1', text: '   ', covers: ['ac-1'] }],
+            evidence_status: '✓ complete',
+          } as GateFrame,
+        });
+        const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
+        expect(r.ok).toBe(false);
+        expect(r.errors.join(' ')).toContain('has blank `text`');
+      });
+
+      it("REFUSES items[].kind === 'step' (closed dead path, B-983/B-925)", () => {
+        const doc = baseDoc({
+          items: [{ kind: 'step' as unknown as BriefItem['kind'], text: 'Click Record' }],
+          frame: {
+            kind: 'verify', environment: 'staging',
+            criteria: [walkCriterion()],
+            steps: [{ ref: '1', text: 'Click Record. EXPECT: a dialog opens.', covers: ['ac-1'] }],
+            evidence_status: '✓ complete',
+          } as GateFrame,
+        });
+        const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
+        expect(r.ok).toBe(false);
+        expect(r.errors.join(' ')).toContain('is not a valid brief item kind');
+      });
+
+      it('REFUSES a raw `frame.runbook` key (closed dead path, B-983/B-925)', () => {
+        const doc = baseDoc({
+          frame: {
+            kind: 'verify', environment: 'staging',
+            criteria: [walkCriterion()],
+            steps: [{ ref: '1', text: 'Click Record. EXPECT: a dialog opens.', covers: ['ac-1'] }],
+            runbook: 'freeform prose',
+            evidence_status: '✓ complete',
+          } as unknown as GateFrame,
+        });
+        const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
+        expect(r.ok).toBe(false);
+        expect(r.errors.join(' ')).toContain('`frame.runbook` is not a field');
+      });
+
+      it('ACCEPTS a well-formed verify brief: two steps covering three criteria, and renders the numbered Walk above the table', () => {
+        const doc = baseDoc({
+          frame: {
+            kind: 'verify', environment: 'staging',
+            criteria: [
+              walkCriterion({ ac_id: 'ac-1', step_ref: '1' }),
+              walkCriterion({ ac_id: 'ac-2', step_ref: '1' }),
+              walkCriterion({ ac_id: 'ac-3', step_ref: '2' }),
+            ],
+            steps: [
+              { ref: '1', text: 'Click Record on a ticket with no active brief. EXPECT: a dialog titled "Record a walk" opens with three inputs.', covers: ['ac-1', 'ac-2'] },
+              { ref: '2', text: 'Submit the dialog with a summary and one evidence link. EXPECT: the ticket advances through every gate to Verified.', covers: ['ac-3'] },
+            ],
+            evidence_status: '✓ complete',
+          } as GateFrame,
+        });
+        const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' });
+        expect(r.ok).toBe(true);
+        expect(r.errors).toEqual([]);
+        const md = renderBrief(doc, null, { reason: 'verification-ack-pending' });
+        expect(md).toContain('**Walk:**');
+        expect(md).toContain('1. Click Record on a ticket with no active brief. EXPECT: a dialog titled "Record a walk" opens with three inputs.');
+        expect(md).toContain('2. Submit the dialog with a summary and one evidence link. EXPECT: the ticket advances through every gate to Verified.');
+        expect(md.indexOf('**Walk:**')).toBeLessThan(md.indexOf('**Verifying against'));
+      });
     });
 
     it('leaves `frame` UNCONSTRAINED at stale-patch-review and revise-scope-review', () => {
@@ -4768,6 +4924,9 @@ verify:
         environment: 'staging',
         criteria: [
           { ac_id: 'ac-1', text: 'The saved view persists across a reload', checked: false, disposition: 'walk', step_ref: '1' },
+        ],
+        steps: [
+          { ref: '1', text: 'Reload the page with a saved view active. EXPECT: the same view is still applied.', covers: ['ac-1'] },
         ],
         evidence_status: '✓ complete',
       } as GateFrame,
