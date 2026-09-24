@@ -154,6 +154,16 @@ count from `by_write_kind.checklist_item`, never a count computed from a manual 
 
 ### O3. Build (Planned → Built)
 
+**An accepted plan brief IS the authorisation to build — never ask "should I build?" (B-1067).** The
+human's accept on the `plan-draft` brief authorises everything this step does in the SAME leg: the
+worktree, the commits, the push, the PR. The controlled pause before anything ships is the RELEASE
+gate, and it is the human's; there is no second confirmation between plan and build, and a leg that
+opens an elicitation round to ask whether it should proceed costs a full leg for nothing (B-1063's
+build did exactly that on 2026-09-23). The ONLY reasons to open an elicitation round at this gate are
+a genuine **capability denial** (attach the verified patch and ask for a hand, per B-784 below) or a
+**plan step that cannot be executed as written** (name the step and what blocks it). A materially
+different risk profile than the discovery gates is not a reason — the plan gate already weighed it.
+
 **FIRST — PRE-CHECK the acceptance-criteria floor, BEFORE any build work begins (B-747). NON-OPTIONAL,
 and the position in this step is load-bearing.**
 
