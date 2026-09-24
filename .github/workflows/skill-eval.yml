@@ -134,7 +134,15 @@ jobs:
           else
             # TODO(founder, release gate): SMOKE_CASES placeholder — must match the fetch step above,
             # PLUS the two control cases (always run — see the fetch step's comment).
-            CASE_FILTER=(--case B-293 --case B-818 --case B-847 --case B-785 --case B-871 --case ctrl-positive-known-good --case ctrl-negative-boundary-flip)
+            # `--case` is NOT repeatable (the runner keeps only the LAST one) and its glob has no brace or
+            # extglob support, so a fixed set of cases cannot be named with --case at all — reproduced
+            # locally 2026-09-24 (the seven --case flags collapsed to the last, which is why CI always
+            # reported "No eval cases found matching --case ctrl-negative-boundary-flip"; that bare name
+            # also never matched, since case names carry the `clarify-replay-` prefix). The smoke set is
+            # therefore selected by the `smoke` tag carried in each smoke case's case.yaml (the five
+            # tickets fetched above plus the two judge-calibration controls). Keep the tag list and the
+            # fetch-labels ticket list in step.
+            CASE_FILTER=(--tag smoke)
           fi
           claude plugin eval . \
             --eval-dir evals/clarify-replay \
@@ -144,8 +152,17 @@ jobs:
             --judge-model claude-opus-5 \
             --max-cost-usd "${MAX_COST_USD:-5}" \
             --trust-plugin --no-publish \
+            --ablation none \
+            --threshold 0 \
             "${CASE_FILTER[@]}" \
             --json evals/clarify-replay/results/result.json
+          # --ablation none: the runner now DEFAULTS to a with-without ablation (every case also runs a
+          #   no-plugin baseline arm — 2x the runs and the cost, and with-only graders drop out of the
+          #   score). The suite was designed and calibrated single-arm; keep it that way.
+          # --threshold 0: the runner's OWN default threshold is 1.0, i.e. it exits 1 whenever any case
+          #   scores below a perfect 1.0 — under `set -e` that kills the job before the AC3 step below
+          #   (the founder-set EVAL_SCORE_THRESHOLD gate) ever runs. The score gate lives in AC3, not
+          #   here; the runner's exit must only mean "the eval genuinely ran". Reproduced 2026-09-24.
 
       # AC6: the eval step above already fails the job on a non-zero `claude plugin eval` exit (no
       # continue-on-error anywhere in this chain — see header). This step is the SECOND, independent

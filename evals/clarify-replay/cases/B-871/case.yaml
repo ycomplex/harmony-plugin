@@ -5,7 +5,7 @@ description: >
   production ticket B-871 and grades the fresh brief against the ratified v1.4 label pulled
   from field_values.gate_slots.clarify (+ retained brief revisions where present, B-843/B-867).
   A Conductor-epic ticket.
-tags: [clarify-replay, gate-regression, B-1036]
+tags: [clarify-replay, gate-regression, B-1036, smoke]
 context:
   add_dirs: []
 runs: 1

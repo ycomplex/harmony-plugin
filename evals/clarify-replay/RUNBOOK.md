@@ -234,8 +234,10 @@ to use another already-fetched label instead.)
 
 **AC2's calibration gate, in order:**
 1. Run the command above.
-2. Run the suite against just the two control cases (`--case ctrl-positive-known-good --case
-   ctrl-negative-boundary-flip`, mocked or real — both work, since neither touches the MCP server).
+2. Run the suite against just the two control cases (`--case 'clarify-replay-ctrl-*'`, mocked or
+   real — both work, since neither touches the MCP server). `--case` is a single glob on the case.yaml
+   `name` (which carries the `clarify-replay-` prefix — the bare directory name matches nothing), and
+   it is NOT repeatable: a second `--case` replaces the first. To select a fixed set, use `--tag`.
 3. Confirm the positive control PASSES and the negative control FAILS on check 2 specifically. If
    either disagrees, the judge/rubric is miscalibrated — fix it before deriving a threshold from
    any other case's score.
