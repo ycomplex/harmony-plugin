@@ -217,7 +217,8 @@ the SAME rubric+label as an ordinary case's judge — only the fresh artifact di
   `not_solving` (a genuine boundary miss, per the rubric's own check-2 definition). Expected
   **FAIL, specifically on check 2** (SAME BOUNDARIES) — checks 1/3/4 must still read PASS.
 
-Both cases also carry a second, weight-0 `graders/judge-reasoning.md` grader (same rubric plus an
+Both cases also carry a second, weight-0.1 `graders/judge-reasoning.md` grader (the runner rejects a
+weight of 0; same rubric plus an
 instruction to name PASS/FAIL per numbered check explicitly) — today's judge votes carry no
 per-check reasoning, so this exists to make a run's report legible to a human without re-deriving
 it from a bare verdict.
