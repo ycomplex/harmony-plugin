@@ -135,6 +135,15 @@ the ordinary gate-name/human markers a live conduct run would leave:
 (`validateResolutionProvenance`, `src/tools/briefs.ts` — `human-in-session` / `agent-synthesized[:mode]`
 only, not widened by this ticket). Every accept this core issues uses `agent-synthesized:recorded`.
 
+**`ratified_by: 'recorded'` is stamped only by THIS walk's own internal `writeGateSlot` calls** (they
+pass `ratified_by: RATIFIED_BY_RECORDED` directly, bypassing the MCP `write_gate_slot` tool a human
+would call by hand). The MCP `write_gate_slot` tool itself has **no `ratified_by` parameter at all** —
+it always stamps the gate's own name (e.g. `'release'`) as `ratified_by`. So a gate slot written BY
+HAND — e.g. a human resuming a stuck recorded ticket by calling `write_gate_slot` directly — will read
+the gate name, not `'recorded'`. This is expected, not a bug: a ticket that had to be partially
+hand-resumed will legitimately carry a mix of `ratified_by` values, and a future reader should not read
+that mix as a defect.
+
 **The verify-walk attestation (item e, when supplied) lands in TWO places — never only the CLI flag:**
 
 - a **dated ticket comment**, prefixed `RECORDED-WALK-ATTESTATION`, naming who/what was walked, when,

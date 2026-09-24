@@ -51,13 +51,16 @@ import { consumePendingAcceptanceEvent } from './acceptance-events.js';
 import { writeGateSlot, type GateSlotContent } from './gate-slots.js';
 import { advanceWorkflow } from './workflow.js';
 import { addComment } from './comments.js';
-import { manageAcceptanceCriteria } from './acceptance-criteria.js';
+import { manageAcceptanceCriteria, listAcceptanceCriteria } from './acceptance-criteria.js';
 import { PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED } from './provenance.js';
 import {
   evaluateEligibility,
   type EligibilityReport,
   type EligibilityEvidenceLink,
 } from './record-eligibility.js';
+import { recordDecision, queryKnowledge, type KnowledgeDecisionFull } from './knowledge.js';
+import { referenceKnowledge } from './workflow.js';
+import { slugRef } from './payload-refs.js';
 
 /** B-1062: the `ratified_by` value stamped on every gate slot this core writes — never the gate's own
  *  name, which is what a live accept would stamp (gate-slots.ts's `WriteGateSlotArgs.ratified_by`). */
@@ -72,7 +75,7 @@ export const RESOLVE_BRIEF_PROVENANCE_RECORDED = 'agent-synthesized:recorded';
  *  widened B-1021 fence's third closed suffix (provenance.ts, B-1062 step 6). */
 export const KNOWLEDGE_WRITE_PROVENANCE_RECORDED = PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED;
 
-export type RecordWalkGateName = 'clarify' | 'decompose' | 'design' | 'plan' | 'build' | 'release';
+export type RecordWalkGateName = 'clarify' | 'decompose' | 'design' | 'plan' | 'build' | 'release' | 'deploy' | 'verify';
 
 const GATE_REASONS: Partial<Record<RecordWalkGateName, string>> = {
   clarify: 'clarification-draft',
@@ -173,6 +176,14 @@ interface ComposeAndAcceptArgs {
   /** B-876 — ONLY meaningful on the release frame: compose_brief derives `frame.risk_classes` from
    *  this (overwriting whatever the frame above authored there). Omitted everywhere else. */
   changedPaths?: string[];
+  /** The Asserted knowledge entry this gate's accept promotes (B-1062 fix-forward round 3). Omit for a
+   *  gate that promotes no entry (decompose's shared no-split convention entry is coupled separately and
+   *  never set here). */
+  decisionRef?: { type: string; id: string };
+  /** Hand-authored payload items ONLY for a reason compose_brief does NOT auto-derive
+   *  (`derivesEntryContent(reason) === false`, e.g. plan-draft) — for clarify/decompose/design, leave
+   *  this undefined; compose_brief derives and REPLACES anything supplied here for those three reasons. */
+  payload?: Array<{ write_kind: 'knowledge_entry_content'; ref: string; content: string; entry_id?: string | null }>;
 }
 
 /** compose_brief -> resolve_brief(accept) -> (payload-carrying reasons only) consume the deferred
@@ -190,11 +201,13 @@ async function composeAndAccept(
     reason: args.reason,
     pending_activity: args.pendingActivity ?? undefined,
     changed_paths: args.changedPaths,
+    decision_ref: args.decisionRef,
     doc: {
       decide: args.decide,
       why: args.why,
       items: [],
       frame: args.frame,
+      payload: args.payload ?? [],
     },
   });
   await resolveBrief(client, projectId, {
@@ -212,6 +225,47 @@ async function composeAndAccept(
       );
     }
   }
+}
+
+const DECOMPOSE_NO_SPLIT_TAG = 'decompose-no-split';
+
+/** Mirrors skills/harmony-decompose/SKILL.md's no-split shared-convention-entry shape exactly:
+ *  query-or-create-once (never per-ticket, never amend from this mechanical walk — B-849), always
+ *  couple. Returns nothing; decompose's compose_brief call passes no decision_ref, matching the live
+ *  skill's own no-split behavior. */
+async function coupleDecomposeNoSplitConvention(
+  client: SupabaseClient,
+  projectId: string,
+  userId: string,
+  taskId: string,
+): Promise<void> {
+  const existing = await queryKnowledge(client, projectId, {
+    type: 'convention',
+    tags: [DECOMPOSE_NO_SPLIT_TAG],
+    status: 'Accepted',
+  });
+  let entryId = existing[0]?.id;
+  if (!entryId) {
+    const created: KnowledgeDecisionFull = await recordDecision(client, projectId, userId, {
+      type: 'convention',
+      title: 'Decompose: when a ticket does not split',
+      content:
+        'Decision: a ticket that does not need to split into children records no split rationale of ' +
+        "its own. Why: per-ticket \"no split\" entries crowd out load-bearing knowledge with " +
+        'near-duplicate prose (264 were retired for this — B-849). How to apply: query this shared ' +
+        'entry, couple the ticket to it via reference_knowledge, and record nothing further unless the ' +
+        "reasoning introduces a genuinely new pattern this entry doesn't yet state. Scope: every " +
+        "no-split decompose accept, conducted or recorded.",
+      tags: [DECOMPOSE_NO_SPLIT_TAG],
+      domain: ['product', 'process'],
+      status: 'Accepted',
+      source_task_id: taskId,
+      source_activity: 'decompose',
+      provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+    });
+    entryId = created.id;
+  }
+  await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: entryId });
 }
 
 /**
@@ -272,6 +326,18 @@ export async function runRecordedWalk(
     }
 
     // ——— CLARIFY ———————————————————————————————————————————————————————————————————————————
+    const clarifyDecision = await recordDecision(client, projectId, userId, {
+      type: 'specification',
+      title: `${args.task_id}: clarified intent (recorded)`,
+      content: `<placeholder — one line: 'clarified intent for ${args.task_id}; body derived from the ratified brief'>`,
+      domain: ['product'],
+      source_type: 'manual',
+      source_activity: 'clarify',
+      source_task_id: taskId,
+      provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+    });
+    await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: clarifyDecision.id });
+
     await composeAndAccept(client, projectId, userId, taskId, {
       reason: GATE_REASONS.clarify!,
       pendingActivity: 'clarifying',
@@ -283,6 +349,7 @@ export async function runRecordedWalk(
         in_scope: [summary],
         not_solving: [],
       },
+      decisionRef: { type: 'specification', id: clarifyDecision.id },
     });
     gates.push({ gate: 'clarify', reason: GATE_REASONS.clarify, landed: true });
 
@@ -324,6 +391,7 @@ export async function runRecordedWalk(
     });
 
     // ——— DECOMPOSE (no-split shape — see this file's header SCOPE NOTE) —————————————————————————
+    await coupleDecomposeNoSplitConvention(client, projectId, userId, taskId);
     await composeAndAccept(client, projectId, userId, taskId, {
       reason: GATE_REASONS.decompose!,
       pendingActivity: 'decomposing',
@@ -338,6 +406,18 @@ export async function runRecordedWalk(
     gates.push({ gate: 'decompose', reason: GATE_REASONS.decompose, landed: true });
 
     // ——— DESIGN (no track requires a fresh decision — see this file's header SCOPE NOTE) ————————
+    const designDecision = await recordDecision(client, projectId, userId, {
+      type: 'technical-design',
+      title: `${args.task_id}: technical-design — no new decision needed (recorded)`,
+      content: `<placeholder — one line: 'technical-design decision for ${args.task_id}; body derived from the ratified brief'>`,
+      domain: ['engineering'],
+      source_type: 'manual',
+      source_activity: 'design-decide',
+      source_task_id: taskId,
+      provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+    });
+    await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: designDecision.id });
+
     await composeAndAccept(client, projectId, userId, taskId, {
       reason: GATE_REASONS.design!,
       pendingActivity: 'designing',
@@ -352,10 +432,26 @@ export async function runRecordedWalk(
         ],
         reach: [],
       },
+      decisionRef: { type: 'technical-design', id: designDecision.id },
     });
     gates.push({ gate: 'design', reason: GATE_REASONS.design, landed: true });
 
     // ——— PLAN ——————————————————————————————————————————————————————————————————————————————
+    const planEntryContent =
+      `Decision: record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not ` +
+      `conducted). Why: ${summary} Scope: this ticket only.`;
+    const planDecision = await recordDecision(client, projectId, userId, {
+      type: 'specification',
+      title: `${args.task_id}: recorded plan`,
+      content: planEntryContent,
+      domain: ['process'],
+      source_type: 'manual',
+      source_activity: 'plan',
+      source_task_id: taskId,
+      provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+    });
+    await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: planDecision.id });
+
     await composeAndAccept(client, projectId, userId, taskId, {
       reason: GATE_REASONS.plan!,
       pendingActivity: 'planning',
@@ -368,6 +464,13 @@ export async function runRecordedWalk(
         carried_unproven: [],
         ac_coverage: 'Recorded from the supplied summary and evidence; one checked acceptance criterion was filed at clarify to satisfy the build gate\'s B-747 floor.',
       },
+      decisionRef: { type: 'specification', id: planDecision.id },
+      payload: [{
+        write_kind: 'knowledge_entry_content',
+        ref: slugRef('plan-entry', planEntryContent),
+        content: planEntryContent,
+        entry_id: planDecision.id,
+      }],
     });
     gates.push({ gate: 'plan', reason: GATE_REASONS.plan, landed: true });
 
@@ -417,6 +520,60 @@ export async function runRecordedWalk(
       ratified_by: RATIFIED_BY_RECORDED,
     });
     gates.push({ gate: 'release', reason: GATE_REASONS.release, landed: true });
+
+    // ——— DEPLOY — brief-less SYSTEM/AGENT advance (Built -> Deployed), mirrors the BUILD step above.
+    // A live conducted ticket reaches Deployed via a real deploy succeeding; a recorded walk has no
+    // live deploy to wait on, so this walk advances the state itself, exactly like it already does
+    // for BUILD (Planned -> Built) above.
+    await advanceWorkflow(client, projectId, { task_id: taskId, activity: 'deploying' });
+    gates.push({ gate: 'deploy', landed: true });
+
+    // ——— VERIFY — compose ONLY, never accept. This is the ticket's actual human-ack point: verify is
+    // the hard floor, and only a live human may accept it (exactly like every conducted ticket) — this
+    // walk's job ends at "brief composed, awaiting_human_input set", never resolve_brief. Uses the raw
+    // `composeBrief` import directly (NOT `composeAndAccept`, which would immediately auto-accept).
+    const criteriaRows = await listAcceptanceCriteria(client, projectId, { task_id: taskId });
+    const verifyCriteria = (criteriaRows ?? []).map((ac: { id: string; content: string; checked: boolean }) => ({
+      ac_id: ac.id,
+      text: ac.content,
+      checked: ac.checked,
+      disposition: 'walk' as const,
+      // A recorded ticket's "walk" is auditing the record itself, not re-doing the work — one
+      // mechanical acknowledgment step, never a multi-step runbook.
+      step_ref: '1',
+    }));
+    const verifyEvidenceSummary = args.evidence.map((e) => e.url).join(', ') || '(none)';
+    await composeBrief(client, projectId, userId, {
+      task_id: taskId,
+      reason: 'verification-ack-pending',
+      pending_activity: 'verifying',
+      // manifest_root omitted deliberately: this function runs against an arbitrary project's Supabase
+      // client, not necessarily a real git worktree, so "the repo of record's absolute root" is not
+      // available at this layer (unlike finish-work, which runs inside one and can read process.cwd()).
+      // Per compose_brief's own contract, omitting it means "no manifest-declared evidence overlay" —
+      // degrades gracefully to today's behavior, never breaks.
+      doc: {
+        decide: `Does ${args.task_id}'s recorded work behave as described — acknowledge verified?`,
+        why: [
+          'This is a recorded (not conducted) walk — verification means confirming the record matches ' +
+            'what actually happened, not re-doing the work.',
+          `An attestation was already recorded at clarify (who: ${userId}); this ack is the human ` +
+            'confirmation that record matches reality.',
+        ],
+        items: [{ kind: 'decision', text: 'Acknowledge verified', recommendation: 'verify once confirmed' }],
+        frame: {
+          kind: 'verify',
+          // 'merged-main' is the safe, honest default for a freshly-recorded walk: the evidence is a
+          // merged PR/commit, not yet promoted anywhere — never guess 'production' without confirmation.
+          environment: 'merged-main',
+          criteria: verifyCriteria,
+          evidence_status:
+            `Recorded walk — evidence linked from the supplied links (${verifyEvidenceSummary}); ` +
+            'verify walk attestation on file.',
+        },
+      },
+    });
+    gates.push({ gate: 'verify', reason: 'verification-ack-pending', landed: true });
   } catch (err) {
     const message =
       err instanceof Error
