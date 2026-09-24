@@ -114,7 +114,7 @@ jobs:
             node evals/clarify-replay/scripts/fetch-labels.mjs
           else
             # TODO(founder, release gate): SMOKE_CASES placeholder — see header.
-            node evals/clarify-replay/scripts/fetch-labels.mjs B-293 B-818 B-847 B-785 B-871
+            node evals/clarify-replay/scripts/fetch-labels.mjs B-293 B-818
           fi
           node evals/clarify-replay/scripts/fetch-labels.mjs --controls B-293
 
@@ -139,9 +139,11 @@ jobs:
             # locally 2026-09-24 (the seven --case flags collapsed to the last, which is why CI always
             # reported "No eval cases found matching --case ctrl-negative-boundary-flip"; that bare name
             # also never matched, since case names carry the `clarify-replay-` prefix). The smoke set is
-            # therefore selected by the `smoke` tag carried in each smoke case's case.yaml (the five
+            # therefore selected by the `smoke` tag carried in each smoke case's case.yaml (the two
             # tickets fetched above plus the two judge-calibration controls). Keep the tag list and the
-            # fetch-labels ticket list in step.
+            # fetch-labels ticket list in step. Two real cases, not five: a real case costs about $1.45
+            # (the $20.10/14 hand run), so five plus the controls breached the $5 ceiling on
+            # 2026-09-24 (runner exit 2, partial result); two keep a run near $3.50.
             CASE_FILTER=(--tag smoke)
           fi
           claude plugin eval . \
@@ -154,8 +156,22 @@ jobs:
             --trust-plugin --no-publish \
             --ablation none \
             --threshold 0 \
+            --allow-tools Write \
             "${CASE_FILTER[@]}" \
-            --json evals/clarify-replay/results/result.json
+            --json evals/clarify-replay/results/result.json || EVAL_RC=$?
+          # --allow-tools Write: the two control cases copy a fixture to a file, and the runner WITHHOLDS a
+          #   gated tool (Bash/Write/Edit/...) from every run unless the operator grants it here — a case's
+          #   own allowed_tools is necessary but not sufficient ("grader ... cannot pass with the granted
+          #   tools ... grant it with --allow-tools Write", every run on 2026-09-24). The real clarify cases
+          #   list no Write in their allowed_tools, so the grant does not widen them.
+          # Exit 2 = the runner hit --max-cost-usd and reported a PARTIAL result (paid graders skipped for
+          #   the rest). Do not abort here: let sanitize/upload/summary keep the numbers, and let AC6 below
+          #   fail the job on `partial` with those numbers visible — a partial run is never green.
+          case "${EVAL_RC:-0}" in
+            0) ;;
+            2) echo "::warning::claude plugin eval exit 2 — cost ceiling hit, partial result (AC6 will fail the job)";;
+            *) echo "::error::claude plugin eval exit ${EVAL_RC}"; exit "${EVAL_RC}";;
+          esac
           # --ablation none: the runner now DEFAULTS to a with-without ablation (every case also runs a
           #   no-plugin baseline arm — 2x the runs and the cost, and with-only graders drop out of the
           #   score). The suite was designed and calibrated single-arm; keep it that way.
@@ -204,7 +220,9 @@ jobs:
               process.exit(1);
             }
             if ((a.casesTotal ?? 0) === 0) { console.error("AC6: zero cases were evaluated — treating as a non-genuine run."); process.exit(1); }
-            console.log("AC6: genuine run confirmed — overallScore=" + a.overallScore + " casesPassed=" + a.casesPassed + "/" + a.casesTotal + " costUsd=" + r.costUsd + " partial=" + r.partial);
+            console.log("AC6: run completed — overallScore=" + a.overallScore + " casesPassed=" + a.casesPassed + "/" + a.casesTotal + " costUsd=" + r.costUsd + " partial=" + r.partial);
+            if (r.partial === true) { console.error("AC6: the runner hit its cost ceiling and skipped paid graders for the remaining cases (partial result) — the score above is NOT a genuine evaluation of the whole smoke set; failing rather than reporting green."); process.exit(1); }
+            console.log("AC6: genuine run confirmed.");
           '
 
       # AC3: score/cost gate (thresholds are founder-set placeholders — see header; this step is a
