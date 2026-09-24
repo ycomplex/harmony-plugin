@@ -164,47 +164,6 @@ jobs:
           #   (the founder-set EVAL_SCORE_THRESHOLD gate) ever runs. The score gate lives in AC3, not
           #   here; the runner's exit must only mean "the eval genuinely ran". Reproduced 2026-09-24.
 
-      # AC6: the eval step above already fails the job on a non-zero `claude plugin eval` exit (no
-      # continue-on-error anywhere in this chain — see header). This step is the SECOND, independent
-      # check: even a zero-exit run that produced no REAL result (e.g. a silent early-access-off
-      # no-op) must not read as green. A missing file or a non-numeric overallScore/casesPassed is a
-      # loud, named failure here.
-      - name: Verify the eval genuinely ran (AC6 — never silently green)
-        run: |
-          set -euo pipefail
-          node -e '
-            const fs = require("node:fs");
-            const path = "evals/clarify-replay/results/result.json";
-            if (!fs.existsSync(path)) { console.error("AC6: no result.json at " + path + " — the eval did not genuinely run."); process.exit(1); }
-            const r = JSON.parse(fs.readFileSync(path, "utf8"));
-            if (typeof r.overallScore !== "number" || typeof r.casesPassed !== "number") {
-              console.error("AC6: result.json is missing a numeric overallScore/casesPassed — treating as a non-genuine run.");
-              process.exit(1);
-            }
-            console.log("AC6: genuine run confirmed — overallScore=" + r.overallScore + " casesPassed=" + r.casesPassed);
-          '
-
-      # AC3: score/cost gate (thresholds are founder-set placeholders — see header; this step is a
-      # no-op pass-through until they are set for real, but the SHAPE is wired now).
-      - name: Enforce score threshold + cost ceiling (AC3)
-        run: |
-          set -euo pipefail
-          node -e '
-            const fs = require("node:fs");
-            const r = JSON.parse(fs.readFileSync("evals/clarify-replay/results/result.json", "utf8"));
-            // TODO(founder, release gate): EVAL_SCORE_THRESHOLD / EVAL_MAX_COST_USD placeholders —
-            // see header. Until set, this step only reports the numbers, never fails on them.
-            const threshold = process.env.EVAL_SCORE_THRESHOLD ? Number(process.env.EVAL_SCORE_THRESHOLD) : null;
-            const maxCost = process.env.EVAL_MAX_COST_USD ? Number(process.env.EVAL_MAX_COST_USD) : null;
-            console.log("overallScore=" + r.overallScore + " threshold=" + threshold);
-            console.log("costUsd=" + r.costUsd + " maxCost=" + maxCost);
-            if (threshold !== null && r.overallScore < threshold) { console.error("AC3: overallScore below threshold."); process.exit(1); }
-            if (maxCost !== null && r.costUsd > maxCost) { console.error("AC3: costUsd exceeded the ceiling."); process.exit(1); }
-          '
-        env:
-          EVAL_SCORE_THRESHOLD: ${{ vars.EVAL_SCORE_THRESHOLD }}
-          EVAL_MAX_COST_USD: ${{ vars.EVAL_MAX_COST_USD }}
-
       # AC4 (amended): sanitize BEFORE anything is uploaded or summarized — strip every grader's
       # criteria/graderMarkdown/config.criteria, then PROVE it with a zero-count grep for judge.md's
       # exact marker heading (see scripts/fetch-labels.mjs's writeJudge). The job FAILS on any hit —
@@ -221,6 +180,55 @@ jobs:
             exit 1
           fi
           echo "AC4: sanitized result has zero judge.md marker-heading hits — safe to upload."
+
+      # AC6: the eval step above already fails the job on a non-zero `claude plugin eval` exit (no
+      # continue-on-error anywhere in this chain — see header). This step is the SECOND, independent
+      # check: even a zero-exit run that produced no REAL result (e.g. a silent early-access-off
+      # no-op) must not read as green. A missing file or a non-numeric overallScore/casesPassed is a
+      # loud, named failure here.
+      - name: Verify the eval genuinely ran (AC6 — never silently green)
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("node:fs");
+            const path = "evals/clarify-replay/results/result.json";
+            if (!fs.existsSync(path)) { console.error("AC6: no result.json at " + path + " — the eval did not genuinely run."); process.exit(1); }
+            const r = JSON.parse(fs.readFileSync(path, "utf8"));
+            // The runner (claude plugin eval, result schemaVersion 1) nests the totals under
+            // `aggregates` ({ casesTotal, casesPassed, overallScore, overallPassRate }); `costUsd` and
+            // `partial` (cost ceiling breached — paid graders skipped for the rest) are top-level.
+            // Reading them at the top level failed every genuine run as "non-genuine" (2026-09-24).
+            const a = r.aggregates ?? r;
+            if (typeof a.overallScore !== "number" || typeof a.casesPassed !== "number") {
+              console.error("AC6: result.json is missing a numeric aggregates.overallScore/casesPassed — treating as a non-genuine run.");
+              process.exit(1);
+            }
+            if ((a.casesTotal ?? 0) === 0) { console.error("AC6: zero cases were evaluated — treating as a non-genuine run."); process.exit(1); }
+            console.log("AC6: genuine run confirmed — overallScore=" + a.overallScore + " casesPassed=" + a.casesPassed + "/" + a.casesTotal + " costUsd=" + r.costUsd + " partial=" + r.partial);
+          '
+
+      # AC3: score/cost gate (thresholds are founder-set placeholders — see header; this step is a
+      # no-op pass-through until they are set for real, but the SHAPE is wired now).
+      - name: Enforce score threshold + cost ceiling (AC3)
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("node:fs");
+            const r = JSON.parse(fs.readFileSync("evals/clarify-replay/results/result.json", "utf8"));
+            // TODO(founder, release gate): EVAL_SCORE_THRESHOLD / EVAL_MAX_COST_USD placeholders —
+            // see header. Until set, this step only reports the numbers, never fails on them.
+            const threshold = process.env.EVAL_SCORE_THRESHOLD ? Number(process.env.EVAL_SCORE_THRESHOLD) : null;
+            const maxCost = process.env.EVAL_MAX_COST_USD ? Number(process.env.EVAL_MAX_COST_USD) : null;
+            const a = r.aggregates ?? r; // see AC6 above for the runner result shape
+            console.log("overallScore=" + a.overallScore + " threshold=" + threshold);
+            console.log("costUsd=" + r.costUsd + " maxCost=" + maxCost + " partial=" + r.partial);
+            if (threshold !== null && a.overallScore < threshold) { console.error("AC3: overallScore below threshold."); process.exit(1); }
+            if (maxCost !== null && r.costUsd > maxCost) { console.error("AC3: costUsd exceeded the ceiling."); process.exit(1); }
+            if (maxCost !== null && r.partial === true) { console.error("AC3: the runner breached its own --max-cost-usd and skipped paid graders (partial result) — the score is not trustworthy."); process.exit(1); }
+          '
+        env:
+          EVAL_SCORE_THRESHOLD: ${{ vars.EVAL_SCORE_THRESHOLD }}
+          EVAL_MAX_COST_USD: ${{ vars.EVAL_MAX_COST_USD }}
 
       # AC4: the SANITISED JSON only — never the HTML report (it embeds grader criteria in full and
       # is never produced by this job — no --report flag above).
@@ -243,12 +251,17 @@ jobs:
             node -e '
               const fs = require("node:fs");
               const r = JSON.parse(fs.readFileSync("evals/clarify-replay/results/result.sanitized.json", "utf8"));
+              const a = r.aggregates ?? r; // see AC6 for the runner result shape
               const lines = [
                 "## clarify-replay eval",
                 "",
-                "| overallScore | casesPassed | costUsd |",
+                "| overallScore | casesPassed | casesTotal | costUsd | partial |",
+                "|---|---|---|---|---|",
+                "| " + a.overallScore + " | " + a.casesPassed + " | " + a.casesTotal + " | " + r.costUsd + " | " + r.partial + " |",
+                "",
+                "| case | score | passRate |",
                 "|---|---|---|",
-                "| " + r.overallScore + " | " + r.casesPassed + " | " + r.costUsd + " |",
+                ...(r.cases ?? []).map((c) => { const ca = c.aggregates ?? {}; return "| " + c.name + " | " + ca.score + " | " + ca.passRate + " |"; }),
               ];
               fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
             '
