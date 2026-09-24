@@ -33,10 +33,16 @@ describe('CLI smoke tests', () => {
   });
 
   it('errors without auth when running a command', () => {
+    // B-1070: strip HARMONY_API_TOKEN (and its EVAL_ twin) too — getAuthenticatedContext() now
+    // falls back to it when no active project is configured, so a real "no auth at all" repro
+    // needs both absent, not just the config dir.
+    const env = { ...process.env, HARMONY_CONFIG_DIR: '/tmp/harmony-nonexistent' };
+    delete env.HARMONY_API_TOKEN;
+    delete env.EVAL_HARMONY_API_TOKEN;
     try {
       execFileSync('node', [CLI, 'tasks', 'list'], {
         encoding: 'utf-8',
-        env: { ...process.env, HARMONY_CONFIG_DIR: '/tmp/harmony-nonexistent' },
+        env,
       });
       expect.unreachable('Should have thrown');
     } catch (err: any) {

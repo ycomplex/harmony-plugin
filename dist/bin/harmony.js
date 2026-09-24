@@ -40233,16 +40233,53 @@ function classifyCleanRowShape(row, nonArchivedChildCount) {
 }
 
 // src/cli/auth.ts
+var fallbackNoticePrinted = false;
 async function getAuthenticatedContext(projectConfig) {
-  const project = projectConfig ?? getActiveProject();
+  let project;
+  let usedFallback = false;
+  if (projectConfig) {
+    project = projectConfig;
+  } else {
+    try {
+      project = getActiveProject();
+    } catch (configErr) {
+      const token = harmonyEnv("HARMONY_API_TOKEN");
+      if (!token) {
+        throw configErr;
+      }
+      project = {
+        name: "(env token)",
+        token,
+        supabaseUrl: harmonyEnv("HARMONY_SUPABASE_URL"),
+        supabaseAnonKey: harmonyEnv("HARMONY_SUPABASE_ANON_KEY")
+      };
+      usedFallback = true;
+    }
+  }
   if (project.supabaseUrl) {
     process.env.HARMONY_SUPABASE_URL = project.supabaseUrl;
   }
   if (project.supabaseAnonKey) {
     process.env.HARMONY_SUPABASE_ANON_KEY = project.supabaseAnonKey;
   }
+  if (usedFallback && !fallbackNoticePrinted) {
+    console.error("harmony: using HARMONY_API_TOKEN (no active project configured)");
+    fallbackNoticePrinted = true;
+  }
   const auth = new HarmonyAuth(project.token);
-  const client = await createAuthenticatedClient(auth);
+  let client;
+  try {
+    client = await createAuthenticatedClient(auth);
+  } catch (err) {
+    if (usedFallback) {
+      if (err instanceof TokenExchangeError) {
+        throw new Error(`HARMONY_API_TOKEN is set but was rejected (HTTP ${err.status}). Check that the token is valid and has not been revoked.`, { cause: err });
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Could not reach Harmony to validate HARMONY_API_TOKEN: ${message}`, { cause: err });
+    }
+    throw err;
+  }
   const projectId = auth.getProjectId();
   const userId = auth.getUserId();
   return { client, projectId, userId };
