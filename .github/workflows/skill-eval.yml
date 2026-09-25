@@ -57,12 +57,12 @@
 
 name: Skill Eval (clarify-replay)
 
+# B-1082: no longer triggered by pull requests. The smoke eval moved to the RELEASE GATE, run by the
+# worker only when the diff touches what the suite measures (.harmony/project.yml release.before_merge
+# -> scripts/eval-smoke-if-clarify-touched.sh), under the plan-included credential instead of the API
+# key. This workflow stays for the on-demand full suite (workflow_dispatch, full_suite=true) and for
+# a manual smoke run against a branch when someone wants the API-key-billed, sandboxed reference run.
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'skills/**'
-      - 'evals/clarify-replay/**'
   workflow_dispatch:
     inputs:
       full_suite:

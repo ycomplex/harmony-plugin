@@ -40,6 +40,13 @@ preconditions:
 release:
   before_merge:
     - run: npm run build
+    # B-1082: the clarify-replay smoke eval, path-conditioned — it runs only when the diff touches
+    # skills/harmony-clarify/**, skills/harmony-shared/brief-authoring.md or evals/clarify-replay/**,
+    # and otherwise skips in under a second saying why. Runs inside the worker at the release gate
+    # under the plan-included credential; fails the gate on a partial result, a score below
+    # EVAL_SCORE_THRESHOLD (default 0.50) or cost above EVAL_MAX_COST_USD (default 5); writes the
+    # sanitized result to .harmony/.gate-evidence/eval-score.json (gitignored) for the release brief.
+    - run: bash scripts/eval-smoke-if-clarify-touched.sh
 
 notify:
   - on: "reaching Built"
@@ -60,6 +67,15 @@ notify:
 # today's verify brief unchanged.
 verify:
   evidence:
+    # B-1082: owed only by a change the clarify-replay suite measures — the release-gate step above
+    # ran it; the human quotes the score line the release brief carried.
+    - key: eval-score
+      prompt: "The release gate's clarify-replay smoke eval ran for this change and scored at or above the threshold — quote the eval-smoke line (overallScore / casesPassed / costUsd / partial) from the release brief in the attestation."
+      applies_to:
+        paths:
+          - "skills/harmony-clarify/**"
+          - "skills/harmony-shared/brief-authoring.md"
+          - "evals/clarify-replay/**"
     - key: live-smoke
       prompt: "Exercised the changed skill or tool once live — from the staging channel (claude --plugin-dir against the staging board) or on production after a promote — and it behaved as the ticket describes. Say which environment in the attestation."
       applies_to:
