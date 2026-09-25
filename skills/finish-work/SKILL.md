@@ -525,10 +525,19 @@ concern, not hand-copied prose repeated at every gate that needs them. Check the
 merged lives in for `.harmony/project.yml`:
 
 - **Present** → run `harmony gates run release.before_merge` from inside that repo. This reads the
-  manifest's `release.before_merge` steps and runs them (for harmony-plugin today: `npm run build` then
-  `npm run verify:dist`), landing a `finish-work` evidence entry on the ticket when it actually runs
-  steps. A non-zero exit is a real release-readiness failure — surface it (a comment naming the failing
-  step) and do NOT proceed to merge; this is a genuine gate, not a formality.
+  manifest's `release.before_merge` steps and runs them (for harmony-plugin today: `npm run build`, then
+  the path-conditioned clarify-replay smoke eval `scripts/eval-smoke-if-clarify-touched.sh` — B-1082),
+  landing a `finish-work` evidence entry on the ticket when it actually runs steps. A non-zero exit is a
+  real release-readiness failure — surface it (a comment naming the failing step) and do NOT proceed to
+  merge; this is a genuine gate, not a formality.
+  **Eval score on the brief (B-1082).** After the run, if `.harmony/.gate-evidence/eval-score.line`
+  exists in that repo, the smoke eval RAN for this change (it runs only when the diff touches
+  `skills/harmony-clarify/**`, `skills/harmony-shared/brief-authoring.md` or `evals/clarify-replay/**`):
+  copy that file's single line VERBATIM into the release brief's `why` bullets
+  (`eval-smoke: overallScore=… casesPassed=… costUsd=… partial=… threshold=… ceiling=…`) — read from the
+  file, never typed from memory. If the step ran and no such file exists, the run did not complete:
+  say so as a failure line and do not merge. If the diff touches none of those paths, the step printed
+  `eval-smoke: skipped …` and the brief carries nothing about it.
 - **Absent, or present but declaring nothing for `release.before_merge`** → this is the AC4 floor:
   fall back to the repo's own `CLAUDE.md` Versioning-section lookup EXACTLY as today (for
   harmony-plugin, its `## Versioning` section; CI's own `verify:dist` job remains the backstop either

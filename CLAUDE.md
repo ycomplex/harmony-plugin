@@ -135,6 +135,14 @@ release-prep step calls this automatically when `.harmony/project.yml` is presen
 this section's steps verbatim when it is absent (see `src/config/project-manifest.ts`'s header for
 why an absent/empty manifest must behave identically to today).
 
+**B-1082:** `release.before_merge` also carries the clarify-replay smoke eval
+(`scripts/eval-smoke-if-clarify-touched.sh`), which runs only when the diff touches
+`skills/harmony-clarify/**`, `skills/harmony-shared/brief-authoring.md` or `evals/clarify-replay/**`
+and otherwise skips in under a second. It replaced the automatic per-PR CI run. A change to those paths
+that is **recorded** rather than conducted (`harmony record`, the fast-track) must run
+`harmony gates run release.before_merge` locally first and quote its `eval-smoke:` line in the record's
+attestation — the gate is the same whoever drives the ticket.
+
 **What CI runs on a PR** is no longer `npm run verify:dist` but
 `scripts/check-generated-artifacts.sh` — the inverted gate described above. The staging generation
 job (push to `main`) is the thing that builds and commits the bundle.

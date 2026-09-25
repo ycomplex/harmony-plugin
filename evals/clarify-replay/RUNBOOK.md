@@ -129,6 +129,19 @@ judge's `focus` at `{ source: file, path: <that file> }`.
 
 ## 8. B-1037 — CI wiring: what runs automatically, and what a founder/orchestrator must still do
 
+> **B-1082 (2026-09-25): the automatic per-PR CI run is retired.** The smoke set now runs at the
+> RELEASE GATE, inside the worker, only when the diff touches `skills/harmony-clarify/**`,
+> `skills/harmony-shared/brief-authoring.md` or `evals/clarify-replay/**` — see
+> `.harmony/project.yml` (`release.before_merge`) and `scripts/eval-smoke-if-clarify-touched.sh`,
+> which performs §3–§5 itself (labels, controls, fixture ids, the runner call, sanitize) and fails the
+> gate on `partial`, on `overallScore < EVAL_SCORE_THRESHOLD` (default 0.50) or on cost above
+> `EVAL_MAX_COST_USD` (default 5). The release brief carries its one `eval-smoke:` line; the verify
+> brief asks for it as the manifest-declared `eval-score` attestation. The workflow below is now
+> `workflow_dispatch` only: the full 15-case suite on demand, or a manual API-key-billed smoke run.
+> **Fast-track rule:** a change to those paths that the orchestrator records from a worktree runs
+> `harmony gates run release.before_merge` locally BEFORE `harmony record`, and quotes the line.
+
+
 B-1037 wires this suite into CI as a PR check on `skills/**` / `evals/clarify-replay/**` changes.
 The workflow YAML itself is **not** in this repo yet — Edit/Write under `.github/workflows/**` is
 denied at the harness level for every build context, so it was written to
