@@ -210,3 +210,29 @@ describe('harmony-inception skill contract', () => {
     expect(never).toMatch(/graph-seeder/);
   });
 });
+
+// --- B-1083: the S4 roadmap slot files STANDALONE feature tickets, never children ----------------
+describe('harmony-inception — the S4 roadmap slot (B-1083)', () => {
+  const s4 = section('### 3e. Stamp the S4 roadmap slot');
+
+  it('the stamped contract files one standalone ticket per agreed feature, and never a child', () => {
+    expect(s4).toMatch(/one STANDALONE ticket per agreed feature/);
+    expect(s4).toMatch(/never a child of this ticket/i);
+    expect(s4).toMatch(/no `parent_task_id`/);
+    expect(s4).not.toMatch(/one child per agreed feature/);
+    expect(s4).not.toMatch(/creates one child/);
+  });
+
+  it('the filing rides the clarify accept and the slot completes by the decision-only fast-forward', () => {
+    expect(s4).toMatch(/decision-only/);
+    expect(s4).toMatch(/advance_workflow\('fast-forwarding'\)/);
+    expect(s4).toMatch(/Clarified → Verified/);
+    expect(s4).toMatch(/milestone_id/);
+    expect(s4).toMatch(/manage_dependencies/);
+  });
+
+  it('no section of the skill still tells a gate to create children for the features', () => {
+    expect(skill.body).not.toMatch(/decompose\*\* gate then creates one child per agreed feature/);
+    expect(skill.body).not.toMatch(/assign each child to the first milestone/);
+  });
+});
