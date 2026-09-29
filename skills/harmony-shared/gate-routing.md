@@ -106,7 +106,7 @@ empty or stalling:
 
 | ticket kind | deliverable gate | fast-forward edge |
 |---|---|---|
-| capture-only (e.g. an inception proposition-root) | **clarify** | Clarified → Verified |
+| capture-only (e.g. an inception proposition-root, or its S4 roadmap slot — whose deliverable is the standalone first-milestone backlog its clarify accept files, B-1083) | **clarify** | Clarified → Verified |
 | decision ticket (decision Accepted at design) | **design** (last required sub-track) | Designed → Verified |
 
 - **One accept, two writes.** The deliverable-gate brief of a marker-carrying ticket **must carry an

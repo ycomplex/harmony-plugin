@@ -69,7 +69,7 @@ up exactly where it stopped.
 
 | Artifact | Lookup-before-create key |
 |---|---|
-| Proposition-root, S2 tickets, S3 umbrellas, the S4 roadmap slot | deterministic title + the `inception-scaffold` label (tasks have no per-project title uniqueness) |
+| Proposition-root, S2 tickets, S3 umbrellas, the S4 roadmap slot | deterministic title + the `inception-scaffold` label (tasks have no per-project title uniqueness); the proposition-root and the S4 slot also carry `decision-only` (§2c, §3e) |
 | The `v1` / `deferred` milestones (§1a) | milestone title |
 | Persona / feature entity nodes | `create_entity` upserts on `(workspace, kind, name)` |
 | `convention` entries (S0 semantics) | knowledge title uniqueness — skip on the friendly "already exists" error |
@@ -320,7 +320,8 @@ Notes on particular rows:
   decision is conducted — cold-start visibility rides this edge; no special rule.
 - **S4 depends on the proposition-root ONLY** (§3e). Which features ship first is a product question, not
   an architecture-dependent one, so the roadmap is conducted EARLY. The *late* things are its OUTPUT
-  tickets, which carry their own edges onto the S3 umbrellas — see §3e's contract.
+  tickets — standalone tickets in the first milestone, never its children — which carry their own edges
+  onto the S3 umbrellas — see §3e's contract.
 - **Bootstrap the stack reads four decisions**, matching the description it stamps: architecture and repo
   topology for the shape, data & migration tooling for the persistence layer, coding standards for house
   style.
@@ -344,12 +345,29 @@ Its **description carries its contract** — and note that every step below is a
 existing job. This slot invents no minting mechanism:
 > *"Conducting this ticket produces the board. Your **clarify** gate agrees the milestone set with the
 > founder — refining and renaming the default fence (§3f), adding milestones as needed — and agrees which
-> features belong in the FIRST milestone, grounded in the persona and feature entity nodes S1 seeded. Your
-> **decompose** gate then creates one child per agreed feature. As part of that same decompose accept:
-> assign each child to the first milestone (`update_task milestone_id`), and wire each child depends-on the
-> S3 bootstrap umbrellas it needs (`manage_dependencies`) — no feature can be built before the stack it
-> runs on exists. Milestone writes are `update_milestone` to rename the defaults and `create_milestone` for
+> features belong in the FIRST milestone, grounded in the persona and feature entity nodes S1 seeded. The
+> clarify brief lists the agreed features, and its accept authorises the writes (one accept, two writes —
+> the B-681 decision-only doctrine): file **one STANDALONE ticket per agreed feature** — `create_task` (or
+> `bulk_create_tasks`) with `milestone_id` = the first milestone and **no `parent_task_id`** — and wire each
+> depends-on the S3 bootstrap umbrellas it needs (`manage_dependencies`) — no feature can be built before
+> the stack it runs on exists. **A feature is never a child of this ticket.** This ticket is a planning
+> artefact; its deliverable is the filed backlog, so it completes Clarified → Verified by the trailing
+> `advance_workflow('fast-forwarding')` the moment the backlog exists — it does not wait on the features
+> being built. Milestone writes are `update_milestone` to rename the defaults and `create_milestone` for
 > any additional."*
+
+**Stamp the `decision-only` label on this slot right after its `create_task`** — the same governed B-688
+stamp the proposition-root gets in §2c, for the same reason: the slot is capture-only by construction
+(nothing to plan/build/deploy from it; the backlog it files is the deliverable), so its clarify is its
+deliverable gate and the fast-forward completes it. Without the label the conduct would walk the build
+gates empty, which is exactly the stall B-681 exists to prevent.
+
+> **Why standalone, never children (B-1083).** The first contract told the decompose gate to "create one
+> child per agreed feature". That nested the milestone's entire backlog under a process ticket and turned
+> the slot into an umbrella whose completion hung on every feature it listed. In every inception run so far
+> the conducting agent identified this as a mistake and, after confirming with the founder, filed the
+> features standalone — a skill its executors consistently override is wrong. The feature tickets are the
+> first milestone's real work; they belong at top level, in the milestone, with their own edges.
 
 **Conduct this EARLY — it is not blocked by architecture.** Its only edge is the proposition-root (§3d).
 Which features ship first is a product question; gating it behind the architecture decision would leave the
@@ -475,8 +493,9 @@ ships first — the gap this scaffold now closes.
 - **Stamp a decision category conditionally** on the product's shape ("no UI, so skip the design system").
   Inferring the shape is itself a decision — stamp every category and let a genuinely inapplicable one
   close with an explicit not-applicable decision (§3b).
-- **Mint feature build tickets itself.** The features land via the S4 roadmap slot's *conduct* (§3e), which
-  is what keeps the skill a graph-seeder. Note the vocabulary: the inception **SKILL** stamps; the
+- **Mint feature build tickets itself.** The features land via the S4 roadmap slot's *conduct* (§3e) — as
+  standalone tickets in the first milestone, never as children of the slot — which is what keeps the skill
+  a graph-seeder. Note the vocabulary: the inception **SKILL** stamps; the
   inception **PROCESS** — this run plus conducting what it stamped — is what puts features on the board.
 - Seed a `component` entity node (Stratum-2 — presuming architecture, the firewall breach).
 - Challenge the merit of the bet (completeness IN, merit OUT).
