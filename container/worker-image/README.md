@@ -39,7 +39,7 @@ An entry is **either** a `bin` (an executable, with exactly one source) **or** a
 | `apt` | no | the Debian package providing the bin. **Defaults to `bin`** — omit it whenever they match. |
 | `npm` | no | an npm spec installed globally instead of an apt package. |
 | `url` + `sha256` | no (B-1085) | a **checksum-pinned static binary**: downloaded over `https` to `/usr/local/bin/<bin>`, verified against the 64-hex `sha256`, then made executable. Both keys or neither. |
-| `lib` | instead of `bin` (B-1085) | a Debian package that provides **no binary** (a shared library). Installed with apt, asserted with `dpkg -s`. Takes no other key. |
+| `lib` | instead of `bin` (B-1085) | a Debian package that provides **no binary** — a shared library, or a font package a headless browser needs. Installed with apt, asserted with `dpkg -s`. Takes no other key. |
 
 Rules the generator enforces (each one is a unit test in `src/container/worker-image.test.ts`):
 
@@ -73,7 +73,11 @@ an image: the `mise` binary, which is neither an apt nor an npm package, and ICU
 ```
 
 The SDK itself is **not** in the image: the leg runs `mise install` and gets whatever the project's
-own `mise.toml` pins, so the image never drifts from the repo. Two things to know: the URL is
+own `mise.toml` pins, so the image never drifts from the repo (measured on that project: 20 s for
+Node, pnpm and the .NET SDK together, per cold leg). The same project's unit suite runs half its
+files in headless Chromium, which needs its system libraries **and at least one font package** in the
+image — all `lib` entries; take the list from `playwright install-deps --dry-run chromium` rather
+than guessing, because a browser with no fonts does not fail to launch, it crashes mid-run. Two things to know: the URL is
 architecture-specific (Cloud Run workers are `linux/amd64`; a local-docker daemon on an Apple-silicon
 host needs the `linux-arm64` asset and its own checksum), and the download happens at every cold leg
 start — baking the toolchain into the image is a later optimisation, not part of this contract.
