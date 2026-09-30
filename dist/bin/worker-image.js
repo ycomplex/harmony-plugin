@@ -4158,6 +4158,13 @@ var DeploymentConfigSchema = external_exports.object({
 });
 
 // src/container/worker-image.ts
+function isLibRequirement(r) {
+  return "lib" in r;
+}
+var KNOWN_KEYS = ["bin", "apt", "npm", "url", "sha256", "lib"];
+var UNSAFE_VALUE = /[^A-Za-z0-9._@+/:-]/;
+var UNSAFE_FILE_NAME = /[^A-Za-z0-9._+-]/;
+var SHA256_HEX = /^[a-f0-9]{64}$/;
 function parseRequirements(raw, source = "<input>") {
   let parsed;
   try {
@@ -4169,77 +4176,142 @@ function parseRequirements(raw, source = "<input>") {
     );
   }
   if (!Array.isArray(parsed)) {
-    throw new Error(`${source} must be a JSON ARRAY of { bin, apt?, npm? } objects`);
+    throw new Error(
+      `${source} must be a JSON ARRAY of { bin, apt? | npm? | url + sha256 } or { lib } objects`
+    );
   }
-  const seen = /* @__PURE__ */ new Set();
+  const seenBins = /* @__PURE__ */ new Set();
+  const seenLibs = /* @__PURE__ */ new Set();
   const requirements = [];
   parsed.forEach((entry, index) => {
     const at = `${source} entry ${index}`;
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-      throw new Error(`${at} must be an object of { bin, apt?, npm? }`);
+      throw new Error(`${at} must be an object of { bin, apt? | npm? | url + sha256 } or { lib }`);
     }
-    const { bin, apt, npm, ...rest } = entry;
-    const extra = Object.keys(rest);
+    const record = entry;
+    const extra = Object.keys(record).filter((k) => !KNOWN_KEYS.includes(k));
     if (extra.length > 0) {
-      throw new Error(`${at} has unknown key(s) ${extra.join(", ")} \u2014 only bin, apt and npm exist`);
+      throw new Error(
+        `${at} has unknown key(s) ${extra.join(", ")} \u2014 only ${KNOWN_KEYS.join(", ")} exist`
+      );
+    }
+    const { bin, apt, npm, url, sha256, lib } = record;
+    if (lib !== void 0) {
+      if (typeof lib !== "string" || lib.trim() === "") {
+        throw new Error(`${at} has a non-empty-string "lib"`);
+      }
+      const others = ["bin", "apt", "npm", "url", "sha256"].filter(
+        (k) => record[k] !== void 0
+      );
+      if (others.length > 0) {
+        throw new Error(
+          `${at} ("${lib}") is a lib entry but also declares ${others.join(", ")} \u2014 a lib is an apt package with no binary; an entry is EITHER a bin or a lib`
+        );
+      }
+      if (UNSAFE_VALUE.test(lib)) {
+        throw new Error(
+          `${at} ("${lib}") has an unsafe "lib" value ${JSON.stringify(lib)} \u2014 allowed: letters, digits and . _ @ + / : -`
+        );
+      }
+      if (seenLibs.has(lib)) {
+        throw new Error(`${source} declares lib "${lib}" twice \u2014 each lib may appear once`);
+      }
+      seenLibs.add(lib);
+      requirements.push({ lib });
+      return;
     }
     if (typeof bin !== "string" || bin.trim() === "") {
-      throw new Error(`${at} is missing a non-empty "bin"`);
+      throw new Error(`${at} is missing a non-empty "bin" (or a "lib" for a library-only package)`);
     }
     for (const [key, value] of [
       ["apt", apt],
-      ["npm", npm]
+      ["npm", npm],
+      ["url", url],
+      ["sha256", sha256]
     ]) {
       if (value !== void 0 && (typeof value !== "string" || value.trim() === "")) {
         throw new Error(`${at} ("${bin}") has a non-empty-string "${key}"`);
       }
     }
-    if (typeof apt === "string" && typeof npm === "string") {
-      throw new Error(`${at} ("${bin}") declares BOTH apt and npm \u2014 pick one source per bin`);
+    const sources = ["apt", "npm", "url"].filter((k) => typeof record[k] === "string");
+    if (sources.length > 1) {
+      throw new Error(
+        `${at} ("${bin}") declares BOTH ${sources.join(" and ")} \u2014 pick one source per bin`
+      );
+    }
+    if (typeof url === "string" && typeof sha256 !== "string") {
+      throw new Error(
+        `${at} ("${bin}") declares a url with no sha256 \u2014 a downloaded binary must be checksum-pinned`
+      );
+    }
+    if (typeof sha256 === "string" && typeof url !== "string") {
+      throw new Error(`${at} ("${bin}") declares a sha256 with no url to verify`);
     }
     for (const [key, value] of [
       ["bin", bin],
       ["apt", apt],
-      ["npm", npm]
+      ["npm", npm],
+      ["url", url]
     ]) {
-      if (typeof value === "string" && /[^A-Za-z0-9._@+/:-]/.test(value)) {
+      if (typeof value === "string" && UNSAFE_VALUE.test(value)) {
         throw new Error(
           `${at} ("${bin}") has an unsafe "${key}" value ${JSON.stringify(value)} \u2014 allowed: letters, digits and . _ @ + / : -`
         );
       }
     }
-    if (seen.has(bin)) {
+    if (typeof url === "string") {
+      if (!url.startsWith("https://")) {
+        throw new Error(`${at} ("${bin}") has a url that is not https:// \u2014 ${JSON.stringify(url)}`);
+      }
+      if (UNSAFE_FILE_NAME.test(bin)) {
+        throw new Error(
+          `${at} ("${bin}") is url-sourced, so its bin becomes a file name under /usr/local/bin and may only contain letters, digits and . _ + -`
+        );
+      }
+      if (typeof sha256 === "string" && !SHA256_HEX.test(sha256)) {
+        throw new Error(
+          `${at} ("${bin}") has a sha256 that is not 64 lowercase hex characters \u2014 ` + JSON.stringify(sha256)
+        );
+      }
+    }
+    if (seenBins.has(bin)) {
       throw new Error(`${source} declares "${bin}" twice \u2014 each bin may appear once`);
     }
-    seen.add(bin);
+    seenBins.add(bin);
     requirements.push({
       bin,
       ...typeof apt === "string" ? { apt } : {},
-      ...typeof npm === "string" ? { npm } : {}
+      ...typeof npm === "string" ? { npm } : {},
+      ...typeof url === "string" && typeof sha256 === "string" ? { url, sha256 } : {}
     });
   });
   return requirements;
 }
-function ordered(requirements) {
-  return [...requirements].sort((a, b) => a.bin < b.bin ? -1 : a.bin > b.bin ? 1 : 0);
-}
+var byString = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 function renderWorkerImageDockerfile(requirements, opts) {
   if (!opts.base || opts.base.trim() === "") {
     throw new Error("renderWorkerImageDockerfile needs a non-empty base image");
   }
   if (requirements.length === 0) {
-    throw new Error("the requirements list is empty \u2014 an image with no declared bins is a no-op");
+    throw new Error(
+      "the requirements list is empty \u2014 an image with no declared requirement is a no-op"
+    );
   }
-  const reqs = ordered(requirements);
-  const aptPackages = reqs.filter((r) => r.npm === void 0).map((r) => r.apt ?? r.bin);
-  const npmSpecs = reqs.flatMap((r) => r.npm === void 0 ? [] : [r.npm]);
+  const bins = requirements.filter((r) => !isLibRequirement(r)).sort((a, b) => byString(a.bin, b.bin));
+  const libs = requirements.filter(isLibRequirement).map((r) => r.lib).sort(byString);
+  const aptFromBins = bins.filter((r) => r.npm === void 0 && r.url === void 0).map((r) => r.apt ?? r.bin);
+  const aptPackages = [...aptFromBins, ...libs.filter((l) => !aptFromBins.includes(l))];
+  const npmSpecs = bins.flatMap((r) => r.npm === void 0 ? [] : [r.npm]);
+  const downloads = bins.filter(
+    (r) => r.url !== void 0 && r.sha256 !== void 0
+  );
   const lines = [
     "# GENERATED \u2014 do not edit by hand.",
     `# Emitted by the B-929 requirements-list generator (src/container/worker-image.ts) from ${opts.source ?? "<requirements>"}.`,
     "# Regenerate instead: node dist/bin/worker-image.js --requirements <list.json> --base <image>",
     "#",
-    "# Every declared bin is asserted with `command -v` at the END of this file, so an unresolved",
-    "# requirement fails the image BUILD rather than a build leg.",
+    "# Every declared requirement is asserted at the END of this file (`command -v` per bin,",
+    "# `dpkg -s` per lib), so an unresolved requirement fails the image BUILD rather than a build leg.",
     "",
     `FROM ${opts.base}`,
     "",
@@ -4258,12 +4330,24 @@ function renderWorkerImageDockerfile(requirements, opts) {
   if (npmSpecs.length > 0) {
     lines.push(`RUN npm install -g ${npmSpecs.join(" ")}`);
   }
+  for (const d of downloads) {
+    lines.push(
+      "RUN set -eux; \\",
+      `    curl -fsSL --proto =https --tlsv1.2 -o /usr/local/bin/${d.bin} ${d.url}; \\`,
+      `    echo "${d.sha256}  /usr/local/bin/${d.bin}" | sha256sum -c -; \\`,
+      `    chmod 0755 /usr/local/bin/${d.bin}`
+    );
+  }
+  const assertions = [
+    ...bins.map((r) => `command -v ${r.bin}`),
+    ...libs.map((l) => `dpkg -s ${l} > /dev/null`)
+  ];
   lines.push(
     "USER worker",
     "",
-    "# One assertion per declared bin (B-929 AC4).",
+    "# One assertion per declared requirement (B-929 AC4; `dpkg -s` for a lib, B-1085).",
     "RUN set -eux; \\",
-    ...reqs.map((r, i) => `    command -v ${r.bin}${i === reqs.length - 1 ? "" : "; \\"}`),
+    ...assertions.map((a, i) => `    ${a}${i === assertions.length - 1 ? "" : "; \\"}`),
     ""
   );
   return lines.join("\n");

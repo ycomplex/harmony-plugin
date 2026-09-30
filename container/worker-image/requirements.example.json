@@ -1,5 +1,6 @@
 [
   { "bin": "pnpm", "npm": "pnpm@11.21.0" },
   { "bin": "rsync" },
-  { "bin": "ping", "apt": "iputils-ping" }
+  { "bin": "ping", "apt": "iputils-ping" },
+  { "lib": "libicu72" }
 ]
