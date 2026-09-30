@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
+  isLibRequirement,
   parseRequirements,
   renderWorkerImageDockerfile,
   type WorkerImageRequirement,
@@ -151,12 +152,110 @@ describe('the committed container/worker-image/requirements.example.json', () =>
     const out = renderWorkerImageDockerfile(requirements, { base: BASE, source: examplePath });
     expect(out).toContain(`FROM ${BASE}`);
     for (const req of requirements) {
-      expect(out).toContain(`command -v ${req.bin}`);
+      expect(out).toContain(isLibRequirement(req) ? `dpkg -s ${req.lib}` : `command -v ${req.bin}`);
     }
   });
 
   it('carries the prospectery-shaped pnpm requirement the docs promise', () => {
     const requirements = parseRequirements(readFileSync(examplePath, 'utf8'), examplePath);
-    expect(requirements.some((r) => r.bin === 'pnpm' && r.npm?.startsWith('pnpm@'))).toBe(true);
+    expect(
+      requirements.some((r) => !isLibRequirement(r) && r.bin === 'pnpm' && r.npm?.startsWith('pnpm@')),
+    ).toBe(true);
+  });
+
+  it('B-1085 — carries a lib entry, so the CI-built example image proves the library kind too', () => {
+    const requirements = parseRequirements(readFileSync(examplePath, 'utf8'), examplePath);
+    expect(requirements.some(isLibRequirement)).toBe(true);
+  });
+});
+
+// --- B-1085: a library-only package, and a checksum-pinned static binary --------------------------
+const SHA = 'a'.repeat(64);
+const URL_OK = 'https://github.com/jdx/mise/releases/download/v2026.9.17/mise-v2026.9.17-linux-x64';
+
+describe('worker-image generator: lib entries (B-1085)', () => {
+  it('installs a lib through apt and asserts it with dpkg -s, never command -v', () => {
+    const out = render([{ bin: 'jq' }, { lib: 'libicu72' }]);
+    expect(out).toMatch(/apt-get install[\s\S]*\n {6}libicu72 \\/);
+    expect(out).toContain('dpkg -s libicu72 > /dev/null');
+    expect(out).not.toContain('command -v libicu72');
+    expect(out).toContain('command -v jq');
+  });
+
+  it('renders a list of libs only (a lib is a requirement, the list is not empty)', () => {
+    const out = render([{ lib: 'libicu72' }]);
+    expect(out).toContain('dpkg -s libicu72 > /dev/null');
+    // no bin assertion LINE (the generated header's prose still mentions `command -v`)
+    expect(out).not.toMatch(/^\s+command -v /m);
+  });
+
+  it('installs a lib once when a bin already names the same apt package', () => {
+    const out = render([{ bin: 'icuinfo', apt: 'libicu72' }, { lib: 'libicu72' }]);
+    expect(out.match(/\n {6}libicu72 \\/g)).toHaveLength(1);
+  });
+
+  it('rejects a lib entry that also declares a bin or a source', () => {
+    expect(() => parseRequirements('[{"lib":"libicu72","bin":"icu"}]')).toThrow(/EITHER a bin or a lib/);
+    expect(() => parseRequirements('[{"lib":"libicu72","apt":"libicu72"}]')).toThrow(/EITHER a bin or a lib/);
+  });
+
+  it('rejects a duplicate lib and an unsafe lib value', () => {
+    expect(() => parseRequirements('[{"lib":"libicu72"},{"lib":"libicu72"}]')).toThrow(/lib "libicu72" twice/);
+    expect(() => parseRequirements('[{"lib":"libicu72; rm -rf /"}]')).toThrow(/unsafe "lib"/);
+  });
+
+  it('is deterministic across input order with libs and bins mixed', () => {
+    const a = render([{ lib: 'zlib1g' }, { bin: 'jq' }, { lib: 'libicu72' }]);
+    const b = render([{ lib: 'libicu72' }, { lib: 'zlib1g' }, { bin: 'jq' }]);
+    expect(a).toBe(b);
+  });
+});
+
+describe('worker-image generator: checksum-pinned static binaries (B-1085)', () => {
+  it('downloads over https to /usr/local/bin/<bin>, verifies the checksum, then makes it executable', () => {
+    const out = render([{ bin: 'mise', url: URL_OK, sha256: SHA }]);
+    expect(out).toContain(`curl -fsSL --proto =https --tlsv1.2 -o /usr/local/bin/mise ${URL_OK}`);
+    expect(out).toContain(`echo "${SHA}  /usr/local/bin/mise" | sha256sum -c -`);
+    expect(out).toContain('chmod 0755 /usr/local/bin/mise');
+    // verify BEFORE chmod: a checksum mismatch must fail the build before the file is executable
+    expect(out.indexOf('sha256sum -c -')).toBeLessThan(out.indexOf('chmod 0755 /usr/local/bin/mise'));
+    expect(out).toContain('command -v mise');
+    // a url-sourced bin is never also apt-installed
+    expect(out).not.toMatch(/apt-get install[\s\S]*\n {6}mise \\/);
+  });
+
+  it('rejects a url without a sha256 — no unpinned download', () => {
+    expect(() => parseRequirements(`[{"bin":"mise","url":"${URL_OK}"}]`)).toThrow(/checksum-pinned/);
+  });
+
+  it('rejects a sha256 without a url, and a malformed sha256', () => {
+    expect(() => parseRequirements(`[{"bin":"mise","sha256":"${SHA}"}]`)).toThrow(/sha256 with no url/);
+    expect(() => parseRequirements(`[{"bin":"mise","url":"${URL_OK}","sha256":"ABC"}]`)).toThrow(/64 lowercase hex/);
+  });
+
+  it('rejects a non-https url', () => {
+    expect(() => parseRequirements(`[{"bin":"mise","url":"http://example.com/mise","sha256":"${SHA}"}]`)).toThrow(/not https/);
+  });
+
+  it('rejects a url with shell metacharacters or a query string', () => {
+    expect(() => parseRequirements(`[{"bin":"mise","url":"https://example.com/mise?x=1","sha256":"${SHA}"}]`)).toThrow(/unsafe "url"/);
+    expect(() => parseRequirements(`[{"bin":"mise","url":"https://example.com/m;id","sha256":"${SHA}"}]`)).toThrow(/unsafe "url"/);
+  });
+
+  it('rejects a url-sourced bin that carries a path (it becomes a file name under /usr/local/bin)', () => {
+    expect(() => parseRequirements(`[{"bin":"bin/mise","url":"${URL_OK}","sha256":"${SHA}"}]`)).toThrow(/file name under \/usr\/local\/bin/);
+  });
+
+  it('rejects a bin declaring a url alongside apt or npm (one source per bin)', () => {
+    expect(() => parseRequirements(`[{"bin":"mise","apt":"mise","url":"${URL_OK}","sha256":"${SHA}"}]`)).toThrow(/pick one source per bin/);
+    expect(() => parseRequirements(`[{"bin":"mise","npm":"mise","url":"${URL_OK}","sha256":"${SHA}"}]`)).toThrow(/pick one source per bin/);
+  });
+
+  it('normalizes the accepted shape, and still names the full key set on an unknown key', () => {
+    expect(parseRequirements(`[{"bin":"mise","url":"${URL_OK}","sha256":"${SHA}"},{"lib":"libicu72"}]`)).toEqual([
+      { bin: 'mise', url: URL_OK, sha256: SHA },
+      { lib: 'libicu72' },
+    ]);
+    expect(() => parseRequirements('[{"bin":"x","script":"https://mise.run"}]')).toThrow(/unknown key\(s\) script/);
   });
 });

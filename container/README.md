@@ -217,10 +217,12 @@ identical to the behaviour before B-929.
 
 ### Generating an image from a requirements LIST
 
-You never hand-write a worker Dockerfile. Declare the binaries the build needs in
-a flat JSON list and generate the layer — full contract and worked example in
+You never hand-write a worker Dockerfile. Declare what the build needs in a flat
+JSON list — a binary from apt or npm, a checksum-pinned static binary, or a
+library-only package (B-1085) — and generate the layer — full contract and worked example in
 **`container/worker-image/README.md`**. The emitted layer is `FROM` the shared
-base and **ends in a `command -v` assertion per declared binary**, so an
+base and **ends in an assertion per declared requirement** (`command -v` for a
+binary, `dpkg -s` for a library), so an
 unresolved requirement fails the **image build** rather than a build **leg**.
 
 ### Publishing an image

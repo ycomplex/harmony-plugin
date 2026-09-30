@@ -110,11 +110,21 @@ docker build -f "$GEN_DIR/Dockerfile" -t b929-generated "$GEN_DIR"
 for bin in $(node -e '
   const fs = require("node:fs");
   const list = JSON.parse(fs.readFileSync("container/worker-image/requirements.example.json", "utf8"));
-  console.log(list.map((r) => r.bin).join(" "));
+  console.log(list.filter((r) => r.bin).map((r) => r.bin).join(" "));
 '); do
   docker run --rm --entrypoint /bin/sh b929-generated -c "command -v $bin >/dev/null" \
     || { echo "FAIL: generated image is missing declared bin $bin"; exit 1; }
   echo "ok: generated image resolves $bin"
+done
+# B-1085: a `lib` entry has no binary — assert the package is installed instead.
+for lib in $(node -e '
+  const fs = require("node:fs");
+  const list = JSON.parse(fs.readFileSync("container/worker-image/requirements.example.json", "utf8"));
+  console.log(list.filter((r) => r.lib).map((r) => r.lib).join(" "));
+'); do
+  docker run --rm --entrypoint /bin/sh b929-generated -c "dpkg -s $lib >/dev/null" \
+    || { echo "FAIL: generated image is missing declared lib $lib"; exit 1; }
+  echo "ok: generated image carries lib $lib"
 done
 
 # …and the generated image is still a WORKER image: same entrypoint dispatch, same base toolchain.
