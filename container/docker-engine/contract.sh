@@ -49,6 +49,21 @@ docker run --rm --privileged -v "$VOLUME:/var/lib/docker" --entrypoint /bin/bash
   echo "ok: engine up as $(id -un) — $(docker --version); hello-world ran; $(docker compose version)"
 ' || fail "the privileged run could not start the engine and run hello-world as the worker"
 
+step "B-708 2b. a second leg on the same engine volume starts clean, with the image cache kept"
+docker run --rm --privileged -v "$VOLUME:/var/lib/docker" --entrypoint /bin/bash "$ENGINE_IMAGE" -euo pipefail -c '
+  sudo -n /usr/local/bin/harmony-start-dockerd
+  docker run -d --restart always --name stale -v stale-data:/data hello-world >/dev/null 2>&1 || true
+  docker create --name stale2 hello-world >/dev/null
+  test -n "$(docker ps -aq)" || { echo "FAIL: could not leave a container behind"; exit 1; }
+' || fail "could not set up the left-behind containers"
+docker run --rm --privileged -v "$VOLUME:/var/lib/docker" --entrypoint /bin/bash "$ENGINE_IMAGE" -euo pipefail -c '
+  sudo -n /usr/local/bin/harmony-start-dockerd
+  test -z "$(docker ps -aq)" || { echo "FAIL: the previous leg left containers: $(docker ps -a --format "{{.Names}}" | tr "\n" " ")"; exit 1; }
+  test -z "$(docker volume ls -q)" || { echo "FAIL: the previous leg left volumes: $(docker volume ls -q | tr "\n" " ")"; exit 1; }
+  docker image inspect hello-world >/dev/null 2>&1 || { echo "FAIL: the image cache was not kept"; exit 1; }
+  echo "ok: no containers, no volumes, hello-world image still cached"
+' || fail "a second leg on the same engine volume did not start clean"
+
 step "B-708 3. NOT privileged — the start script fails with a message (the non-fatal path)"
 set +e
 unpriv_out="$(docker run --rm --entrypoint /bin/bash "$ENGINE_IMAGE" -c \
