@@ -311,6 +311,73 @@ describe('LaunchProfileSchema — probe: B-842 widened union (z.union([z.string(
   });
 });
 
+describe('LaunchProfileSchema — docker_host (B-708)', () => {
+  function withDockerHost(dockerHost: unknown) {
+    const profile: Record<string, unknown> = { launch: 'launch {conduction_id}', reap: 'reap {conduction_id}' };
+    if (dockerHost !== undefined) profile.docker_host = dockerHost;
+    return fakeFs({ '/deployment.json': JSON.stringify({ profiles: { 'docker-host': profile } }) });
+  }
+
+  it('accepts a well-formed docker_host block and carries every field through', () => {
+    const dockerHost = {
+      ssh_target: 'harmony@build-host',
+      wake: 'gcloud compute instances start build-host --zone us-central1-a',
+      wake_timeout_s: 240,
+    };
+    const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...withDockerHost(dockerHost) });
+    expect(loaded?.profiles?.['docker-host'].docker_host).toEqual(dockerHost);
+  });
+
+  it('accepts ssh_target alone — wake and wake_timeout_s are optional', () => {
+    const loaded = loadDeploymentConfig({
+      configPath: '/deployment.json',
+      ...withDockerHost({ ssh_target: 'build-host' }),
+    });
+    expect(loaded?.profiles?.['docker-host'].docker_host).toEqual({ ssh_target: 'build-host' });
+  });
+
+  it('accepts a profile with NO docker_host at all (purely additive — every existing profile)', () => {
+    const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...withDockerHost(undefined) });
+    expect(loaded?.profiles?.['docker-host'].docker_host).toBeUndefined();
+  });
+
+  it('rejects an empty ssh_target', () => {
+    expect(() =>
+      loadDeploymentConfig({ configPath: '/deployment.json', ...withDockerHost({ ssh_target: '' }) }),
+    ).toThrow(/failed validation/);
+  });
+
+  it('rejects a docker_host block that names no ssh_target', () => {
+    expect(() =>
+      loadDeploymentConfig({ configPath: '/deployment.json', ...withDockerHost({ wake: 'true' }) }),
+    ).toThrow(/failed validation/);
+  });
+
+  it('rejects an empty wake command and a non-positive wake_timeout_s', () => {
+    expect(() =>
+      loadDeploymentConfig({
+        configPath: '/deployment.json',
+        ...withDockerHost({ ssh_target: 'build-host', wake: '' }),
+      }),
+    ).toThrow(/failed validation/);
+    expect(() =>
+      loadDeploymentConfig({
+        configPath: '/deployment.json',
+        ...withDockerHost({ ssh_target: 'build-host', wake_timeout_s: 0 }),
+      }),
+    ).toThrow(/failed validation/);
+  });
+
+  it('is resolvable by `harmony config get`\'s dot-path primitive, the way the wrapper scripts read it', () => {
+    const loaded = loadDeploymentConfig({
+      configPath: '/deployment.json',
+      ...withDockerHost({ ssh_target: 'harmony@build-host' }),
+    });
+    expect(resolveConfigPath(loaded, 'profiles.docker-host.docker_host.ssh_target')).toBe('harmony@build-host');
+    expect(resolveConfigPath(loaded, 'profiles.docker-host.docker_host.wake')).toBeUndefined();
+  });
+});
+
 describe('resolveConfigPath', () => {
   const config = {
     launcher: {
