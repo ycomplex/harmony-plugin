@@ -201,6 +201,27 @@ if [ -f "$HOME/.harmony-toolchain.sh" ]; then
   echo "provision.sh: B-929 toolchain active — node $(node --version)"
 fi
 
+# --- B-708: the leg's own container runtime (strictly conditional). ----------
+# An image built with the engine layer (container/docker-engine/Dockerfile)
+# carries a start script the worker may run as root through one sudoers rule.
+# Starting it here gives the leg a Docker engine of its OWN, inside this
+# container: the project's Compose stack lives entirely in the leg, publishes on
+# this container's own 127.0.0.1, and is gone when the container is removed.
+#
+# STRICTLY CONDITIONAL: on an image without the layer — every existing
+# deployment — the script is absent and this block does nothing at all (no
+# output, no file). It is deliberately NON-FATAL: the engine only starts in a
+# container run --privileged (the Docker-host launch profile, container/README.md),
+# and a leg on any other profile must still run, just without a runtime.
+if [ -x /usr/local/bin/harmony-start-dockerd ]; then
+  if sudo -n /usr/local/bin/harmony-start-dockerd; then
+    echo "provision.sh: container runtime ready ($(docker --version))"
+  else
+    echo "provision.sh: WARNING — the container runtime is not available in this leg (the engine did not start; the worker is probably not privileged). Continuing without it." >&2
+  fi
+fi
+# --- end B-708 container runtime ---------------------------------------------
+
 # --- B-869: self-provisioning is a DELIBERATE contract, not a gap. ----------
 # This image (see container/Dockerfile) bakes NO `node_modules/` for any cloned
 # repo -- HARMONY_BUILD_CONTAINER=1 (the image-baked marker above) means "this
