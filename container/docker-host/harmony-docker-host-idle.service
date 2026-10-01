@@ -1,0 +1,9 @@
+# B-708: one pass of the Docker host's idle check (container/docker-host/idle.sh).
+# Triggered by harmony-docker-host-idle.timer; installed by bootstrap.sh.
+[Unit]
+Description=Harmony Docker host idle check (power off when no worker has run for a while)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/harmony-docker-host-idle
