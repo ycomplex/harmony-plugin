@@ -706,3 +706,196 @@ build at a time today; see the comment at the call site in
 Extended coverage lives in `src/daemon/profile-contract.test.ts` (new
 describe blocks, additive only — none of the existing docker-profile tests
 were touched).
+
+### Docker-host launch profile (B-708)
+
+**What it is for.** A worker on the local-Docker or cloud profile cannot start
+containers, so a leg cannot run the project's own container stack (a Compose
+file with a database, an identity provider, the app itself). The Docker-host
+profile is a THIRD, additive launch profile for projects that need that. The
+daemon's machine wakes one remote Linux Docker host, ships the per-run files to
+it over SSH, and runs the worker there as a **privileged** container that
+starts its **own Docker engine inside itself** (Docker-in-Docker). The
+project's stack then lives entirely inside the leg: its ports are on the
+worker's own `127.0.0.1`, two legs never see each other's containers, and
+everything the leg started is gone when the worker container is removed. The
+host powers itself off when idle.
+
+Nothing changes for the other two profiles. As with the cloud profile, the
+daemon's scheduler/classify code is untouched — it runs the profile's `launch`
+command to completion and reads its exit code.
+
+**The pieces.**
+
+| Piece | Where it runs | What it does |
+|---|---|---|
+| `container/docker-engine/Dockerfile` + `start-dockerd.sh` | built into the worker image | The engine layer: Docker Engine, the compose and buildx plugins, and `/usr/local/bin/harmony-start-dockerd`, which the non-root `worker` may run as root through one sudoers rule. Builds on the base image, the agent image, or a project's generated image (`--build-arg BASE=<image>`). |
+| `container/provision.sh` (B-708 block) | inside the worker | Runs the start script when the image carries it and prints `provision.sh: container runtime ready (<docker version>)`. If the engine does not start it warns and the leg continues without a runtime. On an image without the layer the block does nothing. |
+| `container/docker-host-worker-launch.sh` | the daemon's machine | Wakes the host, waits for SSH, mints the per-run token locally, ships `run.env` and `run-config.json` through ssh's stdin, runs resume discovery on the host, and runs the worker in the foreground over SSH. Exits 0 when the worker exited 0, otherwise 1. |
+| `container/docker-host-worker-reap.sh` | the daemon's machine | `docker rm -f harmony-worker-<conduction_id>` on the host. Exit 0 = removed, 3 = already gone or host unreachable, 1 = a real error. |
+| `container/docker-host-worker-probe.sh` | the daemon's machine | Exit 0 if that worker container is running on the host, else 1. An unreachable host is "not running". |
+| `container/docker-host-common.sh` | sourced by the three above | Config resolution and the one `ssh` invocation. |
+| `container/docker-host/bootstrap.sh` | the host, once | Installs Docker Engine, the idle check and its systemd timer. |
+| `container/docker-host/idle.sh` | the host, every 5 minutes | Powers the host off when no worker has run for `IDLE_MINUTES`, pruning old engine volumes first. |
+| `container/daemon-profile.docker-host.example.json` | — | The example profile. |
+
+**Adopting it.**
+
+1. **Create the host.** A Debian or Ubuntu machine that the daemon's machine
+   can reach over SSH with a key (no password prompt — the wrappers use
+   `BatchMode=yes`) and can start with one command (for example
+   `gcloud compute instances start …`). Size it for the worker plus the
+   project's stack.
+2. **Bootstrap it.** On the host, as the SSH user, from a checkout of this repo:
+   `bash container/docker-host/bootstrap.sh`. Log out and back in afterwards so
+   the `docker` group applies.
+3. **Build the two images on the host**, from the same checkout:
+
+   ```bash
+   docker build -f container/Dockerfile --target agent -t harmony-build-env container
+   docker build -f container/docker-engine/Dockerfile --build-arg BASE=harmony-build-env \
+     -t harmony-build-env-docker container/docker-engine
+   ```
+
+   A project with its own generated image (`container/worker-image/`) passes
+   that image as `BASE` instead. Images are used by name **as they exist on the
+   host**; this profile does not pull from or resolve against a registry.
+   Rebuild them on the host when `container/Dockerfile` or the engine layer
+   changes.
+4. **On the daemon's machine, add the profile to the deployment config**
+   (`~/.harmony/deployment.json`) under `profiles`, copying
+   `daemon-profile.docker-host.example.json`, and point `worker_image` at the
+   engine image:
+
+   ```json
+   {
+     "worker_image": "harmony-build-env-docker",
+     "profiles": {
+       "docker-host": {
+         "launch": "bash \"$HARMONY_PLUGIN_DIR/container/docker-host-worker-launch.sh\" {conduction_id} {ticket} '{run_config_json}' '{model}'",
+         "reap": "bash \"$HARMONY_PLUGIN_DIR/container/docker-host-worker-reap.sh\" {conduction_id} {ticket}",
+         "probe": "bash \"$HARMONY_PLUGIN_DIR/container/docker-host-worker-probe.sh\" {conduction_id} {ticket}",
+         "maxConcurrentWorkers": 1,
+         "docker_host": {
+           "ssh_target": "harmony@docker-host.example",
+           "wake": "gcloud compute instances start harmony-docker-host --zone us-central1-a --quiet",
+           "wake_timeout_s": 180
+         }
+       }
+     }
+   }
+   ```
+
+   `docker_host.ssh_target` is required. `wake` is optional (omit it for a host
+   that is always on) and must tolerate an already-running host; its exit
+   status is ignored and the wrapper then polls SSH every 5 seconds for
+   `wake_timeout_s` (default 180).
+5. **Start the daemon with that profile:**
+   `node dist/bin/daemon.js --config ~/.harmony/deployment.json --profile docker-host`.
+   The daemon's machine needs `bash`, `node` and `ssh`; it does not need Docker.
+
+**Environment overrides** (on the daemon's machine; each wins over the
+deployment config):
+
+| Variable | Overrides | Default |
+|---|---|---|
+| `HARMONY_DOCKER_HOST_PROFILE` | which `profiles.<name>` the wrappers read | `docker-host` |
+| `HARMONY_DOCKER_HOST_SSH` | `docker_host.ssh_target` | *(required from one of the two)* |
+| `HARMONY_DOCKER_HOST_WAKE` | `docker_host.wake` | *(none)* |
+| `HARMONY_DOCKER_HOST_WAKE_TIMEOUT_S` | `docker_host.wake_timeout_s` | `180` |
+| `HARMONY_DOCKER_HOST_SSH_OPTS` | extra `ssh` options, word-split (e.g. `-i ~/.ssh/harmony-host`) | *(none)* |
+
+If the daemon is started with a profile name other than `docker-host`, set
+`HARMONY_DOCKER_HOST_PROFILE` to the same name so the wrappers read that
+profile's `docker_host` block.
+
+**Security posture.** A privileged container is root-equivalent on the machine
+it runs on: the agent inside the worker can do anything root on the Docker host
+can do. The profile is built around that fact rather than around hiding it:
+
+- The host must be **dedicated** to this. Do not run anything else on it.
+- The host must hold **no long-lived credentials** — no cloud service-account
+  key, no deploy key, no registry login with write access.
+- **The daemon must not run on the host.** The daemon's machine holds the
+  GitHub App private key and the deployment config; the host holds neither.
+- The **GitHub App private key stays on the daemon's machine.** The per-run
+  installation token is minted there, shipped inside `run.env` through ssh's
+  stdin (never on a command line), written mode 600 on the host, and removed
+  from the host when the launch wrapper exits (the reap wrapper removes it too).
+  The token itself is short-lived. The worker's other secrets
+  (`HARMONY_API_TOKEN`, the agent credential) travel in the same file and are
+  exposed to the agent exactly as they are on the other profiles.
+- The SSH key the daemon's machine uses can run anything as the SSH user on the
+  host, which is in the `docker` group. Treat it as a root credential for the
+  host and for nothing else.
+
+**Where transcripts live.** On the host's disk, in the same layout the local
+profile uses on the daemon's machine (B-724):
+
+```
+~/.harmony-conductions/<ticket>/<conduction_id>/
+├── projects/         # worker-owned; one transcript per leg
+├── logs/             # worker-owned
+├── run-config.json   # worker-owned, mounted read-only
+└── run.env           # the SSH user's, mode 600; exists only while the leg runs
+```
+
+`projects/` and `logs/` are owned by the image's `worker` user, so read them on
+the host with `sudo`. They are NOT copied back to the daemon's machine, and
+they are not pruned: if the host's disk is deleted the transcripts go with it.
+Session resume across conductions (B-718) works on the host, because the
+discovery step runs there, inside the worker image.
+
+**The engine volume.** Each ticket gets one Docker volume on the host,
+`harmony-engine-<ticket>`, mounted at `/var/lib/docker` in that ticket's
+worker. It holds the leg's own images, build cache and named volumes, so the
+second leg of a ticket does not pull and rebuild everything. Containers an
+earlier leg created are still defined there but are not running when the next
+leg's engine starts (unless they carry a restart policy). The idle check removes a ticket's
+engine volume when its stamp (`~/.harmony-conductions/.engine-volumes/<ticket>`,
+touched at every launch) is older than `PRUNE_DAYS` (default 7), and only on a
+pass that is about to power the host off.
+
+**Idle power-off.** `harmony-docker-host-idle.timer` runs the idle check every
+5 minutes. It never powers off while a `harmony-worker-*` container is running.
+Otherwise it takes the smaller of "minutes since the last launch" and "minutes
+since boot" and runs `SLEEP_CMD` (default `systemctl poweroff`) once that
+reaches `IDLE_MINUTES` (default 30). The uptime bound is what stops a freshly
+woken host from powering off before the launch that woke it arrives. Settings
+are in `/etc/default/harmony-docker-host`. On most cloud providers a
+powered-off instance still bills for its disk; whether `poweroff` stops compute
+billing depends on the provider.
+
+**One worker at a time.** The example profile sets `maxConcurrentWorkers: 1`.
+Nothing in the wrappers prevents more — container names, run directories and
+engine volumes are per conduction or per ticket — but two conductions of the
+same ticket would share one engine volume, and that has not been tried.
+
+**The local variant.** The engine image also works under the local-Docker
+profile: add `--privileged -v harmony-engine-{ticket}:/var/lib/docker` to the
+`docker run` in a copy of `daemon-profile.example.json` and set `worker_image`
+to the engine image. **This gives the agent root on that Docker machine** — on
+Docker Desktop or colima that is the Linux VM, which mounts your home
+directory; on a Linux workstation it is the workstation itself. Use it only on
+a machine you would hand to the agent outright. Without `--privileged` the
+engine image is harmless on any profile: the engine does not start, provision
+warns, and the leg runs as before.
+
+**What is proven, and what is not.**
+
+- Proven in CI on every PR (`container/docker-engine/contract.sh`, called by
+  `container/toolchain-contract.sh`): the engine layer builds on the base
+  image; in a privileged container with a volume at `/var/lib/docker` the
+  `worker` user starts the engine and runs `hello-world`; without `--privileged`
+  the start script fails with a message; provision's block is silent on an
+  image without the layer.
+- Proven by unit tests with stub `ssh` / `docker` / `node`
+  (`src/daemon/docker-host-profile.test.ts`): the wrappers' ordering, quoting,
+  exit codes and file handling, and the idle check's decisions.
+- NOT proven by either: a full leg on a real remote host — real SSH, the wake
+  command, a project's Compose stack coming up inside the worker, the idle
+  power-off and the next launch's wake, and `bootstrap.sh` on a real host
+  with systemd (it has only been run in a Debian container with `systemctl`
+  stubbed out).
+
+Proof-run results: to be filled in
