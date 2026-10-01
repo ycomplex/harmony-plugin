@@ -25,7 +25,17 @@ ENV_FILE="$RUN_DIR/run.env"
 
 # Capture combined output + exit code explicitly — no `set -e` for this call, since a nonzero exit
 # here is an expected, inspected outcome, not a script-ending error.
-OUTPUT="$(docker rm -f "harmony-worker-$CONDUCTION_ID" 2>&1)"
+# B-708: ask whether the container EXISTS before removing it. `docker rm -f` on an absent container
+# no longer says so reliably — 28.2.2 prints "No such container" and exits 0, 29.8.2 prints nothing
+# and exits 0 — so neither the exit code nor the output can tell a kill from a miss. A failing
+# `docker ps` (engine down) falls through to `rm -f`, whose error is then reported as before.
+OUTPUT="$(
+  if ids="$(docker ps -aq --filter "name=^harmony-worker-$CONDUCTION_ID\$" 2>/dev/null)" && [ -z "$ids" ]; then
+    echo "No such container: harmony-worker-$CONDUCTION_ID"
+    exit 1
+  fi
+  docker rm -f "harmony-worker-$CONDUCTION_ID" 2>&1
+)"
 DOCKER_EXIT=$?
 
 rm -f "$ENV_FILE"

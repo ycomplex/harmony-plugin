@@ -1505,8 +1505,13 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('docker-worker-reap.sh: EXECUTED miss-vs-ki
   }
 
   it('exits 0 when docker itself exits 0 (a real container was found and removed — the kill case)', () => {
-    const result = runDockerReap('exit 0');
+    const result = runDockerReap('if [ "$1" = ps ]; then echo 3f2a9c1b7d5e; fi\nexit 0');
     expect(result.status).toBe(0);
+  });
+
+  it('exits 3 when the container does not exist — current Docker exits 0 (and 29.x prints nothing) for `rm -f` on an absent container (B-708)', () => {
+    const result = runDockerReap('exit 0');
+    expect(result.status).toBe(3);
   });
 
   it('exits 3 when docker exits nonzero with "No such container" in its output (the routine miss)', () => {
