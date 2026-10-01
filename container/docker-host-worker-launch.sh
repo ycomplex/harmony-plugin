@@ -59,6 +59,7 @@ WORKER_IMAGE="$(dh_config_get worker_image)"
 # Poll/retry cadences. Env-overridable so a test does not have to sit through them; the defaults
 # are the contract.
 WAKE_POLL_S="${HARMONY_DOCKER_HOST_WAKE_POLL_S:-5}"
+WAKE_RETRY_S="${HARMONY_DOCKER_HOST_WAKE_RETRY_S:-30}"
 WAIT_RETRY_S="${HARMONY_DOCKER_HOST_WAIT_RETRY_S:-15}"
 WAIT_RETRY_BUDGET_S="${HARMONY_DOCKER_HOST_WAIT_BUDGET_S:-600}"
 
@@ -74,17 +75,28 @@ mkdir -p "$RUN_DIR"
 
 # 1. Wake the host. The command's exit status is IGNORED: "start" on an already-running machine
 #    fails on some providers, and step 2 is the real test of whether the host is up.
-if [ -n "$WAKE_CMD" ]; then
+run_wake() {
+  [ -n "$WAKE_CMD" ] || return 0
   echo "docker-host-worker-launch: waking the host" >&2
   bash -c "$WAKE_CMD" </dev/null >&2 || echo "docker-host-worker-launch: the wake command exited non-zero — ignored, waiting for SSH" >&2
-fi
+}
+run_wake
 
-# 2. Wait for SSH to answer.
+# 2. Wait for SSH to answer — re-running the wake command every WAKE_RETRY_S while it does not. One
+#    wake is not enough: a host caught MID-SHUTDOWN (its own idle timer fired a moment ago) cannot be
+#    started until it has finished stopping, so the first "start" is refused and nothing would ever
+#    start it again. Seen on the proof host: a launch that arrived while the VM was STOPPING waited
+#    out the whole timeout against a machine nobody had asked to start.
 WAKE_STARTED=$SECONDS
+LAST_WAKE=$SECONDS
 until dh_ssh true </dev/null >/dev/null 2>&1; do
   if [ $((SECONDS - WAKE_STARTED)) -ge "$WAKE_TIMEOUT_S" ]; then
     echo "docker-host-worker-launch: $DH_SSH_TARGET did not answer SSH within ${WAKE_TIMEOUT_S}s — treating as a dirty exit" >&2
     exit 1
+  fi
+  if [ $((SECONDS - LAST_WAKE)) -ge "$WAKE_RETRY_S" ]; then
+    run_wake
+    LAST_WAKE=$SECONDS
   fi
   sleep "$WAKE_POLL_S"
 done
@@ -112,12 +124,12 @@ node "$HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs" --base "$HOME/.ha
 #    idle script reads (.last-launch: "a launch happened now"; .engine-volumes/<ticket>: "this
 #    ticket's engine volume was used now"), then ship the per-run files over ssh's STDIN. The token
 #    is never an argument to anything.
-dh_ssh "umask 077; mkdir -p \"$REMOTE_RUN/projects\" \"$REMOTE_RUN/logs\" \"$DH_REMOTE_ROOT/.engine-volumes\" && chmod 700 \"$DH_REMOTE_ROOT\" \"$DH_REMOTE_ROOT/$TICKET\" \"$REMOTE_RUN\" && touch \"$DH_REMOTE_ROOT/.last-launch\" \"$DH_REMOTE_ROOT/.engine-volumes/$TICKET\"" </dev/null
-dh_ssh "umask 077; cat > \"$REMOTE_RUN/run.env\"" < "$ENV_FILE"
+dh_ssh_setup /dev/null "umask 077; mkdir -p \"$REMOTE_RUN/projects\" \"$REMOTE_RUN/logs\" \"$DH_REMOTE_ROOT/.engine-volumes\" && chmod 700 \"$DH_REMOTE_ROOT\" \"$DH_REMOTE_ROOT/$TICKET\" \"$REMOTE_RUN\" && touch \"$DH_REMOTE_ROOT/.last-launch\" \"$DH_REMOTE_ROOT/.engine-volumes/$TICKET\""
+dh_ssh_setup "$ENV_FILE" "umask 077; cat > \"$REMOTE_RUN/run.env\""
 RUN_CONFIG_MOUNT=""
 RUN_CONFIG_CHOWN=""
 if [ -f "$RUN_CONFIG_FILE" ]; then
-  dh_ssh "umask 077; cat > \"$REMOTE_RUN/run-config.json\"" < "$RUN_CONFIG_FILE"
+  dh_ssh_setup "$RUN_CONFIG_FILE" "umask 077; cat > \"$REMOTE_RUN/run-config.json\""
   RUN_CONFIG_MOUNT="-v \"$REMOTE_RUN/run-config.json\":/home/worker/.claude/run-config.json:ro"
   RUN_CONFIG_CHOWN="/r/run-config.json"
 fi
@@ -137,7 +149,7 @@ dh_ssh "docker run --rm -i --user 0 --entrypoint sh -v \"$DH_REMOTE_ROOT\":/c $I
 #    `worker` user's uid from the image and never depends on the host's own uid numbering.
 #    run.env is deliberately NOT included: it stays the SSH user's, mode 600 — the docker CLI on the
 #    host reads it for --env-file.
-dh_ssh "docker run --rm --user 0 --entrypoint chown -v \"$REMOTE_RUN\":/r $IMAGE_Q -R worker:worker /r/projects /r/logs $RUN_CONFIG_CHOWN" </dev/null >&2
+dh_ssh_setup /dev/null "docker run --rm --user 0 --entrypoint chown -v \"$REMOTE_RUN\":/r $IMAGE_Q -R worker:worker /r/projects /r/logs $RUN_CONFIG_CHOWN" >&2
 
 # 7. Run the worker, in the foreground over ssh.
 #    --privileged + the engine volume at /var/lib/docker: what the in-container Docker engine needs.

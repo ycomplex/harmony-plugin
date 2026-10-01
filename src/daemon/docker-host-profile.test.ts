@@ -327,6 +327,31 @@ describe.skipIf(!BASH_AVAILABLE)('docker-host-worker-launch.sh (EXECUTED against
     expect(order.slice(1, mintAt).every((line) => line === 'ssh true')).toBe(true);
   });
 
+  it('RE-RUNS the wake command while SSH stays down — a host caught mid-shutdown refuses the first start', () => {
+    // The first wake is refused (the host is still stopping); only the SECOND one brings it up.
+    const world = makeWorld({ sshBody: '[ -f "$STUB_LOGS/awake" ] || exit 255' });
+    const result = launch(world, {
+      HARMONY_DOCKER_HOST_WAKE_RETRY_S: '0',
+      STUB_CFG_WAKE:
+        'echo wake >> "$STUB_LOGS/order.log"; n=$(grep -c "^wake$" "$STUB_LOGS/order.log"); [ "$n" -ge 2 ] && touch "$STUB_LOGS/awake"; exit 0',
+    });
+    expect(result.status).toBe(0);
+    const wakes = log(world, 'order.log').split('\n').filter((l) => l === 'wake');
+    expect(wakes.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('retries a SETUP step whose connection drops — a freshly woken host answers once and then flaps', () => {
+    // ssh call 1 (the wait loop's `true`) connects; call 2 (the first setup step) fails to connect;
+    // every later call connects. The launch must ride through it, not exit 255.
+    const world = makeWorld({
+      sshBody:
+        'n=$(cat "$STUB_LOGS/ssh-count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_LOGS/ssh-count"; [ "$n" -ne 2 ] || exit 255',
+    });
+    const result = launch(world);
+    expect(result.status).toBe(0);
+    expect(existsSync(join(world.remoteRunDir, 'projects'))).toBe(true);
+  });
+
   it('gives up with a clear message, minting nothing, when the host never answers within the wake timeout', () => {
     const world = makeWorld({ sshBody: 'exit 255' });
     const result = launch(world, { HARMONY_DOCKER_HOST_WAKE_TIMEOUT_S: '1' });

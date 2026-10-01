@@ -67,6 +67,25 @@ dh_ssh() {
     ${HARMONY_DOCKER_HOST_SSH_OPTS:-} "$DH_SSH_TARGET" "$1"
 }
 
+# dh_ssh_setup <stdin-file> <remote command>: dh_ssh for the launch's IDEMPOTENT setup steps (make the
+# directories, ship a per-run file, chown), retried when the CONNECTION itself fails (ssh's own exit
+# 255). A freshly woken host answers SSH once and then drops connections for a few seconds while its
+# network and sshd settle — seen on the B-708 proof host: the wait loop's `true` succeeded and the
+# very next step timed out connecting. Any other exit status is the remote command's own and is
+# returned at once. Never use this for the worker run itself: that step is not idempotent and has its
+# own `docker wait` recovery.
+dh_ssh_setup() {
+  local stdin_file="$1" cmd="$2" attempt=0 rc
+  while :; do
+    rc=0
+    dh_ssh "$cmd" < "$stdin_file" || rc=$?
+    [ "$rc" -eq 255 ] || return "$rc"
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt "${HARMONY_DOCKER_HOST_SETUP_RETRIES:-6}" ] || return 255
+    sleep "${HARMONY_DOCKER_HOST_WAKE_POLL_S:-5}"
+  done
+}
+
 # Remote layout, under the SSH user's home. These strings are expanded by the REMOTE shell ($HOME is
 # the SSH user's), so they are only ever used inside double quotes in a remote command line.
 # shellcheck disable=SC2016 # $HOME must reach the remote shell unexpanded
