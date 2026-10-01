@@ -21492,6 +21492,18 @@ var RequiredToolsSchema = external_exports.object({
   reap: external_exports.array(external_exports.string().min(1)).optional(),
   probe: external_exports.array(external_exports.string().min(1)).optional()
 }).partial();
+var DockerHostSchema = external_exports.object({
+  /** Where the wrappers `ssh` to — a `user@host` or an ssh_config Host alias. Required inside the
+   *  object: a docker_host block that names no host is a misconfiguration, not a default. */
+  ssh_target: external_exports.string().min(1),
+  /** Optional shell command, run on the daemon's machine before each launch, that starts the host
+   *  (e.g. a cloud CLI's "start instance"). It MUST tolerate an already-running host — the launch
+   *  wrapper ignores its exit status and then waits for SSH to answer. */
+  wake: external_exports.string().min(1).optional(),
+  /** Optional: how many seconds the launch wrapper waits for SSH to answer after the wake command.
+   *  The wrapper's own default (180) applies when absent. */
+  wake_timeout_s: external_exports.number().int().positive().optional()
+});
 var LaunchProfileSchema = external_exports.object({
   /** Command template that launches a one-shot worker. Placeholders: {conduction_id}, {ticket}. */
   launch: external_exports.string().min(1),
@@ -21510,6 +21522,9 @@ var LaunchProfileSchema = external_exports.object({
   /** B-800: replaces the CLOUDSDK_CORE_PROJECT hardcoded default baked into cloud-worker-*.sh —
    *  the cloud profile's GCP project, read by those scripts via `harmony config get`. */
   gcloud_project: external_exports.string().optional(),
+  /** B-708: see DockerHostSchema above — present only on a Docker-host profile; every other
+   *  profile omits it and is unaffected. */
+  docker_host: DockerHostSchema.optional(),
   /** B-801: see RequiredToolsSchema above — src/daemon/preflight.ts's hard tool-resolution check. */
   required_tools: RequiredToolsSchema.optional(),
   /** B-801: true when this profile mints a worker credential via mint-installation-token.mjs before

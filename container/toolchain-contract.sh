@@ -19,6 +19,8 @@
 #      gate runs, so its depth is settled here, pre-merge, not only on a real Cloud Build run.
 #   5. AC4 — an image BUILT FROM the requirements-list generator's output carries every declared
 #      binary and still dispatches through the entrypoint.
+#   6. B-708 — the container-runtime layer (container/docker-engine/contract.sh, its own script):
+#      it builds on this image, the worker starts the engine when privileged, and fails soft when not.
 set -euo pipefail
 
 IMAGE="${1:?usage: toolchain-contract.sh <image-tag>}"
@@ -129,6 +131,11 @@ done
 
 # …and the generated image is still a WORKER image: same entrypoint dispatch, same base toolchain.
 container/smoke.sh b929-generated
+
+step "6. B-708 — the container-runtime layer on this image"
+# Rides this script (same image tag) so CI runs it with no workflow change.
+# Everything substantive lives in that script.
+container/docker-engine/contract.sh "$IMAGE"
 
 echo
 echo "=== toolchain contract: PASS ==="

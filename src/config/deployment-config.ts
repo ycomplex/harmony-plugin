@@ -72,6 +72,24 @@ const RequiredToolsSchema = z
   })
   .partial();
 
+// B-708: the "Docker host" launch profile's own settings — the ONE remote Linux Docker host its
+// wrapper scripts (container/docker-host-worker-{launch,reap,probe}.sh) wake and run the worker on.
+// Read by those scripts via `harmony config get profiles.<name>.docker_host.<field>`, the same way
+// the cloud wrappers read gcloud_project; each field also has an env override on the daemon's
+// machine (container/README.md "Docker-host launch profile"). The daemon itself never reads this.
+const DockerHostSchema = z.object({
+  /** Where the wrappers `ssh` to — a `user@host` or an ssh_config Host alias. Required inside the
+   *  object: a docker_host block that names no host is a misconfiguration, not a default. */
+  ssh_target: z.string().min(1),
+  /** Optional shell command, run on the daemon's machine before each launch, that starts the host
+   *  (e.g. a cloud CLI's "start instance"). It MUST tolerate an already-running host — the launch
+   *  wrapper ignores its exit status and then waits for SSH to answer. */
+  wake: z.string().min(1).optional(),
+  /** Optional: how many seconds the launch wrapper waits for SSH to answer after the wake command.
+   *  The wrapper's own default (180) applies when absent. */
+  wake_timeout_s: z.number().int().positive().optional(),
+});
+
 const LaunchProfileSchema = z.object({
   /** Command template that launches a one-shot worker. Placeholders: {conduction_id}, {ticket}. */
   launch: z.string().min(1),
@@ -90,6 +108,9 @@ const LaunchProfileSchema = z.object({
   /** B-800: replaces the CLOUDSDK_CORE_PROJECT hardcoded default baked into cloud-worker-*.sh —
    *  the cloud profile's GCP project, read by those scripts via `harmony config get`. */
   gcloud_project: z.string().optional(),
+  /** B-708: see DockerHostSchema above — present only on a Docker-host profile; every other
+   *  profile omits it and is unaffected. */
+  docker_host: DockerHostSchema.optional(),
   /** B-801: see RequiredToolsSchema above — src/daemon/preflight.ts's hard tool-resolution check. */
   required_tools: RequiredToolsSchema.optional(),
   /** B-801: true when this profile mints a worker credential via mint-installation-token.mjs before

@@ -1,0 +1,28 @@
+{
+  "launch": "bash \"$HARMONY_PLUGIN_DIR/container/docker-host-worker-launch.sh\" {conduction_id} {ticket} '{run_config_json}' '{model}'",
+  "reap": "bash \"$HARMONY_PLUGIN_DIR/container/docker-host-worker-reap.sh\" {conduction_id} {ticket}",
+  "probe": "bash \"$HARMONY_PLUGIN_DIR/container/docker-host-worker-probe.sh\" {conduction_id} {ticket}",
+  "maxConcurrentWorkers": 1,
+  "docker_host": {
+    "ssh_target": "harmony@docker-host.example",
+    "wake": "gcloud compute instances start harmony-docker-host --zone us-central1-a --quiet",
+    "wake_timeout_s": 180
+  },
+  "required_tools": {
+    "launch": [
+      "bash",
+      "node",
+      "ssh"
+    ],
+    "reap": [
+      "bash",
+      "ssh"
+    ],
+    "probe": [
+      "bash",
+      "ssh"
+    ]
+  },
+  "requires_app_mint": true,
+  "schema_version": 1
+}
