@@ -572,7 +572,7 @@ describe.skipIf(!BASH_AVAILABLE)('docker-host-worker-reap.sh: the three-way exit
   }
 
   it('exits 0 when a container was removed, force-removing it BY NAME, and cleans both sides\' run.env', () => {
-    const { world, result } = reap({});
+    const { world, result } = reap({ dockerBody: 'if [ "$1" = ps ]; then echo 3f2a9c1b7d5e; exit 0; fi' });
     expect(result.status).toBe(0);
     expect(dockerCalls(world)).toContainEqual(['rm', '-f', `harmony-worker-${CONDUCTION_ID}`]);
     expectLocalFilesGone(world);
@@ -581,7 +581,8 @@ describe.skipIf(!BASH_AVAILABLE)('docker-host-worker-reap.sh: the three-way exit
 
   it('exits 3 on "No such container" with a non-zero docker exit (older Docker)', () => {
     const { world, result } = reap({
-      dockerBody: 'if [ "$1" = rm ]; then echo "Error response from daemon: No such container: $3" >&2; exit 1; fi',
+      dockerBody:
+        'if [ "$1" = ps ]; then echo 3f2a9c1b7d5e; exit 0; fi; if [ "$1" = rm ]; then echo "Error response from daemon: No such container: $3" >&2; exit 1; fi',
     });
     expect(result.status).toBe(3);
     expectLocalFilesGone(world);
@@ -589,14 +590,31 @@ describe.skipIf(!BASH_AVAILABLE)('docker-host-worker-reap.sh: the three-way exit
 
   it('exits 3 on "No such container" even when docker itself exits 0 (current Docker\'s `rm -f` on an absent container)', () => {
     const { result } = reap({
-      dockerBody: 'if [ "$1" = rm ]; then echo "Error response from daemon: No such container: $3" >&2; exit 0; fi',
+      dockerBody:
+        'if [ "$1" = ps ]; then echo 3f2a9c1b7d5e; exit 0; fi; if [ "$1" = rm ]; then echo "Error response from daemon: No such container: $3" >&2; exit 0; fi',
     });
     expect(result.status).toBe(3);
   });
 
+  it('exits 3 when the host has NO such container, without calling `rm` — Docker 29 prints nothing and exits 0 for `rm -f` on an absent container', () => {
+    const { world, result } = reap({ dockerBody: 'if [ "$1" = ps ]; then exit 0; fi' });
+    expect(result.status).toBe(3);
+    expect(dockerCalls(world).some((c) => c[0] === 'rm')).toBe(false);
+    expectLocalFilesGone(world);
+  });
+
+  it('falls through to `rm -f` and reports its error when the existence check itself fails (engine down)', () => {
+    const { result } = reap({
+      dockerBody: 'if [ "$1" = ps ]; then exit 1; fi; if [ "$1" = rm ]; then echo "Cannot connect to the Docker daemon" >&2; exit 1; fi',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Cannot connect to the Docker daemon');
+  });
+
   it('exits 1 and prints the captured output on any other error — not swallowed into 0 or 3', () => {
     const { world, result } = reap({
-      dockerBody: 'if [ "$1" = rm ]; then echo "Cannot connect to the Docker daemon" >&2; exit 1; fi',
+      dockerBody:
+        'if [ "$1" = ps ]; then echo 3f2a9c1b7d5e; exit 0; fi; if [ "$1" = rm ]; then echo "Cannot connect to the Docker daemon" >&2; exit 1; fi',
     });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('Cannot connect to the Docker daemon');

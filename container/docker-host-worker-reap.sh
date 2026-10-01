@@ -9,9 +9,9 @@
 #       exit 255). A host that is powered off has no worker, so there was nothing to reap.
 #   1 — anything else: a genuine unexpected error, printed to stderr so it stays investigatable.
 #
-# "No such container" is keyed on docker's OUTPUT, not its exit code: current Docker releases print
-# that message and still exit 0 for `rm -f` on an absent container (observed on 28.2.2), so the exit
-# code alone cannot tell a kill from a miss.
+# The miss is decided by asking the host whether the container exists (`docker ps -aq --filter`),
+# never by `rm -f`'s own exit code or output: neither is stable across Docker releases (see the call
+# site). "No such container" in the output is still honoured, for an older engine that says so.
 #
 # Also deletes the per-run files on the daemon's machine, as docker-worker-reap.sh does, and
 # best-effort removes the host's copy of run.env (the minted token).
@@ -38,7 +38,12 @@ dh_resolve_target docker-host-worker-reap || exit 1
 
 # Capture combined output + exit code explicitly — no `set -e`, since a nonzero exit here is an
 # expected, inspected outcome (same shape as docker-worker-reap.sh).
-OUTPUT="$(dh_ssh "docker rm -f harmony-worker-$CONDUCTION_ID 2>&1" </dev/null 2>&1)"
+# Ask the host whether the container EXISTS before removing it. `docker rm -f` on an absent container
+# cannot be trusted to say so: 28.2.2 prints "No such container" and exits 0, and 29.8.2 (observed on
+# the B-708 proof host) prints NOTHING and exits 0 — indistinguishable from a real kill by output or
+# by code. A failing `docker ps` (engine down) falls through to `rm -f`, whose error is then reported.
+CONTAINER="harmony-worker-$CONDUCTION_ID"
+OUTPUT="$(dh_ssh "if ids=\$(docker ps -aq --filter name=^$CONTAINER\$ 2>/dev/null) && [ -z \"\$ids\" ]; then echo 'No such container: $CONTAINER'; else docker rm -f $CONTAINER 2>&1; fi" </dev/null 2>&1)"
 SSH_EXIT=$?
 
 if [ "$SSH_EXIT" -eq 255 ]; then
