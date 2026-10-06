@@ -161,6 +161,13 @@ if [ "$ACTUAL_TARGET" = "prod" ] && [ "$PLUGIN_REF" != "prod" ] && [ "$AHEAD_OF_
 fi
 echo "Environment confirmed: target=$ACTUAL_TARGET plugin_ref=$PLUGIN_REF plugin_version=$PLUGIN_VERSION workdir=$WORKDIR$AHEAD_OF_PROD_ACK"
 
+# --- B-1074: surface which Claude Code version this worker's image carries. -
+if [ -f /etc/harmony-claude-version ]; then
+  echo "provision.sh: image Claude Code version: $(cat /etc/harmony-claude-version)"
+else
+  echo "provision.sh: image Claude Code version: unknown (pre-B-1074 image, no /etc/harmony-claude-version)"
+fi
+
 # --- B-929: per-repo toolchain activation (strictly conditional). ------------
 # A build leg for a project that pins a Node version or package manager other
 # than Harmony's own used to die on this image's single baked Node 22. The

@@ -64,6 +64,7 @@ import { runBootPreflight, type PreflightProfile } from '../daemon/preflight.js'
 import {
   loadDeploymentConfig,
   resolveDeploymentConfigPath,
+  WORKER_IMAGE_DEFAULT,
   type DeploymentConfig,
   type LaunchProfileConfig,
 } from '../config/deployment-config.js';
@@ -377,6 +378,14 @@ async function main(): Promise<void> {
     log(`boot preflight failed: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
+
+  // B-1074: best-effort — surface which Claude Code version this worker's image carries. Never
+  // fatal and never parsed (the agent-portability guardrail above): a profile with no local docker,
+  // or an older image with no harmony.claude_code_version label, just logs an uninformative
+  // [worker!] line via the EXISTING non-quiet runCommand pipe, and boot continues regardless.
+  await runCommand(
+    `docker inspect ${deploymentConfig?.worker_image ?? WORKER_IMAGE_DEFAULT} --format 'worker image Claude Code version: {{ index .Config.Labels "harmony.claude_code_version" }}'`,
+  );
 
   // Capture auth + project ONCE — the daemon is pinned for its whole lifetime.
   const auth = new HarmonyAuth(token);
