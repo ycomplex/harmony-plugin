@@ -261,6 +261,28 @@ no-op mode; its first act is to require `GIT_TOKEN` and its next is to clone, so
 A real clone or agent run needs a live GitHub credential and is out of scope for
 a publish gate.
 
+### B-1074: a second trigger on `prod`, and the baked Claude Code version
+
+Two Cloud Build triggers run `container/cloudbuild.yaml`, additively: the original
+(`harmony-worker-image-publish`, B-820) on push to `main` touching `container/**`, and a second
+(`harmony-worker-image-publish-on-promote`, B-1074, hand-carried — see
+`container/B-1074-hand-carry-trigger.md`) on push to `prod`, with **no path filter**, so every
+`./promote-prod.sh` run republishes the image even when nothing under `container/` changed —
+keeping the baked Claude Code install current.
+
+The image's Claude Code version is now visible three ways: the `harmony.claude_code_version` OCI
+label (set from a `CLAUDE_CODE_VERSION` build-arg the pipeline resolves via `npm view
+@anthropic-ai/claude-code version` before the build), `/etc/harmony-claude-version` inside the image
+(the ACTUAL installed version, read from the binary itself), and `provision.sh`'s startup echo of
+that file's contents.
+
+Because both triggers publish the same `:latest` tag, a `guard-latest` step races them by **commit
+time**, not plugin version — `main`'s version is permanently pinned at the inert `0.0.0-dev` (B-1007)
+and would always lose a version-based comparison. Each build bakes its own triggering commit's UTC
+timestamp into a `harmony.source_commit_time` label; `guard-latest` compares that against the label
+already on the current `:latest` and skips the `:latest` push when the current image is already as
+new or newer. `push-version` (the plugin-version tag) stays unconditional either way.
+
 ### Rolling back a bad worker image — three tiers
 
 | Tier | Move | Blast radius | Status |

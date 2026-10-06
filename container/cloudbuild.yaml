@@ -1,17 +1,58 @@
 # B-820: publishes the harmony-build-env worker image on every push to main
 # that touches container/** (provisioned as a GCP-side Cloud Build trigger —
-# see container/README.md). Builds container/Dockerfile's default (last)
+# see container/README.md). B-1074 adds a second trigger, on push to `prod`
+# with no path filter, so the image is rebuilt every promote too — both
+# triggers run this SAME file. Builds container/Dockerfile's default (last)
 # stage, same as the manual `gcloud builds submit --tag ... container/` this
 # replaces, and tags the result both :latest and :<plugin-version> so a bad
 # publish can be rolled back to the previous version tag.
+#
+# B-1074: before the build, resolve-claude-version and resolve-commit-time pin
+# the installed Claude Code version (npm view, since `main`'s plugin version is
+# permanently the inert 0.0.0-dev and can't signal "newer") and this build's
+# source commit time, threading both into the single docker build as build-args
+# (see container/Dockerfile's `agent` stage). guard-latest then compares THIS
+# build's commit time against the commit time baked into the current :latest
+# image's `harmony.source_commit_time` label, so whichever of the two triggers
+# runs last — not necessarily the `prod` one — wins the race for :latest.
+# push-version stays unconditional: the version tag is always pushed regardless
+# of the guard's decision.
 
 substitutions:
   _IMAGE: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-build-env
 
 steps:
+  - id: resolve-claude-version
+    name: node:22-bookworm-slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        npm view @anthropic-ai/claude-code version > /workspace/claude_code_version.txt
+        echo "Resolved Claude Code version: $(cat /workspace/claude_code_version.txt)"
+
+  - id: resolve-commit-time
+    name: gcr.io/cloud-builders/git
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        date -u -d "@$(git log -1 --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ > /workspace/source_commit_time.txt
+        echo "Resolved source commit time (UTC): $(cat /workspace/source_commit_time.txt)"
+
   - id: build
     name: gcr.io/cloud-builders/docker
-    args: ['build', '-t', '${_IMAGE}:latest', 'container/']
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        docker build \
+          --build-arg CLAUDE_CODE_VERSION="$(cat /workspace/claude_code_version.txt)" \
+          --build-arg SOURCE_COMMIT_TIME="$(cat /workspace/source_commit_time.txt)" \
+          -t '${_IMAGE}:latest' container/
 
   # B-929: the publish gate. Runs BETWEEN the build and the two pushes, so an image that fails the
   # smoke NEVER becomes :latest and the fleet keeps running the last good image. The assertions live
@@ -42,9 +83,47 @@ steps:
         set -euo pipefail
         docker tag "${_IMAGE}:latest" "${_IMAGE}:$(cat /workspace/plugin_version.txt)"
 
+  # B-1074: guards the :latest race between the two triggers (push to `main` touching container/**,
+  # and push to `prod` on every promote) by COMMIT TIME, never by plugin version — `main` is
+  # permanently pinned at the inert 0.0.0-dev (see plugin/CLAUDE.md -> Versioning), so a
+  # version-based comparison would always lose there. Writes a decision file push-latest reads;
+  # Cloud Build has no native conditional-step-skip.
+  - id: guard-latest
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        NEW_COMMIT_TIME="$(cat /workspace/source_commit_time.txt)"
+        if docker pull '${_IMAGE}:latest' >/dev/null 2>&1; then
+          CURRENT_COMMIT_TIME="$(docker inspect --format '{{ index .Config.Labels "harmony.source_commit_time" }}' '${_IMAGE}:latest' 2>/dev/null || echo unknown)"
+          [ -n "$CURRENT_COMMIT_TIME" ] || CURRENT_COMMIT_TIME=unknown
+        else
+          CURRENT_COMMIT_TIME=unknown
+        fi
+        echo "Current :latest commit-time: $CURRENT_COMMIT_TIME"
+        echo "This build's commit-time:    $NEW_COMMIT_TIME"
+        if [ "$CURRENT_COMMIT_TIME" = unknown ] || [ "$NEW_COMMIT_TIME" \> "$CURRENT_COMMIT_TIME" ]; then
+          echo proceed > /workspace/push_latest_decision.txt
+          echo "guard-latest: this build is newer (or :latest carries no commit-time label yet) — will push :latest"
+        else
+          echo skip > /workspace/push_latest_decision.txt
+          echo "guard-latest: :latest is already at or ahead of this build's commit time — SKIPPING the :latest push to avoid the race"
+        fi
+
   - id: push-latest
     name: gcr.io/cloud-builders/docker
-    args: ['push', '${_IMAGE}:latest']
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        if [ "$(cat /workspace/push_latest_decision.txt)" = proceed ]; then
+          docker push '${_IMAGE}:latest'
+        else
+          echo "push-latest: skipped by guard-latest"
+        fi
 
   - id: push-version
     name: gcr.io/cloud-builders/docker

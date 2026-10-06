@@ -91,8 +91,14 @@ FROM base AS agent
 # target may move up into base — the container-base CI job asserts base has
 # no `claude`.
 USER root
-RUN npm install -g @anthropic-ai/claude-code \
-    && claude --version
+ARG CLAUDE_CODE_VERSION=latest
+ARG SOURCE_COMMIT_TIME=unknown
+
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+    && claude --version | awk '{print $1}' | tee /etc/harmony-claude-version
+
+LABEL harmony.claude_code_version="${CLAUDE_CODE_VERSION}" \
+      harmony.source_commit_time="${SOURCE_COMMIT_TIME}"
 
 # B-724: pre-create the worker's Claude state dirs WORKER-OWNED. The launch
 # profile bind-mounts projects/ and logs/ per conduction; Docker otherwise

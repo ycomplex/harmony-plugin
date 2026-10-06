@@ -35891,6 +35891,9 @@ ${err instanceof Error ? err.message : String(err)}
     log(`boot preflight failed: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
+  await runCommand(
+    `docker inspect ${deploymentConfig?.worker_image ?? WORKER_IMAGE_DEFAULT} --format 'worker image Claude Code version: {{ index .Config.Labels "harmony.claude_code_version" }}'`
+  );
   const auth = new HarmonyAuth(token);
   const client = await createAuthenticatedClient(auth);
   const projectId = auth.getProjectId();
