@@ -15,11 +15,13 @@
 // revision, the same way DeploymentConfigSchema (src/config/deployment-config.ts) does not need
 // passthrough either — both are versioned config files, not wire payloads between build revisions.
 //
-// Six keys, exactly the ratified design: `version`, `preconditions` (declared data, NEVER
+// Seven keys, exactly the ratified design: `version`, `preconditions` (declared data, NEVER
 // executed — see the safety-relevant test in project-manifest.test.ts proving this), the three
 // extension points `build.before_pr` / `release.before_merge` / `verify.before_ack`, each an
-// ordered list of `run:` or `agent_task:` steps, and B-973's `notify` (declared data, NEVER
-// dispatched to — see below).
+// ordered list of `run:` or `agent_task:` steps, B-973's `notify` (declared data, NEVER
+// dispatched to — see below), and B-1072's `fasttrack.scope_budget` (declared data consumed ONLY by
+// the harmony-fasttrack skill's own pre-PR-open scope guard, src/tools/fasttrack-scope.ts — never
+// read by this file or by `harmony gates run`).
 //
 // B-973: `notify` is a list of `{ on, endpoint }` entries declaring which workflow-state transitions
 // a project wants an external endpoint told about. It is the SECOND declared-but-unconsumed key,
@@ -158,11 +160,27 @@ const EvidenceEntrySchema = z
 
 export type EvidenceEntry = z.infer<typeof EvidenceEntrySchema>;
 
+// --- B-1072: `fasttrack.scope_budget` --------------------------------------------------------------
+
+/** B-1072 — the `fasttrack.scope_budget` override a project may declare to tighten or loosen the
+ *  harmony-fasttrack skill's pre-PR-open scope guard (src/tools/fasttrack-scope.ts). Both fields are
+ *  optional — a manifest may override just one of the two defaults. */
+const ScopeBudgetSchema = z
+  .object({
+    files: z.number().int().positive().optional(),
+    lines: z.number().int().positive().optional(),
+  })
+  .strict();
+
+export type ScopeBudget = z.infer<typeof ScopeBudgetSchema>;
+
+const FasttrackSchema = z.object({ scope_budget: ScopeBudgetSchema.optional() }).strict();
+
 const GateSchema = z.object({ before_pr: z.array(StepSchema).optional() }).strict();
 const ReleaseGateSchema = z.object({ before_merge: z.array(StepSchema).optional() }).strict();
 const VerifyGateSchema = z.object({ before_ack: z.array(StepSchema).optional(), evidence: z.array(EvidenceEntrySchema).optional() }).strict();
 
-/** The 6-key top-level schema. Deliberately `.strict()` (see this file's header) — an unrecognized
+/** The 7-key top-level schema. Deliberately `.strict()` (see this file's header) — an unrecognized
  *  top-level key is AC5's own "malformed" example, not a forward-compat pass-through case. */
 const ProjectManifestBodySchema = z
   .object({
@@ -172,6 +190,7 @@ const ProjectManifestBodySchema = z
     release: ReleaseGateSchema.optional(),
     verify: VerifyGateSchema.optional(),
     notify: z.array(NotifyEntrySchema).optional(),
+    fasttrack: FasttrackSchema.optional(),
   })
   .strict();
 
@@ -220,7 +239,7 @@ export interface LoadProjectManifestDeps {
   readFileSync?: (path: string) => string;
 }
 
-const KNOWN_TOP_LEVEL_KEYS = ['version', 'preconditions', 'build', 'release', 'verify', 'notify'] as const;
+const KNOWN_TOP_LEVEL_KEYS = ['version', 'preconditions', 'build', 'release', 'verify', 'notify', 'fasttrack'] as const;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -513,4 +532,11 @@ export function getNotifyEntries(manifest: ProjectManifest): NotifyEntry[] {
  *  drift. */
 export function getDeclaredEvidence(manifest: ProjectManifest): EvidenceEntry[] {
   return manifest.verify?.evidence ?? [];
+}
+
+/** The `fasttrack.scope_budget` override, or the hard-coded default when the manifest declares
+ *  nothing (or no manifest exists at all) — see src/tools/fasttrack-scope.ts's DEFAULT_SCOPE_BUDGET
+ *  for the actual default values. Pure read, same posture as getPreconditions/getDeclaredEvidence. */
+export function getScopeBudget(manifest: ProjectManifest): { files?: number; lines?: number } {
+  return manifest.fasttrack?.scope_budget ?? {};
 }
