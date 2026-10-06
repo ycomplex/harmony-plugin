@@ -3576,6 +3576,45 @@ describe('B-1073 (post-review wiring): fast-track admission check at fireLaunch'
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-1073 x B-1020 interaction: a fast-track leg the admission check parks BEFORE launch must never
+// be counted as a leg (B-1020's leg_count) or receive a HARMONY_LEG assignment it will never use —
+// the admission check runs strictly before the leg-number computation in fireLaunch, so an
+// inadmissible report short-circuits out before leg_count (or leg_started_at) is ever touched.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('B-1073 x B-1020: an admission-parked fast-track leg is never counted or HARMONY_LEG-assigned', () => {
+  it('inadmissible fast-track conduction: leg_count is untouched, no runCommand launch fires, and no HARMONY_LEG is ever computed', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ run_config: { fast_track: true }, leg_count: 2 })], // 2 prior legs
+      tasks: {
+        'task-1': pausedTask({ workflow_state: 'Captured', title: 'Fix the flaky retry timer in the poller.' }),
+      },
+    });
+    h.deps.declaredRepos = ['ycomplex/harmony-web', 'ycomplex/harmony-plugin']; // multi-repo -> inadmissible
+
+    await wakeAndFire(h);
+
+    // No launch fired at all — the admission check short-circuited before fireLaunch ever reaches
+    // the leg_count/leg_started_at write or the launch runCommand call.
+    expect(h.launches()).toEqual([]);
+    expect(h.running()).toEqual([]);
+    expect(h.runCommandCalls().find(([cmd]) => cmd.startsWith('launch'))).toBeUndefined();
+
+    // leg_count stays exactly what it was before this fire — a parked-before-launch leg must never
+    // consume a leg number.
+    expect(h.getConduction('cond-1').leg_count).toBe(2);
+
+    // The lease-guarded write the admission-check park performs carries no leg_count/leg_started_at
+    // at all — only the park's own status fields (see fireLaunch's early-return branch).
+    expect(h.deps.updateConductionIfHeld).not.toHaveBeenCalledWith(
+      'cond-1',
+      ME,
+      expect.objectContaining({ leg_count: expect.anything() }),
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // B-845: withWriteRetry must NEVER wrap the worker-launch/fire call — a launch is not a write this
 // module's retry contract applies to, and re-firing a worker on a transient blip is a completely
 // different (and much larger) hazard than retrying a guarded DB write. This is pinned by SOURCE
