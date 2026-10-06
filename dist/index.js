@@ -45932,6 +45932,11 @@ var EvidenceEntrySchema = external_exports.object({
   prompt: external_exports.string().min(1),
   applies_to: AppliesToSchema.optional()
 }).strict();
+var ScopeBudgetSchema = external_exports.object({
+  files: external_exports.number().int().positive().optional(),
+  lines: external_exports.number().int().positive().optional()
+}).strict();
+var FasttrackSchema = external_exports.object({ scope_budget: ScopeBudgetSchema.optional() }).strict();
 var GateSchema = external_exports.object({ before_pr: external_exports.array(StepSchema).optional() }).strict();
 var ReleaseGateSchema = external_exports.object({ before_merge: external_exports.array(StepSchema).optional() }).strict();
 var VerifyGateSchema = external_exports.object({ before_ack: external_exports.array(StepSchema).optional(), evidence: external_exports.array(EvidenceEntrySchema).optional() }).strict();
@@ -45941,9 +45946,10 @@ var ProjectManifestBodySchema = external_exports.object({
   build: GateSchema.optional(),
   release: ReleaseGateSchema.optional(),
   verify: VerifyGateSchema.optional(),
-  notify: external_exports.array(NotifyEntrySchema).optional()
+  notify: external_exports.array(NotifyEntrySchema).optional(),
+  fasttrack: FasttrackSchema.optional()
 }).strict();
-var KNOWN_TOP_LEVEL_KEYS = ["version", "preconditions", "build", "release", "verify", "notify"];
+var KNOWN_TOP_LEVEL_KEYS = ["version", "preconditions", "build", "release", "verify", "notify", "fasttrack"];
 function isPlainObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -20,6 +20,7 @@ import {
   getPreconditions,
   getDeclaredEvidence,
   getNotifyEntries,
+  getScopeBudget,
   DECLARABLE_TRANSITIONS,
   EXTENSION_POINTS,
   PROJECT_MANIFEST_RELATIVE_PATH,
@@ -623,5 +624,55 @@ verify:
       { key: 'danger', prompt: 'rm -rf / --no-preserve-root' },
     ]);
     expect(result.stepErrors).toEqual({});
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-1072 — `fasttrack.scope_budget`: the 7th strict top-level key, declared data consumed only by
+// the harmony-fasttrack skill's own pre-PR-open scope guard (src/tools/fasttrack-scope.ts).
+
+describe('B-1072 — fasttrack.scope_budget declared override', () => {
+  it('a manifest declaring fasttrack.scope_budget parses to kind "ok" and getScopeBudget returns it', () => {
+    const root = makeProjectRoot();
+    writeManifest(
+      root,
+      [
+        `version: ${SUPPORTED_MANIFEST_VERSION}`,
+        'fasttrack:',
+        '  scope_budget:',
+        '    files: 10',
+        '    lines: 300',
+      ].join('\n'),
+    );
+    const result = loadProjectManifest(root);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(getScopeBudget(result.manifest)).toEqual({ files: 10, lines: 300 });
+  });
+
+  it('a manifest with no fasttrack key at all still parses "ok" (floor preserved) and getScopeBudget returns {}', () => {
+    const root = makeProjectRoot();
+    writeManifest(root, `version: ${SUPPORTED_MANIFEST_VERSION}\n`);
+    const result = loadProjectManifest(root);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(getScopeBudget(result.manifest)).toEqual({});
+  });
+
+  it('a fasttrack.scope_budget with an unrecognized nested field is whole-file malformed (.strict() floor)', () => {
+    const root = makeProjectRoot();
+    writeManifest(
+      root,
+      [
+        `version: ${SUPPORTED_MANIFEST_VERSION}`,
+        'fasttrack:',
+        '  scope_budget:',
+        '    bogus: 1',
+      ].join('\n'),
+    );
+    const result = loadProjectManifest(root);
+    expect(result.kind).toBe('malformed');
+    if (result.kind !== 'malformed') return;
+    expect(result.problem.reason).toBe('invalid-shape');
   });
 });

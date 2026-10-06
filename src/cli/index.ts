@@ -32,6 +32,7 @@ import { registerGatesCommands } from './commands/gates.js';
 import { registerNotifyCommands } from './commands/notify.js';
 import { registerDoctorCommands } from './commands/doctor.js';
 import { registerRecordCommand } from './commands/record.js';
+import { registerFasttrackCommands } from './commands/fasttrack.js';
 
 const program = new Command();
 
@@ -70,5 +71,6 @@ registerGatesCommands(program);
 registerNotifyCommands(program);
 registerDoctorCommands(program);
 registerRecordCommand(program);
+registerFasttrackCommands(program);
 
 program.parse();

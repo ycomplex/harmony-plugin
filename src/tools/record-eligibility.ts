@@ -180,6 +180,13 @@ function evaluateVerifyWalkItem(attestWalk: string | undefined): EligibilityItem
   };
 }
 
+/** Formats one eligibility item's verdict line, in the shape `harmony record --check` and
+ *  `harmony fasttrack check` both render verbatim (AC1's "same output shape") — ONE formatter,
+ *  never two copies that could drift. */
+export function formatEligibilityLine(commandLabel: string, ticket: string, item: EligibilityItemResult): string {
+  return `${commandLabel} ${ticket}: ${item.label} — ${item.verdict.toUpperCase()} (${item.value}${item.detail ? ' — ' + item.detail : ''})`;
+}
+
 // ---------------------------------------------------------------------------
 // The whole evaluator — pure, five items, in the ticket's own (a)-(e) order.
 // ---------------------------------------------------------------------------

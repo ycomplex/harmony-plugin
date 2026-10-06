@@ -37283,6 +37283,11 @@ var EvidenceEntrySchema = external_exports.object({
   prompt: external_exports.string().min(1),
   applies_to: AppliesToSchema.optional()
 }).strict();
+var ScopeBudgetSchema = external_exports.object({
+  files: external_exports.number().int().positive().optional(),
+  lines: external_exports.number().int().positive().optional()
+}).strict();
+var FasttrackSchema = external_exports.object({ scope_budget: ScopeBudgetSchema.optional() }).strict();
 var GateSchema = external_exports.object({ before_pr: external_exports.array(StepSchema).optional() }).strict();
 var ReleaseGateSchema = external_exports.object({ before_merge: external_exports.array(StepSchema).optional() }).strict();
 var VerifyGateSchema = external_exports.object({ before_ack: external_exports.array(StepSchema).optional(), evidence: external_exports.array(EvidenceEntrySchema).optional() }).strict();
@@ -37292,9 +37297,10 @@ var ProjectManifestBodySchema = external_exports.object({
   build: GateSchema.optional(),
   release: ReleaseGateSchema.optional(),
   verify: VerifyGateSchema.optional(),
-  notify: external_exports.array(NotifyEntrySchema).optional()
+  notify: external_exports.array(NotifyEntrySchema).optional(),
+  fasttrack: FasttrackSchema.optional()
 }).strict();
-var KNOWN_TOP_LEVEL_KEYS = ["version", "preconditions", "build", "release", "verify", "notify"];
+var KNOWN_TOP_LEVEL_KEYS = ["version", "preconditions", "build", "release", "verify", "notify", "fasttrack"];
 function isPlainObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -37456,6 +37462,9 @@ function getNotifyEntries(manifest) {
 }
 function getDeclaredEvidence(manifest) {
   return manifest.verify?.evidence ?? [];
+}
+function getScopeBudget(manifest) {
+  return manifest.fasttrack?.scope_budget ?? {};
 }
 
 // src/config/manifest-evidence.ts
@@ -43248,6 +43257,9 @@ function evaluateVerifyWalkItem(attestWalk) {
     value: `verify-walk: ATTESTED ("${trimmed.length > 80 ? trimmed.slice(0, 77) + "..." : trimmed}")`
   };
 }
+function formatEligibilityLine(commandLabel, ticket, item) {
+  return `${commandLabel} ${ticket}: ${item.label} \u2014 ${item.verdict.toUpperCase()} (${item.value}${item.detail ? " \u2014 " + item.detail : ""})`;
+}
 function evaluateEligibility(input) {
   const items = [
     evaluateMultiRepoItem(input.evidence),
@@ -43668,7 +43680,7 @@ function registerRecordCommand(program3) {
       }
       const report = evaluateEligibility({ summary: opts.summary, evidence: gathered, attestWalk: opts.attestWalk });
       for (const item of report.items) {
-        const line = `harmony record --check ${ticket}: ${item.label} \u2014 ${item.verdict.toUpperCase()} (${item.value}${item.detail ? " \u2014 " + item.detail : ""})`;
+        const line = formatEligibilityLine("harmony record --check", ticket, item);
         if (item.verdict === "pass") console.log(line);
         else console.error(line);
       }
@@ -43690,6 +43702,89 @@ function registerRecordCommand(program3) {
       },
       formatWalkResult
     );
+  });
+}
+
+// src/cli/commands/fasttrack.ts
+import { execFileSync as execFileSync2 } from "node:child_process";
+
+// src/tools/fasttrack-scope.ts
+var DEFAULT_SCOPE_BUDGET = { files: 5, lines: 150 };
+function evaluateScopeBudget(entries, budget = DEFAULT_SCOPE_BUDGET) {
+  const filesChanged = entries.length;
+  const linesChanged = entries.reduce((sum, e) => sum + (e.added ?? 0) + (e.deleted ?? 0), 0);
+  return {
+    withinBudget: filesChanged <= budget.files && linesChanged <= budget.lines,
+    filesChanged,
+    linesChanged,
+    budget
+  };
+}
+function parseNumstatLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  const [addedRaw, deletedRaw, ...pathParts] = trimmed.split("	");
+  const path2 = pathParts.join("	");
+  const added = addedRaw === "-" ? null : Number(addedRaw);
+  const deleted = deletedRaw === "-" ? null : Number(deletedRaw);
+  return { added: Number.isFinite(added) ? added : null, deleted: Number.isFinite(deleted) ? deleted : null, path: path2 };
+}
+
+// src/cli/commands/fasttrack.ts
+function resolveScopeBudget(projectRoot) {
+  const result = loadProjectManifest(projectRoot);
+  if (result.kind !== "ok") return DEFAULT_SCOPE_BUDGET;
+  const override = getScopeBudget(result.manifest);
+  return {
+    files: override.files ?? DEFAULT_SCOPE_BUDGET.files,
+    lines: override.lines ?? DEFAULT_SCOPE_BUDGET.lines
+  };
+}
+function registerFasttrackCommands(program3) {
+  const fasttrack = program3.command("fasttrack").description(
+    "B-1072 \u2014 read-only accessors backing the harmony-fasttrack skill: the same eligibility floor harmony record --check uses, and a git-diff scope-budget guard. Neither mutates anything."
+  );
+  fasttrack.command("check").description(
+    "Print every eligibility item's verdict for <ticket> \u2014 the SAME floor harmony record --check uses, rendered with the fasttrack command label. Mutates nothing. Exits non-zero if any item fails or is unattested."
+  ).argument("<ticket>", "Task ID (UUID, number, or B-123)").requiredOption("--summary <text>", "A one-sentence-statable account of the change this ticket records").option("--evidence <url>", "Evidence link (repeatable \u2014 pass --evidence multiple times)", (val, prev) => [...prev, val], []).option("--attest-walk <who-what>", "Attest a 5+ minute verify walk \u2014 who/what was walked. Never auto-passed; omit to leave this item UNATTESTED.").action(async (ticket, opts) => {
+    let gathered;
+    try {
+      gathered = await gatherEvidenceSignals(opts.evidence);
+    } catch {
+      gathered = opts.evidence.map((url) => ({ url }));
+    }
+    const report = evaluateEligibility({ summary: opts.summary, evidence: gathered, attestWalk: opts.attestWalk });
+    for (const item of report.items) {
+      const line = formatEligibilityLine("harmony fasttrack check", ticket, item);
+      if (item.verdict === "pass") console.log(line);
+      else console.error(line);
+    }
+    process.exit(report.eligible ? 0 : 1);
+  });
+  fasttrack.command("scope-check").description(
+    "Run `git diff --numstat <base>...HEAD` in the current directory and report the scope-budget verdict (files changed, lines changed, within-budget or not) against any manifest-declared `.harmony/project.yml` fasttrack.scope_budget override, else the hard-coded default. Read-only \u2014 never mutates anything."
+  ).option("--base <ref>", "Base ref to diff against", "origin/main").action((opts) => {
+    const projectRoot = process.cwd();
+    const budget = resolveScopeBudget(projectRoot);
+    let raw;
+    try {
+      raw = execFileSync2("git", ["diff", "--numstat", `${opts.base}...HEAD`], {
+        cwd: projectRoot,
+        encoding: "utf8"
+      });
+    } catch (err) {
+      console.error(
+        `harmony fasttrack scope-check: could not run 'git diff --numstat ${opts.base}...HEAD' \u2014 ${err?.message ?? String(err)}`
+      );
+      process.exit(1);
+      return;
+    }
+    const entries = raw.split("\n").map((line) => parseNumstatLine(line)).filter((e) => e !== null);
+    const evaluation = evaluateScopeBudget(entries, budget);
+    console.log(
+      `harmony fasttrack scope-check: ${evaluation.filesChanged} file(s), ${evaluation.linesChanged} line(s) changed against ${opts.base} \u2014 budget ${budget.files} file(s)/${budget.lines} line(s) \u2014 ${evaluation.withinBudget ? "WITHIN BUDGET" : "OVER BUDGET"}`
+    );
+    process.exit(evaluation.withinBudget ? 0 : 1);
   });
 }
 
@@ -43727,4 +43822,5 @@ registerGatesCommands(program2);
 registerNotifyCommands(program2);
 registerDoctorCommands(program2);
 registerRecordCommand(program2);
+registerFasttrackCommands(program2);
 program2.parse();
