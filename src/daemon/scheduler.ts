@@ -136,7 +136,7 @@ import { classifyWorkerExit, exitClass, TICKET_TERMINAL_STATES, type ClassifyArg
 import { renderQuietReapOutcome } from './quiet-reap.js';
 import { exchangeWentInactive } from '../conductor/ball-axis.js';
 import { renderTemplate, type DaemonConfig } from './config.js';
-import { resolveGatePhase } from './gate-phase.js';
+import { resolveLegGate } from './leg-gate.js';
 import { getModelForGate, type RunConfig } from '../config/run-config.js';
 // B-929: the ONE place the worker-image default is written (src/config/deployment-config.ts's
 // zod schema) — imported rather than re-typed so this file can never drift from it.
@@ -165,7 +165,7 @@ import type { HintSource } from './hints.js';
 /** The ticket shape the daemon reads (a getTask view:'meta' result is structurally assignable). */
 export type DaemonTask = Taskish & {
   workflow_state?: string | null;
-  /** B-772: read by templateVars' model resolution (resolveGatePhase + getModelForGate) — the
+  /** B-772: read by templateVars' model resolution (resolveLegGate + getModelForGate) — the
    *  same `getTask view:'meta'` read this type's other fields already come from already returns
    *  this column (src/tools/tasks.ts's pinned meta projection), so no new read is needed. */
   workflow_activity?: string | null;
@@ -484,18 +484,20 @@ function runConfigJsonFor(row: ConductionRecord): string {
   return Buffer.from(json, 'utf8').toString('base64');
 }
 
-/** B-772: which Claude model THIS leg should run on — resolveGatePhase projects the task's current
- *  `workflow_state`/`workflow_activity` onto a gate, then getModelForGate runs its three-level
- *  fallback (per-gate override -> run-wide default -> pinned per-deployment default) over the
- *  conduction row's OWN run_config. `task` can be `null` (a best-effort metadata read failed, or a
- *  reconciled re-attach has no snapshot yet — same degrade this file's `ticket` substitution
- *  already tolerates, see resolveVisualId's own comment) — resolveGatePhase reads that as "no gate"
- *  (null workflow_state), which getModelForGate reads as "no per-gate override can apply", falling
- *  through to level 2/3 exactly as intended; this NEVER throws and always returns a non-empty
- *  string (getModelForGate's own guarantee). */
+/** B-772: which Claude model THIS leg should run on — resolveLegGate projects the task's current
+ *  `workflow_state`/`workflow_activity` onto a gate (B-1073: applying the fast-track branch first,
+ *  then delegating to resolveGatePhase exactly as before for every other case), then
+ *  getModelForGate runs its three-level fallback (per-gate override -> run-wide default -> pinned
+ *  per-deployment default) over the conduction row's OWN run_config. `task` can be `null` (a
+ *  best-effort metadata read failed, or a reconciled re-attach has no snapshot yet — same degrade
+ *  this file's `ticket` substitution already tolerates, see resolveVisualId's own comment) —
+ *  resolveLegGate reads that as "no gate" (null workflow_state), which getModelForGate reads as "no
+ *  per-gate override can apply", falling through to level 2/3 exactly as intended; this NEVER
+ *  throws and always returns a non-empty string (getModelForGate's own guarantee). */
 function modelFor(row: ConductionRecord, task: DaemonTask | null): string {
-  const gate = resolveGatePhase(task?.workflow_state, task?.workflow_activity);
-  return getModelForGate((row.run_config ?? {}) as RunConfig, gate);
+  const runConfig = (row.run_config ?? {}) as RunConfig;
+  const gate = resolveLegGate(runConfig, task ?? {});
+  return getModelForGate(runConfig, gate);
 }
 
 function templateVars(

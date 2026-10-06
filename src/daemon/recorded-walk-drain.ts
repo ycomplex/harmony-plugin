@@ -11,6 +11,13 @@
 //      record-walk.ts) — ONE implementation, never a second one reimplemented here,
 //   4. writes the outcome back (`status: 'done' | 'error'`, `processed_at`, `error`).
 //
+// B-1073 step 9/10: between claiming the row and calling `runRecordedWalk`, this drain now also
+// reads the ticket's own CURRENT `workflow_state` (a `tasks` SELECT — the one table besides
+// `recorded_walk_requests` this file touches) to derive `from_gate`, so a fast-track ticket's
+// post-merge drain resumes the walk where it actually left off (e.g. `Built` -> `'deploy'`) instead
+// of re-walking gates that already landed. Best-effort: a read failure degrades to `'clarify'`,
+// today's unchanged default, never throws.
+//
 // TOLERANT OF THE TABLE NOT EXISTING YET (the B-846 precedent — see conduction-record.ts's
 // `isMissingLastLegEndedAtColumn` / scheduler.ts's `writeLastLegEndedAt` for the sibling shape this
 // mirrors): B-1063 (harmony-web's migration) may not have shipped yet when this code merges and reaches
@@ -26,9 +33,37 @@
 // recorded-walk-drain-contract.test.ts for the structural + runtime proof).
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { runRecordedWalk, type RecordWalkArgs, type RecordWalkResult } from '../tools/record-walk.js';
+import { runRecordedWalk, type RecordWalkArgs, type RecordWalkResult, type RecordWalkGateName } from '../tools/record-walk.js';
 
 export const RECORDED_WALK_REQUESTS_TABLE = 'recorded_walk_requests';
+
+/** B-1073 step 9 — `workflow_state -> RecordWalkGateName` for the drain's own from_gate derivation.
+ *  Mirrors `src/daemon/gate-phase.ts`'s `GATE_BY_WORKFLOW_STATE`, with ONE deliberate divergence:
+ *  `Built` maps to `'deploy'`, not `'release'` — a fast-track ticket observed at `Built` already has
+ *  a REAL release brief/slot landed by its own build leg (step 10's own case), so a drain-resumed
+ *  walk must never re-walk release. Every other state keeps gate-phase.ts's own mapping, and any
+ *  state absent from this table (including `Captured`/`Proposed`, and any state this table simply
+ *  doesn't recognize) defaults to `'clarify'` — today's unchanged behavior for every non-fast-track
+ *  walk this drain processes. Deliberately NOT imported from gate-phase.ts: that table's value type
+ *  is `Gate` (seven values, no `'deploy'`), one fewer than `RecordWalkGateName` (eight values), so
+ *  the two tables cannot share a single declaration without widening gate-phase.ts's own type. */
+const WORKFLOW_STATE_TO_FROM_GATE: Record<string, RecordWalkGateName> = {
+  Captured: 'clarify',
+  Proposed: 'clarify',
+  Clarified: 'decompose',
+  Decomposed: 'design',
+  Designed: 'plan',
+  Planned: 'build',
+  Built: 'deploy',
+  Deployed: 'verify',
+};
+
+/** B-1073 step 9 — derive `from_gate` from a ticket's CURRENT `workflow_state`, best-effort: an
+ *  absent/unrecognized state reads as `'clarify'`, never throws. */
+function deriveFromGate(workflowState: string | null | undefined): RecordWalkGateName {
+  if (!workflowState) return 'clarify';
+  return WORKFLOW_STATE_TO_FROM_GATE[workflowState] ?? 'clarify';
+}
 
 export interface RecordedWalkRequestRow {
   id: string;
@@ -124,11 +159,31 @@ export async function runRecordedWalkDrainPass(deps: RecordedWalkDrainDeps): Pro
     return 0;
   }
 
+  // B-1073 step 9/10: read the ticket's CURRENT workflow_state to derive `from_gate` — e.g. a
+  // fast-track ticket already at `Built` (its own build leg already walked clarify->build and
+  // composed a real release brief) resumes at `'deploy'` rather than re-walking every gate.
+  // Best-effort — a read failure degrades to `'clarify'`, today's unchanged default, never throws.
+  let fromGate: RecordWalkGateName = 'clarify';
+  try {
+    const { data: taskRow, error: taskErr } = await client
+      .from('tasks')
+      .select('workflow_state')
+      .eq('id', request.task_id)
+      .eq('project_id', projectId)
+      .maybeSingle();
+    if (!taskErr) {
+      fromGate = deriveFromGate((taskRow as { workflow_state?: string | null } | null)?.workflow_state ?? null);
+    }
+  } catch {
+    // Best-effort — fromGate stays 'clarify'.
+  }
+
   const args: RecordWalkArgs = {
     task_id: request.task_id,
     summary: request.summary,
     evidence: request.evidence_links ?? [],
     attest_walk: request.attest_walk ?? undefined,
+    from_gate: fromGate,
   };
 
   let result: RecordWalkResult | undefined;
@@ -159,4 +214,75 @@ export async function runRecordedWalkDrainPass(deps: RecordedWalkDrainDeps): Pro
   }
 
   return 1;
+}
+
+// ---------------------------------------------------------------------------------------------
+// B-1073 step 11 — release-accept-remark -> `recorded_walk_requests` auto-insert: PLUGIN-SIDE HALF
+// ONLY, AND NOT WIRED IN ANYWHERE. Read this comment before touching this function.
+//
+// THE IDEA (per B-1073's ratified design): when a fast-track ticket's RELEASE brief is accepted
+// WITH a remark (B-503's `pending_remark` — surfaced on `get_task` as `{ brief_id, reason, detail,
+// decision_ref, referent }`, consumed via `consume_accept_remark`, src/tools/briefs.ts), the
+// remark's `detail` text IS the human's post-hoc verify-walk attestation — so a future daemon-side
+// watcher should treat it as `attest_walk` and auto-file a `recorded_walk_requests` row, continuing
+// the fast-track ticket's walk through `harmony record`'s own gate-walk core without a second human
+// action.
+//
+// WHY THIS IS A STUB, HONESTLY: implementing the real thing needs an actual INSERT into
+// `recorded_walk_requests`, and grepping this entire plugin repo (`src/tools/`, `src/daemon/`) turns
+// up NO existing plugin-side insert helper for that table — every existing reference (this file's
+// own SELECT/UPDATE above, `docs/recorded-walk-contract.md` §5) is a READ or a write-BACK to a row
+// the WEB app already created. The table's row is, by B-1063's own design, written by harmony-web's
+// "Record" action — this plugin repo has never had a reason to write a FRESH row into it before
+// this ticket, and inventing a blind `client.from('recorded_walk_requests').insert(...)` call here,
+// untested against the real RLS policy B-1063's migration defines (see
+// docs/recorded-walk-contract.md §5's own "RLS / who may write: left to B-1063's own migration"
+// line), would be exactly the kind of unverified integration this file's own B-1062-step-4 contract
+// test (`recorded-walk-drain-contract.test.ts`) is designed to catch drift from.
+//
+// WHAT THIS FUNCTION DOES, THEREFORE: it is a PURE, UNIT-TESTABLE helper that shapes the row a
+// future insert would need — nothing more. It has NO caller anywhere in this codebase. A FUTURE
+// ticket wires it into `src/daemon/scheduler.ts`'s own release-accept pickup (where
+// `pending_remark` would actually be read live, off a real `get_task`/conduction-record call) and
+// performs the real `client.from('recorded_walk_requests').insert(...)` call, citing B-1063's
+// column contract (`docs/recorded-walk-contract.md` §5): `task_id` (uuid, not null), `summary`
+// (text, not null), `evidence_links` (jsonb array of `EligibilityEvidenceLink`), `attest_walk`
+// (text), `requested_by` (uuid, not null) — never the generated `id` / `requested_at` / `status` /
+// `processed_at` / `error` / `result` columns, which the table's own defaults/this drain's own
+// write-back supply.
+// ---------------------------------------------------------------------------------------------
+
+/** The row shape `buildFastTrackReleaseRemarkRecordedWalkRequest` below produces — the INSERT-able
+ *  columns only (see the module comment above for the generated columns this deliberately omits). */
+export interface FastTrackReleaseRemarkRecordedWalkRequestRow {
+  task_id: string;
+  summary: string;
+  evidence_links: Array<{ url: string }>;
+  attest_walk: string;
+  requested_by: string;
+}
+
+/** B-1073 step 11 — STUB (see the module-level comment above for why): shapes the
+ *  `recorded_walk_requests` row a fast-track ticket's release-accept-with-remark would file, from
+ *  the remark + the ticket's already-recorded `build_pr`. Pure — no I/O, no caller yet.
+ *  `remark_detail` is the B-503 `pending_remark.detail` text, taken VERBATIM as the walk's
+ *  `attest_walk` sentence (per this ticket's own design: the remark IS the attestation). Returns
+ *  `null` when `remark_detail` is blank/whitespace-only — an attestation cannot be empty (mirrors
+ *  `evaluateVerifyWalkItem`'s own blank-reads-as-absent convention, `src/tools/record-eligibility.ts`). */
+export function buildFastTrackReleaseRemarkRecordedWalkRequest(args: {
+  task_id: string;
+  task_title: string;
+  remark_detail: string;
+  build_pr_url: string | null;
+  requested_by: string;
+}): FastTrackReleaseRemarkRecordedWalkRequestRow | null {
+  const attestWalk = args.remark_detail.trim();
+  if (!attestWalk) return null;
+  return {
+    task_id: args.task_id,
+    summary: args.task_title,
+    evidence_links: args.build_pr_url ? [{ url: args.build_pr_url }] : [],
+    attest_walk: attestWalk,
+    requested_by: args.requested_by,
+  };
 }

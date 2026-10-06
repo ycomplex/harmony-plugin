@@ -14,6 +14,15 @@
 // human attestation can supply (see `evaluateVerifyWalkItem` below).
 
 import { detectRiskClasses, PATH_GLOB_TABLE, globToRegExp, type RiskClass } from './risk-class.js';
+import {
+  evaluateScopeBudget,
+  DEFAULT_SCOPE_BUDGET,
+  type NumstatEntry,
+  type ScopeBudget,
+  type ScopeEvaluation,
+} from './fasttrack-scope.js';
+import { getScopeBudget } from '../config/project-manifest.js';
+import type { ProjectManifest } from '../config/project-manifest.js';
 
 export type EligibilityVerdict = 'pass' | 'fail' | 'unattested';
 
@@ -200,6 +209,100 @@ export function evaluateEligibility(input: EvaluateEligibilityInput): Eligibilit
     evaluateVerifyWalkItem(input.attestWalk),
   ];
   return { items, eligible: items.every((i) => i.verdict === 'pass') };
+}
+
+// ---------------------------------------------------------------------------
+// B-1073 — fast-track admission: a RE-INTERPRETATION of the same five-item report above, not a
+// second evaluator. `evaluateEligibility`'s own `eligible` flag blocks on ANY non-pass item,
+// including an `unattested` verify-walk attestation (item e) — correct for `harmony record`, which
+// has no live gate to attest a walk from. The fast-track daemon leg is different: it DOES have a
+// live build leg that will itself walk the ticket, so an `unattested` verify-walk item alone must
+// NOT block admission — only a `fail` (on any item) or a non-verify_walk_attestation `unattested`
+// blocks. (`verify_walk_attestation` itself never returns a 'fail' — see evaluateVerifyWalkItem
+// above — so in practice this carve-out is the ONLY way item (e) can read non-blocking.)
+// ---------------------------------------------------------------------------
+
+/** B-1073 step 4 — is `report` admissible for a fast-track daemon leg? `evaluateEligibility`'s own
+ *  report, re-interpreted: admissible iff every item EXCEPT `verify_walk_attestation` is `'pass'` —
+ *  an `unattested` verdict on `verify_walk_attestation` ALONE does not block; any other item's
+ *  `fail` blocks. Pure — never touches the network/DB, never re-runs the evaluator. */
+export function admissibleForFastTrack(
+  report: EligibilityReport,
+): { admissible: boolean; blockingItems: EligibilityItemResult[] } {
+  const blockingItems = report.items.filter(
+    (item) => !(item.verdict === 'pass' || (item.item === 'verify_walk_attestation' && item.verdict === 'unattested')),
+  );
+  return { admissible: blockingItems.length === 0, blockingItems };
+}
+
+/** B-1073 step 5 — render an inadmissible fast-track ticket's verdict as a park-comment string,
+ *  reusing `describeIneligibility`'s (`src/tools/record-walk.ts`) wording convention — list every
+ *  blocking item's label/verdict/value/detail, one per line. Deliberately duplicated rather than
+ *  imported: `record-walk.ts` already imports THIS module (`record-eligibility.ts`), so importing
+ *  the other way would cycle; the wording is small enough that a hand-kept parallel is the accepted
+ *  cost (same tradeoff `src/config/run-config.ts`'s own `DEFAULT_SUPABASE_URL`/`KNOWN_REFS`
+ *  duplication note documents).
+ *
+ *  CALLER NOTE — HONEST SCOPING (this is NOT wired up anywhere yet): this helper has no caller in
+ *  this ticket. The daemon's ACTUAL admission check — the thing that would call
+ *  `admissibleForFastTrack` at fire time and, on an inadmissible report, park the conduction with
+ *  this comment — is a larger daemon-architecture change than B-1073's own ratified scope covers
+ *  (the daemon fires a leg through its existing `src/daemon/scheduler.ts` / `container/provision.sh`
+ *  machinery, which this ticket does not redesign). A FUTURE ticket wires this into
+ *  `src/daemon/scheduler.ts`'s own fire-time dispatch loop: call `admissibleForFastTrack`, and on
+ *  `admissible: false`, comment this formatter's output on the ticket and park it (mirroring the
+ *  `advance_workflow({ activity: 'parking' })` convention `skills/start-work/SKILL.md`'s FAILURE
+ *  PATH already uses) instead of firing the leg. */
+export function formatInadmissibleFastTrackVerdict(report: EligibilityReport): string {
+  const { blockingItems } = admissibleForFastTrack(report);
+  const lines = blockingItems.map(
+    (item) => `  - ${item.label}: ${item.verdict.toUpperCase()} (${item.value}${item.detail ? ' — ' + item.detail : ''})`,
+  );
+  return (
+    `harmony fast-track refuses admission — ${blockingItems.length} eligibility item(s) blocked:\n` +
+    lines.join('\n') +
+    `\nParked pending human review. Use \`harmony conduct <ticket>\` to walk this ticket's gates ` +
+    'live, or address the blocking item(s) above and retry the fast-track run.'
+  );
+}
+
+/** B-1073 step 6 — the pre-PR-open re-check point: re-run the SAME five-item evaluator against the
+ *  real diff's changed paths, rather than whatever paths were known at admission time (step 4,
+ *  before any code existed). A thin named wrapper, not a new evaluator — `attestWalk` is
+ *  deliberately omitted (`undefined`): this re-check is about the DIFF, not a second attestation
+ *  prompt.
+ *
+ *  CALLER NOTE — HONEST SCOPING, same posture as step 5 above: wiring this into the actual build
+ *  gate's real PR-open call site (`skills/harmony-fasttrack/SKILL.md`'s Build phase, or a future
+ *  daemon-side equivalent) is carried by future daemon/skill work, not claimed as done here. This
+ *  function is exported and unit-testable today so that future wiring has a ready-made, already-
+ *  tested primitive to call. */
+export function reEvaluateEligibilityAgainstDiff(summary: string, changedPaths: string[]): EligibilityReport {
+  return evaluateEligibility({
+    summary,
+    evidence: [{ url: '', paths: changedPaths }],
+    attestWalk: undefined,
+  });
+}
+
+/** B-1073 step 7 — [depends on B-1072, now merged] the SAME scope-guard `harmony fasttrack
+ *  scope-check` (`src/cli/commands/fasttrack.ts`'s `resolveScopeBudget`) already runs, reused
+ *  verbatim rather than reimplemented: a manifest-declared `fasttrack.scope_budget` override
+ *  (partial — either field may be omitted and falls back to the default) merged over
+ *  `DEFAULT_SCOPE_BUDGET`, then `evaluateScopeBudget` over the supplied numstat entries. `manifest`
+ *  is nullable — pass `null` when no `.harmony/project.yml` was found/parsed, same convention as
+ *  every other `ProjectManifest | null` consumer in this repo; this function supplies the "empty
+ *  manifest" default itself rather than requiring the caller to construct one. */
+export function checkFastTrackScopeBudget(
+  entries: NumstatEntry[],
+  manifest: ProjectManifest | null,
+): ScopeEvaluation {
+  const override = manifest ? getScopeBudget(manifest) : {};
+  const budget: ScopeBudget = {
+    files: override.files ?? DEFAULT_SCOPE_BUDGET.files,
+    lines: override.lines ?? DEFAULT_SCOPE_BUDGET.lines,
+  };
+  return evaluateScopeBudget(entries, budget);
 }
 
 // ---------------------------------------------------------------------------

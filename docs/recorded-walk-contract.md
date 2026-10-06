@@ -45,6 +45,7 @@ interface RecordWalkArgs {
   summary: string;                      // a one-sentence-statable account of the change
   evidence: EligibilityEvidenceLink[];  // see §3 — evidence links, each optionally pre-annotated
   attest_walk?: string;                 // "<who/what was walked>" — see §3 item (e)
+  from_gate?: RecordWalkGateName;       // B-1073 — resume starting at this gate; see the paragraph below
 }
 
 interface EligibilityEvidenceLink {
@@ -79,6 +80,18 @@ all** — the ticket is provably byte-identical to before the call. `gates` is a
 and reported as `error`, with `gates` naming exactly which gates already landed — never a silent
 half-apply. A human (or a re-run of `harmony record`, or `harmony conduct`) resumes from the next
 unlanded gate.
+
+**`from_gate` (B-1073) — the walk does NOT always start at clarify.** `RecordWalkArgs.from_gate`
+resumes the walk at any gate in its fixed order (`clarify → decompose → design → plan → build →
+release → deploy → verify`), skipping every gate before it — omitted, it defaults to `'clarify'`
+(every gate runs, unchanged from this contract's original shape). The concrete case this exists
+for: a **fast-track ticket's post-merge `recorded_walk_requests` drain** (§5) reads the ticket's
+CURRENT `workflow_state` and derives `from_gate` from it (`Built` ⇒ `'deploy'`, since a fast-track
+ticket's own build leg already walked clarify→build and composed a real release brief) — landing
+only the `deploy` advance and the verify brief, with no re-walk of the gates that already landed.
+Every other `workflow_state` the drain handles derives the equivalent gate the same way, defaulting
+to `'clarify'` for a ticket still at `Captured`/`Proposed` — today's unchanged behavior for every
+non-fast-track walk.
 
 ---
 
@@ -227,6 +240,15 @@ harmony record --check B-2000: Verify walk (5+ min) attested — UNATTESTED (ver
 Exits `0` iff every item is `pass`, else `1`. **Mutates nothing** — no task id is even resolved against
 the board (eligibility is evaluated purely from the CLI's own arguments plus a `gh` read of the
 evidence links).
+
+**B-1073: a SECOND declared evaluation point exists — the daemon's fast-track pre-build admission
+check.** `--check`/`harmony record` evaluate eligibility against the CLI's own arguments plus a `gh`
+read of evidence links, as above. The daemon's fast-track leg-gate has a DIFFERENT evaluation point:
+before firing a fast-track leg, it evaluates over the TICKET TEXT + its declared repos (there is no
+diff yet — the leg has not run), via `admissibleForFastTrack` (`src/tools/record-eligibility.ts`) —
+`evaluateEligibility`'s own report re-interpreted so an `unattested` verify-walk item alone does not
+block admission (the build leg itself will attest the walk). Both evaluation points share the SAME
+five-item core; they differ only in WHAT they evaluate against and WHEN.
 
 ---
 
