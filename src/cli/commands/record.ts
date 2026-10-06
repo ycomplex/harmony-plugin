@@ -11,7 +11,7 @@
 import { Command } from 'commander';
 import { runCommand } from '../run-command.js';
 import { runRecordedWalk, describeIneligibility, type RecordWalkResult } from '../../tools/record-walk.js';
-import { evaluateEligibility, gatherEvidenceSignals } from '../../tools/record-eligibility.js';
+import { evaluateEligibility, formatEligibilityLine, gatherEvidenceSignals } from '../../tools/record-eligibility.js';
 
 interface RecordOpts {
   summary: string;
@@ -55,7 +55,7 @@ export function registerRecordCommand(program: Command): void {
         }
         const report = evaluateEligibility({ summary: opts.summary, evidence: gathered, attestWalk: opts.attestWalk });
         for (const item of report.items) {
-          const line = `harmony record --check ${ticket}: ${item.label} — ${item.verdict.toUpperCase()} (${item.value}${item.detail ? ' — ' + item.detail : ''})`;
+          const line = formatEligibilityLine('harmony record --check', ticket, item);
           if (item.verdict === 'pass') console.log(line); else console.error(line);
         }
         process.exit(report.eligible ? 0 : 1);
