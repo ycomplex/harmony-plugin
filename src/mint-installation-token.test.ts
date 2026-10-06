@@ -21,6 +21,7 @@ import {
   resolveBaseContent,
   composeConductionIdLine,
   composeModelLine,
+  composeTokenExpiryLine,
   composeRunConfigInlineLine,
   composeRunConfigPathLine,
   normalizeRunConfigJson,
@@ -140,13 +141,13 @@ describe('mintInstallationToken', () => {
       return { ok: true, json: async () => ({ token: 'ghs_minted' }) } as unknown as Response;
     };
 
-    const token = await mintInstallationToken({
+    const result = await mintInstallationToken({
       jwt: 'jwt-value',
       installationId: '12345',
       fetchImpl,
     });
 
-    expect(token).toBe('ghs_minted');
+    expect(result).toEqual({ token: 'ghs_minted', expires_at: null });
     expect(seenUrl).toBe('https://api.github.com/app/installations/12345/access_tokens');
     expect(seenInit.method).toBe('POST');
     expect((seenInit.headers as Record<string, string>).Authorization).toBe('Bearer jwt-value');
@@ -386,6 +387,18 @@ describe('composeModelLine', () => {
   it('returns an empty string when no model was resolved, so nothing is appended', () => {
     expect(composeModelLine(undefined)).toBe('');
     expect(composeModelLine('')).toBe('');
+  });
+});
+
+describe('composeTokenExpiryLine (B-963)', () => {
+  it('returns the line when an expiry is present', () => {
+    expect(composeTokenExpiryLine('2026-10-06T13:00:00Z')).toBe('GIT_TOKEN_EXPIRES_AT=2026-10-06T13:00:00Z\n');
+  });
+
+  it('returns empty string when absent', () => {
+    expect(composeTokenExpiryLine(undefined)).toBe('');
+    expect(composeTokenExpiryLine(null)).toBe('');
+    expect(composeTokenExpiryLine('')).toBe('');
   });
 });
 
