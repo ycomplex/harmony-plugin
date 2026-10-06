@@ -136,8 +136,9 @@ import { classifyWorkerExit, exitClass, TICKET_TERMINAL_STATES, type ClassifyArg
 import { renderQuietReapOutcome } from './quiet-reap.js';
 import { exchangeWentInactive } from '../conductor/ball-axis.js';
 import { renderTemplate, type DaemonConfig } from './config.js';
-import { resolveGatePhase } from './gate-phase.js';
+import { resolveLegGate, isFastTrackBuildLeg, evaluateFastTrackAdmission } from './leg-gate.js';
 import { getModelForGate, type RunConfig } from '../config/run-config.js';
+import { formatInadmissibleFastTrackVerdict } from '../tools/record-eligibility.js';
 // B-929: the ONE place the worker-image default is written (src/config/deployment-config.ts's
 // zod schema) — imported rather than re-typed so this file can never drift from it.
 import { WORKER_IMAGE_DEFAULT } from '../config/deployment-config.js';
@@ -165,7 +166,7 @@ import type { HintSource } from './hints.js';
 /** The ticket shape the daemon reads (a getTask view:'meta' result is structurally assignable). */
 export type DaemonTask = Taskish & {
   workflow_state?: string | null;
-  /** B-772: read by templateVars' model resolution (resolveGatePhase + getModelForGate) — the
+  /** B-772: read by templateVars' model resolution (resolveLegGate + getModelForGate) — the
    *  same `getTask view:'meta'` read this type's other fields already come from already returns
    *  this column (src/tools/tasks.ts's pinned meta projection), so no new read is needed. */
   workflow_activity?: string | null;
@@ -312,6 +313,27 @@ export interface SchedulerDeps extends WriteRetryDeps {
    *  default WORKER_IMAGE_DEFAULT — so an existing deployment that never sets it renders exactly the
    *  literal its template carried before this ticket. */
   workerImage?: string;
+  /** B-1073 (post-review wiring) — the deployment's configured repo set, resolved to `owner/repo`
+   *  strings (e.g. from `deploymentConfig.repos[].url`) — fed as fireLaunch's fast-track admission
+   *  check's evidence (one `{ repo }` entry per declared repo, no `paths`). OPTIONAL and defaults to
+   *  `[]` (feature-detect: absent on most deployments, which have no `~/.harmony/deployment.json`
+   *  `repos` declared at all) — see `evaluateFastTrackAdmission`'s own doc for why an empty list
+   *  degrades to "no multi-repo signal" rather than throwing. */
+  declaredRepos?: string[];
+  /** B-1073 (post-review wiring) — advance a ticket's workflow server-side, the SAME state machine
+   *  `src/tools/workflow.ts`'s `advanceWorkflow` (the `advance_workflow` MCP tool's underlying
+   *  function) already implements; the daemon calls it DIRECTLY (never through the MCP tool, which
+   *  has no meaning outside an agent session) to park a ticket whose fast-track admission check
+   *  fails before any worker launches. OPTIONAL: absent on every existing test fixture and on any
+   *  daemon build that predates this ticket — the admission check still declines to launch and still
+   *  parks the CONDUCTION row either way (see fireLaunch), it just cannot also move the ticket's own
+   *  `workflow_state` to Parked without this dep wired. */
+  advanceTicketWorkflow?: (taskId: string, activity: string) => Promise<void>;
+  /** B-1073 (post-review wiring) — post a comment on a ticket, the SAME `addComment`
+   *  (`src/tools/comments.ts`, the `add_comment` MCP tool's underlying function) already implements.
+   *  OPTIONAL, same degrade posture as `advanceTicketWorkflow` above — the admission-check park
+   *  proceeds regardless, it just carries no human-readable verdict comment without this dep wired. */
+  addTicketComment?: (taskId: string, content: string) => Promise<void>;
 }
 
 /** B-720: the hard cap on how much of the LAUNCH COMMAND's combined stdout/stderr is retained for
@@ -484,18 +506,20 @@ function runConfigJsonFor(row: ConductionRecord): string {
   return Buffer.from(json, 'utf8').toString('base64');
 }
 
-/** B-772: which Claude model THIS leg should run on — resolveGatePhase projects the task's current
- *  `workflow_state`/`workflow_activity` onto a gate, then getModelForGate runs its three-level
- *  fallback (per-gate override -> run-wide default -> pinned per-deployment default) over the
- *  conduction row's OWN run_config. `task` can be `null` (a best-effort metadata read failed, or a
- *  reconciled re-attach has no snapshot yet — same degrade this file's `ticket` substitution
- *  already tolerates, see resolveVisualId's own comment) — resolveGatePhase reads that as "no gate"
- *  (null workflow_state), which getModelForGate reads as "no per-gate override can apply", falling
- *  through to level 2/3 exactly as intended; this NEVER throws and always returns a non-empty
- *  string (getModelForGate's own guarantee). */
+/** B-772: which Claude model THIS leg should run on — resolveLegGate projects the task's current
+ *  `workflow_state`/`workflow_activity` onto a gate (B-1073: applying the fast-track branch first,
+ *  then delegating to resolveGatePhase exactly as before for every other case), then
+ *  getModelForGate runs its three-level fallback (per-gate override -> run-wide default -> pinned
+ *  per-deployment default) over the conduction row's OWN run_config. `task` can be `null` (a
+ *  best-effort metadata read failed, or a reconciled re-attach has no snapshot yet — same degrade
+ *  this file's `ticket` substitution already tolerates, see resolveVisualId's own comment) —
+ *  resolveLegGate reads that as "no gate" (null workflow_state), which getModelForGate reads as "no
+ *  per-gate override can apply", falling through to level 2/3 exactly as intended; this NEVER
+ *  throws and always returns a non-empty string (getModelForGate's own guarantee). */
 function modelFor(row: ConductionRecord, task: DaemonTask | null): string {
-  const gate = resolveGatePhase(task?.workflow_state, task?.workflow_activity);
-  return getModelForGate((row.run_config ?? {}) as RunConfig, gate);
+  const runConfig = (row.run_config ?? {}) as RunConfig;
+  const gate = resolveLegGate(runConfig, task ?? {});
+  return getModelForGate(runConfig, gate);
 }
 
 function templateVars(
@@ -1605,9 +1629,68 @@ async function fireLaunch(
 ): Promise<void> {
   const current = preReadCurrent ?? (await deps.getTaskMeta(row.task_id));
 
+  // B-1073 (post-review wiring) — the fast-track ADMISSION CHECK, run BEFORE leg_started_at (and
+  // B-1020's leg_count) are ever stamped: a fast-track conduction (run_config.fast_track, ticket
+  // still at Captured/Proposed — the EXACT condition resolveLegGate's own fast-track branch
+  // matches, via isFastTrackBuildLeg) must pass the same five-item eligibility floor
+  // `harmony record --check` / the fast-track Check phase use, BEFORE any worker ever launches —
+  // never a silent fall-through to an ordinary build leg. `deps.declaredRepos` (the deployment's
+  // configured repo set, resolved to owner/repo strings — absent on most deployments, which
+  // feature-detects to zero evidence and therefore never blocks on the multi-repo item alone)
+  // stands in for the per-conduction evidence this daemon has no other source for pre-build. On an
+  // inadmissible report: park BOTH the conduction (so no further pass retries this fire) and the
+  // ticket itself (advance_workflow 'parking', so a human sees it in the Parked bucket), post the
+  // five-item verdict as a comment, and launch NO worker — the admission check is a floor, not a
+  // warning. Run BEFORE the leg is ever counted (below): a leg that never launches must never
+  // consume a leg number or receive a HARMONY_LEG assignment it will never use.
+  const runConfig = (row.run_config ?? {}) as RunConfig;
+  if (isFastTrackBuildLeg(runConfig, current)) {
+    const { admissible, report } = evaluateFastTrackAdmission(
+      current.title ?? '',
+      deps.declaredRepos ?? [],
+    );
+    if (!admissible) {
+      const comment = formatInadmissibleFastTrackVerdict(report);
+      deps.log(
+        `${label(row, current, deps.projectKey)}: fast-track admission check failed — parking, ` +
+          `no worker launched`,
+      );
+      runtime.ready.delete(row.id);
+      state.delete(row.id);
+      keeper.stop(row.id);
+      if (deps.advanceTicketWorkflow) {
+        try {
+          await deps.advanceTicketWorkflow(row.task_id, 'parking');
+        } catch (err) {
+          deps.log(
+            `${label(row, current, deps.projectKey)}: fast-track admission park — advance_workflow ` +
+              `failed (${formatDaemonError(err)})`,
+          );
+        }
+      }
+      if (deps.addTicketComment) {
+        try {
+          await deps.addTicketComment(row.task_id, comment);
+        } catch (err) {
+          deps.log(
+            `${label(row, current, deps.projectKey)}: fast-track admission park — add_comment ` +
+              `failed (${formatDaemonError(err)})`,
+          );
+        }
+      }
+      await writeIfHeld(deps, state, keeper, row, {
+        status: 'parked',
+        last_worker_exit_code: null,
+        last_worker_exit_class: 'fast-track-inadmissible',
+      });
+      return;
+    }
+  }
+
   // B-1020: the leg this fire is about to start — one more than the conduction's count so far.
   // Bundled into the SAME lease-guarded write as leg_started_at below so the two numbers always
-  // move together (both land, or neither does).
+  // move together (both land, or neither does). Reached only past the admission check above, so a
+  // parked-before-launch fast-track leg is never counted and never receives a HARMONY_LEG value.
   const leg = (row.leg_count ?? 0) + 1;
 
   if (!(await writeIfHeld(deps, state, keeper, row, { leg_started_at: iso(deps.now()), leg_count: leg }))) {

@@ -21683,6 +21683,7 @@ async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url
   const runConfig = await resolveRunConfigFromConduction(client, conduction_id) ?? readEnvRunConfig(env);
   let operator_note = null;
   let auto_approve_gates = null;
+  let fast_track = false;
   if (runConfig) {
     try {
       operator_note = getOperatorNote(runConfig) ?? null;
@@ -21695,6 +21696,11 @@ async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url
     } catch {
       auto_approve_gates = null;
     }
+    try {
+      fast_track = isFastTrackEnabled(runConfig);
+    } catch {
+      fast_track = false;
+    }
   }
   return {
     supabase_url,
@@ -21703,7 +21709,8 @@ async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url
     plugin_version: resolvePluginVersion(env, moduleUrl),
     conduction_id,
     operator_note,
-    auto_approve_gates
+    auto_approve_gates,
+    fast_track
   };
 }
 
@@ -21875,9 +21882,17 @@ var RunConfigSchema = external_exports.object({
   session_resume: SessionResumeSchema,
   note: NoteSchema,
   model: ModelSchema,
-  auto_approve_gates: external_exports.array(AutoApproveGateSchema).optional()
+  auto_approve_gates: external_exports.array(AutoApproveGateSchema).optional(),
+  /** B-1073: the fast-track flag — a human-invoked `harmony conduct <ticket> --fast-track` run's
+   *  single axis key. Mirrors `session_resume`'s own shape (a bare optional boolean, not a nested
+   *  `{ enabled }` object — there is no second sub-field this flag will ever need). See
+   *  `isFastTrackEnabled` below for the absence/false-both-read-as-disabled convention. */
+  fast_track: external_exports.boolean().optional()
 }).passthrough();
 var EMPTY_RUN_CONFIG = {};
+function isFastTrackEnabled(runConfig) {
+  return runConfig.fast_track === true;
+}
 function getOperatorNote(runConfig) {
   return runConfig.note ? runConfig.note : void 0;
 }

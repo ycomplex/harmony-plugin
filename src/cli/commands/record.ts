@@ -10,7 +10,13 @@
 
 import { Command } from 'commander';
 import { runCommand } from '../run-command.js';
-import { runRecordedWalk, describeIneligibility, type RecordWalkResult } from '../../tools/record-walk.js';
+import {
+  runRecordedWalk,
+  describeIneligibility,
+  RECORD_WALK_GATE_ORDER,
+  type RecordWalkResult,
+  type RecordWalkGateName,
+} from '../../tools/record-walk.js';
 import { evaluateEligibility, formatEligibilityLine, gatherEvidenceSignals } from '../../tools/record-eligibility.js';
 
 interface RecordOpts {
@@ -18,6 +24,9 @@ interface RecordOpts {
   evidence: string[];
   attestWalk?: string;
   check?: boolean;
+  /** B-1073 — raw CLI value; validated against RECORD_WALK_GATE_ORDER in the action below before
+   *  being narrowed to RecordWalkGateName. */
+  fromGate?: string;
 }
 
 function formatWalkResult(result: RecordWalkResult): string {
@@ -41,7 +50,18 @@ export function registerRecordCommand(program: Command): void {
     .option('--evidence <url>', 'Evidence link (repeatable — pass --evidence multiple times)', (val: string, prev: string[]) => [...prev, val], [] as string[])
     .option('--attest-walk <who-what>', "Attest a 5+ minute verify walk — who/what was walked. Never auto-passed; omit to leave this item UNATTESTED.")
     .option('--check', 'Print every eligibility item\'s verdict and mutate nothing. Exits non-zero if any item fails or is unattested.', false)
+    .option(
+      '--from-gate <gate>',
+      `B-1073 — resume the walk starting at this gate (one of: ${RECORD_WALK_GATE_ORDER.join(', ')}). Omit to start at 'clarify' (today's unchanged default).`,
+    )
     .action(async (ticket: string, opts: RecordOpts) => {
+      if (opts.fromGate !== undefined && !RECORD_WALK_GATE_ORDER.includes(opts.fromGate as RecordWalkGateName)) {
+        console.error(
+          `harmony record: --from-gate must be one of: ${RECORD_WALK_GATE_ORDER.join(', ')} (got '${opts.fromGate}')`,
+        );
+        process.exit(1);
+      }
+
       if (opts.check) {
         // A best-effort repo/path gather so --check reads the SAME real values the walk itself would
         // refuse or proceed on. `gh` unavailable/unauthenticated degrades to url-only evidence (each
@@ -70,6 +90,7 @@ export function registerRecordCommand(program: Command): void {
             summary: opts.summary,
             evidence,
             attest_walk: opts.attestWalk,
+            from_gate: opts.fromGate as RecordWalkGateName | undefined,
           });
           if (result.refused) throw new Error(describeIneligibility(result.eligibility));
           if (result.error) throw new Error(result.error);

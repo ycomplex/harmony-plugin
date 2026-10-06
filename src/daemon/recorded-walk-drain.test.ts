@@ -9,6 +9,7 @@ import {
   runRecordedWalkDrainPass,
   isMissingRecordedWalkRequestsTable,
   RECORDED_WALK_REQUESTS_TABLE,
+  buildFastTrackReleaseRemarkRecordedWalkRequest,
 } from './recorded-walk-drain.js';
 
 const PROJECT_ID = 'proj-1';
@@ -21,10 +22,22 @@ function makeClient(opts: {
   selectResult?: { data: unknown; error: unknown };
   claimResult?: { data: unknown; error: unknown };
   writeBackError?: unknown;
+  /** B-1073 step 9 — the `tasks.workflow_state` the from_gate-deriving read returns. Defaults to
+   *  `null` (⇒ `from_gate: 'clarify'`, today's unchanged default) so every pre-existing test keeps
+   *  asserting exactly what it asserted before this ticket. */
+  taskWorkflowState?: string | null;
 }) {
   const updates: Array<{ payload: any; eqCalls: Array<[string, unknown]> }> = [];
   const from = vi.fn((table: string) => {
-    expect(table).toBe(RECORDED_WALK_REQUESTS_TABLE);
+    expect([RECORDED_WALK_REQUESTS_TABLE, 'tasks']).toContain(table);
+    if (table === 'tasks') {
+      // B-1073 step 9: the from_gate-deriving workflow_state read — a plain SELECT, never a write.
+      const taskChain: any = {};
+      taskChain.select = vi.fn(() => taskChain);
+      taskChain.eq = vi.fn(() => taskChain);
+      taskChain.maybeSingle = vi.fn(async () => ({ data: { workflow_state: opts.taskWorkflowState ?? null }, error: null }));
+      return taskChain;
+    }
     const chain: any = { _eqCalls: [] as Array<[string, unknown]> };
     chain.select = vi.fn(() => chain);
     chain.eq = vi.fn((col: string, val: unknown) => { chain._eqCalls.push([col, val]); return chain; });
@@ -124,6 +137,7 @@ describe('runRecordedWalkDrainPass — processing a fake pending row', () => {
       summary: pendingRow.summary,
       evidence: pendingRow.evidence_links,
       attest_walk: pendingRow.attest_walk,
+      from_gate: 'clarify',
     });
     const writeBack = client.updates.find((u: any) => u.payload.status === 'done');
     expect(writeBack).toBeDefined();
@@ -162,5 +176,77 @@ describe('runRecordedWalkDrainPass — processing a fake pending row', () => {
     const processed = await runRecordedWalkDrainPass({ client, projectId: PROJECT_ID, userId: USER_ID, log: () => {} });
     expect(processed).toBe(0);
     expect(mocks.runRecordedWalk).not.toHaveBeenCalled();
+  });
+
+  it('B-1073 step 10: a ticket at Built derives from_gate: "deploy" — resumes without re-walking clarify..build', async () => {
+    mocks.runRecordedWalk.mockResolvedValue({
+      task_id: 'resolved-B-2000', eligibility: { items: [], eligible: true }, refused: false,
+      gates: [{ gate: 'deploy', landed: true }, { gate: 'verify', landed: true }], attestation_recorded: false,
+    });
+    const client = makeClient({ selectResult: { data: [pendingRow], error: null }, taskWorkflowState: 'Built' });
+    const processed = await runRecordedWalkDrainPass({ client, projectId: PROJECT_ID, userId: USER_ID, log: () => {} });
+    expect(processed).toBe(1);
+    expect(mocks.runRecordedWalk).toHaveBeenCalledWith(client, PROJECT_ID, USER_ID, {
+      task_id: 'B-2000',
+      summary: pendingRow.summary,
+      evidence: pendingRow.evidence_links,
+      attest_walk: pendingRow.attest_walk,
+      from_gate: 'deploy',
+    });
+  });
+
+  it('B-1073 step 9: an unreadable workflow_state degrades to from_gate: "clarify" — never throws', async () => {
+    mocks.runRecordedWalk.mockResolvedValue({
+      task_id: 'resolved-B-2000', eligibility: { items: [], eligible: true }, refused: false,
+      gates: [{ gate: 'clarify', landed: true }], attestation_recorded: false,
+    });
+    const client = makeClient({ selectResult: { data: [pendingRow], error: null } });
+    // Force the tasks-table read to throw — the drain must still complete, defaulting to 'clarify'.
+    const originalFrom = client.from;
+    client.from = (table: string) => {
+      if (table === 'tasks') throw new Error('network blip');
+      return originalFrom(table);
+    };
+    const processed = await runRecordedWalkDrainPass({ client, projectId: PROJECT_ID, userId: USER_ID, log: () => {} });
+    expect(processed).toBe(1);
+    expect(mocks.runRecordedWalk).toHaveBeenCalledWith(client, PROJECT_ID, USER_ID, {
+      task_id: 'B-2000',
+      summary: pendingRow.summary,
+      evidence: pendingRow.evidence_links,
+      attest_walk: pendingRow.attest_walk,
+      from_gate: 'clarify',
+    });
+  });
+});
+
+describe('buildFastTrackReleaseRemarkRecordedWalkRequest (B-1073 step 11 — pure stub, no caller yet)', () => {
+  it('shapes the row from a non-blank remark + a known build_pr url', () => {
+    const row = buildFastTrackReleaseRemarkRecordedWalkRequest({
+      task_id: 'task-uuid-1',
+      task_title: 'B-2000: Fix the flaky retry timer',
+      remark_detail: 'walked the poller locally for 8 minutes, confirmed the fix',
+      build_pr_url: 'https://github.com/ycomplex/harmony-plugin/pull/42',
+      requested_by: 'human-1',
+    });
+    expect(row).toEqual({
+      task_id: 'task-uuid-1',
+      summary: 'B-2000: Fix the flaky retry timer',
+      evidence_links: [{ url: 'https://github.com/ycomplex/harmony-plugin/pull/42' }],
+      attest_walk: 'walked the poller locally for 8 minutes, confirmed the fix',
+      requested_by: 'human-1',
+    });
+  });
+
+  it('returns null for a blank/whitespace-only remark — an attestation cannot be empty', () => {
+    expect(buildFastTrackReleaseRemarkRecordedWalkRequest({
+      task_id: 'task-uuid-1', task_title: 'B-2000', remark_detail: '   ', build_pr_url: null, requested_by: 'human-1',
+    })).toBeNull();
+  });
+
+  it('evidence_links is [] when no build_pr url is known', () => {
+    const row = buildFastTrackReleaseRemarkRecordedWalkRequest({
+      task_id: 'task-uuid-1', task_title: 'B-2000', remark_detail: 'walked it', build_pr_url: null, requested_by: 'human-1',
+    });
+    expect(row?.evidence_links).toEqual([]);
   });
 });

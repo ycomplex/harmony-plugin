@@ -30414,9 +30414,17 @@ var RunConfigSchema = external_exports.object({
   session_resume: SessionResumeSchema,
   note: NoteSchema,
   model: ModelSchema,
-  auto_approve_gates: external_exports.array(AutoApproveGateSchema).optional()
+  auto_approve_gates: external_exports.array(AutoApproveGateSchema).optional(),
+  /** B-1073: the fast-track flag — a human-invoked `harmony conduct <ticket> --fast-track` run's
+   *  single axis key. Mirrors `session_resume`'s own shape (a bare optional boolean, not a nested
+   *  `{ enabled }` object — there is no second sub-field this flag will ever need). See
+   *  `isFastTrackEnabled` below for the absence/false-both-read-as-disabled convention. */
+  fast_track: external_exports.boolean().optional()
 }).passthrough();
 var EMPTY_RUN_CONFIG = {};
+function isFastTrackEnabled(runConfig) {
+  return runConfig.fast_track === true;
+}
 function getOperatorNote(runConfig) {
   return runConfig.note ? runConfig.note : void 0;
 }
@@ -30584,6 +30592,7 @@ async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url
   const runConfig = await resolveRunConfigFromConduction(client, conduction_id) ?? readEnvRunConfig(env);
   let operator_note = null;
   let auto_approve_gates = null;
+  let fast_track = false;
   if (runConfig) {
     try {
       operator_note = getOperatorNote(runConfig) ?? null;
@@ -30596,6 +30605,11 @@ async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url
     } catch {
       auto_approve_gates = null;
     }
+    try {
+      fast_track = isFastTrackEnabled(runConfig);
+    } catch {
+      fast_track = false;
+    }
   }
   return {
     supabase_url,
@@ -30604,7 +30618,8 @@ async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url
     plugin_version: resolvePluginVersion(env, moduleUrl),
     conduction_id,
     operator_note,
-    auto_approve_gates
+    auto_approve_gates,
+    fast_track
   };
 }
 
@@ -33920,11 +33935,42 @@ function evaluateEligibility(input) {
   ];
   return { items, eligible: items.every((i) => i.verdict === "pass") };
 }
+function admissibleForFastTrack(report) {
+  const blockingItems = report.items.filter(
+    (item) => !(item.verdict === "pass" || item.item === "verify_walk_attestation" && item.verdict === "unattested")
+  );
+  return { admissible: blockingItems.length === 0, blockingItems };
+}
+function formatInadmissibleFastTrackVerdict(report) {
+  const { blockingItems } = admissibleForFastTrack(report);
+  const lines = blockingItems.map(
+    (item) => `  - ${item.label}: ${item.verdict.toUpperCase()} (${item.value}${item.detail ? " \u2014 " + item.detail : ""})`
+  );
+  return `harmony fast-track refuses admission \u2014 ${blockingItems.length} eligibility item(s) blocked:
+` + lines.join("\n") + `
+Parked pending human review. Use \`harmony conduct <ticket>\` to walk this ticket's gates live, or address the blocking item(s) above and retry the fast-track run.`;
+}
 
 // src/tools/record-walk.ts
 var RATIFIED_BY_RECORDED = "recorded";
 var RESOLVE_BRIEF_PROVENANCE_RECORDED = "agent-synthesized:recorded";
 var KNOWLEDGE_WRITE_PROVENANCE_RECORDED = PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED;
+var RECORD_WALK_GATE_ORDER = [
+  "clarify",
+  "decompose",
+  "design",
+  "plan",
+  "build",
+  "release",
+  "deploy",
+  "verify"
+];
+function recordWalkGateIndex(gate) {
+  return RECORD_WALK_GATE_ORDER.indexOf(gate);
+}
+function shouldRunRecordWalkGate(gate, fromGate) {
+  return recordWalkGateIndex(gate) >= recordWalkGateIndex(fromGate);
+}
 var GATE_REASONS = {
   clarify: "clarification-draft",
   decompose: "decomposition-proposal",
@@ -34045,6 +34091,8 @@ async function runRecordedWalk(client, projectId, userId, args) {
   const solving = deriveSolving(summary);
   const repos = Array.from(new Set(args.evidence.map((e) => e.repo).filter((r) => !!r)));
   const changedPaths = args.evidence.flatMap((e) => e.paths ?? []);
+  const fromGate = args.from_gate ?? "clarify";
+  const runs = (gate) => shouldRunRecordWalkGate(gate, fromGate);
   try {
     const { data: currentTaskRow, error: currentStateErr } = await client.from("tasks").select("workflow_state").eq("id", taskId).eq("project_id", projectId).single();
     if (currentStateErr) throw currentStateErr;
@@ -34052,175 +34100,189 @@ async function runRecordedWalk(client, projectId, userId, args) {
     if (currentWorkflowState === "Captured") {
       await advanceWorkflow(client, projectId, { task_id: taskId, activity: "proposing" });
     }
-    const clarifyDecision = await recordDecision(client, projectId, userId, {
-      type: "specification",
-      title: `${args.task_id}: clarified intent (recorded)`,
-      content: `<placeholder \u2014 one line: 'clarified intent for ${args.task_id}; body derived from the ratified brief'>`,
-      domain: ["product"],
-      source_type: "manual",
-      source_activity: "clarify",
-      source_task_id: taskId,
-      provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED
-    });
-    await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: clarifyDecision.id });
-    await composeAndAccept(client, projectId, userId, taskId, {
-      reason: GATE_REASONS.clarify,
-      pendingActivity: "clarifying",
-      decide: `Record ${args.task_id}'s intent from the supplied summary and evidence (recorded, not conducted).`,
-      why: [summary],
-      frame: {
-        kind: "clarify",
+    if (runs("clarify")) {
+      const clarifyDecision = await recordDecision(client, projectId, userId, {
+        type: "specification",
+        title: `${args.task_id}: clarified intent (recorded)`,
+        content: `<placeholder \u2014 one line: 'clarified intent for ${args.task_id}; body derived from the ratified brief'>`,
+        domain: ["product"],
+        source_type: "manual",
+        source_activity: "clarify",
+        source_task_id: taskId,
+        provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED
+      });
+      await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: clarifyDecision.id });
+      await composeAndAccept(client, projectId, userId, taskId, {
+        reason: GATE_REASONS.clarify,
+        pendingActivity: "clarifying",
+        decide: `Record ${args.task_id}'s intent from the supplied summary and evidence (recorded, not conducted).`,
+        why: [summary],
+        frame: {
+          kind: "clarify",
+          solving,
+          in_scope: [summary],
+          not_solving: []
+        },
+        decisionRef: { type: "specification", id: clarifyDecision.id }
+      });
+      gates.push({ gate: "clarify", reason: GATE_REASONS.clarify, landed: true });
+      const clarifyContent = {
         solving,
         in_scope: [summary],
-        not_solving: []
-      },
-      decisionRef: { type: "specification", id: clarifyDecision.id }
-    });
-    gates.push({ gate: "clarify", reason: GATE_REASONS.clarify, landed: true });
-    const clarifyContent = {
-      solving,
-      in_scope: [summary],
-      not_solving: [],
-      attestation: buildAttestation(args, userId)
-    };
-    await writeGateSlot(client, {
-      gate: "clarify",
-      content: clarifyContent,
-      target: { via: "task", task_id: taskId },
-      ratified_by: RATIFIED_BY_RECORDED
-    });
-    if (trimmedOrEmpty(args.attest_walk)) {
-      await addComment(client, projectId, userId, { task_id: taskId, content: renderAttestationComment(args, userId) });
-      attestationRecorded = true;
-    }
-    const evidenceSummary = args.evidence.map((e) => e.url).join(", ") || "(none)";
-    await manageAcceptanceCriteria(client, projectId, userId, {
-      task_id: taskId,
-      add: [{
-        content: `${summary} \u2014 recorded from ${evidenceSummary}; verify walk attested by ${userId}`,
-        checked: true
-      }]
-    });
-    await coupleDecomposeNoSplitConvention(client, projectId, userId, taskId);
-    await composeAndAccept(client, projectId, userId, taskId, {
-      reason: GATE_REASONS.decompose,
-      pendingActivity: "decomposing",
-      decide: `Confirm ${args.task_id} does not split (recorded walk).`,
-      frame: {
-        kind: "decompose",
-        elements: [],
-        coverage: "Recorded walk \u2014 no decomposition; the work is recorded as a single ticket from the supplied summary and evidence.",
-        existing_children_checked: true
+        not_solving: [],
+        attestation: buildAttestation(args, userId)
+      };
+      await writeGateSlot(client, {
+        gate: "clarify",
+        content: clarifyContent,
+        target: { via: "task", task_id: taskId },
+        ratified_by: RATIFIED_BY_RECORDED
+      });
+      if (trimmedOrEmpty(args.attest_walk)) {
+        await addComment(client, projectId, userId, { task_id: taskId, content: renderAttestationComment(args, userId) });
+        attestationRecorded = true;
       }
-    });
-    gates.push({ gate: "decompose", reason: GATE_REASONS.decompose, landed: true });
-    const designDecision = await recordDecision(client, projectId, userId, {
-      type: "technical-design",
-      title: `${args.task_id}: technical-design \u2014 no new decision needed (recorded)`,
-      content: `<placeholder \u2014 one line: 'technical-design decision for ${args.task_id}; body derived from the ratified brief'>`,
-      domain: ["engineering"],
-      source_type: "manual",
-      source_activity: "design-decide",
-      source_task_id: taskId,
-      provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED
-    });
-    await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: designDecision.id });
-    await composeAndAccept(client, projectId, userId, taskId, {
-      reason: GATE_REASONS.design,
-      pendingActivity: "designing",
-      decide: `Confirm ${args.task_id} needs no new design decision (recorded walk).`,
-      frame: {
-        kind: "design",
-        track: "technical-design",
-        tracks: [
-          { track: "product-design", status: "not-required", note: "Recorded walk \u2014 no product-design decision to ratify." },
-          { track: "technical-design", status: "not-required", note: "Recorded walk \u2014 no technical-design decision to ratify." },
-          { track: "ux-ui-design", status: "not-required", note: "Recorded walk \u2014 no ux-ui-design decision to ratify." }
-        ],
-        reach: []
-      },
-      decisionRef: { type: "technical-design", id: designDecision.id }
-    });
-    gates.push({ gate: "design", reason: GATE_REASONS.design, landed: true });
-    const planEntryContent = `Decision: record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not conducted). Why: ${summary} Scope: this ticket only.`;
-    const planDecision = await recordDecision(client, projectId, userId, {
-      type: "specification",
-      title: `${args.task_id}: recorded plan`,
-      content: planEntryContent,
-      domain: ["process"],
-      source_type: "manual",
-      source_activity: "plan",
-      source_task_id: taskId,
-      provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED
-    });
-    await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: planDecision.id });
-    await composeAndAccept(client, projectId, userId, taskId, {
-      reason: GATE_REASONS.plan,
-      pendingActivity: "planning",
-      decide: `Record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not conducted).`,
-      frame: {
-        kind: "plan",
-        scope: { repos: repos.length > 0 ? repos : ["(unknown \u2014 no repo derived from evidence)"], surfaces: [], has_migration: false },
-        steps: [summary],
-        attestation: { base_verified: "recorded walk \u2014 no live base-verify run; ratified from supplied evidence" },
-        carried_unproven: [],
-        ac_coverage: "Recorded from the supplied summary and evidence; one checked acceptance criterion was filed at clarify to satisfy the build gate's B-747 floor."
-      },
-      decisionRef: { type: "specification", id: planDecision.id },
-      payload: [{
-        write_kind: "knowledge_entry_content",
-        ref: slugRef("plan-entry", planEntryContent),
+      const evidenceSummary = args.evidence.map((e) => e.url).join(", ") || "(none)";
+      await manageAcceptanceCriteria(client, projectId, userId, {
+        task_id: taskId,
+        add: [{
+          content: `${summary} \u2014 recorded from ${evidenceSummary}; verify walk attested by ${userId}`,
+          checked: true
+        }]
+      });
+    }
+    if (runs("decompose")) {
+      await coupleDecomposeNoSplitConvention(client, projectId, userId, taskId);
+      await composeAndAccept(client, projectId, userId, taskId, {
+        reason: GATE_REASONS.decompose,
+        pendingActivity: "decomposing",
+        decide: `Confirm ${args.task_id} does not split (recorded walk).`,
+        frame: {
+          kind: "decompose",
+          elements: [],
+          coverage: "Recorded walk \u2014 no decomposition; the work is recorded as a single ticket from the supplied summary and evidence.",
+          existing_children_checked: true
+        }
+      });
+      gates.push({ gate: "decompose", reason: GATE_REASONS.decompose, landed: true });
+    }
+    if (runs("design")) {
+      const designDecision = await recordDecision(client, projectId, userId, {
+        type: "technical-design",
+        title: `${args.task_id}: technical-design \u2014 no new decision needed (recorded)`,
+        content: `<placeholder \u2014 one line: 'technical-design decision for ${args.task_id}; body derived from the ratified brief'>`,
+        domain: ["engineering"],
+        source_type: "manual",
+        source_activity: "design-decide",
+        source_task_id: taskId,
+        provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED
+      });
+      await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: designDecision.id });
+      await composeAndAccept(client, projectId, userId, taskId, {
+        reason: GATE_REASONS.design,
+        pendingActivity: "designing",
+        decide: `Confirm ${args.task_id} needs no new design decision (recorded walk).`,
+        frame: {
+          kind: "design",
+          track: "technical-design",
+          tracks: [
+            { track: "product-design", status: "not-required", note: "Recorded walk \u2014 no product-design decision to ratify." },
+            { track: "technical-design", status: "not-required", note: "Recorded walk \u2014 no technical-design decision to ratify." },
+            { track: "ux-ui-design", status: "not-required", note: "Recorded walk \u2014 no ux-ui-design decision to ratify." }
+          ],
+          reach: []
+        },
+        decisionRef: { type: "technical-design", id: designDecision.id }
+      });
+      gates.push({ gate: "design", reason: GATE_REASONS.design, landed: true });
+    }
+    if (runs("plan")) {
+      const planEntryContent = `Decision: record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not conducted). Why: ${summary} Scope: this ticket only.`;
+      const planDecision = await recordDecision(client, projectId, userId, {
+        type: "specification",
+        title: `${args.task_id}: recorded plan`,
         content: planEntryContent,
-        entry_id: planDecision.id
-      }]
-    });
-    gates.push({ gate: "plan", reason: GATE_REASONS.plan, landed: true });
-    await advanceWorkflow(client, projectId, { task_id: taskId, activity: "building" });
-    gates.push({ gate: "build", landed: true });
-    await composeAndAccept(client, projectId, userId, taskId, {
-      reason: GATE_REASONS.release,
-      // pending_activity: null — Built->Deployed is SYSTEM-on-deploy-success, never this accept's own
-      // doing (mirrors finish-work's own release compose — see skills/finish-work/SKILL.md).
-      pendingActivity: null,
-      decide: `Record what ${args.task_id} shipped, from the supplied summary and evidence (recorded, not conducted).`,
-      frame: {
-        kind: "release",
-        act: {
-          repos: repos.length > 0 ? repos : [],
-          pr_count: args.evidence.length,
-          lands_in: "merged-main",
-          atomicity: repos.length > 1 ? "together" : "single",
-          irreversible: []
+        domain: ["process"],
+        source_type: "manual",
+        source_activity: "plan",
+        source_task_id: taskId,
+        provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED
+      });
+      await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: planDecision.id });
+      await composeAndAccept(client, projectId, userId, taskId, {
+        reason: GATE_REASONS.plan,
+        pendingActivity: "planning",
+        decide: `Record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not conducted).`,
+        frame: {
+          kind: "plan",
+          scope: { repos: repos.length > 0 ? repos : ["(unknown \u2014 no repo derived from evidence)"], surfaces: [], has_migration: false },
+          steps: [summary],
+          attestation: { base_verified: "recorded walk \u2014 no live base-verify run; ratified from supplied evidence" },
+          carried_unproven: [],
+          ac_coverage: "Recorded from the supplied summary and evidence; one checked acceptance criterion was filed at clarify to satisfy the build gate's B-747 floor."
         },
+        decisionRef: { type: "specification", id: planDecision.id },
+        payload: [{
+          write_kind: "knowledge_entry_content",
+          ref: slugRef("plan-entry", planEntryContent),
+          content: planEntryContent,
+          entry_id: planDecision.id
+        }]
+      });
+      gates.push({ gate: "plan", reason: GATE_REASONS.plan, landed: true });
+    }
+    if (runs("build")) {
+      await advanceWorkflow(client, projectId, { task_id: taskId, activity: "building" });
+      gates.push({ gate: "build", landed: true });
+    }
+    if (runs("release")) {
+      await composeAndAccept(client, projectId, userId, taskId, {
+        reason: GATE_REASONS.release,
+        // pending_activity: null — Built->Deployed is SYSTEM-on-deploy-success, never this accept's own
+        // doing (mirrors finish-work's own release compose — see skills/finish-work/SKILL.md).
+        pendingActivity: null,
+        decide: `Record what ${args.task_id} shipped, from the supplied summary and evidence (recorded, not conducted).`,
+        frame: {
+          kind: "release",
+          act: {
+            repos: repos.length > 0 ? repos : [],
+            pr_count: args.evidence.length,
+            lands_in: "merged-main",
+            atomicity: repos.length > 1 ? "together" : "single",
+            irreversible: []
+          },
+          unproven: [],
+          evidence_status: {
+            proven_by_run: 0,
+            walk_at_verify: 0,
+            unproven: 0,
+            total: 0,
+            detail: "Recorded walk \u2014 evidence linked from the supplied links, not independently re-verified at this accept."
+          },
+          risk_classes: []
+          // overwritten by compose_brief from changedPaths (B-876) — authored value is never trusted.
+        },
+        changedPaths
+      });
+      const releaseContent = {
+        shipped: solving,
+        lands_in: "merged-main",
+        prs: args.evidence.map((e) => ({ url: e.url, repo: e.repo })),
         unproven: [],
-        evidence_status: {
-          proven_by_run: 0,
-          walk_at_verify: 0,
-          unproven: 0,
-          total: 0,
-          detail: "Recorded walk \u2014 evidence linked from the supplied links, not independently re-verified at this accept."
-        },
-        risk_classes: []
-        // overwritten by compose_brief from changedPaths (B-876) — authored value is never trusted.
-      },
-      changedPaths
-    });
-    const releaseContent = {
-      shipped: solving,
-      lands_in: "merged-main",
-      prs: args.evidence.map((e) => ({ url: e.url, repo: e.repo })),
-      unproven: [],
-      evidence_status: "Recorded walk \u2014 evidence linked, not independently re-verified."
-    };
-    await writeGateSlot(client, {
-      gate: "release",
-      content: releaseContent,
-      target: { via: "task", task_id: taskId },
-      ratified_by: RATIFIED_BY_RECORDED
-    });
-    gates.push({ gate: "release", reason: GATE_REASONS.release, landed: true });
-    await advanceWorkflow(client, projectId, { task_id: taskId, activity: "deploying" });
-    gates.push({ gate: "deploy", landed: true });
+        evidence_status: "Recorded walk \u2014 evidence linked, not independently re-verified."
+      };
+      await writeGateSlot(client, {
+        gate: "release",
+        content: releaseContent,
+        target: { via: "task", task_id: taskId },
+        ratified_by: RATIFIED_BY_RECORDED
+      });
+      gates.push({ gate: "release", reason: GATE_REASONS.release, landed: true });
+    }
+    if (runs("deploy")) {
+      await advanceWorkflow(client, projectId, { task_id: taskId, activity: "deploying" });
+      gates.push({ gate: "deploy", landed: true });
+    }
     const criteriaRows = await listAcceptanceCriteria(client, projectId, { task_id: taskId });
     const verifyCriteria = (criteriaRows ?? []).map((ac) => ({
       ac_id: ac.id,
@@ -34282,6 +34344,20 @@ async function runRecordedWalk(client, projectId, userId, args) {
 
 // src/daemon/recorded-walk-drain.ts
 var RECORDED_WALK_REQUESTS_TABLE = "recorded_walk_requests";
+var WORKFLOW_STATE_TO_FROM_GATE = {
+  Captured: "clarify",
+  Proposed: "clarify",
+  Clarified: "decompose",
+  Decomposed: "design",
+  Designed: "plan",
+  Planned: "build",
+  Built: "deploy",
+  Deployed: "verify"
+};
+function deriveFromGate(workflowState) {
+  if (!workflowState) return "clarify";
+  return WORKFLOW_STATE_TO_FROM_GATE[workflowState] ?? "clarify";
+}
 function isMissingRecordedWalkRequestsTable(err) {
   if (!err) return false;
   const code = err.code ?? "";
@@ -34317,11 +34393,20 @@ async function runRecordedWalkDrainPass(deps) {
   if (!claimed) {
     return 0;
   }
+  let fromGate = "clarify";
+  try {
+    const { data: taskRow, error: taskErr } = await client.from("tasks").select("workflow_state").eq("id", request.task_id).eq("project_id", projectId).maybeSingle();
+    if (!taskErr) {
+      fromGate = deriveFromGate(taskRow?.workflow_state ?? null);
+    }
+  } catch {
+  }
   const args = {
     task_id: request.task_id,
     summary: request.summary,
     evidence: request.evidence_links ?? [],
-    attest_walk: request.attest_walk ?? void 0
+    attest_walk: request.attest_walk ?? void 0,
+    from_gate: fromGate
   };
   let result;
   let failureMessage;
@@ -34837,6 +34922,23 @@ function exitClass(outcome, args) {
   return "clean-pause";
 }
 
+// src/daemon/leg-gate.ts
+function isFastTrackBuildLeg(runConfig, task) {
+  return isFastTrackEnabled(runConfig) && (task.workflow_state === "Captured" || task.workflow_state === "Proposed");
+}
+function resolveLegGate(runConfig, task) {
+  if (isFastTrackBuildLeg(runConfig, task)) {
+    return "build";
+  }
+  return resolveGatePhase(task.workflow_state, task.workflow_activity);
+}
+function evaluateFastTrackAdmission(summary, declaredRepos) {
+  const evidence = declaredRepos.map((repo) => ({ url: "", repo }));
+  const report = evaluateEligibility({ summary, evidence });
+  const { admissible } = admissibleForFastTrack(report);
+  return { admissible, report };
+}
+
 // src/daemon/scheduler.ts
 var TAKEOVER_ENDPOINT = "conductions.takeoverConduction";
 var STEAL_ENDPOINT = "conductions.stealConduction";
@@ -34912,8 +35014,9 @@ function runConfigJsonFor(row) {
   return Buffer.from(json, "utf8").toString("base64");
 }
 function modelFor(row, task) {
-  const gate = resolveGatePhase(task?.workflow_state, task?.workflow_activity);
-  return getModelForGate(row.run_config ?? {}, gate);
+  const runConfig = row.run_config ?? {};
+  const gate = resolveLegGate(runConfig, task ?? {});
+  return getModelForGate(runConfig, gate);
 }
 function templateVars(row, task, projectKey, workerImage) {
   return {
@@ -35404,6 +35507,46 @@ function beginReapEscalation(deps, runtime, row, current, tracked, flag) {
 }
 async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, retryCount) {
   const current = preReadCurrent ?? await deps.getTaskMeta(row.task_id);
+  const runConfig = row.run_config ?? {};
+  if (isFastTrackBuildLeg(runConfig, current)) {
+    const { admissible, report } = evaluateFastTrackAdmission(
+      current.title ?? "",
+      deps.declaredRepos ?? []
+    );
+    if (!admissible) {
+      const comment = formatInadmissibleFastTrackVerdict(report);
+      deps.log(
+        `${label(row, current, deps.projectKey)}: fast-track admission check failed \u2014 parking, no worker launched`
+      );
+      runtime.ready.delete(row.id);
+      state.delete(row.id);
+      keeper.stop(row.id);
+      if (deps.advanceTicketWorkflow) {
+        try {
+          await deps.advanceTicketWorkflow(row.task_id, "parking");
+        } catch (err) {
+          deps.log(
+            `${label(row, current, deps.projectKey)}: fast-track admission park \u2014 advance_workflow failed (${formatDaemonError(err)})`
+          );
+        }
+      }
+      if (deps.addTicketComment) {
+        try {
+          await deps.addTicketComment(row.task_id, comment);
+        } catch (err) {
+          deps.log(
+            `${label(row, current, deps.projectKey)}: fast-track admission park \u2014 add_comment failed (${formatDaemonError(err)})`
+          );
+        }
+      }
+      await writeIfHeld(deps, state, keeper, row, {
+        status: "parked",
+        last_worker_exit_code: null,
+        last_worker_exit_class: "fast-track-inadmissible"
+      });
+      return;
+    }
+  }
   const leg = (row.leg_count ?? 0) + 1;
   if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: iso(deps.now()), leg_count: leg })) {
     runtime.ready.delete(row.id);
@@ -35885,6 +36028,11 @@ ${err instanceof Error ? err.message : String(err)}
     }
     return null;
   };
+  const ownerRepoFromUrl = (url) => {
+    const m = /github\.com[:/]+([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url);
+    return m ? `${m[1]}/${m[2]}` : null;
+  };
+  const declaredRepos = (deploymentConfig?.repos ?? []).map((repo) => ownerRepoFromUrl(repo.url)).filter((r) => r !== null);
   const preflightProfileName = daemonArgv.profile ?? (process.env.HARMONY_DAEMON_PROFILE || "unnamed");
   const preflightProfile = {
     ...config.profile,
@@ -35995,6 +36143,22 @@ ${err instanceof Error ? err.message : String(err)}
     // header for the tolerant-absence contract (the table may not exist yet).
     drainRecordedWalkRequests: async () => {
       await runRecordedWalkDrainPass({ client, projectId, userId: auth.getUserId(), log });
+    },
+    // B-1073 (post-review wiring) — the deployment's declared repo set, resolved once at boot
+    // alongside workerImage/projectKey above (same pin-at-boot discipline). `[]` on every deployment
+    // with no `repos` declared, which the admission check reads as "no multi-repo signal".
+    declaredRepos,
+    // B-1073 (post-review wiring) — park a fast-track-inadmissible ticket's own workflow_state,
+    // calling the SAME advanceWorkflow the advance_workflow MCP tool uses, directly against this
+    // daemon's one lifetime client/projectId.
+    advanceTicketWorkflow: async (taskId, activity) => {
+      await advanceWorkflow(client, projectId, { task_id: taskId, activity });
+    },
+    // B-1073 (post-review wiring) — post the five-item verdict comment, calling the SAME addComment
+    // the add_comment MCP tool uses, attributed to this daemon's own authenticated service-account
+    // user id (mirrors drainRecordedWalkRequests's own userId attribution just above).
+    addTicketComment: async (taskId, content) => {
+      await addComment(client, projectId, auth.getUserId(), { task_id: taskId, content });
     }
   };
   const keeper = createHeartbeatKeeper({

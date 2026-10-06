@@ -3,8 +3,16 @@ import {
   evaluateEligibility,
   gatherOneEvidenceLink,
   gatherEvidenceSignals,
+  admissibleForFastTrack,
+  formatInadmissibleFastTrackVerdict,
+  reEvaluateEligibilityAgainstDiff,
+  checkPrePrOpenEligibility,
+  checkFastTrackScopeBudget,
   type EligibilityEvidenceLink,
+  type EligibilityReport,
 } from './record-eligibility.js';
+import type { ProjectManifest } from '../config/project-manifest.js';
+import { DEFAULT_SCOPE_BUDGET, parseNumstatLine } from './fasttrack-scope.js';
 
 const CLEAN_SUMMARY = 'Fix the flaky retry timer in the poller.';
 
@@ -177,5 +185,139 @@ describe('gatherOneEvidenceLink / gatherEvidenceSignals (B-1062)', () => {
       'https://github.com/ycomplex/harmony-web/pull/2',
     ], fakeGh);
     expect(links.map((l) => l.repo)).toEqual(['ycomplex/harmony-plugin', 'ycomplex/harmony-web']);
+  });
+});
+
+describe('admissibleForFastTrack (B-1073 step 4)', () => {
+  it('admissible when every item passes', () => {
+    const report = evaluateEligibility({
+      summary: CLEAN_SUMMARY,
+      evidence: [ev()],
+      attestWalk: 'walked it for 8 minutes',
+    });
+    const result = admissibleForFastTrack(report);
+    expect(result.admissible).toBe(true);
+    expect(result.blockingItems).toEqual([]);
+  });
+
+  it('admissible when the ONLY non-pass item is an unattested verify_walk_attestation', () => {
+    const report = evaluateEligibility({
+      summary: CLEAN_SUMMARY,
+      evidence: [ev()],
+      // no attestWalk ⇒ verify_walk_attestation reads 'unattested'
+    });
+    const verifyItem = report.items.find((i) => i.item === 'verify_walk_attestation')!;
+    expect(verifyItem.verdict).toBe('unattested');
+    const result = admissibleForFastTrack(report);
+    expect(result.admissible).toBe(true);
+    expect(result.blockingItems).toEqual([]);
+  });
+
+  it('inadmissible when a non-verify_walk_attestation item fails, even with the walk attested', () => {
+    const report = evaluateEligibility({
+      summary: CLEAN_SUMMARY,
+      evidence: [ev({ repo: 'ycomplex/harmony-plugin' }), ev({ repo: 'ycomplex/harmony-web', url: 'https://github.com/ycomplex/harmony-web/pull/2' })],
+      attestWalk: 'walked it',
+    });
+    const result = admissibleForFastTrack(report);
+    expect(result.admissible).toBe(false);
+    expect(result.blockingItems.map((i) => i.item)).toEqual(['multi_repo']);
+  });
+});
+
+describe('formatInadmissibleFastTrackVerdict (B-1073 step 5 — stub, no caller yet)', () => {
+  it('renders every blocking item, one line each, and never mentions an unattested verify-walk item', () => {
+    const report: EligibilityReport = {
+      eligible: false,
+      items: [
+        { item: 'multi_repo', label: 'Single repo', verdict: 'fail', value: 'repos: 2 (a, b)', detail: 'spans 2 repos' },
+        { item: 'migration', label: 'No migration', verdict: 'pass', value: 'migration paths: 0 (none)' },
+        { item: 'risk_class', label: 'No auth/shared-core/irreversible-destructive risk', verdict: 'pass', value: 'risk_classes: []' },
+        { item: 'single_sentence_change', label: 'Single-sentence-statable change', verdict: 'pass', value: 'summary: 5 words' },
+        { item: 'verify_walk_attestation', label: 'Verify walk (5+ min) attested', verdict: 'unattested', value: 'verify-walk: UNATTESTED' },
+      ],
+    };
+    const line = formatInadmissibleFastTrackVerdict(report);
+    expect(line).toContain('harmony fast-track refuses admission');
+    expect(line).toContain('Single repo');
+    expect(line).toContain('spans 2 repos');
+    expect(line).not.toContain('Verify walk (5+ min) attested');
+    expect(line).toContain('Parked pending human review');
+  });
+});
+
+describe('reEvaluateEligibilityAgainstDiff (B-1073 step 6)', () => {
+  it('re-runs the same five-item evaluator against the supplied changed paths', () => {
+    const report = reEvaluateEligibilityAgainstDiff(CLEAN_SUMMARY, ['src/tools/foo.ts']);
+    expect(report.items.map((i) => i.item)).toEqual([
+      'multi_repo', 'migration', 'risk_class', 'single_sentence_change', 'verify_walk_attestation',
+    ]);
+    // attestWalk is deliberately omitted — verify_walk_attestation always reads unattested here.
+    const verifyItem = report.items.find((i) => i.item === 'verify_walk_attestation')!;
+    expect(verifyItem.verdict).toBe('unattested');
+  });
+
+  it('fails the migration item when the diff touches a migration path', () => {
+    const report = reEvaluateEligibilityAgainstDiff(CLEAN_SUMMARY, ['web/supabase/migrations/20260101_foo.sql']);
+    const migrationItem = report.items.find((i) => i.item === 'migration')!;
+    expect(migrationItem.verdict).toBe('fail');
+  });
+});
+
+describe('checkPrePrOpenEligibility (B-1073 post-review wiring)', () => {
+  it('allowed: true on a clean diff', () => {
+    const { allowed, verdict } = checkPrePrOpenEligibility(CLEAN_SUMMARY, ['src/tools/foo.ts']);
+    expect(allowed).toBe(true);
+    expect(verdict.eligible).toBe(false); // verify_walk_attestation reads 'unattested', never 'pass'
+  });
+
+  it('allowed: false on a migration-path diff', () => {
+    const { allowed, verdict } = checkPrePrOpenEligibility(CLEAN_SUMMARY, ['supabase/migrations/20260101_foo.sql']);
+    expect(allowed).toBe(false);
+    expect(verdict.items.find((i) => i.item === 'migration')!.verdict).toBe('fail');
+  });
+
+  it('allowed: false on a gated-risk-class diff (shared-core path)', () => {
+    const { allowed, verdict } = checkPrePrOpenEligibility(CLEAN_SUMMARY, ['src/supabase.ts']);
+    expect(allowed).toBe(false);
+    expect(verdict.items.find((i) => i.item === 'risk_class')!.verdict).toBe('fail');
+  });
+
+  it('an unattested verify-walk item ALONE never blocks (mirrors admissibleForFastTrack)', () => {
+    const { allowed } = checkPrePrOpenEligibility(CLEAN_SUMMARY, ['src/tools/foo.ts']);
+    expect(allowed).toBe(true);
+  });
+});
+
+describe('checkFastTrackScopeBudget (B-1073 step 7)', () => {
+  function entries(lines: string[]) {
+    return lines.map((l) => parseNumstatLine(l)).filter((e): e is NonNullable<typeof e> => e !== null);
+  }
+
+  it('uses DEFAULT_SCOPE_BUDGET when manifest is null', () => {
+    const evaluation = checkFastTrackScopeBudget(entries(['10\t5\tsrc/a.ts']), null);
+    expect(evaluation.budget).toEqual(DEFAULT_SCOPE_BUDGET);
+    expect(evaluation.filesChanged).toBe(1);
+    expect(evaluation.linesChanged).toBe(15);
+    expect(evaluation.withinBudget).toBe(true);
+  });
+
+  it("uses the manifest's fasttrack.scope_budget override when present", () => {
+    const manifest = { fasttrack: { scope_budget: { files: 1, lines: 5 } } } as unknown as ProjectManifest;
+    const evaluation = checkFastTrackScopeBudget(entries(['10\t5\tsrc/a.ts']), manifest);
+    expect(evaluation.budget).toEqual({ files: 1, lines: 5 });
+    expect(evaluation.withinBudget).toBe(false); // 15 lines > budget of 5
+  });
+
+  it('a partial override (only files set) falls back to the default for the omitted field', () => {
+    const manifest = { fasttrack: { scope_budget: { files: 1 } } } as unknown as ProjectManifest;
+    const evaluation = checkFastTrackScopeBudget(entries(['1\t1\tsrc/a.ts']), manifest);
+    expect(evaluation.budget).toEqual({ files: 1, lines: DEFAULT_SCOPE_BUDGET.lines });
+  });
+
+  it('a manifest with no fasttrack key at all behaves like null', () => {
+    const manifest = {} as unknown as ProjectManifest;
+    const evaluation = checkFastTrackScopeBudget(entries(['10\t5\tsrc/a.ts']), manifest);
+    expect(evaluation.budget).toEqual(DEFAULT_SCOPE_BUDGET);
   });
 });

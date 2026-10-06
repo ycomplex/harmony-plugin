@@ -212,6 +212,36 @@ describe('resolveEnvironment', () => {
     expect(env.auto_approve_gates).toBeNull();
     expect(env.operator_note).toBeNull(); // sanity: the rest of the block still resolves
   });
+
+  it('B-1073: fast_track is false when no run_config delivery var is set', async () => {
+    const env = await resolveEnvironment({}, NOWHERE_URL);
+    expect(env.fast_track).toBe(false);
+  });
+
+  it("B-1073: fast_track reads the base64-decoded HARMONY_RUN_CONFIG_JSON's fast_track key", async () => {
+    const inline = Buffer.from(JSON.stringify({ fast_track: true }), 'utf8').toString('base64');
+    const env = await resolveEnvironment({ HARMONY_RUN_CONFIG_JSON: inline }, NOWHERE_URL);
+    expect(env.fast_track).toBe(true);
+  });
+
+  it('B-1073: fast_track is false when run_config has no fast_track key', async () => {
+    const inline = Buffer.from(JSON.stringify({ session_resume: { enabled: true } }), 'utf8').toString(
+      'base64',
+    );
+    const env = await resolveEnvironment({ HARMONY_RUN_CONFIG_JSON: inline }, NOWHERE_URL);
+    expect(env.fast_track).toBe(false);
+  });
+
+  it('B-1073: fast_track is false when run_config carries fast_track: false explicitly', async () => {
+    const inline = Buffer.from(JSON.stringify({ fast_track: false }), 'utf8').toString('base64');
+    const env = await resolveEnvironment({ HARMONY_RUN_CONFIG_JSON: inline }, NOWHERE_URL);
+    expect(env.fast_track).toBe(false);
+  });
+
+  it('B-1073: fast_track degrades to false (never throws) on a malformed HARMONY_RUN_CONFIG_JSON — get_project must never break', async () => {
+    const env = await resolveEnvironment({ HARMONY_RUN_CONFIG_JSON: 'not-valid-base64-json!!' }, NOWHERE_URL);
+    expect(env.fast_track).toBe(false);
+  });
 });
 
 // =================================================================================================
