@@ -218,6 +218,27 @@ when read directly (§2) — the subscriber exists precisely so you never have t
   the row before treating any signal as a resolved pause.
 - **Run it under the harness** (`run_in_background`), never as a shell-`&` orphan — an orphan
   dies with its shell and you wake up to a dead watch.
+- **Printing is not waking — arm a `Monitor` on the subscriber's output (B-1049).**
+  `run_in_background` is necessary but not sufficient: the harness re-invokes you when a
+  backgrounded command EXITS, and the subscriber is built never to exit. Its lines land in a file
+  that is read only when you next happen to run a command against it, so a leg that paused hours
+  ago looks exactly like a quiet board — a live watch nobody reads is indistinguishable, from inside
+  the session, from the dead watch the line above warns about. (On 2026-09-22 a correct, live
+  subscriber printed two clean pauses that the seat read four hours later, when the human asked.)
+  Tail the output file under a `Monitor`, filtering the four terminal categories plus
+  `UNAVAILABLE` — `clean-pause|park \(|complete \(terminal\)|dirty-exit|UNAVAILABLE` — so each
+  matching line becomes a notification that re-invokes you. Three things about that shape:
+  - **Tail the file; never wrap the subscriber in the `Monitor` itself.** A `Monitor` expires (30
+    minutes is the cap); wrapping would kill the subscriber and drop and re-establish the Realtime
+    subscription on every expiry. Tailing keeps ONE long-lived subscription alive across re-arms.
+  - **Never wake on `HINT`.** It flips mid-leg (next bullet), so waking on it walks you straight
+    back into reading a brief that may still recompose — the trap §2 exists to prevent.
+  - **Re-arm on every expiry, and know the residual.** Between an expiry you did not notice and
+    the next event the seat is blind. That is a far smaller hole than no wake at all, but it is not
+    zero: re-read the shepherded rows whenever you are invoked for any other reason, including a
+    human message about something else. (A background `until grep -qE <pattern> <file>; do sleep
+    5; done` also wakes you — it exits on the first match — and has no expiry, but it is single-shot
+    and must be re-armed after every wake.)
 - **Adding a ticket mid-session**: same-session re-invocation is a **piggyback by design** (§2) —
   fold the new key into the SAME subscriber's argument list (restart it) rather than leaving it
   unwatched or starting a second one.
