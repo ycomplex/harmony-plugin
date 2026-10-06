@@ -265,10 +265,25 @@ a publish gate.
 
 Two Cloud Build triggers run `container/cloudbuild.yaml`, additively: the original
 (`harmony-worker-image-publish`, B-820) on push to `main` touching `container/**`, and a second
-(`harmony-worker-image-publish-on-promote`, B-1074, hand-carried — see
-`container/B-1074-hand-carry-trigger.md`) on push to `prod`, with **no path filter**, so every
-`./promote-prod.sh` run republishes the image even when nothing under `container/` changed —
+(`harmony-worker-image-publish-on-promote`, B-1074) on push to `prod`, with **no path filter**, so
+every `./promote-prod.sh` run republishes the image even when nothing under `container/` changed —
 keeping the baked Claude Code install current.
+
+The second trigger is GCP-side state, created by hand on 2026-10-06 (a worker cannot create a
+trigger, B-784). It mirrors the first exactly — same repo (`ycomplex/harmony-plugin`, classic GitHub
+App connection), same build config, same service account
+(`542266787439-compute@developer.gserviceaccount.com`) — differing only in the branch pattern
+(`^prod$`) and the absent `container/**` filter. To recreate it, read the first trigger back and
+mirror it rather than trusting this paragraph:
+
+```bash
+gcloud builds triggers describe harmony-worker-image-publish --project=harmony-conductor --region=us-central1
+gcloud builds triggers create github --project=harmony-conductor --region=us-central1 \
+  --name=harmony-worker-image-publish-on-promote \
+  --repo-owner=ycomplex --repo-name=harmony-plugin --branch-pattern='^prod$' \
+  --build-config=container/cloudbuild.yaml \
+  --service-account=projects/harmony-conductor/serviceAccounts/542266787439-compute@developer.gserviceaccount.com
+```
 
 The image's Claude Code version is now visible three ways: the `harmony.claude_code_version` OCI
 label (set from a `CLAUDE_CODE_VERSION` build-arg the pipeline resolves via `npm view
