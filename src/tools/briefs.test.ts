@@ -4961,7 +4961,11 @@ verify:
   }) {
     const queue: Array<{ data: unknown; error?: unknown }> = [{ data: null }];
     if (opts.readsLabels) queue.push({ data: opts.labelRows ?? [] });
-    if (opts.readsLineage) queue.push({ data: opts.lineageRows ?? [] });
+    // B-1015: the shared lineage reader selects every brief row of the task and filters the gate in
+    // memory, so the double's rows carry the gate the real column would.
+    if (opts.readsLineage) {
+      queue.push({ data: (opts.lineageRows ?? []).map((r) => ({ reason: 'verification-ack-pending', ...r })) });
+    }
     queue.push({ data: briefRow974 }, { data: null });
     const client = makeClient(queue);
     const result = await composeBrief(client, PROJECT_ID, USER_ID, {
@@ -5077,6 +5081,32 @@ verify:
       ],
     });
     expect(persisted.content).toContain('Declared evidence — 1 outstanding: founder-clickthrough · 1 attested: ui-screenshot');
+  });
+
+  it('B-1015 — the accept remark box (briefs.accept_remark) is read too: the route the backed_by hint advertises', async () => {
+    const { persisted } = await composeVerify({
+      manifest_root: manifestRoot(TWO_ENTRY_MANIFEST),
+      changed_paths: ['src/components/SavedView.tsx'],
+      readsLabels: true,
+      readsLineage: true,
+      lineageRows: [
+        { resolved_detail: null, pending_resolution: null, accept_remark: 'ATTESTED: founder-clickthrough' },
+      ],
+    });
+    expect(persisted.content).toContain('Declared evidence — 1 outstanding: ui-screenshot · 1 attested: founder-clickthrough');
+  });
+
+  it('B-1015 — a marker that is present but parses to no key is REPORTED on the brief, and attests nothing', async () => {
+    const { persisted } = await composeVerify({
+      manifest_root: manifestRoot(TWO_ENTRY_MANIFEST),
+      changed_paths: ['src/components/SavedView.tsx'],
+      readsLabels: true,
+      readsLineage: true,
+      // The shape a browser reshape stores: the command verb on the marker's line defeats the anchor.
+      lineageRows: [{ resolved_detail: 'iterate ATTESTED: founder-clickthrough', pending_resolution: null }],
+    });
+    expect(persisted.content).toContain('⚠️ ATTESTED: appears but no key could be read from it');
+    expect(persisted.content).toContain('2 outstanding: founder-clickthrough, ui-screenshot');
   });
 
   it('an ATTESTED key naming no declared entry is REPORTED on the brief, never silently dropped', async () => {

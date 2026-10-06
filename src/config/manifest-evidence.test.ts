@@ -13,6 +13,8 @@ import { join } from 'node:path';
 import {
   resolveManifestEvidence,
   parseAttestedKeys,
+  hasUnparsedAttestedMarker,
+  UNPARSED_ATTESTED_MARKER_CLAUSE,
   readDeclaredEvidence,
   attestationHint,
   malformedEvidenceClause,
@@ -181,6 +183,19 @@ describe('resolveManifestEvidence — rows, dispositions and the evidence clause
     expect(r.clause).toContain('⚠️ ATTESTED: names no declared entry: typo-key — nothing was attested by it');
   });
 
+  it('B-1015: an unparsed marker is REPORTED in the clause and on the result, and attests nothing', () => {
+    const r = resolveManifestEvidence(entries(), { changedPaths: [], attestedKeys: [], unparsedAttestedMarker: true });
+    expect(r.unparsed_attested_marker).toBe(true);
+    expect(r.attested).toEqual([]);
+    expect(r.clause).toContain(UNPARSED_ATTESTED_MARKER_CLAUSE);
+  });
+
+  it('B-1015: the flag defaults to false and adds nothing to the clause when absent', () => {
+    const r = resolveManifestEvidence(entries(), { changedPaths: [], attestedKeys: ['founder-clickthrough'] });
+    expect(r.unparsed_attested_marker).toBe(false);
+    expect(r.clause ?? '').not.toContain('no key could be read');
+  });
+
   it('no declared entries at all ⇒ no rows and a NULL clause (the caller then changes nothing)', () => {
     const r = resolveManifestEvidence([], { changedPaths: ['x.ts'] });
     expect(r.rows).toEqual([]);
@@ -224,6 +239,34 @@ describe('parseAttestedKeys — the attestation marker, as a pure function over 
 
   it('never throws on non-string lineage values', () => {
     expect(parseAttestedKeys([null, undefined])).toEqual([]);
+  });
+
+  // B-1015 defect 1 — the anchor is right; the SILENCE was the bug.
+  it('B-1015: a marker after a command verb on the same line still parses to nothing (the anchor stays strict)', () => {
+    expect(parseAttestedKeys(['iterate ATTESTED: staging-channel-smoke'])).toEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+describe('hasUnparsedAttestedMarker — B-1015: a marker that is present but yields no key is a SIGNAL', () => {
+  it('is true for the browser-reshape shape that bit B-974: `iterate ATTESTED: <key>`', () => {
+    expect(hasUnparsedAttestedMarker(['iterate ATTESTED: staging-channel-smoke'])).toBe(true);
+  });
+
+  it('is true for prose that mentions the marker mid-line, since the human may have meant it', () => {
+    expect(hasUnparsedAttestedMarker(['this is not yet ATTESTED: see below'])).toBe(true);
+  });
+
+  it('is false when the marker parses — even if another line in the same text also mentions it', () => {
+    expect(hasUnparsedAttestedMarker(['not yet ATTESTED: see below\nATTESTED: founder-clickthrough'])).toBe(false);
+  });
+
+  it('is false when the text never contains the marker, and on non-string values', () => {
+    expect(hasUnparsedAttestedMarker(['the founder attested this verbally', null, undefined, ''])).toBe(false);
+  });
+
+  it('judges each lineage row on its own: one unparsed row is a signal even when another row attests', () => {
+    expect(hasUnparsedAttestedMarker(['ATTESTED: a', 'accept ATTESTED: b'])).toBe(true);
   });
 });
 

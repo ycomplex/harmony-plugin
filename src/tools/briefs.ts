@@ -22,10 +22,10 @@ import {
 import {
   readDeclaredEvidence,
   resolveManifestEvidence,
-  parseAttestedKeys,
   malformedEvidenceClause,
   malformedEvidenceWarning,
 } from '../config/manifest-evidence.js';
+import { readAttestation } from './attestation-lineage.js';
 
 export interface BriefItem {
   /** §3.2 sort: a decision (always recommended), a content-input (only the human can supply it),
@@ -2330,46 +2330,6 @@ async function readTaskLabelNames(client: SupabaseClient, taskId: string): Promi
   }
 }
 
-/** B-974 — read the `ATTESTED: <key>` markers back out of THIS ticket's verify-brief lineage.
- *
- *  Two sources, both of them places a human's words actually land: `briefs.resolved_detail` on every
- *  `verification-ack-pending` revision (what a previous accept/iterate recorded) and the active row's
- *  `pending_resolution.detail` (a browser-submitted command not yet consumed). Parsing is done by the
- *  pure `parseAttestedKeys`; this function only does the reading, which is what lets the parser be
- *  unit-tested over synthetic lineage rows.
- *
- *  `pending_resolution` is read on the SAME select but with a `resolved_detail`-only retry, because
- *  that column postdates some live databases (B-485's note) — a 400 there must degrade, not break a
- *  gate. Any failure at all yields `[]`: nothing attested, which is the safe direction (an entry
- *  stays outstanding and visible rather than silently reading as confirmed). */
-async function readAttestedKeys(client: SupabaseClient, taskId: string): Promise<string[]> {
-  const details: Array<string | null | undefined> = [];
-  try {
-    let rows: Array<Record<string, unknown>> | null = null;
-    const full = await client
-      .from('briefs').select('resolved_detail, pending_resolution')
-      .eq('task_id', taskId).eq('reason', 'verification-ack-pending');
-    if (full.error) {
-      const narrowed = await client
-        .from('briefs').select('resolved_detail')
-        .eq('task_id', taskId).eq('reason', 'verification-ack-pending');
-      if (narrowed.error) return [];
-      rows = (narrowed.data as Array<Record<string, unknown>>) ?? [];
-    } else {
-      rows = (full.data as Array<Record<string, unknown>>) ?? [];
-    }
-    for (const row of rows ?? []) {
-      if (typeof row.resolved_detail === 'string') details.push(row.resolved_detail);
-      const pending = row.pending_resolution as { detail?: unknown } | null | undefined;
-      if (pending && typeof pending === 'object' && typeof pending.detail === 'string') {
-        details.push(pending.detail);
-      }
-    }
-  } catch {
-    return [];
-  }
-  return parseAttestedKeys(details);
-}
 
 /**
  * B-974 — overlay the project's declared verify evidence onto a verify frame.
@@ -2398,12 +2358,15 @@ async function withManifestEvidence(
   // Only pay for the label read when an entry actually narrows by label.
   const needsLabels = read.entries.some((e) => (e.applies_to?.labels?.length ?? 0) > 0);
   const labels = needsLabels ? await readTaskLabelNames(client, taskId) : [];
-  const attestedKeys = await readAttestedKeys(client, taskId);
+  // B-1015: ONE shared reader (attestation-lineage.ts) — resolved_detail, pending_resolution.detail
+  // AND the accept remark box — so this brief and get_build_evidence_status read the same lineage.
+  const attestation = await readAttestation(client, taskId);
 
   const result = resolveManifestEvidence(read.entries, {
     changedPaths: args.changed_paths,
     labels,
-    attestedKeys,
+    attestedKeys: attestation.attestedKeys,
+    unparsedAttestedMarker: attestation.unparsedMarker,
   });
   // Every declared entry cleanly did not apply and there is nothing to report — say nothing, and
   // return the caller's object untouched rather than a cosmetically-identical clone.

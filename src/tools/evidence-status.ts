@@ -3,9 +3,9 @@ import { resolveTaskId } from './resolve-task-id.js';
 import {
   readDeclaredEvidence,
   resolveManifestEvidence,
-  parseAttestedKeys,
   type DeclaredEvidenceResolution,
 } from '../config/manifest-evidence.js';
+import { readAttestation } from './attestation-lineage.js';
 
 // ===========================================================================
 // CONDUCTOR BUILD-EVIDENCE STATUS (B-560).
@@ -159,6 +159,9 @@ export interface DeclaredEvidence {
   not_evaluated: string[];
   /** Attested keys naming no declared entry — reported, never dropped. */
   unknown_attested_keys: string[];
+  /** B-1015: a marker was present on the lineage but no key could be read from it — reported,
+   *  never silent. Absent on the malformed-manifest shape, where nothing was read. */
+  unparsed_attested_marker?: boolean;
   /** Set instead of the rest when the manifest could not be read: the file and the specific problem. */
   problem?: string;
 }
@@ -327,30 +330,24 @@ async function resolveDeclaredEvidenceBlock(
     };
   }
 
-  // The attestation lineage. Guarded and degrading to "nothing attested" — the safe direction, since
-  // an entry then stays visibly outstanding rather than silently reading as confirmed.
-  let attestedKeys: string[] = [];
-  try {
-    const { data, error } = await client
-      .from('briefs').select('reason, resolved_detail').eq('task_id', taskId);
-    if (!error) {
-      attestedKeys = parseAttestedKeys(
-        ((data as Array<{ reason?: unknown; resolved_detail?: unknown }>) ?? [])
-          .filter((r) => r.reason === 'verification-ack-pending')
-          .map((r) => (typeof r.resolved_detail === 'string' ? r.resolved_detail : null)),
-      );
-    }
-  } catch {
-    attestedKeys = [];
-  }
+  // The attestation lineage — B-1015: the SAME reader the verify brief uses (attestation-lineage.ts),
+  // so the two surfaces can no longer disagree about what was attested. It degrades to "nothing
+  // attested" on any failure — the safe direction, since an entry then stays visibly outstanding
+  // rather than silently reading as confirmed.
+  const attestation = await readAttestation(client, taskId);
 
-  const result = resolveManifestEvidence(read.entries, { labels, attestedKeys });
+  const result = resolveManifestEvidence(read.entries, {
+    labels,
+    attestedKeys: attestation.attestedKeys,
+    unparsedAttestedMarker: attestation.unparsedMarker,
+  });
   return {
     entries: result.entries,
     outstanding: result.outstanding,
     attested: result.attested,
     not_evaluated: result.not_evaluated,
     unknown_attested_keys: result.unknown_attested_keys,
+    unparsed_attested_marker: result.unparsed_attested_marker,
   };
 }
 
