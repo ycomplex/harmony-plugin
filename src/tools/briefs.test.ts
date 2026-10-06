@@ -2426,6 +2426,59 @@ describe('consumeAcceptRemark (B-503)', () => {
     const client = makeClient([]);
     await expect(consumeAcceptRemark(client, PROJECT_ID, { brief_id: '' })).rejects.toThrow(/brief_id/);
   });
+
+  // B-1073 step 11 (post-review wiring): a fast-track ticket's RELEASE-gate accept-with-remark
+  // auto-files a recorded_walk_requests row via fileFastTrackReleaseRemarkRecordedWalkIfEligible —
+  // called ONLY when a userId is passed (the real MCP tool dispatch always passes one; these tests
+  // use the shared makeClient FIFO queue, so each read below is queued in the EXACT call order
+  // fileFastTrackReleaseRemarkRecordedWalkIfEligible makes: conductions -> tasks -> the insert
+  // itself).
+  describe('B-1073 step 11: the release-accept-remark auto-insert', () => {
+    it('files a recorded_walk_requests row for a fast-track ticket released with a remark', async () => {
+      const client = makeClient([
+        { data: { id: 'brief-9', task_id: 'task-1', reason: 'release-decision-pending', accept_remark: 'walked it for 8 minutes' } }, // the brief update
+        { data: { run_config: { fast_track: true } } }, // getActiveConduction
+        { data: { title: 'B-2000: Fix the timer', field_values: { build_pr: { pr_url: 'https://github.com/ycomplex/harmony-plugin/pull/42' } } } }, // the tasks read
+        { data: null, error: null }, // the recorded_walk_requests insert
+      ]);
+      const r = await consumeAcceptRemark(client, PROJECT_ID, { brief_id: 'brief-9' }, USER_ID);
+      expect(r).toEqual({ brief_id: 'brief-9', consumed: true });
+      expect(client.insert).toHaveBeenCalledWith({
+        task_id: 'task-1',
+        summary: 'B-2000: Fix the timer',
+        evidence_links: [{ url: 'https://github.com/ycomplex/harmony-plugin/pull/42' }],
+        attest_walk: 'walked it for 8 minutes',
+        requested_by: USER_ID,
+      });
+    });
+
+    it('files nothing when no userId is passed — the pre-existing (pre-B-1073) call shape', async () => {
+      const client = makeClient([
+        { data: { id: 'brief-9', task_id: 'task-1', reason: 'release-decision-pending', accept_remark: 'walked it' } },
+      ]);
+      const r = await consumeAcceptRemark(client, PROJECT_ID, { brief_id: 'brief-9' });
+      expect(r).toEqual({ brief_id: 'brief-9', consumed: true });
+      expect(client.insert).not.toHaveBeenCalled();
+    });
+
+    it('files nothing when the remark was accepted at a non-release gate', async () => {
+      const client = makeClient([
+        { data: { id: 'brief-9', task_id: 'task-1', reason: 'decomposition-proposal', accept_remark: 'a remark on a different gate' } },
+      ]);
+      const r = await consumeAcceptRemark(client, PROJECT_ID, { brief_id: 'brief-9' }, USER_ID);
+      expect(r).toEqual({ brief_id: 'brief-9', consumed: true });
+      expect(client.insert).not.toHaveBeenCalled();
+    });
+
+    it('a failure in the auto-insert side effect never fails the consume itself (NEVER THROWS)', async () => {
+      const client = makeClient([
+        { data: { id: 'brief-9', task_id: 'task-1', reason: 'release-decision-pending', accept_remark: 'walked it' } },
+        { data: null, error: { message: 'network blip' } }, // getActiveConduction throws
+      ]);
+      const r = await consumeAcceptRemark(client, PROJECT_ID, { brief_id: 'brief-9' }, USER_ID);
+      expect(r).toEqual({ brief_id: 'brief-9', consumed: true });
+    });
+  });
 });
 
 describe('resolveBrief', () => {

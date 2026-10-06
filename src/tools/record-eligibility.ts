@@ -272,17 +272,43 @@ export function formatInadmissibleFastTrackVerdict(report: EligibilityReport): s
  *  deliberately omitted (`undefined`): this re-check is about the DIFF, not a second attestation
  *  prompt.
  *
- *  CALLER NOTE — HONEST SCOPING, same posture as step 5 above: wiring this into the actual build
- *  gate's real PR-open call site (`skills/harmony-fasttrack/SKILL.md`'s Build phase, or a future
- *  daemon-side equivalent) is carried by future daemon/skill work, not claimed as done here. This
- *  function is exported and unit-testable today so that future wiring has a ready-made, already-
- *  tested primitive to call. */
+ *  CALLER NOTE: see `checkPrePrOpenEligibility` immediately below — the named, documented wrapper
+ *  the fast-track build leg's own prose (`skills/start-work/SKILL.md`'s O3, `skills/harmony-conduct
+ *  /SKILL.md`'s fast-track paragraph) now calls BY NAME before `gh pr create`. */
 export function reEvaluateEligibilityAgainstDiff(summary: string, changedPaths: string[]): EligibilityReport {
   return evaluateEligibility({
     summary,
     evidence: [{ url: '', paths: changedPaths }],
     attestWalk: undefined,
   });
+}
+
+/** B-1073 (post-review wiring) — the pre-PR-open admission DECISION, not just the re-evaluated
+ *  report: wraps `reEvaluateEligibilityAgainstDiff` with the SAME admission interpretation
+ *  `admissibleForFastTrack` applies at step 4 (an unattested verify-walk item never blocks; any
+ *  other item's `fail` does), so a build leg gets one `allowed` boolean to branch on rather than
+ *  re-deriving the same interpretation a second time. This is the ONE function name
+ *  `skills/start-work/SKILL.md`'s O3 (the fast-track-only pre-`gh pr create` sub-step) and
+ *  `skills/harmony-conduct/SKILL.md`'s fast-track paragraph both cite — so the skill-level
+ *  instruction and this code are one claim, not two independently-drifting ones.
+ *
+ *  CALLER NOTE — HONEST SCOPING (still true after naming this function in the skill prose above):
+ *  this function has NO call site anywhere in this repository's own TypeScript. "The fast-track
+ *  build leg" is driven by an interactive Claude Code session following `start-work`'s SKILL.md
+ *  prose (O3) — there is no daemon-side "open the PR" dispatcher in this codebase for a unit test
+ *  to exercise end to end (unlike `src/daemon/scheduler.ts`'s admission check at the FIRE path,
+ *  which genuinely is daemon code and genuinely is wired/tested there). What IS real: this function
+ *  is exported, pure, and pinned by a contract test
+ *  (`src/tools/pre-pr-open-eligibility-contract.test.ts`), so the skill instruction that now names
+ *  it has a concrete, already-tested primitive to call once a future ticket adds that dispatcher —
+ *  never a prose claim with nothing behind it. */
+export function checkPrePrOpenEligibility(
+  summary: string,
+  changedPaths: string[],
+): { allowed: boolean; verdict: EligibilityReport } {
+  const verdict = reEvaluateEligibilityAgainstDiff(summary, changedPaths);
+  const { admissible } = admissibleForFastTrack(verdict);
+  return { allowed: admissible, verdict };
 }
 
 /** B-1073 step 7 — [depends on B-1072, now merged] the SAME scope-guard `harmony fasttrack

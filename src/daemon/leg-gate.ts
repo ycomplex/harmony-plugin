@@ -23,6 +23,27 @@
 
 import { resolveGatePhase, type Gate } from './gate-phase.js';
 import { isFastTrackEnabled, type RunConfig } from '../config/run-config.js';
+import {
+  evaluateEligibility,
+  admissibleForFastTrack,
+  type EligibilityEvidenceLink,
+  type EligibilityReport,
+} from '../tools/record-eligibility.js';
+
+/** B-1073: is THIS leg the fast-track branch's own skip-straight-to-build leg — i.e. the one
+ *  `resolveLegGate` below routes to `'build'` early, before `resolveGatePhase` ever runs? Pulled out
+ *  of `resolveLegGate` so the daemon's admission check (scheduler.ts's `fireLaunch`) can ask the
+ *  EXACT same question `resolveLegGate` answers internally, without re-deriving (and risking
+ *  drifting from) the Captured/Proposed + fast_track condition in two places. */
+export function isFastTrackBuildLeg(
+  runConfig: RunConfig,
+  task: { workflow_state?: string | null },
+): boolean {
+  return (
+    isFastTrackEnabled(runConfig) &&
+    (task.workflow_state === 'Captured' || task.workflow_state === 'Proposed')
+  );
+}
 
 /** B-1073: resolve the gate THIS leg is running, with the fast-track branch applied first. `task`
  *  takes the same minimal shape `resolveGatePhase` itself accepts (`workflow_state` +
@@ -32,11 +53,26 @@ export function resolveLegGate(
   runConfig: RunConfig,
   task: { workflow_state?: string | null; workflow_activity?: string | null },
 ): Gate | null {
-  if (
-    isFastTrackEnabled(runConfig) &&
-    (task.workflow_state === 'Captured' || task.workflow_state === 'Proposed')
-  ) {
+  if (isFastTrackBuildLeg(runConfig, task)) {
     return 'build';
   }
   return resolveGatePhase(task.workflow_state, task.workflow_activity);
+}
+
+/** B-1073 (post-review wiring) — the daemon's OWN admission check, run at the fire path
+ *  (`scheduler.ts`'s `fireLaunch`) immediately before a fast-track build leg's worker ever launches.
+ *  Builds ONE `{ repo }` evidence entry per declared repo (`declaredRepos` — the deployment's
+ *  configured repo set, e.g. `deploymentConfig.repos` resolved to `owner/repo` strings; no `paths`,
+ *  since nothing has been built yet at admission time) and runs it through the SAME
+ *  `evaluateEligibility` / `admissibleForFastTrack` pair step 4/5 above already use — never a second,
+ *  re-derived admission rule. Pure: no I/O, so the daemon test suite can exercise both branches
+ *  (admissible/inadmissible) without touching a real Supabase client. */
+export function evaluateFastTrackAdmission(
+  summary: string,
+  declaredRepos: readonly string[],
+): { admissible: boolean; report: EligibilityReport } {
+  const evidence: EligibilityEvidenceLink[] = declaredRepos.map((repo) => ({ url: '', repo }));
+  const report = evaluateEligibility({ summary, evidence });
+  const { admissible } = admissibleForFastTrack(report);
+  return { admissible, report };
 }

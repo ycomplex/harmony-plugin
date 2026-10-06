@@ -3484,6 +3484,98 @@ describe('B-720 captured launcher output', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-1073 (post-review wiring) — the fast-track ADMISSION CHECK at the fire path (fireLaunch): a
+// fast-track conduction (run_config.fast_track, ticket at Captured/Proposed) must pass the same
+// five-item eligibility floor BEFORE its worker ever launches. Covers both branches: admissible ⇒
+// launches exactly as any other conduction would; inadmissible ⇒ no worker launched, the conduction
+// parks, the ticket's own workflow advances to 'parking', and the five-item verdict lands as a
+// comment.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('B-1073 (post-review wiring): fast-track admission check at fireLaunch', () => {
+  it('admissible (one declared repo, clean title): launches the worker exactly as any other conduction would', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ run_config: { fast_track: true } })],
+      tasks: {
+        'task-1': pausedTask({ workflow_state: 'Captured', title: 'Fix the flaky retry timer in the poller.' }),
+      },
+    });
+    h.deps.declaredRepos = ['ycomplex/harmony-plugin'];
+    const advanceTicketWorkflow = vi.fn(async () => {});
+    const addTicketComment = vi.fn(async () => {});
+    h.deps.advanceTicketWorkflow = advanceTicketWorkflow;
+    h.deps.addTicketComment = addTicketComment;
+
+    await wakeAndFire(h);
+
+    expect(h.launches()).toEqual(['launch cond-1 task-1']);
+    expect(h.running()).toEqual(['cond-1']);
+    expect(advanceTicketWorkflow).not.toHaveBeenCalled();
+    expect(addTicketComment).not.toHaveBeenCalled();
+  });
+
+  it('inadmissible (two declared repos — the conservative pre-build floor): parks the conduction, advances the ticket to parking, comments the verdict, and launches NO worker', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ run_config: { fast_track: true } })],
+      tasks: {
+        'task-1': pausedTask({ workflow_state: 'Captured', title: 'Fix the flaky retry timer in the poller.' }),
+      },
+    });
+    h.deps.declaredRepos = ['ycomplex/harmony-web', 'ycomplex/harmony-plugin'];
+    const advanceTicketWorkflow = vi.fn(async () => {});
+    const addTicketComment = vi.fn(async () => {});
+    h.deps.advanceTicketWorkflow = advanceTicketWorkflow;
+    h.deps.addTicketComment = addTicketComment;
+
+    await wakeAndFire(h);
+
+    expect(h.launches()).toEqual([]); // never fired
+    expect(h.running()).toEqual([]);
+    expect(h.statusWrites()).toEqual([
+      { status: 'parked', last_worker_exit_code: null, last_worker_exit_class: 'fast-track-inadmissible' },
+    ]);
+    expect(advanceTicketWorkflow).toHaveBeenCalledWith('task-1', 'parking');
+    expect(addTicketComment).toHaveBeenCalledTimes(1);
+    const [taskId, comment] = addTicketComment.mock.calls[0];
+    expect(taskId).toBe('task-1');
+    expect(comment).toContain('harmony fast-track refuses admission');
+    expect(comment).toContain('Single repo');
+  });
+
+  it('inadmissible with NEITHER advanceTicketWorkflow NOR addTicketComment wired (both optional): still parks the conduction and launches NO worker', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ run_config: { fast_track: true } })],
+      tasks: {
+        'task-1': pausedTask({ workflow_state: 'Captured', title: 'Fix the flaky retry timer in the poller.' }),
+      },
+    });
+    h.deps.declaredRepos = ['ycomplex/harmony-web', 'ycomplex/harmony-plugin'];
+
+    await wakeAndFire(h);
+
+    expect(h.launches()).toEqual([]);
+    expect(h.statusWrites()).toEqual([
+      { status: 'parked', last_worker_exit_code: null, last_worker_exit_class: 'fast-track-inadmissible' },
+    ]);
+  });
+
+  it('a non-fast-track conduction at Captured is NEVER subject to this check, even with multiple declared repos', async () => {
+    const h = makeHarness({
+      conductions: [conduction()], // no run_config at all
+      tasks: {
+        'task-1': pausedTask({ workflow_state: 'Captured', title: 'Fix the flaky retry timer in the poller.' }),
+      },
+    });
+    h.deps.declaredRepos = ['ycomplex/harmony-web', 'ycomplex/harmony-plugin'];
+
+    await wakeAndFire(h);
+
+    expect(h.launches()).toEqual(['launch cond-1 task-1']);
+    expect(h.running()).toEqual(['cond-1']);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // B-845: withWriteRetry must NEVER wrap the worker-launch/fire call — a launch is not a write this
 // module's retry contract applies to, and re-firing a worker on a transient blip is a completely
 // different (and much larger) hazard than retrying a guarded DB write. This is pinned by SOURCE

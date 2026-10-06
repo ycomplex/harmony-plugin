@@ -6,6 +6,7 @@ import {
   admissibleForFastTrack,
   formatInadmissibleFastTrackVerdict,
   reEvaluateEligibilityAgainstDiff,
+  checkPrePrOpenEligibility,
   checkFastTrackScopeBudget,
   type EligibilityEvidenceLink,
   type EligibilityReport,
@@ -260,6 +261,31 @@ describe('reEvaluateEligibilityAgainstDiff (B-1073 step 6)', () => {
     const report = reEvaluateEligibilityAgainstDiff(CLEAN_SUMMARY, ['web/supabase/migrations/20260101_foo.sql']);
     const migrationItem = report.items.find((i) => i.item === 'migration')!;
     expect(migrationItem.verdict).toBe('fail');
+  });
+});
+
+describe('checkPrePrOpenEligibility (B-1073 post-review wiring)', () => {
+  it('allowed: true on a clean diff', () => {
+    const { allowed, verdict } = checkPrePrOpenEligibility(CLEAN_SUMMARY, ['src/tools/foo.ts']);
+    expect(allowed).toBe(true);
+    expect(verdict.eligible).toBe(false); // verify_walk_attestation reads 'unattested', never 'pass'
+  });
+
+  it('allowed: false on a migration-path diff', () => {
+    const { allowed, verdict } = checkPrePrOpenEligibility(CLEAN_SUMMARY, ['supabase/migrations/20260101_foo.sql']);
+    expect(allowed).toBe(false);
+    expect(verdict.items.find((i) => i.item === 'migration')!.verdict).toBe('fail');
+  });
+
+  it('allowed: false on a gated-risk-class diff (shared-core path)', () => {
+    const { allowed, verdict } = checkPrePrOpenEligibility(CLEAN_SUMMARY, ['src/supabase.ts']);
+    expect(allowed).toBe(false);
+    expect(verdict.items.find((i) => i.item === 'risk_class')!.verdict).toBe('fail');
+  });
+
+  it('an unattested verify-walk item ALONE never blocks (mirrors admissibleForFastTrack)', () => {
+    const { allowed } = checkPrePrOpenEligibility(CLEAN_SUMMARY, ['src/tools/foo.ts']);
+    expect(allowed).toBe(true);
   });
 });
 

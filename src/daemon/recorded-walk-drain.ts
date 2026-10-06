@@ -34,6 +34,12 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { runRecordedWalk, type RecordWalkArgs, type RecordWalkResult, type RecordWalkGateName } from '../tools/record-walk.js';
+// B-1073 step 11 (post-review wiring): the release-accept-remark auto-insert now lives in
+// `src/tools/fasttrack-release-remark.ts` — NOT here — because the real call site is
+// `src/tools/briefs.ts`'s `consumeAcceptRemark`, and this module imports `record-walk.ts`, which
+// imports `briefs.ts`; keeping the auto-insert logic here would make `briefs.ts -> this module ->
+// record-walk.ts -> briefs.ts` an import cycle. Re-exported below for backward compatibility with
+// this file's own pre-existing tests/callers.
 
 export const RECORDED_WALK_REQUESTS_TABLE = 'recorded_walk_requests';
 
@@ -216,73 +222,11 @@ export async function runRecordedWalkDrainPass(deps: RecordedWalkDrainDeps): Pro
   return 1;
 }
 
-// ---------------------------------------------------------------------------------------------
-// B-1073 step 11 — release-accept-remark -> `recorded_walk_requests` auto-insert: PLUGIN-SIDE HALF
-// ONLY, AND NOT WIRED IN ANYWHERE. Read this comment before touching this function.
-//
-// THE IDEA (per B-1073's ratified design): when a fast-track ticket's RELEASE brief is accepted
-// WITH a remark (B-503's `pending_remark` — surfaced on `get_task` as `{ brief_id, reason, detail,
-// decision_ref, referent }`, consumed via `consume_accept_remark`, src/tools/briefs.ts), the
-// remark's `detail` text IS the human's post-hoc verify-walk attestation — so a future daemon-side
-// watcher should treat it as `attest_walk` and auto-file a `recorded_walk_requests` row, continuing
-// the fast-track ticket's walk through `harmony record`'s own gate-walk core without a second human
-// action.
-//
-// WHY THIS IS A STUB, HONESTLY: implementing the real thing needs an actual INSERT into
-// `recorded_walk_requests`, and grepping this entire plugin repo (`src/tools/`, `src/daemon/`) turns
-// up NO existing plugin-side insert helper for that table — every existing reference (this file's
-// own SELECT/UPDATE above, `docs/recorded-walk-contract.md` §5) is a READ or a write-BACK to a row
-// the WEB app already created. The table's row is, by B-1063's own design, written by harmony-web's
-// "Record" action — this plugin repo has never had a reason to write a FRESH row into it before
-// this ticket, and inventing a blind `client.from('recorded_walk_requests').insert(...)` call here,
-// untested against the real RLS policy B-1063's migration defines (see
-// docs/recorded-walk-contract.md §5's own "RLS / who may write: left to B-1063's own migration"
-// line), would be exactly the kind of unverified integration this file's own B-1062-step-4 contract
-// test (`recorded-walk-drain-contract.test.ts`) is designed to catch drift from.
-//
-// WHAT THIS FUNCTION DOES, THEREFORE: it is a PURE, UNIT-TESTABLE helper that shapes the row a
-// future insert would need — nothing more. It has NO caller anywhere in this codebase. A FUTURE
-// ticket wires it into `src/daemon/scheduler.ts`'s own release-accept pickup (where
-// `pending_remark` would actually be read live, off a real `get_task`/conduction-record call) and
-// performs the real `client.from('recorded_walk_requests').insert(...)` call, citing B-1063's
-// column contract (`docs/recorded-walk-contract.md` §5): `task_id` (uuid, not null), `summary`
-// (text, not null), `evidence_links` (jsonb array of `EligibilityEvidenceLink`), `attest_walk`
-// (text), `requested_by` (uuid, not null) — never the generated `id` / `requested_at` / `status` /
-// `processed_at` / `error` / `result` columns, which the table's own defaults/this drain's own
-// write-back supply.
-// ---------------------------------------------------------------------------------------------
-
-/** The row shape `buildFastTrackReleaseRemarkRecordedWalkRequest` below produces — the INSERT-able
- *  columns only (see the module comment above for the generated columns this deliberately omits). */
-export interface FastTrackReleaseRemarkRecordedWalkRequestRow {
-  task_id: string;
-  summary: string;
-  evidence_links: Array<{ url: string }>;
-  attest_walk: string;
-  requested_by: string;
-}
-
-/** B-1073 step 11 — STUB (see the module-level comment above for why): shapes the
- *  `recorded_walk_requests` row a fast-track ticket's release-accept-with-remark would file, from
- *  the remark + the ticket's already-recorded `build_pr`. Pure — no I/O, no caller yet.
- *  `remark_detail` is the B-503 `pending_remark.detail` text, taken VERBATIM as the walk's
- *  `attest_walk` sentence (per this ticket's own design: the remark IS the attestation). Returns
- *  `null` when `remark_detail` is blank/whitespace-only — an attestation cannot be empty (mirrors
- *  `evaluateVerifyWalkItem`'s own blank-reads-as-absent convention, `src/tools/record-eligibility.ts`). */
-export function buildFastTrackReleaseRemarkRecordedWalkRequest(args: {
-  task_id: string;
-  task_title: string;
-  remark_detail: string;
-  build_pr_url: string | null;
-  requested_by: string;
-}): FastTrackReleaseRemarkRecordedWalkRequestRow | null {
-  const attestWalk = args.remark_detail.trim();
-  if (!attestWalk) return null;
-  return {
-    task_id: args.task_id,
-    summary: args.task_title,
-    evidence_links: args.build_pr_url ? [{ url: args.build_pr_url }] : [],
-    attest_walk: attestWalk,
-    requested_by: args.requested_by,
-  };
-}
+// B-1073 step 11 (post-review wiring) — re-exported from `src/tools/fasttrack-release-remark.ts`,
+// the real module now (see that file's own header for why it is NOT here — the import-cycle note
+// above). Kept here too so this file's own pre-existing imports/tests need no changes.
+export {
+  type FastTrackReleaseRemarkRecordedWalkRequestRow,
+  buildFastTrackReleaseRemarkRecordedWalkRequest,
+  fileFastTrackReleaseRemarkRecordedWalkIfEligible,
+} from '../tools/fasttrack-release-remark.js';

@@ -400,7 +400,7 @@ export async function handleToolCall(
         result = await reshapeBrief(client, projectId, args as any);
         break;
       case 'consume_accept_remark':
-        result = await consumeAcceptRemark(client, projectId, args as any);
+        result = await consumeAcceptRemark(client, projectId, args as any, userId);
         break;
       case 'consume_pending_acceptance_event':
         result = await consumePendingAcceptanceEventToolHandler(client, projectId, args as any);

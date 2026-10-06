@@ -32,6 +32,13 @@ Three surfaces, ONE implementation:
 | MCP | the `record` tool | directly, in the MCP server process |
 | Web (B-1063) | writes a `recorded_walk_requests` row | the daemon's drain, `src/daemon/recorded-walk-drain.ts`, polling in-process |
 
+**B-1073 step 11 (post-review wiring): there is now a SECOND writer of this table, plugin-side.** A
+fast-track ticket's RELEASE-gate accept-with-remark (B-503's `pending_remark`) auto-files a
+`recorded_walk_requests` row from `src/tools/briefs.ts`'s `consumeAcceptRemark` — see
+`src/tools/fasttrack-release-remark.ts`'s `fileFastTrackReleaseRemarkRecordedWalkIfEligible` — so the
+remark's text becomes the walk's `attest_walk` with no second human action. This is a plain
+`INSERT`, same table, same RLS as the web's own write; it does not change the schema in §5 below.
+
 ---
 
 ## 2. The `RecordWalkArgs` / `RecordWalkResult` shapes

@@ -1,7 +1,7 @@
 // B-1073 — unit coverage for resolveLegGate: the fast-track leg-gate routing wrapper.
 
 import { describe, it, expect } from 'vitest';
-import { resolveLegGate } from './leg-gate.js';
+import { resolveLegGate, isFastTrackBuildLeg, evaluateFastTrackAdmission } from './leg-gate.js';
 import type { RunConfig } from '../config/run-config.js';
 
 const FAST_TRACK: RunConfig = { fast_track: true };
@@ -46,5 +46,54 @@ describe('resolveLegGate (B-1073)', () => {
     expect(resolveLegGate(FAST_TRACK, {})).toBeNull();
     expect(resolveLegGate(FAST_TRACK, { workflow_state: null })).toBeNull();
     expect(resolveLegGate(FAST_TRACK, { workflow_state: undefined })).toBeNull();
+  });
+});
+
+describe('isFastTrackBuildLeg (B-1073 post-review wiring)', () => {
+  it('true for fast-track + Captured/Proposed — the exact condition resolveLegGate special-cases', () => {
+    expect(isFastTrackBuildLeg(FAST_TRACK, { workflow_state: 'Captured' })).toBe(true);
+    expect(isFastTrackBuildLeg(FAST_TRACK, { workflow_state: 'Proposed' })).toBe(true);
+  });
+
+  it('false for fast-track at any other state', () => {
+    expect(isFastTrackBuildLeg(FAST_TRACK, { workflow_state: 'Planned' })).toBe(false);
+    expect(isFastTrackBuildLeg(FAST_TRACK, { workflow_state: 'Built' })).toBe(false);
+  });
+
+  it('false for a non-fast-track run, even at Captured/Proposed', () => {
+    expect(isFastTrackBuildLeg(NOT_FAST_TRACK, { workflow_state: 'Captured' })).toBe(false);
+    expect(isFastTrackBuildLeg(EMPTY, { workflow_state: 'Proposed' })).toBe(false);
+  });
+});
+
+describe('evaluateFastTrackAdmission (B-1073 post-review wiring)', () => {
+  const CLEAN_SUMMARY = 'Fix the flaky retry timer in the poller.';
+
+  it('admissible with zero declared repos — the feature-detect default', () => {
+    const { admissible, report } = evaluateFastTrackAdmission(CLEAN_SUMMARY, []);
+    expect(admissible).toBe(true);
+    expect(report.items.find((i) => i.item === 'multi_repo')!.value).toContain('repos: 0');
+  });
+
+  it('admissible with exactly one declared repo', () => {
+    const { admissible } = evaluateFastTrackAdmission(CLEAN_SUMMARY, ['ycomplex/harmony-plugin']);
+    expect(admissible).toBe(true);
+  });
+
+  it('inadmissible when the deployment declares more than one repo (the conservative pre-build floor)', () => {
+    const { admissible, report } = evaluateFastTrackAdmission(CLEAN_SUMMARY, [
+      'ycomplex/harmony-web',
+      'ycomplex/harmony-plugin',
+    ]);
+    expect(admissible).toBe(false);
+    expect(report.items.find((i) => i.item === 'multi_repo')!.verdict).toBe('fail');
+  });
+
+  it('inadmissible when the summary is not single-sentence-statable, even with one declared repo', () => {
+    const { admissible } = evaluateFastTrackAdmission(
+      'Fix the timer. Also touch up the retry logic while we are in there.',
+      ['ycomplex/harmony-plugin'],
+    );
+    expect(admissible).toBe(false);
   });
 });

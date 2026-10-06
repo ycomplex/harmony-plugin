@@ -854,6 +854,15 @@ leg does run (build) still passes through the SAME per-gate delegation test (§T
 as any other run — a fast-track run is not a second, looser conduct mode, only a shorter approach to
 the same gates.
 
+Two further non-discretionary checks bracket that one build leg. BEFORE it ever fires, the daemon's
+own fire path (`scheduler.ts`'s `fireLaunch`) runs the five-item eligibility floor
+(`evaluateFastTrackAdmission`, `src/daemon/leg-gate.ts`) against the ticket's title and the
+deployment's declared repos; an inadmissible verdict parks the ticket (`advance_workflow 'parking'`
++ a comment) and never launches a worker. BEFORE that leg opens its PR, the build leg itself — driven
+by `skills/start-work/SKILL.md`'s O3 (sub-step 2a) — calls **`checkPrePrOpenEligibility`**
+(`src/tools/record-eligibility.ts`) against the real diff; `allowed: false` there means no PR opens,
+same escalation-to-`harmony conduct` posture as every other eligibility refusal in this ticket.
+
 What is **conduct-specific** (NOT in the shared table — this is the conductor's *handling*, not the routing
 facts; this is the deliberate other half of B-490's "same routing, opposite handling"):
 

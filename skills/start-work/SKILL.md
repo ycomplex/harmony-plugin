@@ -345,6 +345,17 @@ advance past a failed sub-step:
    instructing party. In a main-loop build, run the commit + push yourself.
 2. **Verify the push landed:** `git ls-remote origin <branch>` must show the branch at the expected head
    SHA. An un-pushed commit is not an artefact.
+2a. **Fast-track only (`environment.fast_track === true`, per B-1073) — the pre-PR-open eligibility
+    re-check, BEFORE sub-step 3 opens the PR.** Call
+    `checkPrePrOpenEligibility(summary, changedPaths)` (`src/tools/record-eligibility.ts`) —
+    `summary` is the ticket's title, `changedPaths` is `git diff --name-only` against the merge base.
+    This is the ONE function name both this step and `skills/harmony-conduct/SKILL.md`'s fast-track
+    paragraph cite — never re-derive the check by hand. On `allowed: false`: do NOT open the PR, go
+    to the FAILURE PATH below quoting `verdict`'s blocking item(s)
+    (`formatInadmissibleFastTrackVerdict`), leaving the branch/commits intact — the work is not
+    discarded, just not shipped past this gate. On `allowed: true`, proceed to sub-step 3. An
+    ordinary (non-fast-track) build never calls this — it is scoped to `environment.fast_track`
+    alone.
 3. **Open the PR:** `gh pr create` (base `main`), then verify it is open — `gh pr view <url> --json state,url`
    must report `OPEN`.
 4. **Record the structured pushed-PR reference on the ticket** — written ONLY from the just-verified
