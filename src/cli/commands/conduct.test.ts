@@ -282,3 +282,46 @@ describe('harmony conduct <ticket> --model / --session-resume / --auto-approve-g
     expect(mocks.getProjectConductionDefaults).toHaveBeenCalledWith(ctx.client, 'proj-1');
   });
 });
+
+// ---------------------------------------------------------------------------
+// B-1073 — `--fast-track` sets run_config.fast_track, mirroring the B-925 flags above
+// ---------------------------------------------------------------------------
+
+describe('harmony conduct <ticket> --fast-track (B-1073)', () => {
+  it('passing neither --fast-track nor anything else produces no fast_track key at all', async () => {
+    await run(['conduct', 'B-696']);
+
+    const call = mocks.createConduction.mock.calls[0][1] as Record<string, unknown>;
+    expect('run_config' in call).toBe(false);
+  });
+
+  it('--fast-track produces the explicit run_config.fast_track: true encoding', async () => {
+    await run(['conduct', 'B-696', '--fast-track']);
+
+    const call = mocks.createConduction.mock.calls[0][1] as { run_config?: unknown };
+    expect(call.run_config).toEqual({ fast_track: true });
+  });
+
+  it('composes cleanly with the B-925 flags — --fast-track alongside --model produces both keys', async () => {
+    await run(['conduct', 'B-696', '--fast-track', '--model', 'claude-opus-5']);
+
+    const call = mocks.createConduction.mock.calls[0][1] as { run_config?: unknown };
+    expect(call.run_config).toEqual({ fast_track: true, model: { default: 'claude-opus-5' } });
+  });
+
+  it('is never overridden by a project conduction default — ConductionDefaults has no fast_track field', async () => {
+    mocks.getProjectConductionDefaults.mockResolvedValue({
+      model: 'claude-sonnet-5',
+      session_resume: { enabled: true },
+    });
+
+    await run(['conduct', 'B-696', '--fast-track']);
+
+    const call = mocks.createConduction.mock.calls[0][1] as { run_config?: unknown };
+    expect(call.run_config).toEqual({
+      fast_track: true,
+      model: { default: 'claude-sonnet-5' },
+      session_resume: { enabled: true },
+    });
+  });
+});
