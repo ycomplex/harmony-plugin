@@ -111,9 +111,13 @@ This package also serves as a Claude Code plugin, providing an MCP server and wo
 1. Inside Claude Code, add the marketplace and install the plugin:
 
    ```
-   /plugin marketplace add ycomplex/harmony-plugin
+   /plugin marketplace add ycomplex/plugins
    /plugin install harmony-plugin@ycomplex
    ```
+
+   The marketplace is `ycomplex/plugins`, not this repository. Its manifest pins `harmony-plugin` to the
+   `prod` branch, which is the released plugin with a built `dist/`. Adding this repository as a
+   marketplace would serve `main`, which is source only and may be ahead of the production database.
 
 2. Restart Claude Code for the hooks and MCP server to take effect:
 
@@ -121,7 +125,8 @@ This package also serves as a Claude Code plugin, providing an MCP server and wo
    /exit
    ```
 
-   Then start `claude` again. On first startup, the plugin automatically installs dependencies and builds the MCP server (~10 seconds).
+   Then start `claude` again. The installed plugin already carries the built MCP server; nothing is
+   compiled on your machine.
 
 3. Configure your API token:
 
@@ -157,7 +162,7 @@ export HARMONY_API_TOKEN="hmy_your_token_here"
 
 ### How it works
 
-The plugin's `SessionStart` hook automatically installs dependencies and builds the TypeScript MCP server on first use. Subsequent sessions skip the build if `dist/index.js` already exists.
+A marketplace install ships `dist/` prebuilt, so the MCP server is ready on the first session. The plugin's `SessionStart` hook builds it only when `dist/index.js` is missing, which happens on a source checkout loaded with `claude --plugin-dir` (see [Development](#development)).
 
 The MCP server starts automatically when the plugin is enabled and provides tools prefixed with `mcp__harmony__` (e.g., `mcp__harmony__get_task`).
 
