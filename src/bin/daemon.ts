@@ -255,10 +255,19 @@ async function main(): Promise<void> {
    *  still gets the identical closure. */
   const runCommand = (
     cmd: string,
-    opts?: { quiet?: boolean; quietRender?: (code: number | null) => string },
+    opts?: {
+      quiet?: boolean;
+      quietRender?: (code: number | null) => string;
+      env?: NodeJS.ProcessEnv;
+    },
   ): Promise<{ exitCode: number | null; outputTail: string; outputBytes: number }> =>
     new Promise((resolve) => {
-      const child = exec(cmd);
+      // B-1020: `opts.env`, when given, is passed straight through as `exec`'s own `options.env` —
+      // which REPLACES process.env for the child, never merges with it (Node's own semantics). The
+      // caller (fireLaunch) is responsible for spreading `...process.env` itself when it wants
+      // inheritance plus an addition. `env: undefined` (every other call site) is indistinguishable
+      // from omitting the option entirely, so this is byte-for-byte the pre-B-1020 behavior there.
+      const child = exec(cmd, { env: opts?.env });
       // B-720: a BOUNDED ring buffer over the same data events the log already sees. Chunks are
       // appended and dropped from the FRONT while the retained bytes exceed WORKER_OUTPUT_TAIL_BYTES,
       // so memory is capped regardless of how chatty the command is (a single oversized chunk is

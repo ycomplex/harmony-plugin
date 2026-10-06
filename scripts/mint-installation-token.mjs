@@ -232,6 +232,16 @@ export function composeTokenExpiryLine(expiresAt) {
   return expiresAt ? `GIT_TOKEN_EXPIRES_AT=${expiresAt}\n` : '';
 }
 
+/** B-1020: 'HARMONY_LEG=<n>\n', or '' when no leg was given — mirrors composeModelLine's own
+ *  always-appended-when-present convention exactly. The value here arrives from either an explicit
+ *  --leg flag or (the daemon-driven path) this process's own inherited HARMONY_LEG env var —
+ *  src/daemon/scheduler.ts's fireLaunch sets it as a per-call `env` option on the runCommand that
+ *  spawns this script, and Node's exec() inherits that env into everything it spawns, so this
+ *  script never has to re-derive the leg number itself. */
+export function composeLegLine(leg) {
+  return leg ? `HARMONY_LEG=${leg}\n` : '';
+}
+
 /**
  * B-743: normalize a run-config JSON payload that may arrive as EITHER raw JSON text or
  * base64-encoded JSON text, into raw JSON text. Before this ticket, `--run-config`'s value was
@@ -355,6 +365,7 @@ function parseArgs(argv) {
     runConfig: undefined,
     runConfigPath: undefined,
     model: undefined,
+    leg: undefined,
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--base') args.base = argv[++i];
@@ -364,20 +375,25 @@ function parseArgs(argv) {
     else if (argv[i] === '--run-config') args.runConfig = argv[++i];
     else if (argv[i] === '--run-config-path') args.runConfigPath = argv[++i];
     else if (argv[i] === '--model') args.model = argv[++i];
+    else if (argv[i] === '--leg') args.leg = argv[++i];
   }
   if (!args.out) {
     throw new Error(
       'Usage: mint-installation-token.mjs --out <per-run env-file> [--base <static env-file>] ' +
         '[--config <deployment-config path>] [--conduction-id <uuid>] ' +
         "[--run-config <json-string>] [--run-config-path <container-side path>] " +
-        '[--model <resolved model alias>]',
+        '[--model <resolved model alias>] [--leg <n>]',
     );
   }
   return args;
 }
 
 export async function main(argv = process.argv.slice(2), env = process.env) {
-  const { base, out, config, conductionId, runConfig, runConfigPath, model } = parseArgs(argv);
+  const { base, out, config, conductionId, runConfig, runConfigPath, model, leg } = parseArgs(argv);
+  // B-1020: --leg wins when given; otherwise fall back to this process's own inherited HARMONY_LEG
+  // env var — how fireLaunch's per-call `env` option (scheduler.ts) reaches this script, since it
+  // runs as a child process spawned from the same exec() chain.
+  const resolvedLeg = leg ?? env.HARMONY_LEG;
 
   const appId = env.HARMONY_APP_ID;
   const installationId = env.HARMONY_APP_INSTALLATION_ID;
@@ -416,6 +432,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   envFileContent += composeModelLine(model);
   // B-963: same convention — the leg's own credential horizon, read from the mint response.
   envFileContent += composeTokenExpiryLine(expires_at);
+  // B-1020: same always-appended-when-present convention as composeConductionIdLine/composeModelLine
+  // above.
+  envFileContent += composeLegLine(resolvedLeg);
 
   writeEnvFile(out, envFileContent);
 

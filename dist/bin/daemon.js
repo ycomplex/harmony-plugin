@@ -30283,7 +30283,7 @@ var CONDUCTION_STATUSES = [
   ...CONDUCTION_HUMAN_OWNED_STATUSES,
   ...CONDUCTION_TERMINAL_STATUSES
 ];
-var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, reap_requested_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
+var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, leg_count, clean_shutdown_at, reap_requested_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
 var isMissingLastLegEndedAtColumn = (err) => {
   if (!err) return false;
   const code = err.code ?? "";
@@ -30304,6 +30304,7 @@ var CONDUCTION_PATCHABLE_FIELDS = [
   "lease_acquired_at",
   "last_heartbeat_at",
   "leg_started_at",
+  "leg_count",
   "clean_shutdown_at",
   "reap_requested_at",
   "retry_count",
@@ -35403,7 +35404,8 @@ function beginReapEscalation(deps, runtime, row, current, tracked, flag) {
 }
 async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, retryCount) {
   const current = preReadCurrent ?? await deps.getTaskMeta(row.task_id);
-  if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: iso(deps.now()) })) {
+  const leg = (row.leg_count ?? 0) + 1;
+  if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: iso(deps.now()), leg_count: leg })) {
     runtime.ready.delete(row.id);
     return;
   }
@@ -35434,7 +35436,10 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
       `${label(row, current, deps.projectKey)}: \u26A0 run_config will NOT reach the worker: the active launch template has no {run_config_json} placeholder (conduction ${row.id})`
     );
   }
-  const launch = deps.runCommand(renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey, deps.workerImage))).then((result) => {
+  const launch = deps.runCommand(
+    renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey, deps.workerImage)),
+    { env: { ...process.env, HARMONY_LEG: String(leg) } }
+  ).then((result) => {
     tracked.settled = true;
     tracked.exitCode = result.exitCode;
     tracked.launchOutputTail = result.outputTail ?? null;
@@ -35817,7 +35822,7 @@ ${err instanceof Error ? err.message : String(err)}
     }
   };
   const runCommand = (cmd, opts) => new Promise((resolve) => {
-    const child = exec(cmd);
+    const child = exec(cmd, { env: opts?.env });
     const chunks = [];
     let tailBytes = 0;
     let outputBytes = 0;

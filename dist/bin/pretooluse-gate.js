@@ -21850,7 +21850,7 @@ var CONDUCTION_STATUSES = [
   ...CONDUCTION_HUMAN_OWNED_STATUSES,
   ...CONDUCTION_TERMINAL_STATUSES
 ];
-var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, clean_shutdown_at, reap_requested_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
+var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, leg_count, clean_shutdown_at, reap_requested_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
 async function getConduction(client, id) {
   if (!id) throw new Error("id is required");
   const { data, error } = await client.from("conductions").select(CONDUCTION_COLS).eq("id", id).maybeSingle();

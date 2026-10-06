@@ -22,6 +22,7 @@ import {
   composeConductionIdLine,
   composeModelLine,
   composeTokenExpiryLine,
+  composeLegLine,
   composeRunConfigInlineLine,
   composeRunConfigPathLine,
   normalizeRunConfigJson,
@@ -399,6 +400,21 @@ describe('composeTokenExpiryLine (B-963)', () => {
     expect(composeTokenExpiryLine(undefined)).toBe('');
     expect(composeTokenExpiryLine(null)).toBe('');
     expect(composeTokenExpiryLine('')).toBe('');
+  });
+});
+
+// B-1020: composeLegLine mirrors composeModelLine's own always-appended-when-present convention —
+// see src/daemon/scheduler.test.ts for the fireLaunch coverage that resolves the leg number this
+// function only ever CARRIES, never re-derives.
+describe('composeLegLine', () => {
+  it("composes 'HARMONY_LEG=<n>\\n' when a leg is given", () => {
+    expect(composeLegLine(3)).toBe('HARMONY_LEG=3\n');
+    expect(composeLegLine('3')).toBe('HARMONY_LEG=3\n');
+  });
+
+  it('returns an empty string when no leg was given, so nothing is appended', () => {
+    expect(composeLegLine(undefined)).toBe('');
+    expect(composeLegLine('')).toBe('');
   });
 });
 
