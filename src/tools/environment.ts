@@ -9,6 +9,7 @@ import {
   getConductionId,
   getOperatorNote,
   getRunConfig,
+  isFastTrackEnabled,
   resolveRunConfigFromConduction,
   type RunConfig,
 } from '../config/run-config.js';
@@ -43,6 +44,11 @@ export interface EnvironmentInfo {
    *  `conduction_id`/`operator_note` (the conduct loop now calls `get_project` per iteration, not
    *  once per run) and CAN change mid-run — see `skills/harmony-conduct/SKILL.md` §1b. */
   auto_approve_gates: string[] | null;
+  /** B-1073: this leg's `run_config.fast_track` (the operator's per-run fast-track flag — see
+   *  `src/config/run-config.ts`'s `isFastTrackEnabled`), `false` when absent/unset OR when the
+   *  run_config payload can't be read/decoded/parsed. Same best-effort, degrade-to-false-never-throw
+   *  convention as `operator_note`/`auto_approve_gates` above. */
+  fast_track: boolean;
 }
 
 // Must mirror src/supabase.ts exactly: env override, else the prod project. Exported so B-1035's
@@ -153,6 +159,7 @@ export async function resolveEnvironment(
   // malformed run_config must never break get_project.
   let operator_note: string | null = null;
   let auto_approve_gates: string[] | null = null;
+  let fast_track = false;
   if (runConfig) {
     try {
       operator_note = getOperatorNote(runConfig) ?? null;
@@ -165,6 +172,11 @@ export async function resolveEnvironment(
     } catch {
       auto_approve_gates = null;
     }
+    try {
+      fast_track = isFastTrackEnabled(runConfig);
+    } catch {
+      fast_track = false;
+    }
   }
 
   return {
@@ -175,5 +187,6 @@ export async function resolveEnvironment(
     conduction_id,
     operator_note,
     auto_approve_gates,
+    fast_track,
   };
 }

@@ -498,3 +498,43 @@ describe('runRecordedWalk — mid-walk failure reporting (B-1062)', () => {
     expect(composeBrief).not.toHaveBeenCalled();
   });
 });
+
+describe('runRecordedWalk — from_gate (B-1073 step 9/10)', () => {
+  it('omitted from_gate behaves exactly as before — every gate still lands, in order', async () => {
+    const client = makeClient('Proposed');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, eligibleArgs());
+    expect(result.gates.map((g) => g.gate)).toEqual(['clarify', 'decompose', 'design', 'plan', 'build', 'release', 'deploy', 'verify']);
+  });
+
+  it("from_gate: 'deploy' on an already-Built fixture skips clarify/decompose/design/plan/build and lands only deploy + the verify brief", async () => {
+    const client = makeClient('Built');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, { ...eligibleArgs(), from_gate: 'deploy' });
+
+    expect(result.refused).toBe(false);
+    expect(result.error).toBeUndefined();
+    expect(result.gates.map((g) => g.gate)).toEqual(['deploy', 'verify']);
+
+    // No brief composed for any of the five skipped gates — only the verify compose.
+    expect(composeBrief.mock.calls.map((c: any) => c[3].reason)).toEqual(['verification-ack-pending']);
+    expect(resolveBrief).not.toHaveBeenCalled();
+    expect(consumePendingAcceptanceEvent).not.toHaveBeenCalled();
+
+    // No gate slot written — clarify/release (the two slot-writing gates) are both skipped.
+    expect(writeGateSlot).not.toHaveBeenCalled();
+    expect(addComment).not.toHaveBeenCalled();
+    expect(manageAcceptanceCriteria).not.toHaveBeenCalled();
+    expect(recordDecision).not.toHaveBeenCalled();
+
+    // The ONLY advance_workflow call is the deploy gate's own brief-less Built->Deployed advance —
+    // never 'proposing' (ticket is already past Captured) and never 'building' (skipped).
+    expect(advanceWorkflow).toHaveBeenCalledTimes(1);
+    expect(advanceWorkflow).toHaveBeenCalledWith(client, PROJECT_ID, { task_id: 'resolved-B-2000', activity: 'deploying' });
+  });
+
+  it("from_gate: 'build' skips clarify/decompose/design/plan and lands build onward", async () => {
+    const client = makeClient('Planned');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, { ...eligibleArgs(), from_gate: 'build' });
+    expect(result.gates.map((g) => g.gate)).toEqual(['build', 'release', 'deploy', 'verify']);
+    expect(composeBrief.mock.calls.map((c: any) => c[3].reason)).toEqual(['release-decision-pending', 'verification-ack-pending']);
+  });
+});

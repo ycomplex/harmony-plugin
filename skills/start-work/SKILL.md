@@ -117,6 +117,18 @@ mcp__harmony__compose_brief({
 `frame.steps` and the `checklist_item` payload are the SAME list at the same granularity — the frame is
 what the human reads, the payload is what the accept materializes. Keep them in step.
 
+**B-1073 — a fast-track-run ticket's plan-accept also authors one `label_add` payload item.** Check
+`environment.fast_track` (`get_project`'s `environment` block — the SAME field step 2 of B-1073
+added, sourced from `run_config.fast_track`). When it is `true` — this is the accept that, per this
+section's own header, "IS the authorisation to build" — fold one more item into the SAME `payload`
+array alongside the `checklist_item` entries above: `{ write_kind: 'label_add', ref:
+'label-fast-track', label_name: 'fast-track' }` (the exact `AcceptanceEventPayloadItem` fields
+`src/tools/acceptance-events.ts` already dispatches for `label_add`, read there before authoring
+this — never guess the field names). This is leg-count evidence, not a behavior change: it lands a
+visible `fast-track` label on the ticket at the SAME accept that authorizes the build, so a reader
+can tell a fast-tracked ticket's build leg apart from an ordinary one without re-deriving it from
+`run_config`.
+
 **On an iterate (round 2+), also author `doc.revision`** — `{ round, changes: [{ change, responds_to }] }`,
 each change bound to the feedback it answers. It renders under the **On accept:** line, below the frame.
 Every recompose that is NOT a send-back passes `revision_cause` — see `skills/harmony-shared/brief-authoring.md` §Stating the cause of a redraft (B-1017).
@@ -333,6 +345,17 @@ advance past a failed sub-step:
    instructing party. In a main-loop build, run the commit + push yourself.
 2. **Verify the push landed:** `git ls-remote origin <branch>` must show the branch at the expected head
    SHA. An un-pushed commit is not an artefact.
+2a. **Fast-track only (`environment.fast_track === true`, per B-1073) — the pre-PR-open eligibility
+    re-check, BEFORE sub-step 3 opens the PR.** Call
+    `checkPrePrOpenEligibility(summary, changedPaths)` (`src/tools/record-eligibility.ts`) —
+    `summary` is the ticket's title, `changedPaths` is `git diff --name-only` against the merge base.
+    This is the ONE function name both this step and `skills/harmony-conduct/SKILL.md`'s fast-track
+    paragraph cite — never re-derive the check by hand. On `allowed: false`: do NOT open the PR, go
+    to the FAILURE PATH below quoting `verdict`'s blocking item(s)
+    (`formatInadmissibleFastTrackVerdict`), leaving the branch/commits intact — the work is not
+    discarded, just not shipped past this gate. On `allowed: true`, proceed to sub-step 3. An
+    ordinary (non-fast-track) build never calls this — it is scoped to `environment.fast_track`
+    alone.
 3. **Open the PR:** `gh pr create` (base `main`), then verify it is open — `gh pr view <url> --json state,url`
    must report `OPEN`.
 4. **Record the structured pushed-PR reference on the ticket** — written ONLY from the just-verified

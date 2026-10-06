@@ -25,6 +25,7 @@ import {
   getOperatorNote,
   getRunConfig,
   isAllowedModelAlias,
+  isFastTrackEnabled,
   isSessionResumeEnabled,
   readModelHandoffRequest,
   resolveModelCatalog,
@@ -77,6 +78,43 @@ describe('RunConfigSchema session_resume (B-718)', () => {
     expect(
       RunConfigSchema.parse({ session_resume: { enabled: true }, steering_note: 'be terse' }),
     ).toEqual({ session_resume: { enabled: true }, steering_note: 'be terse' });
+  });
+});
+
+
+describe('RunConfigSchema fast_track (B-1073)', () => {
+  it('accepts { fast_track: true }', () => {
+    expect(RunConfigSchema.parse({ fast_track: true })).toEqual({ fast_track: true });
+  });
+
+  it('accepts { fast_track: false }', () => {
+    expect(RunConfigSchema.parse({ fast_track: false })).toEqual({ fast_track: false });
+  });
+
+  it('rejects a non-boolean fast_track value', () => {
+    expect(() => RunConfigSchema.parse({ fast_track: 'yes' })).toThrow();
+  });
+
+  it('still passes through unrelated unknown keys alongside fast_track', () => {
+    expect(RunConfigSchema.parse({ fast_track: true, note: 'go' })).toEqual({ fast_track: true, note: 'go' });
+  });
+});
+
+describe('isFastTrackEnabled (B-1073)', () => {
+  it('defaults to false on the empty run_config ({})', () => {
+    expect(isFastTrackEnabled(EMPTY_RUN_CONFIG)).toBe(false);
+  });
+
+  it('is false when fast_track is explicitly false', () => {
+    expect(isFastTrackEnabled({ fast_track: false })).toBe(false);
+  });
+
+  it('is true only when fast_track is explicitly true', () => {
+    expect(isFastTrackEnabled({ fast_track: true })).toBe(true);
+  });
+
+  it('is false when fast_track is absent but other unrelated keys are present', () => {
+    expect(isFastTrackEnabled({ note: 'go' })).toBe(false);
   });
 });
 

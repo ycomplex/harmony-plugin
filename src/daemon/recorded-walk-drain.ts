@@ -11,6 +11,13 @@
 //      record-walk.ts) — ONE implementation, never a second one reimplemented here,
 //   4. writes the outcome back (`status: 'done' | 'error'`, `processed_at`, `error`).
 //
+// B-1073 step 9/10: between claiming the row and calling `runRecordedWalk`, this drain now also
+// reads the ticket's own CURRENT `workflow_state` (a `tasks` SELECT — the one table besides
+// `recorded_walk_requests` this file touches) to derive `from_gate`, so a fast-track ticket's
+// post-merge drain resumes the walk where it actually left off (e.g. `Built` -> `'deploy'`) instead
+// of re-walking gates that already landed. Best-effort: a read failure degrades to `'clarify'`,
+// today's unchanged default, never throws.
+//
 // TOLERANT OF THE TABLE NOT EXISTING YET (the B-846 precedent — see conduction-record.ts's
 // `isMissingLastLegEndedAtColumn` / scheduler.ts's `writeLastLegEndedAt` for the sibling shape this
 // mirrors): B-1063 (harmony-web's migration) may not have shipped yet when this code merges and reaches
@@ -26,9 +33,43 @@
 // recorded-walk-drain-contract.test.ts for the structural + runtime proof).
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { runRecordedWalk, type RecordWalkArgs, type RecordWalkResult } from '../tools/record-walk.js';
+import { runRecordedWalk, type RecordWalkArgs, type RecordWalkResult, type RecordWalkGateName } from '../tools/record-walk.js';
+// B-1073 step 11 (post-review wiring): the release-accept-remark auto-insert now lives in
+// `src/tools/fasttrack-release-remark.ts` — NOT here — because the real call site is
+// `src/tools/briefs.ts`'s `consumeAcceptRemark`, and this module imports `record-walk.ts`, which
+// imports `briefs.ts`; keeping the auto-insert logic here would make `briefs.ts -> this module ->
+// record-walk.ts -> briefs.ts` an import cycle. Re-exported below for backward compatibility with
+// this file's own pre-existing tests/callers.
 
 export const RECORDED_WALK_REQUESTS_TABLE = 'recorded_walk_requests';
+
+/** B-1073 step 9 — `workflow_state -> RecordWalkGateName` for the drain's own from_gate derivation.
+ *  Mirrors `src/daemon/gate-phase.ts`'s `GATE_BY_WORKFLOW_STATE`, with ONE deliberate divergence:
+ *  `Built` maps to `'deploy'`, not `'release'` — a fast-track ticket observed at `Built` already has
+ *  a REAL release brief/slot landed by its own build leg (step 10's own case), so a drain-resumed
+ *  walk must never re-walk release. Every other state keeps gate-phase.ts's own mapping, and any
+ *  state absent from this table (including `Captured`/`Proposed`, and any state this table simply
+ *  doesn't recognize) defaults to `'clarify'` — today's unchanged behavior for every non-fast-track
+ *  walk this drain processes. Deliberately NOT imported from gate-phase.ts: that table's value type
+ *  is `Gate` (seven values, no `'deploy'`), one fewer than `RecordWalkGateName` (eight values), so
+ *  the two tables cannot share a single declaration without widening gate-phase.ts's own type. */
+const WORKFLOW_STATE_TO_FROM_GATE: Record<string, RecordWalkGateName> = {
+  Captured: 'clarify',
+  Proposed: 'clarify',
+  Clarified: 'decompose',
+  Decomposed: 'design',
+  Designed: 'plan',
+  Planned: 'build',
+  Built: 'deploy',
+  Deployed: 'verify',
+};
+
+/** B-1073 step 9 — derive `from_gate` from a ticket's CURRENT `workflow_state`, best-effort: an
+ *  absent/unrecognized state reads as `'clarify'`, never throws. */
+function deriveFromGate(workflowState: string | null | undefined): RecordWalkGateName {
+  if (!workflowState) return 'clarify';
+  return WORKFLOW_STATE_TO_FROM_GATE[workflowState] ?? 'clarify';
+}
 
 export interface RecordedWalkRequestRow {
   id: string;
@@ -124,11 +165,31 @@ export async function runRecordedWalkDrainPass(deps: RecordedWalkDrainDeps): Pro
     return 0;
   }
 
+  // B-1073 step 9/10: read the ticket's CURRENT workflow_state to derive `from_gate` — e.g. a
+  // fast-track ticket already at `Built` (its own build leg already walked clarify->build and
+  // composed a real release brief) resumes at `'deploy'` rather than re-walking every gate.
+  // Best-effort — a read failure degrades to `'clarify'`, today's unchanged default, never throws.
+  let fromGate: RecordWalkGateName = 'clarify';
+  try {
+    const { data: taskRow, error: taskErr } = await client
+      .from('tasks')
+      .select('workflow_state')
+      .eq('id', request.task_id)
+      .eq('project_id', projectId)
+      .maybeSingle();
+    if (!taskErr) {
+      fromGate = deriveFromGate((taskRow as { workflow_state?: string | null } | null)?.workflow_state ?? null);
+    }
+  } catch {
+    // Best-effort — fromGate stays 'clarify'.
+  }
+
   const args: RecordWalkArgs = {
     task_id: request.task_id,
     summary: request.summary,
     evidence: request.evidence_links ?? [],
     attest_walk: request.attest_walk ?? undefined,
+    from_gate: fromGate,
   };
 
   let result: RecordWalkResult | undefined;
@@ -160,3 +221,12 @@ export async function runRecordedWalkDrainPass(deps: RecordedWalkDrainDeps): Pro
 
   return 1;
 }
+
+// B-1073 step 11 (post-review wiring) — re-exported from `src/tools/fasttrack-release-remark.ts`,
+// the real module now (see that file's own header for why it is NOT here — the import-cycle note
+// above). Kept here too so this file's own pre-existing imports/tests need no changes.
+export {
+  type FastTrackReleaseRemarkRecordedWalkRequestRow,
+  buildFastTrackReleaseRemarkRecordedWalkRequest,
+  fileFastTrackReleaseRemarkRecordedWalkIfEligible,
+} from '../tools/fasttrack-release-remark.js';

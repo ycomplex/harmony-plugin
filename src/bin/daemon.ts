@@ -55,6 +55,11 @@ import {
 // B-720 (replacement capture): the launcher half of the per-leg output record — the daemon WRITES
 // `source='launcher'` rows and never reads one back (the agent-neutrality seam).
 import { recordLegOutput } from '../tools/leg-output-record.js';
+// B-1073 (post-review wiring) — the daemon's fast-track admission-check park calls these DIRECTLY
+// (never through their MCP tool wrappers, which have no meaning outside an agent session): the SAME
+// advanceWorkflow/addComment the advance_workflow/add_comment MCP tools already call into.
+import { advanceWorkflow } from '../tools/workflow.js';
+import { addComment } from '../tools/comments.js';
 import { runRecordedWalkDrainPass } from '../daemon/recorded-walk-drain.js';
 import { createHeartbeatKeeper } from '../daemon/heartbeat.js';
 import { formatDaemonError } from '../daemon/error-format.js';
@@ -364,6 +369,19 @@ async function main(): Promise<void> {
     return null;
   };
 
+  // B-1073 (post-review wiring) — `deploymentConfig.repos[].url` -> `owner/repo`, for the fast-track
+  // admission check's evidence (SchedulerDeps.declaredRepos). Best-effort: a URL shape this cannot
+  // parse (not a github.com clone URL) is simply excluded, never thrown on — the admission check's
+  // own multi-repo item already treats a shorter-than-expected repo list as the conservative,
+  // non-penalizing read (see record-eligibility.ts's EligibilityEvidenceLink.repo doc comment).
+  const ownerRepoFromUrl = (url: string): string | null => {
+    const m = /github\.com[:/]+([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url);
+    return m ? `${m[1]}/${m[2]}` : null;
+  };
+  const declaredRepos: string[] = (deploymentConfig?.repos ?? [])
+    .map((repo) => ownerRepoFromUrl(repo.url))
+    .filter((r): r is string => r !== null);
+
   // B-801: validate the whole deployment surface — tools on PATH, the launcher-host env contract,
   // and an audit of absent optional profile capabilities — BEFORE any conduction can run. Runs
   // right after loadDaemonConfig resolves and before HarmonyAuth/createAuthenticatedClient/
@@ -521,6 +539,22 @@ async function main(): Promise<void> {
     // header for the tolerant-absence contract (the table may not exist yet).
     drainRecordedWalkRequests: async () => {
       await runRecordedWalkDrainPass({ client, projectId, userId: auth.getUserId(), log });
+    },
+    // B-1073 (post-review wiring) — the deployment's declared repo set, resolved once at boot
+    // alongside workerImage/projectKey above (same pin-at-boot discipline). `[]` on every deployment
+    // with no `repos` declared, which the admission check reads as "no multi-repo signal".
+    declaredRepos,
+    // B-1073 (post-review wiring) — park a fast-track-inadmissible ticket's own workflow_state,
+    // calling the SAME advanceWorkflow the advance_workflow MCP tool uses, directly against this
+    // daemon's one lifetime client/projectId.
+    advanceTicketWorkflow: async (taskId, activity) => {
+      await advanceWorkflow(client, projectId, { task_id: taskId, activity });
+    },
+    // B-1073 (post-review wiring) — post the five-item verdict comment, calling the SAME addComment
+    // the add_comment MCP tool uses, attributed to this daemon's own authenticated service-account
+    // user id (mirrors drainRecordedWalkRequests's own userId attribution just above).
+    addTicketComment: async (taskId, content) => {
+      await addComment(client, projectId, auth.getUserId(), { task_id: taskId, content });
     },
   };
 

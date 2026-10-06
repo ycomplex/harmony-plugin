@@ -113,6 +113,11 @@ export const RunConfigSchema = z
     note: NoteSchema,
     model: ModelSchema,
     auto_approve_gates: z.array(AutoApproveGateSchema).optional(),
+    /** B-1073: the fast-track flag — a human-invoked `harmony conduct <ticket> --fast-track` run's
+     *  single axis key. Mirrors `session_resume`'s own shape (a bare optional boolean, not a nested
+     *  `{ enabled }` object — there is no second sub-field this flag will ever need). See
+     *  `isFastTrackEnabled` below for the absence/false-both-read-as-disabled convention. */
+    fast_track: z.boolean().optional(),
   })
   .passthrough();
 export type RunConfig = z.infer<typeof RunConfigSchema>;
@@ -125,6 +130,17 @@ export const EMPTY_RUN_CONFIG: RunConfig = {};
  *  (see getRunConfig), so by the time a RunConfig value reaches this accessor it is trusted. */
 export function isSessionResumeEnabled(runConfig: RunConfig): boolean {
   return runConfig.session_resume?.enabled === true;
+}
+
+/** B-1073: is fast-track enabled for this run_config payload? Defaults to `false` — an absent
+ *  `fast_track` key or an explicit `false` both read as disabled; only `fast_track: true` turns it
+ *  on. Never throws — a malformed `fast_track` shape would already have been rejected by
+ *  RunConfigSchema.parse at read time (see getRunConfig), so by the time a RunConfig value reaches
+ *  this accessor it is trusted. Consumed by `src/daemon/leg-gate.ts`'s `resolveLegGate` (the
+ *  fast-track leg-routing wrapper around `resolveGatePhase`) and surfaced read-only via
+ *  `src/tools/environment.ts`'s `environment.fast_track`. */
+export function isFastTrackEnabled(runConfig: RunConfig): boolean {
+  return runConfig.fast_track === true;
 }
 
 /** B-743: the operator note for this run_config payload, or `undefined` when none was set — an

@@ -5,8 +5,10 @@
 //       (a structural guarantee stronger than "didn't happen to call it this run").
 //   (b) RUNTIME — a spied fake Supabase client proves the drain's `client.from(...)` calls, across a
 //       full successful processing pass, never once name `conduction_leg_costs` (the table
-//       `leg-cost-record.ts`'s `recordLegCost` writes — see that file for the exact call site) or
-//       `recorded_walk_requests` are the ONLY two tables touched.
+//       `leg-cost-record.ts`'s `recordLegCost` writes — see that file for the exact call site).
+//       `recorded_walk_requests` and `tasks` are the ONLY two tables touched — B-1073 step 9 added the
+//       `tasks` read (deriving `from_gate` from the ticket's current workflow_state), a plain SELECT,
+//       never a write, and still nowhere near a leg-cost/container-launch channel.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -46,7 +48,7 @@ describe('recorded-walk-drain.ts — the leg-cost/container-launch structural fe
     const importLines = source.split('\n').filter((l) => l.trim().startsWith('import '));
     expect(importLines).toEqual([
       "import type { SupabaseClient } from '@supabase/supabase-js';",
-      "import { runRecordedWalk, type RecordWalkArgs, type RecordWalkResult } from '../tools/record-walk.js';",
+      "import { runRecordedWalk, type RecordWalkArgs, type RecordWalkResult, type RecordWalkGateName } from '../tools/record-walk.js';",
     ]);
   });
 });
@@ -67,6 +69,14 @@ describe('recorded-walk-drain.ts — runtime proof: zero conduction_leg_costs wr
     };
     const from = vi.fn((table: string) => {
       tablesTouched.push(table);
+      if (table === 'tasks') {
+        // B-1073 step 9: the from_gate-deriving workflow_state read — a plain SELECT, never a write.
+        const taskChain: any = {};
+        taskChain.select = vi.fn(() => taskChain);
+        taskChain.eq = vi.fn(() => taskChain);
+        taskChain.maybeSingle = vi.fn(async () => ({ data: { workflow_state: 'Proposed' }, error: null }));
+        return taskChain;
+      }
       const chain: any = { _eqCalls: [] };
       chain.select = vi.fn(() => chain);
       chain.eq = vi.fn(() => chain);
@@ -92,7 +102,7 @@ describe('recorded-walk-drain.ts — runtime proof: zero conduction_leg_costs wr
     const processed = await runRecordedWalkDrainPass({ client, projectId: 'proj-1', userId: 'user-1', log: () => {} });
 
     expect(processed).toBe(1);
-    expect(new Set(tablesTouched)).toEqual(new Set([RECORDED_WALK_REQUESTS_TABLE]));
+    expect(new Set(tablesTouched)).toEqual(new Set([RECORDED_WALK_REQUESTS_TABLE, 'tasks']));
     expect(tablesTouched).not.toContain('conduction_leg_costs');
     expect(mocks.runRecordedWalk).toHaveBeenCalledTimes(1);
   });

@@ -77,6 +77,25 @@ export const KNOWLEDGE_WRITE_PROVENANCE_RECORDED = PROVENANCE_AGENT_ON_BEHALF_HU
 
 export type RecordWalkGateName = 'clarify' | 'decompose' | 'design' | 'plan' | 'build' | 'release' | 'deploy' | 'verify';
 
+/** B-1073 step 9 — the fixed gate order `from_gate` is resolved against. Mirrors
+ *  `RecordWalkGateName`'s own declared order exactly (never redeclare the set independently). */
+export const RECORD_WALK_GATE_ORDER: readonly RecordWalkGateName[] = [
+  'clarify', 'decompose', 'design', 'plan', 'build', 'release', 'deploy', 'verify',
+];
+
+function recordWalkGateIndex(gate: RecordWalkGateName): number {
+  return RECORD_WALK_GATE_ORDER.indexOf(gate);
+}
+
+/** B-1073 step 9 — should THIS gate's section run, given the walk's `fromGate`? `fromGate` defaults
+ *  to `'clarify'` (the first gate) at every call site below when `args.from_gate` is omitted, so
+ *  every section's guard reads `true` unconditionally — today's unchanged behavior. A `fromGate`
+ *  later in the order (e.g. `'deploy'`, the drain's own post-merge-request case — step 10) skips
+ *  every gate section BEFORE it in the fixed order above. */
+function shouldRunRecordWalkGate(gate: RecordWalkGateName, fromGate: RecordWalkGateName): boolean {
+  return recordWalkGateIndex(gate) >= recordWalkGateIndex(fromGate);
+}
+
 const GATE_REASONS: Partial<Record<RecordWalkGateName, string>> = {
   clarify: 'clarification-draft',
   decompose: 'decomposition-proposal',
@@ -99,6 +118,11 @@ export interface RecordWalkArgs {
   summary: string;
   evidence: EligibilityEvidenceLink[];
   attest_walk?: string;
+  /** B-1073 step 9 — resume the walk starting at this gate (inclusive); every gate BEFORE it in
+   *  `RECORD_WALK_GATE_ORDER` is skipped. Omitted ⇒ `'clarify'` (today's unchanged default — every
+   *  gate runs, exactly as before this ticket). The drain's own post-merge-request case (step 10)
+   *  passes `'deploy'` for a fast-track ticket already at `Built`. */
+  from_gate?: RecordWalkGateName;
 }
 
 export interface RecordWalkGateResult {
@@ -304,6 +328,10 @@ export async function runRecordedWalk(
   const solving = deriveSolving(summary);
   const repos = Array.from(new Set(args.evidence.map((e) => e.repo).filter((r): r is string => !!r)));
   const changedPaths = args.evidence.flatMap((e) => e.paths ?? []);
+  // B-1073 step 9: defaults to 'clarify' — every gate section below runs, exactly as before this
+  // ticket, when `args.from_gate` is omitted.
+  const fromGate: RecordWalkGateName = args.from_gate ?? 'clarify';
+  const runs = (gate: RecordWalkGateName) => shouldRunRecordWalkGate(gate, fromGate);
 
   try {
     // ——— Captured -> Proposed, brief-less plumbing (B-1062 verify-round fix 1) ——————————————————
@@ -325,6 +353,7 @@ export async function runRecordedWalk(
       await advanceWorkflow(client, projectId, { task_id: taskId, activity: 'proposing' });
     }
 
+    if (runs('clarify')) {
     // ——— CLARIFY ———————————————————————————————————————————————————————————————————————————
     const clarifyDecision = await recordDecision(client, projectId, userId, {
       type: 'specification',
@@ -390,6 +419,9 @@ export async function runRecordedWalk(
       }],
     });
 
+    }
+
+    if (runs('decompose')) {
     // ——— DECOMPOSE (no-split shape — see this file's header SCOPE NOTE) —————————————————————————
     await coupleDecomposeNoSplitConvention(client, projectId, userId, taskId);
     await composeAndAccept(client, projectId, userId, taskId, {
@@ -405,6 +437,9 @@ export async function runRecordedWalk(
     });
     gates.push({ gate: 'decompose', reason: GATE_REASONS.decompose, landed: true });
 
+    }
+
+    if (runs('design')) {
     // ——— DESIGN (no track requires a fresh decision — see this file's header SCOPE NOTE) ————————
     const designDecision = await recordDecision(client, projectId, userId, {
       type: 'technical-design',
@@ -436,6 +471,9 @@ export async function runRecordedWalk(
     });
     gates.push({ gate: 'design', reason: GATE_REASONS.design, landed: true });
 
+    }
+
+    if (runs('plan')) {
     // ——— PLAN ——————————————————————————————————————————————————————————————————————————————
     const planEntryContent =
       `Decision: record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not ` +
@@ -474,10 +512,16 @@ export async function runRecordedWalk(
     });
     gates.push({ gate: 'plan', reason: GATE_REASONS.plan, landed: true });
 
+    }
+
+    if (runs('build')) {
     // ——— BUILD — brief-less SYSTEM/AGENT advance (Planned -> Built), mirrors every conducted run ——
     await advanceWorkflow(client, projectId, { task_id: taskId, activity: 'building' });
     gates.push({ gate: 'build', landed: true });
 
+    }
+
+    if (runs('release')) {
     // ——— RELEASE ———————————————————————————————————————————————————————————————————————————
     await composeAndAccept(client, projectId, userId, taskId, {
       reason: GATE_REASONS.release!,
@@ -521,12 +565,17 @@ export async function runRecordedWalk(
     });
     gates.push({ gate: 'release', reason: GATE_REASONS.release, landed: true });
 
+    }
+
+    if (runs('deploy')) {
     // ——— DEPLOY — brief-less SYSTEM/AGENT advance (Built -> Deployed), mirrors the BUILD step above.
     // A live conducted ticket reaches Deployed via a real deploy succeeding; a recorded walk has no
     // live deploy to wait on, so this walk advances the state itself, exactly like it already does
     // for BUILD (Planned -> Built) above.
     await advanceWorkflow(client, projectId, { task_id: taskId, activity: 'deploying' });
     gates.push({ gate: 'deploy', landed: true });
+
+    }
 
     // ——— VERIFY — compose ONLY, never accept. This is the ticket's actual human-ack point: verify is
     // the hard floor, and only a live human may accept it (exactly like every conducted ticket) — this
@@ -617,6 +666,9 @@ export interface RecordToolArgs {
   summary: string;
   evidence: Array<{ url: string; repo?: string; paths?: string[] }>;
   attest_walk?: string;
+  /** B-1073 step 9 — resume the walk starting at this gate; omitted ⇒ `'clarify'` (unchanged
+   *  default). See `RecordWalkArgs.from_gate`'s own doc comment. */
+  from_gate?: RecordWalkGateName;
 }
 
 export const recordTool = {
@@ -657,6 +709,11 @@ export const recordTool = {
         type: 'string',
         description: 'Attest a 5+ minute verify walk — who/what was walked. Never auto-passed; omit to leave this eligibility item UNATTESTED (which refuses the walk).',
       },
+      from_gate: {
+        type: 'string',
+        enum: RECORD_WALK_GATE_ORDER as unknown as string[],
+        description: "B-1073 — resume the walk starting at this gate (inclusive); every gate before it is skipped. Omitted ⇒ 'clarify' (today's unchanged default — every gate runs).",
+      },
     },
     required: ['task_id', 'summary', 'evidence'],
   },
@@ -675,5 +732,6 @@ export async function recordToolHandler(
     summary: args.summary,
     evidence: args.evidence ?? [],
     attest_walk: args.attest_walk,
+    from_gate: args.from_gate,
   });
 }

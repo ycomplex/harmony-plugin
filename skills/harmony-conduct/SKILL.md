@@ -842,6 +842,27 @@ table keyed by `workflow_state` (walking forward one state at a time); `harmony-
 keyed by `awaiting_human_reason` (resolving an existing brief). The forward path it walks: `Proposed` →
 `Clarified` → `Decomposed` → `Designed` → `Planned` → `Built` → `Deployed` → `Verified`.
 
+**The fast-track branch (B-1073) — skips straight to build, never a second routing table.** A
+human-invoked `harmony conduct <ticket> --fast-track` run sets `run_config.fast_track`; when the
+ticket sits at `Captured`/`Proposed`, the leg that fires resolves its gate via
+`src/daemon/leg-gate.ts`'s `resolveLegGate` instead of this file's own `resolveGatePhase` reads —
+and `resolveLegGate` routes straight to the **build** gate, skipping decompose/design/plan's
+discovery legs for a ticket already understood well enough to fast-track. This changes ONLY which
+gate the daemon fires a leg FOR; it does not change the hard floor or the delegation test: release
+and verify are still always-human (§The contract this skill obeys), and the one gate a fast-track
+leg does run (build) still passes through the SAME per-gate delegation test (§The delegation test)
+as any other run — a fast-track run is not a second, looser conduct mode, only a shorter approach to
+the same gates.
+
+Two further non-discretionary checks bracket that one build leg. BEFORE it ever fires, the daemon's
+own fire path (`scheduler.ts`'s `fireLaunch`) runs the five-item eligibility floor
+(`evaluateFastTrackAdmission`, `src/daemon/leg-gate.ts`) against the ticket's title and the
+deployment's declared repos; an inadmissible verdict parks the ticket (`advance_workflow 'parking'`
++ a comment) and never launches a worker. BEFORE that leg opens its PR, the build leg itself — driven
+by `skills/start-work/SKILL.md`'s O3 (sub-step 2a) — calls **`checkPrePrOpenEligibility`**
+(`src/tools/record-eligibility.ts`) against the real diff; `allowed: false` there means no PR opens,
+same escalation-to-`harmony conduct` posture as every other eligibility refusal in this ticket.
+
 What is **conduct-specific** (NOT in the shared table — this is the conductor's *handling*, not the routing
 facts; this is the deliberate other half of B-490's "same routing, opposite handling"):
 

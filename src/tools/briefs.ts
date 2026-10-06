@@ -10,6 +10,10 @@ import { slugRef } from './payload-refs.js';
 import { listTicketKnowledge } from './workflow.js';
 import { queryKnowledge, getWorkspaceId } from './knowledge.js';
 import { getConductionId, getLeg } from '../config/run-config.js';
+// B-1073 step 11 (post-review wiring): the release-accept-with-remark auto-insert consumeAcceptRemark
+// calls below — see fasttrack-release-remark.ts's own header for why this lives there, not in
+// src/daemon/recorded-walk-drain.ts (an import cycle through record-walk.ts).
+import { fileFastTrackReleaseRemarkRecordedWalkIfEligible } from './fasttrack-release-remark.js';
 import { getProject } from './project.js';
 import { REVISION_CAUSE_SOURCES, isRevisionCause, type RevisionCause } from './revision-cause.js';
 import {
@@ -3500,19 +3504,23 @@ export async function consumeAcceptRemark(
   client: SupabaseClient,
   _projectId: string,
   args: ConsumeAcceptRemarkArgs,
+  userId?: string,
 ): Promise<ConsumeAcceptRemarkResult> {
   if (!args.brief_id) throw new Error('brief_id is required');
 
   // Conditional stamp: WHERE accept_remark_consumed_at IS NULL makes the consume naturally
   // idempotent — a second call matches zero rows and is a no-op ack, never an error. The
   // remark-present filter keeps the stamp meaningful (a brief with no remark is a no-op too).
+  // B-1073 step 11 (post-review wiring): also select task_id/reason/accept_remark on the SAME row
+  // the UPDATE just stamped — the one read a fast-track release-accept-with-remark auto-insert
+  // needs, off the SAME call rather than a second round trip.
   const { data, error } = await client
     .from('briefs')
     .update({ accept_remark_consumed_at: new Date().toISOString() })
     .eq('id', args.brief_id)
     .not('accept_remark', 'is', null)
     .is('accept_remark_consumed_at', null)
-    .select('id')
+    .select('id, task_id, reason, accept_remark')
     .maybeSingle();
   if (error) {
     // Guarded (B-383 class, like the pending_resolution fallback): on a DB that predates the B-503
@@ -3523,6 +3531,27 @@ export async function consumeAcceptRemark(
     throw new Error(error.message);
   }
   if (!data) return { brief_id: args.brief_id, consumed: false, already: true };
+
+  // B-1073 step 11 (post-review wiring) — a fast-track ticket's RELEASE-gate accept-with-remark
+  // auto-files a recorded_walk_requests row, continuing the walk without a second human action.
+  // Best-effort and NEVER throws (see fileFastTrackReleaseRemarkRecordedWalkIfEligible's own doc) —
+  // a side effect riding on this consume must never be able to fail the consume itself. `userId` is
+  // optional here ONLY because this function predates it; every real caller (the MCP tool dispatch,
+  // the CLI) has one and passes it.
+  if (userId) {
+    const row = data as unknown as { task_id: string; reason: string; accept_remark: string };
+    try {
+      await fileFastTrackReleaseRemarkRecordedWalkIfEligible(client, {
+        task_id: row.task_id,
+        reason: row.reason,
+        remark_detail: row.accept_remark,
+        requested_by: userId,
+      });
+    } catch {
+      // best-effort — see the doc comment above.
+    }
+  }
+
   return { brief_id: args.brief_id, consumed: true };
 }
 
