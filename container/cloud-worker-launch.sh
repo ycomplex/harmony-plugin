@@ -243,6 +243,15 @@ HARMONY_RUN_CONFIG_JSON="$(grep -m1 '^HARMONY_RUN_CONFIG_JSON=' "$ENV_FILE" | cu
 # write_exec_env_file() below skips forwarding it, the same fail-soft shape.
 HARMONY_MODEL="$(grep -m1 '^HARMONY_MODEL=' "$ENV_FILE" | cut -d= -f2- || true)"
 
+# B-963: credential-horizon seam — GIT_TOKEN_EXPIRES_AT is written into the SAME minted $ENV_FILE
+# as GIT_TOKEN/HARMONY_PLUGIN_POSTURE/HARMONY_RUN_CONFIG_JSON/HARMONY_MODEL above (mint-installation-
+# token.mjs's composeTokenExpiryLine, from the mint response's own `expires_at`). Read the same
+# grep+cut way, no non-empty check (mirrors HARMONY_MODEL's own convention): an absent value just
+# means write_exec_env_file() below skips forwarding it, the same fail-soft shape — this is the
+# cloud profile's half of the fix; local docker and docker-host already forward the whole minted
+# env-file via --env-file and need no equivalent change.
+GIT_TOKEN_EXPIRES_AT="$(grep -m1 '^GIT_TOKEN_EXPIRES_AT=' "$ENV_FILE" | cut -d= -f2- || true)"
+
 # 2. Compose the per-execution env-vars FILE. A small, isolated function on purpose — see the
 #    CONFIRMED note inside it (round 3: the flag/format question this note originally raised is now
 #    resolved by a live check, see below).
@@ -319,6 +328,13 @@ write_exec_env_file() {
       # YAML value, unlike the JSON blobs the other two forwards handle.
       if [ -n "${HARMONY_MODEL:-}" ]; then
         printf 'HARMONY_MODEL: "%s"\n' "$HARMONY_MODEL"
+      fi
+      # B-963: credential-horizon seam — forwarded ONLY when the mint script actually wrote one
+      # (see the GIT_TOKEN_EXPIRES_AT acquisition above; same conditional-forward convention as
+      # HARMONY_PLUGIN_POSTURE/HARMONY_RUN_CONFIG_JSON/HARMONY_MODEL above). No base64-encoding
+      # needed — an ISO-8601 timestamp has no characters that would break a quoted YAML value.
+      if [ -n "${GIT_TOKEN_EXPIRES_AT:-}" ]; then
+        printf 'GIT_TOKEN_EXPIRES_AT: "%s"\n' "$GIT_TOKEN_EXPIRES_AT"
       fi
       # B-846: HARMONY_CONDUCTION_ID — the plain (not HARMONY_-prefixed) conduction id every
       # run-config-aware worker reads via src/config/run-config.ts's getConductionId(). An

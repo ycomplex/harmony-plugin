@@ -1923,6 +1923,12 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('cloud-worker-launch.sh + cloud-worker-reap
       // B-772: model seam acquisition line — same extraction discipline as GIT_TOKEN/posture/
       // run-config above, so drift in the real acquisition line breaks this EXECUTED test too.
       const modelAcquisition = extractLine(launchScript, 'HARMONY_MODEL="$(grep -m1');
+      // B-963: credential-horizon seam acquisition line — same extraction discipline as the
+      // seams above, so drift in the real acquisition line breaks this EXECUTED test too.
+      const expiresAtAcquisition = extractLine(
+        launchScript,
+        'GIT_TOKEN_EXPIRES_AT="$(grep -m1',
+      );
       const fnBody = extractFunctionBody(launchScript);
 
       const harness = [
@@ -1940,6 +1946,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('cloud-worker-launch.sh + cloud-worker-reap
         postureAcquisition,
         runConfigAcquisition,
         modelAcquisition,
+        expiresAtAcquisition,
         fnBody,
         `write_exec_env_file "${outFile}"`,
         '',
@@ -2000,6 +2007,23 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('cloud-worker-launch.sh + cloud-worker-reap
     it('omits the HARMONY_MODEL line entirely when the fixture minted env-file does not carry it', () => {
       const output = runWriteExecEnvFile(['GIT_TOKEN=ghs_dummytoken', ''].join('\n'));
       expect(output).not.toContain('HARMONY_MODEL');
+    });
+
+    // B-963: credential-horizon seam — EXECUTED (not just prose-pinned), matching this describe
+    // block's own stated rationale for the adjacent seam coverage above. This is the regression
+    // test for the gap an accept-with-remark reshape surfaced: the cloud profile cherry-picks
+    // named vars rather than forwarding the whole minted env-file, so GIT_TOKEN_EXPIRES_AT must
+    // be explicitly wired here or it silently never reaches the one profile Harmony runs.
+    it('produces GIT_TOKEN_EXPIRES_AT in the output YAML, verbatim, when the fixture minted env-file carries it', () => {
+      const output = runWriteExecEnvFile(
+        ['GIT_TOKEN=ghs_dummytoken', 'GIT_TOKEN_EXPIRES_AT=2026-10-06T13:00:00Z', ''].join('\n'),
+      );
+      expect(output).toContain('GIT_TOKEN_EXPIRES_AT: "2026-10-06T13:00:00Z"');
+    });
+
+    it('omits the GIT_TOKEN_EXPIRES_AT line entirely when the fixture minted env-file does not carry it', () => {
+      const output = runWriteExecEnvFile(['GIT_TOKEN=ghs_dummytoken', ''].join('\n'));
+      expect(output).not.toContain('GIT_TOKEN_EXPIRES_AT');
     });
 
     it('ALWAYS forwards HARMONY_CONDUCTION_ID from the wrapper\'s own $CONDUCTION_ID (never from the minted env-file — no acquisition line needed for it)', () => {

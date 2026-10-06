@@ -99,3 +99,9 @@ knowledge decisions) but made no state-advancing write was getting parked as ind
 worker that spun and did nothing, hiding finished work from the human triaging the park. Both specimens are
 the same defect at different points in the lifecycle: an in-between state with real progress in it, and
 nothing that says so.
+
+**B-963** is a sibling specimen, not a new failure mode: a build or release leg whose GitHub token's
+lifetime ran out mid-wait, forced to hand CI-conclusion verification to the next gate, is an ordinary
+instance of shape 1 in the shared list above (`awaiting_human_input: true` via a composed brief, or a
+filed elicitation round) — an AUTHORED pause with a stated reason, never a silent stall, and never a dirty
+exit.
