@@ -391,13 +391,56 @@ report, fix, push again — rather than handing the release gate a pull request 
 concluded. A failure discovered at the release gate comes back as an iterate and costs a whole second
 build leg: a cold start, a fresh clone and install, and another leg's tokens.
 
-**The bounds — BOTH of them, checked BEFORE each new wait.** The loop is bounded by **two fix rounds** and
-by a **~35-minute wall-clock budget for the whole wait-and-fix loop**, whichever binds first. Check both
-*before starting a new wait*, never after: a leg killed mid-wait by the worker deadline is a DIRTY exit
-the daemon parks, which is strictly worse than a clean exhaustion hand-back. Each individual poll command
-must return well inside the 600-second Bash cap, and **no part of this wait may be delegated to a
-background subagent** — background tasks are killed at 600 seconds (B-825), which would silently abandon
-the wait while the leg exits looking clean.
+**The bounds — ALL THREE of them, checked BEFORE each new wait.** The loop is bounded by **two fix
+rounds**, a **~35-minute wall-clock budget for the whole wait-and-fix loop**, and — new, B-963 — **the
+leg's own credential horizon**, whichever binds first. Check all three *before starting a new wait*, never
+after: a leg killed mid-wait by the worker deadline is a DIRTY exit the daemon parks, which is strictly
+worse than a clean exhaustion hand-back. Each individual poll command must return well inside the
+600-second Bash cap, and **no part of this wait may be delegated to a background subagent** — background
+tasks are killed at 600 seconds (B-825), which would silently abandon the wait while the leg exits looking
+clean.
+
+**The credential-horizon bound (B-963) — this leg's own GitHub token has a lifetime, and the leg now
+knows it.** A worker's GitHub access is an installation token with a ~1-hour lifetime, minted once at
+launch and never re-minted inside the container (the App private key deliberately never enters a worker —
+B-732). A build that combines a long implementation with this wait-and-fix loop can cross that hour
+mid-wait, discovering the loss only when a `gh` call starts failing. Avoid the discovery: know the horizon
+before each wait, not after.
+
+Resolve the horizon once, before the FIRST wait in this loop (not on every iteration):
+
+1. **`$GIT_TOKEN_EXPIRES_AT`** (an ISO-8601 timestamp, set by `scripts/mint-installation-token.mjs` from
+   the mint response's own `expires_at` field) — if present and parses to a valid timestamp, that is the
+   horizon.
+2. **Absent or unparseable → fall back to a leg-age estimate.** Read this container's own age
+   (`/proc/uptime`, seconds since boot — the container starts at launch, so this is a reasonable proxy for
+   leg age) and assume a conservative ~55-minute token lifetime from launch (5 minutes of margin below
+   GitHub's ~60-minute actual lifetime, absorbing mint-to-start latency). The horizon is then `(launch
+   time) + 55 minutes`, i.e. `(now) + (55 minutes − uptime seconds)`.
+3. **Both signals absent/unusable** (e.g. `/proc/uptime` unreadable) → there is no horizon to bound
+   against — this bound does not apply; proceed with only the other two bounds, exactly as before this
+   ticket existed. This is the `HARMONY_MODEL`-shaped graceful opt-out: no signal, no behavior change.
+
+**Before starting each new wait**, check whether the wait's own cap (the ~20-minute-per-wait figure named
+in this deployment's own concrete-read block below) would run past the horizon. If it would:
+
+- **Do NOT start the wait.** Do not poll `gh` once more hoping it still works.
+- **Record the existing `still in flight` disposition** (never a guess at green or red) with a handoff
+  note naming the run id and the reason: *"Credential horizon reached before CI concluded — handing
+  CI-conclusion verification to the release gate."*
+- **Proceed exactly as if the wait-and-fix loop had exhausted its two-fix-round/35-minute bounds with
+  checks still in flight** — EXCEPT do not file a worker-question round (this is not a failure; the
+  release gate will perform this exact check with a fresh token). Instead: land the build evidence (the
+  three ordered steps below this loop — test cases, ACs, in that order), advance to Built, and compose the
+  release brief exactly as this skill already does at the end of a normal build. The release brief's own
+  CI-evidence line (fetched fresh, by `finish-work`, with a fresh token) is what actually confirms green or
+  red — this leg is not asserting either.
+- **Name the handoff in the B-560 trail comment** this skill already writes, e.g.: *"CI still in flight
+  when this leg's credential horizon arrived — handing CI-conclusion verification to the release gate (run
+  <id>)."*
+
+This is additive: a leg whose build finishes well inside the hour never reaches this bound, and behaves
+exactly as today.
 
 1. **Read the checks for the head commit you just pushed.** Resolve each check's status and conclusion
    from the **parsed payload** of the host's own API, never from a watcher command's exit status. Four

@@ -222,6 +222,16 @@ export function composeModelLine(model) {
   return model ? `HARMONY_MODEL=${model}\n` : '';
 }
 
+/** B-963: 'GIT_TOKEN_EXPIRES_AT=<ISO>\n', or '' when no expiry was reported — mirrors
+ *  composeConductionIdLine/composeModelLine's own always-appended-when-present convention. This is
+ *  how a worker leg learns its own credential horizon: the GitHub access_tokens response carries
+ *  `expires_at` already (an ISO-8601 string, ~1h out); nothing previously read it. The value rides
+ *  the SAME per-run env-file GIT_TOKEN already does — never a new channel — so every launch profile
+ *  (cloud, local docker, docker-host) carries it for free. It is a timestamp, not a secret. */
+export function composeTokenExpiryLine(expiresAt) {
+  return expiresAt ? `GIT_TOKEN_EXPIRES_AT=${expiresAt}\n` : '';
+}
+
 /**
  * B-743: normalize a run-config JSON payload that may arrive as EITHER raw JSON text or
  * base64-encoded JSON text, into raw JSON text. Before this ticket, `--run-config`'s value was
@@ -292,7 +302,8 @@ export function runConfigFilePathFor(outPath) {
   return join(dirname(outPath), 'run-config.json');
 }
 
-/** Exchange the App JWT for a ~1h installation token. */
+/** Exchange the App JWT for a ~1h installation token. Also returns the token's own expiry when
+ *  GitHub reports one (B-963). */
 export async function mintInstallationToken({ jwt, installationId, fetchImpl = fetch }) {
   const response = await fetchImpl(
     `${GITHUB_API}/app/installations/${installationId}/access_tokens`,
@@ -320,9 +331,9 @@ export async function mintInstallationToken({ jwt, installationId, fetchImpl = f
     );
   }
 
-  const { token } = await response.json();
+  const { token, expires_at } = await response.json();
   if (!token) throw new Error('GitHub returned no token in the access_tokens response');
-  return token;
+  return { token, expires_at: expires_at ?? null };
 }
 
 function readPrivateKey(env) {
@@ -376,7 +387,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
 
   const jwt = buildJwt({ appId, privateKey: readPrivateKey(env) });
-  const token = await mintInstallationToken({ jwt, installationId });
+  const { token, expires_at } = await mintInstallationToken({ jwt, installationId });
 
   // B-800: the deployment config's `env` section wins over --base when present; see
   // resolveBaseContent's own doc comment for the full precedence + malformed-JSON behavior.
@@ -403,6 +414,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   envFileContent += composeConductionIdLine(conductionId);
   // B-772: same always-appended-when-present convention as composeConductionIdLine above.
   envFileContent += composeModelLine(model);
+  // B-963: same convention — the leg's own credential horizon, read from the mint response.
+  envFileContent += composeTokenExpiryLine(expires_at);
 
   writeEnvFile(out, envFileContent);
 

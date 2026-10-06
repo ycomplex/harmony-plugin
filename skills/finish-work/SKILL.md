@@ -600,6 +600,17 @@ paths:
 - **`build_pr` present (the common case — daemon- or human-built, B-722 recorded it):** merge it via the
   REST endpoint already established for the bypass floor (B-712), directly — **no local worktree required:
   no checkout, no rebase, no force-push.**
+
+  **Check the credential horizon before starting this wait (B-963) — same check as start-work's own
+  wait-and-fix loop** (`skills/start-work/SKILL.md`'s "The credential-horizon bound"): resolve
+  `$GIT_TOKEN_EXPIRES_AT` (fallback: `/proc/uptime` leg-age estimate; absent both → this check does not
+  apply). If the wait's own cap would run past the horizon, do **not** start it — this is a FRESH leg at
+  the release gate, so the ordinary fix is simply to confirm the horizon is fresh here (it almost always
+  will be, since this gate launches with its own newly-minted token). The only case this bites is an
+  unusually long-running release-gate leg itself; if it does, write the reason to a comment and pause with
+  an authored elicitation round naming what remains (do not silently retry indefinitely) rather than let a
+  `gh` call fail mid-wait with no explanation.
+
   1. **Wait for CI** — run `gh pr checks <pr_number> --watch`, with the exit status EXPLICITLY CAPTURED
      (`$?`) — never pipe it through `tail` or anything else that discards the exit code (a prior version of
      this step did exactly that — `... --watch --interval 15 2>&1 | tail -40` — silently losing `gh`'s exit
@@ -825,6 +836,12 @@ This IS this gate's own instance of the shared **clean-exit contract**
 before the deploy is confirmed is exactly the "real work landed, no state-advancing write should happen
 yet" gap the shared doctrine generalizes from. The mechanics below are release-specific (this gate's own
 markers and repo artefacts); the doc is the one place the general rule lives.
+
+**Check the credential horizon before starting this wait too (B-963)** — identical check, same fallback
+chain (`$GIT_TOKEN_EXPIRES_AT`, else the `/proc/uptime` leg-age estimate, else this check does not apply).
+The ~20-minute cap on this wait is comfortably inside a fresh token's hour in the ordinary case; if the
+horizon would not cover it, name the reason in a comment and pause with an authored elicitation round
+rather than let the poll fail mid-wait.
 
 1. **Resolve the post-merge workflow run** for the merge commit — `gh run list --branch main --commit
    <merge_sha> --limit 1 --json databaseId,status,conclusion,workflowName` (or equivalent).
