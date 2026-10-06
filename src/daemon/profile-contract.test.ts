@@ -1929,6 +1929,9 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('cloud-worker-launch.sh + cloud-worker-reap
         launchScript,
         'GIT_TOKEN_EXPIRES_AT="$(grep -m1',
       );
+      // B-1020: leg seam acquisition line — same extraction discipline as GIT_TOKEN/posture/
+      // run-config/model above, so drift in the real acquisition line breaks this EXECUTED test too.
+      const legAcquisition = extractLine(launchScript, 'HARMONY_LEG="$(grep -m1');
       const fnBody = extractFunctionBody(launchScript);
 
       const harness = [
@@ -1947,6 +1950,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('cloud-worker-launch.sh + cloud-worker-reap
         runConfigAcquisition,
         modelAcquisition,
         expiresAtAcquisition,
+        legAcquisition,
         fnBody,
         `write_exec_env_file "${outFile}"`,
         '',
@@ -2024,6 +2028,21 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('cloud-worker-launch.sh + cloud-worker-reap
     it('omits the GIT_TOKEN_EXPIRES_AT line entirely when the fixture minted env-file does not carry it', () => {
       const output = runWriteExecEnvFile(['GIT_TOKEN=ghs_dummytoken', ''].join('\n'));
       expect(output).not.toContain('GIT_TOKEN_EXPIRES_AT');
+    });
+
+    // B-1020: leg seam — EXECUTED (not just prose-pinned), matching this describe block's own
+    // stated rationale for the adjacent HARMONY_PLUGIN_POSTURE/HARMONY_RUN_CONFIG_JSON/HARMONY_MODEL
+    // coverage above.
+    it('produces HARMONY_LEG in the output YAML, verbatim, when the fixture minted env-file carries it', () => {
+      const output = runWriteExecEnvFile(
+        ['GIT_TOKEN=ghs_dummytoken', 'HARMONY_LEG=3', ''].join('\n'),
+      );
+      expect(output).toContain('HARMONY_LEG: "3"');
+    });
+
+    it('omits the HARMONY_LEG line entirely when the fixture minted env-file does not carry it', () => {
+      const output = runWriteExecEnvFile(['GIT_TOKEN=ghs_dummytoken', ''].join('\n'));
+      expect(output).not.toContain('HARMONY_LEG');
     });
 
     it('ALWAYS forwards HARMONY_CONDUCTION_ID from the wrapper\'s own $CONDUCTION_ID (never from the minted env-file — no acquisition line needed for it)', () => {

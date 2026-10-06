@@ -252,6 +252,15 @@ HARMONY_MODEL="$(grep -m1 '^HARMONY_MODEL=' "$ENV_FILE" | cut -d= -f2- || true)"
 # env-file via --env-file and need no equivalent change.
 GIT_TOKEN_EXPIRES_AT="$(grep -m1 '^GIT_TOKEN_EXPIRES_AT=' "$ENV_FILE" | cut -d= -f2- || true)"
 
+# B-1020: leg seam — HARMONY_LEG is written into the SAME minted $ENV_FILE as GIT_TOKEN/
+# HARMONY_PLUGIN_POSTURE/HARMONY_RUN_CONFIG_JSON/HARMONY_MODEL above (the mint script resolves it
+# from its own inherited HARMONY_LEG env var — set by the daemon's fireLaunch as a per-call `env`
+# option on the exec() that ultimately runs this script, per src/daemon/scheduler.ts). This wrapper
+# itself never computes a leg number; it only forwards what the mint script already wrote. Read the
+# same grep+cut way, no non-empty check (mirrors HARMONY_MODEL's own convention): an absent value
+# just means write_exec_env_file() below skips forwarding it, the same fail-soft shape.
+HARMONY_LEG="$(grep -m1 '^HARMONY_LEG=' "$ENV_FILE" | cut -d= -f2- || true)"
+
 # 2. Compose the per-execution env-vars FILE. A small, isolated function on purpose — see the
 #    CONFIRMED note inside it (round 3: the flag/format question this note originally raised is now
 #    resolved by a live check, see below).
@@ -335,6 +344,13 @@ write_exec_env_file() {
       # needed — an ISO-8601 timestamp has no characters that would break a quoted YAML value.
       if [ -n "${GIT_TOKEN_EXPIRES_AT:-}" ]; then
         printf 'GIT_TOKEN_EXPIRES_AT: "%s"\n' "$GIT_TOKEN_EXPIRES_AT"
+      fi
+      # B-1020: leg seam — forwarded ONLY when the mint script actually wrote one (see the
+      # HARMONY_LEG acquisition above; same conditional-forward convention as HARMONY_MODEL above).
+      # No base64-encoding needed — a leg number has no characters that would break a quoted YAML
+      # value.
+      if [ -n "${HARMONY_LEG:-}" ]; then
+        printf 'HARMONY_LEG: "%s"\n' "$HARMONY_LEG"
       fi
       # B-846: HARMONY_CONDUCTION_ID — the plain (not HARMONY_-prefixed) conduction id every
       # run-config-aware worker reads via src/config/run-config.ts's getConductionId(). An

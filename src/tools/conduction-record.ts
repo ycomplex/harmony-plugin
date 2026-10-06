@@ -101,6 +101,13 @@ export interface ConductionRecord {
   /** B-698/B-742: when the current worker leg was launched; cleared on exit. Null when no leg is
    *  running. Left set if the daemon dies mid-leg (deliberate — see scheduler.ts). */
   leg_started_at: string | null;
+  /** B-1020: how many legs have been launched for this conduction so far — incremented by
+   *  `fireLaunch` (src/daemon/scheduler.ts) in the SAME lease-guarded write that stamps
+   *  `leg_started_at` for a fresh launch, so the two always move together. Fed to the worker as the
+   *  `HARMONY_LEG` env var (via the mint script), which is what lets a tracked write name which leg
+   *  of the run made it. Defaults to 0 in the DB (a row created before this ticket reads 0, never
+   *  null) and is selected by every plain-CONDUCTION_COLS accessor below. */
+  leg_count: number;
   /** B-761: stamped by the daemon's SIGTERM/SIGINT handler on every row it held, right before a
    *  DELIBERATE exit — never set by an unclean death (crash/SIGKILL/OOM/host loss), which is what
    *  keeps the fail-safe (unclean death still waits the full stale window) true by construction.
@@ -152,6 +159,7 @@ export interface ConductionRecord {
 // confirmed live (origin/prod HEAD carries the B-846 migration commit) and adds it below.
 const CONDUCTION_COLS =
   'id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, ' +
+  'leg_count, ' +
   'clean_shutdown_at, ' +
   'reap_requested_at, ' +
   'retry_count, ' +
@@ -369,6 +377,7 @@ export const CONDUCTION_PATCHABLE_FIELDS = [
   'lease_acquired_at',
   'last_heartbeat_at',
   'leg_started_at',
+  'leg_count',
   'clean_shutdown_at',
   'reap_requested_at',
   'retry_count',

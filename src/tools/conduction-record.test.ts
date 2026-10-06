@@ -73,6 +73,7 @@ const conductionRow: ConductionRecord = {
   lease_acquired_at: null,
   last_heartbeat_at: null,
   leg_started_at: null,
+  leg_count: 0,
   clean_shutdown_at: null,
   reap_requested_at: null,
   retry_count: 0,
@@ -731,6 +732,13 @@ describe('the canonical status axis', () => {
 
   it('CONDUCTION_PATCHABLE_FIELDS includes last_leg_ended_at (B-1040)', () => {
     expect(CONDUCTION_PATCHABLE_FIELDS).toContain('last_leg_ended_at');
+  });
+
+  // B-1020: leg_count must be patchable — fireLaunch bundles it into the SAME lease-guarded write
+  // as leg_started_at (see scheduler.ts), so a missing entry here would make every launch's fire
+  // throw instead of just omitting the leg number.
+  it('CONDUCTION_PATCHABLE_FIELDS includes leg_count (B-1020)', () => {
+    expect(CONDUCTION_PATCHABLE_FIELDS).toContain('leg_count');
   });
 });
 
