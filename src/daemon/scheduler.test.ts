@@ -31,6 +31,7 @@ function conduction(over: Partial<ConductionRecord> = {}): ConductionRecord {
     lease_acquired_at: iso(T0),
     last_heartbeat_at: iso(T0),
     leg_started_at: null,
+    leg_count: 0,
     clean_shutdown_at: null,
     retry_count: 0,
     worker_kind: null,
@@ -244,7 +245,7 @@ function makeHarness(opts: HarnessOpts) {
       row.last_heartbeat_at = iso(t);
       return { ...row };
     }),
-    runCommand: vi.fn(async (cmd: string, _opts?: { quiet?: boolean }) => {
+    runCommand: vi.fn(async (cmd: string, _opts?: { quiet?: boolean; env?: NodeJS.ProcessEnv }) => {
       commands.push(cmd);
       const id = condId(cmd);
       if (cmd.startsWith('launch')) {
@@ -343,7 +344,7 @@ function makeHarness(opts: HarnessOpts) {
      *  mode was requested at EXACTLY one call site and nowhere else. */
     runCommandCalls: () =>
       (deps.runCommand as unknown as { mock: { calls: unknown[][] } }).mock.calls as Array<
-        [string, { quiet?: boolean } | undefined]
+        [string, { quiet?: boolean; env?: NodeJS.ProcessEnv } | undefined]
       >,
     ready: () => [...runtime.ready.keys()],
     running: () => [...runtime.running.keys()],
@@ -389,10 +390,14 @@ function makeHarness(opts: HarnessOpts) {
       (deps.updateConductionIfHeld as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter(
         (c) => c[0] === id && Object.keys(c[2] as object).join() === 'last_heartbeat_at',
       ),
-    /** B-742: leg_started_at writes ATTEMPTED by this daemon (set or clear), in call order. */
+    /** B-742: leg_started_at writes ATTEMPTED by this daemon (set or clear), in call order. B-1020:
+     *  matches on the KEY'S PRESENCE, not an exact single-key patch shape — fireLaunch's fresh-leg
+     *  write now bundles leg_count into the SAME patch (see scheduler.ts), so a strict
+     *  single-key-only match would silently drop every SET from this list while still catching the
+     *  (unchanged, leg_started_at-only) settlement CLEAR. */
     legStartedWrites: (id: string) =>
       (deps.updateConductionIfHeld as unknown as { mock: { calls: unknown[][] } }).mock.calls
-        .filter((c) => c[0] === id && Object.keys(c[2] as object).join() === 'leg_started_at')
+        .filter((c) => c[0] === id && 'leg_started_at' in (c[2] as object))
         .map((c) => (c[2] as Record<string, unknown>).leg_started_at as string | null),
     /** B-720: leg-output rows this daemon actually WROTE, in call order. */
     legOutputRows: () => legOutputRows,
@@ -2923,7 +2928,12 @@ describe('B-742/B-717: leg_started_at', () => {
     });
     await firedAndBlocked(h);
 
-    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, { leg_started_at: iso(T0) });
+    // B-1020: leg_count lands in the SAME lease-guarded write as leg_started_at — conduction()'s
+    // default leg_count is 0, so this first fire's leg is 1.
+    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
+      leg_started_at: iso(T0),
+      leg_count: 1,
+    });
     expect(h.getConduction('cond-1').leg_started_at).toBe(iso(T0)); // non-null WHILE still running
 
     h.setNow(T0 + 300_000);
@@ -3009,6 +3019,50 @@ describe('B-742/B-717: leg_started_at', () => {
     ).toEqual([]);
     expect(h.getConduction('cond-1').lease_holder).toBe('other-daemon:9:zzzz');
     expect(h.getConduction('cond-1').leg_started_at).toBe(iso(T0)); // untouched by us
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-1020 — a conductor leg's writes name their leg number, not just their run: fireLaunch bundles
+// leg_count into the same lease-guarded write as leg_started_at, and delivers the leg number to the
+// worker via a PER-CALL `env` option on the launch runCommand (never a process.env mutation — see
+// scheduler.ts's fireLaunch comment for why that matters under concurrent legs).
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('B-1020: HARMONY_LEG delivery', () => {
+  it('fires the launch runCommand with an env option carrying HARMONY_LEG, alongside process.env, and increments leg_count on each successive fire', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ leg_count: 4 })], // a run already 4 legs in
+      tasks: { 'task-1': pausedTask() },
+    });
+    await h.pass(); // baseline
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false; // the human resolved -> wake
+    await h.pass(); // wake -> fire
+
+    const launchCall = h.runCommandCalls().find(([cmd]) => cmd.startsWith('launch'));
+    expect(launchCall).toBeDefined();
+    const [, launchOpts] = launchCall!;
+    expect(launchOpts?.env).toMatchObject({ ...process.env, HARMONY_LEG: '5' });
+
+    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
+      leg_started_at: iso(T0),
+      leg_count: 5,
+    });
+    expect(h.getConduction('cond-1').leg_count).toBe(5);
+  });
+
+  it('a conduction with no prior legs (leg_count undefined/0) fires its first leg as HARMONY_LEG=1', async () => {
+    const h = makeHarness({
+      conductions: [conduction()], // leg_count defaults to 0
+      tasks: { 'task-1': pausedTask() },
+    });
+    await h.pass(); // baseline
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false; // the human resolved -> wake
+    await h.pass(); // wake -> fire
+
+    const launchCall = h.runCommandCalls().find(([cmd]) => cmd.startsWith('launch'));
+    const [, launchOpts] = launchCall!;
+    expect(launchOpts?.env?.HARMONY_LEG).toBe('1');
   });
 });
 
@@ -3463,7 +3517,10 @@ describe('B-845: withWriteRetry exclusion — the fire/worker-launch path is nev
     expect(bodyEnd).toBeGreaterThan(fnStart);
     const body = src.slice(fnStart, bodyEnd);
 
-    expect(body).toContain('.runCommand(renderTemplate(deps.config.profile.launch'); // the launch call is really in here
+    // B-1020 reformatted this call across multiple lines (to carry the new `env` option) — match
+    // the two pieces separately rather than one brittle single-line substring.
+    expect(body).toContain('.runCommand('); // the launch call is really in here
+    expect(body).toContain('renderTemplate(deps.config.profile.launch');
     expect(body).not.toContain('withWriteRetry');
   });
 });

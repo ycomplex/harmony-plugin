@@ -264,10 +264,21 @@ export interface SchedulerDeps extends WriteRetryDeps {
    *  `handleWonTakeover` (`quietRender: renderQuietReapOutcome`) — the routine "container already
    *  gone" case there must render calmly rather than as raw Docker stderr. See the real
    *  implementation (src/bin/daemon.ts) / quiet-reap.ts's `quietLogLine` for how quiet/quietRender
-   *  are actually applied; this module only decides WHERE to ask for it. */
+   *  are actually applied; this module only decides WHERE to ask for it.
+   *
+   *  `opts.env` (B-1020): an explicit per-call environment for the spawned child, REPLACING
+   *  `process.env` rather than merging with it (Node's own `exec` options.env semantics) — so the
+   *  ONE caller that uses it (`fireLaunch`, delivering `HARMONY_LEG` to the launch command) is
+   *  responsible for spreading `...process.env` itself when it wants inheritance plus an addition.
+   *  Omitted entirely (every other call site here) ⇒ the real implementation falls back to
+   *  `process.env`, byte-for-byte the pre-B-1020 behavior. */
   runCommand(
     cmd: string,
-    opts?: { quiet?: boolean; quietRender?: (code: number | null) => string },
+    opts?: {
+      quiet?: boolean;
+      quietRender?: (code: number | null) => string;
+      env?: NodeJS.ProcessEnv;
+    },
   ): Promise<{ exitCode: number | null; outputTail?: string; outputBytes?: number }>;
   /** B-720 (replacement capture): insert ONE `conduction_leg_output` row. This module only ever
    *  calls it with `source: 'launcher'` — the launch command's own bytes, which are the worker's
@@ -1594,7 +1605,12 @@ async function fireLaunch(
 ): Promise<void> {
   const current = preReadCurrent ?? (await deps.getTaskMeta(row.task_id));
 
-  if (!(await writeIfHeld(deps, state, keeper, row, { leg_started_at: iso(deps.now()) }))) {
+  // B-1020: the leg this fire is about to start — one more than the conduction's count so far.
+  // Bundled into the SAME lease-guarded write as leg_started_at below so the two numbers always
+  // move together (both land, or neither does).
+  const leg = (row.leg_count ?? 0) + 1;
+
+  if (!(await writeIfHeld(deps, state, keeper, row, { leg_started_at: iso(deps.now()), leg_count: leg }))) {
     runtime.ready.delete(row.id);
     return;
   }
@@ -1650,8 +1666,18 @@ async function fireLaunch(
 
   // Rejects ONLY when the reap cannot free us; otherwise `launch` always settles first — mirrors
   // the old inline Promise.race exactly, just no longer awaited by the pass itself.
+  //
+  // B-1020: HARMONY_LEG rides a PER-CALL env option (spread onto `...process.env`, not a mutation of
+  // the shared process.env) — the daemon can fire multiple concurrent legs in the same process, and
+  // a per-call argument carries its own value by construction, with no race and no ordering
+  // constraint, unlike a shared mutable write would have. Node's exec() inherits whatever `env` it is
+  // given into everything it spawns, so this reaches the mint script on every launch profile with NO
+  // launch-profile template change anywhere (no {leg} placeholder).
   const launch = deps
-    .runCommand(renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey, deps.workerImage)))
+    .runCommand(
+      renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey, deps.workerImage)),
+      { env: { ...process.env, HARMONY_LEG: String(leg) } },
+    )
     .then((result) => {
       tracked.settled = true;
       tracked.exitCode = result.exitCode;
