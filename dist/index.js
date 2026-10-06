@@ -46142,6 +46142,12 @@ function parseAttestedKeys(details) {
   }
   return out;
 }
+function hasUnparsedAttestedMarker(details) {
+  return details.some(
+    (d) => typeof d === "string" && /ATTESTED:/i.test(d) && parseAttestedKeys([d]).length === 0
+  );
+}
+var UNPARSED_ATTESTED_MARKER_CLAUSE = `\u26A0\uFE0F ${ATTESTED_MARKER} appears but no key could be read from it \u2014 put the marker at the start of its own line`;
 function plural(n, singular, pluralForm) {
   return `${n} ${n === 1 ? singular : pluralForm}`;
 }
@@ -46182,6 +46188,7 @@ function resolveManifestEvidence(entries, ctx = {}) {
     else outstanding.push(entry.key);
   }
   const unknown_attested_keys = attestedKeys.filter((k) => !declaredKeys.has(k));
+  const unparsed_attested_marker = ctx.unparsedAttestedMarker === true;
   const parts = [];
   if (outstanding.length) parts.push(`${plural(outstanding.length, "outstanding", "outstanding")}: ${outstanding.join(", ")}`);
   if (attested.length) parts.push(`${attested.length} attested: ${attested.join(", ")}`);
@@ -46195,6 +46202,7 @@ function resolveManifestEvidence(entries, ctx = {}) {
       `\u26A0\uFE0F ${ATTESTED_MARKER} names no declared entry: ${unknown_attested_keys.join(", ")} \u2014 nothing was attested by it`
     );
   }
+  if (unparsed_attested_marker) parts.push(UNPARSED_ATTESTED_MARKER_CLAUSE);
   return {
     entries: resolutions,
     rows,
@@ -46202,6 +46210,7 @@ function resolveManifestEvidence(entries, ctx = {}) {
     attested,
     not_evaluated,
     unknown_attested_keys,
+    unparsed_attested_marker,
     clause: parts.length ? `Declared evidence \u2014 ${parts.join(" \xB7 ")}` : null
   };
 }
@@ -46219,6 +46228,43 @@ function readDeclaredEvidence(manifestRoot, deps) {
   const entries = getDeclaredEvidence(result.manifest);
   if (entries.length === 0) return { kind: "none" };
   return { kind: "entries", file: result.file, entries };
+}
+
+// src/tools/attestation-lineage.ts
+async function readAttestationDetails(client, taskId) {
+  const selects = [
+    "reason, resolved_detail, pending_resolution, accept_remark",
+    "reason, resolved_detail, pending_resolution",
+    "reason, resolved_detail"
+  ];
+  try {
+    let rows = null;
+    for (const columns of selects) {
+      const res = await client.from("briefs").select(columns).eq("task_id", taskId);
+      if (!res.error) {
+        rows = res.data ?? [];
+        break;
+      }
+    }
+    if (rows === null) return [];
+    const details = [];
+    for (const row of rows) {
+      if (row.reason !== "verification-ack-pending") continue;
+      if (typeof row.resolved_detail === "string") details.push(row.resolved_detail);
+      const pending = row.pending_resolution;
+      if (pending && typeof pending === "object" && typeof pending.detail === "string") {
+        details.push(pending.detail);
+      }
+      if (typeof row.accept_remark === "string") details.push(row.accept_remark);
+    }
+    return details;
+  } catch {
+    return [];
+  }
+}
+async function readAttestation(client, taskId) {
+  const details = await readAttestationDetails(client, taskId);
+  return { attestedKeys: parseAttestedKeys(details), unparsedMarker: hasUnparsedAttestedMarker(details) };
 }
 
 // src/tools/briefs.ts
@@ -47195,30 +47241,6 @@ async function readTaskLabelNames(client, taskId) {
     return [];
   }
 }
-async function readAttestedKeys(client, taskId) {
-  const details = [];
-  try {
-    let rows = null;
-    const full = await client.from("briefs").select("resolved_detail, pending_resolution").eq("task_id", taskId).eq("reason", "verification-ack-pending");
-    if (full.error) {
-      const narrowed = await client.from("briefs").select("resolved_detail").eq("task_id", taskId).eq("reason", "verification-ack-pending");
-      if (narrowed.error) return [];
-      rows = narrowed.data ?? [];
-    } else {
-      rows = full.data ?? [];
-    }
-    for (const row of rows ?? []) {
-      if (typeof row.resolved_detail === "string") details.push(row.resolved_detail);
-      const pending = row.pending_resolution;
-      if (pending && typeof pending === "object" && typeof pending.detail === "string") {
-        details.push(pending.detail);
-      }
-    }
-  } catch {
-    return [];
-  }
-  return parseAttestedKeys(details);
-}
 async function withManifestEvidence(client, taskId, doc, args) {
   if (doc.frame?.kind !== "verify") return { doc };
   const read = readDeclaredEvidence(args.manifest_root);
@@ -47231,11 +47253,12 @@ async function withManifestEvidence(client, taskId, doc, args) {
   }
   const needsLabels = read.entries.some((e) => (e.applies_to?.labels?.length ?? 0) > 0);
   const labels = needsLabels ? await readTaskLabelNames(client, taskId) : [];
-  const attestedKeys = await readAttestedKeys(client, taskId);
+  const attestation = await readAttestation(client, taskId);
   const result = resolveManifestEvidence(read.entries, {
     changedPaths: args.changed_paths,
     labels,
-    attestedKeys
+    attestedKeys: attestation.attestedKeys,
+    unparsedAttestedMarker: attestation.unparsedMarker
   });
   if (result.rows.length === 0 && result.clause === null) return { doc };
   const frame = doc.frame;
@@ -51426,24 +51449,19 @@ async function resolveDeclaredEvidenceBlock(client, taskId, manifestRoot, labels
       problem: read.problem.message
     };
   }
-  let attestedKeys = [];
-  try {
-    const { data, error: error2 } = await client.from("briefs").select("reason, resolved_detail").eq("task_id", taskId);
-    if (!error2) {
-      attestedKeys = parseAttestedKeys(
-        (data ?? []).filter((r) => r.reason === "verification-ack-pending").map((r) => typeof r.resolved_detail === "string" ? r.resolved_detail : null)
-      );
-    }
-  } catch {
-    attestedKeys = [];
-  }
-  const result = resolveManifestEvidence(read.entries, { labels, attestedKeys });
+  const attestation = await readAttestation(client, taskId);
+  const result = resolveManifestEvidence(read.entries, {
+    labels,
+    attestedKeys: attestation.attestedKeys,
+    unparsedAttestedMarker: attestation.unparsedMarker
+  });
   return {
     entries: result.entries,
     outstanding: result.outstanding,
     attested: result.attested,
     not_evaluated: result.not_evaluated,
-    unknown_attested_keys: result.unknown_attested_keys
+    unknown_attested_keys: result.unknown_attested_keys,
+    unparsed_attested_marker: result.unparsed_attested_marker
   };
 }
 async function readCriteriaPresence(client, taskId, localPresence) {

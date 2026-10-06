@@ -548,6 +548,40 @@ verify:
     expect(result.missing).toEqual([]);
   });
 
+  it('B-1015 — reads the accept remark box and pending_resolution.detail too, like the brief does', async () => {
+    const client = makeClient(
+      completeLeaf({
+        briefs: [
+          { reason: 'verification-ack-pending', resolved_detail: null, accept_remark: 'ATTESTED: founder-clickthrough' },
+          { reason: 'verification-ack-pending', resolved_detail: null, pending_resolution: { command: 'accept', detail: 'ATTESTED: ui-screenshot' } },
+        ],
+      } as any),
+    );
+    const result = await getBuildEvidenceStatus(client, PROJECT_ID, {
+      task_id: 'B-1', manifest_root: manifestRoot(MANIFEST),
+    });
+    expect(result.declared_evidence?.attested).toEqual(['founder-clickthrough']);
+    // ui-screenshot is declared but path-narrowed, and this tool has no diff: not evaluated, and its
+    // attestation is NOT an unknown key (the key exists).
+    expect(result.declared_evidence?.not_evaluated).toEqual(['ui-screenshot']);
+    expect(result.declared_evidence?.unknown_attested_keys).toEqual([]);
+    expect(result.declared_evidence?.unparsed_attested_marker).toBe(false);
+  });
+
+  it('B-1015 — a present-but-unparsed marker is reported on the status, never silent', async () => {
+    const client = makeClient(
+      completeLeaf({
+        briefs: [{ reason: 'verification-ack-pending', resolved_detail: 'iterate ATTESTED: founder-clickthrough' }],
+      } as any),
+    );
+    const result = await getBuildEvidenceStatus(client, PROJECT_ID, {
+      task_id: 'B-1', manifest_root: manifestRoot(MANIFEST),
+    });
+    expect(result.declared_evidence?.attested).toEqual([]);
+    expect(result.declared_evidence?.outstanding).toEqual(['founder-clickthrough']);
+    expect(result.declared_evidence?.unparsed_attested_marker).toBe(true);
+  });
+
   it('a malformed manifest reports the problem and overlays nothing — it never throws', async () => {
     const root = manifestRoot('version: 1\nverify:\n  evidence:\n    - key: dup\n      prompt: a\n    - key: dup\n      prompt: b\n');
     const client = makeClient(completeLeaf());

@@ -30519,6 +30519,10 @@ var ProjectManifestBodySchema = external_exports.object({
   notify: external_exports.array(NotifyEntrySchema).optional()
 }).strict();
 
+// src/config/manifest-evidence.ts
+var ATTESTED_MARKER = "ATTESTED:";
+var UNPARSED_ATTESTED_MARKER_CLAUSE = `\u26A0\uFE0F ${ATTESTED_MARKER} appears but no key could be read from it \u2014 put the marker at the start of its own line`;
+
 // src/tools/briefs.ts
 var DEFAULT_TAIL = "Type `accept`, `edit`, `iterate <feedback>`, or `defer`.";
 var STALE_PATCH_TAIL = "`accept` applies this patch and clears the stale flag (state unchanged). `defer` REJECTS it \u2014 the flag clears anyway, the divergence is recorded, and the ticket proceeds on the retired decision; this is not a park and cannot be undone. Or `edit` / `iterate <feedback>`.";
