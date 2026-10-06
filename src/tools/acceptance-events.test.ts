@@ -408,10 +408,11 @@ describe('applyAcceptanceEventPayload', () => {
     const result = await applyAcceptanceEventPayload(client, event);
     expect(result.applied).toBe(1);
     expect(result.by_write_kind).toEqual({ knowledge_entry_content: 1 });
-    // B-921: the call now also carries `_title` (null here — the item was minted with no title).
+    // B-921 / B-1046: the call now also carries `_title` and `_tags` (both null here — the item was
+    // minted with no title and no tags).
     expect(client.rpc).toHaveBeenCalledWith('consume_knowledge_entry_content_write', {
       _event_id: 'event-1', _external_ref: 'entry-1', _content: 'THE ACCEPTED WORDING', _entry_id: null,
-      _title: null,
+      _title: null, _tags: null,
     });
   });
 
@@ -435,6 +436,61 @@ describe('applyAcceptanceEventPayload', () => {
     await applyAcceptanceEventPayload(client, makeEvent([knowledgeEntryItem('entry-1', { title: 'B-921: technical design — X' })]));
     expect(client.rpc).toHaveBeenCalledWith('consume_knowledge_entry_content_write',
       expect.objectContaining({ _title: 'B-921: technical design — X' }));
+  });
+
+  // B-1046 — the write-side sibling of B-921's `_title` param, same drift class, independent dimension:
+  // the companion web migration widens this RPC with a new trailing `_tags text[] DEFAULT NULL` param.
+  it('passes item.tags through as _tags when present', async () => {
+    const client = makeClient({
+      rpcResponses: { consume_knowledge_entry_content_write: [{ data: { applied: true } }] },
+    });
+    await applyAcceptanceEventPayload(client, makeEvent([knowledgeEntryItem('entry-1', { tags: ['b-1046'] })]));
+    expect(client.rpc).toHaveBeenCalledWith('consume_knowledge_entry_content_write',
+      expect.objectContaining({ _tags: ['b-1046'] }));
+  });
+
+  it('SCHEMA DRIFT: a PGRST202 naming _tags retries WITHOUT it (keeping _title), and the write still lands', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_knowledge_entry_content_write: [
+          { data: null, error: { message: 'Could not find the function public.consume_knowledge_entry_content_write(_content, _entry_id, _event_id, _external_ref, _tags, _title) in the schema cache' } },
+          { data: { applied: true, result_id: 'entry-1' } },
+        ],
+      },
+    });
+    const event = makeEvent([knowledgeEntryItem('entry-1', { title: 'B-921: technical design — X', tags: ['b-1046'] })]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.applied).toBe(1);
+    expect(client.rpcCalls).toHaveLength(2);
+    expect(client.rpcCalls[0].args).toHaveProperty('_tags', ['b-1046']);
+    expect(client.rpcCalls[0].args).toHaveProperty('_title', 'B-921: technical design — X');
+    expect(client.rpcCalls[1].args).not.toHaveProperty('_tags');
+    // `_title` is an INDEPENDENT drift dimension — unaffected by the `_tags` drop.
+    expect(client.rpcCalls[1].args).toHaveProperty('_title', 'B-921: technical design — X');
+  });
+
+  it('SCHEMA DRIFT: a DB missing BOTH _title and _tags drops one per round, never both in a single retry', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_knowledge_entry_content_write: [
+          { data: null, error: { message: 'Could not find the function public.consume_knowledge_entry_content_write(_content, _entry_id, _event_id, _external_ref, _tags, _title) in the schema cache' } },
+          { data: null, error: { message: 'Could not find the function public.consume_knowledge_entry_content_write(_content, _entry_id, _event_id, _external_ref, _title) in the schema cache' } },
+          { data: { applied: true, result_id: 'entry-1' } },
+        ],
+      },
+    });
+    const event = makeEvent([knowledgeEntryItem('entry-1', { title: 'B-921: technical design — X', tags: ['b-1046'] })]);
+    const result = await applyAcceptanceEventPayload(client, event);
+    expect(result.applied).toBe(1);
+    expect(client.rpcCalls).toHaveLength(3);
+    expect(client.rpcCalls[0].args).toHaveProperty('_tags');
+    expect(client.rpcCalls[0].args).toHaveProperty('_title');
+    // Round 2 dropped ONLY `_tags` — `_title` is still being sent.
+    expect(client.rpcCalls[1].args).not.toHaveProperty('_tags');
+    expect(client.rpcCalls[1].args).toHaveProperty('_title');
+    // Round 3 dropped `_title` too — neither param is sent on the final, successful call.
+    expect(client.rpcCalls[2].args).not.toHaveProperty('_tags');
+    expect(client.rpcCalls[2].args).not.toHaveProperty('_title');
   });
 
   it('SCHEMA DRIFT: a PGRST202 naming _title retries WITHOUT it, and the write still lands', async () => {

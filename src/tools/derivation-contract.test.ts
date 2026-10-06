@@ -355,12 +355,17 @@ describe('the derivation contract: approved doc in, promoted entry + executed wr
     expect(result.applied).toBe(1);
     // B-921: the RPC call now ALSO carries `_title` (null here — this compose passed no visualId, so
     // deriveEntryTitle no-opped and the stored item carries no title, exactly today's pre-B-921 shape).
+    // B-1046: `_tags` is null here too — no visualId (nothing to lowercase into a ticket tag) and this
+    // doc authors no `tags`, so `withDerivedEntryContent` computes an EMPTY array, attaches no `tags` key
+    // to the stored item at all (its own non-empty guard), and `item.tags ?? null` sends null, exactly
+    // mirroring `_title`'s own no-signal-to-derive-from case just above.
     expect(rpc).toHaveBeenCalledWith('consume_knowledge_entry_content_write', {
       _event_id: 'event-1',
       _external_ref: entryItemOf(stored.doc)!.ref,
       _content: entryItemOf(stored.doc)!.content,
       _entry_id: DECISION_REF.id,
       _title: null,
+      _tags: null,
     });
   });
 
@@ -627,5 +632,46 @@ describe('B-921: the derived title tracks the FINAL round, riding the same withD
       .toBe('B-921: product design — X');
     expect(deriveEntryTitle(doc, 'design-decision-draft', { visualId: 'B-921', decisionRef: { type: 'ux-ui-design', id: 'x' } }))
       .toBe('B-921: ux-ui design — X');
+  });
+});
+
+// ——— B-1046: a derived entry keeps its ticket tag ——————————————————————————————————————————————
+//
+// Investigation found `consume_knowledge_entry_content_write` has never read or written `tags` — a
+// derived entry was always written with an empty `tags` array, losing the only link back to the
+// ticket that made it. The fix computes `tags` ONCE, centrally, at `withDerivedEntryContent` (riding
+// the SAME call `content`/`title` are derived at, for the same reason B-921's title fix gives: one
+// derivation, not one per gate skill's own `record_decision` call).
+
+describe('B-1046: the derived entry carries the ticket tag, so it keeps its link back to the ticket', () => {
+  const VISUAL = { projectKey: 'B', taskNumber: 1046 };
+
+  it('clarification-draft: the stored knowledge_entry_content item carries the lowercased ticket tag', async () => {
+    const stored = await composeAndCapture(
+      'clarification-draft',
+      ratifiedDoc({ recommend: { text: 'Solve the login timeout' } }),
+      DECISION_REF,
+      VISUAL,
+    );
+    const tags = entryItemOf(stored.doc)!.tags;
+    expect(tags).toBeDefined();
+    expect(tags!.length).toBeGreaterThan(0);
+    expect(tags).toContain('b-1046');
+  });
+
+  it('design-decision-draft: a doc-declared extra tag is folded in ALONGSIDE the ticket tag, not instead of it', async () => {
+    const stored = await composeAndCapture(
+      'design-decision-draft',
+      ratifiedDoc({ recommend: { text: 'Adopt a per-request cache' }, tags: ['surface:plugin'] }),
+      DECISION_REF,
+      VISUAL,
+    );
+    expect(entryItemOf(stored.doc)!.tags).toEqual(['b-1046', 'surface:plugin']);
+  });
+
+  it('withDerivedEntryContent omits `tags` entirely (never an empty-but-present key) when there is no visualId and the doc declares none', () => {
+    const doc = ratifiedDoc();
+    const result = withDerivedEntryContent(doc, 'clarification-draft', DECISION_REF, { reason: 'clarification-draft' });
+    expect(entryItemOf(result)!.tags).toBeUndefined();
   });
 });
