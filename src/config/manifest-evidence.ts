@@ -81,6 +81,10 @@ export interface ManifestEvidenceContext {
   labels?: string[];
   /** Keys read back out of this ticket's verify-brief lineage — see `parseAttestedKeys`. */
   attestedKeys?: string[];
+  /** B-1015: a resolution on the lineage CONTAINS the marker but yielded no key (e.g. `iterate
+   *  ATTESTED: x` — the command verb on the same line defeats the line anchor). Reported on the
+   *  brief, never silent: a human who typed the marker believes they attested something. */
+  unparsedAttestedMarker?: boolean;
 }
 
 export interface ManifestEvidenceResult {
@@ -97,6 +101,8 @@ export interface ManifestEvidenceResult {
   /** Attested keys naming no declared entry. REPORTED on the brief, never silently dropped: a human
    *  who typed a key that matches nothing has attested nothing, and must be told. */
   unknown_attested_keys: string[];
+  /** B-1015: the marker was present somewhere on the lineage but no key parsed out of it. */
+  unparsed_attested_marker: boolean;
   /** The evidence-line clause, or `null` when this manifest has nothing to say about this ticket. */
   clause: string | null;
 }
@@ -153,7 +159,9 @@ export function attestationHint(key: string): string {
 }
 
 /** Parse `ATTESTED: <key>[, <key>]` marker lines out of arbitrary human text (a resolved verify
- *  brief's `resolved_detail`, or the active row's `pending_resolution.detail`).
+ *  brief's `resolved_detail`, the active row's `pending_resolution.detail`, or — B-1015 — the accept
+ *  remark box, `briefs.accept_remark`, which the `backed_by` hint had advertised all along but nothing
+ *  read).
  *
  *  Line-anchored and case-insensitive, so a marker may sit inside a longer remark; every matching line
  *  contributes, and keys are de-duplicated preserving first-seen order. Pure over its inputs — the
@@ -178,6 +186,22 @@ export function parseAttestedKeys(details: Array<string | null | undefined>): st
   }
   return out;
 }
+
+/** B-1015 — does any of these texts CONTAIN the marker while yielding no key? The line anchor in
+ *  `parseAttestedKeys` is deliberately strict (prose like "not yet ATTESTED: see below" must never
+ *  attest an entry), so a marker typed after a command verb on the same line — `iterate ATTESTED: x`,
+ *  as a browser reshape stores it — parses to nothing. Before this, that was silent: the row stayed
+ *  unattested and nothing said why. Pure, like its sibling; the caller reads, this judges. A text that
+ *  parses to at least one key is NOT unparsed, even if another line in it also mentions the marker. */
+export function hasUnparsedAttestedMarker(details: Array<string | null | undefined>): boolean {
+  return details.some(
+    (d) => typeof d === 'string' && /ATTESTED:/i.test(d) && parseAttestedKeys([d]).length === 0,
+  );
+}
+
+/** The fail-loud clause for `hasUnparsedAttestedMarker`. */
+export const UNPARSED_ATTESTED_MARKER_CLAUSE =
+  `⚠️ ${ATTESTED_MARKER} appears but no key could be read from it — put the marker at the start of its own line`;
 
 // --- resolution ----------------------------------------------------------------------------------------
 
@@ -231,6 +255,7 @@ export function resolveManifestEvidence(
   }
 
   const unknown_attested_keys = attestedKeys.filter((k) => !declaredKeys.has(k));
+  const unparsed_attested_marker = ctx.unparsedAttestedMarker === true;
 
   const parts: string[] = [];
   if (outstanding.length) parts.push(`${plural(outstanding.length, 'outstanding', 'outstanding')}: ${outstanding.join(', ')}`);
@@ -246,6 +271,7 @@ export function resolveManifestEvidence(
       `⚠️ ${ATTESTED_MARKER} names no declared entry: ${unknown_attested_keys.join(', ')} — nothing was attested by it`,
     );
   }
+  if (unparsed_attested_marker) parts.push(UNPARSED_ATTESTED_MARKER_CLAUSE);
 
   return {
     entries: resolutions,
@@ -254,6 +280,7 @@ export function resolveManifestEvidence(
     attested,
     not_evaluated,
     unknown_attested_keys,
+    unparsed_attested_marker,
     clause: parts.length ? `Declared evidence — ${parts.join(' · ')}` : null,
   };
 }
