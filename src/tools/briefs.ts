@@ -320,6 +320,10 @@ export interface BriefDoc {
   frame?: GateFrame;
   /** B-876 — the round-2+ iteration delta, rendered under the **On accept:** line. */
   revision?: RevisionBlock;
+  /** B-1046 — extra domain/surface tags a composing gate skill may declare for the derived knowledge
+   *  entry (`withDerivedEntryContent` folds these into the entry's `tags`). The ticket's own `b-NNN` tag
+   *  is always added regardless of whether this field is populated. */
+  tags?: string[];
 }
 
 export interface BriefLintResult {
@@ -2171,7 +2175,21 @@ export function withDerivedEntryContent(
   // round. `undefined` (missing visualId, missing recommendation, or — for design-decide — missing
   // decisionRef.type) means "leave the entry's title exactly as it already is", never a broken title.
   const title = deriveEntryTitle(staged, reason, { ...ctx, decisionRef });
-  return { ...staged, payload: [...others, { ...stub, content, ...(title ? { title } : {}) }] };
+  // B-1046 — the entry's `tags`, computed ONCE here (not scattered across every gate skill's own
+  // `record_decision` call): the ticket's own tag (lowercased visual id, e.g. 'b-1046') from
+  // `ctx.visualId` — now fetched for every `derives_entry_content` reason, see the visualId fetch above
+  // — plus whatever domain/surface tags the composing gate's doc declared via `doc.tags`. Deduped
+  // (no reusable string-array dedupe helper exists in this codebase — `dedupeRefs` in payload-refs.ts
+  // is ref-object-shaped, not a bare string dedupe — so this uses the same inline `Set` idiom as
+  // tasks.ts/resolve-task-id.ts) and attached only when non-empty, mirroring `title`'s own guard above.
+  const tags = [...new Set([...(ctx.visualId ? [ctx.visualId.toLowerCase()] : []), ...(doc.tags ?? [])])];
+  return {
+    ...staged,
+    payload: [
+      ...others,
+      { ...stub, content, ...(title ? { title } : {}), ...(tags.length ? { tags } : {}) },
+    ],
+  };
 }
 
 export interface ComposeBriefArgs {
@@ -2829,12 +2847,15 @@ export async function composeBrief(
   // B-866: `doc` also carries the DERIVED `knowledge_entry_content` payload item for the five gate
   // reasons whose accept promotes a knowledge entry — the entry prose is a projection of this same doc
   // (`renderEntry`), so the human ratifies and the accept promotes one authored source, not two.
-  // B-921 — the ticket's own visual id (e.g. 'B-921'), fetched ONLY for the two reasons whose entry
-  // title embeds it (deriveEntryTitle no-ops for every other reason, so the extra queries below would be
-  // wasted work). A read failure here must NEVER block compose — it degrades to `visualId: undefined`,
-  // which makes deriveEntryTitle's own guard no-op exactly like today's (pre-this-ticket) behavior.
+  // B-921 — the ticket's own visual id (e.g. 'B-921'), fetched for every `derives_entry_content`
+  // reason (widened by B-1046: `deriveEntryTitle` only embeds it for the two design/decompose reasons,
+  // but `withDerivedEntryContent`'s own `tags` derivation below needs it for all FOUR
+  // `derives_entry_content` reasons — clarification-draft, decomposition-proposal, design-decision-draft,
+  // revise-scope-review — not just the two title needs). A read failure here must NEVER block compose —
+  // it degrades to `visualId: undefined`, which makes both deriveEntryTitle's and the tags derivation's
+  // own guards no-op exactly like today's (pre-this-ticket) behavior.
   let visualId: string | undefined;
-  if (args.reason === 'decomposition-proposal' || args.reason === 'design-decision-draft') {
+  if (derivesEntryContent(args.reason)) {
     try {
       const [{ data: taskRow }, project] = await Promise.all([
         client.from('tasks').select('task_number').eq('id', taskId).maybeSingle(),
