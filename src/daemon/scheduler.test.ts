@@ -3490,17 +3490,28 @@ describe('B-720 captured launcher output', () => {
 // launches exactly as any other conduction would; inadmissible ⇒ no worker launched, the conduction
 // parks, the ticket's own workflow advances to 'parking', and the five-item verdict lands as a
 // comment.
+//
+// B-1073 BUGFIX (this ticket) — ALWAYS-EMPTY ADMISSION EVIDENCE: the original landing fed the
+// admission check one `{ repo }` evidence entry PER `deps.declaredRepos` entry (the deployment's
+// configured repo set — e.g. workspace/web/plugin for a 3-repo deployment), which made
+// `evaluateMultiRepoItem` see >1 distinct repo and FAIL every fast-track conduction a multi-repo
+// deployment ever ran, before any work started. fireLaunch now always calls
+// `evaluateFastTrackAdmission` with `[]`, so `deps.declaredRepos` no longer has ANY effect on
+// admission — every test below that still sets it does so DELIBERATELY, to prove it is ignored.
+// Only a title that trips the single-sentence-statable item (d) can still produce an inadmissible
+// report at this call site, since items (a) multi-repo and (b) migration now always read vacuous
+// (0 repos, 0 migration paths) on empty evidence, and item (c) risk-class needs an auth/shared-core/
+// irreversible-destructive signal this file's test titles never carry.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 describe('B-1073 (post-review wiring): fast-track admission check at fireLaunch', () => {
-  it('admissible (one declared repo, clean title): launches the worker exactly as any other conduction would', async () => {
+  it('admissible (clean title, no declared repos): launches the worker exactly as any other conduction would', async () => {
     const h = makeHarness({
       conductions: [conduction({ run_config: { fast_track: true } })],
       tasks: {
         'task-1': pausedTask({ workflow_state: 'Captured', title: 'Fix the flaky retry timer in the poller.' }),
       },
     });
-    h.deps.declaredRepos = ['ycomplex/harmony-plugin'];
     const advanceTicketWorkflow = vi.fn(async () => {});
     const addTicketComment = vi.fn(async () => {});
     h.deps.advanceTicketWorkflow = advanceTicketWorkflow;
@@ -3514,13 +3525,40 @@ describe('B-1073 (post-review wiring): fast-track admission check at fireLaunch'
     expect(addTicketComment).not.toHaveBeenCalled();
   });
 
-  it('inadmissible (two declared repos — the conservative pre-build floor): parks the conduction, advances the ticket to parking, comments the verdict, and launches NO worker', async () => {
+  it('B-1073 BUGFIX regression: a 3-repo deployment (the exact bug scenario — e.g. workspace/web/plugin) no longer parks a clean fast-track conduction, because declaredRepos is never fed to the admission check as evidence', async () => {
     const h = makeHarness({
       conductions: [conduction({ run_config: { fast_track: true } })],
       tasks: {
         'task-1': pausedTask({ workflow_state: 'Captured', title: 'Fix the flaky retry timer in the poller.' }),
       },
     });
+    // The exact shape of the original bug report: a deployment declaring 3 repos.
+    h.deps.declaredRepos = ['ycomplex/workspace', 'ycomplex/harmony-web', 'ycomplex/harmony-plugin'];
+    const advanceTicketWorkflow = vi.fn(async () => {});
+    const addTicketComment = vi.fn(async () => {});
+    h.deps.advanceTicketWorkflow = advanceTicketWorkflow;
+    h.deps.addTicketComment = addTicketComment;
+
+    await wakeAndFire(h);
+
+    // Before this fix, this would have parked ("evidence spans 3 repos") and launched no worker.
+    expect(h.launches()).toEqual(['launch cond-1 task-1']);
+    expect(h.running()).toEqual(['cond-1']);
+    expect(advanceTicketWorkflow).not.toHaveBeenCalled();
+    expect(addTicketComment).not.toHaveBeenCalled();
+  });
+
+  it('inadmissible (title not single-sentence-statable — the one failure path still reachable with empty evidence): parks the conduction, advances the ticket to parking, comments the verdict, and launches NO worker', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ run_config: { fast_track: true } })],
+      tasks: {
+        'task-1': pausedTask({
+          workflow_state: 'Captured',
+          title: 'Fix the timer. Also touch up the retry logic while we are in there.',
+        }),
+      },
+    });
+    // Declared regardless, to prove it has no bearing on this verdict either.
     h.deps.declaredRepos = ['ycomplex/harmony-web', 'ycomplex/harmony-plugin'];
     const advanceTicketWorkflow = vi.fn(async () => {});
     const addTicketComment = vi.fn(async () => {});
@@ -3539,17 +3577,19 @@ describe('B-1073 (post-review wiring): fast-track admission check at fireLaunch'
     const [taskId, comment] = addTicketComment.mock.calls[0];
     expect(taskId).toBe('task-1');
     expect(comment).toContain('harmony fast-track refuses admission');
-    expect(comment).toContain('Single repo');
+    expect(comment).toContain('Single-sentence-statable change');
   });
 
   it('inadmissible with NEITHER advanceTicketWorkflow NOR addTicketComment wired (both optional): still parks the conduction and launches NO worker', async () => {
     const h = makeHarness({
       conductions: [conduction({ run_config: { fast_track: true } })],
       tasks: {
-        'task-1': pausedTask({ workflow_state: 'Captured', title: 'Fix the flaky retry timer in the poller.' }),
+        'task-1': pausedTask({
+          workflow_state: 'Captured',
+          title: 'Fix the timer. Also touch up the retry logic while we are in there.',
+        }),
       },
     });
-    h.deps.declaredRepos = ['ycomplex/harmony-web', 'ycomplex/harmony-plugin'];
 
     await wakeAndFire(h);
 
@@ -3587,10 +3627,15 @@ describe('B-1073 x B-1020: an admission-parked fast-track leg is never counted o
     const h = makeHarness({
       conductions: [conduction({ run_config: { fast_track: true }, leg_count: 2 })], // 2 prior legs
       tasks: {
-        'task-1': pausedTask({ workflow_state: 'Captured', title: 'Fix the flaky retry timer in the poller.' }),
+        'task-1': pausedTask({
+          workflow_state: 'Captured',
+          // B-1073 bugfix (this ticket): declaredRepos is never fed to admission evidence any more
+          // (see the describe block above), so a multi-sentence title — tripping item (d),
+          // single-sentence-statable — is the trigger used here instead of a multi-repo deployment.
+          title: 'Fix the timer. Also touch up the retry logic while we are in there.',
+        }),
       },
     });
-    h.deps.declaredRepos = ['ycomplex/harmony-web', 'ycomplex/harmony-plugin']; // multi-repo -> inadmissible
 
     await wakeAndFire(h);
 

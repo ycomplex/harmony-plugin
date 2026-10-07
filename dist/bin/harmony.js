@@ -42021,7 +42021,7 @@ function fillRunConfigDefaults(callerRunConfig, defaults) {
 
 // src/cli/commands/conduct.ts
 function registerConductCommand(program3) {
-  program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor daemon picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").option("--unpark", "Revive a Parked ticket and hand it to the conductor in this same call (B-964)", false).option("--resume-to <state>", "Target workflow_state override when reviving a Parked ticket (defaults to the ticket's own parked_from, else Proposed)").option("--model <alias>", "B-925: explicit model alias for this run (fills run_config.model.default)").option("--session-resume", "B-925: explicitly enable session-resume for this run").option("--no-session-resume", "B-925: explicitly disable session-resume for this run").option("--auto-approve-gates <gates>", "B-925: comma-separated forward gates to auto-approve for this run").option("--no-auto-approve-gates", "B-925: explicitly auto-approve no gates for this run").action(async (ticket, opts) => {
+  program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor daemon picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").option("--unpark", "Revive a Parked ticket and hand it to the conductor in this same call (B-964)", false).option("--resume-to <state>", "Target workflow_state override when reviving a Parked ticket (defaults to the ticket's own parked_from, else Proposed)").option("--model <alias>", "B-925: explicit model alias for this run (fills run_config.model.default)").option("--session-resume", "B-925: explicitly enable session-resume for this run").option("--no-session-resume", "B-925: explicitly disable session-resume for this run").option("--auto-approve-gates <gates>", "B-925: comma-separated forward gates to auto-approve for this run").option("--no-auto-approve-gates", "B-925: explicitly auto-approve no gates for this run").option("--fast-track", "B-1073: run this conduction in fast-track mode (sets run_config.fast_track)").action(async (ticket, opts) => {
     await runCommand(
       program3.opts(),
       async (ctx) => {
@@ -42042,6 +42042,9 @@ function registerConductCommand(program3) {
           }
           if (opts.autoApproveGates !== void 0) {
             runConfigInput.auto_approve_gates = opts.autoApproveGates === false ? [] : opts.autoApproveGates.split(",").map((g) => g.trim()).filter(Boolean);
+          }
+          if (opts.fastTrack !== void 0) {
+            runConfigInput.fast_track = opts.fastTrack;
           }
           const callerRunConfig = Object.keys(runConfigInput).length > 0 ? RunConfigSchema.parse(runConfigInput) : void 0;
           const defaults = await getProjectConductionDefaults(ctx.client, ctx.projectId);

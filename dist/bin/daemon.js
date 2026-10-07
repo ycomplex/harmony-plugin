@@ -35509,10 +35509,7 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
   const current = preReadCurrent ?? await deps.getTaskMeta(row.task_id);
   const runConfig = row.run_config ?? {};
   if (isFastTrackBuildLeg(runConfig, current)) {
-    const { admissible, report } = evaluateFastTrackAdmission(
-      current.title ?? "",
-      deps.declaredRepos ?? []
-    );
+    const { admissible, report } = evaluateFastTrackAdmission(current.title ?? "", []);
     if (!admissible) {
       const comment = formatInadmissibleFastTrackVerdict(report);
       deps.log(
@@ -36145,8 +36142,9 @@ ${err instanceof Error ? err.message : String(err)}
       await runRecordedWalkDrainPass({ client, projectId, userId: auth.getUserId(), log });
     },
     // B-1073 (post-review wiring) — the deployment's declared repo set, resolved once at boot
-    // alongside workerImage/projectKey above (same pin-at-boot discipline). `[]` on every deployment
-    // with no `repos` declared, which the admission check reads as "no multi-repo signal".
+    // alongside workerImage/projectKey above (same pin-at-boot discipline). B-1073 BUGFIX (this
+    // ticket): no longer read by the admission check at all — see this field's own doc comment on
+    // SchedulerDeps (scheduler.ts) and the computation above for why it is still wired through.
     declaredRepos,
     // B-1073 (post-review wiring) — park a fast-track-inadmissible ticket's own workflow_state,
     // calling the SAME advanceWorkflow the advance_workflow MCP tool uses, directly against this

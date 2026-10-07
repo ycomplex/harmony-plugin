@@ -313,12 +313,20 @@ export interface SchedulerDeps extends WriteRetryDeps {
    *  default WORKER_IMAGE_DEFAULT — so an existing deployment that never sets it renders exactly the
    *  literal its template carried before this ticket. */
   workerImage?: string;
-  /** B-1073 (post-review wiring) — the deployment's configured repo set, resolved to `owner/repo`
-   *  strings (e.g. from `deploymentConfig.repos[].url`) — fed as fireLaunch's fast-track admission
-   *  check's evidence (one `{ repo }` entry per declared repo, no `paths`). OPTIONAL and defaults to
-   *  `[]` (feature-detect: absent on most deployments, which have no `~/.harmony/deployment.json`
-   *  `repos` declared at all) — see `evaluateFastTrackAdmission`'s own doc for why an empty list
-   *  degrades to "no multi-repo signal" rather than throwing. */
+  /** B-1073 bugfix (this ticket) — the deployment's configured repo set, resolved to `owner/repo`
+   *  strings (e.g. from `deploymentConfig.repos[].url`). DELIBERATELY NOT fed to fireLaunch's
+   *  fast-track admission check any more — a deployment's declared repo list is where code CAN
+   *  live (e.g. workspace/web/plugin for a 3-repo deployment), never which repo THIS conduction's
+   *  change touches; that is unknowable before the build runs. The original B-1073 landing passed
+   *  one `{ repo }` evidence entry PER declared repo into `evaluateFastTrackAdmission`, which made
+   *  `evaluateMultiRepoItem` (record-eligibility.ts) see >1 distinct repo and FAIL on every single
+   *  fast-track conduction a multi-repo deployment ever ran — parking all of them before any work
+   *  started. The fix (fireLaunch below) always calls `evaluateFastTrackAdmission` with `[]`; items
+   *  (a)/(b) are DESIGNED to pass vacuously on empty evidence (the ratified contract), deferring the
+   *  real single-repo/no-migration judgement to B-1072's pre-PR-open re-check against the actual
+   *  diff. KEPT (rather than deleted) purely so the scheduler test suite can still exercise and pin
+   *  the exact bug scenario (a fake multi-repo deployment config feeding a fast-track conduction)
+   *  end to end and assert admission now PASSES — it has no other reader anywhere in this repo. */
   declaredRepos?: string[];
   /** B-1073 (post-review wiring) — advance a ticket's workflow server-side, the SAME state machine
    *  `src/tools/workflow.ts`'s `advanceWorkflow` (the `advance_workflow` MCP tool's underlying
@@ -1634,21 +1642,25 @@ async function fireLaunch(
   // still at Captured/Proposed — the EXACT condition resolveLegGate's own fast-track branch
   // matches, via isFastTrackBuildLeg) must pass the same five-item eligibility floor
   // `harmony record --check` / the fast-track Check phase use, BEFORE any worker ever launches —
-  // never a silent fall-through to an ordinary build leg. `deps.declaredRepos` (the deployment's
-  // configured repo set, resolved to owner/repo strings — absent on most deployments, which
-  // feature-detects to zero evidence and therefore never blocks on the multi-repo item alone)
-  // stands in for the per-conduction evidence this daemon has no other source for pre-build. On an
-  // inadmissible report: park BOTH the conduction (so no further pass retries this fire) and the
-  // ticket itself (advance_workflow 'parking', so a human sees it in the Parked bucket), post the
-  // five-item verdict as a comment, and launch NO worker — the admission check is a floor, not a
-  // warning. Run BEFORE the leg is ever counted (below): a leg that never launches must never
-  // consume a leg number or receive a HARMONY_LEG assignment it will never use.
+  // never a silent fall-through to an ordinary build leg. B-1073 bugfix (this ticket): the evidence
+  // passed to `evaluateFastTrackAdmission` is now ALWAYS `[]` — see the call site just below and
+  // `deps.declaredRepos`'s own doc comment (SchedulerDeps) for why `deps.declaredRepos` is no
+  // longer read here at all. On an inadmissible report: park BOTH the conduction (so no further
+  // pass retries this fire) and the ticket itself (advance_workflow 'parking', so a human sees it
+  // in the Parked bucket), post the five-item verdict as a comment, and launch NO worker — the
+  // admission check is a floor, not a warning. Run BEFORE the leg is ever counted (below): a leg
+  // that never launches must never consume a leg number or receive a HARMONY_LEG assignment it
+  // will never use.
   const runConfig = (row.run_config ?? {}) as RunConfig;
   if (isFastTrackBuildLeg(runConfig, current)) {
-    const { admissible, report } = evaluateFastTrackAdmission(
-      current.title ?? '',
-      deps.declaredRepos ?? [],
-    );
+    // B-1073 bugfix (this ticket) — ALWAYS empty evidence, regardless of `deps.declaredRepos`. See
+    // that field's own doc comment above (SchedulerDeps) for the bug this fixes: a deployment's
+    // declared repo list is where code CAN live, not which repo THIS conduction's change touches,
+    // so feeding it in as per-repo evidence spuriously failed the multi-repo item on every
+    // fast-track conduction a multi-repo deployment ever ran. Items (a)/(b) are designed to pass
+    // vacuously on empty evidence — the real judgement is deferred to the pre-PR-open re-check
+    // against the actual diff (B-1072's checkPrePrOpenEligibility / reEvaluateEligibilityAgainstDiff).
+    const { admissible, report } = evaluateFastTrackAdmission(current.title ?? '', []);
     if (!admissible) {
       const comment = formatInadmissibleFastTrackVerdict(report);
       deps.log(

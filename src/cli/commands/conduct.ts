@@ -24,6 +24,14 @@
 // tool) applies. This command has no `run_config` option at all before B-925 and does not go
 // through create-conduction.ts's wrapper; it reuses the same fill helper + RunConfigSchema import
 // directly against the thin conduction-record.ts insert primitive.
+//
+// B-1073: `--fast-track` sets `run_config.fast_track = true` the SAME way, built alongside the
+// B-925 flags above into the same `runConfigInput` object (never a second RunConfig shape) and
+// going through the identical RunConfigSchema.parse + fillRunConfigDefaults path. It composes
+// cleanly with every other flag here: fillRunConfigDefaults only ever fills `model` /
+// `session_resume` / `auto_approve_gates` from a project's stored defaults (ConductionDefaults has
+// no `fast_track` field at all), so `fast_track` is never touched or overridden by that fill —
+// there is no real conflict with any existing flag to name.
 
 import { Command } from 'commander';
 import { resolveTaskId } from '../../tools/resolve-task-id.js';
@@ -52,6 +60,7 @@ export function registerConductCommand(program: Command): void {
     .option('--no-session-resume', 'B-925: explicitly disable session-resume for this run')
     .option('--auto-approve-gates <gates>', 'B-925: comma-separated forward gates to auto-approve for this run')
     .option('--no-auto-approve-gates', 'B-925: explicitly auto-approve no gates for this run')
+    .option('--fast-track', 'B-1073: run this conduction in fast-track mode (sets run_config.fast_track)')
     .action(async (
       ticket: string,
       opts: {
@@ -60,6 +69,7 @@ export function registerConductCommand(program: Command): void {
         model?: string;
         sessionResume?: boolean;
         autoApproveGates?: string | false;
+        fastTrack?: boolean;
       },
     ) => {
       await runCommand(
@@ -97,6 +107,11 @@ export function registerConductCommand(program: Command): void {
                       .split(',')
                       .map((g) => g.trim())
                       .filter(Boolean);
+            }
+            // B-1073: same "omitted unless passed" discipline as every flag above — --fast-track
+            // not given means no `fast_track` key at all, never a defaulted `false`.
+            if (opts.fastTrack !== undefined) {
+              runConfigInput.fast_track = opts.fastTrack;
             }
             const callerRunConfig: RunConfig | undefined =
               Object.keys(runConfigInput).length > 0

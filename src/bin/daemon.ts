@@ -369,11 +369,17 @@ async function main(): Promise<void> {
     return null;
   };
 
-  // B-1073 (post-review wiring) — `deploymentConfig.repos[].url` -> `owner/repo`, for the fast-track
-  // admission check's evidence (SchedulerDeps.declaredRepos). Best-effort: a URL shape this cannot
-  // parse (not a github.com clone URL) is simply excluded, never thrown on — the admission check's
-  // own multi-repo item already treats a shorter-than-expected repo list as the conservative,
-  // non-penalizing read (see record-eligibility.ts's EligibilityEvidenceLink.repo doc comment).
+  // B-1073 (post-review wiring) — `deploymentConfig.repos[].url` -> `owner/repo`, resolved into
+  // SchedulerDeps.declaredRepos. B-1073 BUGFIX (this ticket): this value is DELIBERATELY NOT fed to
+  // fireLaunch's fast-track admission check any more (see declaredRepos's own doc comment on
+  // SchedulerDeps in src/daemon/scheduler.ts for the bug — a deployment's declared repo list is
+  // where code CAN live, never which repo THIS conduction's change touches, so the original landing
+  // fed one evidence entry per declared repo and spuriously failed the multi-repo item on every
+  // fast-track conduction a multi-repo deployment ever ran). Kept computing it here (rather than
+  // deleting the whole block) purely so the scheduler test suite can pin the exact bug scenario
+  // end to end against the REAL wiring that produces it — it currently has no other reader.
+  // Best-effort: a URL shape this cannot parse (not a github.com clone URL) is simply excluded,
+  // never thrown on.
   const ownerRepoFromUrl = (url: string): string | null => {
     const m = /github\.com[:/]+([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url);
     return m ? `${m[1]}/${m[2]}` : null;
@@ -541,8 +547,9 @@ async function main(): Promise<void> {
       await runRecordedWalkDrainPass({ client, projectId, userId: auth.getUserId(), log });
     },
     // B-1073 (post-review wiring) — the deployment's declared repo set, resolved once at boot
-    // alongside workerImage/projectKey above (same pin-at-boot discipline). `[]` on every deployment
-    // with no `repos` declared, which the admission check reads as "no multi-repo signal".
+    // alongside workerImage/projectKey above (same pin-at-boot discipline). B-1073 BUGFIX (this
+    // ticket): no longer read by the admission check at all — see this field's own doc comment on
+    // SchedulerDeps (scheduler.ts) and the computation above for why it is still wired through.
     declaredRepos,
     // B-1073 (post-review wiring) — park a fast-track-inadmissible ticket's own workflow_state,
     // calling the SAME advanceWorkflow the advance_workflow MCP tool uses, directly against this
