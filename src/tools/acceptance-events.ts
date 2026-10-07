@@ -110,6 +110,11 @@ export interface AcceptanceEventPayloadItem {
    *  brief's own `decision_ref`, which is the normal case; set it only when the payload deliberately
    *  targets an entry the brief does not point at. */
   entry_id?: string | null;
+  /** `knowledge_entry_content` only (B-1046) — the entry's tags, computed ONCE at derivation
+   *  (`withDerivedEntryContent`, briefs.ts) so the entry keeps its link back to the ticket that made
+   *  it. Omit/empty ⇒ nothing to write — the RPC's `_tags` param defaults to NULL and leaves whatever
+   *  tags the entry already carries untouched. */
+  tags?: string[];
   /** `gate_slot` only (B-867) — WHICH durable section this write lands ('clarify' | 'release' |
    *  'verify' today; the storage key is deliberately open). Also the slot's `ratified_by`, stamped from
    *  it by the write itself. */
@@ -188,6 +193,16 @@ export function isMissingRelationOrFunction(err: { message?: string; code?: stri
  *  name. */
 const isMissingTitleParam = (msg: string | undefined): boolean =>
   !!msg && /_title/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
+
+/** B-1046 — the write-side drift predicate for `consume_knowledge_entry_content_write`'s new trailing
+ *  `_tags` param, same shape/class as `isMissingTitleParam` directly above — a PostgREST
+ *  FUNCTION-resolution failure (PGRST202, "Could not find the function ... in the schema cache") naming
+ *  the unresolvable parameter. Matched on `_tags` specifically, against the companion web migration's
+ *  actual parameter name (`_tags text[] DEFAULT NULL`). An INDEPENDENT drift dimension from `_title` —
+ *  a DB may carry one param without the other — so the call site checks (and drops) each separately
+ *  rather than coupling them. */
+const isMissingTagsParam = (msg: string | undefined): boolean =>
+  !!msg && /_tags/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
 
 /** B-975 — the b847 shipped-milestone guard trigger's refusal (`tasks_guard_shipped_milestone`,
  *  migration `20260902145707_b847_shipped_milestone_guard.sql`): Postgres raises `check_violation`
@@ -478,21 +493,39 @@ export async function applyAcceptanceEventPayload(
         result = data as { applied?: boolean };
       } else if (item.write_kind === 'knowledge_entry_content') {
         if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content — the payload CARRIES the entry text; it is never synthesized from doc fields`);
-        let { data, error } = await client.rpc('consume_knowledge_entry_content_write', {
+        // B-921 / B-1046: `includeTitle` and `includeTags` track which of the two INDEPENDENTLY-drifting
+        // trailing params are still being sent. `_title` (B-921) and `_tags` (B-1046) can each be absent
+        // from a not-yet-migrated DB without the other being absent, so the retry loop below drops only
+        // ONE param per round — never both from a single error — re-checking the fresh error after each
+        // drop. A DB missing both chains two rounds, regardless of which param name the first error
+        // happens to mention.
+        let includeTitle = true;
+        let includeTags = true;
+        const callArgs = () => ({
           _event_id: event.id, _external_ref: item.ref, _content: item.content, _entry_id: item.entry_id ?? null,
-          _title: item.title ?? null,
+          ...(includeTitle ? { _title: item.title ?? null } : {}),
+          ...(includeTags ? { _tags: item.tags ?? null } : {}),
         });
-        // B-921: write-side schema drift, same class/shape as briefs.ts's isMissingRemarkParam — the
-        // companion web migration (harmony-web PR #485) widens this RPC with a new trailing `_title`
-        // param, so a not-yet-migrated DB rejects the whole call with a PGRST202 naming `_title`. Checked
-        // BEFORE isMissingRelationOrFunction below (which would ALSO match this exact error — a
-        // wrong-signature PGRST202 looks identical to a wholly-absent function) so a title-only drift
-        // retries the SAME call without `_title` instead of degrading to "substrate absent" and skipping
-        // the content write entirely, which the B-843 mechanism this rides must never do.
-        if (error && isMissingTitleParam(error.message)) {
-          ({ data, error } = await client.rpc('consume_knowledge_entry_content_write', {
-            _event_id: event.id, _external_ref: item.ref, _content: item.content, _entry_id: item.entry_id ?? null,
-          }));
+        let { data, error } = await client.rpc('consume_knowledge_entry_content_write', callArgs());
+        // B-921 / B-1046: write-side schema drift, same class/shape as briefs.ts's isMissingRemarkParam —
+        // the companion web migrations (harmony-web PR #485 for `_title`; the B-1046 migration for
+        // `_tags`) each widen this RPC with a new trailing param, so a not-yet-migrated DB rejects the
+        // whole call with a PGRST202 naming whichever param(s) it doesn't have. Checked BEFORE
+        // isMissingRelationOrFunction below (which would ALSO match this exact error — a wrong-signature
+        // PGRST202 looks identical to a wholly-absent function) so a param-drift retries the SAME call
+        // with one fewer param instead of degrading to "substrate absent" and skipping the content write
+        // entirely, which the B-843 mechanism this rides must never do. At most two rounds (one per
+        // param); each round drops exactly the one param the CURRENT error names, never guessing both
+        // are gone from a single error.
+        for (let round = 0; round < 2 && error; round++) {
+          if (includeTags && isMissingTagsParam(error.message)) {
+            includeTags = false;
+          } else if (includeTitle && isMissingTitleParam(error.message)) {
+            includeTitle = false;
+          } else {
+            break;
+          }
+          ({ data, error } = await client.rpc('consume_knowledge_entry_content_write', callArgs()));
         }
         if (error) {
           // Same B-383 window as label_add below: harmony-web's migration reaches prod only at the next

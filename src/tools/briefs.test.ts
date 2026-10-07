@@ -14,6 +14,21 @@ vi.mock('./resolve-task-id.js', () => ({
 import { resolveTaskId } from './resolve-task-id.js';
 const mockResolveTaskId = vi.mocked(resolveTaskId);
 
+// B-1046 — the visualId lookup (`withDerivedEntryContent`'s compose-time fetch) now fires for every
+// `derives_entry_content` reason (widened from the B-921 two-reason set), so it reaches EVERY
+// composeBrief call in this file that uses one of those four reasons — which is most of them. Mocked
+// at the module level, same discipline as derivation-contract.test.ts's own `getProject` mock: a
+// rejection here degrades to no visualId (byte-identical to pre-widening behavior) for every test
+// below that doesn't opt in, so this file's generic FIFO response queue is never silently consumed by
+// an extra read it didn't account for.
+vi.mock('./project.js', () => ({ getProject: vi.fn() }));
+import { getProject } from './project.js';
+const mockGetProject = vi.mocked(getProject);
+beforeEach(() => {
+  mockGetProject.mockReset();
+  mockGetProject.mockRejectedValue(new Error('project not found'));
+});
+
 // B-1000: isolate every test in this file from the AMBIENT environment's HARMONY_CONDUCTION_ID /
 // HARMONY_LEG — this suite may itself be running inside a real conductor leg (both vars genuinely
 // set), which would otherwise leak into resolveBrief/reshapeBrief's exact-match assertions below and
@@ -556,6 +571,17 @@ function makeClient(
   emptyFloorChain.eq = vi.fn(async () => ({ data: [], error: null }));
   const realFrom = chain.from;
   chain.from = vi.fn((table: string) => (table === 'ticket_references_knowledge' ? emptyFloorChain : realFrom(table)));
+  // B-1046 — the visualId lookup's task-number half is a raw client read
+  // (`.from('tasks').select('task_number')`), TABLE/COLUMN-ROUTED same as the floor read just above, so
+  // it never consumes a slot from the shared FIFO queue every other test here already sized exactly to
+  // its own response sequence. Defaults to "not found" (no task_number) — paired with the module-level
+  // `getProject` rejection above, this makes the whole visualId lookup a no-op by default, byte-identical
+  // to this file's pre-B-1046 behavior.
+  const taskNumberStub: any = {};
+  taskNumberStub.eq = vi.fn(() => taskNumberStub);
+  taskNumberStub.maybeSingle = vi.fn(async () => ({ data: null, error: null }));
+  const realSelect = chain.select;
+  chain.select = vi.fn((cols?: string) => (cols === 'task_number' ? taskNumberStub : realSelect(cols)));
   return chain;
 }
 

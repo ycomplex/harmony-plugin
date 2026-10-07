@@ -32408,7 +32408,14 @@ function withDerivedEntryContent(doc, reason, decisionRef, ctx) {
   const staged = { ...doc, payload: [...others, stub] };
   const content = renderEntry(staged, { ...ctx, decisionRef });
   const title = deriveEntryTitle(staged, reason, { ...ctx, decisionRef });
-  return { ...staged, payload: [...others, { ...stub, content, ...title ? { title } : {} }] };
+  const tags = [.../* @__PURE__ */ new Set([...ctx.visualId ? [ctx.visualId.toLowerCase()] : [], ...doc.tags ?? []])];
+  return {
+    ...staged,
+    payload: [
+      ...others,
+      { ...stub, content, ...title ? { title } : {}, ...tags.length ? { tags } : {} }
+    ]
+  };
 }
 function withDiffDerivedRiskClasses(doc, changedPaths, priorRiskClasses) {
   if (doc.frame?.kind !== "release") return doc;
@@ -32614,7 +32621,7 @@ async function composeBrief(client, projectId, userId, args) {
     );
   }
   let visualId;
-  if (args.reason === "decomposition-proposal" || args.reason === "design-decision-draft") {
+  if (derivesEntryContent(args.reason)) {
     try {
       const [{ data: taskRow }, project] = await Promise.all([
         client.from("tasks").select("task_number").eq("id", taskId).maybeSingle(),
@@ -33401,6 +33408,7 @@ function isMissingRelationOrFunction(err) {
   return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
 }
 var isMissingTitleParam = (msg) => !!msg && /_title/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
+var isMissingTagsParam = (msg) => !!msg && /_tags/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
 function isShippedMilestoneGuardError(error) {
   if (!error) return false;
   if (error.code !== "23514") return false;
@@ -33563,20 +33571,26 @@ async function applyAcceptanceEventPayload(client, event) {
         result = data;
       } else if (item.write_kind === "knowledge_entry_content") {
         if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content \u2014 the payload CARRIES the entry text; it is never synthesized from doc fields`);
-        let { data, error } = await client.rpc("consume_knowledge_entry_content_write", {
+        let includeTitle = true;
+        let includeTags = true;
+        const callArgs = () => ({
           _event_id: event.id,
           _external_ref: item.ref,
           _content: item.content,
           _entry_id: item.entry_id ?? null,
-          _title: item.title ?? null
+          ...includeTitle ? { _title: item.title ?? null } : {},
+          ...includeTags ? { _tags: item.tags ?? null } : {}
         });
-        if (error && isMissingTitleParam(error.message)) {
-          ({ data, error } = await client.rpc("consume_knowledge_entry_content_write", {
-            _event_id: event.id,
-            _external_ref: item.ref,
-            _content: item.content,
-            _entry_id: item.entry_id ?? null
-          }));
+        let { data, error } = await client.rpc("consume_knowledge_entry_content_write", callArgs());
+        for (let round = 0; round < 2 && error; round++) {
+          if (includeTags && isMissingTagsParam(error.message)) {
+            includeTags = false;
+          } else if (includeTitle && isMissingTitleParam(error.message)) {
+            includeTitle = false;
+          } else {
+            break;
+          }
+          ({ data, error } = await client.rpc("consume_knowledge_entry_content_write", callArgs()));
         }
         if (error) {
           if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError("knowledge_entry_content");
