@@ -98,13 +98,13 @@ steps:
         NEW_COMMIT_TIME="$(cat /workspace/source_commit_time.txt)"
         if docker pull '${_IMAGE}:latest' >/dev/null 2>&1; then
           CURRENT_COMMIT_TIME="$(docker inspect --format '{{ index .Config.Labels "harmony.source_commit_time" }}' '${_IMAGE}:latest' 2>/dev/null || echo unknown)"
-          [ -n "$CURRENT_COMMIT_TIME" ] || CURRENT_COMMIT_TIME=unknown
+          [ -n "$$CURRENT_COMMIT_TIME" ] || CURRENT_COMMIT_TIME=unknown
         else
           CURRENT_COMMIT_TIME=unknown
         fi
-        echo "Current :latest commit-time: $CURRENT_COMMIT_TIME"
-        echo "This build's commit-time:    $NEW_COMMIT_TIME"
-        if [ "$CURRENT_COMMIT_TIME" = unknown ] || [ "$NEW_COMMIT_TIME" \> "$CURRENT_COMMIT_TIME" ]; then
+        echo "Current :latest commit-time: $$CURRENT_COMMIT_TIME"
+        echo "This build's commit-time:    $$NEW_COMMIT_TIME"
+        if [ "$$CURRENT_COMMIT_TIME" = unknown ] || [ "$$NEW_COMMIT_TIME" \> "$$CURRENT_COMMIT_TIME" ]; then
           echo proceed > /workspace/push_latest_decision.txt
           echo "guard-latest: this build is newer (or :latest carries no commit-time label yet) — will push :latest"
         else
