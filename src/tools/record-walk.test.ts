@@ -13,10 +13,22 @@ const mocks = vi.hoisted(() => ({
   recordDecision: vi.fn(async (_c: unknown, _p: string, args: any) => ({ id: `decision-${args.type}-${args.source_activity}`, ...args })),
   queryKnowledge: vi.fn(async () => ([] as any[])),
   referenceKnowledge: vi.fn(async () => ({ linked: true })),
+  // B-1073 fast-track release-brief round — the RELEASE section's live `gh pr view` read bottoms out
+  // in `node:child_process`'s `execFile`, called via a dynamic `await import(...)` inside
+  // record-walk.ts (NOT a static import) — vitest's module mock still intercepts it, since mocks are
+  // resolved at the module-graph level, not at the import-statement level. Defaults to an ENOENT-style
+  // rejection ('gh: command not found') so every PRE-EXISTING test in this file (none of which know
+  // about this round's new gh dependency) keeps degrading to "no clause" exactly like before this
+  // round — the regression guard this ticket's spec calls for, satisfied by construction rather than
+  // by a dedicated test alone.
+  execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: (err: unknown, stdout: string) => void) => {
+    cb(new Error('gh: command not found'), '');
+  }),
 }));
 const {
   composeBrief, resolveBrief, consumePendingAcceptanceEvent, writeGateSlot, advanceWorkflow, addComment,
   resolveTaskId, manageAcceptanceCriteria, listAcceptanceCriteria, recordDecision, queryKnowledge, referenceKnowledge,
+  execFile,
 } = mocks;
 
 vi.mock('./briefs.js', () => ({ composeBrief: mocks.composeBrief, resolveBrief: mocks.resolveBrief }));
@@ -30,6 +42,7 @@ vi.mock('./acceptance-criteria.js', () => ({
   listAcceptanceCriteria: mocks.listAcceptanceCriteria,
 }));
 vi.mock('./knowledge.js', () => ({ recordDecision: mocks.recordDecision, queryKnowledge: mocks.queryKnowledge }));
+vi.mock('node:child_process', () => ({ execFile: mocks.execFile }));
 
 import { runRecordedWalk, RATIFIED_BY_RECORDED, RESOLVE_BRIEF_PROVENANCE_RECORDED, KNOWLEDGE_WRITE_PROVENANCE_RECORDED } from './record-walk.js';
 import { PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED } from './provenance.js';
@@ -79,6 +92,9 @@ beforeEach(() => {
   recordDecision.mockImplementation(async (_c: unknown, _p: string, _u: string, args: any) => ({ id: `decision-${args.type}-${args.source_activity}`, ...args }));
   queryKnowledge.mockResolvedValue([] as any[]);
   referenceKnowledge.mockResolvedValue({ linked: true } as any);
+  execFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: (err: unknown, stdout: string) => void) => {
+    cb(new Error('gh: command not found'), '');
+  });
 });
 
 describe('runRecordedWalk — refuse-before-write (B-1062)', () => {
@@ -593,5 +609,107 @@ describe('runRecordedWalk — to_gate (B-1073 fast-track-daemon-ending round)', 
     expect(writeGateSlot).not.toHaveBeenCalled();
     // Only the Captured->Proposed plumbing advance fires — no gate section runs.
     expect(advanceWorkflow.mock.calls.map((c: any) => c[2].activity)).toEqual(['proposing']);
+  });
+});
+
+describe('runRecordedWalk — RELEASE: bot-authored evidence PR disclosure (B-1073 fast-track round)', () => {
+  /** A fake `execFile` that answers `gh pr view <number> --repo <repoSlug> --json ...` for exactly
+   *  the PR named by `evidenceUrl`, and rejects (ENOENT-style) for anything else. */
+  function mockGhPrView(evidenceUrl: string, data: Record<string, unknown>) {
+    execFile.mockImplementation((_cmd: string, cmdArgs: string[], _opts: unknown, cb: (err: unknown, stdout: string) => void) => {
+      if (cmdArgs[0] === 'pr' && cmdArgs[1] === 'view') {
+        cb(null, JSON.stringify(data));
+      } else {
+        cb(new Error('gh: unexpected invocation in test'), '');
+      }
+    });
+  }
+
+  const botPrEvidence = () => ({
+    task_id: 'B-2000',
+    summary: 'Fix the flaky retry timer in the poller.',
+    evidence: [{ url: 'https://github.com/ycomplex/harmony-web/pull/529', repo: 'ycomplex/harmony-web' }],
+    attest_walk: 'walked the poller locally for 8 minutes, confirmed the retry timer no longer flakes',
+  });
+
+  function releaseComposeCall() {
+    const call = composeBrief.mock.calls.find((c: any) => c[3].reason === 'release-decision-pending');
+    expect(call).toBeDefined();
+    return call![3];
+  }
+
+  it('a bot-authored, ALREADY-MERGED evidence PR gets the merged-not-approval-needed clause, and compose/lint succeeds', async () => {
+    mockGhPrView('https://github.com/ycomplex/harmony-web/pull/529', {
+      author: { is_bot: true },
+      mergedAt: '2026-10-01T12:00:00Z',
+      reviewDecision: null,
+    });
+
+    const client = makeClient('Proposed');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, botPrEvidence());
+
+    expect(result.error).toBeUndefined();
+    expect(result.refused).toBe(false);
+    expect(result.gates.map((g) => g.gate)).toContain('release');
+
+    const releaseArgs = releaseComposeCall();
+    expect(releaseArgs.doc.context).toBeDefined();
+    const clause = releaseArgs.doc.context.join(' ');
+    expect(clause).toContain('https://github.com/ycomplex/harmony-web/pull/529');
+    expect(clause).toMatch(/already MERGED/);
+    expect(clause).toMatch(/no GitHub approval is needed/);
+
+    // The gh call read the SAME fields finish-work's own O1 step reads, widened with mergedAt.
+    const prViewCall = execFile.mock.calls.find((c: any) => c[1][0] === 'pr' && c[1][1] === 'view');
+    expect(prViewCall![1]).toEqual(
+      expect.arrayContaining(['--repo', 'ycomplex/harmony-web', '--json', 'author,mergedAt,reviewDecision']),
+    );
+  });
+
+  it('a bot-authored, NOT-yet-merged evidence PR gets the approval-required clause with the live reviewDecision', async () => {
+    mockGhPrView('https://github.com/ycomplex/harmony-web/pull/529', {
+      author: { is_bot: true },
+      mergedAt: null,
+      reviewDecision: 'REVIEW_REQUIRED',
+    });
+
+    const client = makeClient('Proposed');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, botPrEvidence());
+
+    expect(result.error).toBeUndefined();
+    const releaseArgs = releaseComposeCall();
+    const clause = releaseArgs.doc.context.join(' ');
+    expect(clause).toContain('https://github.com/ycomplex/harmony-web/pull/529');
+    expect(clause).toMatch(/needs your approval on GitHub/);
+    expect(clause).toContain('REVIEW_REQUIRED');
+    expect(clause.toLowerCase()).toContain('reviewdecision');
+  });
+
+  it('gh-unavailable (or a non-PR-URL evidence entry) degrades to no clause — the walk still succeeds', async () => {
+    // execFile's default (set in beforeEach) already rejects every call — simulating `gh` missing.
+    const client = makeClient('Proposed');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, botPrEvidence());
+
+    expect(result.error).toBeUndefined();
+    expect(result.refused).toBe(false);
+    expect(result.gates.map((g) => g.gate)).toContain('release');
+
+    const releaseArgs = releaseComposeCall();
+    expect(releaseArgs.doc.context).toBeUndefined();
+  });
+
+  it('a non-bot-authored evidence PR gets no clause either, even when gh IS available', async () => {
+    mockGhPrView('https://github.com/ycomplex/harmony-web/pull/529', {
+      author: { is_bot: false },
+      mergedAt: '2026-10-01T12:00:00Z',
+      reviewDecision: null,
+    });
+
+    const client = makeClient('Proposed');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, botPrEvidence());
+
+    expect(result.error).toBeUndefined();
+    const releaseArgs = releaseComposeCall();
+    expect(releaseArgs.doc.context).toBeUndefined();
   });
 });
