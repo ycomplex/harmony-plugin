@@ -27,6 +27,9 @@ interface RecordOpts {
   /** B-1073 — raw CLI value; validated against RECORD_WALK_GATE_ORDER in the action below before
    *  being narrowed to RecordWalkGateName. */
   fromGate?: string;
+  /** B-1073 fast-track-daemon-ending round — raw CLI value; validated against
+   *  RECORD_WALK_GATE_ORDER in the action below before being narrowed to RecordWalkGateName. */
+  toGate?: string;
 }
 
 function formatWalkResult(result: RecordWalkResult): string {
@@ -54,10 +57,20 @@ export function registerRecordCommand(program: Command): void {
       '--from-gate <gate>',
       `B-1073 — resume the walk starting at this gate (one of: ${RECORD_WALK_GATE_ORDER.join(', ')}). Omit to start at 'clarify' (today's unchanged default).`,
     )
+    .option(
+      '--to-gate <gate>',
+      `B-1073 fast-track-daemon-ending round — bound the walk to stop at this gate, inclusive (one of: ${RECORD_WALK_GATE_ORDER.join(', ')}). Omit to run to 'verify' (today's unchanged default).`,
+    )
     .action(async (ticket: string, opts: RecordOpts) => {
       if (opts.fromGate !== undefined && !RECORD_WALK_GATE_ORDER.includes(opts.fromGate as RecordWalkGateName)) {
         console.error(
           `harmony record: --from-gate must be one of: ${RECORD_WALK_GATE_ORDER.join(', ')} (got '${opts.fromGate}')`,
+        );
+        process.exit(1);
+      }
+      if (opts.toGate !== undefined && !RECORD_WALK_GATE_ORDER.includes(opts.toGate as RecordWalkGateName)) {
+        console.error(
+          `harmony record: --to-gate must be one of: ${RECORD_WALK_GATE_ORDER.join(', ')} (got '${opts.toGate}')`,
         );
         process.exit(1);
       }
@@ -91,6 +104,7 @@ export function registerRecordCommand(program: Command): void {
             evidence,
             attest_walk: opts.attestWalk,
             from_gate: opts.fromGate as RecordWalkGateName | undefined,
+            to_gate: opts.toGate as RecordWalkGateName | undefined,
           });
           if (result.refused) throw new Error(describeIneligibility(result.eligibility));
           if (result.error) throw new Error(result.error);
