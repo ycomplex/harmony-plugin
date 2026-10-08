@@ -129,6 +129,14 @@ visible `fast-track` label on the ticket at the SAME accept that authorizes the 
 can tell a fast-tracked ticket's build leg apart from an ordinary one without re-deriving it from
 `run_config`.
 
+**Pointer — a fast-track-DAEMON leg never reaches this O2 plan gate at all (B-1073
+fast-track-daemon-ending round).** `resolveLegGate` routes a Captured/Proposed fast-track leg
+straight to **build**, so this section's own Designed→Planned sequence simply never fires for that
+leg; nothing here changes mechanics. When a daemon-driven fast-track build leg's Build phase ends, the
+build-ending behavior — landing clarify→build via the `record` tool's `to_gate` argument, then
+composing the release brief — is owned by `skills/harmony-fasttrack/SKILL.md`'s own daemon branch, not
+by this file's O2/O3 sequence.
+
 **On an iterate (round 2+), also author `doc.revision`** — `{ round, changes: [{ change, responds_to }] }`,
 each change bound to the feedback it answers. It renders under the **On accept:** line, below the frame.
 Every recompose that is NOT a send-back passes `revision_cause` — see `skills/harmony-shared/brief-authoring.md` §Stating the cause of a redraft (B-1017).
@@ -389,6 +397,16 @@ advance past a failed sub-step:
    repository from the one this build's own worktree lives in, and finish-work's live merge-status check
    (O2) needs it to target the right repo. Only record this for a genuinely cross-repo dependency; a
    same-repo ordering dependency is ordinary PR-stacking, out of this ticket's scope.
+
+**Pointer — under the daemon case, this build's own ending is owned elsewhere (B-1073
+fast-track-daemon-ending round).** Sub-steps 1-6 above (commit/push/PR-open/record) run the same way
+for every build, fast-track included — but when THIS build is a daemon-driven fast-track leg
+(`environment.conduction_id !== null && environment.fast_track === true`), what happens immediately
+after sub-step 3 opens the PR — landing clarify→build via the `record` tool's `to_gate` argument, then
+composing the release brief, in the same leg — is owned by `skills/harmony-fasttrack/SKILL.md`'s own
+daemon branch, not by this O3 section's own Designed→Planned→Built sequence; a fast-track leg never
+reaches Designed/Planned through the ordinary gates at all, so nothing here says it ends differently
+without this pointer.
 
 **FAILURE PATH — preserve the work, then park; NEVER a PR-less release brief (B-722).** On ANY failure
 of commit / push / PR-create (permission denial, network, auth, `gh` outage), run this IN THE WORKER,

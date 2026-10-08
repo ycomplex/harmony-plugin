@@ -87,13 +87,25 @@ function recordWalkGateIndex(gate: RecordWalkGateName): number {
   return RECORD_WALK_GATE_ORDER.indexOf(gate);
 }
 
-/** B-1073 step 9 — should THIS gate's section run, given the walk's `fromGate`? `fromGate` defaults
- *  to `'clarify'` (the first gate) at every call site below when `args.from_gate` is omitted, so
- *  every section's guard reads `true` unconditionally — today's unchanged behavior. A `fromGate`
- *  later in the order (e.g. `'deploy'`, the drain's own post-merge-request case — step 10) skips
- *  every gate section BEFORE it in the fixed order above. */
-function shouldRunRecordWalkGate(gate: RecordWalkGateName, fromGate: RecordWalkGateName): boolean {
-  return recordWalkGateIndex(gate) >= recordWalkGateIndex(fromGate);
+/** B-1073 step 9 (+ B-1073 fast-track-daemon-ending round: `toGate`) — should THIS gate's section
+ *  run, given the walk's `fromGate`/`toGate` bounds? `fromGate` defaults to `'clarify'` (the first
+ *  gate) and `toGate` defaults to `'verify'` (the last gate) at every call site below when
+ *  `args.from_gate`/`args.to_gate` are omitted, so every section's guard reads `true`
+ *  unconditionally — today's unchanged behavior. A `fromGate` later in the order (e.g. `'deploy'`,
+ *  the drain's own post-merge-request case — step 10) skips every gate section BEFORE it in the
+ *  fixed order above. A `toGate` earlier in the order (e.g. `'build'`, the daemon fast-track-ending
+ *  case) skips every gate section AFTER it — `toGate` itself is INCLUSIVE (it still runs). A
+ *  degenerate bound (`toGate` strictly before `fromGate`) makes every gate's guard read `false` —
+ *  the walk runs zero gate sections, writes nothing beyond the Captured->Proposed plumbing above,
+ *  and returns an empty `gates: []` with no throw (see `runRecordedWalk`'s own comment at the
+ *  `fromGate`/`toGate` computation for why this is the chosen behavior for that case). */
+function shouldRunRecordWalkGate(
+  gate: RecordWalkGateName,
+  fromGate: RecordWalkGateName,
+  toGate: RecordWalkGateName,
+): boolean {
+  const idx = recordWalkGateIndex(gate);
+  return idx >= recordWalkGateIndex(fromGate) && idx <= recordWalkGateIndex(toGate);
 }
 
 const GATE_REASONS: Partial<Record<RecordWalkGateName, string>> = {
@@ -123,6 +135,14 @@ export interface RecordWalkArgs {
    *  gate runs, exactly as before this ticket). The drain's own post-merge-request case (step 10)
    *  passes `'deploy'` for a fast-track ticket already at `Built`. */
   from_gate?: RecordWalkGateName;
+  /** B-1073 fast-track-daemon-ending round — bound the walk: every gate AFTER it (inclusive — i.e.
+   *  `to_gate` itself still runs; everything strictly after it in `RECORD_WALK_GATE_ORDER` is
+   *  skipped) is skipped. Omitted ⇒ `'verify'` (today's unchanged default — every gate runs to the
+   *  end). The daemon fast-track-ending case passes `'build'` so the walk lands clarify..build and
+   *  stops BEFORE its own release/deploy/verify sections would run — the real release brief for that
+   *  case is composed separately, by the caller, never by this walk's own placeholder release/verify
+   *  sections. */
+  to_gate?: RecordWalkGateName;
 }
 
 export interface RecordWalkGateResult {
@@ -142,6 +162,12 @@ export interface RecordWalkResult {
   attestation_recorded: boolean;
   /** Set on a genuine mid-walk failure — `gates` still names everything that landed before it. */
   error?: string;
+  /** B-1073 fast-track-daemon-ending round — set to the resolved `to_gate` whenever it is anything
+   *  other than `'verify'` (a DELIBERATE bounded stop, distinguishable from a full walk that ran to
+   *  its natural end or a refusal/error that never started). Omitted/undefined when the walk ran to
+   *  the end. Set on BOTH the success return and the catch-block's error return, so even a mid-walk
+   *  failure still reports the intended bound (never only on success). */
+  stopped_at_gate?: RecordWalkGateName;
 }
 
 function trimmedOrEmpty(s: string | undefined): string {
@@ -331,7 +357,10 @@ export async function runRecordedWalk(
   // B-1073 step 9: defaults to 'clarify' — every gate section below runs, exactly as before this
   // ticket, when `args.from_gate` is omitted.
   const fromGate: RecordWalkGateName = args.from_gate ?? 'clarify';
-  const runs = (gate: RecordWalkGateName) => shouldRunRecordWalkGate(gate, fromGate);
+  // B-1073 fast-track-daemon-ending round: defaults to 'verify' — every gate section below runs to
+  // the end, exactly as before this round, when `args.to_gate` is omitted.
+  const toGate: RecordWalkGateName = args.to_gate ?? 'verify';
+  const runs = (gate: RecordWalkGateName) => shouldRunRecordWalkGate(gate, fromGate, toGate);
 
   try {
     // ——— Captured -> Proposed, brief-less plumbing (B-1062 verify-round fix 1) ——————————————————
@@ -577,10 +606,15 @@ export async function runRecordedWalk(
 
     }
 
+    if (runs('verify')) {
     // ——— VERIFY — compose ONLY, never accept. This is the ticket's actual human-ack point: verify is
     // the hard floor, and only a live human may accept it (exactly like every conducted ticket) — this
     // walk's job ends at "brief composed, awaiting_human_input set", never resolve_brief. Uses the raw
     // `composeBrief` import directly (NOT `composeAndAccept`, which would immediately auto-accept).
+    // B-1073 fast-track-daemon-ending round: this section previously ran UNCONDITIONALLY (no guard at
+    // all) even when `from_gate` skipped ahead of it — now bounded by the SAME `runs('verify')` check
+    // every other gate section uses, so a `to_gate: 'build'` walk genuinely stops after the build
+    // advance and never composes a release/deploy/verify-shaped write.
     const criteriaRows = await listAcceptanceCriteria(client, projectId, { task_id: taskId });
     const verifyCriteria = (criteriaRows ?? []).map((ac: { id: string; content: string; checked: boolean }) => ({
       ac_id: ac.id,
@@ -636,6 +670,8 @@ export async function runRecordedWalk(
       },
     });
     gates.push({ gate: 'verify', reason: 'verification-ack-pending', landed: true });
+
+    }
   } catch (err) {
     const message =
       err instanceof Error
@@ -652,10 +688,18 @@ export async function runRecordedWalk(
       error:
         `recorded walk failed after landing ${gates.length} gate(s) (${gates.map((g) => g.gate).join(', ') || 'none'}) — ` +
         `${message} — resume by hand from the next unlanded gate, or via harmony conduct.`,
+      ...(toGate !== 'verify' ? { stopped_at_gate: toGate } : {}),
     };
   }
 
-  return { task_id: taskId, eligibility, refused: false, gates, attestation_recorded: attestationRecorded };
+  return {
+    task_id: taskId,
+    eligibility,
+    refused: false,
+    gates,
+    attestation_recorded: attestationRecorded,
+    ...(toGate !== 'verify' ? { stopped_at_gate: toGate } : {}),
+  };
 }
 
 // ——— B-1062 step 9: the MCP tool — the CLI (src/cli/commands/record.ts) and this tool drive the ———
@@ -669,6 +713,9 @@ export interface RecordToolArgs {
   /** B-1073 step 9 — resume the walk starting at this gate; omitted ⇒ `'clarify'` (unchanged
    *  default). See `RecordWalkArgs.from_gate`'s own doc comment. */
   from_gate?: RecordWalkGateName;
+  /** B-1073 fast-track-daemon-ending round — bound the walk to stop at this gate (inclusive);
+   *  omitted ⇒ `'verify'` (unchanged default). See `RecordWalkArgs.to_gate`'s own doc comment. */
+  to_gate?: RecordWalkGateName;
 }
 
 export const recordTool = {
@@ -686,7 +733,10 @@ export const recordTool = {
     'failure, reports exactly which gates already landed (never a silent half-apply) so a human can ' +
     'resume by hand, or via `create_conduction`/`harmony conduct` instead. `evidence` entries carry ' +
     '`repo`/`paths` when already known (e.g. from `gh pr diff`); omit them and this tool evaluates ' +
-    'eligibility from `url` alone.',
+    'eligibility from `url` alone. `from_gate` resumes a partial walk starting at that gate (omit to ' +
+    "start at 'clarify'); `to_gate` bounds it to stop at that gate inclusive (omit to run to " +
+    "'verify') — e.g. `to_gate: 'build'` lands clarify..build and stops before release/deploy/verify, " +
+    'for a caller composing its own release brief separately.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -714,6 +764,11 @@ export const recordTool = {
         enum: RECORD_WALK_GATE_ORDER as unknown as string[],
         description: "B-1073 — resume the walk starting at this gate (inclusive); every gate before it is skipped. Omitted ⇒ 'clarify' (today's unchanged default — every gate runs).",
       },
+      to_gate: {
+        type: 'string',
+        enum: RECORD_WALK_GATE_ORDER as unknown as string[],
+        description: "B-1073 fast-track-daemon-ending round — bound the walk to stop at this gate (inclusive); every gate after it is skipped. Omitted ⇒ 'verify' (today's unchanged default — every gate runs to the end).",
+      },
     },
     required: ['task_id', 'summary', 'evidence'],
   },
@@ -733,5 +788,6 @@ export async function recordToolHandler(
     evidence: args.evidence ?? [],
     attest_walk: args.attest_walk,
     from_gate: args.from_gate,
+    to_gate: args.to_gate,
   });
 }

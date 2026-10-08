@@ -538,3 +538,60 @@ describe('runRecordedWalk — from_gate (B-1073 step 9/10)', () => {
     expect(composeBrief.mock.calls.map((c: any) => c[3].reason)).toEqual(['release-decision-pending', 'verification-ack-pending']);
   });
 });
+
+describe('runRecordedWalk — to_gate (B-1073 fast-track-daemon-ending round)', () => {
+  it("to_gate: 'build' from a fresh Captured ticket lands exactly clarify..build, leaves workflow_state " +
+     'at Built (via the build gate\'s own advance_workflow call), writes no release/deploy/verify brief ' +
+     'or gate slot, and reports stopped_at_gate', async () => {
+    const client = makeClient('Captured');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, { ...eligibleArgs(), to_gate: 'build' });
+
+    expect(result.refused).toBe(false);
+    expect(result.error).toBeUndefined();
+    expect(result.gates.map((g) => g.gate)).toEqual(['clarify', 'decompose', 'design', 'plan', 'build']);
+    expect(result.stopped_at_gate).toBe('build');
+
+    // No release/deploy/verify-shaped write landed — composeBrief only ran for the four reasons
+    // clarify/decompose/design/plan actually use (build itself is a bare advance_workflow, no brief).
+    expect(composeBrief.mock.calls.map((c: any) => c[3].reason)).toEqual([
+      'clarification-draft', 'decomposition-proposal', 'design-decision-draft', 'plan-draft',
+    ]);
+    // write_gate_slot ran once, for clarify only — release's own write_gate_slot call never fires.
+    expect(writeGateSlot.mock.calls.map((c: any) => c[1].gate)).toEqual(['clarify']);
+    // advance_workflow ran for the Captured->Proposed plumbing AND the build gate's own advance —
+    // never 'deploying' (deploy is past the bound).
+    expect(advanceWorkflow.mock.calls.map((c: any) => c[2].activity)).toEqual(['proposing', 'building']);
+  });
+
+  it('to_gate omitted still behaves exactly as today — full walk to verify, stopped_at_gate undefined ' +
+     '(a regression guard)', async () => {
+    const client = makeClient('Proposed');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, eligibleArgs());
+    expect(result.gates.map((g) => g.gate)).toEqual(['clarify', 'decompose', 'design', 'plan', 'build', 'release', 'deploy', 'verify']);
+    expect(result.stopped_at_gate).toBeUndefined();
+  });
+
+  it("from_gate: 'plan' + to_gate: 'build' together lands only plan and build", async () => {
+    const client = makeClient('Designed');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, { ...eligibleArgs(), from_gate: 'plan', to_gate: 'build' });
+    expect(result.gates.map((g) => g.gate)).toEqual(['plan', 'build']);
+    expect(result.stopped_at_gate).toBe('build');
+    expect(composeBrief.mock.calls.map((c: any) => c[3].reason)).toEqual(['plan-draft']);
+  });
+
+  it('a degenerate bound (to_gate precedes from_gate) lands zero gates, writes nothing beyond the ' +
+     'Captured->Proposed plumbing, and never throws — documented choice: every gate\'s runs() guard ' +
+     'reads false when toGate\'s index < fromGate\'s index, so the walk completes with an empty ' +
+     '`gates` array rather than refusing or erroring', async () => {
+    const client = makeClient('Captured');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, { ...eligibleArgs(), from_gate: 'build', to_gate: 'clarify' });
+    expect(result.refused).toBe(false);
+    expect(result.error).toBeUndefined();
+    expect(result.gates).toEqual([]);
+    expect(result.stopped_at_gate).toBe('clarify');
+    expect(composeBrief).not.toHaveBeenCalled();
+    expect(writeGateSlot).not.toHaveBeenCalled();
+    // Only the Captured->Proposed plumbing advance fires — no gate section runs.
+    expect(advanceWorkflow.mock.calls.map((c: any) => c[2].activity)).toEqual(['proposing']);
+  });
+});
