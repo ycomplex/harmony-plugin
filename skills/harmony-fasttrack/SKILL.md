@@ -44,6 +44,22 @@ Check. Present the plan to the human and **wait for their explicit confirmation 
 touching the repo. This is the **one hard pause** in the whole skill before any repo work happens —
 never auto-proceed past it.
 
+**Daemon-driven fast-track conduction — do NOT wait; post instead (B-1073 fast-track-daemon-ending
+round).** Detect this case via `mcp__harmony__get_project`'s `environment` block: BOTH
+`environment.conduction_id !== null` (this leg is running inside a conduction, B-743) AND
+`environment.fast_track === true` (this run's `run_config.fast_track`, B-1073). Under the daemon,
+nothing is in-session to wait on — the only way to "ask" would be filing an elicitation round, which
+costs a full extra worker leg for a confirmation the human already gave implicitly (they set
+`run_config.fast_track = true` and authored an operator note authorizing exactly this fast-track
+flow). So instead of pausing: `mcp__harmony__add_comment` the <=3-step plan AND the Check phase's
+five-item verdict — one comment, or two, either is fine, as long as both land — so the decision is
+on the record and reviewable later at release, then **proceed straight into Build in the same leg,
+without pausing.**
+
+**The interactive case is unchanged** — whenever EITHER condition above is false (no conduction, or
+`fast_track` not set), this phase still waits for the human's explicit in-session confirmation exactly
+as described above.
+
 ### 3. Build phase
 
 Once confirmed, reuse `skills/start-work/SKILL.md`'s **O3** section **by reference** — worktree
@@ -70,9 +86,53 @@ Do not duplicate that prose here. This skill adds exactly **two deltas** on top 
   past the scope budget or tripped a risk class while being built needs the full orchestrated flow,
   not a fast-tracked PR.
 
-  **If both pass:** open the PR and record `build_pr` on the ticket exactly as O3 does, then **STOP**
-  — never merge, never record, in the same invocation (per AC4). The merge is the human's; recording
-  is this skill's own separate, later invocation (step 4).
+  **If both pass:** open the PR and record `build_pr` on the ticket exactly as O3 does. What happens
+  next branches on the SAME daemon-detection signal step 2 just used
+  (`environment.conduction_id !== null && environment.fast_track === true`):
+
+  - **Interactive (unchanged)** — whenever either condition is false (no conduction, or `fast_track`
+    not set): then **STOP** — never merge, never record, in the same invocation (per AC4). The merge
+    is the human's; recording is this skill's own separate, later invocation (step 4).
+
+  - **Daemon (B-1073 fast-track-daemon-ending round) — land clarify..build, then compose the ordinary
+    release brief, in the SAME leg; never stop at a bare PR-open.** Under a daemon-driven fast-track
+    conduction, nothing re-invokes this skill later — a bare PR-open STOP leaves the ticket at
+    Proposed with no brief and no exchange, and the daemon's own park machinery eventually parks the
+    conduction as "no-progress" instead of a human ever seeing a release decision. This closes the
+    exact gap `src/daemon/recorded-walk-drain.ts`'s `WORKFLOW_STATE_TO_FROM_GATE` comment already
+    assumed was true for `Built -> 'deploy'` — "a fast-track ticket already at Built has a REAL
+    release brief/slot landed by its own build leg" was previously aspirational; this is what makes
+    it real. Instead of stopping:
+
+    1. Call the `record` tool (or, equivalently, `runRecordedWalk` directly via MCP —
+       `src/tools/record-walk.ts`) with `task_id`, a one-sentence `summary` derived from the ticket,
+       `evidence: [{ url: <the just-opened PR's URL>, repo: <owner/repo>, paths: <the real changed
+       paths from this build's diff> }]`, and **`to_gate: 'build'`**. This lands the
+       clarify→decompose→design→plan gate slots/knowledge entries AND performs the Planned→Built
+       state advance (the walk's own `build` section is a bare `advance_workflow('building')`, no
+       brief) — then STOPS before the walk's own release/deploy/verify sections would run; those
+       must never fire here, because a real release brief is coming next, not the walk's own
+       placeholder one. No `attest_walk` is needed for this call — the verify-walk attestation stays
+       deferred to the human, the same floor the Check phase note above already states; a walk
+       bounded at `to_gate: 'build'` never reaches `'verify'`, so that item is never even touched.
+    2. Re-read the ticket (`mcp__harmony__get_task`) to confirm `workflow_state === 'Built'`.
+    3. Compose the ORDINARY `release-decision-pending` brief directly — the same shape
+       `skills/finish-work/SKILL.md`'s **O1** section composes for any other build leg (reuse/reference
+       that section's contract rather than restating it here). At minimum this daemon branch must
+       still satisfy: the release frame (B-876, `doc.frame.kind: 'release'` with `act`/`unproven`/
+       `evidence_status`/`risk_classes`); the PR reference riding `doc.context` (never a typed field,
+       per B-876); the bot-approval attention line (this PR is daemon-authored, so
+       `author.is_bot` is true — the human must approve on GitHub before the merge can happen); and
+       the check-status section (one entry per pull request, per B-861). Populate `doc.why`/context
+       with what THIS leg actually proved: the Check phase's five-item verdict as read from the
+       ticket text, whether this leg had to file its own acceptance criteria (step 4's recorded walk
+       files exactly one, per the B-747 floor — none existed before it), and the pre-PR-open
+       re-check's real scope-guard result (file count / line count) against the real diff.
+    4. End the leg cleanly here — this is a one-shot pause on a freshly composed brief, nothing
+       further to do this turn.
+
+    This also means the turn-end stop gate sees a sanctioned stopping point: see "No conduct-session
+    breadcrumb" below.
 
 ### 4. Record phase
 
@@ -121,3 +181,12 @@ sanctioned stop point for a *conducted* ticket. Writing a breadcrumb here would 
 treat this skill's own correct, deliberate stopping point (end of Build, end of Record) as an
 incomplete conduct session and incorrectly block it. **Do not "fix" this by adding a breadcrumb** — a
 future reader who notices the absence should read this paragraph, not add one back.
+
+This "don't write a breadcrumb" rule is about a **standalone interactive invocation** of this skill —
+no conduction, no conductor session around it. When this skill's logic instead runs **inline inside a
+`harmony-conduct` session** (the daemon case detected in steps 2/3 above), `harmony-conduct`'s own
+breadcrumb is already in effect (written at its own step 0) — this file writes none of its own, on top
+of that one. The daemon branch added to the Build phase above is written specifically so that
+breadcrumb's turn-end gate sees a sanctioned stopping point (`Built` + an active, freshly-composed
+release brief) at the end of this leg, rather than blocking the leg or forcing it through to a merge it
+should not perform.

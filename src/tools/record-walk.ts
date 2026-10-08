@@ -57,6 +57,7 @@ import {
   evaluateEligibility,
   type EligibilityReport,
   type EligibilityEvidenceLink,
+  type RunGhCommand,
 } from './record-eligibility.js';
 import { recordDecision, queryKnowledge, type KnowledgeDecisionFull } from './knowledge.js';
 import { referenceKnowledge } from './workflow.js';
@@ -87,13 +88,25 @@ function recordWalkGateIndex(gate: RecordWalkGateName): number {
   return RECORD_WALK_GATE_ORDER.indexOf(gate);
 }
 
-/** B-1073 step 9 — should THIS gate's section run, given the walk's `fromGate`? `fromGate` defaults
- *  to `'clarify'` (the first gate) at every call site below when `args.from_gate` is omitted, so
- *  every section's guard reads `true` unconditionally — today's unchanged behavior. A `fromGate`
- *  later in the order (e.g. `'deploy'`, the drain's own post-merge-request case — step 10) skips
- *  every gate section BEFORE it in the fixed order above. */
-function shouldRunRecordWalkGate(gate: RecordWalkGateName, fromGate: RecordWalkGateName): boolean {
-  return recordWalkGateIndex(gate) >= recordWalkGateIndex(fromGate);
+/** B-1073 step 9 (+ B-1073 fast-track-daemon-ending round: `toGate`) — should THIS gate's section
+ *  run, given the walk's `fromGate`/`toGate` bounds? `fromGate` defaults to `'clarify'` (the first
+ *  gate) and `toGate` defaults to `'verify'` (the last gate) at every call site below when
+ *  `args.from_gate`/`args.to_gate` are omitted, so every section's guard reads `true`
+ *  unconditionally — today's unchanged behavior. A `fromGate` later in the order (e.g. `'deploy'`,
+ *  the drain's own post-merge-request case — step 10) skips every gate section BEFORE it in the
+ *  fixed order above. A `toGate` earlier in the order (e.g. `'build'`, the daemon fast-track-ending
+ *  case) skips every gate section AFTER it — `toGate` itself is INCLUSIVE (it still runs). A
+ *  degenerate bound (`toGate` strictly before `fromGate`) makes every gate's guard read `false` —
+ *  the walk runs zero gate sections, writes nothing beyond the Captured->Proposed plumbing above,
+ *  and returns an empty `gates: []` with no throw (see `runRecordedWalk`'s own comment at the
+ *  `fromGate`/`toGate` computation for why this is the chosen behavior for that case). */
+function shouldRunRecordWalkGate(
+  gate: RecordWalkGateName,
+  fromGate: RecordWalkGateName,
+  toGate: RecordWalkGateName,
+): boolean {
+  const idx = recordWalkGateIndex(gate);
+  return idx >= recordWalkGateIndex(fromGate) && idx <= recordWalkGateIndex(toGate);
 }
 
 const GATE_REASONS: Partial<Record<RecordWalkGateName, string>> = {
@@ -123,6 +136,14 @@ export interface RecordWalkArgs {
    *  gate runs, exactly as before this ticket). The drain's own post-merge-request case (step 10)
    *  passes `'deploy'` for a fast-track ticket already at `Built`. */
   from_gate?: RecordWalkGateName;
+  /** B-1073 fast-track-daemon-ending round — bound the walk: every gate AFTER it (inclusive — i.e.
+   *  `to_gate` itself still runs; everything strictly after it in `RECORD_WALK_GATE_ORDER` is
+   *  skipped) is skipped. Omitted ⇒ `'verify'` (today's unchanged default — every gate runs to the
+   *  end). The daemon fast-track-ending case passes `'build'` so the walk lands clarify..build and
+   *  stops BEFORE its own release/deploy/verify sections would run — the real release brief for that
+   *  case is composed separately, by the caller, never by this walk's own placeholder release/verify
+   *  sections. */
+  to_gate?: RecordWalkGateName;
 }
 
 export interface RecordWalkGateResult {
@@ -142,6 +163,12 @@ export interface RecordWalkResult {
   attestation_recorded: boolean;
   /** Set on a genuine mid-walk failure — `gates` still names everything that landed before it. */
   error?: string;
+  /** B-1073 fast-track-daemon-ending round — set to the resolved `to_gate` whenever it is anything
+   *  other than `'verify'` (a DELIBERATE bounded stop, distinguishable from a full walk that ran to
+   *  its natural end or a refusal/error that never started). Omitted/undefined when the walk ran to
+   *  the end. Set on BOTH the success return and the catch-block's error return, so even a mid-walk
+   *  failure still reports the intended bound (never only on success). */
+  stopped_at_gate?: RecordWalkGateName;
 }
 
 function trimmedOrEmpty(s: string | undefined): string {
@@ -191,6 +218,143 @@ function buildAttestation(args: RecordWalkArgs, userId: string): Record<string, 
   };
 }
 
+// ——— B-1073 fast-track release-brief round — bot-authored/merge-state disclosure ——————————————————
+//
+// B-840 (a real `harmony record B-840 --evidence harmony-web#529` run, mid-review on this PR) showed
+// the gap: the evidence PR was bot-authored and already merged, the ticket's own `field_values.build_pr`
+// record (set by an earlier real `start-work`) carried `author_is_bot: true`, and the RELEASE section's
+// authored release frame/content below said nothing about it — so `compose_brief`'s existing B-732 hard
+// lint (briefs.ts's `lintBrief`, the `ctx.reason === 'release-decision-pending' &&
+// ctx.buildPr?.author_is_bot === true` rule) refused the brief outright (`Brief failed the §3.2
+// pre-send lint: ... This release brief is for a BOT-AUTHORED pull request ...`), BEFORE any write —
+// `composeBrief` throws ahead of its own upsert. The throw propagates out of `composeAndAccept` (no
+// try/catch there) into `runRecordedWalk`'s own top-level catch below, which returns `{ error, gates:
+// landed, ... }` without the release gate ever landing — exactly the observed symptom: B-840 stayed at
+// `Built`, `active_brief_iteration: null`, `awaiting_human_input: false`, no comment (the error is
+// returned as data to the caller, never posted to the ticket).
+//
+// The fix: read the SAME author/merge-state facts `skills/finish-work/SKILL.md`'s O1 "Bot-approval
+// line" reads (`gh pr view --json author,reviewDecision`, widened here with `mergedAt` for the
+// already-merged branch) for each evidence entry that looks like a GitHub PR, and put the resulting
+// clause on `doc.context` — the same field finish-work's own PR-reference line rides (B-876) — so the
+// rendered brief satisfies `lintBrief`'s `mentionsApprovalRequirement` check regardless of which PR
+// drove it.
+//
+// gh-unavailable degrade (REQUIRED — this module otherwise has ZERO shell/gh dependencies, see this
+// file's header): the CLI call site has `gh` available and authenticated; the MCP `record` tool and
+// the daemon drain (`src/daemon/recorded-walk-drain.ts`) are both server-side, in-process, and likely
+// do not. A `gh` failure here (not installed, no network, not authenticated, a hung process past the
+// timeout, a URL that isn't a GitHub PR link, a PR `gh` can't find) must never throw and never block
+// the walk — it degrades to "no clause for this entry", exactly today's behavior. This is the same
+// shape finish-work's own "Capability-denial doctrine" names: a signal this read cannot confirm is
+// informational only here (nothing in this walk depends on it to proceed), so losing it must never
+// stop the walk.
+
+/** Mirrors `record-eligibility.ts`'s `RunGhCommand` signature exactly — injectable so tests never shell
+ *  out for real. A SEPARATE default implementation from that file's own `runGhCommand`: this one needs
+ *  a short timeout (that file's does not, today), so a hung `gh` process can never hang the whole
+ *  recorded walk. */
+const GH_RELEASE_INFO_TIMEOUT_MS = 5000;
+
+async function runGhForReleaseInfo(args: string[]): Promise<string> {
+  const { execFile } = await import('node:child_process');
+  return await new Promise<string>((resolve, reject) => {
+    execFile('gh', args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(String(stdout));
+    });
+  });
+}
+
+const GITHUB_PR_URL_FOR_RELEASE = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?/i;
+
+/** `repo` wins when the caller already supplied it (the evidence shape's own documented convention —
+ *  see `EligibilityEvidenceLink.repo`'s doc comment); otherwise parsed from the URL itself. Returns
+ *  `null` for anything that isn't a recognizable GitHub PR link — the caller treats that as "nothing to
+ *  fetch", never as an error. */
+function parseGithubPrFromEvidence(e: { url: string; repo?: string }): { repoSlug: string; prNumber: string } | null {
+  const match = GITHUB_PR_URL_FOR_RELEASE.exec(e.url.trim());
+  if (!match) return null;
+  const [, owner, repoName, prNumber] = match;
+  const repoSlug = e.repo?.trim() || `${owner}/${repoName}`;
+  return { repoSlug, prNumber };
+}
+
+interface EvidencePrReleaseInfo {
+  prUrl: string;
+  authorIsBot: boolean;
+  merged: boolean;
+  mergedAt: string | null;
+  reviewDecision: string | null;
+}
+
+/** Best-effort, LIVE read of one evidence entry's author/merge state, via the SAME `gh pr view` fields
+ *  `skills/finish-work/SKILL.md`'s O1 step reads (`author`, `reviewDecision`), widened with `mergedAt`
+ *  so an already-merged PR can be told apart from one still awaiting approval. Returns `null` — never
+ *  throws — for a non-PR URL or ANY `gh` failure (see this section's header for the full degrade list);
+ *  the caller treats `null` exactly like "this entry contributes no clause", never a walk failure. */
+export async function fetchEvidencePrReleaseInfo(
+  e: { url: string; repo?: string },
+  runGh: RunGhCommand = runGhForReleaseInfo,
+): Promise<EvidencePrReleaseInfo | null> {
+  const parsed = parseGithubPrFromEvidence(e);
+  if (!parsed) return null;
+  try {
+    const out = await runGh([
+      'pr', 'view', parsed.prNumber,
+      '--repo', parsed.repoSlug,
+      '--json', 'author,mergedAt,reviewDecision',
+    ]);
+    const data = JSON.parse(out) as {
+      author?: { is_bot?: boolean } | null;
+      mergedAt?: string | null;
+      reviewDecision?: string | null;
+    };
+    return {
+      prUrl: e.url,
+      authorIsBot: data.author?.is_bot === true,
+      merged: typeof data.mergedAt === 'string' && data.mergedAt.length > 0,
+      mergedAt: data.mergedAt ?? null,
+      reviewDecision: data.reviewDecision ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Mirrors `skills/finish-work/SKILL.md`'s O1 "Bot-approval line" wording pattern — name the PR, state
+ *  the approval requirement, surface the live `reviewDecision` — literally, satisfying
+ *  `lintBrief`'s `mentionsApprovalRequirement` check (briefs.ts) via the explicit "reviewDecision"
+ *  mention. The ALREADY-MERGED branch (the common case here: a recorded walk's evidence is near-always
+ *  a merged PR, and the post-merge drain always feeds this function a merged one) says so instead of
+ *  asking for an approval that was never needed — never misrepresenting a done merge as still pending
+ *  a human's GitHub click. */
+function buildBotAuthoredReleaseClause(info: EvidencePrReleaseInfo): string {
+  if (info.merged) {
+    return `This PR (${info.prUrl}) is authored by a bot account and is already MERGED` +
+      `${info.mergedAt ? ` (at \`${info.mergedAt}\`)` : ''} — no GitHub approval is needed.`;
+  }
+  return `\u26a0 This PR (${info.prUrl}) is authored by a bot account and needs your approval on ` +
+    `GitHub before it can merge. Current reviewDecision: ${info.reviewDecision ?? 'REVIEW_REQUIRED'}.`;
+}
+
+/** Gathers the bot-authored disclosure clause for every evidence entry that is (a) a GitHub PR URL and
+ *  (b) actually bot-authored (per the live `gh` read) — skipping everything else silently, including
+ *  every `gh`-unavailable/non-PR entry (see this section's header). Returned in evidence order; `[]`
+ *  when nothing qualifies, which the RELEASE section below treats as "no `doc.context` addition",
+ *  byte-identical to this round's pre-fix behavior. */
+export async function gatherBotAuthoredReleaseClauses(
+  evidence: Array<{ url: string; repo?: string }>,
+  runGh: RunGhCommand = runGhForReleaseInfo,
+): Promise<string[]> {
+  const clauses: string[] = [];
+  for (const e of evidence) {
+    const info = await fetchEvidencePrReleaseInfo(e, runGh);
+    if (info && info.authorIsBot) clauses.push(buildBotAuthoredReleaseClause(info));
+  }
+  return clauses;
+}
+
 interface ComposeAndAcceptArgs {
   reason: string;
   pendingActivity: string | null;
@@ -208,6 +372,10 @@ interface ComposeAndAcceptArgs {
    *  (`derivesEntryContent(reason) === false`, e.g. plan-draft) — for clarify/decompose/design, leave
    *  this undefined; compose_brief derives and REPLACES anything supplied here for those three reasons. */
   payload?: Array<{ write_kind: 'knowledge_entry_content'; ref: string; content: string; entry_id?: string | null }>;
+  /** B-1073 fast-track release-brief round — the bot-authored disclosure clauses from
+   *  `gatherBotAuthoredReleaseClauses`, ONLY meaningful on the release reason (every other gate omits
+   *  it). Rides `doc.context` exactly like finish-work's own PR-reference line (B-876). */
+  context?: string[];
 }
 
 /** compose_brief -> resolve_brief(accept) -> (payload-carrying reasons only) consume the deferred
@@ -232,6 +400,7 @@ async function composeAndAccept(
       items: [],
       frame: args.frame,
       payload: args.payload ?? [],
+      context: args.context,
     },
   });
   await resolveBrief(client, projectId, {
@@ -331,7 +500,10 @@ export async function runRecordedWalk(
   // B-1073 step 9: defaults to 'clarify' — every gate section below runs, exactly as before this
   // ticket, when `args.from_gate` is omitted.
   const fromGate: RecordWalkGateName = args.from_gate ?? 'clarify';
-  const runs = (gate: RecordWalkGateName) => shouldRunRecordWalkGate(gate, fromGate);
+  // B-1073 fast-track-daemon-ending round: defaults to 'verify' — every gate section below runs to
+  // the end, exactly as before this round, when `args.to_gate` is omitted.
+  const toGate: RecordWalkGateName = args.to_gate ?? 'verify';
+  const runs = (gate: RecordWalkGateName) => shouldRunRecordWalkGate(gate, fromGate, toGate);
 
   try {
     // ——— Captured -> Proposed, brief-less plumbing (B-1062 verify-round fix 1) ——————————————————
@@ -523,12 +695,19 @@ export async function runRecordedWalk(
 
     if (runs('release')) {
     // ——— RELEASE ———————————————————————————————————————————————————————————————————————————
+    // B-1073 fast-track release-brief round — a LIVE, best-effort `gh pr view` read per evidence
+    // entry, so a bot-authored evidence PR gets the same disclosure finish-work's O1 "Bot-approval
+    // line" would (or the merged-not-approval-needed clause, for the common already-merged case).
+    // Degrades to `[]` (no `doc.context` addition — byte-identical to pre-fix behavior) on any
+    // gh-unavailable/non-PR entry; see `gatherBotAuthoredReleaseClauses`'s header.
+    const botAuthoredClauses = await gatherBotAuthoredReleaseClauses(args.evidence);
     await composeAndAccept(client, projectId, userId, taskId, {
       reason: GATE_REASONS.release!,
       // pending_activity: null — Built->Deployed is SYSTEM-on-deploy-success, never this accept's own
       // doing (mirrors finish-work's own release compose — see skills/finish-work/SKILL.md).
       pendingActivity: null,
       decide: `Record what ${args.task_id} shipped, from the supplied summary and evidence (recorded, not conducted).`,
+      context: botAuthoredClauses.length > 0 ? botAuthoredClauses : undefined,
       frame: {
         kind: 'release',
         act: {
@@ -577,10 +756,15 @@ export async function runRecordedWalk(
 
     }
 
+    if (runs('verify')) {
     // ——— VERIFY — compose ONLY, never accept. This is the ticket's actual human-ack point: verify is
     // the hard floor, and only a live human may accept it (exactly like every conducted ticket) — this
     // walk's job ends at "brief composed, awaiting_human_input set", never resolve_brief. Uses the raw
     // `composeBrief` import directly (NOT `composeAndAccept`, which would immediately auto-accept).
+    // B-1073 fast-track-daemon-ending round: this section previously ran UNCONDITIONALLY (no guard at
+    // all) even when `from_gate` skipped ahead of it — now bounded by the SAME `runs('verify')` check
+    // every other gate section uses, so a `to_gate: 'build'` walk genuinely stops after the build
+    // advance and never composes a release/deploy/verify-shaped write.
     const criteriaRows = await listAcceptanceCriteria(client, projectId, { task_id: taskId });
     const verifyCriteria = (criteriaRows ?? []).map((ac: { id: string; content: string; checked: boolean }) => ({
       ac_id: ac.id,
@@ -636,6 +820,8 @@ export async function runRecordedWalk(
       },
     });
     gates.push({ gate: 'verify', reason: 'verification-ack-pending', landed: true });
+
+    }
   } catch (err) {
     const message =
       err instanceof Error
@@ -652,10 +838,18 @@ export async function runRecordedWalk(
       error:
         `recorded walk failed after landing ${gates.length} gate(s) (${gates.map((g) => g.gate).join(', ') || 'none'}) — ` +
         `${message} — resume by hand from the next unlanded gate, or via harmony conduct.`,
+      ...(toGate !== 'verify' ? { stopped_at_gate: toGate } : {}),
     };
   }
 
-  return { task_id: taskId, eligibility, refused: false, gates, attestation_recorded: attestationRecorded };
+  return {
+    task_id: taskId,
+    eligibility,
+    refused: false,
+    gates,
+    attestation_recorded: attestationRecorded,
+    ...(toGate !== 'verify' ? { stopped_at_gate: toGate } : {}),
+  };
 }
 
 // ——— B-1062 step 9: the MCP tool — the CLI (src/cli/commands/record.ts) and this tool drive the ———
@@ -669,6 +863,9 @@ export interface RecordToolArgs {
   /** B-1073 step 9 — resume the walk starting at this gate; omitted ⇒ `'clarify'` (unchanged
    *  default). See `RecordWalkArgs.from_gate`'s own doc comment. */
   from_gate?: RecordWalkGateName;
+  /** B-1073 fast-track-daemon-ending round — bound the walk to stop at this gate (inclusive);
+   *  omitted ⇒ `'verify'` (unchanged default). See `RecordWalkArgs.to_gate`'s own doc comment. */
+  to_gate?: RecordWalkGateName;
 }
 
 export const recordTool = {
@@ -686,7 +883,10 @@ export const recordTool = {
     'failure, reports exactly which gates already landed (never a silent half-apply) so a human can ' +
     'resume by hand, or via `create_conduction`/`harmony conduct` instead. `evidence` entries carry ' +
     '`repo`/`paths` when already known (e.g. from `gh pr diff`); omit them and this tool evaluates ' +
-    'eligibility from `url` alone.',
+    'eligibility from `url` alone. `from_gate` resumes a partial walk starting at that gate (omit to ' +
+    "start at 'clarify'); `to_gate` bounds it to stop at that gate inclusive (omit to run to " +
+    "'verify') — e.g. `to_gate: 'build'` lands clarify..build and stops before release/deploy/verify, " +
+    'for a caller composing its own release brief separately.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -714,6 +914,11 @@ export const recordTool = {
         enum: RECORD_WALK_GATE_ORDER as unknown as string[],
         description: "B-1073 — resume the walk starting at this gate (inclusive); every gate before it is skipped. Omitted ⇒ 'clarify' (today's unchanged default — every gate runs).",
       },
+      to_gate: {
+        type: 'string',
+        enum: RECORD_WALK_GATE_ORDER as unknown as string[],
+        description: "B-1073 fast-track-daemon-ending round — bound the walk to stop at this gate (inclusive); every gate after it is skipped. Omitted ⇒ 'verify' (today's unchanged default — every gate runs to the end).",
+      },
     },
     required: ['task_id', 'summary', 'evidence'],
   },
@@ -733,5 +938,6 @@ export async function recordToolHandler(
     evidence: args.evidence ?? [],
     attest_walk: args.attest_walk,
     from_gate: args.from_gate,
+    to_gate: args.to_gate,
   });
 }
