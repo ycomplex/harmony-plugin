@@ -112,9 +112,12 @@ export function registerFasttrackCommands(program: Command): void {
         .filter((e): e is NonNullable<typeof e> => e !== null);
 
       const evaluation = evaluateScopeBudget(entries, budget);
+      // B-1109: test files are excluded from both counts; say how many were ignored so the verdict
+      // never hides what it did not count.
       console.log(
         `harmony fasttrack scope-check: ${evaluation.filesChanged} file(s), ${evaluation.linesChanged} ` +
-          `line(s) changed against ${opts.base} — budget ${budget.files} file(s)/${budget.lines} line(s) — ` +
+          `line(s) changed against ${opts.base} (${evaluation.testFilesIgnored} test file(s) not counted) — ` +
+          `budget ${budget.files} file(s)/${budget.lines} line(s) — ` +
           `${evaluation.withinBudget ? 'WITHIN BUDGET' : 'OVER BUDGET'}`,
       );
       process.exit(evaluation.withinBudget ? 0 : 1);

@@ -43245,13 +43245,21 @@ function registerDoctorCommands(program3) {
 
 // src/tools/fasttrack-scope.ts
 var DEFAULT_SCOPE_BUDGET = { files: 5, lines: 150 };
+function isTestPath(path2) {
+  const p = path2.replace(/\\/g, "/");
+  if (/(^|\/)(e2e|__tests__)\//.test(p)) return true;
+  if (/(^|\/)supabase\/tests\//.test(p)) return true;
+  return /\.(test|spec)\.[A-Za-z0-9]+$/.test(p);
+}
 function evaluateScopeBudget(entries, budget = DEFAULT_SCOPE_BUDGET) {
-  const filesChanged = entries.length;
-  const linesChanged = entries.reduce((sum, e) => sum + (e.added ?? 0) + (e.deleted ?? 0), 0);
+  const counted = entries.filter((e) => !isTestPath(e.path));
+  const filesChanged = counted.length;
+  const linesChanged = counted.reduce((sum, e) => sum + (e.added ?? 0) + (e.deleted ?? 0), 0);
   return {
     withinBudget: filesChanged <= budget.files && linesChanged <= budget.lines,
     filesChanged,
     linesChanged,
+    testFilesIgnored: entries.length - counted.length,
     budget
   };
 }
@@ -44066,7 +44074,7 @@ function registerFasttrackCommands(program3) {
     const entries = raw.split("\n").map((line) => parseNumstatLine(line)).filter((e) => e !== null);
     const evaluation = evaluateScopeBudget(entries, budget);
     console.log(
-      `harmony fasttrack scope-check: ${evaluation.filesChanged} file(s), ${evaluation.linesChanged} line(s) changed against ${opts.base} \u2014 budget ${budget.files} file(s)/${budget.lines} line(s) \u2014 ${evaluation.withinBudget ? "WITHIN BUDGET" : "OVER BUDGET"}`
+      `harmony fasttrack scope-check: ${evaluation.filesChanged} file(s), ${evaluation.linesChanged} line(s) changed against ${opts.base} (${evaluation.testFilesIgnored} test file(s) not counted) \u2014 budget ${budget.files} file(s)/${budget.lines} line(s) \u2014 ${evaluation.withinBudget ? "WITHIN BUDGET" : "OVER BUDGET"}`
     );
     process.exit(evaluation.withinBudget ? 0 : 1);
   });
