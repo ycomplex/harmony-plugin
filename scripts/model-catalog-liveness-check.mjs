@@ -101,8 +101,8 @@ export function runVerifyClaude(alias, { spawn = spawnSync, timeoutMs = 60_000 }
  *  run-config.ts's own header comment already documents for its copy of environment.ts's
  *  KNOWN_REFS (there: KNOWN_REFS_FOR_MODEL). Keep both copies in sync by hand. */
 const PINNED_DEFAULT_MODEL_BY_PROFILE = {
-  prod: 'claude-sonnet-5',
-  staging: 'claude-sonnet-5',
+  prod: 'claude-sonnet-5-5',
+  staging: 'claude-sonnet-5-5',
 };
 
 /**

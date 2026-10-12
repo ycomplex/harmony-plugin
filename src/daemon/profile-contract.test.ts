@@ -772,10 +772,10 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
     it('cold-starts instead of resuming when the resumable session exceeds the model\'s context budget', () => {
       const claudeStub = fakeArgsEchoClaude();
       const dir = mkdtempSync(join(tmpdir(), 'b772-budget-home-'));
-      // claude-haiku-4-5-20251001's tabled budget is 60MB (src/config/run-config.ts) — one byte over trips the guard.
+      // claude-haiku-5-5's tabled budget is 60MB (src/config/run-config.ts) — one byte over trips the guard.
       writeSizedSession(dir, 'fake-id', 60 * 1024 * 1024 + 1);
       const result = runResumeBlock(
-        { ...enabledRunConfigEnv(), HARMONY_MODEL: 'claude-haiku-4-5-20251001' },
+        { ...enabledRunConfigEnv(), HARMONY_MODEL: 'claude-haiku-5-5' },
         { fakeClaudeDir: claudeStub, homeDir: dir, pluginDir: REAL_PLUGIN_DIR },
       );
       expect(result.status).toBe(0);
@@ -812,12 +812,12 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
       const combined = execFileSync('bash', [scriptFile], {
         env: {
           ...enabledRunConfigEnv(),
-          HARMONY_MODEL: 'claude-haiku-4-5-20251001',
+          HARMONY_MODEL: 'claude-haiku-5-5',
           HOME: homeDir,
           PATH: `${claudeStub}:${process.env.PATH}`,
         },
       }).toString();
-      expect(combined).toContain('over model \'claude-haiku-4-5-20251001\'\'s');
+      expect(combined).toContain('over model \'claude-haiku-5-5\'\'s');
       expect(combined).toContain('cold-starting instead of resuming (session-resume guard)');
     });
 
@@ -840,7 +840,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
       const dir = mkdtempSync(join(tmpdir(), 'b772-budget-home-small-'));
       writeSession(dir, 'fake-id'); // tiny ('{}\n') — nowhere near any tabled budget
       const result = runResumeBlock(
-        { ...enabledRunConfigEnv(), HARMONY_MODEL: 'claude-haiku-4-5-20251001' },
+        { ...enabledRunConfigEnv(), HARMONY_MODEL: 'claude-haiku-5-5' },
         { fakeClaudeDir: claudeStub, homeDir: dir, pluginDir: REAL_PLUGIN_DIR },
       );
       expect(result.status).toBe(0);
@@ -3321,7 +3321,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('entrypoint.sh: B-718 cross-conduction resu
       mkdirSync(oldSlug, { recursive: true });
       const sessionFile = join(oldSlug, 'sess-old.jsonl');
       writeFileSync(sessionFile, '');
-      truncateSync(sessionFile, 60 * 1024 * 1024 + 1); // over claude-haiku-4-5-20251001's 60MB budget
+      truncateSync(sessionFile, 60 * 1024 * 1024 + 1); // over claude-haiku-5-5's 60MB budget
 
       const runConfig = Buffer.from(JSON.stringify({ session_resume: { enabled: true } })).toString(
         'base64',
@@ -3331,7 +3331,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('entrypoint.sh: B-718 cross-conduction resu
           CONDUCTION_ID: 'cond-new',
           TICKET: 'B-772',
           HARMONY_RUN_CONFIG_JSON: runConfig,
-          HARMONY_MODEL: 'claude-haiku-4-5-20251001',
+          HARMONY_MODEL: 'claude-haiku-5-5',
         },
         dir,
       );
@@ -3355,7 +3355,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('entrypoint.sh: B-718 cross-conduction resu
           CONDUCTION_ID: 'cond-new',
           TICKET: 'B-772',
           HARMONY_RUN_CONFIG_JSON: runConfig,
-          HARMONY_MODEL: 'claude-haiku-4-5-20251001',
+          HARMONY_MODEL: 'claude-haiku-5-5',
         },
         dir,
       );

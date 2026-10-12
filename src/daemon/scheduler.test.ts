@@ -604,7 +604,7 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
           },
         });
         await wakeAndFire(h);
-        expect(h.launches()).toEqual([`launch cond-1 task-1 --model 'claude-sonnet-5'`]);
+        expect(h.launches()).toEqual([`launch cond-1 task-1 --model 'claude-sonnet-5-5'`]);
       } finally {
         if (originalUrl === undefined) delete process.env.HARMONY_SUPABASE_URL;
         else process.env.HARMONY_SUPABASE_URL = originalUrl;
