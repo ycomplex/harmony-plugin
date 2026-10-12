@@ -5,6 +5,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import {
+  remarkAttestsWalk,
   buildFastTrackReleaseRemarkRecordedWalkRequest,
   fileFastTrackReleaseRemarkRecordedWalkIfEligible,
 } from './fasttrack-release-remark.js';
@@ -73,12 +74,23 @@ describe('buildFastTrackReleaseRemarkRecordedWalkRequest (B-1073 step 11)', () =
     });
   });
 
-  it('returns null for a blank/whitespace-only remark', () => {
-    expect(
-      buildFastTrackReleaseRemarkRecordedWalkRequest({
-        task_id: 'task-uuid-1', task_title: 'B-2000', remark_detail: '   ', build_pr_url: null, requested_by: 'human-1',
-      }),
-    ).toBeNull();
+  it('a blank/whitespace-only or null remark yields a row with NO attestation', () => {
+    for (const remark of ['   ', '', null]) {
+      expect(
+        buildFastTrackReleaseRemarkRecordedWalkRequest({
+          task_id: 'task-uuid-1', task_title: 'B-2000', remark_detail: remark, build_pr_url: null, requested_by: 'human-1',
+        }),
+      ).toEqual({ task_id: 'task-uuid-1', summary: 'B-2000', evidence_links: [], attest_walk: null, requested_by: 'human-1' });
+    }
+  });
+
+  it("a remark that says the walk was NOT done yields NO attestation (the founder's real remark)", () => {
+    const row = buildFastTrackReleaseRemarkRecordedWalkRequest({
+      task_id: 't', task_title: 'B', remark_detail: 'not walked \u2014 attest at verify',
+      build_pr_url: 'https://github.com/o/r/pull/1', requested_by: 'h',
+    });
+    expect(row.attest_walk).toBeNull();
+    expect(row.evidence_links).toEqual([{ url: 'https://github.com/o/r/pull/1' }]);
   });
 });
 
@@ -219,5 +231,38 @@ describe('fileFastTrackReleaseRemarkRecordedWalkIfEligible (B-1073 step 11 — t
     });
     expect(filed).toBe(false);
     expect(insertCalls).toEqual([]);
+  });
+});
+
+describe('remarkAttestsWalk (B-1073 — the deterministic, conservative attestation rule)', () => {
+  const none: Array<[string, string | null | undefined]> = [
+    ['null', null],
+    ['undefined', undefined],
+    ['empty', ''],
+    ['whitespace', '  \n\t '],
+    ["the founder's real remark", 'not walked \u2014 attest at verify'],
+    ['not yet walked', 'Not yet walked.'],
+    ['unwalked', 'UNWALKED, will do at verify'],
+    ["haven't walked", "I haven't walked it yet"],
+    ['curly apostrophe', 'I haven\u2019t walked it yet'],
+    ['have not walked', 'have not walked this'],
+    ['attest at verify', 'will attest at verify'],
+    ['attest later', 'Attest later'],
+    ['will walk', 'I will walk it after the deploy'],
+    ['to be walked', 'dialog to be walked at verify'],
+    ['no walk', 'no walk was done'],
+    ['ambiguous: genuine prose that also says it did not walk part', 'orchestrator: walked the dialog, did not walk the legacy path'],
+  ];
+  it.each(none)('%s => not an attestation', (_name, remark) => {
+    expect(remarkAttestsWalk(remark)).toBe(false);
+  });
+
+  const attests = [
+    'orchestrator, 2026-10-08, under 3 minutes: walked the dialog end to end, saved a draft, reopened it, no regressions',
+    'walked the poller locally for 8 minutes, confirmed the fix',
+    'Looks good, merged.',
+  ];
+  it.each(attests)('%s => an attestation', (remark) => {
+    expect(remarkAttestsWalk(remark)).toBe(true);
   });
 });

@@ -128,6 +128,15 @@ Do not duplicate that prose here. This skill adds exactly **two deltas** on top 
     release brief/slot landed by its own build leg" was previously aspirational; this is what makes
     it real. Instead of stopping:
 
+    0. **Record `build_pr` FIRST, immediately after `gh pr create` and before calling `record`** — with
+       the SAME shape and the SAME `update_task` call `skills/start-work/SKILL.md` O3 sub-step 4 records
+       (`pr_url`, `pr_number`, `head_sha`, `branch`, `base`, `opened_at`, `author_login`,
+       `author_is_bot`, all read from the just-verified `gh pr view <n> --json
+       state,url,number,headRefOid,headRefName,baseRefName,createdAt,author`). Do not skip it: two live
+       specimens (B-1106, B-1092) reached `Built` with `build_pr` missing or lacking `head_sha`, which
+       blinds `has_pushed_pr`, the release brief's bot-approval lint, and the daemon's merge check
+       below. (`runRecordedWalk` also backfills any missing keys for a walk bounded at or before
+       `build`, best-effort — a safety net, not a substitute.)
     1. Call the `record` tool (or, equivalently, `runRecordedWalk` directly via MCP —
        `src/tools/record-walk.ts`) with `task_id`, a one-sentence `summary` derived from the ticket,
        `evidence: [{ url: <the just-opened PR's URL>, repo: <owner/repo>, paths: <the real changed
@@ -155,6 +164,17 @@ Do not duplicate that prose here. This skill adds exactly **two deltas** on top 
        re-check's real scope-guard result (file count / line count) against the real diff.
     4. End the leg cleanly here — this is a one-shot pause on a freshly composed brief, nothing
        further to do this turn.
+
+    **The post-merge recording is NOT a worker leg (B-1073).** When the human accepts this release
+    brief, the **daemon** files the `recorded_walk_requests` row itself, under its lease
+    (`src/daemon/fasttrack-release-recording.ts`, called from the scheduler's `handleHeldConduction`)
+    — only after it positively confirms the accept from the activity timeline AND that the recorded
+    `build_pr` PR is **MERGED** (a bot-authored PR still needs the human's GitHub approval + merge;
+    the release accept alone does not perform it). The accept remark becomes the walk attestation
+    unless it says the walk was not done (`remarkAttestsWalk`); the in-process drain then lands
+    deploy and composes the verify brief. If the PR is not merged yet, or anything is unconfirmable,
+    the daemon falls through to an ordinary worker leg (finish-work), which handles approval/merge
+    waiting. See `docs/recorded-walk-contract.md` §1/§3.
 
     This also means the turn-end stop gate sees a sanctioned stopping point: see "No conduct-session
     breadcrumb" below.

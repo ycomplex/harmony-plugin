@@ -137,7 +137,7 @@ import { renderQuietReapOutcome } from './quiet-reap.js';
 import { exchangeWentInactive } from '../conductor/ball-axis.js';
 import { renderTemplate, type DaemonConfig } from './config.js';
 import { resolveLegGate, isFastTrackBuildLeg, evaluateFastTrackAdmission } from './leg-gate.js';
-import { getModelForGate, type RunConfig } from '../config/run-config.js';
+import { getModelForGate, isFastTrackEnabled, type RunConfig } from '../config/run-config.js';
 import { formatInadmissibleFastTrackVerdict } from '../tools/record-eligibility.js';
 // B-929: the ONE place the worker-image default is written (src/config/deployment-config.ts's
 // zod schema) — imported rather than re-typed so this file can never drift from it.
@@ -162,6 +162,11 @@ import { isMissingLastLegEndedAtColumn } from '../tools/conduction-record.js';
 import type { RecordLegOutputArgs } from '../tools/leg-output-record.js';
 import type { Taskish } from '../conductor/poll-loop.js';
 import type { HintSource } from './hints.js';
+import {
+  tryFileFastTrackPostMergeRecording,
+  type FastTrackRecordingBoard,
+  type PrMergeState,
+} from './fasttrack-release-recording.js';
 
 /** The ticket shape the daemon reads (a getTask view:'meta' result is structurally assignable). */
 export type DaemonTask = Taskish & {
@@ -233,6 +238,15 @@ export interface SchedulerDeps extends WriteRetryDeps {
    *  (src/tools/record-walk.ts) directly in-process; see recorded-walk-drain.ts's own header for why
    *  it is tolerant of the table not existing yet, and never throws. */
   drainRecordedWalkRequests?: () => Promise<void>;
+  /** B-1073 (daemon-files-recording round) — OPTIONAL pair that lets the daemon file a fast-track
+   *  conduction's post-merge recording ITSELF (src/daemon/fasttrack-release-recording.ts), with no worker
+   *  leg. BOTH must be present or no interception happens at all (absent ⇒ every wake takes the ordinary
+   *  queue-a-worker path, byte-for-byte — so every existing test/deployment is unaffected).
+   *  `getPrMergeState` is DELIBERATELY not `runCommand` (that dep launches workers; the recording path
+   *  must make no runCommand call): a narrow read of one PR's state, returning 'unknown' on any failure
+   *  (which falls through to the worker path). `fastTrackRecording` is the board handle it files through. */
+  getPrMergeState?: (prUrl: string) => Promise<PrMergeState>;
+  fastTrackRecording?: FastTrackRecordingBoard;
   /** Run a rendered launch/reap/probe command to completion.
    *
    *  CONTROL vs DISPLAY (amended by B-720, corrected by its replacement capture). The exit code
@@ -1032,6 +1046,31 @@ async function handleHeldConduction(
     deps.log(
       `${label(row, current, deps.projectKey)}: returned to conductor (conductor_excluded_at cleared)`,
     );
+  }
+
+  // B-1073 (daemon-files-recording round): a FAST-TRACK conduction whose release brief was ACCEPTED and
+  // whose PR is MERGED needs no worker at all — the daemon files the post-merge `recorded_walk_requests`
+  // row itself (under this lease) and the in-process drain walks it (deploy -> verify brief). Every
+  // precondition is fail-closed: anything unconfirmable falls through to the ordinary queue below, which
+  // is byte-for-byte today's behaviour. See src/daemon/fasttrack-release-recording.ts. Never calls
+  // `deps.runCommand`.
+  if (
+    deps.getPrMergeState &&
+    deps.fastTrackRecording &&
+    isFastTrackEnabled((row.run_config ?? {}) as RunConfig) &&
+    current.workflow_state === 'Built' &&
+    current.awaiting_human_input === false
+  ) {
+    const outcome = await tryFileFastTrackPostMergeRecording(
+      { board: deps.fastTrackRecording, getPrMergeState: deps.getPrMergeState, log: deps.log },
+      row.task_id,
+    );
+    if (outcome.handled) {
+      deps.log(`${label(row, current, deps.projectKey)}: fast-track release accepted — ${outcome.detail}; no worker leg`);
+      state.set(row.id, captureBaseline(current));
+      return;
+    }
+    deps.log(`${label(row, current, deps.projectKey)}: fast-track recording not taken by the daemon (${outcome.reason}) — queuing the ordinary leg`);
   }
 
   // B-717 item 1: QUEUE rather than fire — the fire phase (fireReadyCandidates) decides WHEN,

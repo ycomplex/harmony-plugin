@@ -62,6 +62,7 @@ import {
 import { recordDecision, queryKnowledge, type KnowledgeDecisionFull } from './knowledge.js';
 import { referenceKnowledge } from './workflow.js';
 import { slugRef } from './payload-refs.js';
+import { updateTask } from './tasks.js';
 
 /** B-1062: the `ratified_by` value stamped on every gate slot this core writes — never the gate's own
  *  name, which is what a live accept would stamp (gate-slots.ts's `WriteGateSlotArgs.ratified_by`). */
@@ -282,6 +283,13 @@ function parseGithubPrFromEvidence(e: { url: string; repo?: string }): { repoSlu
 
 interface EvidencePrReleaseInfo {
   prUrl: string;
+  /** B-1073 — the extra facts the `build_pr` backfill needs, from the SAME single `gh pr view` read. */
+  number: number | null;
+  headSha: string | null;
+  branch: string | null;
+  base: string | null;
+  openedAt: string | null;
+  authorLogin: string | null;
   authorIsBot: boolean;
   merged: boolean;
   mergedAt: string | null;
@@ -303,15 +311,26 @@ export async function fetchEvidencePrReleaseInfo(
     const out = await runGh([
       'pr', 'view', parsed.prNumber,
       '--repo', parsed.repoSlug,
-      '--json', 'author,mergedAt,reviewDecision',
+      '--json', 'author,mergedAt,reviewDecision,number,headRefOid,headRefName,baseRefName,createdAt',
     ]);
     const data = JSON.parse(out) as {
-      author?: { is_bot?: boolean } | null;
+      author?: { is_bot?: boolean; login?: string } | null;
       mergedAt?: string | null;
       reviewDecision?: string | null;
+      number?: number;
+      headRefOid?: string;
+      headRefName?: string;
+      baseRefName?: string;
+      createdAt?: string;
     };
     return {
       prUrl: e.url,
+      number: typeof data.number === 'number' ? data.number : null,
+      headSha: data.headRefOid || null,
+      branch: data.headRefName || null,
+      base: data.baseRefName || null,
+      openedAt: data.createdAt || null,
+      authorLogin: data.author?.login || null,
       authorIsBot: data.author?.is_bot === true,
       merged: typeof data.mergedAt === 'string' && data.mergedAt.length > 0,
       mergedAt: data.mergedAt ?? null,
@@ -353,6 +372,101 @@ export async function gatherBotAuthoredReleaseClauses(
     if (info && info.authorIsBot) clauses.push(buildBotAuthoredReleaseClause(info));
   }
   return clauses;
+}
+
+// ——— B-1073 — build_pr backfill ————————————————————————————————————————————————————————————————
+//
+// A fast-track build leg is supposed to record `field_values.build_pr` right after `gh pr create` (the
+// same shape start-work O3 records), but two live specimens showed it missing (B-1106) or lacking
+// `head_sha` (B-1092). A walk bounded at or before `build` is the daemon fast-track ending: every
+// downstream reader (`get_build_evidence_status.has_pushed_pr`, the release brief's bot-approval lint,
+// the daemon's merge-state check) keys on that record, so this walk MERGES in whatever is missing.
+// Best-effort, NEVER throws: gh unavailable / non-PR evidence / any write failure ⇒ silently skipped.
+
+const BUILD_PR_REQUIRED_KEYS = ['head_sha', 'pr_number', 'author_is_bot'] as const;
+
+/** Pure: given the existing `build_pr` (or undefined) and the live PR facts, the keys to MERGE in — only
+ *  keys the existing record LACKS (never clobbering), or `null` when the existing record already carries
+ *  every required key, or records a DIFFERENT PR (never mix two PRs' facts). */
+export function computeBuildPrBackfill(
+  existing: Record<string, unknown> | null | undefined,
+  info: EvidencePrReleaseInfo,
+): Record<string, unknown> | null {
+  const candidate: Record<string, unknown> = {
+    pr_url: info.prUrl,
+    pr_number: info.number,
+    head_sha: info.headSha,
+    branch: info.branch,
+    base: info.base,
+    opened_at: info.openedAt,
+    author_login: info.authorLogin,
+    author_is_bot: info.authorIsBot,
+  };
+  const current = existing && typeof existing === 'object' ? existing : {};
+  if (typeof current['pr_url'] === 'string' && current['pr_url'] && current['pr_url'] !== info.prUrl) return null;
+  const lacksRequired = BUILD_PR_REQUIRED_KEYS.some((k) => current[k] === undefined || current[k] === null);
+  if (!lacksRequired) return null;
+  const merged: Record<string, unknown> = { ...current };
+  let added = 0;
+  for (const [k, v] of Object.entries(candidate)) {
+    if (v === null || v === undefined) continue;
+    if (current[k] === undefined || current[k] === null) {
+      merged[k] = v;
+      added++;
+    }
+  }
+  return added > 0 ? merged : null;
+}
+
+async function backfillBuildPr(
+  client: SupabaseClient,
+  projectId: string,
+  taskId: string,
+  evidence: Array<{ url: string; repo?: string }>,
+): Promise<void> {
+  try {
+    for (const e of evidence) {
+      const info = await fetchEvidencePrReleaseInfo(e);
+      if (!info || info.number === null) continue;
+      const { data, error } = await client
+        .from('tasks')
+        .select('field_values')
+        .eq('id', taskId)
+        .eq('project_id', projectId)
+        .single();
+      if (error) return;
+      const fieldValues = (data as { field_values?: Record<string, unknown> | null } | null)?.field_values ?? {};
+      const merged = computeBuildPrBackfill(fieldValues['build_pr'] as Record<string, unknown> | undefined, info);
+      if (merged) {
+        // updateTask merges at the top level of field_values (every other key preserved); `build_pr`
+        // itself is replaced by `merged`, which already carries every key the existing record had.
+        await updateTask(client, projectId, { task_id: taskId, field_values: { build_pr: merged } });
+      }
+      return; // the first GitHub-PR evidence entry is the build PR (a fast-track walk is single-repo).
+    }
+  } catch {
+    /* best-effort — a backfill failure must never fail the walk */
+  }
+}
+
+const ATTESTATION_COMMENT_PREFIX = 'RECORDED-WALK-ATTESTATION';
+
+/** The `who:` of an attestation comment already on the ticket, `''` when one exists but names no one
+ *  parseable, or `null` when none is on file (or the read failed — never throws). */
+async function findRecordedAttestation(client: SupabaseClient, taskId: string): Promise<string | null> {
+  try {
+    const { data, error } = await client
+      .from('task_comments')
+      .select('content')
+      .eq('task_id', taskId)
+      .like('content', `${ATTESTATION_COMMENT_PREFIX}%`)
+      .limit(1);
+    if (error || !data || data.length === 0) return null;
+    const content = String((data[0] as { content?: unknown }).content ?? '');
+    return /^who:\s*(.+)$/m.exec(content)?.[1]?.trim() ?? '';
+  } catch {
+    return null;
+  }
 }
 
 interface ComposeAndAcceptArgs {
@@ -477,8 +591,13 @@ export async function runRecordedWalk(
     attestWalk: args.attest_walk,
     // B-1073: a walk bounded at or before 'build' never lands release/deploy/verify, so the verify-walk
     // attestation (item e) is deferred, not evaluated. No `to_gate` ⇒ runs to 'verify' ⇒ still refuses.
+    // B-1073 (daemon-files-recording round): ALSO deferred for a RESUMED walk (from_gate past 'clarify'):
+    // the attestation is only ever RECORDED by the clarify section, which a resumed walk skips — and the
+    // post-merge drain walk (from_gate 'deploy') composes the verify brief but never accepts it, so the
+    // human attests at the verify gate. A FULL walk from clarify with no attestation still refuses.
     deferVerifyWalk:
-      args.to_gate !== undefined && recordWalkGateIndex(args.to_gate) <= recordWalkGateIndex('build'),
+      (args.to_gate !== undefined && recordWalkGateIndex(args.to_gate) <= recordWalkGateIndex('build')) ||
+      (args.from_gate !== undefined && recordWalkGateIndex(args.from_gate) > recordWalkGateIndex('clarify')),
   });
 
   // REFUSE-BEFORE-WRITE: nothing below this line runs on an ineligible ticket — not even a task-id
@@ -509,7 +628,17 @@ export async function runRecordedWalk(
   const toGate: RecordWalkGateName = args.to_gate ?? 'verify';
   const runs = (gate: RecordWalkGateName) => shouldRunRecordWalkGate(gate, fromGate, toGate);
 
+  const boundedAtOrBeforeBuild = recordWalkGateIndex(toGate) <= recordWalkGateIndex('build');
+  const attestationSupplied = trimmedOrEmpty(args.attest_walk).length > 0;
+
   try {
+    // B-1073: a RESUMED walk skips the clarify section that normally records the attestation, so record
+    // a supplied one here, in the same RECORDED-WALK-ATTESTATION comment format.
+    if (!runs('clarify') && attestationSupplied) {
+      await addComment(client, projectId, userId, { task_id: taskId, content: renderAttestationComment(args, userId) });
+      attestationRecorded = true;
+    }
+
     // ——— Captured -> Proposed, brief-less plumbing (B-1062 verify-round fix 1) ——————————————————
     // EVERY ticket eligible for `harmony record` starts life in `Captured` (the post-B-474 inbox
     // state) — without this, clarify's own compose_brief would refuse (no
@@ -582,16 +711,23 @@ export async function runRecordedWalk(
 
     // B-747 build-gate floor (B-1062 verify-round fix 2): the floor correctly refuses Planned->Built
     // on zero acceptance criteria — a recorded walk has no live clarify leg to file one, so nothing
-    // ever would without this. File exactly one checked AC here, at clarify, before the walk proceeds
-    // any further, so the floor never blocks this walk's own BUILD step below. Same provenance
-    // discipline as the rest of this walk's writes (see this file's header): the content names the
-    // recorded-not-conducted origin and the attesting user, never presented as a live-clarified AC.
+    // ever would without this. File exactly one AC here, at clarify, before the walk proceeds any
+    // further, so the floor never blocks this walk's own BUILD step below. The floor needs the AC to
+    // EXIST, not to be checked (`task_criteria_floor_status` / `get_build_evidence_status.
+    // has_acceptance_criteria` are presence-only — src/tools/evidence-status.ts CRITERIA_FLOOR_CONTRACT).
+    // B-1073: the AC is filed TICKED, with the "verify walk attested by" suffix, ONLY for a walk that
+    // runs past build AND was given an attestation. A walk bounded at or before build has verified
+    // nothing yet, and an unattested one has no attestation to name — filing those ticked/suffixed
+    // asserted something false. They file UNTICKED, with no suffix; the human ticks it at verify.
     const evidenceSummary = args.evidence.map((e) => e.url).join(', ') || '(none)';
+    const attestedAc = attestationSupplied && !boundedAtOrBeforeBuild;
     await manageAcceptanceCriteria(client, projectId, userId, {
       task_id: taskId,
       add: [{
-        content: `${summary} — recorded from ${evidenceSummary}; verify walk attested by ${userId}`,
-        checked: true,
+        content: attestedAc
+          ? `${summary} — recorded from ${evidenceSummary}; verify walk attested by ${userId}`
+          : `${summary} — recorded from ${evidenceSummary}`,
+        checked: attestedAc,
       }],
     });
 
@@ -676,7 +812,7 @@ export async function runRecordedWalk(
         steps: [summary],
         attestation: { base_verified: 'recorded walk — no live base-verify run; ratified from supplied evidence' },
         carried_unproven: [],
-        ac_coverage: 'Recorded from the supplied summary and evidence; one checked acceptance criterion was filed at clarify to satisfy the build gate\'s B-747 floor.',
+        ac_coverage: 'Recorded from the supplied summary and evidence; one acceptance criterion was filed at clarify to satisfy the build gate\'s B-747 floor.',
       },
       decisionRef: { type: 'specification', id: planDecision.id },
       payload: [{
@@ -694,6 +830,10 @@ export async function runRecordedWalk(
     // ——— BUILD — brief-less SYSTEM/AGENT advance (Planned -> Built), mirrors every conducted run ——
     await advanceWorkflow(client, projectId, { task_id: taskId, activity: 'building' });
     gates.push({ gate: 'build', landed: true });
+
+    // B-1073: a walk bounded at or before build is the daemon fast-track ending — backfill whatever
+    // part of `field_values.build_pr` the build leg failed to record (see backfillBuildPr's header).
+    if (boundedAtOrBeforeBuild) await backfillBuildPr(client, projectId, taskId, args.evidence);
 
     }
 
@@ -780,6 +920,22 @@ export async function runRecordedWalk(
       step_ref: '1',
     }));
     const verifyEvidenceSummary = args.evidence.map((e) => e.url).join(', ') || '(none)';
+    // B-1073: the brief must be TRUTHFUL about the attestation. "On file" is claimed only when one was
+    // supplied to this walk or is already recorded on the ticket (a RECORDED-WALK-ATTESTATION comment).
+    const priorAttestationWho = attestationSupplied ? null : await findRecordedAttestation(client, taskId);
+    const attestationOnFile = attestationSupplied || priorAttestationWho !== null;
+    const attestationWhy = attestationSupplied
+      ? (runs('clarify')
+          ? `An attestation was already recorded at clarify (who: ${userId}); this ack is the human ` +
+            'confirmation that record matches reality.'
+          : `An attestation was recorded with this walk (who: ${userId}); this ack is the human ` +
+            'confirmation that record matches reality.')
+      : priorAttestationWho !== null
+        ? `An attestation was recorded earlier${priorAttestationWho ? ` (who: ${priorAttestationWho})` : ''}; ` +
+          'this ack is the human confirmation that record matches reality.'
+        : 'NO verify-walk attestation is on file — the walk was not attested before the merge. ' +
+          'You attest at this verify gate (e.g. by typing what you walked in the accept remark); ' +
+          'this ack is the human confirmation that record matches reality.';
     // B-1068 — a REAL step 1, not a bare pointer: one action + one expected observation, covering
     // every filed criterion (a recorded walk audits the record itself against ALL of them at once, so
     // one step legitimately covers all ids). Without this, record-walk's own self-composed verify
@@ -806,8 +962,7 @@ export async function runRecordedWalk(
         why: [
           'This is a recorded (not conducted) walk — verification means confirming the record matches ' +
             'what actually happened, not re-doing the work.',
-          `An attestation was already recorded at clarify (who: ${userId}); this ack is the human ` +
-            'confirmation that record matches reality.',
+          attestationWhy,
         ],
         items: [{ kind: 'decision', text: 'Acknowledge verified', recommendation: 'verify once confirmed' }],
         frame: {
@@ -819,7 +974,9 @@ export async function runRecordedWalk(
           steps: verifySteps,
           evidence_status:
             `Recorded walk — evidence linked from the supplied links (${verifyEvidenceSummary}); ` +
-            'verify walk attestation on file.',
+            (attestationOnFile
+              ? 'verify walk attestation on file.'
+              : 'NO verify-walk attestation is on file — attest at this verify gate (e.g. in the accept remark).'),
         },
       },
     });

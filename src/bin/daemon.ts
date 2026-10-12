@@ -61,6 +61,7 @@ import { recordLegOutput } from '../tools/leg-output-record.js';
 import { advanceWorkflow } from '../tools/workflow.js';
 import { addComment } from '../tools/comments.js';
 import { runRecordedWalkDrainPass } from '../daemon/recorded-walk-drain.js';
+import { createGithubPrMergeStateReader } from '../daemon/github-pr-state.js';
 import { createHeartbeatKeeper } from '../daemon/heartbeat.js';
 import { formatDaemonError } from '../daemon/error-format.js';
 import { loadDaemonConfig, selectNamedProfile } from '../daemon/config.js';
@@ -490,6 +491,15 @@ async function main(): Promise<void> {
       })
     : null;
 
+  const prMergeStateReader = createGithubPrMergeStateReader({ env: process.env });
+  log(
+    prMergeStateReader
+      ? 'fast-track post-merge recording: daemon-filed (GitHub credential found for PR merge-state reads)'
+      : 'fast-track post-merge recording: NOT daemon-filed — no GitHub credential in the daemon env ' +
+          '(set HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/HARMONY_APP_PRIVATE_KEY_PATH, or GH_TOKEN); ' +
+          'fast-track accepts fall back to a worker leg',
+  );
+
   const deps: SchedulerDeps = {
     now: Date.now,
     sleep,
@@ -546,6 +556,13 @@ async function main(): Promise<void> {
     drainRecordedWalkRequests: async () => {
       await runRecordedWalkDrainPass({ client, projectId, userId: auth.getUserId(), log });
     },
+    // B-1073 (daemon-files-recording round) — lets the daemon file a fast-track ticket's post-merge
+    // recording itself (no worker leg) once the release is accepted AND the PR is confirmed MERGED.
+    // `getPrMergeState` is undefined when the daemon's env carries no GitHub credential source (the
+    // harmony-daemon App identity or GH_TOKEN/GITHUB_TOKEN) — then NOTHING is intercepted and every
+    // fast-track wake takes the ordinary worker path. See src/daemon/github-pr-state.ts.
+    getPrMergeState: prMergeStateReader,
+    fastTrackRecording: prMergeStateReader ? { client, projectId, userId: auth.getUserId() } : undefined,
     // B-1073 (post-review wiring) — the deployment's declared repo set, resolved once at boot
     // alongside workerImage/projectKey above (same pin-at-boot discipline). B-1073 BUGFIX (this
     // ticket): no longer read by the admission check at all — see this field's own doc comment on

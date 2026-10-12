@@ -3700,3 +3700,324 @@ describe('B-845: withWriteRetry exclusion — the fire/worker-launch path is nev
     expect(body).not.toContain('withWriteRetry');
   });
 });
+
+// ——————————————————————————————————————————————————————————————————————————————————————————————————
+// B-1073 (daemon-files-recording round): a FAST-TRACK conduction whose release brief was ACCEPTED and
+// whose PR is MERGED needs NO worker leg — the daemon files the post-merge `recorded_walk_requests` row
+// itself (under its lease, in handleHeldConduction, before a wake would be queued), consumes the accept
+// remark, rolls the baseline, and the in-process drain lands release -> deploy -> verify brief. Every
+// uncertain precondition FALLS THROUGH to the ordinary queue-a-worker path.
+// ——————————————————————————————————————————————————————————————————————————————————————————————————
+
+/** A tiny in-memory Supabase stand-in covering exactly the calls the recording path makes. */
+function makeFakeBoard(seed: {
+  activity?: Array<Record<string, unknown>>;
+  briefs?: Array<Record<string, unknown>>;
+  requests?: Array<Record<string, unknown>>;
+  task?: Record<string, unknown>;
+  failInsert?: boolean;
+}) {
+  const tables: Record<string, Array<Record<string, unknown>>> = {
+    activity_events: seed.activity ?? [],
+    task_comments: [],
+    briefs: seed.briefs ?? [],
+    recorded_walk_requests: seed.requests ?? [],
+    tasks: [seed.task ?? { id: 'task-1', project_id: 'proj-1', title: 'B-2000: Fix the flaky retry timer', field_values: {} }],
+  };
+  let clock = Date.parse('2026-10-10T11:00:00Z');
+  const calls: string[] = [];
+  const from = (name: string) => {
+    calls.push(name);
+    const rows = tables[name];
+    if (!rows) throw new Error(`unexpected table ${name}`);
+    const filters: Array<(r: Record<string, unknown>) => boolean> = [];
+    let patch: Record<string, unknown> | null = null;
+    let orderCol: string | null = null;
+    let ascending = true;
+    let limitN = Infinity;
+    const run = () => {
+      let out = rows.filter((r) => filters.every((f) => f(r)));
+      if (orderCol) {
+        const c = orderCol;
+        out = [...out].sort((a, b) => (String(a[c]) < String(b[c]) ? -1 : 1) * (ascending ? 1 : -1));
+      }
+      out = out.slice(0, limitN);
+      if (patch) out.forEach((r) => Object.assign(r, patch));
+      return out;
+    };
+    const q: any = {
+      select: () => q,
+      eq: (c: string, v: unknown) => (filters.push((r) => r[c] === v), q),
+      not: (c: string) => (filters.push((r) => r[c] != null), q),
+      is: (c: string) => (filters.push((r) => r[c] == null), q),
+      order: (c: string, o?: { ascending?: boolean }) => ((orderCol = c), (ascending = o?.ascending !== false), q),
+      limit: (n: number) => ((limitN = n), q),
+      update: (p: Record<string, unknown>) => ((patch = p), q),
+      insert: async (row: Record<string, unknown>) => {
+        if (seed.failInsert) return { error: { message: 'insert denied' } };
+        clock += 1000;
+        rows.push({ id: `req-${rows.length + 1}`, status: 'pending', requested_at: new Date(clock).toISOString(), ...row });
+        return { error: null };
+      },
+      maybeSingle: async () => ({ data: run()[0] ?? null, error: null }),
+      single: async () => ({ data: run()[0] ?? null, error: null }),
+      then: (resolve: (v: unknown) => void) => resolve({ data: run(), error: null }),
+    };
+    return q;
+  };
+  return { client: { from } as any, tables, calls };
+}
+
+const PR_URL = 'https://github.com/ycomplex/harmony-plugin/pull/42';
+const builtEvent = { event_type: 'field_change', field_name: 'workflow_state', new_value: 'Built', metadata: null, task_id: 'task-1', created_at: '2026-10-10T10:00:00Z' };
+const acceptEvent = {
+  event_type: 'brief_resolved', field_name: null, new_value: null, task_id: 'task-1', created_at: '2026-10-10T10:05:00Z',
+  metadata: { reason: 'release-decision-pending', command: 'accept', brief_id: 'brief-rel', provenance: 'human-in-browser' },
+};
+const releaseBrief = (remark: string | null) => ({
+  id: 'brief-rel', task_id: 'task-1', reason: 'release-decision-pending', accept_remark: remark, accept_remark_consumed_at: null,
+  decision_ref: null, doc: {}, created_at: '2026-10-10T10:01:00Z',
+});
+
+function recordingScenario(over: {
+  conduction?: Partial<ConductionRecord>;
+  board?: Parameters<typeof makeFakeBoard>[0];
+  prState?: 'merged' | 'open' | 'closed' | 'unknown' | 'throw';
+  omitPrDep?: boolean;
+  omitBoard?: boolean;
+  task?: Partial<DaemonTask>;
+}) {
+  const board = makeFakeBoard({
+    activity: [builtEvent, acceptEvent],
+    briefs: [releaseBrief(null)],
+    task: { id: 'task-1', project_id: 'proj-1', title: 'B-2000: Fix the flaky retry timer', field_values: { build_pr: { pr_url: PR_URL } } },
+    ...over.board,
+  });
+  const h = makeHarness({
+    conductions: [conduction({ run_config: { fast_track: true }, ...over.conduction })],
+    tasks: { 'task-1': pausedTask(over.task) },
+  });
+  const getPrMergeState = vi.fn(async (_url: string) => {
+    if (over.prState === 'throw') throw new Error('network');
+    return over.prState ?? 'merged';
+  });
+  if (!over.omitPrDep) h.deps.getPrMergeState = getPrMergeState as SchedulerDeps['getPrMergeState'];
+  if (!over.omitBoard) h.deps.fastTrackRecording = { client: board.client, projectId: 'proj-1', userId: 'daemon-user' };
+  return { h, board, getPrMergeState };
+}
+
+/** baseline pass (still awaiting) → the human accepts (flag down) → the pass under test. */
+async function acceptAndPass(h: ReturnType<typeof makeHarness>): Promise<void> {
+  await h.pass();
+  (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+  await h.pass();
+}
+
+describe('B-1073: the daemon files a fast-track release accept\'s post-merge recording itself', () => {
+  it('files the row (summary=title, evidence=build_pr, attestation=the remark), consumes the remark, rolls the baseline, queues NO leg and makes NO runCommand call', async () => {
+    const remark = 'orchestrator, 2026-10-08, under 3 minutes: walked the dialog end to end';
+    const { h, board, getPrMergeState } = recordingScenario({ board: { briefs: [releaseBrief(remark)] } });
+
+    await acceptAndPass(h);
+
+    expect(board.tables.recorded_walk_requests).toEqual([
+      expect.objectContaining({
+        task_id: 'task-1',
+        summary: 'B-2000: Fix the flaky retry timer',
+        evidence_links: [{ url: PR_URL }],
+        attest_walk: remark,
+        requested_by: 'daemon-user',
+        status: 'pending',
+      }),
+    ]);
+    expect(board.tables.briefs[0].accept_remark_consumed_at).toEqual(expect.any(String));
+    expect(getPrMergeState).toHaveBeenCalledWith(PR_URL);
+    expect((h.deps.runCommand as any).mock.calls).toEqual([]); // NO runCommand call of any kind
+    expect(h.commands).toEqual([]);
+    expect(h.launches()).toEqual([]);
+    expect(h.ready()).toEqual([]);
+    expect(h.running()).toEqual([]);
+    expect(h.state.get('cond-1')).toEqual({ awaitingHumanInput: false, activeExchange: null }); // baseline rolled
+    expect(h.logs.some((l) => l.includes('no worker leg'))).toBe(true);
+  });
+
+  it('the founder\'s real remark "not walked — attest at verify" files the row with NO attestation', async () => {
+    const { h, board } = recordingScenario({ board: { briefs: [releaseBrief('not walked — attest at verify')] } });
+    await acceptAndPass(h);
+    expect(board.tables.recorded_walk_requests).toHaveLength(1);
+    expect(board.tables.recorded_walk_requests[0].attest_walk).toBeNull();
+    expect(board.tables.briefs[0].accept_remark_consumed_at).toEqual(expect.any(String)); // still consumed
+    expect(h.commands).toEqual([]);
+  });
+
+  it('an accept with NO remark at all files a row with no attestation and consumes nothing', async () => {
+    const { h, board } = recordingScenario({});
+    await acceptAndPass(h);
+    expect(board.tables.recorded_walk_requests).toHaveLength(1);
+    expect(board.tables.recorded_walk_requests[0].attest_walk).toBeNull();
+    expect(h.commands).toEqual([]);
+  });
+
+  it('a verify brief results: the drain (stubbed faithfully) walks the filed row from Built -> Deployed + verify brief', async () => {
+    const { h, board } = recordingScenario({ board: { briefs: [releaseBrief('not walked — attest at verify')] } });
+    // Faithful stub of runRecordedWalkDrainPass for this fixture: claim the pending row, derive
+    // from_gate from the ticket ('Built' -> 'deploy'), forward attest_walk ?? undefined, walk.
+    const walks: Array<{ from_gate: string; attest_walk: string | undefined }> = [];
+    h.deps.drainRecordedWalkRequests = async () => {
+      const pending = board.tables.recorded_walk_requests.find((r) => r.status === 'pending');
+      if (!pending) return;
+      pending.status = 'done';
+      walks.push({ from_gate: 'deploy', attest_walk: (pending.attest_walk as string | null) ?? undefined });
+      (h.tasks['task-1'] as DaemonTask).workflow_state = 'Deployed';
+      (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true; // verify brief composed
+    };
+    await acceptAndPass(h);
+    await h.deps.drainRecordedWalkRequests!();
+    expect(walks).toEqual([{ from_gate: 'deploy', attest_walk: undefined }]);
+    await h.pass(); // Deployed + awaiting the verify ack: nothing wakes
+    expect(h.commands).toEqual([]);
+    expect(h.getConduction('cond-1').status).toBe('active');
+  });
+
+  it('is idempotent: a second pass while the row is still pending files NO second row and still queues no leg', async () => {
+    const { h, board } = recordingScenario({ board: { briefs: [releaseBrief('walked it for ten minutes')] } });
+    await acceptAndPass(h);
+    await h.pass();
+    await h.pass();
+    expect(board.tables.recorded_walk_requests).toHaveLength(1);
+    expect(h.commands).toEqual([]);
+    expect(h.ready()).toEqual([]);
+  });
+
+  it('a crash between filing and consuming self-heals: the next pass consumes the remark without a second row', async () => {
+    const { h, board } = recordingScenario({
+      board: {
+        briefs: [releaseBrief('walked it')],
+        requests: [{ id: 'req-0', task_id: 'task-1', status: 'pending', requested_at: '2026-10-10T10:06:00Z', attest_walk: 'walked it' }],
+      },
+    });
+    await acceptAndPass(h);
+    expect(board.tables.recorded_walk_requests).toHaveLength(1);
+    expect(board.tables.briefs[0].accept_remark_consumed_at).toEqual(expect.any(String));
+    expect(h.commands).toEqual([]);
+  });
+
+  // ——— fall-through cases: every one takes the ORDINARY queue-a-worker path ———————————————————
+  const expectsOrdinaryLeg = async (h: ReturnType<typeof makeHarness>, board: ReturnType<typeof makeFakeBoard>) => {
+    expect(h.launches()).toEqual(['launch cond-1 task-1']);
+    expect(board.tables.recorded_walk_requests.filter((r) => r.status === 'pending' && r.requested_by === 'daemon-user')).toEqual([]);
+  };
+
+  it('NON-fast-track conduction: byte-identical ordinary path — the board is never even read', async () => {
+    const { h, board, getPrMergeState } = recordingScenario({ conduction: { run_config: {} } });
+    await acceptAndPass(h);
+    await expectsOrdinaryLeg(h, board);
+    expect(getPrMergeState).not.toHaveBeenCalled();
+    expect(board.calls).toEqual([]);
+    expect(h.logs.some((l) => l.includes('fast-track recording not taken'))).toBe(false);
+  });
+
+  it('PR not merged (open) => ordinary worker path, nothing filed, remark untouched', async () => {
+    const { h, board } = recordingScenario({ prState: 'open', board: { briefs: [releaseBrief('walked it')] } });
+    await acceptAndPass(h);
+    await expectsOrdinaryLeg(h, board);
+    expect(board.tables.recorded_walk_requests).toEqual([]);
+    expect(board.tables.briefs[0].accept_remark_consumed_at).toBeNull();
+  });
+
+  it.each(['closed', 'unknown'] as const)('PR state %s => ordinary worker path', async (prState) => {
+    const { h, board } = recordingScenario({ prState });
+    await acceptAndPass(h);
+    await expectsOrdinaryLeg(h, board);
+    expect(board.tables.recorded_walk_requests).toEqual([]);
+  });
+
+  it('PR state read throws => ordinary worker path', async () => {
+    const { h, board } = recordingScenario({ prState: 'throw' });
+    await acceptAndPass(h);
+    await expectsOrdinaryLeg(h, board);
+  });
+
+  it('no getPrMergeState dep => no interception at all', async () => {
+    const { h, board } = recordingScenario({ omitPrDep: true });
+    await acceptAndPass(h);
+    await expectsOrdinaryLeg(h, board);
+    expect(board.calls).toEqual([]);
+  });
+
+  it('no board handle => no interception at all', async () => {
+    const { h, board, getPrMergeState } = recordingScenario({ omitBoard: true });
+    await acceptAndPass(h);
+    await expectsOrdinaryLeg(h, board);
+    expect(getPrMergeState).not.toHaveBeenCalled();
+  });
+
+  it('accept NOT positively evidenced (a torn pause: Built, flag down, no brief_resolved) => ordinary worker path', async () => {
+    const { h, board, getPrMergeState } = recordingScenario({ board: { activity: [builtEvent] } });
+    await acceptAndPass(h);
+    await expectsOrdinaryLeg(h, board);
+    expect(getPrMergeState).not.toHaveBeenCalled();
+  });
+
+  it('an accept from a PREVIOUS release cycle (before the latest advance into Built) is not evidence', async () => {
+    const laterBuilt = { ...builtEvent, created_at: '2026-10-10T10:30:00Z' };
+    const { h, board } = recordingScenario({ board: { activity: [builtEvent, acceptEvent, laterBuilt] } });
+    await acceptAndPass(h);
+    await expectsOrdinaryLeg(h, board);
+  });
+
+  it('a DEFER (command != accept) is not an accept', async () => {
+    const defer = { ...acceptEvent, metadata: { ...acceptEvent.metadata, command: 'defer' } };
+    const { h, board } = recordingScenario({ board: { activity: [builtEvent, defer] } });
+    await acceptAndPass(h);
+    await expectsOrdinaryLeg(h, board);
+  });
+
+  it('Built with the awaiting flag UP is never intercepted (no wake at all)', async () => {
+    const { h, board, getPrMergeState } = recordingScenario({});
+    await h.pass();
+    await h.pass(); // flag stays up
+    expect(h.commands).toEqual([]);
+    expect(getPrMergeState).not.toHaveBeenCalled();
+    expect(board.calls).toEqual([]);
+  });
+
+  it('a ticket not at Built (e.g. Planned) is never intercepted', async () => {
+    const { h, board, getPrMergeState } = recordingScenario({ task: { workflow_state: 'Planned' } });
+    await acceptAndPass(h);
+    await expectsOrdinaryLeg(h, board);
+    expect(getPrMergeState).not.toHaveBeenCalled();
+  });
+
+  it('an unconsumed remark on a DIFFERENT brief is ambiguous => ordinary worker path', async () => {
+    const other = { ...releaseBrief('walked it'), id: 'brief-other', reason: 'plan-draft' };
+    const { h, board } = recordingScenario({ board: { briefs: [other] } });
+    await acceptAndPass(h);
+    await expectsOrdinaryLeg(h, board);
+  });
+
+  it('no recorded build_pr.pr_url => ordinary worker path', async () => {
+    const { h, board, getPrMergeState } = recordingScenario({
+      board: { task: { id: 'task-1', project_id: 'proj-1', title: 'T', field_values: {} } },
+    });
+    await acceptAndPass(h);
+    await expectsOrdinaryLeg(h, board);
+    expect(getPrMergeState).not.toHaveBeenCalled();
+  });
+
+  it('a failed insert (table absent / RLS) => ordinary worker path, remark not consumed', async () => {
+    const { h, board } = recordingScenario({ board: { failInsert: true, briefs: [releaseBrief('walked it')] } });
+    await acceptAndPass(h);
+    await expectsOrdinaryLeg(h, board);
+    expect(board.tables.briefs[0].accept_remark_consumed_at).toBeNull();
+  });
+
+  it('a request already processed (done/error) for this accept is never refiled — ordinary worker path', async () => {
+    const { h, board } = recordingScenario({
+      board: { requests: [{ id: 'req-0', task_id: 'task-1', status: 'error', requested_at: '2026-10-10T10:06:00Z' }] },
+    });
+    await acceptAndPass(h);
+    expect(h.launches()).toEqual(['launch cond-1 task-1']);
+    expect(board.tables.recorded_walk_requests).toHaveLength(1);
+  });
+});

@@ -3526,6 +3526,7 @@ export async function consumeAcceptRemark(
   _projectId: string,
   args: ConsumeAcceptRemarkArgs,
   userId?: string,
+  opts?: { skipRecordedWalkFiling?: boolean },
 ): Promise<ConsumeAcceptRemarkResult> {
   if (!args.brief_id) throw new Error('brief_id is required');
 
@@ -3559,7 +3560,10 @@ export async function consumeAcceptRemark(
   // a side effect riding on this consume must never be able to fail the consume itself. `userId` is
   // optional here ONLY because this function predates it; every real caller (the MCP tool dispatch,
   // the CLI) has one and passes it.
-  if (userId) {
+  // B-1073: `skipRecordedWalkFiling` is the DAEMON's own post-merge recording path
+  // (src/daemon/fasttrack-release-recording.ts) — it files the row itself, then consumes with this
+  // flag so exactly ONE row is filed.
+  if (userId && !opts?.skipRecordedWalkFiling) {
     const row = data as unknown as { task_id: string; reason: string; accept_remark: string };
     try {
       await fileFastTrackReleaseRemarkRecordedWalkIfEligible(client, {

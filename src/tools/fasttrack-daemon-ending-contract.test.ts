@@ -31,10 +31,15 @@ const mocks = vi.hoisted(() => ({
   recordDecision: vi.fn(async (_c: unknown, _p: string, _u: string, args: any) => ({ id: `decision-${args.type}-${args.source_activity}`, ...args })),
   queryKnowledge: vi.fn(async () => ([] as any[])),
   referenceKnowledge: vi.fn(async () => ({ linked: true })),
+  // B-1073 daemon-files-recording round: the build_pr backfill's `gh pr view` read (default: gh missing)
+  // and its field_values write. Mocked so this file NEVER shells out to a real `gh`.
+  execFile: vi.fn((_c: string, _a: string[], _o: unknown, cb: (err: unknown, stdout: string) => void) => cb(new Error('gh: command not found'), '')),
+  updateTask: vi.fn(async () => ({})),
 }));
 const {
   composeBrief, resolveBrief, consumePendingAcceptanceEvent, writeGateSlot, advanceWorkflow, addComment,
   resolveTaskId, manageAcceptanceCriteria, listAcceptanceCriteria, recordDecision, queryKnowledge, referenceKnowledge,
+  execFile, updateTask,
 } = mocks;
 
 vi.mock('./briefs.js', () => ({ composeBrief: mocks.composeBrief, resolveBrief: mocks.resolveBrief }));
@@ -47,6 +52,8 @@ vi.mock('./acceptance-criteria.js', () => ({
   manageAcceptanceCriteria: mocks.manageAcceptanceCriteria,
   listAcceptanceCriteria: mocks.listAcceptanceCriteria,
 }));
+vi.mock('node:child_process', () => ({ execFile: mocks.execFile }));
+vi.mock('./tasks.js', () => ({ updateTask: mocks.updateTask }));
 vi.mock('./knowledge.js', () => ({ recordDecision: mocks.recordDecision, queryKnowledge: mocks.queryKnowledge }));
 
 import { runRecordedWalk } from './record-walk.js';
@@ -58,7 +65,7 @@ const USER_ID = 'user-1';
  *  "the ticket read back" this contract needs. Every `advance_workflow` call this walk makes updates
  *  it, so a post-walk `get_task`-shaped read (`currentWorkflowState()`) reflects the walk's actual
  *  effect, not a fixed fixture value. */
-function makeStatefulClient(initialState: string) {
+function makeStatefulClient(initialState: string, fieldValues: Record<string, unknown> = {}) {
   let workflowState = initialState;
   advanceWorkflow.mockImplementation(async (_c: unknown, _p: string, args: any) => {
     const toState = args.activity === 'proposing' ? 'Proposed'
@@ -76,7 +83,7 @@ function makeStatefulClient(initialState: string) {
         select: () => ({
           eq: () => ({
             eq: () => ({
-              single: async () => ({ data: { workflow_state: workflowState }, error: null }),
+              single: async () => ({ data: { workflow_state: workflowState, field_values: fieldValues }, error: null }),
             }),
           }),
         }),
@@ -95,6 +102,8 @@ const eligibleArgs = () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  execFile.mockImplementation((_c: string, _a: string[], _o: unknown, cb: (err: unknown, stdout: string) => void) => cb(new Error('gh: command not found'), ''));
+  updateTask.mockResolvedValue({} as any);
   composeBrief.mockResolvedValue({ brief: { id: 'brief-1' }, lint: { ok: true, errors: [], warnings: [] } } as any);
   resolveBrief.mockResolvedValue({ status: 'accepted' } as any);
   consumePendingAcceptanceEvent.mockResolvedValue({ status: 'none' } as any);
@@ -169,5 +178,54 @@ describe("daemon-ending contract (B-1073): B-1092's exact shape — Proposed tic
     expect(writeGateSlot.mock.calls.map((c: any) => c[1].gate)).toEqual(['clarify']);
     // Proposed already, so only the build gate's own advance fires.
     expect(advanceWorkflow.mock.calls.map((c: any) => c[2].activity)).toEqual(['building']);
+  });
+});
+
+describe('daemon-ending contract (B-1073 daemon-files-recording round): recorder artifacts on the specimens', () => {
+  const PR = 'https://github.com/ycomplex/harmony-web/pull/534';
+  const specimenArgs = () => ({
+    task_id: 'B-1106',
+    summary: 'Fix the flaky retry timer in the poller.',
+    evidence: [{ url: PR, repo: 'ycomplex/harmony-web', paths: ['src/lib/foo.ts'] }],
+    to_gate: 'build' as const,
+  });
+  const ghPr = {
+    author: { is_bot: true, login: 'harmony-daemon[bot]' }, mergedAt: null, reviewDecision: null,
+    number: 534, headRefOid: 'deadbeef', headRefName: 'fix/x', baseRefName: 'main', createdAt: '2026-10-10T00:00:00Z',
+  };
+
+  it('B-1106 (build_pr never recorded): the walk files the AC UNTICKED/no suffix and backfills build_pr', async () => {
+    execFile.mockImplementation((_c: string, _a: string[], _o: unknown, cb: (err: unknown, stdout: string) => void) => cb(null, JSON.stringify(ghPr)));
+    const { client, currentWorkflowState } = makeStatefulClient('Captured', { unrelated: 'keep' });
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, specimenArgs());
+
+    expect(result.error).toBeUndefined();
+    expect(currentWorkflowState()).toBe('Built');
+    const ac = (manageAcceptanceCriteria.mock.calls[0] as any)[3].add[0];
+    expect(ac.checked).toBe(false);
+    expect(ac.content).not.toContain('attested by');
+    expect((updateTask.mock.calls[0] as any)[2].field_values).toEqual({
+      build_pr: {
+        pr_url: PR, pr_number: 534, head_sha: 'deadbeef', branch: 'fix/x', base: 'main',
+        opened_at: '2026-10-10T00:00:00Z', author_login: 'harmony-daemon[bot]', author_is_bot: true,
+      },
+    });
+  });
+
+  it('B-1092 (build_pr lacks head_sha): only the missing keys are merged in', async () => {
+    execFile.mockImplementation((_c: string, _a: string[], _o: unknown, cb: (err: unknown, stdout: string) => void) => cb(null, JSON.stringify(ghPr)));
+    const existing = { pr_url: PR, pr_number: 534, branch: 'fix/x', base: 'main', author_is_bot: true };
+    const { client } = makeStatefulClient('Proposed', { build_pr: existing });
+    await runRecordedWalk(client, PROJECT_ID, USER_ID, specimenArgs());
+    const written = (updateTask.mock.calls[0] as any)[2].field_values.build_pr;
+    expect(written).toMatchObject({ ...existing, head_sha: 'deadbeef' });
+  });
+
+  it('gh unavailable: no backfill, the walk still lands Built', async () => {
+    const { client, currentWorkflowState } = makeStatefulClient('Proposed');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, specimenArgs());
+    expect(result.error).toBeUndefined();
+    expect(currentWorkflowState()).toBe('Built');
+    expect(updateTask).not.toHaveBeenCalled();
   });
 });
