@@ -381,9 +381,9 @@ export function getModelForGate(
 // =================================================================================================
 
 /** One live row of the `model_catalog` table (or a fallback entry shaped identically — see
- *  MODEL_CATALOG_FALLBACK below). `verified_at` is carried through for completeness (the liveness
- *  script's own bookkeeping column) but nothing in this file reads it — it plays no role in
- *  allow/deny or budget decisions. */
+ *  MODEL_CATALOG_FALLBACK below). `verified_at` is carried through for completeness — it was the
+ *  B-881 liveness script's bookkeeping column, and nothing writes it since B-1104 retired that
+ *  script — but nothing in this file reads it; it plays no role in allow/deny or budget decisions. */
 export interface ModelCatalogEntry {
   alias: string;
   label: string;

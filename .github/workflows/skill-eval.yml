@@ -20,8 +20,8 @@
 # post-calibration founder action" the plan's build notes describe (item 4). See AC2/AC3/AC6.
 #
 # ============================================================================================
-# SECRETS THIS WORKFLOW NEEDS (a human must add these — see the B-881 model-catalog-liveness.yml
-# precedent for the exact regime: repo secrets, NAMES only, never a value in this file):
+# SECRETS THIS WORKFLOW NEEDS (a human must add these — repo secrets, NAMES only, never a value
+# in this file):
 #   - HARMONY_CLARIFY_EVAL_LABEL_TOKEN   an ORDINARY PRODUCTION Harmony API token, READ-ONLY scope
 #                                        preferred — used ONLY by fetch-labels.mjs (SELECTs from
 #                                        `tasks` and `briefs`; never writes). Label TEXT is never
@@ -29,8 +29,7 @@
 #                                        — fetch-labels.mjs's own stdout is ticket-id + revision-
 #                                        count only (see its source).
 #   - ANTHROPIC_API_KEY                  needed by the `claude` CLI itself to invoke the pinned
-#                                        model + judge-model (same secret name as
-#                                        model-catalog-liveness.yml's own precedent).
+#                                        model + judge-model.
 # Until both exist, this job goes RED (AC6 fail-loud) — there is no silent-skip path.
 #
 # ============================================================================================
