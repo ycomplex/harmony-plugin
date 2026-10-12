@@ -102,7 +102,10 @@ Do not duplicate that prose here. This skill adds exactly **two deltas** on top 
      merge base — rather than the Check phase's pre-work guess.
   2. Run `evaluateScopeBudget` (`src/tools/fasttrack-scope.ts`) against `git diff --numstat`, using
      any `.harmony/project.yml`-declared override (`getScopeBudget`) when present, else
-     `DEFAULT_SCOPE_BUDGET`. (`harmony fasttrack scope-check` wraps exactly this read.)
+     `DEFAULT_SCOPE_BUDGET`. (`harmony fasttrack scope-check` wraps exactly this read.) Test files
+     (`*.test.*`, `*.spec.*`, `e2e/**`, `supabase/tests/**`, `__tests__/`) never count toward either
+     number (B-1109): adding or extending tests is never what makes a change too big for the fast
+     track. The verdict says how many test files it ignored.
 
   **If either check now fails: do NOT open the PR.** Report the overage/verdict, **leave the branch
   and its commits intact** (per AC6 — the work is not discarded, just not shipped through this skill),
