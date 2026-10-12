@@ -87,3 +87,60 @@ describe('container/cloudbuild.yaml: no unescaped $NAME shell-variable reads (B-
     }
   });
 });
+
+// B-1074 (fix-forward): guard-latest's `docker pull '${_IMAGE}:latest'` re-tags the LOCAL
+// `${_IMAGE}:latest` reference to point at whatever the pull fetched (the stale, currently-published
+// image), clobbering the tag the earlier `build` step had just put on the fresh image. Because that
+// pull happens unconditionally before the decision is even made, by the time push-latest runs,
+// `${_IMAGE}:latest` resolves to the OLD image regardless of guard-latest's "proceed" verdict — so
+// every build re-publishes the stale image under `:latest`, forever, and the version tag (written by
+// tag-version, which ran BEFORE guard-latest's clobbering pull) is the only tag that's ever correct.
+//
+// The fix: in the `proceed` branch, push-latest re-tags `${_IMAGE}:latest` FROM the already-correct
+// version tag (`${_IMAGE}:$(cat /workspace/plugin_version.txt)`) immediately before the push, so the
+// push is always of the fresh build regardless of what the guard-latest pull clobbered locally. This
+// only works if the retag happens BEFORE the push in program order — a retag after the push is a
+// no-op for that push. This test pins both the presence of the retag and its ordering.
+describe('container/cloudbuild.yaml: push-latest retags :latest from the version tag before pushing (B-1074)', () => {
+  const raw = readFileSync(cloudbuildPath, 'utf8');
+  const config = parseYaml(raw) as CloudBuildConfig;
+
+  function getStepScript(id: string): string {
+    const step = config.steps.find((s) => s.id === id);
+    expect(step, `no step with id "${id}" found in cloudbuild.yaml`).toBeTruthy();
+    const args = (step?.args ?? []) as unknown[];
+    const script = args.find((arg) => typeof arg === 'string' && arg.includes('docker')) as
+      | string
+      | undefined;
+    expect(script, `step "${id}" has no string arg containing "docker"`).toBeTruthy();
+    return script as string;
+  }
+
+  it('push-latest retags ${_IMAGE}:latest from the version tag, and does so BEFORE the push', () => {
+    const script = getStepScript('push-latest');
+
+    const tagLine = 'docker tag "${_IMAGE}:$(cat /workspace/plugin_version.txt)" \'${_IMAGE}:latest\'';
+    const pushLine = "docker push '${_IMAGE}:latest'";
+
+    expect(
+      script.includes(tagLine),
+      `push-latest's script does not contain the expected retag-from-version-tag line. Got:\n${script}`,
+    ).toBe(true);
+    expect(
+      script.includes(pushLine),
+      `push-latest's script does not contain the expected docker push line. Got:\n${script}`,
+    ).toBe(true);
+
+    const tagIndex = script.indexOf(tagLine);
+    const pushIndex = script.indexOf(pushLine);
+    expect(
+      tagIndex,
+      'the retag line must appear before the push line in push-latest\'s script (a retag after the push does nothing)',
+    ).toBeLessThan(pushIndex);
+  });
+
+  it('the retag references the version tag written by tag-version (plugin_version.txt), not a hardcoded tag', () => {
+    const script = getStepScript('push-latest');
+    expect(script).toContain('plugin_version.txt');
+  });
+});
