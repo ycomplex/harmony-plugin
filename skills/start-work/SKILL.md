@@ -378,6 +378,8 @@ advance past a failed sub-step:
      author_login, author_is_bot
    } } })
    ```
+   (A daemon fast-track leg records this exact shape too — `skills/harmony-fasttrack/SKILL.md`, Build
+   phase step 0 — right after `gh pr create` and before calling `record`.)
    The record IS the verification: `get_build_evidence_status` keys `has_pushed_pr` (and therefore
    `complete`) on this reference, so a ticket with no verified PR mechanically reads incomplete at the
    verify gate. `update_task` merges `field_values` — other keys are preserved.

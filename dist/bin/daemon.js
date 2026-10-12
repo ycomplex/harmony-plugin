@@ -17391,7 +17391,7 @@ var require_dist = __commonJS({
 });
 
 // src/bin/daemon.ts
-import { appendFileSync, readFileSync as readFileSync3 } from "node:fs";
+import { appendFileSync, readFileSync as readFileSync4 } from "node:fs";
 import { exec } from "node:child_process";
 import { hostname } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -30000,6 +30000,20 @@ function normalizeHtmlEntities(text) {
     (seg) => seg.code ? seg.text : seg.text.replace(ENTITY_PATTERN, (m) => ENTITY_MAP[m] ?? m)
   ).join("");
 }
+var TAG_LIKE_PATTERN = /<\/?[a-zA-Z][\w-]*(?:\s[^<>]*)?>/;
+var LINE_BREAK_PATTERN = /[\n\r]/;
+function validateTitle(title, cap = 200) {
+  if (title.length > cap) {
+    throw new Error(`Title exceeds 200 characters (received ${title.length}).`);
+  }
+  const markupMatch = title.match(TAG_LIKE_PATTERN);
+  if (markupMatch) {
+    throw new Error(`Title contains disallowed markup: \`${markupMatch[0]}\``);
+  }
+  if (LINE_BREAK_PATTERN.test(title)) {
+    throw new Error("Title cannot contain a line break.");
+  }
+}
 
 // src/tools/provenance.ts
 var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
@@ -30295,6 +30309,12 @@ var isMissingLastLegEndedAtColumn = (err) => {
 async function getConduction(client, id) {
   if (!id) throw new Error("id is required");
   const { data, error } = await client.from("conductions").select(CONDUCTION_COLS).eq("id", id).maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ?? null;
+}
+async function getActiveConduction(client, taskId) {
+  if (!taskId) throw new Error("task_id is required");
+  const { data, error } = await client.from("conductions").select(CONDUCTION_COLS).eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (error) throw new Error(error.message);
   return data ?? null;
 }
@@ -30702,6 +30722,38 @@ async function resolveTaskId(client, projectId, input) {
   return data.id;
 }
 
+// src/tools/members.ts
+async function listMembers(client, projectId) {
+  const { data: project, error: projError } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
+  if (projError) throw projError;
+  const { data, error } = await client.from("workspace_members").select("user_id, role, joined_at, profile:profiles!workspace_members_user_id_profiles_fkey(display_name, email)").eq("workspace_id", project.workspace_id).order("joined_at", { ascending: true });
+  if (error) throw error;
+  return data.map((m) => ({
+    user_id: m.user_id,
+    display_name: m.profile?.display_name ?? null,
+    email: m.profile?.email ?? null,
+    role: m.role
+  }));
+}
+async function resolveAssignee(client, projectId, assignee) {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(assignee)) {
+    return assignee;
+  }
+  const members = await listMembers(client, projectId);
+  const query = assignee.toLowerCase();
+  const emailMatch = members.filter((m) => m.email?.toLowerCase() === query);
+  if (emailMatch.length === 1) return emailMatch[0].user_id;
+  const nameMatch = members.filter(
+    (m) => m.display_name?.toLowerCase().includes(query)
+  );
+  if (nameMatch.length === 1) return nameMatch[0].user_id;
+  if (nameMatch.length > 1) {
+    const names = nameMatch.map((m) => m.display_name ?? m.email).join(", ");
+    throw new Error(`Ambiguous assignee "${assignee}" \u2014 matches multiple members: ${names}. Be more specific.`);
+  }
+  throw new Error(`No member found matching "${assignee}". Use list_members to see available members.`);
+}
+
 // src/tools/risk-class.ts
 var RISK_CLASSES = [
   "auth",
@@ -30980,6 +31032,65 @@ function slugRef(prefix, text, maxLen = 40) {
   return `${prefix}-${slug}`;
 }
 
+// src/tools/fasttrack-release-remark.ts
+var RECORDED_WALK_REQUESTS_TABLE = "recorded_walk_requests";
+var RELEASE_GATE_REASON = "release-decision-pending";
+var UNWALKED_REMARK_PATTERNS = [
+  /\bnot\s+(?:yet\s+)?(?:been\s+)?walked\b/i,
+  // "not walked", "not yet walked", "not been walked"
+  /\bunwalked\b/i,
+  /\b(?:haven't|have\s+not|hasn't|has\s+not|didn't|did\s+not)\s+(?:yet\s+)?walk(?:ed)?\b/i,
+  // "haven't walked", "have not walked", "didn't walk"
+  /\battest\s+(?:it\s+)?(?:at|during|in)\s+(?:the\s+)?verify\b/i,
+  // "attest at verify"
+  /\battest\s+later\b/i,
+  /\bwill\s+walk\b/i,
+  /\bto\s+be\s+walked\b/i,
+  /\bno\s+walk\b/i
+];
+function remarkAttestsWalk(detail) {
+  if (typeof detail !== "string") return false;
+  const text = detail.replace(/[\u2018\u2019]/g, "'").trim();
+  if (!text) return false;
+  return !UNWALKED_REMARK_PATTERNS.some((re) => re.test(text));
+}
+function buildFastTrackReleaseRemarkRecordedWalkRequest(args) {
+  return {
+    task_id: args.task_id,
+    summary: args.task_title,
+    evidence_links: args.build_pr_url ? [{ url: args.build_pr_url }] : [],
+    attest_walk: remarkAttestsWalk(args.remark_detail) ? args.remark_detail.trim() : null,
+    requested_by: args.requested_by
+  };
+}
+async function insertRecordedWalkRequest(client, row) {
+  const { error } = await client.from(RECORDED_WALK_REQUESTS_TABLE).insert(row);
+  return !error;
+}
+async function fileFastTrackReleaseRemarkRecordedWalkIfEligible(client, args) {
+  if (args.reason !== RELEASE_GATE_REASON) return false;
+  if (!args.remark_detail.trim()) return false;
+  try {
+    const conduction = await getActiveConduction(client, args.task_id);
+    const runConfig = conduction?.run_config ?? {};
+    if (!isFastTrackEnabled(runConfig)) return false;
+    const { data: taskRow, error: taskErr } = await client.from("tasks").select("title, field_values").eq("id", args.task_id).maybeSingle();
+    if (taskErr || !taskRow) return false;
+    const row = taskRow;
+    const buildPr = row.field_values?.["build_pr"];
+    const request = buildFastTrackReleaseRemarkRecordedWalkRequest({
+      task_id: args.task_id,
+      task_title: row.title ?? "",
+      remark_detail: args.remark_detail,
+      build_pr_url: buildPr?.pr_url ?? null,
+      requested_by: args.requested_by
+    });
+    return await insertRecordedWalkRequest(client, request);
+  } catch {
+    return false;
+  }
+}
+
 // src/tools/revision-cause.ts
 var REVISION_CAUSE_SOURCES = [
   "human-send-back",
@@ -31194,10 +31305,10 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync2) {
 }
 function loadProjectManifest(projectRoot, deps = {}) {
   const existsSync2 = deps.existsSync ?? nodeExistsSync2;
-  const readFileSync4 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
+  const readFileSync5 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
   if (!existsSync2(file)) return { kind: "absent" };
-  const raw = readFileSync4(file);
+  const raw = readFileSync5(file);
   let parsed;
   try {
     parsed = (0, import_yaml.parse)(raw);
@@ -33004,7 +33115,32 @@ async function fetchPendingRemark(client, taskId) {
     return null;
   }
 }
+var isMissingAcceptRemark = (msg) => !!msg && /accept_remark/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
 var isMissingRemarkParam = (msg) => !!msg && /p_remark/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
+async function consumeAcceptRemark(client, _projectId, args, userId, opts) {
+  if (!args.brief_id) throw new Error("brief_id is required");
+  const { data, error } = await client.from("briefs").update({ accept_remark_consumed_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", args.brief_id).not("accept_remark", "is", null).is("accept_remark_consumed_at", null).select("id, task_id, reason, accept_remark").maybeSingle();
+  if (error) {
+    if (isMissingAcceptRemark(error.message)) {
+      return { brief_id: args.brief_id, consumed: false, unsupported: true };
+    }
+    throw new Error(error.message);
+  }
+  if (!data) return { brief_id: args.brief_id, consumed: false, already: true };
+  if (userId && !opts?.skipRecordedWalkFiling) {
+    const row = data;
+    try {
+      await fileFastTrackReleaseRemarkRecordedWalkIfEligible(client, {
+        task_id: row.task_id,
+        reason: row.reason,
+        remark_detail: row.accept_remark,
+        requested_by: userId
+      });
+    } catch {
+    }
+  }
+  return { brief_id: args.brief_id, consumed: true };
+}
 var BRIEF_HISTORY_COLS = `${BRIEF_COLS}, lineage_id, iterate_feedback, revision_cause`;
 var BRIEF_HISTORY_COLS_NO_CAUSE = `${BRIEF_COLS}, lineage_id, iterate_feedback`;
 var ACCEPTED_PROVENANCE = `'${PROVENANCE_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_SYNTHESIZED}', or '${PROVENANCE_AGENT_SYNTHESIZED}:<mode>'`;
@@ -33292,6 +33428,72 @@ async function getTask(client, projectId, args) {
     // of the write discipline — full view only (payload, not loop-control).
     implements_entities
   };
+}
+async function updateTask(client, projectId, args) {
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const { task_id: _discarded, field_values, label_ids, ...updates } = args;
+  if (updates.assignee_id && updates.assignee_id !== "null") {
+    updates.assignee_id = await resolveAssignee(client, projectId, updates.assignee_id);
+  } else if (updates.assignee_id === "null") {
+    updates.assignee_id = null;
+  }
+  if (updates.parent_task_id !== void 0) {
+    updates.parent_task_id = updates.parent_task_id === null ? null : await resolveTaskId(client, projectId, updates.parent_task_id);
+  }
+  if (updates.subsumed_by_task_id !== void 0) {
+    updates.subsumed_by_task_id = updates.subsumed_by_task_id === null ? null : await resolveTaskId(client, projectId, updates.subsumed_by_task_id);
+  }
+  if (typeof updates.title === "string") {
+    validateTitle(updates.title);
+    updates.title = normalizeHtmlEntities(updates.title);
+  }
+  if (typeof updates.description === "string") {
+    updates.description = normalizeHtmlEntities(updates.description.replace(/\\n/g, "\n"));
+  }
+  const payload = {};
+  for (const [k, v] of Object.entries(updates)) {
+    if (v !== void 0) payload[k] = v;
+  }
+  if (field_values) {
+    const { data: existing } = await client.from("tasks").select("field_values").eq("id", resolvedId).eq("project_id", projectId).single();
+    payload.field_values = { ...existing?.field_values ?? {}, ...field_values };
+  }
+  let taskData;
+  if (Object.keys(payload).length > 0) {
+    if (payload.status !== void 0) {
+      const { data: projectRow, error: projErr } = await client.from("projects").select("custom_statuses").eq("id", projectId).single();
+      if (projErr) throw projErr;
+      const statuses = projectRow?.custom_statuses ?? [];
+      const terminal = statuses.length > 0 ? statuses[statuses.length - 1] : "Done";
+      if (payload.status === terminal) {
+        const { data: blocked, error: rpcErr } = await client.rpc("task_blocked_from_terminal", {
+          _task_id: resolvedId
+        });
+        if (rpcErr) throw rpcErr;
+        if (blocked === true) {
+          throw new Error(
+            "This task has unfinished dependencies or subtasks and cannot move to the final stage. Use list_dependencies and list_subtasks to see them."
+          );
+        }
+      }
+    }
+    const { data, error } = await client.from("tasks").update(payload).eq("id", resolvedId).eq("project_id", projectId).select().single();
+    if (error) throw error;
+    taskData = data;
+  } else {
+    const { data, error } = await client.from("tasks").select("*").eq("id", resolvedId).eq("project_id", projectId).single();
+    if (error) throw error;
+    taskData = data;
+  }
+  if (label_ids !== void 0) {
+    await client.from("task_labels").delete().eq("task_id", resolvedId);
+    if (label_ids.length > 0) {
+      await client.from("task_labels").insert(
+        label_ids.map((id) => ({ task_id: resolvedId, label_id: id }))
+      );
+    }
+  }
+  return taskData;
 }
 
 // src/tools/gate-slots.ts
@@ -34081,11 +34283,17 @@ async function fetchEvidencePrReleaseInfo(e, runGh = runGhForReleaseInfo) {
       "--repo",
       parsed.repoSlug,
       "--json",
-      "author,mergedAt,reviewDecision"
+      "author,mergedAt,reviewDecision,number,headRefOid,headRefName,baseRefName,createdAt"
     ]);
     const data = JSON.parse(out);
     return {
       prUrl: e.url,
+      number: typeof data.number === "number" ? data.number : null,
+      headSha: data.headRefOid || null,
+      branch: data.headRefName || null,
+      base: data.baseRefName || null,
+      openedAt: data.createdAt || null,
+      authorLogin: data.author?.login || null,
       authorIsBot: data.author?.is_bot === true,
       merged: typeof data.mergedAt === "string" && data.mergedAt.length > 0,
       mergedAt: data.mergedAt ?? null,
@@ -34108,6 +34316,61 @@ async function gatherBotAuthoredReleaseClauses(evidence, runGh = runGhForRelease
     if (info && info.authorIsBot) clauses.push(buildBotAuthoredReleaseClause(info));
   }
   return clauses;
+}
+var BUILD_PR_REQUIRED_KEYS = ["head_sha", "pr_number", "author_is_bot"];
+function computeBuildPrBackfill(existing, info) {
+  const candidate = {
+    pr_url: info.prUrl,
+    pr_number: info.number,
+    head_sha: info.headSha,
+    branch: info.branch,
+    base: info.base,
+    opened_at: info.openedAt,
+    author_login: info.authorLogin,
+    author_is_bot: info.authorIsBot
+  };
+  const current = existing && typeof existing === "object" ? existing : {};
+  if (typeof current["pr_url"] === "string" && current["pr_url"] && current["pr_url"] !== info.prUrl) return null;
+  const lacksRequired = BUILD_PR_REQUIRED_KEYS.some((k) => current[k] === void 0 || current[k] === null);
+  if (!lacksRequired) return null;
+  const merged = { ...current };
+  let added = 0;
+  for (const [k, v] of Object.entries(candidate)) {
+    if (v === null || v === void 0) continue;
+    if (current[k] === void 0 || current[k] === null) {
+      merged[k] = v;
+      added++;
+    }
+  }
+  return added > 0 ? merged : null;
+}
+async function backfillBuildPr(client, projectId, taskId, evidence) {
+  try {
+    for (const e of evidence) {
+      const info = await fetchEvidencePrReleaseInfo(e);
+      if (!info || info.number === null) continue;
+      const { data, error } = await client.from("tasks").select("field_values").eq("id", taskId).eq("project_id", projectId).single();
+      if (error) return;
+      const fieldValues = data?.field_values ?? {};
+      const merged = computeBuildPrBackfill(fieldValues["build_pr"], info);
+      if (merged) {
+        await updateTask(client, projectId, { task_id: taskId, field_values: { build_pr: merged } });
+      }
+      return;
+    }
+  } catch {
+  }
+}
+var ATTESTATION_COMMENT_PREFIX = "RECORDED-WALK-ATTESTATION";
+async function findRecordedAttestation(client, taskId) {
+  try {
+    const { data, error } = await client.from("task_comments").select("content").eq("task_id", taskId).like("content", `${ATTESTATION_COMMENT_PREFIX}%`).limit(1);
+    if (error || !data || data.length === 0) return null;
+    const content = String(data[0].content ?? "");
+    return /^who:\s*(.+)$/m.exec(content)?.[1]?.trim() ?? "";
+  } catch {
+    return null;
+  }
 }
 async function composeAndAccept(client, projectId, userId, taskId, args) {
   await composeBrief(client, projectId, userId, {
@@ -34170,7 +34433,11 @@ async function runRecordedWalk(client, projectId, userId, args) {
     attestWalk: args.attest_walk,
     // B-1073: a walk bounded at or before 'build' never lands release/deploy/verify, so the verify-walk
     // attestation (item e) is deferred, not evaluated. No `to_gate` ⇒ runs to 'verify' ⇒ still refuses.
-    deferVerifyWalk: args.to_gate !== void 0 && recordWalkGateIndex(args.to_gate) <= recordWalkGateIndex("build")
+    // B-1073 (daemon-files-recording round): ALSO deferred for a RESUMED walk (from_gate past 'clarify'):
+    // the attestation is only ever RECORDED by the clarify section, which a resumed walk skips — and the
+    // post-merge drain walk (from_gate 'deploy') composes the verify brief but never accepts it, so the
+    // human attests at the verify gate. A FULL walk from clarify with no attestation still refuses.
+    deferVerifyWalk: args.to_gate !== void 0 && recordWalkGateIndex(args.to_gate) <= recordWalkGateIndex("build") || args.from_gate !== void 0 && recordWalkGateIndex(args.from_gate) > recordWalkGateIndex("clarify")
   });
   if (!eligibility.eligible) {
     return {
@@ -34192,7 +34459,13 @@ async function runRecordedWalk(client, projectId, userId, args) {
   const fromGate = args.from_gate ?? "clarify";
   const toGate = args.to_gate ?? "verify";
   const runs = (gate) => shouldRunRecordWalkGate(gate, fromGate, toGate);
+  const boundedAtOrBeforeBuild = recordWalkGateIndex(toGate) <= recordWalkGateIndex("build");
+  const attestationSupplied = trimmedOrEmpty(args.attest_walk).length > 0;
   try {
+    if (!runs("clarify") && attestationSupplied) {
+      await addComment(client, projectId, userId, { task_id: taskId, content: renderAttestationComment(args, userId) });
+      attestationRecorded = true;
+    }
     const { data: currentTaskRow, error: currentStateErr } = await client.from("tasks").select("workflow_state").eq("id", taskId).eq("project_id", projectId).single();
     if (currentStateErr) throw currentStateErr;
     const currentWorkflowState = currentTaskRow?.workflow_state ?? null;
@@ -34242,11 +34515,12 @@ async function runRecordedWalk(client, projectId, userId, args) {
         attestationRecorded = true;
       }
       const evidenceSummary = args.evidence.map((e) => e.url).join(", ") || "(none)";
+      const attestedAc = attestationSupplied && !boundedAtOrBeforeBuild;
       await manageAcceptanceCriteria(client, projectId, userId, {
         task_id: taskId,
         add: [{
-          content: `${summary} \u2014 recorded from ${evidenceSummary}; verify walk attested by ${userId}`,
-          checked: true
+          content: attestedAc ? `${summary} \u2014 recorded from ${evidenceSummary}; verify walk attested by ${userId}` : `${summary} \u2014 recorded from ${evidenceSummary}`,
+          checked: attestedAc
         }]
       });
     }
@@ -34318,7 +34592,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
           steps: [summary],
           attestation: { base_verified: "recorded walk \u2014 no live base-verify run; ratified from supplied evidence" },
           carried_unproven: [],
-          ac_coverage: "Recorded from the supplied summary and evidence; one checked acceptance criterion was filed at clarify to satisfy the build gate's B-747 floor."
+          ac_coverage: "Recorded from the supplied summary and evidence; one acceptance criterion was filed at clarify to satisfy the build gate's B-747 floor."
         },
         decisionRef: { type: "specification", id: planDecision.id },
         payload: [{
@@ -34333,6 +34607,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
     if (runs("build")) {
       await advanceWorkflow(client, projectId, { task_id: taskId, activity: "building" });
       gates.push({ gate: "build", landed: true });
+      if (boundedAtOrBeforeBuild) await backfillBuildPr(client, projectId, taskId, args.evidence);
     }
     if (runs("release")) {
       const botAuthoredClauses = await gatherBotAuthoredReleaseClauses(args.evidence);
@@ -34396,6 +34671,9 @@ async function runRecordedWalk(client, projectId, userId, args) {
         step_ref: "1"
       }));
       const verifyEvidenceSummary = args.evidence.map((e) => e.url).join(", ") || "(none)";
+      const priorAttestationWho = attestationSupplied ? null : await findRecordedAttestation(client, taskId);
+      const attestationOnFile = attestationSupplied || priorAttestationWho !== null;
+      const attestationWhy = attestationSupplied ? runs("clarify") ? `An attestation was already recorded at clarify (who: ${userId}); this ack is the human confirmation that record matches reality.` : `An attestation was recorded with this walk (who: ${userId}); this ack is the human confirmation that record matches reality.` : priorAttestationWho !== null ? `An attestation was recorded earlier${priorAttestationWho ? ` (who: ${priorAttestationWho})` : ""}; this ack is the human confirmation that record matches reality.` : "NO verify-walk attestation is on file \u2014 the walk was not attested before the merge. You attest at this verify gate (e.g. by typing what you walked in the accept remark); this ack is the human confirmation that record matches reality.";
       const verifySteps = verifyCriteria.length ? [{
         ref: "1",
         action: `Open the linked evidence (${verifyEvidenceSummary}) and compare it against the recorded summary \u2014 "${solving}".`,
@@ -34415,7 +34693,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
           decide: `Does ${args.task_id}'s recorded work behave as described \u2014 acknowledge verified?`,
           why: [
             "This is a recorded (not conducted) walk \u2014 verification means confirming the record matches what actually happened, not re-doing the work.",
-            `An attestation was already recorded at clarify (who: ${userId}); this ack is the human confirmation that record matches reality.`
+            attestationWhy
           ],
           items: [{ kind: "decision", text: "Acknowledge verified", recommendation: "verify once confirmed" }],
           frame: {
@@ -34425,7 +34703,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
             environment: "merged-main",
             criteria: verifyCriteria,
             steps: verifySteps,
-            evidence_status: `Recorded walk \u2014 evidence linked from the supplied links (${verifyEvidenceSummary}); verify walk attestation on file.`
+            evidence_status: `Recorded walk \u2014 evidence linked from the supplied links (${verifyEvidenceSummary}); ` + (attestationOnFile ? "verify walk attestation on file." : "NO verify-walk attestation is on file \u2014 attest at this verify gate (e.g. in the accept remark).")
           }
         }
       });
@@ -34454,7 +34732,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
 }
 
 // src/daemon/recorded-walk-drain.ts
-var RECORDED_WALK_REQUESTS_TABLE = "recorded_walk_requests";
+var RECORDED_WALK_REQUESTS_TABLE2 = "recorded_walk_requests";
 var WORKFLOW_STATE_TO_FROM_GATE = {
   Captured: "clarify",
   Proposed: "clarify",
@@ -34474,17 +34752,17 @@ function isMissingRecordedWalkRequestsTable(err) {
   const code = err.code ?? "";
   if (code === "42P01" || code === "PGRST205" || code === "PGRST204") return true;
   const msg = err.message ?? "";
-  return new RegExp(RECORDED_WALK_REQUESTS_TABLE).test(msg) && /(does not exist|could not find|schema cache)/i.test(msg);
+  return new RegExp(RECORDED_WALK_REQUESTS_TABLE2).test(msg) && /(does not exist|could not find|schema cache)/i.test(msg);
 }
 var LOG_PREFIX = "[recorded-walk-drain]";
 async function runRecordedWalkDrainPass(deps) {
   const { client, projectId, userId, log } = deps;
   let pending;
   try {
-    const { data, error } = await client.from(RECORDED_WALK_REQUESTS_TABLE).select("id, task_id, summary, evidence_links, attest_walk, requested_by, requested_at, status, processed_at, error, result").eq("status", "pending").order("requested_at", { ascending: true }).limit(1);
+    const { data, error } = await client.from(RECORDED_WALK_REQUESTS_TABLE2).select("id, task_id, summary, evidence_links, attest_walk, requested_by, requested_at, status, processed_at, error, result").eq("status", "pending").order("requested_at", { ascending: true }).limit(1);
     if (error) {
       if (isMissingRecordedWalkRequestsTable(error)) {
-        log(`${LOG_PREFIX} ${RECORDED_WALK_REQUESTS_TABLE} table not found \u2014 skipping this pass (B-1063 not yet merged)`);
+        log(`${LOG_PREFIX} ${RECORDED_WALK_REQUESTS_TABLE2} table not found \u2014 skipping this pass (B-1063 not yet merged)`);
         return 0;
       }
       throw new Error(error.message);
@@ -34496,7 +34774,7 @@ async function runRecordedWalkDrainPass(deps) {
   }
   if (pending.length === 0) return 0;
   const request = pending[0];
-  const { data: claimed, error: claimErr } = await client.from(RECORDED_WALK_REQUESTS_TABLE).update({ status: "processing" }).eq("id", request.id).eq("status", "pending").select("id").maybeSingle();
+  const { data: claimed, error: claimErr } = await client.from(RECORDED_WALK_REQUESTS_TABLE2).update({ status: "processing" }).eq("id", request.id).eq("status", "pending").select("id").maybeSingle();
   if (claimErr) {
     log(`${LOG_PREFIX} claim failed for request ${request.id} \u2014 skipping this pass (${claimErr.message})`);
     return 0;
@@ -34529,7 +34807,7 @@ async function runRecordedWalkDrainPass(deps) {
     failureMessage = err instanceof Error ? err.message : String(err);
   }
   const finalStatus = failureMessage ? "error" : "done";
-  const { error: writeBackErr } = await client.from(RECORDED_WALK_REQUESTS_TABLE).update({ status: finalStatus, processed_at: (/* @__PURE__ */ new Date()).toISOString(), error: failureMessage ?? null, result: result ?? null }).eq("id", request.id);
+  const { error: writeBackErr } = await client.from(RECORDED_WALK_REQUESTS_TABLE2).update({ status: finalStatus, processed_at: (/* @__PURE__ */ new Date()).toISOString(), error: failureMessage ?? null, result: result ?? null }).eq("id", request.id);
   if (writeBackErr) {
     log(`${LOG_PREFIX} write-back failed for request ${request.id} \u2014 it stays 'processing' (${writeBackErr.message})`);
   }
@@ -34539,6 +34817,93 @@ async function runRecordedWalkDrainPass(deps) {
     log(`${LOG_PREFIX} request ${request.id} (task ${request.task_id}) recorded \u2014 ${result?.gates.length ?? 0} gate(s) landed`);
   }
   return 1;
+}
+
+// src/daemon/github-pr-state.ts
+import { createSign } from "node:crypto";
+import { readFileSync as readFileSync3 } from "node:fs";
+var GITHUB_API_DEFAULT = "https://api.github.com";
+var REQUEST_TIMEOUT_MS = 1e4;
+var TOKEN_REFRESH_MARGIN_MS = 5 * 6e4;
+var PR_URL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?/i;
+function parseGithubPrUrl(url) {
+  const m = PR_URL.exec(url.trim());
+  return m ? { owner: m[1], repo: m[2], number: Number(m[3]) } : null;
+}
+function prMergeStateFromPullJson(json) {
+  const pr = json;
+  if (!pr || typeof pr !== "object") return "unknown";
+  if (pr.merged === true) return "merged";
+  if (pr.state === "open") return "open";
+  if (pr.state === "closed") return "closed";
+  return "unknown";
+}
+function buildAppJwt(appId, privateKey, nowSeconds) {
+  const b64url = (input) => Buffer.from(input).toString("base64url");
+  const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const payload = b64url(JSON.stringify({ iat: nowSeconds - 60, exp: nowSeconds + 540, iss: String(appId) }));
+  const signer = createSign("RSA-SHA256");
+  signer.update(`${header}.${payload}`);
+  signer.end();
+  return `${header}.${payload}.${signer.sign(privateKey).toString("base64url")}`;
+}
+function createGithubPrMergeStateReader(deps) {
+  const { env } = deps;
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const readFile = deps.readFile ?? ((p) => readFileSync3(p, "utf8"));
+  const now = deps.now ?? Date.now;
+  const api = env.GITHUB_API_URL || GITHUB_API_DEFAULT;
+  const appId = env.HARMONY_APP_ID;
+  const installationId = env.HARMONY_APP_INSTALLATION_ID;
+  const keyPath = env.HARMONY_APP_PRIVATE_KEY_PATH;
+  const keyInline = env.HARMONY_APP_PRIVATE_KEY;
+  const hasApp = !!(appId && installationId && (keyPath || keyInline));
+  const staticToken = env.GH_TOKEN || env.GITHUB_TOKEN;
+  if (!hasApp && !staticToken) return void 0;
+  let cached = null;
+  const getToken = async () => {
+    if (hasApp) {
+      if (cached && cached.expiresAtMs - TOKEN_REFRESH_MARGIN_MS > now()) return cached.token;
+      const privateKey = keyPath ? readFile(keyPath) : keyInline.includes("\\n") ? keyInline.replace(/\\n/g, "\n") : keyInline;
+      const jwt = buildAppJwt(appId, privateKey, Math.floor(now() / 1e3));
+      const res = await fetchImpl(`${api}/app/installations/${installationId}/access_tokens`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${jwt}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28"
+        },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+      });
+      if (!res.ok) return null;
+      const body = await res.json();
+      if (!body.token) return null;
+      const exp = body.expires_at ? Date.parse(body.expires_at) : NaN;
+      cached = { token: body.token, expiresAtMs: Number.isNaN(exp) ? now() + 50 * 6e4 : exp };
+      return body.token;
+    }
+    return staticToken ?? null;
+  };
+  return async (prUrl) => {
+    try {
+      const parsed = parseGithubPrUrl(prUrl);
+      if (!parsed) return "unknown";
+      const token = await getToken();
+      if (!token) return "unknown";
+      const res = await fetchImpl(`${api}/repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.number}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28"
+        },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+      });
+      if (!res.ok) return "unknown";
+      return prMergeStateFromPullJson(await res.json());
+    } catch {
+      return "unknown";
+    }
+  };
 }
 
 // src/daemon/error-format.ts
@@ -35050,6 +35415,91 @@ function evaluateFastTrackAdmission(summary, declaredRepos) {
   return { admissible, report };
 }
 
+// src/daemon/fasttrack-release-recording.ts
+var REQUESTS_TABLE = "recorded_walk_requests";
+function findReleaseAccept(timeline) {
+  let builtAt = -1;
+  timeline.forEach((e, i) => {
+    if (e.type === "event" && e.event_type === "field_change" && e.field_name === "workflow_state" && e.new_value === "Built") {
+      builtAt = i;
+    }
+  });
+  if (builtAt < 0) return null;
+  for (let i = timeline.length - 1; i > builtAt; i--) {
+    const e = timeline[i];
+    if (e.type === "event" && e.event_type === "brief_resolved" && e.metadata?.reason === RELEASE_GATE_REASON && e.metadata?.command === "accept") {
+      return {
+        timestamp: e.timestamp ?? "",
+        brief_id: typeof e.metadata.brief_id === "string" ? e.metadata.brief_id : null
+      };
+    }
+  }
+  return null;
+}
+var declined = (reason) => ({ handled: false, reason });
+async function tryFileFastTrackPostMergeRecording(deps, taskId) {
+  const { client, projectId, userId } = deps.board;
+  try {
+    const { data: events, error: eventsErr } = await client.from("activity_events").select("event_type, field_name, new_value, metadata, created_at").eq("task_id", taskId).order("created_at", { ascending: true });
+    if (eventsErr) return declined(`could not read the activity timeline (${eventsErr.message})`);
+    const timeline = (events ?? []).map((e) => ({
+      type: "event",
+      timestamp: e.created_at,
+      event_type: e.event_type,
+      field_name: e.field_name,
+      new_value: e.new_value,
+      metadata: e.metadata
+    }));
+    const accept = findReleaseAccept(timeline);
+    if (!accept) return declined("release accept not positively evidenced after the latest advance into Built");
+    const remark = await fetchPendingRemark(client, taskId);
+    if (remark && (remark.reason !== RELEASE_GATE_REASON || accept.brief_id !== null && remark.brief_id !== accept.brief_id)) {
+      return declined(`an unconsumed remark on a different brief (${remark.reason}) is pending \u2014 ambiguous`);
+    }
+    const consumeRemark = async () => {
+      if (!remark) return;
+      try {
+        await consumeAcceptRemark(client, projectId, { brief_id: remark.brief_id }, userId, { skipRecordedWalkFiling: true });
+      } catch (err) {
+        deps.log(`fast-track recording: consuming the accept remark failed (${err instanceof Error ? err.message : String(err)}) \u2014 a later pass retries`);
+      }
+    };
+    const { data: existing, error: existingErr } = await client.from(REQUESTS_TABLE).select("status, requested_at").eq("task_id", taskId);
+    if (existingErr) return declined(`could not read ${REQUESTS_TABLE} (${existingErr.message})`);
+    const acceptMs = Date.parse(accept.timestamp);
+    const sinceAccept = (existing ?? []).filter(
+      (r) => Number.isNaN(acceptMs) || Date.parse(r.requested_at ?? "") > acceptMs
+    );
+    if (sinceAccept.some((r) => r.status === "pending" || r.status === "processing")) {
+      await consumeRemark();
+      return { handled: true, detail: "recording already filed \u2014 the drain owns it" };
+    }
+    if (sinceAccept.length > 0) return declined("a recording request was already processed for this accept \u2014 not refiling");
+    const { data: taskRow, error: taskErr } = await client.from("tasks").select("title, field_values").eq("id", taskId).eq("project_id", projectId).maybeSingle();
+    if (taskErr || !taskRow) return declined("could not read the ticket");
+    const row = taskRow;
+    const prUrl = row.field_values?.["build_pr"]?.pr_url;
+    if (typeof prUrl !== "string" || !prUrl) return declined("no recorded build_pr.pr_url");
+    const prState = await deps.getPrMergeState(prUrl);
+    if (prState !== "merged") return declined(`PR is not confirmed merged (${prState})`);
+    const request = buildFastTrackReleaseRemarkRecordedWalkRequest({
+      task_id: taskId,
+      task_title: row.title ?? "",
+      remark_detail: remark?.detail ?? null,
+      build_pr_url: prUrl,
+      requested_by: userId
+    });
+    if (!await insertRecordedWalkRequest(client, request)) return declined(`could not insert into ${REQUESTS_TABLE}`);
+    await consumeRemark();
+    return {
+      handled: true,
+      detail: `filed the post-merge recording (${request.attest_walk ? "attested by the accept remark" : "no attestation \u2014 human attests at verify"})`
+    };
+  } catch (err) {
+    return declined(`error (${err instanceof Error ? err.message : String(err)})`);
+  }
+}
+
 // src/daemon/scheduler.ts
 var TAKEOVER_ENDPOINT = "conductions.takeoverConduction";
 var STEAL_ENDPOINT = "conductions.stealConduction";
@@ -35334,6 +35784,18 @@ async function handleHeldConduction(deps, state, keeper, excluded, runtime, row)
     deps.log(
       `${label(row, current, deps.projectKey)}: returned to conductor (conductor_excluded_at cleared)`
     );
+  }
+  if (deps.getPrMergeState && deps.fastTrackRecording && isFastTrackEnabled(row.run_config ?? {}) && current.workflow_state === "Built" && current.awaiting_human_input === false) {
+    const outcome = await tryFileFastTrackPostMergeRecording(
+      { board: deps.fastTrackRecording, getPrMergeState: deps.getPrMergeState, log: deps.log },
+      row.task_id
+    );
+    if (outcome.handled) {
+      deps.log(`${label(row, current, deps.projectKey)}: fast-track release accepted \u2014 ${outcome.detail}; no worker leg`);
+      state.set(row.id, captureBaseline(current));
+      return;
+    }
+    deps.log(`${label(row, current, deps.projectKey)}: fast-track recording not taken by the daemon (${outcome.reason}) \u2014 queuing the ordinary leg`);
   }
   deps.log(`${label(row, current, deps.projectKey)}: wake (${wake}) \u2014 queued`);
   runtime.ready.set(row.id, {
@@ -36050,7 +36512,7 @@ async function main() {
     }
     config = loadDaemonConfig(
       process.env,
-      (p) => readFileSync3(p, "utf8"),
+      (p) => readFileSync4(p, "utf8"),
       namedProfile ? { profileOverride: namedProfile } : {}
     );
   } catch (err) {
@@ -36200,6 +36662,10 @@ ${err instanceof Error ? err.message : String(err)}
     setAuth: () => client.realtime.setAuth(),
     pollMs: config.pollMs
   }) : null;
+  const prMergeStateReader = createGithubPrMergeStateReader({ env: process.env });
+  log(
+    prMergeStateReader ? "fast-track post-merge recording: daemon-filed (GitHub credential found for PR merge-state reads)" : "fast-track post-merge recording: NOT daemon-filed \u2014 no GitHub credential in the daemon env (set HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/HARMONY_APP_PRIVATE_KEY_PATH, or GH_TOKEN); fast-track accepts fall back to a worker leg"
+  );
   const deps = {
     now: Date.now,
     sleep,
@@ -36252,6 +36718,13 @@ ${err instanceof Error ? err.message : String(err)}
     drainRecordedWalkRequests: async () => {
       await runRecordedWalkDrainPass({ client, projectId, userId: auth.getUserId(), log });
     },
+    // B-1073 (daemon-files-recording round) — lets the daemon file a fast-track ticket's post-merge
+    // recording itself (no worker leg) once the release is accepted AND the PR is confirmed MERGED.
+    // `getPrMergeState` is undefined when the daemon's env carries no GitHub credential source (the
+    // harmony-daemon App identity or GH_TOKEN/GITHUB_TOKEN) — then NOTHING is intercepted and every
+    // fast-track wake takes the ordinary worker path. See src/daemon/github-pr-state.ts.
+    getPrMergeState: prMergeStateReader,
+    fastTrackRecording: prMergeStateReader ? { client, projectId, userId: auth.getUserId() } : void 0,
     // B-1073 (post-review wiring) — the deployment's declared repo set, resolved once at boot
     // alongside workerImage/projectKey above (same pin-at-boot discipline). B-1073 BUGFIX (this
     // ticket): no longer read by the admission check at all — see this field's own doc comment on

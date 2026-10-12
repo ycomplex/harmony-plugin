@@ -237,16 +237,16 @@ describe('buildFastTrackReleaseRemarkRecordedWalkRequest (B-1073 step 11 — pur
     });
   });
 
-  it('returns null for a blank/whitespace-only remark — an attestation cannot be empty', () => {
+  it('a blank/whitespace-only remark files a row with NO attestation — an attestation cannot be empty', () => {
     expect(buildFastTrackReleaseRemarkRecordedWalkRequest({
       task_id: 'task-uuid-1', task_title: 'B-2000', remark_detail: '   ', build_pr_url: null, requested_by: 'human-1',
-    })).toBeNull();
+    }).attest_walk).toBeNull();
   });
 
   it('evidence_links is [] when no build_pr url is known', () => {
     const row = buildFastTrackReleaseRemarkRecordedWalkRequest({
       task_id: 'task-uuid-1', task_title: 'B-2000', remark_detail: 'walked it', build_pr_url: null, requested_by: 'human-1',
     });
-    expect(row?.evidence_links).toEqual([]);
+    expect(row.evidence_links).toEqual([]);
   });
 });

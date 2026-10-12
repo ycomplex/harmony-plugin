@@ -865,6 +865,13 @@ human-invoked fast-track session with no conduction row around it. This is a poi
 restatement — see that file for the actual mechanics, the same discipline this paragraph already
 follows for `checkPrePrOpenEligibility` below.
 
+**The post-merge recording is filed by the DAEMON, with no worker leg (B-1073).** After the human
+accepts a fast-track conduction's release brief, `scheduler.ts`'s `handleHeldConduction` files the
+`recorded_walk_requests` row itself (`src/daemon/fasttrack-release-recording.ts`) — fail-closed on a
+positively evidenced accept and a MERGED PR — and the in-process drain lands deploy + the verify
+brief; no leg fires. Anything unconfirmable falls through to the ordinary leg (finish-work). Pointer:
+`harmony-fasttrack/SKILL.md` Build phase and `docs/recorded-walk-contract.md` §1.
+
 **Resume rule (one sentence, mechanics in `harmony-fasttrack`):** a re-launched daemon fast-track leg
 whose ticket already carries an OPEN `build_pr` does not rebuild or open a second PR — it re-checks
 that PR's real diff and goes straight to landing.

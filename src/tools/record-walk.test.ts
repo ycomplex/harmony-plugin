@@ -24,11 +24,13 @@ const mocks = vi.hoisted(() => ({
   execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: (err: unknown, stdout: string) => void) => {
     cb(new Error('gh: command not found'), '');
   }),
+  // B-1073: the build_pr backfill writes through tasks.ts's updateTask (field_values merge).
+  updateTask: vi.fn(async () => ({})),
 }));
 const {
   composeBrief, resolveBrief, consumePendingAcceptanceEvent, writeGateSlot, advanceWorkflow, addComment,
   resolveTaskId, manageAcceptanceCriteria, listAcceptanceCriteria, recordDecision, queryKnowledge, referenceKnowledge,
-  execFile,
+  execFile, updateTask,
 } = mocks;
 
 vi.mock('./briefs.js', () => ({ composeBrief: mocks.composeBrief, resolveBrief: mocks.resolveBrief }));
@@ -43,6 +45,7 @@ vi.mock('./acceptance-criteria.js', () => ({
 }));
 vi.mock('./knowledge.js', () => ({ recordDecision: mocks.recordDecision, queryKnowledge: mocks.queryKnowledge }));
 vi.mock('node:child_process', () => ({ execFile: mocks.execFile }));
+vi.mock('./tasks.js', () => ({ updateTask: mocks.updateTask }));
 
 import { runRecordedWalk, RATIFIED_BY_RECORDED, RESOLVE_BRIEF_PROVENANCE_RECORDED, KNOWLEDGE_WRITE_PROVENANCE_RECORDED } from './record-walk.js';
 import { PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED } from './provenance.js';
@@ -78,8 +81,42 @@ function makeClient(workflowState: string | null = 'Proposed') {
   } as any;
 }
 
+/** Like makeClient, but ALSO answers the `field_values` read (build_pr backfill) and the
+ *  `task_comments` attestation lookup (verify-brief truthfulness). */
+function makeRichClient(opts: { workflowState?: string; fieldValues?: Record<string, unknown>; attestationComment?: string | null } = {}) {
+  return {
+    from: vi.fn((table: string) => {
+      if (table === 'tasks') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: async () => ({
+                  data: { workflow_state: opts.workflowState ?? 'Proposed', field_values: opts.fieldValues ?? {} },
+                  error: null,
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === 'task_comments') {
+        const rows = opts.attestationComment ? [{ content: opts.attestationComment }] : [];
+        const chain: any = {};
+        chain.select = () => chain;
+        chain.eq = () => chain;
+        chain.like = () => chain;
+        chain.limit = async () => ({ data: rows, error: null });
+        return chain;
+      }
+      throw new Error(`unexpected table read in test client: ${table}`);
+    }),
+  } as any;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  updateTask.mockResolvedValue({} as any);
   composeBrief.mockResolvedValue({ brief: { id: 'brief-1' }, lint: { ok: true, errors: [], warnings: [] } } as any);
   resolveBrief.mockResolvedValue({ status: 'accepted' } as any);
   consumePendingAcceptanceEvent.mockResolvedValue({ status: 'none' } as any);
@@ -537,7 +574,11 @@ describe('runRecordedWalk — from_gate (B-1073 step 9/10)', () => {
 
     // No gate slot written — clarify/release (the two slot-writing gates) are both skipped.
     expect(writeGateSlot).not.toHaveBeenCalled();
-    expect(addComment).not.toHaveBeenCalled();
+    // B-1073: a supplied attestation on a RESUMED walk is recorded (the clarify section that normally
+    // records it was skipped) — the one comment, in the RECORDED-WALK-ATTESTATION format.
+    expect(addComment).toHaveBeenCalledTimes(1);
+    expect((addComment.mock.calls[0] as any)[3].content).toMatch(/^RECORDED-WALK-ATTESTATION\nwho: user-1\n/);
+    expect(result.attestation_recorded).toBe(true);
     expect(manageAcceptanceCriteria).not.toHaveBeenCalled();
     expect(recordDecision).not.toHaveBeenCalled();
 
@@ -714,7 +755,7 @@ describe('runRecordedWalk — RELEASE: bot-authored evidence PR disclosure (B-10
     // The gh call read the SAME fields finish-work's own O1 step reads, widened with mergedAt.
     const prViewCall = execFile.mock.calls.find((c: any) => c[1][0] === 'pr' && c[1][1] === 'view');
     expect(prViewCall![1]).toEqual(
-      expect.arrayContaining(['--repo', 'ycomplex/harmony-web', '--json', 'author,mergedAt,reviewDecision']),
+      expect.arrayContaining(['--repo', 'ycomplex/harmony-web', '--json', 'author,mergedAt,reviewDecision,number,headRefOid,headRefName,baseRefName,createdAt']),
     );
   });
 
@@ -763,5 +804,175 @@ describe('runRecordedWalk — RELEASE: bot-authored evidence PR disclosure (B-10
     expect(result.error).toBeUndefined();
     const releaseArgs = releaseComposeCall();
     expect(releaseArgs.doc.context).toBeUndefined();
+  });
+});
+
+
+const noAttestArgs = () => {
+  const { attest_walk: _drop, ...rest } = eligibleArgs();
+  return rest;
+};
+const verifyCompose = () => composeBrief.mock.calls.find((c: any) => c[3].reason === 'verification-ack-pending')![3].doc;
+
+describe('runRecordedWalk — the clarify-time AC is filed truthfully (B-1073 daemon-files-recording round, B1)', () => {
+  const acCall = () => (manageAcceptanceCriteria.mock.calls[0] as any)[3].add[0];
+
+  it('a FULL walk WITH an attestation files the AC TICKED with the "verify walk attested by" suffix (unchanged)', async () => {
+    await runRecordedWalk(makeClient('Proposed'), PROJECT_ID, USER_ID, eligibleArgs());
+    expect(acCall().checked).toBe(true);
+    expect(acCall().content).toMatch(/; verify walk attested by user-1$/);
+  });
+
+  it("a walk bounded at or before 'build' files the AC UNTICKED with NO attestation suffix — even when an attestation is supplied", async () => {
+    await runRecordedWalk(makeClient('Proposed'), PROJECT_ID, USER_ID, { ...eligibleArgs(), to_gate: 'build' });
+    expect(acCall().checked).toBe(false);
+    expect(acCall().content).not.toContain('attested by');
+    expect(acCall().content).toContain('recorded from https://github.com/ycomplex/harmony-plugin/pull/1');
+  });
+
+  it('a resumed walk to verify never reaches the clarify AC (nothing filed)', async () => {
+    await runRecordedWalk(makeClient('Built'), PROJECT_ID, USER_ID, { ...noAttestArgs(), from_gate: 'deploy' });
+    expect(manageAcceptanceCriteria).not.toHaveBeenCalled();
+  });
+});
+
+describe('runRecordedWalk — the resumed-walk deferral of the verify-walk item (B-1073 daemon-files-recording round)', () => {
+  it("from_gate 'deploy' with NO attestation does not refuse: item (e) is deferred and the verify brief is composed", async () => {
+    const result = await runRecordedWalk(makeRichClient({ workflowState: 'Built' }), PROJECT_ID, USER_ID, { ...noAttestArgs(), from_gate: 'deploy' });
+    expect(result.refused).toBe(false);
+    expect(result.error).toBeUndefined();
+    expect(result.eligibility.items.find((i) => i.item === 'verify_walk_attestation')!.verdict).toBe('deferred');
+    expect(result.gates.map((g) => g.gate)).toEqual(['deploy', 'verify']);
+    expect(addComment).not.toHaveBeenCalled();
+    expect(result.attestation_recorded).toBe(false);
+  });
+
+  it('a FULL walk from clarify with NO attestation still refuses exactly as before', async () => {
+    const result = await runRecordedWalk({} as any, PROJECT_ID, USER_ID, noAttestArgs());
+    expect(result.refused).toBe(true);
+    expect(result.refusal_reason).toContain('Verify walk');
+    expect(result.eligibility.items.find((i) => i.item === 'verify_walk_attestation')!.verdict).toBe('unattested');
+  });
+
+  it('a supplied attestation on a resumed walk still reads pass', async () => {
+    const result = await runRecordedWalk(makeRichClient({ workflowState: 'Built' }), PROJECT_ID, USER_ID, { ...eligibleArgs(), from_gate: 'deploy' });
+    expect(result.eligibility.items.find((i) => i.item === 'verify_walk_attestation')!.verdict).toBe('pass');
+  });
+});
+
+describe('runRecordedWalk — the verify brief is TRUTHFUL about the attestation (B-1073 daemon-files-recording round, B3)', () => {
+  it('NO attestation anywhere: the why and evidence_status say plainly that none is on file', async () => {
+    await runRecordedWalk(makeRichClient({ workflowState: 'Built' }), PROJECT_ID, USER_ID, { ...noAttestArgs(), from_gate: 'deploy' });
+    const doc = verifyCompose();
+    const text = JSON.stringify(doc);
+    expect(doc.why.join(' ')).toContain('NO verify-walk attestation is on file');
+    expect(doc.why.join(' ')).toContain('attest');
+    expect(doc.frame.evidence_status).toContain('NO verify-walk attestation is on file');
+    expect(text).not.toContain('attestation on file.');
+    expect(text).not.toContain('already recorded at clarify');
+  });
+
+  it('an attestation SUPPLIED to a full walk keeps today\'s wording', async () => {
+    await runRecordedWalk(makeClient('Proposed'), PROJECT_ID, USER_ID, eligibleArgs());
+    const doc = verifyCompose();
+    expect(doc.why[1]).toBe('An attestation was already recorded at clarify (who: user-1); this ack is the human confirmation that record matches reality.');
+    expect(doc.frame.evidence_status).toContain('verify walk attestation on file.');
+  });
+
+  it('an attestation SUPPLIED to a resumed walk is recorded and the brief says so (not "at clarify")', async () => {
+    await runRecordedWalk(makeRichClient({ workflowState: 'Built' }), PROJECT_ID, USER_ID, { ...eligibleArgs(), from_gate: 'deploy' });
+    const doc = verifyCompose();
+    expect(doc.why[1]).toContain('recorded with this walk (who: user-1)');
+    expect(doc.frame.evidence_status).toContain('verify walk attestation on file.');
+  });
+
+  it('an attestation ALREADY recorded on the ticket (a prior comment) is reported on file, with its who', async () => {
+    const comment = 'RECORDED-WALK-ATTESTATION\nwho: founder-1\nwhat_was_walked: x\nwhen: y';
+    await runRecordedWalk(makeRichClient({ workflowState: 'Built', attestationComment: comment }), PROJECT_ID, USER_ID, { ...noAttestArgs(), from_gate: 'deploy' });
+    const doc = verifyCompose();
+    expect(doc.why[1]).toContain('recorded earlier (who: founder-1)');
+    expect(doc.frame.evidence_status).toContain('verify walk attestation on file.');
+  });
+});
+
+describe('runRecordedWalk — build_pr backfill for walks bounded at or before build (B-1073 daemon-files-recording round, B2)', () => {
+  const PR = 'https://github.com/ycomplex/harmony-web/pull/534';
+  const ghData = {
+    author: { is_bot: true, login: 'harmony-daemon[bot]' },
+    mergedAt: null, reviewDecision: 'REVIEW_REQUIRED',
+    number: 534, headRefOid: 'abc123', headRefName: 'feat/x', baseRefName: 'main', createdAt: '2026-10-10T10:00:00Z',
+  };
+  const prArgs = () => ({ ...noAttestArgs(), evidence: [{ url: PR, repo: 'ycomplex/harmony-web' }], to_gate: 'build' as const });
+  function mockGh(data: Record<string, unknown>) {
+    execFile.mockImplementation((_cmd: string, _a: string[], _o: unknown, cb: (err: unknown, stdout: string) => void) => cb(null, JSON.stringify(data)));
+  }
+
+  it('build_pr ABSENT => created with the full start-work O3 shape', async () => {
+    mockGh(ghData);
+    const result = await runRecordedWalk(makeRichClient({ fieldValues: { other: 1 } }), PROJECT_ID, USER_ID, prArgs());
+    expect(result.error).toBeUndefined();
+    expect(updateTask).toHaveBeenCalledTimes(1);
+    expect(updateTask.mock.calls[0]).toEqual([
+      expect.anything(), PROJECT_ID,
+      {
+        task_id: 'resolved-B-2000',
+        field_values: {
+          build_pr: {
+            pr_url: PR, pr_number: 534, head_sha: 'abc123', branch: 'feat/x', base: 'main',
+            opened_at: '2026-10-10T10:00:00Z', author_login: 'harmony-daemon[bot]', author_is_bot: true,
+          },
+        },
+      },
+    ]);
+  });
+
+  it('build_pr present WITHOUT head_sha => head_sha merged in; every existing key intact (never clobbered)', async () => {
+    mockGh(ghData);
+    const existing = { pr_url: PR, branch: 'my-own-branch', pr_number: 534, author_is_bot: true, author_login: 'x', base: 'main', opened_at: 'T' };
+    await runRecordedWalk(makeRichClient({ fieldValues: { build_pr: existing } }), PROJECT_ID, USER_ID, prArgs());
+    expect(updateTask).toHaveBeenCalledTimes(1);
+    const written = (updateTask.mock.calls[0] as any)[2].field_values.build_pr;
+    expect(written).toEqual({ ...existing, head_sha: 'abc123' });
+    expect(written.branch).toBe('my-own-branch');
+    expect(Object.keys((updateTask.mock.calls[0] as any)[2].field_values)).toEqual(['build_pr']);
+  });
+
+  it('a complete build_pr is left alone (no write)', async () => {
+    mockGh(ghData);
+    const full = { pr_url: PR, pr_number: 534, head_sha: 'old', author_is_bot: false };
+    await runRecordedWalk(makeRichClient({ fieldValues: { build_pr: full } }), PROJECT_ID, USER_ID, prArgs());
+    expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  it('a build_pr recording a DIFFERENT PR is not mixed with this PR\'s facts', async () => {
+    mockGh(ghData);
+    await runRecordedWalk(makeRichClient({ fieldValues: { build_pr: { pr_url: 'https://github.com/ycomplex/harmony-web/pull/1' } } }), PROJECT_ID, USER_ID, prArgs());
+    expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  it('gh unavailable => silently skipped; the walk still succeeds', async () => {
+    const result = await runRecordedWalk(makeRichClient(), PROJECT_ID, USER_ID, prArgs());
+    expect(result.refused).toBe(false);
+    expect(result.error).toBeUndefined();
+    expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  it('a failing write is swallowed; the walk still succeeds', async () => {
+    mockGh(ghData);
+    updateTask.mockRejectedValue(new Error('boom'));
+    const result = await runRecordedWalk(makeRichClient(), PROJECT_ID, USER_ID, prArgs());
+    expect(result.error).toBeUndefined();
+    expect(result.gates.map((g) => g.gate)).toEqual(['clarify', 'decompose', 'design', 'plan', 'build']);
+  });
+
+  it('a non-PR evidence URL => no gh call at all, no write', async () => {
+    await runRecordedWalk(makeRichClient(), PROJECT_ID, USER_ID, { ...prArgs(), evidence: [{ url: 'https://example.com/x', repo: 'o/r' }] });
+    expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  it('a walk NOT bounded at build never backfills', async () => {
+    mockGh(ghData);
+    await runRecordedWalk(makeRichClient(), PROJECT_ID, USER_ID, { ...eligibleArgs(), evidence: [{ url: PR, repo: 'ycomplex/harmony-web' }] });
+    expect(updateTask).not.toHaveBeenCalled();
   });
 });

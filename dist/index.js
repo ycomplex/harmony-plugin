@@ -45809,19 +45809,40 @@ function slugRef(prefix, text, maxLen = 40) {
 
 // src/tools/fasttrack-release-remark.ts
 var RECORDED_WALK_REQUESTS_TABLE = "recorded_walk_requests";
+var RELEASE_GATE_REASON = "release-decision-pending";
+var UNWALKED_REMARK_PATTERNS = [
+  /\bnot\s+(?:yet\s+)?(?:been\s+)?walked\b/i,
+  // "not walked", "not yet walked", "not been walked"
+  /\bunwalked\b/i,
+  /\b(?:haven't|have\s+not|hasn't|has\s+not|didn't|did\s+not)\s+(?:yet\s+)?walk(?:ed)?\b/i,
+  // "haven't walked", "have not walked", "didn't walk"
+  /\battest\s+(?:it\s+)?(?:at|during|in)\s+(?:the\s+)?verify\b/i,
+  // "attest at verify"
+  /\battest\s+later\b/i,
+  /\bwill\s+walk\b/i,
+  /\bto\s+be\s+walked\b/i,
+  /\bno\s+walk\b/i
+];
+function remarkAttestsWalk(detail) {
+  if (typeof detail !== "string") return false;
+  const text = detail.replace(/[\u2018\u2019]/g, "'").trim();
+  if (!text) return false;
+  return !UNWALKED_REMARK_PATTERNS.some((re) => re.test(text));
+}
 function buildFastTrackReleaseRemarkRecordedWalkRequest(args) {
-  const attestWalk = args.remark_detail.trim();
-  if (!attestWalk) return null;
   return {
     task_id: args.task_id,
     summary: args.task_title,
     evidence_links: args.build_pr_url ? [{ url: args.build_pr_url }] : [],
-    attest_walk: attestWalk,
+    attest_walk: remarkAttestsWalk(args.remark_detail) ? args.remark_detail.trim() : null,
     requested_by: args.requested_by
   };
 }
+async function insertRecordedWalkRequest(client, row) {
+  const { error: error2 } = await client.from(RECORDED_WALK_REQUESTS_TABLE).insert(row);
+  return !error2;
+}
 async function fileFastTrackReleaseRemarkRecordedWalkIfEligible(client, args) {
-  const RELEASE_GATE_REASON = "release-decision-pending";
   if (args.reason !== RELEASE_GATE_REASON) return false;
   if (!args.remark_detail.trim()) return false;
   try {
@@ -45839,10 +45860,7 @@ async function fileFastTrackReleaseRemarkRecordedWalkIfEligible(client, args) {
       build_pr_url: buildPr?.pr_url ?? null,
       requested_by: args.requested_by
     });
-    if (!request) return false;
-    const { error: insertErr } = await client.from(RECORDED_WALK_REQUESTS_TABLE).insert(request);
-    if (insertErr) return false;
-    return true;
+    return await insertRecordedWalkRequest(client, request);
   } catch {
     return false;
   }
@@ -47880,7 +47898,7 @@ async function fetchPendingRemark(client, taskId) {
 var isMissingAcceptRemark = (msg) => !!msg && /accept_remark/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
 var isMissingRemarkParam = (msg) => !!msg && /p_remark/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
 var isMissingLegParams = (msg) => !!msg && /p_(source|conduction_id|leg)\b/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
-async function consumeAcceptRemark(client, _projectId, args, userId) {
+async function consumeAcceptRemark(client, _projectId, args, userId, opts) {
   if (!args.brief_id) throw new Error("brief_id is required");
   const { data, error: error2 } = await client.from("briefs").update({ accept_remark_consumed_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", args.brief_id).not("accept_remark", "is", null).is("accept_remark_consumed_at", null).select("id, task_id, reason, accept_remark").maybeSingle();
   if (error2) {
@@ -47890,7 +47908,7 @@ async function consumeAcceptRemark(client, _projectId, args, userId) {
     throw new Error(error2.message);
   }
   if (!data) return { brief_id: args.brief_id, consumed: false, already: true };
-  if (userId) {
+  if (userId && !opts?.skipRecordedWalkFiling) {
     const row = data;
     try {
       await fileFastTrackReleaseRemarkRecordedWalkIfEligible(client, {
@@ -52159,11 +52177,17 @@ async function fetchEvidencePrReleaseInfo(e, runGh = runGhForReleaseInfo) {
       "--repo",
       parsed.repoSlug,
       "--json",
-      "author,mergedAt,reviewDecision"
+      "author,mergedAt,reviewDecision,number,headRefOid,headRefName,baseRefName,createdAt"
     ]);
     const data = JSON.parse(out);
     return {
       prUrl: e.url,
+      number: typeof data.number === "number" ? data.number : null,
+      headSha: data.headRefOid || null,
+      branch: data.headRefName || null,
+      base: data.baseRefName || null,
+      openedAt: data.createdAt || null,
+      authorLogin: data.author?.login || null,
       authorIsBot: data.author?.is_bot === true,
       merged: typeof data.mergedAt === "string" && data.mergedAt.length > 0,
       mergedAt: data.mergedAt ?? null,
@@ -52186,6 +52210,61 @@ async function gatherBotAuthoredReleaseClauses(evidence, runGh = runGhForRelease
     if (info && info.authorIsBot) clauses.push(buildBotAuthoredReleaseClause(info));
   }
   return clauses;
+}
+var BUILD_PR_REQUIRED_KEYS = ["head_sha", "pr_number", "author_is_bot"];
+function computeBuildPrBackfill(existing, info) {
+  const candidate = {
+    pr_url: info.prUrl,
+    pr_number: info.number,
+    head_sha: info.headSha,
+    branch: info.branch,
+    base: info.base,
+    opened_at: info.openedAt,
+    author_login: info.authorLogin,
+    author_is_bot: info.authorIsBot
+  };
+  const current = existing && typeof existing === "object" ? existing : {};
+  if (typeof current["pr_url"] === "string" && current["pr_url"] && current["pr_url"] !== info.prUrl) return null;
+  const lacksRequired = BUILD_PR_REQUIRED_KEYS.some((k) => current[k] === void 0 || current[k] === null);
+  if (!lacksRequired) return null;
+  const merged = { ...current };
+  let added = 0;
+  for (const [k, v] of Object.entries(candidate)) {
+    if (v === null || v === void 0) continue;
+    if (current[k] === void 0 || current[k] === null) {
+      merged[k] = v;
+      added++;
+    }
+  }
+  return added > 0 ? merged : null;
+}
+async function backfillBuildPr(client, projectId, taskId, evidence) {
+  try {
+    for (const e of evidence) {
+      const info = await fetchEvidencePrReleaseInfo(e);
+      if (!info || info.number === null) continue;
+      const { data, error: error2 } = await client.from("tasks").select("field_values").eq("id", taskId).eq("project_id", projectId).single();
+      if (error2) return;
+      const fieldValues = data?.field_values ?? {};
+      const merged = computeBuildPrBackfill(fieldValues["build_pr"], info);
+      if (merged) {
+        await updateTask(client, projectId, { task_id: taskId, field_values: { build_pr: merged } });
+      }
+      return;
+    }
+  } catch {
+  }
+}
+var ATTESTATION_COMMENT_PREFIX = "RECORDED-WALK-ATTESTATION";
+async function findRecordedAttestation(client, taskId) {
+  try {
+    const { data, error: error2 } = await client.from("task_comments").select("content").eq("task_id", taskId).like("content", `${ATTESTATION_COMMENT_PREFIX}%`).limit(1);
+    if (error2 || !data || data.length === 0) return null;
+    const content = String(data[0].content ?? "");
+    return /^who:\s*(.+)$/m.exec(content)?.[1]?.trim() ?? "";
+  } catch {
+    return null;
+  }
 }
 async function composeAndAccept(client, projectId, userId, taskId, args) {
   await composeBrief(client, projectId, userId, {
@@ -52248,7 +52327,11 @@ async function runRecordedWalk(client, projectId, userId, args) {
     attestWalk: args.attest_walk,
     // B-1073: a walk bounded at or before 'build' never lands release/deploy/verify, so the verify-walk
     // attestation (item e) is deferred, not evaluated. No `to_gate` ⇒ runs to 'verify' ⇒ still refuses.
-    deferVerifyWalk: args.to_gate !== void 0 && recordWalkGateIndex(args.to_gate) <= recordWalkGateIndex("build")
+    // B-1073 (daemon-files-recording round): ALSO deferred for a RESUMED walk (from_gate past 'clarify'):
+    // the attestation is only ever RECORDED by the clarify section, which a resumed walk skips — and the
+    // post-merge drain walk (from_gate 'deploy') composes the verify brief but never accepts it, so the
+    // human attests at the verify gate. A FULL walk from clarify with no attestation still refuses.
+    deferVerifyWalk: args.to_gate !== void 0 && recordWalkGateIndex(args.to_gate) <= recordWalkGateIndex("build") || args.from_gate !== void 0 && recordWalkGateIndex(args.from_gate) > recordWalkGateIndex("clarify")
   });
   if (!eligibility.eligible) {
     return {
@@ -52270,7 +52353,13 @@ async function runRecordedWalk(client, projectId, userId, args) {
   const fromGate = args.from_gate ?? "clarify";
   const toGate = args.to_gate ?? "verify";
   const runs = (gate) => shouldRunRecordWalkGate(gate, fromGate, toGate);
+  const boundedAtOrBeforeBuild = recordWalkGateIndex(toGate) <= recordWalkGateIndex("build");
+  const attestationSupplied = trimmedOrEmpty(args.attest_walk).length > 0;
   try {
+    if (!runs("clarify") && attestationSupplied) {
+      await addComment(client, projectId, userId, { task_id: taskId, content: renderAttestationComment(args, userId) });
+      attestationRecorded = true;
+    }
     const { data: currentTaskRow, error: currentStateErr } = await client.from("tasks").select("workflow_state").eq("id", taskId).eq("project_id", projectId).single();
     if (currentStateErr) throw currentStateErr;
     const currentWorkflowState = currentTaskRow?.workflow_state ?? null;
@@ -52320,11 +52409,12 @@ async function runRecordedWalk(client, projectId, userId, args) {
         attestationRecorded = true;
       }
       const evidenceSummary = args.evidence.map((e) => e.url).join(", ") || "(none)";
+      const attestedAc = attestationSupplied && !boundedAtOrBeforeBuild;
       await manageAcceptanceCriteria(client, projectId, userId, {
         task_id: taskId,
         add: [{
-          content: `${summary} \u2014 recorded from ${evidenceSummary}; verify walk attested by ${userId}`,
-          checked: true
+          content: attestedAc ? `${summary} \u2014 recorded from ${evidenceSummary}; verify walk attested by ${userId}` : `${summary} \u2014 recorded from ${evidenceSummary}`,
+          checked: attestedAc
         }]
       });
     }
@@ -52396,7 +52486,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
           steps: [summary],
           attestation: { base_verified: "recorded walk \u2014 no live base-verify run; ratified from supplied evidence" },
           carried_unproven: [],
-          ac_coverage: "Recorded from the supplied summary and evidence; one checked acceptance criterion was filed at clarify to satisfy the build gate's B-747 floor."
+          ac_coverage: "Recorded from the supplied summary and evidence; one acceptance criterion was filed at clarify to satisfy the build gate's B-747 floor."
         },
         decisionRef: { type: "specification", id: planDecision.id },
         payload: [{
@@ -52411,6 +52501,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
     if (runs("build")) {
       await advanceWorkflow(client, projectId, { task_id: taskId, activity: "building" });
       gates.push({ gate: "build", landed: true });
+      if (boundedAtOrBeforeBuild) await backfillBuildPr(client, projectId, taskId, args.evidence);
     }
     if (runs("release")) {
       const botAuthoredClauses = await gatherBotAuthoredReleaseClauses(args.evidence);
@@ -52474,6 +52565,9 @@ async function runRecordedWalk(client, projectId, userId, args) {
         step_ref: "1"
       }));
       const verifyEvidenceSummary = args.evidence.map((e) => e.url).join(", ") || "(none)";
+      const priorAttestationWho = attestationSupplied ? null : await findRecordedAttestation(client, taskId);
+      const attestationOnFile = attestationSupplied || priorAttestationWho !== null;
+      const attestationWhy = attestationSupplied ? runs("clarify") ? `An attestation was already recorded at clarify (who: ${userId}); this ack is the human confirmation that record matches reality.` : `An attestation was recorded with this walk (who: ${userId}); this ack is the human confirmation that record matches reality.` : priorAttestationWho !== null ? `An attestation was recorded earlier${priorAttestationWho ? ` (who: ${priorAttestationWho})` : ""}; this ack is the human confirmation that record matches reality.` : "NO verify-walk attestation is on file \u2014 the walk was not attested before the merge. You attest at this verify gate (e.g. by typing what you walked in the accept remark); this ack is the human confirmation that record matches reality.";
       const verifySteps = verifyCriteria.length ? [{
         ref: "1",
         action: `Open the linked evidence (${verifyEvidenceSummary}) and compare it against the recorded summary \u2014 "${solving}".`,
@@ -52493,7 +52587,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
           decide: `Does ${args.task_id}'s recorded work behave as described \u2014 acknowledge verified?`,
           why: [
             "This is a recorded (not conducted) walk \u2014 verification means confirming the record matches what actually happened, not re-doing the work.",
-            `An attestation was already recorded at clarify (who: ${userId}); this ack is the human confirmation that record matches reality.`
+            attestationWhy
           ],
           items: [{ kind: "decision", text: "Acknowledge verified", recommendation: "verify once confirmed" }],
           frame: {
@@ -52503,7 +52597,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
             environment: "merged-main",
             criteria: verifyCriteria,
             steps: verifySteps,
-            evidence_status: `Recorded walk \u2014 evidence linked from the supplied links (${verifyEvidenceSummary}); verify walk attestation on file.`
+            evidence_status: `Recorded walk \u2014 evidence linked from the supplied links (${verifyEvidenceSummary}); ` + (attestationOnFile ? "verify walk attestation on file." : "NO verify-walk attestation is on file \u2014 attest at this verify gate (e.g. in the accept remark).")
           }
         }
       });
