@@ -21932,13 +21932,27 @@ async function resolveRunConfigFromConduction(client, conductionId) {
   }
 }
 var PINNED_DEFAULT_MODEL_BY_PROFILE = {
-  prod: "claude-sonnet-5",
-  staging: "claude-sonnet-5"
+  prod: "claude-sonnet-5-5",
+  staging: "claude-sonnet-5-5"
 };
 var MODEL_CATALOG_FALLBACK = [
   {
+    alias: "claude-sonnet-5-5",
+    label: "Claude Sonnet 5.5",
+    context_budget_bytes: 150 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  },
+  {
     alias: "claude-sonnet-5",
     label: "Claude Sonnet 5",
+    context_budget_bytes: 150 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  },
+  {
+    alias: "claude-opus-5-5",
+    label: "Claude Opus 5.5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
     verified_at: null
@@ -21951,15 +21965,15 @@ var MODEL_CATALOG_FALLBACK = [
     verified_at: null
   },
   {
-    alias: "claude-haiku-4-5-20251001",
-    label: "Claude Haiku 4.5",
+    alias: "claude-haiku-5-5",
+    label: "Claude Haiku 5.5",
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
     verified_at: null
   },
   {
-    alias: "claude-fable-5",
-    label: "Claude Fable 5",
+    alias: "claude-fable-5-1",
+    label: "Claude Fable 5.1",
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
     verified_at: null

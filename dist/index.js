@@ -45258,13 +45258,27 @@ async function resolveRunConfigFromConduction(client, conductionId) {
   }
 }
 var PINNED_DEFAULT_MODEL_BY_PROFILE = {
-  prod: "claude-sonnet-5",
-  staging: "claude-sonnet-5"
+  prod: "claude-sonnet-5-5",
+  staging: "claude-sonnet-5-5"
 };
 var MODEL_CATALOG_FALLBACK = [
   {
+    alias: "claude-sonnet-5-5",
+    label: "Claude Sonnet 5.5",
+    context_budget_bytes: 150 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  },
+  {
     alias: "claude-sonnet-5",
     label: "Claude Sonnet 5",
+    context_budget_bytes: 150 * 1024 * 1024,
+    active: true,
+    verified_at: null
+  },
+  {
+    alias: "claude-opus-5-5",
+    label: "Claude Opus 5.5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
     verified_at: null
@@ -45277,15 +45291,15 @@ var MODEL_CATALOG_FALLBACK = [
     verified_at: null
   },
   {
-    alias: "claude-haiku-4-5-20251001",
-    label: "Claude Haiku 4.5",
+    alias: "claude-haiku-5-5",
+    label: "Claude Haiku 5.5",
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
     verified_at: null
   },
   {
-    alias: "claude-fable-5",
-    label: "Claude Fable 5",
+    alias: "claude-fable-5-1",
+    label: "Claude Fable 5.1",
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
     verified_at: null
@@ -52481,6 +52495,48 @@ async function recordToolHandler(client, projectId, userId, args) {
 
 // src/tools/leg-output-record.ts
 var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
+
+// src/tools/claude-result-parse.ts
+var MODEL_PRICING = {
+  "opus-5-5": {
+    input_per_mtok: 4,
+    output_per_mtok: 20,
+    cache_write_1h_per_mtok: 8,
+    cache_write_5m_per_mtok: 5,
+    cache_read_per_mtok: 0.2
+  },
+  /** Opus 5 and the 4.x line ($5/$25). */
+  opus: {
+    input_per_mtok: 5,
+    output_per_mtok: 25,
+    cache_write_1h_per_mtok: 10,
+    cache_write_5m_per_mtok: 6.25,
+    cache_read_per_mtok: 0.5
+  },
+  /** Sonnet 5 and Sonnet 5.5 share one price. */
+  "sonnet-5": {
+    input_per_mtok: 2,
+    output_per_mtok: 10,
+    cache_write_1h_per_mtok: 4,
+    cache_write_5m_per_mtok: 2.5,
+    cache_read_per_mtok: 0.2
+  },
+  "fable-5-1": {
+    input_per_mtok: 10,
+    output_per_mtok: 50,
+    cache_write_1h_per_mtok: 20,
+    cache_write_5m_per_mtok: 12.5,
+    cache_read_per_mtok: 0.25
+  },
+  "fable-5": {
+    input_per_mtok: 10,
+    output_per_mtok: 50,
+    cache_write_1h_per_mtok: 20,
+    cache_write_5m_per_mtok: 12.5,
+    cache_read_per_mtok: 1
+  }
+};
+var PRICING_KEYS_BY_SPECIFICITY = Object.keys(MODEL_PRICING).sort((x, y) => y.length - x.length);
 
 // src/tools/index.ts
 function registerTools(disabledFeatures) {

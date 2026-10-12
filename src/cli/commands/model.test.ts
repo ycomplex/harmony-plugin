@@ -168,9 +168,9 @@ describe('harmony model request-switch / read-handoff / clear-handoff', () => {
   it('read-handoff prints the pending alias and exits 0 when a request is pending', async () => {
     const handoffPath = tempHandoffPath();
     vi.stubEnv('HARMONY_MODEL_HANDOFF_PATH', handoffPath);
-    await run(['model', 'request-switch', 'claude-haiku-4-5-20251001']);
+    await run(['model', 'request-switch', 'claude-haiku-5-5']);
     await run(['model', 'read-handoff']);
-    expect(logSpy).toHaveBeenCalledWith('claude-haiku-4-5-20251001');
+    expect(logSpy).toHaveBeenCalledWith('claude-haiku-5-5');
   });
 
   it('read-handoff exits 1 with no stdout when no request is pending', async () => {
@@ -247,16 +247,16 @@ function stubConductedEnv(): void {
 describe('B-892 harmony model resolve-gate — gate-boundary re-read of conductions.run_config', () => {
   it("prefers the LIVE row's model over the frozen launch env", async () => {
     stubConductedEnv();
-    stubAuthWith(conductionRow({ model: { per_gate: { build: 'claude-haiku-4-5-20251001' } } }));
+    stubAuthWith(conductionRow({ model: { per_gate: { build: 'claude-haiku-5-5' } } }));
     await run(['model', 'resolve-gate', 'Planned']);
-    expect(logSpy).toHaveBeenCalledWith('claude-haiku-4-5-20251001');
+    expect(logSpy).toHaveBeenCalledWith('claude-haiku-5-5');
   });
 
   it("honors a row-level run-wide default over the launch env's per-gate pin", async () => {
     stubConductedEnv();
-    stubAuthWith(conductionRow({ model: { default: 'claude-haiku-4-5-20251001' } }));
+    stubAuthWith(conductionRow({ model: { default: 'claude-haiku-5-5' } }));
     await run(['model', 'resolve-gate', 'Planned']);
-    expect(logSpy).toHaveBeenCalledWith('claude-haiku-4-5-20251001');
+    expect(logSpy).toHaveBeenCalledWith('claude-haiku-5-5');
   });
 
   it('falls back to the launch env when the row is missing', async () => {
@@ -304,7 +304,7 @@ describe('B-892 harmony model resolve-gate — gate-boundary re-read of conducti
   it('running-model still reports HARMONY_MODEL, never the row (the switch comparison baseline)', async () => {
     stubConductedEnv();
     vi.stubEnv('HARMONY_MODEL', 'claude-opus-5');
-    stubAuthWith(conductionRow({ model: { per_gate: { build: 'claude-haiku-4-5-20251001' } } }));
+    stubAuthWith(conductionRow({ model: { per_gate: { build: 'claude-haiku-5-5' } } }));
     await run(['model', 'running-model']);
     expect(logSpy).toHaveBeenCalledWith('claude-opus-5');
     expect(authMock.getAuthenticatedContext).not.toHaveBeenCalled();

@@ -82,15 +82,28 @@ export interface ModelPricing {
   cache_read_per_mtok: number;
 }
 
-/** B-495's price table, keyed by a lower-cased model-FAMILY substring (the `--model` alias the leg
- *  actually launched with — e.g. `claude-opus-5` — matches on `opus`).
+/** B-495's price table, keyed by a lower-cased model-alias SUBSTRING (the `--model` alias the leg
+ *  actually launched with). The LONGEST matching key wins, so `claude-opus-5-5` resolves to its own
+ *  row rather than the broader `opus` row, and `claude-fable-5-1` to its own rather than `fable-5`.
  *
- *  DELIBERATELY ONE ROW. Only the Opus rates were ratified for this ticket, and an unrecognized
+ *  Only ratified rates belong here (B-1096: Anthropic's published table, 2026-10). An unrecognized
  *  model resolves to NO pricing, so its `cost_source` is `'unknown'` and its `total_cost_usd` is
  *  null — an honest "we cannot say" rather than a plausible-looking number computed from somebody
- *  else's rates. That is the whole point of carrying `cost_source` at all. Adding a family here is
- *  a one-line change once its rates are ratified; guessing one is not. */
+ *  else's rates. That is the whole point of carrying `cost_source` at all. Two deliberate gaps:
+ *    - Claude Haiku 5.5 has two input tiers split at a 100K-token prompt, and a leg's aggregated
+ *      usage cannot say which side of that line each request fell on — so it stays unpriced.
+ *    - Claude Sonnet 4.6 and older Sonnets ($3/$15) are not matched by `sonnet-5`.
+ *  Cache writes are 1.25x (5m) / 2x (1h) the input rate on every row; cache READS are not a uniform
+ *  multiplier (0.1x generally, 0.05x on Opus 5.5, 0.025x on Fable 5.1), so each row states its own. */
 export const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
+  'opus-5-5': {
+    input_per_mtok: 4,
+    output_per_mtok: 20,
+    cache_write_1h_per_mtok: 8,
+    cache_write_5m_per_mtok: 5,
+    cache_read_per_mtok: 0.2,
+  },
+  /** Opus 5 and the 4.x line ($5/$25). */
   opus: {
     input_per_mtok: 5,
     output_per_mtok: 25,
@@ -98,17 +111,40 @@ export const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
     cache_write_5m_per_mtok: 6.25,
     cache_read_per_mtok: 0.5,
   },
+  /** Sonnet 5 and Sonnet 5.5 share one price. */
+  'sonnet-5': {
+    input_per_mtok: 2,
+    output_per_mtok: 10,
+    cache_write_1h_per_mtok: 4,
+    cache_write_5m_per_mtok: 2.5,
+    cache_read_per_mtok: 0.2,
+  },
+  'fable-5-1': {
+    input_per_mtok: 10,
+    output_per_mtok: 50,
+    cache_write_1h_per_mtok: 20,
+    cache_write_5m_per_mtok: 12.5,
+    cache_read_per_mtok: 0.25,
+  },
+  'fable-5': {
+    input_per_mtok: 10,
+    output_per_mtok: 50,
+    cache_write_1h_per_mtok: 20,
+    cache_write_5m_per_mtok: 12.5,
+    cache_read_per_mtok: 1,
+  },
 };
+
+/** MODEL_PRICING's keys, longest first, so the most specific row wins. */
+const PRICING_KEYS_BY_SPECIFICITY = Object.keys(MODEL_PRICING).sort((x, y) => y.length - x.length);
 
 /** The price row for a model alias, or null when this deployment has no ratified rates for it.
  *  Never throws. */
 export function resolvePricing(model: string | null | undefined): ModelPricing | null {
   if (!model) return null;
   const alias = model.toLowerCase();
-  for (const [family, pricing] of Object.entries(MODEL_PRICING)) {
-    if (alias.includes(family)) return pricing;
-  }
-  return null;
+  const key = PRICING_KEYS_BY_SPECIFICITY.find((k) => alias.includes(k));
+  return key ? MODEL_PRICING[key] : null;
 }
 
 const MTOK = 1_000_000;
