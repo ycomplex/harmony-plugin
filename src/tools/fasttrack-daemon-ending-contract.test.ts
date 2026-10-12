@@ -141,3 +141,33 @@ describe('daemon-ending contract (B-1073 fast-track-daemon-ending round): to_gat
     expect(advanceWorkflow.mock.calls.map((c: any) => c[2].activity)).toEqual(['proposing', 'building']);
   });
 });
+
+describe("daemon-ending contract (B-1073): B-1092's exact shape — Proposed ticket, build_pr already recorded, no ACs, no attestation", () => {
+  // NOTE: the RESUME decision itself (detect the OPEN build_pr via `gh pr view`, do not rebuild, do not
+  // open a second PR) is skill prose in skills/harmony-fasttrack/SKILL.md and is not unit-testable.
+  // Only the TS half is pinned here: given that shape, the walk lands and does not refuse.
+  it("to_gate: 'build' with no attest_walk lands clarify..build, ends at Built, writes nothing release/verify-shaped", async () => {
+    const { client, currentWorkflowState } = makeStatefulClient('Proposed');
+    listAcceptanceCriteria.mockResolvedValue([] as any);
+
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, {
+      task_id: 'B-1092',
+      summary: 'Fix the flaky retry timer in the poller.',
+      evidence: [{ url: 'https://github.com/ycomplex/harmony-web/pull/534', repo: 'ycomplex/harmony-web', paths: ['src/lib/foo.ts'] }],
+      to_gate: 'build',
+    });
+
+    expect(result.refused).toBe(false);
+    expect(result.refusal_reason).toBeUndefined();
+    expect(result.error).toBeUndefined();
+    expect(result.gates.map((g) => g.gate)).toEqual(['clarify', 'decompose', 'design', 'plan', 'build']);
+    expect(result.stopped_at_gate).toBe('build');
+    expect(currentWorkflowState()).toBe('Built');
+    expect(result.eligibility.items.find((i) => i.item === 'verify_walk_attestation')!.verdict).toBe('deferred');
+
+    expect(composeBrief.mock.calls.every((c: any) => c[3].reason !== 'release-decision-pending' && c[3].reason !== 'verification-ack-pending')).toBe(true);
+    expect(writeGateSlot.mock.calls.map((c: any) => c[1].gate)).toEqual(['clarify']);
+    // Proposed already, so only the build gate's own advance fires.
+    expect(advanceWorkflow.mock.calls.map((c: any) => c[2].activity)).toEqual(['building']);
+  });
+});

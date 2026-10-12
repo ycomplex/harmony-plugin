@@ -43337,8 +43337,16 @@ function evaluateSingleSentenceItem(summary) {
   }
   return { item: "single_sentence_change", label: "Single-sentence-statable change", verdict: "pass", value };
 }
-function evaluateVerifyWalkItem(attestWalk) {
+function evaluateVerifyWalkItem(attestWalk, defer = false) {
   const trimmed = typeof attestWalk === "string" ? attestWalk.trim() : "";
+  if (!trimmed && defer) {
+    return {
+      item: "verify_walk_attestation",
+      label: "Verify walk (5+ min) attested",
+      verdict: "deferred",
+      value: "verify-walk: DEFERRED (belongs to the verify gate, which this walk does not land; the human attests it after the merge)"
+    };
+  }
   if (!trimmed) {
     return {
       item: "verify_walk_attestation",
@@ -43363,9 +43371,9 @@ function evaluateEligibility(input) {
     evaluateMigrationItem(input.evidence),
     evaluateRiskClassItem(input.summary, input.evidence),
     evaluateSingleSentenceItem(input.summary),
-    evaluateVerifyWalkItem(input.attestWalk)
+    evaluateVerifyWalkItem(input.attestWalk, input.deferVerifyWalk === true)
   ];
-  return { items, eligible: items.every((i) => i.verdict === "pass") };
+  return { items, eligible: items.every((i) => i.verdict === "pass" || i.verdict === "deferred") };
 }
 var GITHUB_PR_URL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?/i;
 async function runGhCommand(args) {
@@ -43439,7 +43447,7 @@ function deriveSolving(summary) {
   return trimmed ? `${trimmed}.` : summary;
 }
 function describeIneligibility(report) {
-  const bad = report.items.filter((i) => i.verdict !== "pass");
+  const bad = report.items.filter((i) => i.verdict !== "pass" && i.verdict !== "deferred");
   const lines = bad.map((i) => `  - ${i.label}: ${i.verdict.toUpperCase()} (${i.value}${i.detail ? " \u2014 " + i.detail : ""})`);
   return `harmony record refuses \u2014 ${bad.length} of 5 eligibility item(s) did not pass:
 ` + lines.join("\n") + `
@@ -43577,7 +43585,10 @@ async function runRecordedWalk(client, projectId, userId, args) {
   const eligibility = evaluateEligibility({
     summary: args.summary,
     evidence: args.evidence,
-    attestWalk: args.attest_walk
+    attestWalk: args.attest_walk,
+    // B-1073: a walk bounded at or before 'build' never lands release/deploy/verify, so the verify-walk
+    // attestation (item e) is deferred, not evaluated. No `to_gate` ⇒ runs to 'verify' ⇒ still refuses.
+    deferVerifyWalk: args.to_gate !== void 0 && recordWalkGateIndex(args.to_gate) <= recordWalkGateIndex("build")
   });
   if (!eligibility.eligible) {
     return {
@@ -43900,7 +43911,7 @@ function registerRecordCommand(program3) {
       const report = evaluateEligibility({ summary: opts.summary, evidence: gathered, attestWalk: opts.attestWalk });
       for (const item of report.items) {
         const line = formatEligibilityLine("harmony record --check", ticket, item);
-        if (item.verdict === "pass") console.log(line);
+        if (item.verdict === "pass" || item.verdict === "deferred") console.log(line);
         else console.error(line);
       }
       process.exit(report.eligible ? 0 : 1);
@@ -43953,7 +43964,7 @@ function registerFasttrackCommands(program3) {
     const report = evaluateEligibility({ summary: opts.summary, evidence: gathered, attestWalk: opts.attestWalk });
     for (const item of report.items) {
       const line = formatEligibilityLine("harmony fasttrack check", ticket, item);
-      if (item.verdict === "pass") console.log(line);
+      if (item.verdict === "pass" || item.verdict === "deferred") console.log(line);
       else console.error(line);
     }
     process.exit(report.eligible ? 0 : 1);
