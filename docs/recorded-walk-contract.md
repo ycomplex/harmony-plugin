@@ -32,12 +32,32 @@ Three surfaces, ONE implementation:
 | MCP | the `record` tool | directly, in the MCP server process |
 | Web (B-1063) | writes a `recorded_walk_requests` row | the daemon's drain, `src/daemon/recorded-walk-drain.ts`, polling in-process |
 
-**B-1073 step 11 (post-review wiring): there is now a SECOND writer of this table, plugin-side.** A
-fast-track ticket's RELEASE-gate accept-with-remark (B-503's `pending_remark`) auto-files a
-`recorded_walk_requests` row from `src/tools/briefs.ts`'s `consumeAcceptRemark` — see
-`src/tools/fasttrack-release-remark.ts`'s `fileFastTrackReleaseRemarkRecordedWalkIfEligible` — so the
-remark's text becomes the walk's `attest_walk` with no second human action. This is a plain
-`INSERT`, same table, same RLS as the web's own write; it does not change the schema in §5 below.
+**B-1073: there are now plugin-side writers of this table too — the DAEMON first, a hook as fallback.**
+A fast-track ticket's post-merge row is filed by **the daemon itself, with no worker leg**
+(`src/daemon/fasttrack-release-recording.ts`, called from the scheduler's `handleHeldConduction`,
+under the conduction lease). It intercepts only when ALL hold, each fail-closed (anything unconfirmable
+⇒ the ordinary queue-a-worker path, unchanged): the conduction's `run_config.fast_track` is true; the
+ticket is at `Built` with the awaiting flag down; a `brief_resolved` accept for
+`release-decision-pending` is positively evidenced in the activity timeline AFTER the latest advance
+into `Built` (the finish-work O1 step 3 rule — never inferred from row shape); no request was already
+processed for that accept (a pending/processing one means "already filed", the daemon just holds); and
+the recorded `field_values.build_pr` PR is **MERGED** per the injected `SchedulerDeps.getPrMergeState`
+(never `runCommand`; the walk's deploy step advances Built→Deployed without checking a merge, and a
+bot-authored PR still needs the human's GitHub approval + merge). It then inserts the row
+(summary = ticket title, evidence = `build_pr.pr_url`, `requested_by` = the daemon's user id), consumes
+the accept remark with `skipRecordedWalkFiling` (so exactly one row exists), rolls the baseline, and
+queues no leg; the same loop's drain lands deploy and composes the verify brief.
+The fallback is `src/tools/briefs.ts`'s `consumeAcceptRemark` →
+`src/tools/fasttrack-release-remark.ts`'s `fileFastTrackReleaseRemarkRecordedWalkIfEligible`, which still
+files when a *worker* consumes a release-accept remark (the daemon declined). Both are plain `INSERT`s,
+same table, same RLS as the web's own write; neither changes the schema in §5 below.
+
+**Attestation rule (both writers, `remarkAttestsWalk`).** The accept remark is the walk's `attest_walk`
+VERBATIM unless it is blank or says the walk was not done (`not walked`, `unwalked`, `haven't walked`,
+`not yet walked`, `attest at verify`, `attest later`, `will walk`, `to be walked`, `no walk`, …; the
+single list is `UNWALKED_REMARK_PATTERNS`) — then `attest_walk` is **null** and the human attests at the
+verify gate. Ambiguity resolves toward "none": wrongly dropping a real attestation costs one re-attest;
+the reverse fabricates one.
 
 ---
 
@@ -144,6 +164,22 @@ reads `pass`), and `eligible` is computed over the non-deferred items — the ot
 deferred item is never a blocker. A walk with no `to_gate`, or `release` or later, still refuses on an
 unattested (e); `record --check`, `fasttrack check`, and the daemon drain (which never pass `to_gate`)
 never produce `deferred`.
+
+**Amendment (B-1073, daemon-files-recording round) — item (e) is ALSO `deferred` for a resumed walk
+(`from_gate` past `clarify`).** The attestation is only ever *recorded* by the clarify section, which a
+resumed walk skips, and the drain's post-merge walk (`from_gate: 'deploy'`) composes the verify brief but
+never accepts it — so with no attestation it defers (e) instead of refusing (an `attest_walk` supplied to a
+resumed walk still reads `pass`, and is recorded as a `RECORDED-WALK-ATTESTATION` comment because the
+clarify section was skipped). A FULL walk from `clarify` with no attestation still refuses. Consequently
+`recorded_walk_requests.result` rows written by the drain CAN now carry `deferred` for a resumed walk.
+
+**Recorder truthfulness (same round).** The clarify-time acceptance criterion is filed ticked, with the
+"verify walk attested by" suffix, only for a walk that runs past `build` AND was given an attestation;
+otherwise it is filed unticked with no suffix (the build-gate floor is presence-only —
+`task_criteria_floor_status`). A walk bounded at or before `build` also backfills missing keys of
+`field_values.build_pr` (best-effort `gh pr view`, never clobbering). The composed verify brief states
+whether a verify-walk attestation is on file and, when none is, says plainly that the human attests at
+the verify gate.
 
 ---
 
