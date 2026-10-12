@@ -294,8 +294,8 @@ export async function resolveRunConfigFromConduction(
  *  per-environment picks; the identity that matters for THIS ticket is "always something explicit
  *  here, never silence". */
 export const PINNED_DEFAULT_MODEL_BY_PROFILE: Record<string, string> = {
-  prod: 'claude-sonnet-5',
-  staging: 'claude-sonnet-5',
+  prod: 'claude-sonnet-5-5',
+  staging: 'claude-sonnet-5-5',
 };
 
 // B-772: duplicated from src/tools/environment.ts's DEFAULT_SUPABASE_URL/KNOWN_REFS, deliberately
@@ -405,11 +405,26 @@ export interface ModelCatalogEntry {
  *  retired model, or, in an emergency, keeping the pinned-default invariant below satisfiable.
  *  Context budgets follow the same conservative-bias convention as
  *  DEFAULT_MODEL_CONTEXT_BUDGET_BYTES: the smallest tabled tier for anything not certain (here,
- *  every tier except the two flagship models this repo has long pinned defaults for). */
+ *  every tier except the Sonnet and Opus rows this repo has long pinned defaults or routed gates to;
+ *  B-1096 refreshed the list to the current generation). */
 export const MODEL_CATALOG_FALLBACK: readonly ModelCatalogEntry[] = [
+  {
+    alias: 'claude-sonnet-5-5',
+    label: 'Claude Sonnet 5.5',
+    context_budget_bytes: 150 * 1024 * 1024,
+    active: true,
+    verified_at: null,
+  },
   {
     alias: 'claude-sonnet-5',
     label: 'Claude Sonnet 5',
+    context_budget_bytes: 150 * 1024 * 1024,
+    active: true,
+    verified_at: null,
+  },
+  {
+    alias: 'claude-opus-5-5',
+    label: 'Claude Opus 5.5',
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
     verified_at: null,
@@ -422,15 +437,15 @@ export const MODEL_CATALOG_FALLBACK: readonly ModelCatalogEntry[] = [
     verified_at: null,
   },
   {
-    alias: 'claude-haiku-4-5-20251001',
-    label: 'Claude Haiku 4.5',
+    alias: 'claude-haiku-5-5',
+    label: 'Claude Haiku 5.5',
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
     verified_at: null,
   },
   {
-    alias: 'claude-fable-5',
-    label: 'Claude Fable 5',
+    alias: 'claude-fable-5-1',
+    label: 'Claude Fable 5.1',
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
     verified_at: null,

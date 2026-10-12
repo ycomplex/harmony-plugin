@@ -658,8 +658,8 @@ describe('B-772 round 2: model handoff-file contract', () => {
 
   it('writeModelHandoffRequest overwrites a prior pending request — only the latest matters', () => {
     writeModelHandoffRequest('claude-sonnet-5', env);
-    writeModelHandoffRequest('claude-haiku-4-5-20251001', env);
-    expect(readModelHandoffRequest(env)).toEqual({ requested_model: 'claude-haiku-4-5-20251001' });
+    writeModelHandoffRequest('claude-haiku-5-5', env);
+    expect(readModelHandoffRequest(env)).toEqual({ requested_model: 'claude-haiku-5-5' });
   });
 
   it('readModelHandoffRequest returns null on malformed JSON (best-effort, never throws)', () => {

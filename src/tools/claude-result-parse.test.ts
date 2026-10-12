@@ -118,8 +118,18 @@ describe('the derived-cost fallback (B-495 price table)', () => {
   it('resolves the Opus row by model-family substring, and NOTHING for an unratified family', () => {
     expect(resolvePricing('claude-opus-5')).toBe(opus);
     expect(resolvePricing('CLAUDE-OPUS-4-5-20251101')).toBe(opus);
-    expect(resolvePricing('claude-sonnet-5')).toBeNull();
+    expect(resolvePricing('claude-haiku-5-5')).toBeNull();
+    expect(resolvePricing('claude-sonnet-4-6')).toBeNull();
     expect(resolvePricing(null)).toBeNull();
+  });
+
+  it('B-1096: the most specific row wins — Opus 5.5 and Fable 5.1 are not priced as their predecessors', () => {
+    expect(resolvePricing('claude-opus-5-5')).toBe(MODEL_PRICING['opus-5-5']);
+    expect(resolvePricing('claude-opus-5-5')?.input_per_mtok).toBe(4);
+    expect(resolvePricing('claude-fable-5-1')?.cache_read_per_mtok).toBe(0.25);
+    expect(resolvePricing('claude-fable-5')?.cache_read_per_mtok).toBe(1);
+    expect(resolvePricing('claude-sonnet-5')).toBe(MODEL_PRICING['sonnet-5']);
+    expect(resolvePricing('claude-sonnet-5-5')).toBe(MODEL_PRICING['sonnet-5']);
   });
 
   it('prices the 1h and 5m cache-write buckets SEPARATELY, at their own rates', () => {
@@ -239,7 +249,7 @@ describe('resolveCost — which figure the row actually carries', () => {
     const raw = JSON.parse(envelope()) as Record<string, unknown>;
     delete raw.total_cost_usd;
     const parsed = parseClaudeResultJson(JSON.stringify(raw))!;
-    expect(resolveCost(parsed, 'claude-sonnet-5')).toEqual({
+    expect(resolveCost(parsed, 'claude-haiku-5-5')).toEqual({
       total_cost_usd: null,
       cost_source: 'unknown',
     });
