@@ -407,6 +407,8 @@ composing the release brief, in the same leg — is owned by `skills/harmony-fas
 daemon branch, not by this O3 section's own Designed→Planned→Built sequence; a fast-track leg never
 reaches Designed/Planned through the ordinary gates at all, so nothing here says it ends differently
 without this pointer.
+A re-launched daemon fast-track leg whose ticket already has an OPEN `build_pr` skips this section
+entirely (no worktree, no second PR) — the resume rule lives in `harmony-fasttrack`.
 
 **FAILURE PATH — preserve the work, then park; NEVER a PR-less release brief (B-722).** On ANY failure
 of commit / push / PR-create (permission denial, network, auth, `gh` outage), run this IN THE WORKER,

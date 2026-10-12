@@ -62,6 +62,30 @@ as described above.
 
 ### 3. Build phase
 
+**Daemon resume check — runs FIRST, before any worktree creation or implementation (B-1073).** A
+daemon fast-track leg can be re-launched after an earlier leg already built and opened the PR but
+parked before landing (B-1092: `build_pr` = an OPEN PR, ticket still Proposed). Such a leg must NOT
+rebuild. Under the daemon detection signal (`environment.conduction_id !== null &&
+environment.fast_track === true`):
+
+1. `mcp__harmony__get_task` and read `field_values.build_pr`. Absent ⇒ no resume; continue below
+   with the ordinary build path.
+2. Present with a `pr_number`/`pr_url`: run
+   `gh pr view <n> --repo <repo> --json state,headRefOid,headRefName,author`.
+   - **OPEN** — do NOT create a worktree, do NOT rebuild, do NOT open a second PR. Take the real
+     changed paths from `gh pr diff <n> --repo <repo> --name-only`, and the numstat from
+     `gh pr view <n> --repo <repo> --json files` (additions/deletions per file); re-run the
+     pre-PR-open eligibility re-check (`checkPrePrOpenEligibility`) and the scope guard
+     (`checkFastTrackScopeBudget`) against that real diff — the same checks as the normal path, and
+     the same park-on-failure rule. If both pass, skip straight to the **Daemon** landing steps
+     below: call `record` with `to_gate: 'build'` and the existing PR as the evidence link, confirm
+     `Built`, and compose the ordinary release-decision-pending brief. (`record`'s clarify step files
+     one acceptance criterion itself when the ticket has none, so the resumed leg need not file ACs.)
+   - **MERGED** — the work is already landed: say so on the ticket as a comment, then continue to
+     the landing steps with that fact stated in the brief (no rebuild, no second PR).
+   - **CLOSED unmerged** — say so on the ticket as a comment (the `build_pr` reference is stale),
+     then take the ordinary build path below.
+
 Once confirmed, reuse `skills/start-work/SKILL.md`'s **O3** section **by reference** — worktree
 creation, implementation, tests, commit, push, PR-open all follow that section's mechanics verbatim.
 Do not duplicate that prose here. This skill adds exactly **two deltas** on top of O3:
@@ -114,7 +138,8 @@ Do not duplicate that prose here. This skill adds exactly **two deltas** on top 
        must never fire here, because a real release brief is coming next, not the walk's own
        placeholder one. No `attest_walk` is needed for this call — the verify-walk attestation stays
        deferred to the human, the same floor the Check phase note above already states; a walk
-       bounded at `to_gate: 'build'` never reaches `'verify'`, so that item is never even touched.
+       bounded at or before `to_gate: 'build'` never lands the verify gate, so that eligibility item is
+       reported DEFERRED (not evaluated) rather than refusing the walk on an unattested attestation.
     2. Re-read the ticket (`mcp__harmony__get_task`) to confirm `workflow_state === 'Built'`.
     3. Compose the ORDINARY `release-decision-pending` brief directly — the same shape
        `skills/finish-work/SKILL.md`'s **O1** section composes for any other build leg (reuse/reference

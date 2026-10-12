@@ -612,6 +612,58 @@ describe('runRecordedWalk — to_gate (B-1073 fast-track-daemon-ending round)', 
   });
 });
 
+describe('runRecordedWalk — verify-walk item deferred when bounded at or before build (B-1073)', () => {
+  const noAttest = () => { const { attest_walk: _a, ...rest } = eligibleArgs(); return rest; };
+
+  it("to_gate: 'build' with NO attest_walk lands clarify..build, item (e) deferred, eligible true", async () => {
+    const client = makeClient('Captured');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, { ...noAttest(), to_gate: 'build' });
+    expect(result.refused).toBe(false);
+    expect(result.error).toBeUndefined();
+    expect(result.gates.map((g) => g.gate)).toEqual(['clarify', 'decompose', 'design', 'plan', 'build']);
+    expect(result.stopped_at_gate).toBe('build');
+    expect(result.eligibility.eligible).toBe(true);
+    expect(result.eligibility.items.find((i) => i.item === 'verify_walk_attestation')!.verdict).toBe('deferred');
+  });
+
+  it("to_gate: 'build' with a failing (a)-(d) item still refuses, nothing written", async () => {
+    const client = {} as any;
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, {
+      ...noAttest(),
+      evidence: [
+        { url: 'https://github.com/ycomplex/harmony-plugin/pull/1', repo: 'ycomplex/harmony-plugin' },
+        { url: 'https://github.com/ycomplex/harmony-web/pull/2', repo: 'ycomplex/harmony-web' },
+      ],
+      to_gate: 'build',
+    });
+    expect(result.refused).toBe(true);
+    expect(result.refusal_reason).toContain('Single repo');
+    expect(result.refusal_reason).not.toContain('Verify walk');
+    expect(resolveTaskId).not.toHaveBeenCalled();
+    expect(composeBrief).not.toHaveBeenCalled();
+    expect(writeGateSlot).not.toHaveBeenCalled();
+    expect(advanceWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('NO to_gate and no attest_walk still refuses on the verify-walk item (regression)', async () => {
+    const result = await runRecordedWalk({} as any, PROJECT_ID, USER_ID, noAttest());
+    expect(result.refused).toBe(true);
+    expect(result.refusal_reason).toContain('Verify walk');
+    expect(result.eligibility.items.find((i) => i.item === 'verify_walk_attestation')!.verdict).toBe('unattested');
+    expect(writeGateSlot).not.toHaveBeenCalled();
+  });
+
+  it.each(['release', 'deploy', 'verify'] as const)(
+    'to_gate: %s with no attest_walk still refuses (only at-or-before build defers)',
+    async (toGate) => {
+      const result = await runRecordedWalk({} as any, PROJECT_ID, USER_ID, { ...noAttest(), to_gate: toGate });
+      expect(result.refused).toBe(true);
+      expect(result.refusal_reason).toContain('Verify walk');
+      expect(writeGateSlot).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe('runRecordedWalk — RELEASE: bot-authored evidence PR disclosure (B-1073 fast-track round)', () => {
   /** A fake `execFile` that answers `gh pr view <number> --repo <repoSlug> --json ...` for exactly
    *  the PR named by `evidenceUrl`, and rejects (ENOENT-style) for anything else. */

@@ -183,7 +183,7 @@ function deriveSolving(summary: string): string {
 }
 
 export function describeIneligibility(report: EligibilityReport): string {
-  const bad = report.items.filter((i) => i.verdict !== 'pass');
+  const bad = report.items.filter((i) => i.verdict !== 'pass' && i.verdict !== 'deferred');
   const lines = bad.map((i) => `  - ${i.label}: ${i.verdict.toUpperCase()} (${i.value}${i.detail ? ' — ' + i.detail : ''})`);
   return (
     `harmony record refuses — ${bad.length} of 5 eligibility item(s) did not pass:\n` +
@@ -475,6 +475,10 @@ export async function runRecordedWalk(
     summary: args.summary,
     evidence: args.evidence,
     attestWalk: args.attest_walk,
+    // B-1073: a walk bounded at or before 'build' never lands release/deploy/verify, so the verify-walk
+    // attestation (item e) is deferred, not evaluated. No `to_gate` ⇒ runs to 'verify' ⇒ still refuses.
+    deferVerifyWalk:
+      args.to_gate !== undefined && recordWalkGateIndex(args.to_gate) <= recordWalkGateIndex('build'),
   });
 
   // REFUSE-BEFORE-WRITE: nothing below this line runs on an ineligible ticket — not even a task-id

@@ -8,6 +8,7 @@ import {
   reEvaluateEligibilityAgainstDiff,
   checkPrePrOpenEligibility,
   checkFastTrackScopeBudget,
+  formatEligibilityLine,
   type EligibilityEvidenceLink,
   type EligibilityReport,
 } from './record-eligibility.js';
@@ -319,5 +320,50 @@ describe('checkFastTrackScopeBudget (B-1073 step 7)', () => {
     const manifest = {} as unknown as ProjectManifest;
     const evaluation = checkFastTrackScopeBudget(entries(['10\t5\tsrc/a.ts']), manifest);
     expect(evaluation.budget).toEqual(DEFAULT_SCOPE_BUDGET);
+  });
+});
+
+describe('evaluateEligibility — deferVerifyWalk (B-1073)', () => {
+  it('item (e) reads deferred, and eligible is computed over the four non-deferred items', () => {
+    const report = evaluateEligibility({ summary: CLEAN_SUMMARY, evidence: [ev()], deferVerifyWalk: true });
+    const e = report.items.find((i) => i.item === 'verify_walk_attestation')!;
+    expect(e.verdict).toBe('deferred');
+    expect(e.value).toContain('DEFERRED');
+    expect(report.items.filter((i) => i.verdict === 'pass').length).toBe(4);
+    expect(report.eligible).toBe(true);
+  });
+
+  it('a failing item among (a)-(d) still makes the report ineligible', () => {
+    const report = evaluateEligibility({
+      summary: CLEAN_SUMMARY,
+      evidence: [ev(), ev({ repo: 'ycomplex/harmony-web' })],
+      deferVerifyWalk: true,
+    });
+    expect(report.items.find((i) => i.item === 'multi_repo')!.verdict).toBe('fail');
+    expect(report.eligible).toBe(false);
+  });
+
+  it('default path is unchanged: flag absent or false still reads unattested and ineligible', () => {
+    for (const flag of [undefined, false]) {
+      const report = evaluateEligibility({ summary: CLEAN_SUMMARY, evidence: [ev()], deferVerifyWalk: flag });
+      expect(report.items.find((i) => i.item === 'verify_walk_attestation')!.verdict).toBe('unattested');
+      expect(report.eligible).toBe(false);
+    }
+  });
+
+  it('a supplied attestation still reads pass under the flag', () => {
+    const report = evaluateEligibility({ summary: CLEAN_SUMMARY, evidence: [ev()], attestWalk: 'walked it', deferVerifyWalk: true });
+    expect(report.items.find((i) => i.item === 'verify_walk_attestation')!.verdict).toBe('pass');
+  });
+
+  it('formatEligibilityLine prints DEFERRED', () => {
+    const report = evaluateEligibility({ summary: CLEAN_SUMMARY, evidence: [ev()], deferVerifyWalk: true });
+    const line = formatEligibilityLine('harmony record', 'B-1', report.items[4]);
+    expect(line).toContain('DEFERRED');
+  });
+
+  it('admissibleForFastTrack never treats a deferred item as blocking', () => {
+    const report = evaluateEligibility({ summary: CLEAN_SUMMARY, evidence: [ev()], deferVerifyWalk: true });
+    expect(admissibleForFastTrack(report)).toEqual({ admissible: true, blockingItems: [] });
   });
 });

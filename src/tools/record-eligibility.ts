@@ -24,7 +24,9 @@ import {
 import { getScopeBudget } from '../config/project-manifest.js';
 import type { ProjectManifest } from '../config/project-manifest.js';
 
-export type EligibilityVerdict = 'pass' | 'fail' | 'unattested';
+/** 'deferred' (B-1073) — the item was NOT evaluated because it belongs to gates this walk does not land
+ *  (only the verify-walk item, and only when the caller passes `deferVerifyWalk`). Never a blocker, never a failure. */
+export type EligibilityVerdict = 'pass' | 'fail' | 'unattested' | 'deferred';
 
 export interface EligibilityItemResult {
   /** Machine key — stable across releases, used by tests and by any future programmatic reader. */
@@ -61,11 +63,17 @@ export interface EvaluateEligibilityInput {
   /** `--attest-walk "<who/what was walked>"` — see item (e) below. Blank/whitespace-only reads as absent
    *  (mirrors this repo's "blank ≡ absent" convention, e.g. resolveBrief's remark handling). */
   attestWalk?: string;
+  /** B-1073 — the walk is bounded at or before 'build' (`to_gate`), so the verify-walk attestation (item e)
+   *  belongs to gates the walk does not land: it reads 'deferred' (when no attestation was given) and does
+   *  not count toward `eligible`. Absent/false ⇒ today's behavior, byte-identical. A supplied attestation
+   *  still reads 'pass'. Only `runRecordedWalk` sets this (never the drain, `record --check`, or fasttrack
+   *  check), so `recorded_walk_requests.result` rows written by the drain never carry 'deferred'. */
+  deferVerifyWalk?: boolean;
 }
 
 export interface EligibilityReport {
   items: EligibilityItemResult[];
-  /** true iff EVERY item is 'pass'. Both 'fail' and 'unattested' block eligibility — the ticket's own
+  /** true iff EVERY non-'deferred' item is 'pass'. Both 'fail' and 'unattested' block eligibility — the ticket's own
    *  eligibility gate never distinguishes "known-bad" from "unknown" when deciding whether to proceed;
    *  it only distinguishes them in how it's REPORTED (see `describeIneligibility` in record-walk.ts). */
   eligible: boolean;
@@ -175,8 +183,14 @@ function evaluateSingleSentenceItem(summary: string): EligibilityItemResult {
 // attestation (`--attest-walk "<who/what was walked>"`); reported UNATTESTED (never failed) when absent.
 // ---------------------------------------------------------------------------
 
-function evaluateVerifyWalkItem(attestWalk: string | undefined): EligibilityItemResult {
+function evaluateVerifyWalkItem(attestWalk: string | undefined, defer = false): EligibilityItemResult {
   const trimmed = typeof attestWalk === 'string' ? attestWalk.trim() : '';
+  if (!trimmed && defer) {
+    return {
+      item: 'verify_walk_attestation', label: 'Verify walk (5+ min) attested', verdict: 'deferred',
+      value: 'verify-walk: DEFERRED (belongs to the verify gate, which this walk does not land; the human attests it after the merge)',
+    };
+  }
   if (!trimmed) {
     return {
       item: 'verify_walk_attestation', label: 'Verify walk (5+ min) attested', verdict: 'unattested',
@@ -206,9 +220,9 @@ export function evaluateEligibility(input: EvaluateEligibilityInput): Eligibilit
     evaluateMigrationItem(input.evidence),
     evaluateRiskClassItem(input.summary, input.evidence),
     evaluateSingleSentenceItem(input.summary),
-    evaluateVerifyWalkItem(input.attestWalk),
+    evaluateVerifyWalkItem(input.attestWalk, input.deferVerifyWalk === true),
   ];
-  return { items, eligible: items.every((i) => i.verdict === 'pass') };
+  return { items, eligible: items.every((i) => i.verdict === 'pass' || i.verdict === 'deferred') };
 }
 
 // ---------------------------------------------------------------------------
@@ -230,7 +244,7 @@ export function admissibleForFastTrack(
   report: EligibilityReport,
 ): { admissible: boolean; blockingItems: EligibilityItemResult[] } {
   const blockingItems = report.items.filter(
-    (item) => !(item.verdict === 'pass' || (item.item === 'verify_walk_attestation' && item.verdict === 'unattested')),
+    (item) => !(item.verdict === 'pass' || item.verdict === 'deferred' || (item.item === 'verify_walk_attestation' && item.verdict === 'unattested')),
   );
   return { admissible: blockingItems.length === 0, blockingItems };
 }
