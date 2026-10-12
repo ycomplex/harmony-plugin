@@ -285,8 +285,7 @@ on demand via `workflow_dispatch` with `full_suite: true`.
 ### 8h. Secrets discipline (applies to every step above run in CI)
 
 Every credential the CI workflow needs is a repo secret referenced by NAME only
-(`secrets.HARMONY_CLARIFY_EVAL_LABEL_TOKEN`, `secrets.ANTHROPIC_API_KEY`) — the same regime as
-`.github/workflows/model-catalog-liveness.yml`. No step ever echoes a token or label text to a log,
+(`secrets.HARMONY_CLARIFY_EVAL_LABEL_TOKEN`, `secrets.ANTHROPIC_API_KEY`). No step ever echoes a token or label text to a log,
 the job summary, or an uploaded artifact; `fetch-labels.mjs`'s own stdout is ticket-id +
 revision-count only (never the label's content), and the uploaded eval-result artifact is always
 the SANITISED copy (see AC4 in the workflow's own comments) — the raw JSON (with full grader
