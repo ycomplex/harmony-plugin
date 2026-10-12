@@ -854,6 +854,17 @@ leg does run (build) still passes through the SAME per-gate delegation test (§T
 as any other run — a fast-track run is not a second, looser conduct mode, only a shorter approach to
 the same gates.
 
+**That one build leg routes to `skills/harmony-fasttrack/SKILL.md`'s Check → Plan-lite → Build
+sequence, run inline by this SAME session** — detected there via the same signal this file's leg
+already carries, `environment.conduction_id !== null && environment.fast_track === true`
+(`get_project`'s `environment` block). `harmony-fasttrack/SKILL.md`'s own daemon branch (its Plan-lite
+and Build phases) is what governs how that leg ENDS: landing clarify→build via the `record` tool's
+`to_gate: 'build'` argument, then composing the ordinary release brief directly, in the same leg —
+**never** the interactive "stop after PR-open" behavior, which applies only to a standalone,
+human-invoked fast-track session with no conduction row around it. This is a pointer, not a
+restatement — see that file for the actual mechanics, the same discipline this paragraph already
+follows for `checkPrePrOpenEligibility` below.
+
 Two further non-discretionary checks bracket that one build leg. BEFORE it ever fires, the daemon's
 own fire path (`scheduler.ts`'s `fireLaunch`) runs the five-item eligibility floor
 (`evaluateFastTrackAdmission`, `src/daemon/leg-gate.ts`) against the ticket's title and the

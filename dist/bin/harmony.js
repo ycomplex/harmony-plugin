@@ -43414,8 +43414,9 @@ var RECORD_WALK_GATE_ORDER = [
 function recordWalkGateIndex(gate) {
   return RECORD_WALK_GATE_ORDER.indexOf(gate);
 }
-function shouldRunRecordWalkGate(gate, fromGate) {
-  return recordWalkGateIndex(gate) >= recordWalkGateIndex(fromGate);
+function shouldRunRecordWalkGate(gate, fromGate, toGate) {
+  const idx = recordWalkGateIndex(gate);
+  return idx >= recordWalkGateIndex(fromGate) && idx <= recordWalkGateIndex(toGate);
 }
 var GATE_REASONS = {
   clarify: "clarification-draft",
@@ -43461,6 +43462,63 @@ function buildAttestation(args, userId) {
     evidence: args.evidence.map((e) => e.url)
   };
 }
+var GH_RELEASE_INFO_TIMEOUT_MS = 5e3;
+async function runGhForReleaseInfo(args) {
+  const { execFile } = await import("node:child_process");
+  return await new Promise((resolve, reject) => {
+    execFile("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(String(stdout));
+    });
+  });
+}
+var GITHUB_PR_URL_FOR_RELEASE = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?/i;
+function parseGithubPrFromEvidence(e) {
+  const match = GITHUB_PR_URL_FOR_RELEASE.exec(e.url.trim());
+  if (!match) return null;
+  const [, owner, repoName, prNumber] = match;
+  const repoSlug = e.repo?.trim() || `${owner}/${repoName}`;
+  return { repoSlug, prNumber };
+}
+async function fetchEvidencePrReleaseInfo(e, runGh = runGhForReleaseInfo) {
+  const parsed = parseGithubPrFromEvidence(e);
+  if (!parsed) return null;
+  try {
+    const out = await runGh([
+      "pr",
+      "view",
+      parsed.prNumber,
+      "--repo",
+      parsed.repoSlug,
+      "--json",
+      "author,mergedAt,reviewDecision"
+    ]);
+    const data = JSON.parse(out);
+    return {
+      prUrl: e.url,
+      authorIsBot: data.author?.is_bot === true,
+      merged: typeof data.mergedAt === "string" && data.mergedAt.length > 0,
+      mergedAt: data.mergedAt ?? null,
+      reviewDecision: data.reviewDecision ?? null
+    };
+  } catch {
+    return null;
+  }
+}
+function buildBotAuthoredReleaseClause(info) {
+  if (info.merged) {
+    return `This PR (${info.prUrl}) is authored by a bot account and is already MERGED${info.mergedAt ? ` (at \`${info.mergedAt}\`)` : ""} \u2014 no GitHub approval is needed.`;
+  }
+  return `\u26A0 This PR (${info.prUrl}) is authored by a bot account and needs your approval on GitHub before it can merge. Current reviewDecision: ${info.reviewDecision ?? "REVIEW_REQUIRED"}.`;
+}
+async function gatherBotAuthoredReleaseClauses(evidence, runGh = runGhForReleaseInfo) {
+  const clauses = [];
+  for (const e of evidence) {
+    const info = await fetchEvidencePrReleaseInfo(e, runGh);
+    if (info && info.authorIsBot) clauses.push(buildBotAuthoredReleaseClause(info));
+  }
+  return clauses;
+}
 async function composeAndAccept(client, projectId, userId, taskId, args) {
   await composeBrief(client, projectId, userId, {
     task_id: taskId,
@@ -43473,7 +43531,8 @@ async function composeAndAccept(client, projectId, userId, taskId, args) {
       why: args.why,
       items: [],
       frame: args.frame,
-      payload: args.payload ?? []
+      payload: args.payload ?? [],
+      context: args.context
     }
   });
   await resolveBrief(client, projectId, {
@@ -43538,7 +43597,8 @@ async function runRecordedWalk(client, projectId, userId, args) {
   const repos = Array.from(new Set(args.evidence.map((e) => e.repo).filter((r) => !!r)));
   const changedPaths = args.evidence.flatMap((e) => e.paths ?? []);
   const fromGate = args.from_gate ?? "clarify";
-  const runs = (gate) => shouldRunRecordWalkGate(gate, fromGate);
+  const toGate = args.to_gate ?? "verify";
+  const runs = (gate) => shouldRunRecordWalkGate(gate, fromGate, toGate);
   try {
     const { data: currentTaskRow, error: currentStateErr } = await client.from("tasks").select("workflow_state").eq("id", taskId).eq("project_id", projectId).single();
     if (currentStateErr) throw currentStateErr;
@@ -43682,12 +43742,14 @@ async function runRecordedWalk(client, projectId, userId, args) {
       gates.push({ gate: "build", landed: true });
     }
     if (runs("release")) {
+      const botAuthoredClauses = await gatherBotAuthoredReleaseClauses(args.evidence);
       await composeAndAccept(client, projectId, userId, taskId, {
         reason: GATE_REASONS.release,
         // pending_activity: null — Built->Deployed is SYSTEM-on-deploy-success, never this accept's own
         // doing (mirrors finish-work's own release compose — see skills/finish-work/SKILL.md).
         pendingActivity: null,
         decide: `Record what ${args.task_id} shipped, from the supplied summary and evidence (recorded, not conducted).`,
+        context: botAuthoredClauses.length > 0 ? botAuthoredClauses : void 0,
         frame: {
           kind: "release",
           act: {
@@ -43729,51 +43791,53 @@ async function runRecordedWalk(client, projectId, userId, args) {
       await advanceWorkflow(client, projectId, { task_id: taskId, activity: "deploying" });
       gates.push({ gate: "deploy", landed: true });
     }
-    const criteriaRows = await listAcceptanceCriteria(client, projectId, { task_id: taskId });
-    const verifyCriteria = (criteriaRows ?? []).map((ac) => ({
-      ac_id: ac.id,
-      text: ac.content,
-      checked: ac.checked,
-      disposition: "walk",
-      // A recorded ticket's "walk" is auditing the record itself, not re-doing the work — one
-      // mechanical acknowledgment step, never a multi-step runbook.
-      step_ref: "1"
-    }));
-    const verifyEvidenceSummary = args.evidence.map((e) => e.url).join(", ") || "(none)";
-    const verifySteps = verifyCriteria.length ? [{
-      ref: "1",
-      action: `Open the linked evidence (${verifyEvidenceSummary}) and compare it against the recorded summary \u2014 "${solving}".`,
-      expect: "The linked PRs/commits exist and their content matches what was recorded, for every criterion below.",
-      covers: verifyCriteria.map((c) => c.ac_id)
-    }] : [];
-    await composeBrief(client, projectId, userId, {
-      task_id: taskId,
-      reason: "verification-ack-pending",
-      pending_activity: "verifying",
-      // manifest_root omitted deliberately: this function runs against an arbitrary project's Supabase
-      // client, not necessarily a real git worktree, so "the repo of record's absolute root" is not
-      // available at this layer (unlike finish-work, which runs inside one and can read process.cwd()).
-      // Per compose_brief's own contract, omitting it means "no manifest-declared evidence overlay" —
-      // degrades gracefully to today's behavior, never breaks.
-      doc: {
-        decide: `Does ${args.task_id}'s recorded work behave as described \u2014 acknowledge verified?`,
-        why: [
-          "This is a recorded (not conducted) walk \u2014 verification means confirming the record matches what actually happened, not re-doing the work.",
-          `An attestation was already recorded at clarify (who: ${userId}); this ack is the human confirmation that record matches reality.`
-        ],
-        items: [{ kind: "decision", text: "Acknowledge verified", recommendation: "verify once confirmed" }],
-        frame: {
-          kind: "verify",
-          // 'merged-main' is the safe, honest default for a freshly-recorded walk: the evidence is a
-          // merged PR/commit, not yet promoted anywhere — never guess 'production' without confirmation.
-          environment: "merged-main",
-          criteria: verifyCriteria,
-          steps: verifySteps,
-          evidence_status: `Recorded walk \u2014 evidence linked from the supplied links (${verifyEvidenceSummary}); verify walk attestation on file.`
+    if (runs("verify")) {
+      const criteriaRows = await listAcceptanceCriteria(client, projectId, { task_id: taskId });
+      const verifyCriteria = (criteriaRows ?? []).map((ac) => ({
+        ac_id: ac.id,
+        text: ac.content,
+        checked: ac.checked,
+        disposition: "walk",
+        // A recorded ticket's "walk" is auditing the record itself, not re-doing the work — one
+        // mechanical acknowledgment step, never a multi-step runbook.
+        step_ref: "1"
+      }));
+      const verifyEvidenceSummary = args.evidence.map((e) => e.url).join(", ") || "(none)";
+      const verifySteps = verifyCriteria.length ? [{
+        ref: "1",
+        action: `Open the linked evidence (${verifyEvidenceSummary}) and compare it against the recorded summary \u2014 "${solving}".`,
+        expect: "The linked PRs/commits exist and their content matches what was recorded, for every criterion below.",
+        covers: verifyCriteria.map((c) => c.ac_id)
+      }] : [];
+      await composeBrief(client, projectId, userId, {
+        task_id: taskId,
+        reason: "verification-ack-pending",
+        pending_activity: "verifying",
+        // manifest_root omitted deliberately: this function runs against an arbitrary project's Supabase
+        // client, not necessarily a real git worktree, so "the repo of record's absolute root" is not
+        // available at this layer (unlike finish-work, which runs inside one and can read process.cwd()).
+        // Per compose_brief's own contract, omitting it means "no manifest-declared evidence overlay" —
+        // degrades gracefully to today's behavior, never breaks.
+        doc: {
+          decide: `Does ${args.task_id}'s recorded work behave as described \u2014 acknowledge verified?`,
+          why: [
+            "This is a recorded (not conducted) walk \u2014 verification means confirming the record matches what actually happened, not re-doing the work.",
+            `An attestation was already recorded at clarify (who: ${userId}); this ack is the human confirmation that record matches reality.`
+          ],
+          items: [{ kind: "decision", text: "Acknowledge verified", recommendation: "verify once confirmed" }],
+          frame: {
+            kind: "verify",
+            // 'merged-main' is the safe, honest default for a freshly-recorded walk: the evidence is a
+            // merged PR/commit, not yet promoted anywhere — never guess 'production' without confirmation.
+            environment: "merged-main",
+            criteria: verifyCriteria,
+            steps: verifySteps,
+            evidence_status: `Recorded walk \u2014 evidence linked from the supplied links (${verifyEvidenceSummary}); verify walk attestation on file.`
+          }
         }
-      }
-    });
-    gates.push({ gate: "verify", reason: "verification-ack-pending", landed: true });
+      });
+      gates.push({ gate: "verify", reason: "verification-ack-pending", landed: true });
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : typeof err === "object" && err !== null && "message" in err ? String(err.message) : JSON.stringify(err);
     return {
@@ -43782,10 +43846,18 @@ async function runRecordedWalk(client, projectId, userId, args) {
       refused: false,
       gates,
       attestation_recorded: attestationRecorded,
-      error: `recorded walk failed after landing ${gates.length} gate(s) (${gates.map((g) => g.gate).join(", ") || "none"}) \u2014 ${message} \u2014 resume by hand from the next unlanded gate, or via harmony conduct.`
+      error: `recorded walk failed after landing ${gates.length} gate(s) (${gates.map((g) => g.gate).join(", ") || "none"}) \u2014 ${message} \u2014 resume by hand from the next unlanded gate, or via harmony conduct.`,
+      ...toGate !== "verify" ? { stopped_at_gate: toGate } : {}
     };
   }
-  return { task_id: taskId, eligibility, refused: false, gates, attestation_recorded: attestationRecorded };
+  return {
+    task_id: taskId,
+    eligibility,
+    refused: false,
+    gates,
+    attestation_recorded: attestationRecorded,
+    ...toGate !== "verify" ? { stopped_at_gate: toGate } : {}
+  };
 }
 
 // src/cli/commands/record.ts
@@ -43802,10 +43874,19 @@ function registerRecordCommand(program3) {
   ).argument("<ticket>", "Task ID (UUID, number, or B-123)").requiredOption("--summary <text>", "A one-sentence-statable account of the change this ticket records").option("--evidence <url>", "Evidence link (repeatable \u2014 pass --evidence multiple times)", (val, prev) => [...prev, val], []).option("--attest-walk <who-what>", "Attest a 5+ minute verify walk \u2014 who/what was walked. Never auto-passed; omit to leave this item UNATTESTED.").option("--check", "Print every eligibility item's verdict and mutate nothing. Exits non-zero if any item fails or is unattested.", false).option(
     "--from-gate <gate>",
     `B-1073 \u2014 resume the walk starting at this gate (one of: ${RECORD_WALK_GATE_ORDER.join(", ")}). Omit to start at 'clarify' (today's unchanged default).`
+  ).option(
+    "--to-gate <gate>",
+    `B-1073 fast-track-daemon-ending round \u2014 bound the walk to stop at this gate, inclusive (one of: ${RECORD_WALK_GATE_ORDER.join(", ")}). Omit to run to 'verify' (today's unchanged default).`
   ).action(async (ticket, opts) => {
     if (opts.fromGate !== void 0 && !RECORD_WALK_GATE_ORDER.includes(opts.fromGate)) {
       console.error(
         `harmony record: --from-gate must be one of: ${RECORD_WALK_GATE_ORDER.join(", ")} (got '${opts.fromGate}')`
+      );
+      process.exit(1);
+    }
+    if (opts.toGate !== void 0 && !RECORD_WALK_GATE_ORDER.includes(opts.toGate)) {
+      console.error(
+        `harmony record: --to-gate must be one of: ${RECORD_WALK_GATE_ORDER.join(", ")} (got '${opts.toGate}')`
       );
       process.exit(1);
     }
@@ -43833,7 +43914,8 @@ function registerRecordCommand(program3) {
           summary: opts.summary,
           evidence,
           attest_walk: opts.attestWalk,
-          from_gate: opts.fromGate
+          from_gate: opts.fromGate,
+          to_gate: opts.toGate
         });
         if (result.refused) throw new Error(describeIneligibility(result.eligibility));
         if (result.error) throw new Error(result.error);
