@@ -107,7 +107,7 @@ non-fast-track walk.
 `src/tools/record-eligibility.ts`'s `evaluateEligibility` returns:
 
 ```ts
-type EligibilityVerdict = 'pass' | 'fail' | 'unattested';
+type EligibilityVerdict = 'pass' | 'fail' | 'unattested' | 'deferred';
 
 interface EligibilityItemResult {
   item: 'multi_repo' | 'migration' | 'risk_class' | 'single_sentence_change' | 'verify_walk_attestation';
@@ -135,6 +135,15 @@ The five items, in order:
 
 `eligible` is false if **any** item is `fail` **or** `unattested` — both block the walk; they differ
 only in how `--check` reports them (§6).
+
+**Amendment (B-1073) — item (e) is `deferred`, not evaluated, for a `to_gate`-bounded walk at or before
+`build`.** A walk with `to_gate` in clarify/decompose/design/plan/build never lands release/deploy/verify,
+so the verify-walk attestation belongs to gates it does not land (the human attests after the merge).
+`runRecordedWalk` then reports item (e) as `DEFERRED` (unless an attestation was supplied, which still
+reads `pass`), and `eligible` is computed over the non-deferred items — the other four must pass. A
+deferred item is never a blocker. A walk with no `to_gate`, or `release` or later, still refuses on an
+unattested (e); `record --check`, `fasttrack check`, and the daemon drain (which never pass `to_gate`)
+never produce `deferred`.
 
 ---
 

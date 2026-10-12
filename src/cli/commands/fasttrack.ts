@@ -72,7 +72,7 @@ export function registerFasttrackCommands(program: Command): void {
       const report = evaluateEligibility({ summary: opts.summary, evidence: gathered, attestWalk: opts.attestWalk });
       for (const item of report.items) {
         const line = formatEligibilityLine('harmony fasttrack check', ticket, item);
-        if (item.verdict === 'pass') console.log(line); else console.error(line);
+        if (item.verdict === 'pass' || item.verdict === 'deferred') console.log(line); else console.error(line);
       }
       process.exit(report.eligible ? 0 : 1);
     });
