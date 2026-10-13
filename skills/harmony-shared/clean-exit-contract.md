@@ -45,7 +45,8 @@ statement of what a clean place to stop looks like, in this order:
 
 1. `awaiting_human_input: true` — a composed brief or a filed elicitation round is holding the ball;
 2. `workflow_state` ∈ `Verified` / `Cancelled` / `Parked` — a terminal outcome (a park carries an authored
-   reason);
+   reason). The daemon completes the conduction for `Verified` / `Cancelled`, but PARKS it
+   (`ticket-parked`, B-1107) for `Parked` so it stays on Live with Resume; the stop gate treats all three as clean;
 3. `Decomposed` with ≥1 non-archived child and the flag down — the split-umbrella report-and-stop.
 
 Nothing else is a clean voluntary stop. A contract test (`src/hooks/stop-gate.contract.test.ts`) runs a

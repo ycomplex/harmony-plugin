@@ -30,7 +30,7 @@ describe('classifyWorkerExit — the B-693 worker exit contract, in order', () =
     expect(exitClass(outcome, a)).toBe('clean-pause');
   });
 
-  it.each(['Verified', 'Cancelled', 'Parked'])(
+  it.each(['Verified', 'Cancelled'])(
     "2. terminal ticket state %s ⇒ complete / 'terminal'",
     (state) => {
       const a = args({ row: { workflow_state: state, awaiting_human_input: false, stale: false } });
@@ -39,6 +39,32 @@ describe('classifyWorkerExit — the B-693 worker exit contract, in order', () =
       expect(exitClass(outcome, a)).toBe('terminal');
     },
   );
+
+  // B-1107: a worker that parked its own ticket PARKS the conduction (stays on Live with Resume).
+  it.each([
+    ['exit code 0', { exitCode: 0 }],
+    ['exit code 1', { exitCode: 1 }],
+    ['timedOut', { exitCode: 137, timedOut: true }],
+    ['operatorReaped', { exitCode: 137, operatorReaped: true }],
+  ])("2c. ticket Parked with %s ⇒ park / 'ticket-parked' (wins over every later branch)", (_n, extra) => {
+    const a = args({
+      row: { workflow_state: 'Parked', awaiting_human_input: false, stale: false },
+      ...extra,
+    });
+    const outcome = classifyWorkerExit(a);
+    expect(outcome).toEqual({ action: 'park', reason: 'ticket-parked' });
+    expect(exitClass(outcome, a)).toBe('ticket-parked');
+  });
+
+  it("2d. ticket Parked and stale ⇒ still park / 'ticket-parked'", () => {
+    const a = args({ row: { workflow_state: 'Parked', awaiting_human_input: false, stale: true } });
+    expect(classifyWorkerExit(a)).toEqual({ action: 'park', reason: 'ticket-parked' });
+  });
+
+  it('2e. ticket Parked with awaiting_human_input=true still waits (clean-pause wins)', () => {
+    const a = args({ row: { workflow_state: 'Parked', awaiting_human_input: true, stale: false } });
+    expect(classifyWorkerExit(a)).toEqual({ action: 'wait' });
+  });
 
   it('2b. the terminal check is an explicit allowlist CONSTANT — exactly the three terminal states', () => {
     expect(TICKET_TERMINAL_STATES).toEqual(['Verified', 'Cancelled', 'Parked']);

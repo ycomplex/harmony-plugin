@@ -825,6 +825,14 @@ export async function runSchedulerPass(
   return { attempted: rows.length, authShapedFailures };
 }
 
+/** B-1107: the pre-fire terminal-decline patch. An already-Parked ticket PARKS its conduction (stays
+ *  on Live with Resume); Verified/Cancelled complete it. Shared by both decline sites. */
+function terminalDeclinePatch(workflowState: string | null | undefined): ConductionPatch {
+  return workflowState === 'Parked'
+    ? { status: 'parked', last_worker_exit_code: null, last_worker_exit_class: 'ticket-parked-no-leg' }
+    : { status: 'completed', last_worker_exit_code: null, last_worker_exit_class: 'terminal-no-leg' };
+}
+
 /** B-739: every write AFTER the lease is claimed goes through the lease guard. A `null` means
  *  another daemon owns this run now — go quiet immediately rather than clobbering its record.
  *  Returns false when the lease was lost, in which case the caller must write nothing further.
@@ -988,8 +996,9 @@ async function handleHeldConduction(
   // NEW leg. Same shape as the B-740 archived-ticket decline just below (pre-fire DECLINE, bypasses
   // classifyWorkerExit entirely, closes via the SAME writeIfHeld path), placed adjacently since both
   // are "the ticket is already done, don't fire" checks; the one difference is the outcome status —
-  // this ticket already reached a real terminal state, so the conduction is 'completed', not
-  // 'parked'. See classify.ts's header (branch 2) for why a worker LAUNCH used to reach this state
+  // this ticket already reached a real terminal state, so the conduction is 'completed' (B-1107:
+  // except an already-Parked ticket, which parks the conduction — see terminalDeclinePatch).
+  // See classify.ts's header (branch 2) for why a worker LAUNCH used to reach this state
   // uncontested before this ticket (B-740's note there): the launch was a CLAUDE.md verify-gate
   // extension point, so classify.ts never short-circuited it — this scheduler-level pre-fire decline
   // is the new, correct place to catch it, before a leg ever fires.
@@ -999,11 +1008,7 @@ async function handleHeldConduction(
     );
     state.delete(row.id);
     keeper.stop(row.id);
-    await writeIfHeld(deps, state, keeper, row, {
-      status: 'completed',
-      last_worker_exit_code: null,
-      last_worker_exit_class: 'terminal-no-leg',
-    });
+    await writeIfHeld(deps, state, keeper, row, terminalDeclinePatch(current.workflow_state));
     return;
   }
 
@@ -1585,11 +1590,7 @@ async function fireStealCandidates(
         deps.log(
           `${label(row, current, deps.projectKey)}: ticket already terminal (${current.workflow_state}) — declining stolen fire, closing conduction`,
         );
-        await writeIfHeld(deps, state, keeper, stolen, {
-          status: 'completed',
-          last_worker_exit_code: null,
-          last_worker_exit_class: 'terminal-no-leg',
-        });
+        await writeIfHeld(deps, state, keeper, stolen, terminalDeclinePatch(current.workflow_state));
         continue;
       }
 

@@ -2746,7 +2746,8 @@ describe('B-740: archived-ticket pre-fire decline (settle instead of silently de
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // B-1052: the terminal-ticket pre-fire decline. A NEW fire against a ticket that already reached a
 // TICKET_TERMINAL_STATES workflow_state (Verified/Cancelled/Parked) settles straight to
-// 'completed'/'terminal-no-leg' via the SAME writeIfHeld path the B-740 archived-ticket decline just
+// 'completed'/'terminal-no-leg' (B-1107: an already-Parked ticket parks the conduction instead —
+// 'parked'/'ticket-parked-no-leg') via the SAME writeIfHeld path the B-740 archived-ticket decline just
 // above uses — never reaches classifyWorkerExit (there is no worker exit to classify: this is a
 // pre-fire decline), and never fires a leg on a dead ticket.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -2773,6 +2774,47 @@ describe('B-1052: terminal-ticket pre-fire decline (held path)', () => {
     expect(
       h.logs.some((l) => l.includes('ticket already terminal (Verified) — declining fire, closing conduction')),
     ).toBe(true);
+  });
+
+  it('B-1107: an already-Parked ticket fires NO leg and PARKS the conduction with ticket-parked-no-leg', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: true }) },
+    });
+    await h.pass(); // baseline
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    (h.tasks['task-1'] as DaemonTask).workflow_state = 'Parked';
+    await h.pass();
+
+    expect(h.launches()).toEqual([]);
+    expect(h.statusWrites()).toEqual([
+      { status: 'parked', last_worker_exit_code: null, last_worker_exit_class: 'ticket-parked-no-leg' },
+    ]);
+    expect(h.getConduction('cond-1').status).toBe('parked');
+  });
+
+  it('B-1107: a worker that exits with its ticket Parked parks the conduction (ticket-parked) and is never retried', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      launchExitCode: 1,
+    });
+    await h.pass();
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    h.hooks.onLaunch = () => {
+      (h.tasks['task-1'] as DaemonTask).workflow_state = 'Parked';
+    };
+    await h.pass(); // fire
+    await h.pass(); // settle
+    await h.pass();
+    await h.pass();
+
+    expect(h.launches()).toHaveLength(1);
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('ticket-parked');
+    expect(h.getConduction('cond-1').retry_count).toBe(0);
   });
 
   it('RE-ENTRANCY: a second pass over an already-completed (terminal-declined) conduction is a silent no-op — never a second close write, never a throw', async () => {
@@ -2855,6 +2897,24 @@ describe('B-1052: terminal-ticket pre-fire decline (steal path)', () => {
     expect(
       h.logs.some((l) => l.includes('ticket already terminal (Verified) — declining stolen fire, closing conduction')),
     ).toBe(true);
+  });
+
+  it('B-1107: an already-Parked ticket discovered via the steal path parks the conduction with ticket-parked-no-leg', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({ lease_holder: 'peer-host:2:bbbb2222', last_heartbeat_at: iso(T0 - 1_000), leg_started_at: null }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false, workflow_state: 'Parked' }) },
+    });
+    await h.pass();
+    await h.pass();
+
+    const row = h.getConduction('cond-1');
+    expect(row.lease_holder).toBe(ME);
+    expect(row.status).toBe('parked');
+    expect(row.last_worker_exit_code).toBeNull();
+    expect(row.last_worker_exit_class).toBe('ticket-parked-no-leg');
+    expect(h.commands).toEqual([]);
   });
 });
 
