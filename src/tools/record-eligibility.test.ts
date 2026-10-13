@@ -120,6 +120,27 @@ describe('evaluateEligibility (B-1062)', () => {
     expect(report.items.find((i) => i.item === 'single_sentence_change')!.verdict).toBe('fail');
   });
 
+  // B-1105 — a dot inside a version number or a common abbreviation is not a sentence boundary.
+  it.each([
+    ['a model version', 'Workers default to Sonnet 5.5, the fallback list matches the catalog.'],
+    ['a plugin version', 'Pin the daemon to v0.15.42 so the worker image matches.'],
+    ['two decimals', 'Raise the budget from 0.5 to 1.25 for the long build legs.'],
+    ['e.g.', 'Neutralize abbreviations (e.g. version numbers) in the sentence check.'],
+    ['i.e.', 'Count only source files, i.e. never tests, toward the scope budget.'],
+  ])('single-sentence: passes with %s (B-1105)', (_label, summary) => {
+    const report = evaluateEligibility({ summary, evidence: [ev()], attestWalk: 'walked it' });
+    expect(report.items.find((i) => i.item === 'single_sentence_change')!.verdict).toBe('pass');
+  });
+
+  it('single-sentence: a genuine second sentence still fails even next to a version number (B-1105)', () => {
+    const report = evaluateEligibility({
+      summary: 'Fixed the poller for Sonnet 5.5. Also adds a retry.',
+      evidence: [ev()],
+      attestWalk: 'walked it',
+    });
+    expect(report.items.find((i) => i.item === 'single_sentence_change')!.verdict).toBe('fail');
+  });
+
   it('single-sentence: passes on a clean one-sentence summary', () => {
     const report = evaluateEligibility({ summary: CLEAN_SUMMARY, evidence: [ev()], attestWalk: 'walked it' });
     expect(report.items.find((i) => i.item === 'single_sentence_change')!.verdict).toBe('pass');
