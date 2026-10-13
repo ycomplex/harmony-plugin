@@ -1470,8 +1470,9 @@ row shape the exit leaves behind (daemon spec §3 step 4):
 - **Clean human pause** — `awaiting_human_input: true` plus an active brief or elicitation exchange
   (**release and verify pauses included** — the hard floor is a clean pause like any other) → the daemon
   waits for the human.
-- **Terminal** — `Verified` / `Cancelled` (or `Parked` via a human defer consumed in-run — a human
-  outcome, never the worker's own) → the conduction is done.
+- **Terminal** — `Verified` / `Cancelled` → the conduction is done. A `Parked` ticket is still a clean
+  place to stop, but the daemon PARKS the conduction (`ticket-parked`, stays on Live with Resume) rather
+  than completing it (B-1107).
 - **Split-umbrella report-and-stop** — `Decomposed` with non-archived children, `awaiting_human_input:
   false`, no active brief (§5's report-and-stop): a **legitimate clean exit** — the daemon must NOT
   classify it as dirty; how the daemon proceeds from it (conduct the children / park-and-flag) is B-696's

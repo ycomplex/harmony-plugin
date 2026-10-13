@@ -68,7 +68,12 @@ function daemonSaysClean(shape: Shape): boolean {
     operatorReaped: false,
     repoProgressed: false,
   };
-  return classifyWorkerExit(args).action !== 'park';
+  const outcome = classifyWorkerExit(args);
+  // B-1107: Parked is the ONE deliberate divergence in what the daemon DOES with a clean row — it
+  // parks the conduction ('ticket-parked') instead of completing it — but it still recognises the
+  // row as a clean place to stop (the clean-row predicate is shared and unchanged), so it counts
+  // as clean here.
+  return outcome.action !== 'park' || outcome.reason === 'ticket-parked';
 }
 
 describe('AC7 no-drift: the stop gate and the daemon exit classifier never disagree about a row shape', () => {

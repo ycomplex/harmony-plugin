@@ -35380,6 +35380,9 @@ function classifyWorkerExit(args) {
   const { row, nonArchivedChildCount, exitCode, progressed } = args;
   const cleanKind = classifyCleanRowShape(row, nonArchivedChildCount);
   if (cleanKind === "clean-pause") return { action: "wait" };
+  if (cleanKind === "terminal" && row.workflow_state === "Parked") {
+    return { action: "park", reason: "ticket-parked" };
+  }
   if (cleanKind !== null) return { action: "complete" };
   if (row.stale === true) return { action: "park", reason: "stale" };
   if (args.timedOut) return { action: "park", reason: "worker-timeout" };
@@ -35677,6 +35680,9 @@ async function runSchedulerPass(deps, state, keeper, runtime) {
   announceWaiting(deps, state, waitingCandidates);
   return { attempted: rows.length, authShapedFailures };
 }
+function terminalDeclinePatch(workflowState) {
+  return workflowState === "Parked" ? { status: "parked", last_worker_exit_code: null, last_worker_exit_class: "ticket-parked-no-leg" } : { status: "completed", last_worker_exit_code: null, last_worker_exit_class: "terminal-no-leg" };
+}
 async function writeIfHeld(deps, state, keeper, row, patch) {
   const updated = await deps.updateConductionIfHeld(row.id, deps.leaseHolder, patch);
   if (updated !== null) return true;
@@ -35753,11 +35759,7 @@ async function handleHeldConduction(deps, state, keeper, excluded, runtime, row)
     );
     state.delete(row.id);
     keeper.stop(row.id);
-    await writeIfHeld(deps, state, keeper, row, {
-      status: "completed",
-      last_worker_exit_code: null,
-      last_worker_exit_class: "terminal-no-leg"
-    });
+    await writeIfHeld(deps, state, keeper, row, terminalDeclinePatch(current.workflow_state));
     return;
   }
   if (current.archived === true) {
@@ -36046,11 +36048,7 @@ async function fireStealCandidates(deps, state, keeper, runtime, candidates) {
         deps.log(
           `${label(row, current, deps.projectKey)}: ticket already terminal (${current.workflow_state}) \u2014 declining stolen fire, closing conduction`
         );
-        await writeIfHeld(deps, state, keeper, stolen, {
-          status: "completed",
-          last_worker_exit_code: null,
-          last_worker_exit_class: "terminal-no-leg"
-        });
+        await writeIfHeld(deps, state, keeper, stolen, terminalDeclinePatch(current.workflow_state));
         continue;
       }
       await fireLaunch(deps, state, keeper, runtime, stolen, current, stolen.retry_count);

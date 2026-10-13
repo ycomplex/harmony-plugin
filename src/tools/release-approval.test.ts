@@ -406,13 +406,13 @@ describe('B-745: deferring the evidence-missing re-fire parks the ticket, and no
 
   // ── the executable half: the daemon cannot re-fire a worker against a Parked ticket ──
 
-  it('DAEMON (executable): the post-defer row — Parked, flag cleared — classifies as complete, so no second worker is ever launched', () => {
+  it('DAEMON (executable): the post-defer row — Parked, flag cleared — classifies as park / ticket-parked (B-1107), so no second worker is ever launched', () => {
     const postDefer = classifyArgs({
       row: { workflow_state: 'Parked', awaiting_human_input: false, stale: false },
     });
     const outcome = classifyWorkerExit(postDefer);
-    expect(outcome).toEqual({ action: 'complete' });
-    expect(exitClass(outcome, postDefer)).toBe('terminal');
+    expect(outcome).toEqual({ action: 'park', reason: 'ticket-parked' });
+    expect(exitClass(outcome, postDefer)).toBe('ticket-parked');
     // Explicitly NOT a resume: 'wait' would keep the conduction active and let the next pass fire a
     // worker, which would re-enter O1 and compose brief #2.
     expect(outcome).not.toEqual({ action: 'wait' });
@@ -423,19 +423,19 @@ describe('B-745: deferring the evidence-missing re-fire parks the ticket, and no
       row: { workflow_state: 'Parked', awaiting_human_input: false, stale: false },
     });
     // A "merely interrupted" loop would classify differently on a later pass (e.g. wait → fire →
-    // park → wait). Parked is absorbing: every pass returns the same terminal completion.
+    // park → wait). Parked is absorbing: every pass returns the same park.
     for (let pass = 0; pass < 5; pass++) {
-      expect(classifyWorkerExit(postDefer)).toEqual({ action: 'complete' });
+      expect(classifyWorkerExit(postDefer)).toEqual({ action: 'park', reason: 'ticket-parked' });
     }
   });
 
-  it('DAEMON (executable): Parked completes even on a dirty exit code, so a crashed worker cannot reopen the loop either', () => {
+  it('DAEMON (executable): Parked parks (never retried) even on a dirty exit code, so a crashed worker cannot reopen the loop either', () => {
     const postDefer = classifyArgs({
       row: { workflow_state: 'Parked', awaiting_human_input: false, stale: false },
       exitCode: 1,
       progressed: false,
     });
-    expect(classifyWorkerExit(postDefer)).toEqual({ action: 'complete' });
+    expect(classifyWorkerExit(postDefer)).toEqual({ action: 'park', reason: 'ticket-parked' });
   });
 
   it("DAEMON (executable): 'Parked' is a member of the terminal allowlist constant — the bound is data, not a hand-written check", () => {
