@@ -2,7 +2,6 @@
 name: harmony-conduct
 description: The opinionated-mode entry point: drive one ticket through the gate sequence end to end. Default = pause at every gate for the human's decision (controlled). Optional per-run delegation — `--pause-at <gate>` (auto-advance up to a gate), `--unattended` (auto-advance to the hard floor), or `--escalate` (auto-advance, but surface any gate genuinely worth a human opinion). A non-discretionary risk-class FLOOR (auth / data-migration / irreversible-destructive / shared-core) PAUSES a delegated gate for a human in `--escalate`; in `--unattended` and the auto-advanced prefix of `--pause-at` it does NOT pause mid-run — it is recorded and SURFACED on the release brief (the hard floor at release+verify already covers irreversibility). Triggers on "conduct B-123", "harmony conduct", "run B-123 through the flow", "drive this ticket to verified". The conductor orchestrates the plumbing BETWEEN gates; at a controlled gate it hands the decision to the human, and an auto-advanced gate still records the SAME Accepted decision a controlled run would. `--one-shot` (the daemon's worker flag, orthogonal to the mode selector) advances one leg and exits at the next human pause WITHOUT arming the watch — the daemon owns watching.
 allowed-tools: mcp__harmony__* Read Grep Glob Bash(node *)
-disallowed-tools: Write Edit NotebookEdit
 ---
 
 # Harmony Conduct (conductor — B-458 phase 2a controlled core + B-489 phase 2b autonomy selector + B-485 browser auto-pickup + B-493 phase 2c risk-class floor & --escalate + B-500 auto-watch by default + B-506 Decomposed split-umbrella branch + B-519 revise-scope / back-up + B-516 floor scoping: pause only in --escalate, release-brief signal otherwise + B-693 --one-shot worker exit)
@@ -28,6 +27,15 @@ gate only in `--escalate`**; in `--unattended` and the auto-advanced prefix of `
 The rationale: nothing executes irreversibly before release, and the **hard floor (release + verify)
 already covers irreversibility** — a mid-run floor pause would override the human's explicit `--unattended`
 control choice for no safety gain. Neither weakens the controlled default or the hard floor.
+
+> **Why this skill declares NO `disallowed-tools` (B-1114, 2026-10-13).** It used to revoke `Write`,
+> `Edit` and `NotebookEdit` to say "the conductor never edits code". Claude Code now applies an invoked
+> skill's `disallowed-tools` to the REST of the headless session, subagents included, overriding
+> `--dangerously-skip-permissions` and the `harmony-build` agent's `permissionMode` — so every daemon
+> build leg, which enters through this skill before delegating to start-work / `harmony-build`, was
+> denied Edit in every context (B-1108 ×2, B-1105 on 2026-10-12/13). The conductor-never-edits rule is
+> prose below, enforced by delegation, never by a tool revocation on the worker's launch path. The
+> discovery skills keep their own revocations: they never precede a build in the same session.
 
 ## The contract this skill obeys (founder-locked — do not relitigate)
 

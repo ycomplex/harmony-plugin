@@ -18,18 +18,29 @@ describe('harmony-conduct skill contract', () => {
     }
   });
 
-  it('revokes file writes but NOT git — the conductor orchestrates gates that legitimately run git (B-722)', () => {
-    // The conductor delegates the build gate (start-work: commit/push) and the release gate
-    // (finish-work: merge). The old discovery-profile git revocation here was in force during
-    // the daemon's `harmony-conduct --one-shot`, hard-denying the delegated build's commit/push
-    // headless (no approver) — the B-713/B-668 phantom-build root that survived PR #115.
-    // File writes stay revoked: implementation is delegated to the harmony-build subagent
-    // (its own bypassPermissions), and commits use heredoc messages, not top-level file writes.
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/Edit/);
-    expect(skill.frontmatter['disallowed-tools']).not.toMatch(/git commit/);
-    expect(skill.frontmatter['disallowed-tools']).not.toMatch(/git push/);
-    expect(skill.frontmatter['disallowed-tools']).not.toMatch(/git merge/);
+  it('revokes NOTHING on the worker launch path — no Write/Edit/NotebookEdit disallow, and no git disallow (B-722, B-1114)', () => {
+    // B-1114: Claude Code applies an invoked skill's `disallowed-tools` to the rest of the headless
+    // session, subagents included, overriding --dangerously-skip-permissions and the harmony-build
+    // agent's permissionMode. Every daemon build leg enters through THIS skill before delegating to
+    // start-work / harmony-build, so a Write/Edit revocation here blocked every build (B-1108 ×2,
+    // B-1105, 2026-10-12/13 — three legs, zero edits). "The conductor never edits" is prose enforced by
+    // delegation; it must never be a tool revocation on the launch path.
+    const disallowed = skill.frontmatter['disallowed-tools'] ?? '';
+    expect(disallowed).not.toMatch(/\bWrite\b/);
+    expect(disallowed).not.toMatch(/\bEdit\b/);
+    expect(disallowed).not.toMatch(/NotebookEdit/);
+    // B-722: the conductor orchestrates gates that legitimately run git.
+    expect(disallowed).not.toMatch(/git commit/);
+    expect(disallowed).not.toMatch(/git push/);
+    expect(disallowed).not.toMatch(/git merge/);
+  });
+
+  it('every skill on the worker launch path leaves Edit and Write available (B-1114)', () => {
+    for (const name of ['harmony-conduct', 'harmony-fasttrack', 'start-work', 'finish-work']) {
+      const disallowed = readSkill(name).frontmatter['disallowed-tools'] ?? '';
+      expect(disallowed, `${name} must not revoke Edit — a build leg enters through it`).not.toMatch(/\bEdit\b/);
+      expect(disallowed, `${name} must not revoke Write`).not.toMatch(/\bWrite\b/);
+    }
   });
 
   it('CONTROLLED DEFAULT: the no-flag run pauses at every gate (the core contract, intact in 2b)', () => {
