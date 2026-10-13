@@ -34120,7 +34120,8 @@ function isSingleSentenceShaped(summary) {
   if (!trimmed) return false;
   const words = trimmed.split(/\s+/).filter(Boolean);
   if (words.length > SENTENCE_WORD_LIMIT2) return false;
-  const withoutTrailingTerminator = trimmed.replace(/[.!?]+\s*$/, "");
+  const neutralized = trimmed.replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
+  const withoutTrailingTerminator = neutralized.replace(/[.!?]+\s*$/, "");
   return !/[.!?]/.test(withoutTrailingTerminator);
 }
 function evaluateSingleSentenceItem(summary) {

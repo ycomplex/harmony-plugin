@@ -147,7 +147,9 @@ function evaluateRiskClassItem(summary: string, evidence: EligibilityEvidenceLin
 // ignored), and (2) be at most SENTENCE_WORD_LIMIT words. Both are the same shape/threshold this repo
 // already uses for "is this legible as one BLUF sentence" (see briefs.ts's `SENTENCE_WORD_LIMIT` /
 // `analyzeLegibility`) — reused as a CONSTANT VALUE, not as an import, to keep this module free of a
-// coupling to briefs.ts's much larger surface for one shared number.
+// coupling to briefs.ts's much larger surface for one shared number. Decimals and "e.g." / "i.e."
+// are neutralized first (B-1105); briefs.ts splits on punctuation-then-whitespace and never had the
+// digit-dot false-fail, so it is unchanged.
 // ---------------------------------------------------------------------------
 
 const SENTENCE_WORD_LIMIT = 50;
@@ -157,11 +159,17 @@ function isSingleSentenceShaped(summary: string): boolean {
   if (!trimmed) return false;
   const words = trimmed.split(/\s+/).filter(Boolean);
   if (words.length > SENTENCE_WORD_LIMIT) return false;
+  // B-1105: a dot between two digits ("Sonnet 5.5", "v0.15.42") and the abbreviations "e.g." / "i.e."
+  // are never sentence boundaries — neutralize them BEFORE counting terminators. Three of four
+  // fast-track summaries on 2026-10-12 failed on a version number alone. "etc." stays a known
+  // false-fail (it genuinely ends sentences often enough to keep).
+  const neutralized = trimmed
+    .replace(/(\d)\.(?=\d)/g, '$1')
+    .replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ''));
   // Strip exactly one trailing terminator run, then check for any terminator left inside — that is a
-  // second sentence. ("e.g." / "i.e." / decimals are a known false-fail this simple heuristic accepts;
-  // it is conservative-on-ambiguity in the SAME direction as risk-class.ts — a false 'fail' costs one
-  // human --attest-walk-style re-phrase, never a silent pass-through.)
-  const withoutTrailingTerminator = trimmed.replace(/[.!?]+\s*$/, '');
+  // second sentence. (Conservative-on-ambiguity in the SAME direction as risk-class.ts — a false 'fail'
+  // costs one human re-phrase, never a silent pass-through.)
+  const withoutTrailingTerminator = neutralized.replace(/[.!?]+\s*$/, '');
   return !/[.!?]/.test(withoutTrailingTerminator);
 }
 
