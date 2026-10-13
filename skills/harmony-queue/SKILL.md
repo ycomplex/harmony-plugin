@@ -2,8 +2,13 @@
 name: harmony-queue
 description: Show what's awaiting ME — the opinionated-mode pull queue. Triggers on "my queue", "what's awaiting me", "what should I look at", "harmony queue", "what needs my input". Read-only conductor view that lists every ticket where the ball is in the human's court, with its one-line decision and brief reason.
 allowed-tools: mcp__harmony__* Read Grep Glob
-disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
+
+> **No `disallowed-tools` here (B-1117, 2026-10-13).** This skill never edits code or runs git — that is
+> its role, stated in prose — but it no longer *revokes* Write/Edit/git: Claude Code applies an invoked
+> skill's `disallowed-tools` to the rest of the session, subagents included, so in an auto-approved run
+> (several gates in one worker leg) the revocation reached the build gate and denied its commit
+> (B-1115). Same class as B-1114 (the conduct skill's Edit revocation).
 
 # Harmony Queue
 

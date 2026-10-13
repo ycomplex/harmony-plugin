@@ -2,8 +2,13 @@
 name: harmony-inception
 description: Run a project's Day-1 genesis — the inception flow that seeds a brand-new product's knowledge base and work graph from a raw idea. Triggers on "inception", "harmony inception", "start a new project", "seed a new project from scratch", "Day 1", "we're starting something brand new". Configures Harmony for the project (S0), captures the founding proposition through the clarify gate (S1), then STAMPS the fixed genesis scaffold — foundational-spine decision tickets + bootstrap umbrellas + dependency edges — and seeds the founding persona + feature entity nodes. It makes ZERO technical decisions; those happen later by conducting the seeded decision tickets.
 allowed-tools: mcp__harmony__* Read Grep Glob Write Edit
-disallowed-tools: Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
+
+> **No `disallowed-tools` here (B-1117, 2026-10-13).** This skill never edits code or runs git — that is
+> its role, stated in prose — but it no longer *revokes* Write/Edit/git: Claude Code applies an invoked
+> skill's `disallowed-tools` to the rest of the session, subagents included, so in an auto-approved run
+> (several gates in one worker leg) the revocation reached the build gate and denied its commit
+> (B-1115). Same class as B-1114 (the conduct skill's Edit revocation).
 
 # Harmony Inception (Day-1 genesis — B-397)
 

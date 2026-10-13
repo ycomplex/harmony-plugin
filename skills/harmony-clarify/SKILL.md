@@ -2,8 +2,13 @@
 name: harmony-clarify
 description: Clarify a ticket's intent into a specification (Proposed → Clarified) — elicitation-first (B-462): infer from the ticket + Accepted knowledge, interrogate only the load-bearing residual through a question exchange BEFORE drafting, then draft. Triggers on "clarify B-123", "what does this ticket mean", "harmony clarify", or picking up a Proposed-state ticket. Queries domain knowledge first, opens an elicitation exchange when intent is opaque, drafts a clarification, and files it as a brief for accept/edit/defer.
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
-disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
+
+> **No `disallowed-tools` here (B-1117, 2026-10-13).** This skill never edits code or runs git — that is
+> its role, stated in prose — but it no longer *revokes* Write/Edit/git: Claude Code applies an invoked
+> skill's `disallowed-tools` to the rest of the session, subagents included, so in an auto-approved run
+> (several gates in one worker leg) the revocation reached the build gate and denied its commit
+> (B-1115). Same class as B-1114 (the conduct skill's Edit revocation).
 
 # Harmony Clarify
 

@@ -2,8 +2,13 @@
 name: harmony-next
 description: Pick up the highest-priority thing awaiting me and start the right activity. Triggers on "what's next", "harmony next", "pick up the next thing", "do the next item". Reads the queue, takes the top item, renders its brief, and either resolves it (accept/defer/expand/related) or hands off to the activity skill that owns it.
 allowed-tools: mcp__harmony__* Read Grep Glob
-disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
+
+> **No `disallowed-tools` here (B-1117, 2026-10-13).** This skill never edits code or runs git — that is
+> its role, stated in prose — but it no longer *revokes* Write/Edit/git: Claude Code applies an invoked
+> skill's `disallowed-tools` to the rest of the session, subagents included, so in an auto-approved run
+> (several gates in one worker leg) the revocation reached the build gate and denied its commit
+> (B-1115). Same class as B-1114 (the conduct skill's Edit revocation).
 
 # Harmony Next
 

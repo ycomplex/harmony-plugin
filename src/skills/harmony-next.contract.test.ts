@@ -107,7 +107,7 @@ describe('harmony-next skill contract', () => {
     expect(seg.toLowerCase()).toMatch(/stop|pause|ball is in the human/);
   });
   it('is scoped to the read-only discovery role', () => {
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);
+    expect(skill.frontmatter['disallowed-tools'] ?? '').not.toMatch(/Write/);
+    expect(skill.frontmatter['disallowed-tools'] ?? '').not.toMatch(/git commit/);
   });
 });
