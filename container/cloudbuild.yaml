@@ -120,6 +120,7 @@ steps:
       - |
         set -euo pipefail
         if [ "$(cat /workspace/push_latest_decision.txt)" = proceed ]; then
+          docker tag "${_IMAGE}:$(cat /workspace/plugin_version.txt)" '${_IMAGE}:latest'
           docker push '${_IMAGE}:latest'
         else
           echo "push-latest: skipped by guard-latest"
