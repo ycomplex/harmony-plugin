@@ -7,6 +7,8 @@
 //
 //   1. awaiting_human_input=true                       ⇒ wait     / 'clean-pause'
 //   2. workflow_state ∈ TICKET_TERMINAL_STATES         ⇒ complete / 'terminal'
+//      EXCEPT 'Parked' (B-1107): a worker that parked its own ticket ⇒ park / 'ticket-parked'
+//      (the conduction stays on Live with Resume; never retried — only 'dirty-exit' retries)
 //   3. Decomposed + ≥1 non-archived child + flag false ⇒ complete / 'split-umbrella'
 //      (founder-settled claim 1ebea32c: a split-umbrella exit COMPLETES the conduction — the
 //      children carry the work forward under their own conductions; NEVER park it)
@@ -160,6 +162,14 @@ export function classifyWorkerExit(args: ClassifyArgs): ExitOutcome {
   //   3. Decomposed + ≥1 non-archived child + flag false ⇒ 'split-umbrella' ⇒ complete
   const cleanKind = classifyCleanRowShape(row, nonArchivedChildCount);
   if (cleanKind === 'clean-pause') return { action: 'wait' };
+  // B-1107: a worker that parked its OWN ticket did not finish the work — the conduction must PARK
+  //   (stay on Live with Resume), not complete. Placed ahead of stale / timedOut / operatorReaped /
+  //   dirty-exit so it wins over them and is never retried (the retry ladder only fires for
+  //   'dirty-exit'). TICKET_TERMINAL_STATES and classifyCleanRowShape are deliberately UNCHANGED:
+  //   the interactive Stop gate shares them and must keep treating Parked as a clean place to stop.
+  if (cleanKind === 'terminal' && row.workflow_state === 'Parked') {
+    return { action: 'park', reason: 'ticket-parked' };
+  }
   if (cleanKind !== null) return { action: 'complete' };
 
   // 4. Stale ticket ⇒ the conduction parks (a human must reconcile via harmony-stale-patch).
