@@ -165,7 +165,7 @@ function isSingleSentenceShaped(summary: string): boolean {
   // false-fail (it genuinely ends sentences often enough to keep).
   const neutralized = trimmed
     .replace(/(\d)\.(?=\d)/g, '$1')
-    .replace(/\b(e|i)\.g\.|\b(e|i)\.e\./gi, (m) => m.replace(/\./g, ''));
+    .replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ''));
   // Strip exactly one trailing terminator run, then check for any terminator left inside — that is a
   // second sentence. (Conservative-on-ambiguity in the SAME direction as risk-class.ts — a false 'fail'
   // costs one human re-phrase, never a silent pass-through.)
