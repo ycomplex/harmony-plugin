@@ -2,8 +2,13 @@
 name: harmony-revise-scope
 description: Draft a "revise scope / back up" reconciliation for a ticket whose downstream gate revealed the upstream spec was scoped too narrowly — back the run up to an earlier discovery gate (clarify/decompose/design) or the build gate (a release-gate merge conflict) and re-run it against the real scope. Triggers on "harmony revise-scope B-123", "back up B-123 to re-clarify", "the scope grew — re-decompose B-123", a `revise-scope`/"back up" verb at a conductor gate pause, or being delegated by harmony-conduct when iterate feedback reveals the upstream scope grew. Drafts a concrete reconciliation brief (target gate + broadened scope + supersede-list vs keep-list) for the human to accept or reject.
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
-disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
+
+> **No `disallowed-tools` here (B-1117, 2026-10-13).** This skill never edits code or runs git — that is
+> its role, stated in prose — but it no longer *revokes* Write/Edit/git: Claude Code applies an invoked
+> skill's `disallowed-tools` to the rest of the session, subagents included, so in an auto-approved run
+> (several gates in one worker leg) the revocation reached the build gate and denied its commit
+> (B-1115). Same class as B-1114 (the conduct skill's Edit revocation).
 
 # Harmony Revise-Scope (B-519, B-529)
 

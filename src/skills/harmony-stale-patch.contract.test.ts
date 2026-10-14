@@ -36,7 +36,7 @@ describe('harmony-stale-patch skill contract', () => {
     expect(skill.body.toLowerCase()).toContain('knowing-divergence');
   });
   it('carries the read-only discovery role profile', () => {
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);
+    expect(skill.frontmatter['disallowed-tools'] ?? '').not.toMatch(/Write/);
+    expect(skill.frontmatter['disallowed-tools'] ?? '').not.toMatch(/git commit/);
   });
 });

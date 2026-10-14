@@ -2,8 +2,13 @@
 name: harmony-stale-patch
 description: Draft a reconciliation patch for a ticket gone Stale because a knowledge decision it depends on was superseded (state-machine §6.4). Triggers on "patch the stale ticket", "harmony stale-patch B-123", "reconcile B-123 against the superseding decision", or being delegated a Stale item by harmony-next. Reads the superseded decision + its successor, drafts a concrete proposed patch (knowledge reconciliation and/or a state re-work), and files it as a stale-patch-review brief for the human to accept or reject.
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
-disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
+
+> **No `disallowed-tools` here (B-1117, 2026-10-13).** This skill never edits code or runs git — that is
+> its role, stated in prose — but it no longer *revokes* Write/Edit/git: Claude Code applies an invoked
+> skill's `disallowed-tools` to the rest of the session, subagents included, so in an auto-approved run
+> (several gates in one worker leg) the revocation reached the build gate and denied its commit
+> (B-1115). Same class as B-1114 (the conduct skill's Edit revocation).
 
 # Harmony Stale-Patch
 

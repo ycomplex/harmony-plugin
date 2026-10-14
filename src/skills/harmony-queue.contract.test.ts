@@ -24,7 +24,7 @@ describe('harmony-queue skill contract', () => {
     expect(skill.body).toContain('stale');
   });
   it('is scoped to the read-only discovery role', () => {
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);
+    expect(skill.frontmatter['disallowed-tools'] ?? '').not.toMatch(/Write/);
+    expect(skill.frontmatter['disallowed-tools'] ?? '').not.toMatch(/git commit/);
   });
 });

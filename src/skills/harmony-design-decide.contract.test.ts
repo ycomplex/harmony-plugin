@@ -41,8 +41,8 @@ describe('harmony-design-decide skill contract', () => {
     expect(skill.body.toLowerCase()).toMatch(/still parks|fallback/);   // graceful fallback (B-352)
   });
   it('carries the discovery role profile (no commit)', () => {
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);
+    expect(skill.frontmatter['disallowed-tools'] ?? '').not.toMatch(/Write/);
+    expect(skill.frontmatter['disallowed-tools'] ?? '').not.toMatch(/git commit/);
   });
   it('routes the UX/UI sub-track to the visual hand-off generator (P6)', () => {
     expect(skill.body).toContain('harmony-visual-handoff');

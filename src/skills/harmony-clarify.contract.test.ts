@@ -37,8 +37,8 @@ describe('harmony-clarify skill contract', () => {
     expect(skill.body.toLowerCase()).toMatch(/still parks|fallback/);   // graceful fallback (B-352)
   });
   it('carries the discovery role profile', () => {
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);
+    expect(skill.frontmatter['disallowed-tools'] ?? '').not.toMatch(/Write/);
+    expect(skill.frontmatter['disallowed-tools'] ?? '').not.toMatch(/git commit/);
   });
   it('AC-filing idempotency is a per-clarification-brief filing-pass record, not a ticket-wide AC-presence check (B-744)', () => {
     expect(skill.body).toContain('AC-FILING-PASS');

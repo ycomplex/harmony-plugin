@@ -2,8 +2,13 @@
 name: harmony-research
 description: Fill a load-bearing knowledge gap via the v1 human-relayed research hand-off. Triggers on "research X", "harmony research", "I don't know enough about Y", or when a gate skill hits a load-bearing gap. Emits concrete research prompts for the human to run in their tool of choice — handed over as a filed elicitation round in a ticket-driving session — then ingests the returned result as Asserted knowledge (never auto-Accepted).
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
-disallowed-tools: Write Edit NotebookEdit Bash(git commit *) Bash(git push *) Bash(git merge *)
 ---
+
+> **No `disallowed-tools` here (B-1117, 2026-10-13).** This skill never edits code or runs git — that is
+> its role, stated in prose — but it no longer *revokes* Write/Edit/git: Claude Code applies an invoked
+> skill's `disallowed-tools` to the rest of the session, subagents included, so in an auto-approved run
+> (several gates in one worker leg) the revocation reached the build gate and denied its commit
+> (B-1115). Same class as B-1114 (the conduct skill's Edit revocation).
 
 # Harmony Research
 

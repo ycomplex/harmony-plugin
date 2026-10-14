@@ -158,8 +158,8 @@ describe('harmony-revise-scope skill contract', () => {
   });
 
   it('carries the read-only discovery role profile', () => {
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);
+    expect(skill.frontmatter['disallowed-tools'] ?? '').not.toMatch(/Write/);
+    expect(skill.frontmatter['disallowed-tools'] ?? '').not.toMatch(/git commit/);
   });
 
   // B-762: the target-gate whitelist widens to accept `build` (a release-gate merge-conflict reopen),
