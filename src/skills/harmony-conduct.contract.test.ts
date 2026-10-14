@@ -35,11 +35,20 @@ describe('harmony-conduct skill contract', () => {
     expect(disallowed).not.toMatch(/git merge/);
   });
 
-  it('every skill on the worker launch path leaves Edit and Write available (B-1114)', () => {
-    for (const name of ['harmony-conduct', 'harmony-fasttrack', 'start-work', 'finish-work']) {
+  it('every skill a worker leg can invoke leaves Edit, Write and git available (B-1114, B-1117)', () => {
+    // B-1117 widened the set from the four launch-path skills to EVERY skill the conduct loop (or an
+    // auto-approved leg) can invoke in the same session: a discovery skill's git revocation reached
+    // B-1115's build gate and denied its commit.
+    for (const name of [
+      'harmony-conduct', 'harmony-fasttrack', 'start-work', 'finish-work',
+      'harmony-clarify', 'harmony-decompose', 'harmony-design-decide', 'harmony-next',
+      'harmony-revise-scope', 'harmony-stale-patch', 'harmony-visual-handoff', 'harmony-research',
+      'harmony-inception', 'harmony-queue',
+    ]) {
       const disallowed = readSkill(name).frontmatter['disallowed-tools'] ?? '';
       expect(disallowed, `${name} must not revoke Edit — a build leg enters through it`).not.toMatch(/\bEdit\b/);
       expect(disallowed, `${name} must not revoke Write`).not.toMatch(/\bWrite\b/);
+      expect(disallowed, `${name} must not revoke git commit/push/merge (B-1117)`).not.toMatch(/git (commit|push|merge)/);
     }
   });
 

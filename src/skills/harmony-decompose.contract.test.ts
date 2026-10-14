@@ -45,8 +45,8 @@ describe('harmony-decompose skill contract', () => {
     expect(skill.body.toLowerCase()).toMatch(/still parks|fallback/);   // graceful fallback (B-352)
   });
   it('carries the discovery role profile', () => {
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/git commit/);
+    expect(skill.frontmatter['disallowed-tools'] ?? '').not.toMatch(/Write/);
+    expect(skill.frontmatter['disallowed-tools'] ?? '').not.toMatch(/git commit/);
   });
   it('detects pre-existing children before proposing (B-646)', () => {
     // Manual pre-decomposition is common (children filed during triage); an unguided run

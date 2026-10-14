@@ -30,7 +30,7 @@ describe('harmony-research skill contract', () => {
     expect(skill.body.toLowerCase()).toMatch(/paste|relay|run these/);
   });
   it('carries the discovery role profile', () => {
-    expect(skill.frontmatter['disallowed-tools']).toMatch(/Write/);
+    expect(skill.frontmatter['disallowed-tools'] ?? '').not.toMatch(/Write/);
   });
 
   // B-870 AC4: the human relay is no longer a bare terminal ask — the prompts ride a worker-question
