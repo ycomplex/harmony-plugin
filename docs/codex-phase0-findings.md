@@ -166,13 +166,68 @@ about a spike that was not executed.
 | Skill-description budget, implicit-invocation restriction | **BLOCKED** (live model) |
 | Subagent (`multi_agent_v1` is present in the tool list) as an alternative build strategy | not spiked; root-thread build chosen |
 | Hooks (`SessionStart`/`Stop`) | out of scope for daemon parity (`hooks: false`) |
-| Cloud Run profile (Phase 4) | not wired; the Docker-host profile is the first Codex profile |
+| Cloud Run profile (Phase 4) | wired (B-1076 send-back), not run live — see "Local-docker and cloud profiles" below |
 | Provider-qualified model catalog (Phase 3) | not built. Interim: a Codex leg ignores the daemon's `HARMONY_MODEL` (a Claude alias) and takes `HARMONY_CODEX_MODEL` from the base env, or the CLI default |
+
+### Local-docker and cloud profiles — WIRED / BLOCKED
+
+The B-1076 send-back gives Codex a launch path on all three profiles; each example profile now lists
+`"agents": ["claude-code", "codex"]`. Every launcher detects a Codex run the same way: the
+`run_config.agent.adapter` probe (`ADAPTER_PROBE`, base64 or raw JSON) copied from
+`container/docker-host-worker-launch.sh`.
+
+- **Local-docker** (`container/docker-worker-launch.sh`, replacing the inline template). A Claude run is
+  the old template's launch, argv for argv (executed parity test, `src/daemon/local-docker-launch.test.ts`).
+  A Codex run bind-mounts `${HARMONY_CODEX_AUTH_SRC:-~/.harmony/codex-automation/auth.json}` read-only at
+  `/home/worker/.codex-auth-src/auth.json`, mounts a per-conduction `codex-sessions` dir at
+  `~/.codex/sessions`, sets `HARMONY_CODEX_AUTH_FILE`, skips the Claude-only host resume discovery, and
+  refuses on a missing file or a metered variable.
+- **Cloud** (`container/cloud-worker-launch.sh`). The login cache is a Secret Manager secret mounted on the
+  **job** (container/README.md runbook). A Codex run checks `gcloud run jobs describe` for a secret volume
+  at `/home/worker/.codex-auth-src` before minting, locking, updating or executing, refuses without it,
+  and adds `HARMONY_CODEX_AUTH_FILE` to the per-execution env (`--env-vars-file` replaces the job's literal
+  env, so it cannot be a standing job variable). A Claude run's gcloud calls are byte-identical to the
+  previous script (executed against a fixture copy, `src/daemon/cloud-codex-launch.test.ts`).
+
+**BLOCKED — pending the live leg.** None of this has run against a real Docker daemon or Cloud Run job
+with a real login cache. Unproven:
+
+1. **Local-docker file permissions.** The cache is bind-mounted as-is (mode 600, owned by the daemon
+   host's user). Docker Desktop's file sharing presents it readable to the worker (uid 1001); on a native
+   Linux daemon host whose user is not uid 1001 the worker cannot read it and `harmony agent render`
+   refuses. The docker-host profile avoids this by chowning a shipped copy; local-docker does not.
+2. **Cloud secret mount.** That `--update-secrets=/home/worker/.codex-auth-src/auth.json=…` produces a
+   volume the describe parse recognises (a `secret` volume mounted at the directory, item `auth.json`) is
+   taken from the documented Cloud Run shape, not observed. Secret-volume files are root-owned and
+   read-only; whether the worker user can read them is unverified.
+3. The image the deployment's `worker_image` names must be the `agent-codex` target on both profiles.
+
+### Cost capture — RAN (fixture) / gaps
+
+`harmony leg-cost record` now reads a Codex capture through the codex adapter's telemetry
+(`TelemetryRecord.usage`, filled from the LAST `turn.completed`): `input_tokens`, `cached_input_tokens`
+→ `cache_read_input_tokens`, `output_tokens`; `runtime=codex`, `credential_kind=login-cache`,
+`cost_regime=plan-included`, `total_cost_usd` null with `cost_source='unknown'`, `session_id` = the thread
+id, `is_error` from `turn.failed`. `provision.sh` already handed every invocation's stdout capture to
+`leg-cost record` regardless of adapter, so no script change was needed. Gaps, recorded as null:
+
+- **`input_tokens` semantics differ.** Codex's figure *includes* the cached part; Claude's excludes cache
+  reads. The column holds what Codex reports; a cross-runtime comparison must subtract.
+- **Cumulative on resume.** On a resumed thread the usage is cumulative for the thread. Codex legs
+  cold-start today, so each row is per invocation; once Codex resume is wired, rows must subtract.
+- **Not recorded:** `cache_write_input_tokens` and `reasoning_output_tokens` (no column with matching
+  semantics — reasoning is a subset of output for OpenAI), `num_turns`, `duration_ms`, `duration_api_ms`,
+  `service_tier` (not in the `--json` stream).
+- **Live stream unverified.** The fixture follows the shape observed in the 0.163.0 mock runs; a live
+  plan-backed stream is BLOCKED with the rest of Auth.
 
 ## What the contract needed
 
-`src/agents/contract.ts` is **unchanged**. Two places where the contract is a poor fit are absorbed in the
+`src/agents/contract.ts` was unchanged by the first pass. Two places where the contract is a poor fit are absorbed in the
 adapter rather than widening the contract: `HeadlessInput` has no working-directory field, so `--cd` is
 derived from the plugin checkout's parent (an upstream `--cd`/`-C` in `extraFlags` wins), and the plugin
-dir is also passed as `--add-dir` so it is an argv element as the conformance suite requires; and
-`TelemetryRecord` carries no token usage, so usage is exposed through `parseCodexUsage` for B-1078.
+dir is also passed as `--add-dir` so it is an argv element as the conformance suite requires.
+
+The send-back made one additive change: `TelemetryRecord` gained an optional `usage`
+(`TelemetryUsage`: input, cache-read and output tokens), which the codex adapter fills and
+`harmony leg-cost record` reads for a non-Claude capture. Claude legs keep their own envelope parse.
