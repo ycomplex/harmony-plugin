@@ -28,6 +28,7 @@
 // this module itself never touches the deployment config file or argv.
 
 import type { DeploymentConfig, LaunchProfileConfig } from '../config/deployment-config.js';
+import { listAdapterIds } from '../agents/registry.js';
 
 /** B-801: declarative, OPTIONAL map of binaries each template invokes — mirrors
  *  src/config/deployment-config.ts's RequiredToolsSchema; kept in lockstep (see
@@ -283,6 +284,22 @@ export function loadDaemonConfig(
   // directly for the file-path route; guaranteed by DeploymentConfigSchema for profileOverride) —
   // this assertion just tells TS what the runtime checks already ensure.
   const validatedProfile = profile as LaunchProfile;
+
+  // B-1076: now that a second adapter exists, refuse AT BOOT a profile whose `agents` list names an id
+  // the registry does not know — on BOTH routes (the deployment-config schema only checks the list's
+  // shape). A typo such as "codx" would otherwise sit silently in the profile and park every run that
+  // asks for the adapter. The per-run fire-time check (src/daemon/agent-eligibility.ts) stays as the
+  // second line of defence for a run_config that names an unregistered id.
+  if (validatedProfile.agents) {
+    const registered = listAdapterIds();
+    const unknown = validatedProfile.agents.filter((id) => !registered.includes(id));
+    if (unknown.length > 0) {
+      throw new Error(
+        `launch profile's "agents" names unregistered agent adapter(s): ${unknown.map((u) => `'${u}'`).join(', ')}. ` +
+          `Registered adapters: ${registered.join(', ')}. Fix the profile's "agents" list; the daemon will not boot with it.`,
+      );
+    }
+  }
 
   return {
     pollMs: envMs(env, 'HARMONY_DAEMON_POLL_MS', 25_000),

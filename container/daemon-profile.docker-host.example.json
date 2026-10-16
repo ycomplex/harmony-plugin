@@ -3,6 +3,10 @@
   "reap": "bash \"$HARMONY_PLUGIN_DIR/container/docker-host-worker-reap.sh\" {conduction_id} {ticket}",
   "probe": "bash \"$HARMONY_PLUGIN_DIR/container/docker-host-worker-probe.sh\" {conduction_id} {ticket}",
   "maxConcurrentWorkers": 1,
+  "agents": [
+    "claude-code",
+    "codex"
+  ],
   "docker_host": {
     "ssh_target": "harmony@docker-host.example",
     "wake": "gcloud compute instances start harmony-docker-host --zone us-central1-a --quiet",
