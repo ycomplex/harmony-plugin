@@ -34,9 +34,9 @@ describe('resolveLaunchAdapter', () => {
     expect(r.ok && r.adapter.id).toBe('claude-code');
   });
   it('unknown adapter ⇒ refused with the registry message, no fallback', () => {
-    expect(resolveLaunchAdapter(RunConfigSchema.parse({ agent: { adapter: 'codex' } }))).toEqual({
+    expect(resolveLaunchAdapter(RunConfigSchema.parse({ agent: { adapter: 'opencode' } }))).toEqual({
       ok: false,
-      error: "Unknown agent adapter 'codex' — registered: claude-code",
+      error: "Unknown agent adapter 'opencode' — registered: claude-code, codex",
     });
   });
   it('malformed adapter ⇒ refused', () => {
@@ -200,10 +200,10 @@ describe('config-only rollback: provision.sh launches byte-identically to the pr
 
   it('an unknown adapter is REFUSED at the worker (non-zero, "Refusing to start", nothing launched) — then switching config back to claude-code launches as before', () => {
     const c: Case = { prompt: 'do the leg', model: 'claude-opus-5-5' };
-    const refused = runBash(currentAssembly(), caseEnv(c, '{"agent":{"adapter":"codex"}}'));
+    const refused = runBash(currentAssembly(), caseEnv(c, '{"agent":{"adapter":"opencode"}}'));
     expect(refused.status).toBe(1);
     expect(refused.stdout.length).toBe(0);
-    expect(refused.stderr).toContain(`${REFUSAL_PREFIX} Unknown agent adapter 'codex' — registered: claude-code`);
+    expect(refused.stderr).toContain(`${REFUSAL_PREFIX} Unknown agent adapter 'opencode' — registered: claude-code, codex`);
     expect(refused.stderr).toContain('no worker launched');
 
     const rolledBack = runBash(currentAssembly(), caseEnv(c, '{"agent":{"adapter":"claude-code"}}'));
@@ -215,7 +215,7 @@ describe('config-only rollback: provision.sh launches byte-identically to the pr
     const dir = mkdtempSync(join(tmpdir(), 'b1077-rc-'));
     const path = join(dir, 'run-config.json');
     const c: Case = { prompt: 'do the leg' };
-    writeFileSync(path, '{"agent":{"adapter":"codex"}}');
+    writeFileSync(path, '{"agent":{"adapter":"opencode"}}');
     expect(runBash(currentAssembly(), { ...caseEnv(c, null), HARMONY_RUN_CONFIG_PATH: path }).status).toBe(1);
     writeFileSync(path, '{"agent":{"adapter":"claude-code"}}');
     const ok = runBash(currentAssembly(), { ...caseEnv(c, null), HARMONY_RUN_CONFIG_PATH: path });
@@ -264,9 +264,9 @@ describe('provision.sh credential refusal (shell level, real CLI)', () => {
   it('an unknown adapter refuses before any credential is even looked at', () => {
     const r = runAuth({
       CLAUDE_CODE_OAUTH_TOKEN: 'oauth-test',
-      HARMONY_RUN_CONFIG_JSON: Buffer.from('{"agent":{"adapter":"codex"}}').toString('base64'),
+      HARMONY_RUN_CONFIG_JSON: Buffer.from('{"agent":{"adapter":"opencode"}}').toString('base64'),
     });
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain("Unknown agent adapter 'codex' — registered: claude-code");
+    expect(r.stderr).toContain("Unknown agent adapter 'opencode' — registered: claude-code, codex");
   });
 });

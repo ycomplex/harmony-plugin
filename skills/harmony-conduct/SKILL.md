@@ -401,6 +401,12 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    check is per-GATE, not per-mode, so it runs identically whether this gate ends up controlled or
    auto-advanced by step 2/2a below.
 
+   **Skipped entirely when the agent adapter declares no model switch (B-1076).** Ask first:
+   `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" agent capability modelSwitch` prints `true` or `false`.
+   `false` (a Codex worker — `provision.sh` runs no switch loop and a Claude alias is not a Codex model) ⇒
+   proceed straight to step 2; make no `model ...` call. Anything else, or an unavailable command ⇒ continue
+   with the check below unchanged.
+
    ```
    RUNNING_MODEL="$(node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" model running-model)"
    ```

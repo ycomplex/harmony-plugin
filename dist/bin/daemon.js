@@ -470,13 +470,13 @@ function __disposeResources(env) {
   }
   return next();
 }
-function __rewriteRelativeImportExtension(path, preserveJsx) {
-  if (typeof path === "string" && /^\.\.?\//.test(path)) {
-    return path.replace(/\.(tsx)$|((?:\.d)?)((?:\.[^./]+?)?)\.([cm]?)ts$/i, function(m, tsx, d, ext, cm) {
+function __rewriteRelativeImportExtension(path2, preserveJsx) {
+  if (typeof path2 === "string" && /^\.\.?\//.test(path2)) {
+    return path2.replace(/\.(tsx)$|((?:\.d)?)((?:\.[^./]+?)?)\.([cm]?)ts$/i, function(m, tsx, d, ext, cm) {
       return tsx ? preserveJsx ? ".jsx" : ".js" : d && (!ext || !cm) ? m : d + ext + "." + cm.toLowerCase() + "js";
     });
   }
-  return path;
+  return path2;
 }
 var extendStatics, __assign, __createBinding, __setModuleDefault, ownKeys, _SuppressedError, tslib_es6_default;
 var init_tslib_es6 = __esm({
@@ -2139,7 +2139,7 @@ var require_phoenix_cjs = __commonJS({
        * @param {PresenceOptions} [opts] - The options, for example `{events: {state: "state", diff: "diff"}}`
        */
       constructor(channel, opts = {}) {
-        let events = opts.events || /** @type {PresenceEvents} */
+        let events2 = opts.events || /** @type {PresenceEvents} */
         { state: "presence_state", diff: "presence_diff" };
         this.state = {};
         this.pendingDiffs = [];
@@ -2153,7 +2153,7 @@ var require_phoenix_cjs = __commonJS({
           onSync: function() {
           }
         };
-        this.channel.on(events.state, (newState) => {
+        this.channel.on(events2.state, (newState) => {
           let { onJoin, onLeave, onSync } = this.caller;
           this.joinRef = this.channel.joinRef();
           this.state = _Presence.syncState(this.state, newState, onJoin, onLeave);
@@ -2163,7 +2163,7 @@ var require_phoenix_cjs = __commonJS({
           this.pendingDiffs = [];
           onSync();
         });
-        this.channel.on(events.diff, (diff) => {
+        this.channel.on(events2.diff, (diff) => {
           let { onJoin, onLeave, onSync } = this.caller;
           if (this.inPendingSyncState()) {
             this.pendingDiffs.push(diff);
@@ -3984,8 +3984,8 @@ var require_RealtimeChannel = __commonJS({
       /** @internal */
       _notThisChannelEvent(event, ref) {
         const { close, error, leave, join: join3 } = constants_1.CHANNEL_EVENTS;
-        const events = [close, error, leave, join3];
-        return ref && events.includes(event) && ref !== this.joinPush.ref;
+        const events2 = [close, error, leave, join3];
+        return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
       _updateFilterTransform() {
@@ -10140,17 +10140,17 @@ var require_visit = __commonJS({
     visit.BREAK = BREAK;
     visit.SKIP = SKIP;
     visit.REMOVE = REMOVE;
-    function visit_(key, node, visitor, path) {
-      const ctrl = callVisitor(key, node, visitor, path);
+    function visit_(key, node, visitor, path2) {
+      const ctrl = callVisitor(key, node, visitor, path2);
       if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
-        replaceNode(key, path, ctrl);
-        return visit_(key, ctrl, visitor, path);
+        replaceNode(key, path2, ctrl);
+        return visit_(key, ctrl, visitor, path2);
       }
       if (typeof ctrl !== "symbol") {
         if (identity.isCollection(node)) {
-          path = Object.freeze(path.concat(node));
+          path2 = Object.freeze(path2.concat(node));
           for (let i = 0; i < node.items.length; ++i) {
-            const ci = visit_(i, node.items[i], visitor, path);
+            const ci = visit_(i, node.items[i], visitor, path2);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -10161,13 +10161,13 @@ var require_visit = __commonJS({
             }
           }
         } else if (identity.isPair(node)) {
-          path = Object.freeze(path.concat(node));
-          const ck = visit_("key", node.key, visitor, path);
+          path2 = Object.freeze(path2.concat(node));
+          const ck = visit_("key", node.key, visitor, path2);
           if (ck === BREAK)
             return BREAK;
           else if (ck === REMOVE)
             node.key = null;
-          const cv = visit_("value", node.value, visitor, path);
+          const cv = visit_("value", node.value, visitor, path2);
           if (cv === BREAK)
             return BREAK;
           else if (cv === REMOVE)
@@ -10188,17 +10188,17 @@ var require_visit = __commonJS({
     visitAsync.BREAK = BREAK;
     visitAsync.SKIP = SKIP;
     visitAsync.REMOVE = REMOVE;
-    async function visitAsync_(key, node, visitor, path) {
-      const ctrl = await callVisitor(key, node, visitor, path);
+    async function visitAsync_(key, node, visitor, path2) {
+      const ctrl = await callVisitor(key, node, visitor, path2);
       if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
-        replaceNode(key, path, ctrl);
-        return visitAsync_(key, ctrl, visitor, path);
+        replaceNode(key, path2, ctrl);
+        return visitAsync_(key, ctrl, visitor, path2);
       }
       if (typeof ctrl !== "symbol") {
         if (identity.isCollection(node)) {
-          path = Object.freeze(path.concat(node));
+          path2 = Object.freeze(path2.concat(node));
           for (let i = 0; i < node.items.length; ++i) {
-            const ci = await visitAsync_(i, node.items[i], visitor, path);
+            const ci = await visitAsync_(i, node.items[i], visitor, path2);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -10209,13 +10209,13 @@ var require_visit = __commonJS({
             }
           }
         } else if (identity.isPair(node)) {
-          path = Object.freeze(path.concat(node));
-          const ck = await visitAsync_("key", node.key, visitor, path);
+          path2 = Object.freeze(path2.concat(node));
+          const ck = await visitAsync_("key", node.key, visitor, path2);
           if (ck === BREAK)
             return BREAK;
           else if (ck === REMOVE)
             node.key = null;
-          const cv = await visitAsync_("value", node.value, visitor, path);
+          const cv = await visitAsync_("value", node.value, visitor, path2);
           if (cv === BREAK)
             return BREAK;
           else if (cv === REMOVE)
@@ -10242,23 +10242,23 @@ var require_visit = __commonJS({
       }
       return visitor;
     }
-    function callVisitor(key, node, visitor, path) {
+    function callVisitor(key, node, visitor, path2) {
       if (typeof visitor === "function")
-        return visitor(key, node, path);
+        return visitor(key, node, path2);
       if (identity.isMap(node))
-        return visitor.Map?.(key, node, path);
+        return visitor.Map?.(key, node, path2);
       if (identity.isSeq(node))
-        return visitor.Seq?.(key, node, path);
+        return visitor.Seq?.(key, node, path2);
       if (identity.isPair(node))
-        return visitor.Pair?.(key, node, path);
+        return visitor.Pair?.(key, node, path2);
       if (identity.isScalar(node))
-        return visitor.Scalar?.(key, node, path);
+        return visitor.Scalar?.(key, node, path2);
       if (identity.isAlias(node))
-        return visitor.Alias?.(key, node, path);
+        return visitor.Alias?.(key, node, path2);
       return void 0;
     }
-    function replaceNode(key, path, node) {
-      const parent = path[path.length - 1];
+    function replaceNode(key, path2, node) {
+      const parent = path2[path2.length - 1];
       if (identity.isCollection(parent)) {
         parent.items[key] = node;
       } else if (identity.isPair(parent)) {
@@ -10868,10 +10868,10 @@ var require_Collection = __commonJS({
     var createNode = require_createNode();
     var identity = require_identity();
     var Node = require_Node();
-    function collectionFromPath(schema, path, value) {
+    function collectionFromPath(schema, path2, value) {
       let v = value;
-      for (let i = path.length - 1; i >= 0; --i) {
-        const k = path[i];
+      for (let i = path2.length - 1; i >= 0; --i) {
+        const k = path2[i];
         if (typeof k === "number" && Number.isInteger(k) && k >= 0) {
           const a = [];
           a[k] = v;
@@ -10890,7 +10890,7 @@ var require_Collection = __commonJS({
         sourceObjects: /* @__PURE__ */ new Map()
       });
     }
-    var isEmptyPath = (path) => path == null || typeof path === "object" && !!path[Symbol.iterator]().next().done;
+    var isEmptyPath = (path2) => path2 == null || typeof path2 === "object" && !!path2[Symbol.iterator]().next().done;
     var Collection = class extends Node.NodeBase {
       constructor(type, schema) {
         super(type);
@@ -10920,11 +10920,11 @@ var require_Collection = __commonJS({
        * be a Pair instance or a `{ key, value }` object, which may not have a key
        * that already exists in the map.
        */
-      addIn(path, value) {
-        if (isEmptyPath(path))
+      addIn(path2, value) {
+        if (isEmptyPath(path2))
           this.add(value);
         else {
-          const [key, ...rest] = path;
+          const [key, ...rest] = path2;
           const node = this.get(key, true);
           if (identity.isCollection(node))
             node.addIn(rest, value);
@@ -10938,8 +10938,8 @@ var require_Collection = __commonJS({
        * Removes a value from the collection.
        * @returns `true` if the item was found and removed.
        */
-      deleteIn(path) {
-        const [key, ...rest] = path;
+      deleteIn(path2) {
+        const [key, ...rest] = path2;
         if (rest.length === 0)
           return this.delete(key);
         const node = this.get(key, true);
@@ -10953,8 +10953,8 @@ var require_Collection = __commonJS({
        * scalar values from their surrounding node; to disable set `keepScalar` to
        * `true` (collections are always returned intact).
        */
-      getIn(path, keepScalar) {
-        const [key, ...rest] = path;
+      getIn(path2, keepScalar) {
+        const [key, ...rest] = path2;
         const node = this.get(key, true);
         if (rest.length === 0)
           return !keepScalar && identity.isScalar(node) ? node.value : node;
@@ -10972,8 +10972,8 @@ var require_Collection = __commonJS({
       /**
        * Checks if the collection includes a value with the key `key`.
        */
-      hasIn(path) {
-        const [key, ...rest] = path;
+      hasIn(path2) {
+        const [key, ...rest] = path2;
         if (rest.length === 0)
           return this.has(key);
         const node = this.get(key, true);
@@ -10983,8 +10983,8 @@ var require_Collection = __commonJS({
        * Sets a value in this collection. For `!!set`, `value` needs to be a
        * boolean to add/remove the item from the set.
        */
-      setIn(path, value) {
-        const [key, ...rest] = path;
+      setIn(path2, value) {
+        const [key, ...rest] = path2;
         if (rest.length === 0) {
           this.set(key, value);
         } else {
@@ -13499,9 +13499,9 @@ var require_Document = __commonJS({
           this.contents.add(value);
       }
       /** Adds a value to the document. */
-      addIn(path, value) {
+      addIn(path2, value) {
         if (assertCollection(this.contents))
-          this.contents.addIn(path, value);
+          this.contents.addIn(path2, value);
       }
       /**
        * Create a new `Alias` node, ensuring that the target `node` has the required anchor.
@@ -13576,14 +13576,14 @@ var require_Document = __commonJS({
        * Removes a value from the document.
        * @returns `true` if the item was found and removed.
        */
-      deleteIn(path) {
-        if (Collection.isEmptyPath(path)) {
+      deleteIn(path2) {
+        if (Collection.isEmptyPath(path2)) {
           if (this.contents == null)
             return false;
           this.contents = null;
           return true;
         }
-        return assertCollection(this.contents) ? this.contents.deleteIn(path) : false;
+        return assertCollection(this.contents) ? this.contents.deleteIn(path2) : false;
       }
       /**
        * Returns item at `key`, or `undefined` if not found. By default unwraps
@@ -13598,10 +13598,10 @@ var require_Document = __commonJS({
        * scalar values from their surrounding node; to disable set `keepScalar` to
        * `true` (collections are always returned intact).
        */
-      getIn(path, keepScalar) {
-        if (Collection.isEmptyPath(path))
+      getIn(path2, keepScalar) {
+        if (Collection.isEmptyPath(path2))
           return !keepScalar && identity.isScalar(this.contents) ? this.contents.value : this.contents;
-        return identity.isCollection(this.contents) ? this.contents.getIn(path, keepScalar) : void 0;
+        return identity.isCollection(this.contents) ? this.contents.getIn(path2, keepScalar) : void 0;
       }
       /**
        * Checks if the document includes a value with the key `key`.
@@ -13612,10 +13612,10 @@ var require_Document = __commonJS({
       /**
        * Checks if the document includes a value at `path`.
        */
-      hasIn(path) {
-        if (Collection.isEmptyPath(path))
+      hasIn(path2) {
+        if (Collection.isEmptyPath(path2))
           return this.contents !== void 0;
-        return identity.isCollection(this.contents) ? this.contents.hasIn(path) : false;
+        return identity.isCollection(this.contents) ? this.contents.hasIn(path2) : false;
       }
       /**
        * Sets a value in this document. For `!!set`, `value` needs to be a
@@ -13632,13 +13632,13 @@ var require_Document = __commonJS({
        * Sets a value in this document. For `!!set`, `value` needs to be a
        * boolean to add/remove the item from the set.
        */
-      setIn(path, value) {
-        if (Collection.isEmptyPath(path)) {
+      setIn(path2, value) {
+        if (Collection.isEmptyPath(path2)) {
           this.contents = value;
         } else if (this.contents == null) {
-          this.contents = Collection.collectionFromPath(this.schema, Array.from(path), value);
+          this.contents = Collection.collectionFromPath(this.schema, Array.from(path2), value);
         } else if (assertCollection(this.contents)) {
-          this.contents.setIn(path, value);
+          this.contents.setIn(path2, value);
         }
       }
       /**
@@ -15598,9 +15598,9 @@ var require_cst_visit = __commonJS({
     visit.BREAK = BREAK;
     visit.SKIP = SKIP;
     visit.REMOVE = REMOVE;
-    visit.itemAtPath = (cst, path) => {
+    visit.itemAtPath = (cst, path2) => {
       let item = cst;
-      for (const [field, index] of path) {
+      for (const [field, index] of path2) {
         const tok = item?.[field];
         if (tok && "items" in tok) {
           item = tok.items[index];
@@ -15609,23 +15609,23 @@ var require_cst_visit = __commonJS({
       }
       return item;
     };
-    visit.parentCollection = (cst, path) => {
-      const parent = visit.itemAtPath(cst, path.slice(0, -1));
-      const field = path[path.length - 1][0];
+    visit.parentCollection = (cst, path2) => {
+      const parent = visit.itemAtPath(cst, path2.slice(0, -1));
+      const field = path2[path2.length - 1][0];
       const coll = parent?.[field];
       if (coll && "items" in coll)
         return coll;
       throw new Error("Parent collection not found");
     };
-    function _visit(path, item, visitor) {
-      let ctrl = visitor(item, path);
+    function _visit(path2, item, visitor) {
+      let ctrl = visitor(item, path2);
       if (typeof ctrl === "symbol")
         return ctrl;
       for (const field of ["key", "value"]) {
         const token = item[field];
         if (token && "items" in token) {
           for (let i = 0; i < token.items.length; ++i) {
-            const ci = _visit(Object.freeze(path.concat([[field, i]])), token.items[i], visitor);
+            const ci = _visit(Object.freeze(path2.concat([[field, i]])), token.items[i], visitor);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -15636,10 +15636,10 @@ var require_cst_visit = __commonJS({
             }
           }
           if (typeof ctrl === "function" && field === "key")
-            ctrl = ctrl(item, path);
+            ctrl = ctrl(item, path2);
         }
       }
-      return typeof ctrl === "function" ? ctrl(item, path) : ctrl;
+      return typeof ctrl === "function" ? ctrl(item, path2) : ctrl;
     }
     exports.visit = visit;
   }
@@ -22275,8 +22275,8 @@ var IcebergError = class extends Error {
     return this.status === 419;
   }
 };
-function buildUrl(baseUrl, path, query) {
-  const url = new URL(path, baseUrl);
+function buildUrl(baseUrl, path2, query) {
+  const url = new URL(path2, baseUrl);
   if (query) {
     for (const [key, value] of Object.entries(query)) {
       if (value !== void 0) {
@@ -22306,12 +22306,12 @@ function createFetchClient(options) {
   return {
     async request({
       method,
-      path,
+      path: path2,
       query,
       body,
       headers
     }) {
-      const url = buildUrl(options.baseUrl, path, query);
+      const url = buildUrl(options.baseUrl, path2, query);
       const authHeaders = await buildAuthHeaders(options.auth);
       const res = await fetchFn(url, {
         method,
@@ -23130,7 +23130,7 @@ var StorageFileApi = class extends BaseApiClient {
   * @param path The relative file path. Should be of the format `folder/subfolder/filename.png`. The bucket must already exist before attempting to upload.
   * @param fileBody The body of the file to be stored in the bucket.
   */
-  async uploadOrUpdate(method, path, fileBody, fileOptions) {
+  async uploadOrUpdate(method, path2, fileBody, fileOptions) {
     var _this = this;
     return _this.handleOperation(async () => {
       let body;
@@ -23154,7 +23154,7 @@ var StorageFileApi = class extends BaseApiClient {
         if ((typeof ReadableStream !== "undefined" && body instanceof ReadableStream || body && typeof body === "object" && "pipe" in body && typeof body.pipe === "function") && !options.duplex) options.duplex = "half";
       }
       if (fileOptions === null || fileOptions === void 0 ? void 0 : fileOptions.headers) headers = _objectSpread22(_objectSpread22({}, headers), fileOptions.headers);
-      const cleanPath = _this._removeEmptyFolders(path);
+      const cleanPath = _this._removeEmptyFolders(path2);
       const _path = _this._getFinalPath(cleanPath);
       const data = await (method == "PUT" ? put : post)(_this.fetch, `${_this.url}/object/${_path}`, body, _objectSpread22({ headers }, (options === null || options === void 0 ? void 0 : options.duplex) ? { duplex: options.duplex } : {}));
       return {
@@ -23208,8 +23208,8 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async upload(path, fileBody, fileOptions) {
-    return this.uploadOrUpdate("POST", path, fileBody, fileOptions);
+  async upload(path2, fileBody, fileOptions) {
+    return this.uploadOrUpdate("POST", path2, fileBody, fileOptions);
   }
   /**
   * Upload a file with a token generated from `createSignedUploadUrl`.
@@ -23242,9 +23242,9 @@ var StorageFileApi = class extends BaseApiClient {
   * }
   * ```
   */
-  async uploadToSignedUrl(path, token, fileBody, fileOptions) {
+  async uploadToSignedUrl(path2, token, fileBody, fileOptions) {
     var _this3 = this;
-    const cleanPath = _this3._removeEmptyFolders(path);
+    const cleanPath = _this3._removeEmptyFolders(path2);
     const _path = _this3._getFinalPath(cleanPath);
     const url = new URL(_this3.url + `/object/upload/sign/${_path}`);
     url.searchParams.set("token", token);
@@ -23300,10 +23300,10 @@ var StorageFileApi = class extends BaseApiClient {
   * }
   * ```
   */
-  async createSignedUploadUrl(path, options) {
+  async createSignedUploadUrl(path2, options) {
     var _this4 = this;
     return _this4.handleOperation(async () => {
-      let _path = _this4._getFinalPath(path);
+      let _path = _this4._getFinalPath(path2);
       const headers = _objectSpread22({}, _this4.headers);
       if (options === null || options === void 0 ? void 0 : options.upsert) headers["x-upsert"] = "true";
       const data = await post(_this4.fetch, `${_this4.url}/object/upload/sign/${_path}`, {}, { headers });
@@ -23312,7 +23312,7 @@ var StorageFileApi = class extends BaseApiClient {
       if (!token) throw new StorageError("No token returned by API");
       return {
         signedUrl: url.toString(),
-        path,
+        path: path2,
         token
       };
     });
@@ -23361,8 +23361,8 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async update(path, fileBody, fileOptions) {
-    return this.uploadOrUpdate("PUT", path, fileBody, fileOptions);
+  async update(path2, fileBody, fileOptions) {
+    return this.uploadOrUpdate("PUT", path2, fileBody, fileOptions);
   }
   /**
   * Moves an existing file to a new path in the same bucket.
@@ -23491,10 +23491,10 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async createSignedUrl(path, expiresIn, options) {
+  async createSignedUrl(path2, expiresIn, options) {
     var _this8 = this;
     return _this8.handleOperation(async () => {
-      let _path = _this8._getFinalPath(path);
+      let _path = _this8._getFinalPath(path2);
       const hasTransform = typeof (options === null || options === void 0 ? void 0 : options.transform) === "object" && options.transform !== null && Object.keys(options.transform).length > 0;
       let data = await post(_this8.fetch, `${_this8.url}/object/sign/${_path}`, _objectSpread22({ expiresIn }, hasTransform ? { transform: options.transform } : {}), { headers: _this8.headers });
       const downloadQueryParam = (options === null || options === void 0 ? void 0 : options.download) ? `&download=${options.download === true ? "" : options.download}` : "";
@@ -23609,11 +23609,11 @@ var StorageFileApi = class extends BaseApiClient {
   *   .download('folder/avatar1.png', {}, { signal: controller.signal })
   * ```
   */
-  download(path, options, parameters) {
+  download(path2, options, parameters) {
     const renderPath = typeof (options === null || options === void 0 ? void 0 : options.transform) !== "undefined" ? "render/image/authenticated" : "object";
     const transformationQuery = this.transformOptsToQueryString((options === null || options === void 0 ? void 0 : options.transform) || {});
     const queryString = transformationQuery ? `?${transformationQuery}` : "";
-    const _path = this._getFinalPath(path);
+    const _path = this._getFinalPath(path2);
     const downloadFn = () => get(this.fetch, `${this.url}/${renderPath}/${_path}${queryString}`, {
       headers: this.headers,
       noResolveJson: true
@@ -23643,9 +23643,9 @@ var StorageFileApi = class extends BaseApiClient {
   * }
   * ```
   */
-  async info(path) {
+  async info(path2) {
     var _this10 = this;
-    const _path = _this10._getFinalPath(path);
+    const _path = _this10._getFinalPath(path2);
     return _this10.handleOperation(async () => {
       return recursiveToCamel(await get(_this10.fetch, `${_this10.url}/object/info/${_path}`, { headers: _this10.headers }));
     });
@@ -23665,9 +23665,9 @@ var StorageFileApi = class extends BaseApiClient {
   *   .exists('folder/avatar1.png')
   * ```
   */
-  async exists(path) {
+  async exists(path2) {
     var _this11 = this;
-    const _path = _this11._getFinalPath(path);
+    const _path = _this11._getFinalPath(path2);
     try {
       await head(_this11.fetch, `${_this11.url}/object/${_path}`, { headers: _this11.headers });
       return {
@@ -23737,8 +23737,8 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  getPublicUrl(path, options) {
-    const _path = this._getFinalPath(path);
+  getPublicUrl(path2, options) {
+    const _path = this._getFinalPath(path2);
     const _queryString = [];
     const downloadQueryParam = (options === null || options === void 0 ? void 0 : options.download) ? `download=${options.download === true ? "" : options.download}` : "";
     if (downloadQueryParam !== "") _queryString.push(downloadQueryParam);
@@ -23865,10 +23865,10 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async list(path, options, parameters) {
+  async list(path2, options, parameters) {
     var _this13 = this;
     return _this13.handleOperation(async () => {
-      const body = _objectSpread22(_objectSpread22(_objectSpread22({}, DEFAULT_SEARCH_OPTIONS), options), {}, { prefix: path || "" });
+      const body = _objectSpread22(_objectSpread22(_objectSpread22({}, DEFAULT_SEARCH_OPTIONS), options), {}, { prefix: path2 || "" });
       return await post(_this13.fetch, `${_this13.url}/object/list/${_this13.bucketId}`, body, { headers: _this13.headers }, parameters);
     });
   }
@@ -23932,11 +23932,11 @@ var StorageFileApi = class extends BaseApiClient {
     if (typeof Buffer !== "undefined") return Buffer.from(data).toString("base64");
     return btoa(data);
   }
-  _getFinalPath(path) {
-    return `${this.bucketId}/${path.replace(/^\/+/, "")}`;
+  _getFinalPath(path2) {
+    return `${this.bucketId}/${path2.replace(/^\/+/, "")}`;
   }
-  _removeEmptyFolders(path) {
-    return path.replace(/^\/|\/$/g, "").replace(/\/+/g, "/");
+  _removeEmptyFolders(path2) {
+    return path2.replace(/^\/|\/$/g, "").replace(/\/+/g, "/");
   }
   transformOptsToQueryString(transform) {
     const params = [];
@@ -26203,8 +26203,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path, errorMaps, issueData } = params;
-  const fullPath = [...path, ...issueData.path || []];
+  const { data, path: path2, errorMaps, issueData } = params;
+  const fullPath = [...path2, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -26320,11 +26320,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path, key) {
+  constructor(parent, value, path2, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path;
+    this._path = path2;
     this._key = key;
   }
   get path() {
@@ -29903,14 +29903,14 @@ function loadDeploymentConfig(opts = {}) {
   const env = opts.env ?? process.env;
   const exists = opts.existsSync ?? existsSync;
   const readFile = opts.readFileSync ?? ((p) => readFileSync(p, "utf8"));
-  const path = resolveDeploymentConfigPath({ configPath: opts.configPath, env });
-  if (!exists(path)) return null;
+  const path2 = resolveDeploymentConfigPath({ configPath: opts.configPath, env });
+  if (!exists(path2)) return null;
   let raw;
   try {
-    raw = readFile(path);
+    raw = readFile(path2);
   } catch (err) {
     throw new Error(
-      `could not read deployment config at ${path}: ${err instanceof Error ? err.message : String(err)}`,
+      `could not read deployment config at ${path2}: ${err instanceof Error ? err.message : String(err)}`,
       { cause: err }
     );
   }
@@ -29919,13 +29919,13 @@ function loadDeploymentConfig(opts = {}) {
     parsed = JSON.parse(raw);
   } catch (err) {
     throw new Error(
-      `deployment config at ${path} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      `deployment config at ${path2} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
       { cause: err }
     );
   }
   const result = DeploymentConfigSchema.safeParse(parsed);
   if (!result.success) {
-    throw new Error(`deployment config at ${path} failed validation: ${result.error.message}`, {
+    throw new Error(`deployment config at ${path2} failed validation: ${result.error.message}`, {
       cause: result.error
     });
   }
@@ -30492,9 +30492,9 @@ function getLeg(env = process.env) {
 }
 function getRunConfig(env = process.env, deps = {}) {
   const readFile = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
-  const path = envValue(env, "HARMONY_RUN_CONFIG_PATH");
-  if (path) {
-    return RunConfigSchema.parse(JSON.parse(readFile(path)));
+  const path2 = envValue(env, "HARMONY_RUN_CONFIG_PATH");
+  if (path2) {
+    return RunConfigSchema.parse(JSON.parse(readFile(path2)));
   }
   const inline = envValue(env, "HARMONY_RUN_CONFIG_JSON");
   if (inline) {
@@ -31004,16 +31004,16 @@ function labelToRiskClass(label2) {
       return null;
   }
 }
-function basenameOf(path) {
-  const idx = path.lastIndexOf("/");
-  return idx === -1 ? path : path.slice(idx + 1);
+function basenameOf(path2) {
+  const idx = path2.lastIndexOf("/");
+  return idx === -1 ? path2 : path2.slice(idx + 1);
 }
 function tokenizeBasename(basename) {
   const spaced = basename.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
   return spaced.split(/\s+/).filter((t) => t.length > 0);
 }
-function authBasenameHit(path) {
-  const tokens = tokenizeBasename(basenameOf(path));
+function authBasenameHit(path2) {
+  const tokens = tokenizeBasename(basenameOf(path2));
   return tokens.some((t) => AUTH_WORD_REGEX.test(t) || OAUTH_WORD_REGEX.test(t));
 }
 function pathHitsClass(paths, cls) {
@@ -31149,8 +31149,8 @@ var GENERATED_VENDORED_EXCLUDE = [
   /\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|gz|tgz|tar|woff2?|ttf|eot|mp4|mov|bin)$/i
   // binary/attachment paths
 ];
-function isExcludedPath(path) {
-  return GENERATED_VENDORED_EXCLUDE.some((re) => re.test(path));
+function isExcludedPath(path2) {
+  return GENERATED_VENDORED_EXCLUDE.some((re) => re.test(path2));
 }
 function extractCandidateValues(text) {
   if (!text) return [];
@@ -31198,8 +31198,8 @@ function parseDiff(diffContent) {
     const line = lines[i];
     const header = /^diff --git a\/(\S+) b\/(\S+)/.exec(line);
     if (header) {
-      const path = header[2] ?? header[1];
-      currentExcluded = isExcludedPath(path);
+      const path2 = header[2] ?? header[1];
+      currentExcluded = isExcludedPath(path2);
       continue;
     }
     if (currentExcluded) continue;
@@ -35102,356 +35102,6 @@ function createHeartbeatKeeper(deps) {
   };
 }
 
-// src/daemon/config.ts
-function selectNamedProfile(deploymentConfig, profileName) {
-  if (!profileName || !deploymentConfig) return null;
-  return deploymentConfig.profiles?.[profileName] ?? null;
-}
-function envValue2(env, key) {
-  const v = env[key];
-  return v == null || v === "" ? void 0 : v;
-}
-function envMs(env, key, fallback) {
-  const raw = envValue2(env, key);
-  if (raw === void 0) return fallback;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) {
-    throw new Error(`${key} must be a positive number of milliseconds, got: ${raw}`);
-  }
-  return n;
-}
-function envNonNegativeInt(env, key, fallback) {
-  const raw = envValue2(env, key);
-  if (raw === void 0) return fallback;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
-    throw new Error(`${key} must be a non-negative integer, got: ${raw}`);
-  }
-  return n;
-}
-function loadDaemonConfig(env, readFile, opts = {}) {
-  let profile;
-  if (opts.profileOverride) {
-    profile = opts.profileOverride;
-  } else {
-    const profilePath = envValue2(env, "HARMONY_DAEMON_PROFILE");
-    if (!profilePath) {
-      throw new Error(
-        `No launch profile resolved: select one BY NAME from a deployment config via --config <path> --profile <name> (src/config/deployment-config.ts's "profiles" section), or set HARMONY_DAEMON_PROFILE to a standalone launch-profile JSON path ({ launch, reap } command templates). There is no baked-in worker command.`
-      );
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(readFile(profilePath));
-    } catch (err) {
-      throw new Error(
-        `could not load the launch profile at ${profilePath}: ${err instanceof Error ? err.message : String(err)}`,
-        { cause: err }
-      );
-    }
-    profile = parsed;
-    if (typeof profile.launch !== "string" || profile.launch.length === 0) {
-      throw new Error(`launch profile ${profilePath} is missing the "launch" command template`);
-    }
-    if (typeof profile.reap !== "string" || profile.reap.length === 0) {
-      throw new Error(`launch profile ${profilePath} is missing the "reap" command template`);
-    }
-    if (profile.probe !== void 0 && profile.probe !== false) {
-      if (typeof profile.probe !== "string" || profile.probe.length === 0) {
-        throw new Error(
-          `launch profile ${profilePath}'s "probe" template, when present, must be a non-empty string or the literal \`false\` (explicit opt-out of mid-leg re-attach)`
-        );
-      }
-    }
-    if (profile.maxConcurrentWorkers !== void 0 && (!Number.isInteger(profile.maxConcurrentWorkers) || profile.maxConcurrentWorkers < 0)) {
-      throw new Error(
-        `launch profile ${profilePath}'s "maxConcurrentWorkers", when present, must be a non-negative integer`
-      );
-    }
-    if (profile.required_tools !== void 0) {
-      const rt = profile.required_tools;
-      if (typeof rt !== "object" || rt === null || Array.isArray(rt)) {
-        throw new Error(
-          `launch profile ${profilePath}'s "required_tools", when present, must be an object of { launch?, reap?, probe? } string arrays`
-        );
-      }
-      for (const key of ["launch", "reap", "probe"]) {
-        const tools = rt[key];
-        if (tools === void 0) continue;
-        if (!Array.isArray(tools) || tools.some((t) => typeof t !== "string" || t.length === 0)) {
-          throw new Error(
-            `launch profile ${profilePath}'s "required_tools.${key}", when present, must be an array of non-empty tool names`
-          );
-        }
-      }
-    }
-    if (profile.requires_app_mint !== void 0 && typeof profile.requires_app_mint !== "boolean") {
-      throw new Error(
-        `launch profile ${profilePath}'s "requires_app_mint", when present, must be a boolean`
-      );
-    }
-    if (profile.schema_version !== void 0 && (!Number.isInteger(profile.schema_version) || profile.schema_version < 1)) {
-      throw new Error(
-        `launch profile ${profilePath}'s "schema_version", when present, must be a positive integer`
-      );
-    }
-    if (profile.agents !== void 0 && (!Array.isArray(profile.agents) || profile.agents.length === 0 || profile.agents.some((a) => typeof a !== "string" || a.length === 0))) {
-      throw new Error(
-        `launch profile ${profilePath}'s "agents", when present, must be a non-empty array of agent adapter ids`
-      );
-    }
-  }
-  const validatedProfile = profile;
-  return {
-    pollMs: envMs(env, "HARMONY_DAEMON_POLL_MS", 25e3),
-    heartbeatMs: envMs(env, "HARMONY_DAEMON_HEARTBEAT_MS", 3e4),
-    staleMs: envMs(env, "HARMONY_DAEMON_STALE_MS", 3e5),
-    retryCap: envNonNegativeInt(env, "HARMONY_DAEMON_RETRY_CAP", 2),
-    retryBackoffMs: envNonNegativeInt(env, "HARMONY_DAEMON_RETRY_BACKOFF_MS", 15e3),
-    workerTimeoutMs: envMs(env, "HARMONY_DAEMON_WORKER_TIMEOUT_MS", 54e5),
-    // B-717 item 2: env var > per-profile override > the 3-for-local-docker default.
-    maxConcurrentWorkers: envNonNegativeInt(
-      env,
-      "HARMONY_DAEMON_MAX_CONCURRENT_WORKERS",
-      validatedProfile.maxConcurrentWorkers ?? 3
-    ),
-    readyAgeMs: envMs(env, "HARMONY_DAEMON_READY_AGE_MS", 6e5),
-    // B-1011: the fixed (never sliding) hint-coalescing window — see DaemonConfig.hintDebounceMs.
-    hintDebounceMs: envMs(env, "HARMONY_DAEMON_HINT_DEBOUNCE_MS", 1e3),
-    profile: {
-      launch: validatedProfile.launch,
-      reap: validatedProfile.reap,
-      probe: validatedProfile.probe,
-      maxConcurrentWorkers: validatedProfile.maxConcurrentWorkers,
-      // B-801: carried through so src/daemon/preflight.ts's boot preflight (called with this
-      // DaemonConfig's own `profile`) sees them on BOTH the named-profile and legacy file-path
-      // routes.
-      required_tools: validatedProfile.required_tools,
-      requires_app_mint: validatedProfile.requires_app_mint,
-      schema_version: validatedProfile.schema_version,
-      // B-1077: carried through on BOTH routes so the fire-time agent eligibility check sees it.
-      agents: validatedProfile.agents
-    },
-    logPath: envValue2(env, "HARMONY_DAEMON_LOG")
-  };
-}
-function renderTemplate(tpl, vars) {
-  return tpl.replace(/\{([A-Za-z0-9_]+)\}/g, (_match, name) => {
-    if (name === "conduction_id") return vars.conduction_id;
-    if (name === "ticket") return vars.ticket;
-    if (name === "run_config_json" && vars.run_config_json !== void 0) return vars.run_config_json;
-    if (name === "model" && vars.model !== void 0) return vars.model;
-    if (name === "worker_image" && vars.worker_image !== void 0) return vars.worker_image;
-    throw new Error(
-      `unknown placeholder {${name}} in launch-profile template \u2014 supported: {conduction_id}, {ticket}, {run_config_json}, {model}, {worker_image}`
-    );
-  });
-}
-
-// src/daemon/quiet-reap.ts
-function renderQuietReapOutcome(exitCode) {
-  if (exitCode === 0) return "reaped a live worker";
-  if (exitCode === 3) return "reap: worker already gone \u2014 ok";
-  return `reap: unexpected exit code ${exitCode === null ? "null" : exitCode} \u2014 investigate`;
-}
-function quietLogLine(exitCode, opts) {
-  if (!opts?.quiet || !opts.quietRender) return null;
-  return opts.quietRender(exitCode);
-}
-
-// src/daemon/preflight.ts
-var LAUNCHD_PATH_HINT = "Note: launchd inherits a minimal PATH \u2014 add the SDK's bin dir to the plist's EnvironmentVariables PATH key.";
-var CURRENT_SCHEMA_VERSION = 1;
-var CAPABILITIES_BY_VERSION = {
-  1: ["required_tools", "requires_app_mint"]
-};
-function capabilitiesAddedSince(schemaVersion) {
-  const added = [];
-  for (let v = schemaVersion + 1; v <= CURRENT_SCHEMA_VERSION; v++) {
-    added.push(...CAPABILITIES_BY_VERSION[v] ?? []);
-  }
-  return added;
-}
-function resolvedEnv(env, key) {
-  const v = env[key];
-  return v == null || v === "" ? void 0 : v;
-}
-var APP_MINT_VARS = [
-  "HARMONY_APP_ID",
-  "HARMONY_APP_INSTALLATION_ID",
-  "HARMONY_APP_PRIVATE_KEY_PATH",
-  "HARMONY_PLUGIN_DIR"
-];
-function resolveLauncherVar(varName, env, deploymentConfig) {
-  const fromEnv = resolvedEnv(env, varName);
-  if (fromEnv !== void 0) return fromEnv;
-  const launcher = deploymentConfig?.launcher;
-  switch (varName) {
-    case "HARMONY_APP_ID":
-      return launcher?.github_app?.app_id || void 0;
-    case "HARMONY_APP_INSTALLATION_ID":
-      return launcher?.github_app?.installation_id || void 0;
-    case "HARMONY_APP_PRIVATE_KEY_PATH":
-      return launcher?.github_app?.private_key_path || void 0;
-    case "HARMONY_PLUGIN_DIR":
-      return launcher?.plugin_dir || void 0;
-  }
-}
-var TEMPLATE_KEYS = ["launch", "reap", "probe"];
-async function runBootPreflight(config, profile, opts) {
-  void config;
-  for (const templateKey of TEMPLATE_KEYS) {
-    const tools = profile.required_tools?.[templateKey] ?? [];
-    for (const tool of tools) {
-      const result = await opts.runCommand(`command -v ${tool}`, { quiet: true });
-      if (result.exitCode !== 0) {
-        throw new Error(
-          `Missing required tool "${tool}" (invoked by profile "${opts.profileName}"'s "${templateKey}" template) \u2014 not found on PATH.
-${LAUNCHD_PATH_HINT}`
-        );
-      }
-    }
-  }
-  if (profile.requires_app_mint) {
-    for (const varName of APP_MINT_VARS) {
-      const value = resolveLauncherVar(varName, opts.env, opts.deploymentConfig);
-      if (value === void 0) {
-        throw new Error(
-          `Missing required launcher-host config "${varName}" \u2014 see container/README.md \xA7 The credential envelopes.`
-        );
-      }
-    }
-  }
-  if (profile.probe === void 0) {
-    throw new Error(
-      `Profile "${opts.profileName}" has no "probe" template \u2014 mid-leg re-attach capability is missing, so a takeover would SIGKILL any live worker for this profile and discard its in-progress work (reap-and-refire). Add a working probe template \u2014 see container/migrate-to-deployment-config.md step 3, e.g.:
-  "probe": "docker ps --filter name=harmony-worker-{conduction_id} --filter status=running --quiet | grep -q ."
-Or, if this profile's workers are genuinely safe to reap-and-refire on takeover, opt out explicitly with "probe": false.`
-    );
-  }
-  if (profile.probe === false) {
-    opts.log(
-      `Note: profile "${opts.profileName}" has "probe: false" \u2014 an explicit operator opt-out; mid-leg re-attach is disabled and takeovers will reap-and-refire running workers.`
-    );
-  }
-  if (!profile.required_tools) {
-    opts.log(
-      `Note: profile "${opts.profileName}" has no "required_tools" \u2014 tool-on-PATH preflight skipped for this profile; a missing binary will fail mid-conduction instead of at boot.`
-    );
-  }
-  const namesGcloud = TEMPLATE_KEYS.some(
-    (k) => (profile.required_tools?.[k] ?? []).includes("gcloud")
-  );
-  if (!profile.gcloud_project && namesGcloud) {
-    opts.log(
-      `Note: profile "${opts.profileName}" has no "gcloud_project" \u2014 cloud-worker-*.sh falls back to its own CLOUDSDK_CORE_PROJECT default.`
-    );
-  }
-  const schemaVersion = profile.schema_version ?? CURRENT_SCHEMA_VERSION;
-  if (schemaVersion < CURRENT_SCHEMA_VERSION) {
-    const added = capabilitiesAddedSince(schemaVersion);
-    opts.log(
-      `Note: profile "${opts.profileName}"'s schema_version (${schemaVersion}) is behind the current schema version (${CURRENT_SCHEMA_VERSION}) \u2014 capabilities added since: ${added.join(", ")}.`
-    );
-  }
-}
-
-// src/conductor/ball-axis.ts
-function ballWithHuman(row) {
-  return row.awaiting_human_input === true;
-}
-function ballReturned(previous, current) {
-  return ballWithHuman(previous) && !ballWithHuman(current);
-}
-function exchangeWentInactive(previous, current) {
-  const base = previous.active_exchange ?? null;
-  const cur = current.active_exchange ?? null;
-  if (base == null || base.status !== "active") return false;
-  if (cur == null) return true;
-  if ((cur.exchange_id ?? null) !== (base.exchange_id ?? null)) return true;
-  return cur.status != null && cur.status !== "active";
-}
-
-// src/daemon/watch.ts
-function captureBaseline(row) {
-  return {
-    awaitingHumanInput: row.awaiting_human_input ?? null,
-    activeExchange: row.active_exchange ?? null
-  };
-}
-function asTaskish(baseline) {
-  return {
-    awaiting_human_input: baseline.awaitingHumanInput,
-    active_exchange: baseline.activeExchange
-  };
-}
-function detectWake(baseline, current) {
-  const previous = asTaskish(baseline);
-  if (ballReturned(previous, current)) return "agent-ball";
-  if (!ballWithHuman(previous) && !ballWithHuman(current)) return "agent-ball";
-  if (exchangeWentInactive(previous, current)) return "discussion-cancelled";
-  return null;
-}
-
-// src/daemon/classify.ts
-var TICKET_TERMINAL_STATES = ["Verified", "Cancelled", "Parked"];
-function classifyCleanRowShape(row, nonArchivedChildCount) {
-  if (row.pending_acceptance_event_id !== null && row.pending_acceptance_event_id !== void 0) {
-    return null;
-  }
-  if (row.awaiting_human_input === true) return "clean-pause";
-  const state = row.workflow_state ?? null;
-  if (state !== null && TICKET_TERMINAL_STATES.includes(state)) {
-    return "terminal";
-  }
-  if (state === "Decomposed" && nonArchivedChildCount >= 1 && row.awaiting_human_input === false) {
-    return "split-umbrella";
-  }
-  return null;
-}
-function classifyWorkerExit(args) {
-  const { row, nonArchivedChildCount, exitCode, progressed } = args;
-  const cleanKind = classifyCleanRowShape(row, nonArchivedChildCount);
-  if (cleanKind === "clean-pause") return { action: "wait" };
-  if (cleanKind === "terminal" && row.workflow_state === "Parked") {
-    return { action: "park", reason: "ticket-parked" };
-  }
-  if (cleanKind !== null) return { action: "complete" };
-  if (row.stale === true) return { action: "park", reason: "stale" };
-  if (args.timedOut) return { action: "park", reason: "worker-timeout" };
-  if (args.operatorReaped) return { action: "park", reason: "operator-reap" };
-  if (exitCode !== 0) return { action: "park", reason: "dirty-exit" };
-  if (!progressed) {
-    return args.repoProgressed ? { action: "park", reason: "repo-active-board-silent" } : { action: "park", reason: "no-progress" };
-  }
-  return { action: "wait" };
-}
-function exitClass(outcome, args) {
-  if (outcome.action === "park") return outcome.reason;
-  if (outcome.action === "complete") {
-    const state = args.row.workflow_state ?? null;
-    return state !== null && TICKET_TERMINAL_STATES.includes(state) ? "terminal" : "split-umbrella";
-  }
-  return "clean-pause";
-}
-
-// src/daemon/leg-gate.ts
-function isFastTrackBuildLeg(runConfig, task) {
-  return isFastTrackEnabled(runConfig) && (task.workflow_state === "Captured" || task.workflow_state === "Proposed");
-}
-function resolveLegGate(runConfig, task) {
-  if (isFastTrackBuildLeg(runConfig, task)) {
-    return "build";
-  }
-  return resolveGatePhase(task.workflow_state, task.workflow_activity);
-}
-function evaluateFastTrackAdmission(summary, declaredRepos) {
-  const evidence = declaredRepos.map((repo) => ({ url: "", repo }));
-  const report = evaluateEligibility({ summary, evidence });
-  const { admissible } = admissibleForFastTrack(report);
-  return { admissible, report };
-}
-
 // src/agents/contract.ts
 var SEAMS = [
   "launch",
@@ -35710,8 +35360,8 @@ var claudeCodeAdapter = {
     extension: SESSION_EXT,
     resumeFlag: CLAUDE_RESUME_FLAG,
     sessionGlob: (id) => `${SESSION_ROOT}/*/${id}${SESSION_EXT}`,
-    sessionIdFromPath: (path) => {
-      const m = /\/\.claude\/projects\/[^/]+\/([^/]+)\.jsonl$/.exec(path);
+    sessionIdFromPath: (path2) => {
+      const m = /\/\.claude\/projects\/[^/]+\/([^/]+)\.jsonl$/.exec(path2);
       return m ? m[1] : null;
     }
   },
@@ -35777,11 +35427,612 @@ var claudeCodeAdapter = {
   }
 };
 
+// src/agents/codex.ts
+import { posix as path } from "node:path";
+var CODEX_AUTH_FILE_ENV = "HARMONY_CODEX_AUTH_FILE";
+var CODEX_REFUSED_CREDENTIAL_ENV = ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"];
+var CODEX_DEFAULT_PLUGIN_ROOT = "/workspace/workspace/plugin";
+var CODEX_EXEC_SUBCOMMAND = "exec";
+var CODEX_RESUME_SUBCOMMAND = "resume";
+var CODEX_JSON_FLAG = "--json";
+var CODEX_CD_FLAG = "--cd";
+var CODEX_ADD_DIR_FLAG = "--add-dir";
+var CODEX_MODEL_FLAG = "-m";
+var CODEX_BYPASS_FLAG = "--dangerously-bypass-approvals-and-sandbox";
+var CODEX_SKILLS_LINK = ".agents/skills";
+var CODEX_PROJECT_DOC_MAX_BYTES = 262144;
+var CODEX_MCP_STARTUP_TIMEOUT_SEC = 60;
+var CODEX_MCP_TOOL_TIMEOUT_SEC = 600;
+var CODEX_MCP_ENV_VARS = [
+  "HARMONY_API_TOKEN",
+  "HARMONY_SUPABASE_URL",
+  "HARMONY_SUPABASE_ANON_KEY",
+  "HARMONY_LEG",
+  "HARMONY_CONDUCTION_ID",
+  "HARMONY_MODEL",
+  "HARMONY_PLUGIN_POSTURE",
+  "HARMONY_RUN_CONFIG_JSON",
+  "HARMONY_RUN_CONFIG_PATH",
+  "HARMONY_WEB_ROOT",
+  "HARMONY_DEPLOYMENT_CONFIG",
+  "HARMONY_CONFIG_DIR"
+];
+function present2(env, name) {
+  const v = env[name];
+  return typeof v === "string" && v !== "";
+}
+var LOGIN_HOWTO = `On the daemon host run 'CODEX_HOME=~/.harmony/codex-automation codex login --device-auth' once, then mount that auth.json into the worker (container/README.md "Codex credential runbook").`;
+function resolveCodexCredential(env) {
+  const refused = CODEX_REFUSED_CREDENTIAL_ENV.filter((n) => present2(env, n));
+  if (refused.length > 0) {
+    return {
+      ok: false,
+      error: `${refused.join(" and ")} ${refused.length > 1 ? "are" : "is"} set \u2014 the Codex adapter runs on the plan-included login cache (${CODEX_AUTH_FILE_ENV}) and refuses a metered or token credential beside it (B-934: no silent fallback between regimes). Unset ${refused.join(" and ")}.`
+    };
+  }
+  if (present2(env, CODEX_AUTH_FILE_ENV)) return { ok: true, credential: "login-cache" };
+  return {
+    ok: false,
+    error: `headless Codex needs auth: set ${CODEX_AUTH_FILE_ENV} to the path of the mounted login-cache file (login-cache, plan-included). ${LOGIN_HOWTO}`
+  };
+}
+function codexPrompt(prompt) {
+  const m = /^\/([A-Za-z0-9_-]+:[A-Za-z0-9_-]+)(?=\s|$)/.exec(prompt);
+  return m ? `$${m[1]}${prompt.slice(m[0].length)}` : prompt;
+}
+function buildCodexArgv(input) {
+  const extra = [...input.extraFlags ?? []];
+  const resume = input.resumeSessionId;
+  const argv = [CODEX_EXEC_SUBCOMMAND];
+  if (resume) {
+    argv.push(CODEX_RESUME_SUBCOMMAND, resume, CODEX_JSON_FLAG, CODEX_BYPASS_FLAG);
+  } else {
+    argv.push(CODEX_JSON_FLAG);
+    if (!extra.includes(CODEX_CD_FLAG) && !extra.includes("-C")) argv.push(CODEX_CD_FLAG, path.dirname(input.pluginDir));
+    argv.push(CODEX_ADD_DIR_FLAG, input.pluginDir, CODEX_BYPASS_FLAG);
+  }
+  if (input.model) argv.push(CODEX_MODEL_FLAG, input.model);
+  argv.push(...extra);
+  argv.push(codexPrompt(input.prompt));
+  return argv;
+}
+var SESSION_ROOT2 = "$HOME/.codex/sessions";
+var SESSION_EXT2 = ".jsonl";
+var ROLLOUT_PATH = /\/\.codex\/sessions\/(?:[^/]+\/){3}rollout-(?:\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}|\*)-(.+)\.jsonl$/;
+function tomlString(s) {
+  return JSON.stringify(s);
+}
+function tomlStringArray(a) {
+  return `[${a.map(tomlString).join(", ")}]`;
+}
+function renderCodexConfig(connection, opts = {}) {
+  const root = opts.pluginRoot ?? CODEX_DEFAULT_PLUGIN_ROOT;
+  const args = connection.args.map((a) => a.split(PLUGIN_ROOT_PLACEHOLDER).join(root));
+  const lines = [
+    "# Generated by `harmony agent render` (B-1076) from the canonical MCP connection. Do not edit.",
+    "# approval_policy never: an unattended worker must never wait on an approval UI.",
+    'approval_policy = "never"',
+    "# The aggregated AGENTS.md is larger than Codex's 32 KiB default, which TRUNCATES silently.",
+    `project_doc_max_bytes = ${CODEX_PROJECT_DOC_MAX_BYTES}`,
+    "",
+    `[mcp_servers.${connection.name}]`,
+    `command = ${tomlString(connection.command)}`,
+    `args = ${tomlStringArray(args)}`,
+    "# required: a worker without Harmony tools must fail BEFORE doing repository work.",
+    "required = true",
+    `startup_timeout_sec = ${CODEX_MCP_STARTUP_TIMEOUT_SEC}`,
+    `tool_timeout_sec = ${CODEX_MCP_TOOL_TIMEOUT_SEC}`,
+    'default_tools_approval_mode = "auto"',
+    `env_vars = ${tomlStringArray(CODEX_MCP_ENV_VARS)}`,
+    ""
+  ];
+  return { fileName: "config.toml", content: lines.join("\n") };
+}
+var CODEX_WORKER_OVERLAY = [
+  "## Codex worker overlay (B-1076)",
+  "",
+  "You are running as a Codex worker inside a disposable single-ticket container. The sections above are the",
+  "repository guidance written for Claude Code; read them with these substitutions:",
+  "",
+  "- Skills are invoked as `$harmony-plugin:<skill>` (for example `$harmony-plugin:harmony-conduct`), not as",
+  "  `/harmony-plugin:<skill>`. Harmony tools are the `harmony` MCP server's tools.",
+  "- There are no subagents and no `harmony-build` agent: do the build in this thread.",
+  "- There is no in-worker model switch: skip any step that asks you to compare or switch models.",
+  "- There are no hooks: do not rely on a session-start or stop hook having run.",
+  ""
+].join("\n");
+function events(stdout) {
+  const out = [];
+  for (const line of stdout.split("\n")) {
+    const t = line.trim();
+    if (!t.startsWith("{")) continue;
+    try {
+      const v = JSON.parse(t);
+      if (v && typeof v === "object" && typeof v.type === "string") out.push(v);
+    } catch {
+    }
+  }
+  return out;
+}
+function parseCodexThreadId(stdout) {
+  const e = events(stdout).find((x) => x.type === "thread.started" && typeof x.thread_id === "string" && x.thread_id !== "");
+  return e ? e.thread_id : null;
+}
+var SAMPLE_OUTPUT = [
+  JSON.stringify({ type: "thread.started", thread_id: "00000000-0000-4000-8000-000000000000" }),
+  JSON.stringify({ type: "turn.started" }),
+  JSON.stringify({ type: "item.completed", item: { id: "item_0", type: "agent_message", text: "done" } }),
+  JSON.stringify({
+    type: "turn.completed",
+    usage: { input_tokens: 10, cached_input_tokens: 2, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 4 }
+  })
+].join("\n");
+var codexAdapter = {
+  id: "codex",
+  family: "codex",
+  displayName: "Codex",
+  // 1. launch — `codex --version` (the image's smoke gate runs the same probe).
+  launch: { binary: "codex", probeArgv: ["codex", "--version"] },
+  // 2. auth — the login-cache file, addressed by a non-secret path variable. Plan-included (B-934).
+  auth: {
+    acceptedCredentials: ["login-cache"],
+    credentialEnv: { "login-cache": CODEX_AUTH_FILE_ENV },
+    primaryCredential: "login-cache",
+    resolveCredential: resolveCodexCredential
+  },
+  // 3. headless — `codex exec --json --cd <root> … <prompt>`; exit 0 = the leg completed, any other
+  //    exit fails it (verified: a failed turn exits 1 with a turn.failed event). The exit code is
+  //    authoritative, so there is no structured error field to consult.
+  headless: {
+    buildArgv: buildCodexArgv,
+    exit: { successCode: 0, nonZeroIsFailure: true, structuredErrorField: null }
+  },
+  // 4. session — per-conduction CODEX_HOME/sessions (mounted per conduction by the launch profile);
+  //    `codex exec resume <id>`; the id comes from the thread.started event, the rollout glob is the
+  //    version-pinned fallback.
+  session: {
+    root: SESSION_ROOT2,
+    extension: SESSION_EXT2,
+    resumeFlag: CODEX_RESUME_SUBCOMMAND,
+    sessionGlob: (id) => `${SESSION_ROOT2}/*/*/*/rollout-*-${id}${SESSION_EXT2}`,
+    sessionIdFromPath: (p) => {
+      const m = ROLLOUT_PATH.exec(p);
+      return m ? m[1] : null;
+    }
+  },
+  // 5. instructions — ONE generated AGENTS.md (workspace + plugin + web CLAUDE.md + a short overlay).
+  instructions: {
+    fileName: "AGENTS.md",
+    render: (body) => ({ fileName: "AGENTS.md", content: body.endsWith("\n") ? body : body + "\n" })
+  },
+  // 6. skills — `.agents/skills` symlinked to the plugin's skills/. No agent files: no subagents.
+  skills: {
+    mechanism: `${CODEX_SKILLS_LINK} symlink`,
+    skillsRoot: "skills",
+    agentFiles: []
+  },
+  // 7. mcp — config.toml rendered from the canonical connection, required = true.
+  mcp: { render: (connection) => renderCodexConfig(connection) },
+  // 8. worker env allowlist — the same per-leg set the launch scripts forward for every adapter
+  //    (container/cloud-worker-launch.sh write_exec_env_file()). The login-cache PATH variable is a
+  //    standing binding of the launcher, not a per-leg value, and the file itself never rides env.
+  env: {
+    allowlist: [
+      "CONDUCTION_ID",
+      "TICKET",
+      "GIT_TOKEN",
+      "HARMONY_TRANSCRIPT_MOUNT_ROOT",
+      "HARMONY_PLUGIN_POSTURE",
+      "HARMONY_REPOS_JSON",
+      "HARMONY_RUN_CONFIG_JSON",
+      "HARMONY_MODEL",
+      "GIT_TOKEN_EXPIRES_AT",
+      "HARMONY_LEG",
+      "HARMONY_CONDUCTION_ID"
+    ],
+    standingSecrets: ["HARMONY_API_TOKEN", CODEX_AUTH_FILE_ENV]
+  },
+  // 9. capabilities — Codex has subagents and hooks, but this adapter does not use them (build in the
+  //    root thread, daemon one-shot workers need no hook), and `exec resume` cannot be relied on for an
+  //    in-worker model switch (a switch cold-starts a new thread), so the loop is not offered.
+  capabilities: {
+    subagents: false,
+    hooks: false,
+    skills: true,
+    mcp: true,
+    resume: true,
+    modelSwitch: false,
+    structuredOutput: true
+  },
+  // 10. telemetry — the `--json` JSONL stream: thread id from thread.started, the terminal turn event.
+  //     Plan-included login cache ⇒ the cost regime is derived (never chosen) and costUsd is null.
+  telemetry: {
+    parse: (stdout, ctx) => {
+      const evs = events(stdout);
+      const terminal = [...evs].reverse().find((e) => e.type === "turn.completed" || e.type === "turn.failed");
+      if (!terminal) return null;
+      return {
+        runtime: "codex",
+        model: ctx.model,
+        credential: ctx.credential,
+        costRegime: deriveCostRegime(ctx.credential),
+        costUsd: null,
+        sessionId: parseCodexThreadId(stdout),
+        isError: terminal.type === "turn.failed"
+      };
+    },
+    sampleOutput: SAMPLE_OUTPUT
+  }
+};
+
 // src/agents/registry.ts
-var ADAPTERS = /* @__PURE__ */ new Map([[claudeCodeAdapter.id, claudeCodeAdapter]]);
+var ADAPTERS = /* @__PURE__ */ new Map([
+  [claudeCodeAdapter.id, claudeCodeAdapter],
+  [codexAdapter.id, codexAdapter]
+  // B-1076
+]);
 var DEFAULT_ADAPTER_ID = claudeCodeAdapter.id;
 function listAdapterIds() {
   return [...ADAPTERS.keys()];
+}
+
+// src/daemon/config.ts
+function selectNamedProfile(deploymentConfig, profileName) {
+  if (!profileName || !deploymentConfig) return null;
+  return deploymentConfig.profiles?.[profileName] ?? null;
+}
+function envValue2(env, key) {
+  const v = env[key];
+  return v == null || v === "" ? void 0 : v;
+}
+function envMs(env, key, fallback) {
+  const raw = envValue2(env, key);
+  if (raw === void 0) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`${key} must be a positive number of milliseconds, got: ${raw}`);
+  }
+  return n;
+}
+function envNonNegativeInt(env, key, fallback) {
+  const raw = envValue2(env, key);
+  if (raw === void 0) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    throw new Error(`${key} must be a non-negative integer, got: ${raw}`);
+  }
+  return n;
+}
+function loadDaemonConfig(env, readFile, opts = {}) {
+  let profile;
+  if (opts.profileOverride) {
+    profile = opts.profileOverride;
+  } else {
+    const profilePath = envValue2(env, "HARMONY_DAEMON_PROFILE");
+    if (!profilePath) {
+      throw new Error(
+        `No launch profile resolved: select one BY NAME from a deployment config via --config <path> --profile <name> (src/config/deployment-config.ts's "profiles" section), or set HARMONY_DAEMON_PROFILE to a standalone launch-profile JSON path ({ launch, reap } command templates). There is no baked-in worker command.`
+      );
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(readFile(profilePath));
+    } catch (err) {
+      throw new Error(
+        `could not load the launch profile at ${profilePath}: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err }
+      );
+    }
+    profile = parsed;
+    if (typeof profile.launch !== "string" || profile.launch.length === 0) {
+      throw new Error(`launch profile ${profilePath} is missing the "launch" command template`);
+    }
+    if (typeof profile.reap !== "string" || profile.reap.length === 0) {
+      throw new Error(`launch profile ${profilePath} is missing the "reap" command template`);
+    }
+    if (profile.probe !== void 0 && profile.probe !== false) {
+      if (typeof profile.probe !== "string" || profile.probe.length === 0) {
+        throw new Error(
+          `launch profile ${profilePath}'s "probe" template, when present, must be a non-empty string or the literal \`false\` (explicit opt-out of mid-leg re-attach)`
+        );
+      }
+    }
+    if (profile.maxConcurrentWorkers !== void 0 && (!Number.isInteger(profile.maxConcurrentWorkers) || profile.maxConcurrentWorkers < 0)) {
+      throw new Error(
+        `launch profile ${profilePath}'s "maxConcurrentWorkers", when present, must be a non-negative integer`
+      );
+    }
+    if (profile.required_tools !== void 0) {
+      const rt = profile.required_tools;
+      if (typeof rt !== "object" || rt === null || Array.isArray(rt)) {
+        throw new Error(
+          `launch profile ${profilePath}'s "required_tools", when present, must be an object of { launch?, reap?, probe? } string arrays`
+        );
+      }
+      for (const key of ["launch", "reap", "probe"]) {
+        const tools = rt[key];
+        if (tools === void 0) continue;
+        if (!Array.isArray(tools) || tools.some((t) => typeof t !== "string" || t.length === 0)) {
+          throw new Error(
+            `launch profile ${profilePath}'s "required_tools.${key}", when present, must be an array of non-empty tool names`
+          );
+        }
+      }
+    }
+    if (profile.requires_app_mint !== void 0 && typeof profile.requires_app_mint !== "boolean") {
+      throw new Error(
+        `launch profile ${profilePath}'s "requires_app_mint", when present, must be a boolean`
+      );
+    }
+    if (profile.schema_version !== void 0 && (!Number.isInteger(profile.schema_version) || profile.schema_version < 1)) {
+      throw new Error(
+        `launch profile ${profilePath}'s "schema_version", when present, must be a positive integer`
+      );
+    }
+    if (profile.agents !== void 0 && (!Array.isArray(profile.agents) || profile.agents.length === 0 || profile.agents.some((a) => typeof a !== "string" || a.length === 0))) {
+      throw new Error(
+        `launch profile ${profilePath}'s "agents", when present, must be a non-empty array of agent adapter ids`
+      );
+    }
+  }
+  const validatedProfile = profile;
+  if (validatedProfile.agents) {
+    const registered = listAdapterIds();
+    const unknown = validatedProfile.agents.filter((id) => !registered.includes(id));
+    if (unknown.length > 0) {
+      throw new Error(
+        `launch profile's "agents" names unregistered agent adapter(s): ${unknown.map((u) => `'${u}'`).join(", ")}. Registered adapters: ${registered.join(", ")}. Fix the profile's "agents" list; the daemon will not boot with it.`
+      );
+    }
+  }
+  return {
+    pollMs: envMs(env, "HARMONY_DAEMON_POLL_MS", 25e3),
+    heartbeatMs: envMs(env, "HARMONY_DAEMON_HEARTBEAT_MS", 3e4),
+    staleMs: envMs(env, "HARMONY_DAEMON_STALE_MS", 3e5),
+    retryCap: envNonNegativeInt(env, "HARMONY_DAEMON_RETRY_CAP", 2),
+    retryBackoffMs: envNonNegativeInt(env, "HARMONY_DAEMON_RETRY_BACKOFF_MS", 15e3),
+    workerTimeoutMs: envMs(env, "HARMONY_DAEMON_WORKER_TIMEOUT_MS", 54e5),
+    // B-717 item 2: env var > per-profile override > the 3-for-local-docker default.
+    maxConcurrentWorkers: envNonNegativeInt(
+      env,
+      "HARMONY_DAEMON_MAX_CONCURRENT_WORKERS",
+      validatedProfile.maxConcurrentWorkers ?? 3
+    ),
+    readyAgeMs: envMs(env, "HARMONY_DAEMON_READY_AGE_MS", 6e5),
+    // B-1011: the fixed (never sliding) hint-coalescing window — see DaemonConfig.hintDebounceMs.
+    hintDebounceMs: envMs(env, "HARMONY_DAEMON_HINT_DEBOUNCE_MS", 1e3),
+    profile: {
+      launch: validatedProfile.launch,
+      reap: validatedProfile.reap,
+      probe: validatedProfile.probe,
+      maxConcurrentWorkers: validatedProfile.maxConcurrentWorkers,
+      // B-801: carried through so src/daemon/preflight.ts's boot preflight (called with this
+      // DaemonConfig's own `profile`) sees them on BOTH the named-profile and legacy file-path
+      // routes.
+      required_tools: validatedProfile.required_tools,
+      requires_app_mint: validatedProfile.requires_app_mint,
+      schema_version: validatedProfile.schema_version,
+      // B-1077: carried through on BOTH routes so the fire-time agent eligibility check sees it.
+      agents: validatedProfile.agents
+    },
+    logPath: envValue2(env, "HARMONY_DAEMON_LOG")
+  };
+}
+function renderTemplate(tpl, vars) {
+  return tpl.replace(/\{([A-Za-z0-9_]+)\}/g, (_match, name) => {
+    if (name === "conduction_id") return vars.conduction_id;
+    if (name === "ticket") return vars.ticket;
+    if (name === "run_config_json" && vars.run_config_json !== void 0) return vars.run_config_json;
+    if (name === "model" && vars.model !== void 0) return vars.model;
+    if (name === "worker_image" && vars.worker_image !== void 0) return vars.worker_image;
+    throw new Error(
+      `unknown placeholder {${name}} in launch-profile template \u2014 supported: {conduction_id}, {ticket}, {run_config_json}, {model}, {worker_image}`
+    );
+  });
+}
+
+// src/daemon/quiet-reap.ts
+function renderQuietReapOutcome(exitCode) {
+  if (exitCode === 0) return "reaped a live worker";
+  if (exitCode === 3) return "reap: worker already gone \u2014 ok";
+  return `reap: unexpected exit code ${exitCode === null ? "null" : exitCode} \u2014 investigate`;
+}
+function quietLogLine(exitCode, opts) {
+  if (!opts?.quiet || !opts.quietRender) return null;
+  return opts.quietRender(exitCode);
+}
+
+// src/daemon/preflight.ts
+var LAUNCHD_PATH_HINT = "Note: launchd inherits a minimal PATH \u2014 add the SDK's bin dir to the plist's EnvironmentVariables PATH key.";
+var CURRENT_SCHEMA_VERSION = 1;
+var CAPABILITIES_BY_VERSION = {
+  1: ["required_tools", "requires_app_mint"]
+};
+function capabilitiesAddedSince(schemaVersion) {
+  const added = [];
+  for (let v = schemaVersion + 1; v <= CURRENT_SCHEMA_VERSION; v++) {
+    added.push(...CAPABILITIES_BY_VERSION[v] ?? []);
+  }
+  return added;
+}
+function resolvedEnv(env, key) {
+  const v = env[key];
+  return v == null || v === "" ? void 0 : v;
+}
+var APP_MINT_VARS = [
+  "HARMONY_APP_ID",
+  "HARMONY_APP_INSTALLATION_ID",
+  "HARMONY_APP_PRIVATE_KEY_PATH",
+  "HARMONY_PLUGIN_DIR"
+];
+function resolveLauncherVar(varName, env, deploymentConfig) {
+  const fromEnv = resolvedEnv(env, varName);
+  if (fromEnv !== void 0) return fromEnv;
+  const launcher = deploymentConfig?.launcher;
+  switch (varName) {
+    case "HARMONY_APP_ID":
+      return launcher?.github_app?.app_id || void 0;
+    case "HARMONY_APP_INSTALLATION_ID":
+      return launcher?.github_app?.installation_id || void 0;
+    case "HARMONY_APP_PRIVATE_KEY_PATH":
+      return launcher?.github_app?.private_key_path || void 0;
+    case "HARMONY_PLUGIN_DIR":
+      return launcher?.plugin_dir || void 0;
+  }
+}
+var TEMPLATE_KEYS = ["launch", "reap", "probe"];
+async function runBootPreflight(config, profile, opts) {
+  void config;
+  for (const templateKey of TEMPLATE_KEYS) {
+    const tools = profile.required_tools?.[templateKey] ?? [];
+    for (const tool of tools) {
+      const result = await opts.runCommand(`command -v ${tool}`, { quiet: true });
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `Missing required tool "${tool}" (invoked by profile "${opts.profileName}"'s "${templateKey}" template) \u2014 not found on PATH.
+${LAUNCHD_PATH_HINT}`
+        );
+      }
+    }
+  }
+  if (profile.requires_app_mint) {
+    for (const varName of APP_MINT_VARS) {
+      const value = resolveLauncherVar(varName, opts.env, opts.deploymentConfig);
+      if (value === void 0) {
+        throw new Error(
+          `Missing required launcher-host config "${varName}" \u2014 see container/README.md \xA7 The credential envelopes.`
+        );
+      }
+    }
+  }
+  if (profile.probe === void 0) {
+    throw new Error(
+      `Profile "${opts.profileName}" has no "probe" template \u2014 mid-leg re-attach capability is missing, so a takeover would SIGKILL any live worker for this profile and discard its in-progress work (reap-and-refire). Add a working probe template \u2014 see container/migrate-to-deployment-config.md step 3, e.g.:
+  "probe": "docker ps --filter name=harmony-worker-{conduction_id} --filter status=running --quiet | grep -q ."
+Or, if this profile's workers are genuinely safe to reap-and-refire on takeover, opt out explicitly with "probe": false.`
+    );
+  }
+  if (profile.probe === false) {
+    opts.log(
+      `Note: profile "${opts.profileName}" has "probe: false" \u2014 an explicit operator opt-out; mid-leg re-attach is disabled and takeovers will reap-and-refire running workers.`
+    );
+  }
+  if (!profile.required_tools) {
+    opts.log(
+      `Note: profile "${opts.profileName}" has no "required_tools" \u2014 tool-on-PATH preflight skipped for this profile; a missing binary will fail mid-conduction instead of at boot.`
+    );
+  }
+  const namesGcloud = TEMPLATE_KEYS.some(
+    (k) => (profile.required_tools?.[k] ?? []).includes("gcloud")
+  );
+  if (!profile.gcloud_project && namesGcloud) {
+    opts.log(
+      `Note: profile "${opts.profileName}" has no "gcloud_project" \u2014 cloud-worker-*.sh falls back to its own CLOUDSDK_CORE_PROJECT default.`
+    );
+  }
+  const schemaVersion = profile.schema_version ?? CURRENT_SCHEMA_VERSION;
+  if (schemaVersion < CURRENT_SCHEMA_VERSION) {
+    const added = capabilitiesAddedSince(schemaVersion);
+    opts.log(
+      `Note: profile "${opts.profileName}"'s schema_version (${schemaVersion}) is behind the current schema version (${CURRENT_SCHEMA_VERSION}) \u2014 capabilities added since: ${added.join(", ")}.`
+    );
+  }
+}
+
+// src/conductor/ball-axis.ts
+function ballWithHuman(row) {
+  return row.awaiting_human_input === true;
+}
+function ballReturned(previous, current) {
+  return ballWithHuman(previous) && !ballWithHuman(current);
+}
+function exchangeWentInactive(previous, current) {
+  const base = previous.active_exchange ?? null;
+  const cur = current.active_exchange ?? null;
+  if (base == null || base.status !== "active") return false;
+  if (cur == null) return true;
+  if ((cur.exchange_id ?? null) !== (base.exchange_id ?? null)) return true;
+  return cur.status != null && cur.status !== "active";
+}
+
+// src/daemon/watch.ts
+function captureBaseline(row) {
+  return {
+    awaitingHumanInput: row.awaiting_human_input ?? null,
+    activeExchange: row.active_exchange ?? null
+  };
+}
+function asTaskish(baseline) {
+  return {
+    awaiting_human_input: baseline.awaitingHumanInput,
+    active_exchange: baseline.activeExchange
+  };
+}
+function detectWake(baseline, current) {
+  const previous = asTaskish(baseline);
+  if (ballReturned(previous, current)) return "agent-ball";
+  if (!ballWithHuman(previous) && !ballWithHuman(current)) return "agent-ball";
+  if (exchangeWentInactive(previous, current)) return "discussion-cancelled";
+  return null;
+}
+
+// src/daemon/classify.ts
+var TICKET_TERMINAL_STATES = ["Verified", "Cancelled", "Parked"];
+function classifyCleanRowShape(row, nonArchivedChildCount) {
+  if (row.pending_acceptance_event_id !== null && row.pending_acceptance_event_id !== void 0) {
+    return null;
+  }
+  if (row.awaiting_human_input === true) return "clean-pause";
+  const state = row.workflow_state ?? null;
+  if (state !== null && TICKET_TERMINAL_STATES.includes(state)) {
+    return "terminal";
+  }
+  if (state === "Decomposed" && nonArchivedChildCount >= 1 && row.awaiting_human_input === false) {
+    return "split-umbrella";
+  }
+  return null;
+}
+function classifyWorkerExit(args) {
+  const { row, nonArchivedChildCount, exitCode, progressed } = args;
+  const cleanKind = classifyCleanRowShape(row, nonArchivedChildCount);
+  if (cleanKind === "clean-pause") return { action: "wait" };
+  if (cleanKind === "terminal" && row.workflow_state === "Parked") {
+    return { action: "park", reason: "ticket-parked" };
+  }
+  if (cleanKind !== null) return { action: "complete" };
+  if (row.stale === true) return { action: "park", reason: "stale" };
+  if (args.timedOut) return { action: "park", reason: "worker-timeout" };
+  if (args.operatorReaped) return { action: "park", reason: "operator-reap" };
+  if (exitCode !== 0) return { action: "park", reason: "dirty-exit" };
+  if (!progressed) {
+    return args.repoProgressed ? { action: "park", reason: "repo-active-board-silent" } : { action: "park", reason: "no-progress" };
+  }
+  return { action: "wait" };
+}
+function exitClass(outcome, args) {
+  if (outcome.action === "park") return outcome.reason;
+  if (outcome.action === "complete") {
+    const state = args.row.workflow_state ?? null;
+    return state !== null && TICKET_TERMINAL_STATES.includes(state) ? "terminal" : "split-umbrella";
+  }
+  return "clean-pause";
+}
+
+// src/daemon/leg-gate.ts
+function isFastTrackBuildLeg(runConfig, task) {
+  return isFastTrackEnabled(runConfig) && (task.workflow_state === "Captured" || task.workflow_state === "Proposed");
+}
+function resolveLegGate(runConfig, task) {
+  if (isFastTrackBuildLeg(runConfig, task)) {
+    return "build";
+  }
+  return resolveGatePhase(task.workflow_state, task.workflow_activity);
+}
+function evaluateFastTrackAdmission(summary, declaredRepos) {
+  const evidence = declaredRepos.map((repo) => ({ url: "", repo }));
+  const report = evaluateEligibility({ summary, evidence });
+  const { admissible } = admissibleForFastTrack(report);
+  return { admissible, report };
 }
 
 // src/daemon/agent-eligibility.ts
@@ -35853,9 +36104,9 @@ var declined = (reason) => ({ handled: false, reason });
 async function tryFileFastTrackPostMergeRecording(deps, taskId) {
   const { client, projectId, userId } = deps.board;
   try {
-    const { data: events, error: eventsErr } = await client.from("activity_events").select("event_type, field_name, new_value, metadata, created_at").eq("task_id", taskId).order("created_at", { ascending: true });
+    const { data: events2, error: eventsErr } = await client.from("activity_events").select("event_type, field_name, new_value, metadata, created_at").eq("task_id", taskId).order("created_at", { ascending: true });
     if (eventsErr) return declined(`could not read the activity timeline (${eventsErr.message})`);
-    const timeline = (events ?? []).map((e) => ({
+    const timeline = (events2 ?? []).map((e) => ({
       type: "event",
       timestamp: e.created_at,
       event_type: e.event_type,

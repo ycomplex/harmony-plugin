@@ -71,6 +71,16 @@ not this interactive session.
 |---|---|---|
 | `base` | git, node 22, gh, python3/jq, **fnm + corepack (the toolchain manager, B-929)**, the bootstrap entrypoint — agent-neutral | never changes |
 | `agent` | `FROM base` + Claude Code + `CLAUDE_HEADLESS_FLAGS` | replace to swap agents |
+| `agent-codex` | `FROM agent` + the Codex CLI (`@openai/codex`) + a worker-owned `~/.codex` (B-1076) — a **superset**: both CLIs | what `cloudbuild.yaml` publishes; the single deployment `worker_image` serves either adapter |
+
+`agent-codex` is a superset on purpose: the adapter is chosen per leg (`run_config.agent.adapter`), so
+one `worker_image` per deployment serves both. Base stays agent-neutral and `agent` stays
+Claude-only; neither gains a Codex byte. The Codex CLI version follows the Claude Code policy
+(B-1074): **not pinned in the Dockerfile** — `cloudbuild.yaml` resolves the current `@openai/codex`
+release with `npm view` at build time and passes it as `CODEX_VERSION`, so every promote rebuild
+refreshes it. The resolved version is in `/etc/harmony-codex-version`, the `harmony.codex_version`
+label and `provision.sh`'s startup echo, and `smoke.sh` requires `codex --version` to run before
+anything is published (it skips that probe on the agent-neutral `base` target).
 
 The `container-base` CI job rebuilds `base` on every PR and **fails if any
 agent install is present in it** — the layering guardrail is continuously
@@ -971,3 +981,69 @@ needs a deployment's own credentials; the worker's provisioning starting the eng
 leg (the block is covered by the engine contract and by vitest, and the real entrypoint was run
 only up to the token refusal); and the mint step, which was replaced by a placeholder because the
 GitHub App key was not on the proving machine.
+
+## Codex legs (B-1076)
+
+A leg runs on Codex instead of Claude Code when its run selects the adapter: `run_config.agent.adapter =
+"codex"` (absent means `claude-code`, unchanged). Everything is gated on that; a Claude leg is
+byte-for-byte what it was. The adapter, the seams and the evidence are in `docs/agent-adapter-contract.md`
+and `docs/codex-phase0-findings.md`.
+
+**Which profiles.** Only the **Docker-host** profile launches a Codex leg today
+(`container/daemon-profile.docker-host.example.json` lists `"agents": ["claude-code", "codex"]`). The
+local-Docker and cloud profiles list no `agents`, so the daemon parks a Codex run on them
+(`agent-ineligible`) before any worker starts. The daemon also refuses to boot a profile whose `agents`
+list names an adapter that is not registered.
+
+**One image.** The deployment's single `worker_image` is built from the `agent-codex` target and carries
+both CLIs. Build it for a hand-run host with
+`docker build -f container/Dockerfile --target agent-codex -t harmony-build-env container`.
+
+### Codex credential runbook
+
+A Codex leg runs on a **plan-included login cache** (`auth.json`), never an API key. B-934: no silent
+fallback between regimes, so `OPENAI_API_KEY`, `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN` set anywhere in the
+worker's environment, or in the launcher's, **refuses the start**.
+
+1. On the **daemon host** (the machine that runs the launch wrapper), mint the automation identity once,
+   in its own `CODEX_HOME` so it never touches your personal Codex login:
+
+   ```bash
+   CODEX_HOME=~/.harmony/codex-automation codex login --device-auth
+   ```
+
+   Follow the device-code prompt with the ChatGPT account whose plan the automation should use. The result
+   is `~/.harmony/codex-automation/auth.json`. Keep it mode 600. Treat it like a password: it holds a bearer
+   token and a refresh token, and nothing in this repo reads, prints or logs it.
+2. That is all the daemon host needs. `container/docker-host-worker-launch.sh` finds the file at
+   `~/.harmony/codex-automation/auth.json` (override: `HARMONY_CODEX_AUTH_SRC`), ships it to the Docker host
+   over ssh's stdin into the private run directory (mode 600, never on a command line), mounts it
+   **read-only** into the worker at `/home/worker/.codex-auth-src/auth.json`, and removes the host copy when
+   the run ends. If the file is missing the wrapper refuses **before it wakes the host**.
+3. In the worker, `provision.sh` runs `harmony agent render`, which **copies** the mounted file to
+   `/home/worker/.codex/auth.json` (mode 600), renders `~/.codex/config.toml` (the `harmony` MCP server,
+   `required = true`), one `AGENTS.md` at the workspace root and the `.agents/skills` link, and passes the
+   file's *path* to the adapter as `HARMONY_CODEX_AUTH_FILE`. The secret itself never enters the
+   environment.
+4. A Codex leg's model comes from `HARMONY_CODEX_MODEL` in the base env file (or the CLI default); the
+   daemon's `HARMONY_MODEL` is a Claude alias and is ignored. Per-run flags go in `CODEX_HEADLESS_FLAGS`.
+
+**Copy-in, not a read-write mount, and why.** It is unproven whether Codex rewrites `auth.json` when it
+refreshes the token, or whether refresh tokens rotate (single use). That needs a live plan login to
+establish (BLOCKED, `docs/codex-phase0-findings.md`). A copy is the safe default: a refresh inside a leg
+works on the copy, and nothing can corrupt the master. The cost is that the master on the daemon host is
+**not** updated. If refresh tokens turn out to rotate, the master goes stale after the first leg that
+refreshes and Codex legs will start failing authentication: re-run step 1, and treat that as the signal to
+add a write-back step.
+
+**What a failing leg may print.** Recorded output tails (`harmony leg-output record`) pass through
+`redactSecrets` (bearer tokens, refresh/access/id tokens, JWTs, API keys). The worker's own stderr is not
+redacted; it never contains the file, and Codex does not print it.
+
+**Resume.** The adapter supports `codex exec resume`, and the per-conduction `~/.codex/sessions` mount
+persists the rollouts, but `provision.sh` does not yet discover a Codex session to resume: Codex legs cold
+start. A Claude session id is never offered to Codex.
+
+**Image smoke.** `container/smoke.sh` runs `codex --version`, compares it with `/etc/harmony-codex-version`,
+and checks that `codex exec --help` still lists every flag the adapter emits. It skips these on the
+agent-neutral `base` target.

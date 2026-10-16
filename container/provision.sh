@@ -168,6 +168,11 @@ else
   echo "provision.sh: image Claude Code version: unknown (pre-B-1074 image, no /etc/harmony-claude-version)"
 fi
 
+# --- B-1076: the Codex layer's version, when the image carries it (agent-codex). ----------
+if [ -f /etc/harmony-codex-version ]; then
+  echo "provision.sh: image Codex version: $(cat /etc/harmony-codex-version)"
+fi
+
 # --- B-929: per-repo toolchain activation (strictly conditional). ------------
 # A build leg for a project that pins a Node version or package manager other
 # than Harmony's own used to die on this image's single baked Node 22. The
@@ -302,6 +307,36 @@ case "$MODE" in
     # safety net for anything that still slips into the background. The daemon's
     # 90-minute worker deadline (B-739) remains the outer bound on the leg.
     export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0
+
+    # --- B-1076: prepare a non-default (Codex) leg THROUGH the adapter. -------------------------
+    # Claude needs nothing rendered (it loads the plugin by flag; its agent file was copied above).
+    # For any other adapter `harmony agent render` writes the runtime's config, its ONE generated
+    # AGENTS.md, the .agents/skills link and the copy-in of the mounted login-cache file — and exits
+    # non-zero ("Refusing to start: …", which this script treats as fatal) when HARMONY_CODEX_AUTH_FILE
+    # is unset or the file is missing. This script never opens, prints or copies that file itself,
+    # and neither does anything it calls except the adapter's own byte copy.
+    AGENT_ID="$(node "$PLUGIN_DIR/dist/bin/harmony.js" agent resolve)" || exit 1
+    if [ "$AGENT_ID" != "claude-code" ]; then
+      RENDER_REPO_ARGS=()
+      while IFS= read -r B1076_REPO_PATH; do
+        [ -n "$B1076_REPO_PATH" ] && RENDER_REPO_ARGS+=("$B1076_REPO_PATH")
+      done < <(b929_repo_paths)
+      if [ "${#RENDER_REPO_ARGS[@]}" -gt 0 ]; then
+        node "$PLUGIN_DIR/dist/bin/harmony.js" agent render --plugin-dir "$PLUGIN_DIR" --workspace "$WORKDIR" \
+          --extra-repo "${RENDER_REPO_ARGS[@]}" || exit 1
+      else
+        node "$PLUGIN_DIR/dist/bin/harmony.js" agent render --plugin-dir "$PLUGIN_DIR" --workspace "$WORKDIR" || exit 1
+      fi
+      # The image-baked CLAUDE_HEADLESS_FLAGS (and any cross-conduction `--resume <claude id>` an
+      # upstream script injected into it) are CLAUDE flags: never offered to another runtime. The
+      # per-run passthrough for a non-Claude leg is CODEX_HEADLESS_FLAGS (empty by default — the
+      # adapter's argv carries the runtime's own permission envelope).
+      CLAUDE_HEADLESS_FLAGS="${CODEX_HEADLESS_FLAGS:-}"
+      # The skills address the plugin as ${CLAUDE_PLUGIN_ROOT}. Claude's harness sets it; a Codex leg
+      # gets it here (the shell tool inherits this environment — verified, docs/codex-phase0-findings.md).
+      export CLAUDE_PLUGIN_ROOT="$PLUGIN_DIR"
+      echo "B-1076: agent adapter: $AGENT_ID (config, AGENTS.md and skills rendered)." >&2
+    fi
     cd "$WORKDIR"
 
     # --- B-718: same-conduction resume discovery + best-effort --resume wiring (AC5). -----------
@@ -341,6 +376,13 @@ case "$MODE" in
       else
         echo "provision.sh: WARNING — failed to parse run_config JSON for session_resume.enabled (jq: $JQ_RESULT); defaulting to disabled" >&2
       fi
+    fi
+
+    # B-1076: the discovery below globs CLAUDE's transcript layout. A leg on another adapter never
+    # resumes from it (a Claude session id must never reach another runtime); Codex legs cold-start
+    # until Codex resume discovery is wired (docs/codex-phase0-findings.md, "Resume").
+    if [ "${AGENT_ID:-claude-code}" != "claude-code" ]; then
+      SESSION_RESUME_ENABLED="false"
     fi
 
     RESUME_SESSION_ID=""
@@ -491,6 +533,12 @@ case "$MODE" in
     # doesn't render {model}), CURRENT_MODEL stays empty and every invocation below runs
     # byte-for-byte unchanged — no --model flag at all, never an empty one.
     CURRENT_MODEL="${HARMONY_MODEL:-}"
+    # B-1076: HARMONY_MODEL is the daemon's resolution over the CLAUDE model catalog; another runtime
+    # cannot run a Claude alias. Until the catalog is provider-qualified, a non-Claude leg takes its
+    # model from HARMONY_CODEX_MODEL (the deployment's base env), or the runtime's own default.
+    if [ "${AGENT_ID:-claude-code}" != "claude-code" ]; then
+      CURRENT_MODEL="${HARMONY_CODEX_MODEL:-}"
+    fi
 
     # --- B-772 round 2: bounded in-worker model-switch loop --------------------------------------
     # The WORKER (skills/harmony-conduct/SKILL.md step 1d), not this daemon-fired guess, is what

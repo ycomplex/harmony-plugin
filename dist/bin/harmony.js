@@ -1158,7 +1158,7 @@ var require_command = __commonJS({
   "node_modules/commander/lib/command.js"(exports) {
     var EventEmitter = __require("node:events").EventEmitter;
     var childProcess = __require("node:child_process");
-    var path2 = __require("node:path");
+    var path3 = __require("node:path");
     var fs2 = __require("node:fs");
     var process3 = __require("node:process");
     var { Argument: Argument2, humanReadableArgName } = require_argument();
@@ -2158,9 +2158,9 @@ Expecting one of '${allowedValues.join("', '")}'`);
         let launchWithNode = false;
         const sourceExt = [".js", ".ts", ".tsx", ".mjs", ".cjs"];
         function findFile(baseDir, baseName) {
-          const localBin = path2.resolve(baseDir, baseName);
+          const localBin = path3.resolve(baseDir, baseName);
           if (fs2.existsSync(localBin)) return localBin;
-          if (sourceExt.includes(path2.extname(baseName))) return void 0;
+          if (sourceExt.includes(path3.extname(baseName))) return void 0;
           const foundExt = sourceExt.find(
             (ext) => fs2.existsSync(`${localBin}${ext}`)
           );
@@ -2178,17 +2178,17 @@ Expecting one of '${allowedValues.join("', '")}'`);
           } catch {
             resolvedScriptPath = this._scriptPath;
           }
-          executableDir = path2.resolve(
-            path2.dirname(resolvedScriptPath),
+          executableDir = path3.resolve(
+            path3.dirname(resolvedScriptPath),
             executableDir
           );
         }
         if (executableDir) {
           let localFile = findFile(executableDir, executableFile);
           if (!localFile && !subcommand._executableFile && this._scriptPath) {
-            const legacyName = path2.basename(
+            const legacyName = path3.basename(
               this._scriptPath,
-              path2.extname(this._scriptPath)
+              path3.extname(this._scriptPath)
             );
             if (legacyName !== this._name) {
               localFile = findFile(
@@ -2199,7 +2199,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
           }
           executableFile = localFile || executableFile;
         }
-        launchWithNode = sourceExt.includes(path2.extname(executableFile));
+        launchWithNode = sourceExt.includes(path3.extname(executableFile));
         let proc;
         if (process3.platform !== "win32") {
           if (launchWithNode) {
@@ -3046,7 +3046,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @return {Command}
        */
       nameFromFilename(filename) {
-        this._name = path2.basename(filename, path2.extname(filename));
+        this._name = path3.basename(filename, path3.extname(filename));
         return this;
       }
       /**
@@ -3060,9 +3060,9 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @param {string} [path]
        * @return {(string|null|Command)}
        */
-      executableDir(path3) {
-        if (path3 === void 0) return this._executableDir;
-        this._executableDir = path3;
+      executableDir(path4) {
+        if (path4 === void 0) return this._executableDir;
+        this._executableDir = path4;
         return this;
       }
       /**
@@ -3453,11 +3453,11 @@ function __metadata(metadataKey, metadataValue) {
 }
 function __awaiter(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve) {
-      resolve(value);
+    return value instanceof P ? value : new P(function(resolve2) {
+      resolve2(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve, reject) {
+  return new (P || (P = Promise))(function(resolve2, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -3473,7 +3473,7 @@ function __awaiter(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -3664,14 +3664,14 @@ function __asyncValues(o) {
   }, i);
   function verb(n) {
     i[n] = o[n] && function(v) {
-      return new Promise(function(resolve, reject) {
-        v = o[n](v), settle(resolve, reject, v.done, v.value);
+      return new Promise(function(resolve2, reject) {
+        v = o[n](v), settle(resolve2, reject, v.done, v.value);
       });
     };
   }
-  function settle(resolve, reject, d, v) {
+  function settle(resolve2, reject, d, v) {
     Promise.resolve(v).then(function(v2) {
-      resolve({ value: v2, done: d });
+      resolve2({ value: v2, done: d });
     }, reject);
   }
 }
@@ -3763,13 +3763,13 @@ function __disposeResources(env2) {
   }
   return next();
 }
-function __rewriteRelativeImportExtension(path2, preserveJsx) {
-  if (typeof path2 === "string" && /^\.\.?\//.test(path2)) {
-    return path2.replace(/\.(tsx)$|((?:\.d)?)((?:\.[^./]+?)?)\.([cm]?)ts$/i, function(m, tsx, d, ext, cm) {
+function __rewriteRelativeImportExtension(path3, preserveJsx) {
+  if (typeof path3 === "string" && /^\.\.?\//.test(path3)) {
+    return path3.replace(/\.(tsx)$|((?:\.d)?)((?:\.[^./]+?)?)\.([cm]?)ts$/i, function(m, tsx, d, ext, cm) {
       return tsx ? preserveJsx ? ".jsx" : ".js" : d && (!ext || !cm) ? m : d + ext + "." + cm.toLowerCase() + "js";
     });
   }
-  return path2;
+  return path3;
 }
 var extendStatics, __assign, __createBinding, __setModuleDefault, ownKeys, _SuppressedError, tslib_es6_default;
 var init_tslib_es6 = __esm({
@@ -5432,7 +5432,7 @@ var require_phoenix_cjs = __commonJS({
        * @param {PresenceOptions} [opts] - The options, for example `{events: {state: "state", diff: "diff"}}`
        */
       constructor(channel, opts = {}) {
-        let events = opts.events || /** @type {PresenceEvents} */
+        let events2 = opts.events || /** @type {PresenceEvents} */
         { state: "presence_state", diff: "presence_diff" };
         this.state = {};
         this.pendingDiffs = [];
@@ -5446,7 +5446,7 @@ var require_phoenix_cjs = __commonJS({
           onSync: function() {
           }
         };
-        this.channel.on(events.state, (newState) => {
+        this.channel.on(events2.state, (newState) => {
           let { onJoin, onLeave, onSync } = this.caller;
           this.joinRef = this.channel.joinRef();
           this.state = _Presence.syncState(this.state, newState, onJoin, onLeave);
@@ -5456,7 +5456,7 @@ var require_phoenix_cjs = __commonJS({
           this.pendingDiffs = [];
           onSync();
         });
-        this.channel.on(events.diff, (diff) => {
+        this.channel.on(events2.diff, (diff) => {
           let { onJoin, onLeave, onSync } = this.caller;
           if (this.inPendingSyncState()) {
             this.pendingDiffs.push(diff);
@@ -7161,15 +7161,15 @@ var require_RealtimeChannel = __commonJS({
             }
           }
         } else {
-          return new Promise((resolve) => {
+          return new Promise((resolve2) => {
             var _a2, _b2, _c;
             const push = this.channelAdapter.push(args.type, args, opts.timeout || this.timeout);
             if (args.type === "broadcast" && !((_c = (_b2 = (_a2 = this.params) === null || _a2 === void 0 ? void 0 : _a2.config) === null || _b2 === void 0 ? void 0 : _b2.broadcast) === null || _c === void 0 ? void 0 : _c.ack)) {
-              resolve("ok");
+              resolve2("ok");
             }
-            push.receive("ok", () => resolve("ok"));
-            push.receive("error", () => resolve("error"));
-            push.receive("timeout", () => resolve("timed out"));
+            push.receive("ok", () => resolve2("ok"));
+            push.receive("error", () => resolve2("error"));
+            push.receive("timeout", () => resolve2("timed out"));
           });
         }
       }
@@ -7194,8 +7194,8 @@ var require_RealtimeChannel = __commonJS({
        * @category Realtime
        */
       async unsubscribe(timeout = this.timeout) {
-        return new Promise((resolve) => {
-          this.channelAdapter.unsubscribe(timeout).receive("ok", () => resolve("ok")).receive("timeout", () => resolve("timed out")).receive("error", () => resolve("error"));
+        return new Promise((resolve2) => {
+          this.channelAdapter.unsubscribe(timeout).receive("ok", () => resolve2("ok")).receive("timeout", () => resolve2("timed out")).receive("error", () => resolve2("error"));
         });
       }
       /**
@@ -7276,9 +7276,9 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error, leave, join: join3 } = constants_1.CHANNEL_EVENTS;
-        const events = [close, error, leave, join3];
-        return ref && events.includes(event) && ref !== this.joinPush.ref;
+        const { close, error, leave, join: join5 } = constants_1.CHANNEL_EVENTS;
+        const events2 = [close, error, leave, join5];
+        return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
       _updateFilterTransform() {
@@ -7389,11 +7389,11 @@ var require_socketAdapter = __commonJS({
         this.socket.connect();
       }
       disconnect(callback, code, reason, timeout = 1e4) {
-        return new Promise((resolve) => {
-          setTimeout(() => resolve("timeout"), timeout);
+        return new Promise((resolve2) => {
+          setTimeout(() => resolve2("timeout"), timeout);
           this.socket.disconnect(() => {
             callback();
-            resolve("ok");
+            resolve2("ok");
           }, code, reason);
         });
       }
@@ -15238,17 +15238,17 @@ var require_visit = __commonJS({
     visit.BREAK = BREAK;
     visit.SKIP = SKIP;
     visit.REMOVE = REMOVE;
-    function visit_(key, node, visitor, path2) {
-      const ctrl = callVisitor(key, node, visitor, path2);
+    function visit_(key, node, visitor, path3) {
+      const ctrl = callVisitor(key, node, visitor, path3);
       if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
-        replaceNode(key, path2, ctrl);
-        return visit_(key, ctrl, visitor, path2);
+        replaceNode(key, path3, ctrl);
+        return visit_(key, ctrl, visitor, path3);
       }
       if (typeof ctrl !== "symbol") {
         if (identity.isCollection(node)) {
-          path2 = Object.freeze(path2.concat(node));
+          path3 = Object.freeze(path3.concat(node));
           for (let i = 0; i < node.items.length; ++i) {
-            const ci = visit_(i, node.items[i], visitor, path2);
+            const ci = visit_(i, node.items[i], visitor, path3);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -15259,13 +15259,13 @@ var require_visit = __commonJS({
             }
           }
         } else if (identity.isPair(node)) {
-          path2 = Object.freeze(path2.concat(node));
-          const ck = visit_("key", node.key, visitor, path2);
+          path3 = Object.freeze(path3.concat(node));
+          const ck = visit_("key", node.key, visitor, path3);
           if (ck === BREAK)
             return BREAK;
           else if (ck === REMOVE)
             node.key = null;
-          const cv = visit_("value", node.value, visitor, path2);
+          const cv = visit_("value", node.value, visitor, path3);
           if (cv === BREAK)
             return BREAK;
           else if (cv === REMOVE)
@@ -15286,17 +15286,17 @@ var require_visit = __commonJS({
     visitAsync.BREAK = BREAK;
     visitAsync.SKIP = SKIP;
     visitAsync.REMOVE = REMOVE;
-    async function visitAsync_(key, node, visitor, path2) {
-      const ctrl = await callVisitor(key, node, visitor, path2);
+    async function visitAsync_(key, node, visitor, path3) {
+      const ctrl = await callVisitor(key, node, visitor, path3);
       if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
-        replaceNode(key, path2, ctrl);
-        return visitAsync_(key, ctrl, visitor, path2);
+        replaceNode(key, path3, ctrl);
+        return visitAsync_(key, ctrl, visitor, path3);
       }
       if (typeof ctrl !== "symbol") {
         if (identity.isCollection(node)) {
-          path2 = Object.freeze(path2.concat(node));
+          path3 = Object.freeze(path3.concat(node));
           for (let i = 0; i < node.items.length; ++i) {
-            const ci = await visitAsync_(i, node.items[i], visitor, path2);
+            const ci = await visitAsync_(i, node.items[i], visitor, path3);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -15307,13 +15307,13 @@ var require_visit = __commonJS({
             }
           }
         } else if (identity.isPair(node)) {
-          path2 = Object.freeze(path2.concat(node));
-          const ck = await visitAsync_("key", node.key, visitor, path2);
+          path3 = Object.freeze(path3.concat(node));
+          const ck = await visitAsync_("key", node.key, visitor, path3);
           if (ck === BREAK)
             return BREAK;
           else if (ck === REMOVE)
             node.key = null;
-          const cv = await visitAsync_("value", node.value, visitor, path2);
+          const cv = await visitAsync_("value", node.value, visitor, path3);
           if (cv === BREAK)
             return BREAK;
           else if (cv === REMOVE)
@@ -15340,23 +15340,23 @@ var require_visit = __commonJS({
       }
       return visitor;
     }
-    function callVisitor(key, node, visitor, path2) {
+    function callVisitor(key, node, visitor, path3) {
       if (typeof visitor === "function")
-        return visitor(key, node, path2);
+        return visitor(key, node, path3);
       if (identity.isMap(node))
-        return visitor.Map?.(key, node, path2);
+        return visitor.Map?.(key, node, path3);
       if (identity.isSeq(node))
-        return visitor.Seq?.(key, node, path2);
+        return visitor.Seq?.(key, node, path3);
       if (identity.isPair(node))
-        return visitor.Pair?.(key, node, path2);
+        return visitor.Pair?.(key, node, path3);
       if (identity.isScalar(node))
-        return visitor.Scalar?.(key, node, path2);
+        return visitor.Scalar?.(key, node, path3);
       if (identity.isAlias(node))
-        return visitor.Alias?.(key, node, path2);
+        return visitor.Alias?.(key, node, path3);
       return void 0;
     }
-    function replaceNode(key, path2, node) {
-      const parent = path2[path2.length - 1];
+    function replaceNode(key, path3, node) {
+      const parent = path3[path3.length - 1];
       if (identity.isCollection(parent)) {
         parent.items[key] = node;
       } else if (identity.isPair(parent)) {
@@ -15966,10 +15966,10 @@ var require_Collection = __commonJS({
     var createNode = require_createNode();
     var identity = require_identity();
     var Node = require_Node();
-    function collectionFromPath(schema, path2, value) {
+    function collectionFromPath(schema, path3, value) {
       let v = value;
-      for (let i = path2.length - 1; i >= 0; --i) {
-        const k = path2[i];
+      for (let i = path3.length - 1; i >= 0; --i) {
+        const k = path3[i];
         if (typeof k === "number" && Number.isInteger(k) && k >= 0) {
           const a = [];
           a[k] = v;
@@ -15988,7 +15988,7 @@ var require_Collection = __commonJS({
         sourceObjects: /* @__PURE__ */ new Map()
       });
     }
-    var isEmptyPath = (path2) => path2 == null || typeof path2 === "object" && !!path2[Symbol.iterator]().next().done;
+    var isEmptyPath = (path3) => path3 == null || typeof path3 === "object" && !!path3[Symbol.iterator]().next().done;
     var Collection = class extends Node.NodeBase {
       constructor(type, schema) {
         super(type);
@@ -16018,11 +16018,11 @@ var require_Collection = __commonJS({
        * be a Pair instance or a `{ key, value }` object, which may not have a key
        * that already exists in the map.
        */
-      addIn(path2, value) {
-        if (isEmptyPath(path2))
+      addIn(path3, value) {
+        if (isEmptyPath(path3))
           this.add(value);
         else {
-          const [key, ...rest] = path2;
+          const [key, ...rest] = path3;
           const node = this.get(key, true);
           if (identity.isCollection(node))
             node.addIn(rest, value);
@@ -16036,8 +16036,8 @@ var require_Collection = __commonJS({
        * Removes a value from the collection.
        * @returns `true` if the item was found and removed.
        */
-      deleteIn(path2) {
-        const [key, ...rest] = path2;
+      deleteIn(path3) {
+        const [key, ...rest] = path3;
         if (rest.length === 0)
           return this.delete(key);
         const node = this.get(key, true);
@@ -16051,8 +16051,8 @@ var require_Collection = __commonJS({
        * scalar values from their surrounding node; to disable set `keepScalar` to
        * `true` (collections are always returned intact).
        */
-      getIn(path2, keepScalar) {
-        const [key, ...rest] = path2;
+      getIn(path3, keepScalar) {
+        const [key, ...rest] = path3;
         const node = this.get(key, true);
         if (rest.length === 0)
           return !keepScalar && identity.isScalar(node) ? node.value : node;
@@ -16070,8 +16070,8 @@ var require_Collection = __commonJS({
       /**
        * Checks if the collection includes a value with the key `key`.
        */
-      hasIn(path2) {
-        const [key, ...rest] = path2;
+      hasIn(path3) {
+        const [key, ...rest] = path3;
         if (rest.length === 0)
           return this.has(key);
         const node = this.get(key, true);
@@ -16081,8 +16081,8 @@ var require_Collection = __commonJS({
        * Sets a value in this collection. For `!!set`, `value` needs to be a
        * boolean to add/remove the item from the set.
        */
-      setIn(path2, value) {
-        const [key, ...rest] = path2;
+      setIn(path3, value) {
+        const [key, ...rest] = path3;
         if (rest.length === 0) {
           this.set(key, value);
         } else {
@@ -18597,9 +18597,9 @@ var require_Document = __commonJS({
           this.contents.add(value);
       }
       /** Adds a value to the document. */
-      addIn(path2, value) {
+      addIn(path3, value) {
         if (assertCollection(this.contents))
-          this.contents.addIn(path2, value);
+          this.contents.addIn(path3, value);
       }
       /**
        * Create a new `Alias` node, ensuring that the target `node` has the required anchor.
@@ -18674,14 +18674,14 @@ var require_Document = __commonJS({
        * Removes a value from the document.
        * @returns `true` if the item was found and removed.
        */
-      deleteIn(path2) {
-        if (Collection.isEmptyPath(path2)) {
+      deleteIn(path3) {
+        if (Collection.isEmptyPath(path3)) {
           if (this.contents == null)
             return false;
           this.contents = null;
           return true;
         }
-        return assertCollection(this.contents) ? this.contents.deleteIn(path2) : false;
+        return assertCollection(this.contents) ? this.contents.deleteIn(path3) : false;
       }
       /**
        * Returns item at `key`, or `undefined` if not found. By default unwraps
@@ -18696,10 +18696,10 @@ var require_Document = __commonJS({
        * scalar values from their surrounding node; to disable set `keepScalar` to
        * `true` (collections are always returned intact).
        */
-      getIn(path2, keepScalar) {
-        if (Collection.isEmptyPath(path2))
+      getIn(path3, keepScalar) {
+        if (Collection.isEmptyPath(path3))
           return !keepScalar && identity.isScalar(this.contents) ? this.contents.value : this.contents;
-        return identity.isCollection(this.contents) ? this.contents.getIn(path2, keepScalar) : void 0;
+        return identity.isCollection(this.contents) ? this.contents.getIn(path3, keepScalar) : void 0;
       }
       /**
        * Checks if the document includes a value with the key `key`.
@@ -18710,10 +18710,10 @@ var require_Document = __commonJS({
       /**
        * Checks if the document includes a value at `path`.
        */
-      hasIn(path2) {
-        if (Collection.isEmptyPath(path2))
+      hasIn(path3) {
+        if (Collection.isEmptyPath(path3))
           return this.contents !== void 0;
-        return identity.isCollection(this.contents) ? this.contents.hasIn(path2) : false;
+        return identity.isCollection(this.contents) ? this.contents.hasIn(path3) : false;
       }
       /**
        * Sets a value in this document. For `!!set`, `value` needs to be a
@@ -18730,13 +18730,13 @@ var require_Document = __commonJS({
        * Sets a value in this document. For `!!set`, `value` needs to be a
        * boolean to add/remove the item from the set.
        */
-      setIn(path2, value) {
-        if (Collection.isEmptyPath(path2)) {
+      setIn(path3, value) {
+        if (Collection.isEmptyPath(path3)) {
           this.contents = value;
         } else if (this.contents == null) {
-          this.contents = Collection.collectionFromPath(this.schema, Array.from(path2), value);
+          this.contents = Collection.collectionFromPath(this.schema, Array.from(path3), value);
         } else if (assertCollection(this.contents)) {
-          this.contents.setIn(path2, value);
+          this.contents.setIn(path3, value);
         }
       }
       /**
@@ -20696,9 +20696,9 @@ var require_cst_visit = __commonJS({
     visit.BREAK = BREAK;
     visit.SKIP = SKIP;
     visit.REMOVE = REMOVE;
-    visit.itemAtPath = (cst, path2) => {
+    visit.itemAtPath = (cst, path3) => {
       let item = cst;
-      for (const [field, index] of path2) {
+      for (const [field, index] of path3) {
         const tok = item?.[field];
         if (tok && "items" in tok) {
           item = tok.items[index];
@@ -20707,23 +20707,23 @@ var require_cst_visit = __commonJS({
       }
       return item;
     };
-    visit.parentCollection = (cst, path2) => {
-      const parent = visit.itemAtPath(cst, path2.slice(0, -1));
-      const field = path2[path2.length - 1][0];
+    visit.parentCollection = (cst, path3) => {
+      const parent = visit.itemAtPath(cst, path3.slice(0, -1));
+      const field = path3[path3.length - 1][0];
       const coll = parent?.[field];
       if (coll && "items" in coll)
         return coll;
       throw new Error("Parent collection not found");
     };
-    function _visit(path2, item, visitor) {
-      let ctrl = visitor(item, path2);
+    function _visit(path3, item, visitor) {
+      let ctrl = visitor(item, path3);
       if (typeof ctrl === "symbol")
         return ctrl;
       for (const field of ["key", "value"]) {
         const token = item[field];
         if (token && "items" in token) {
           for (let i = 0; i < token.items.length; ++i) {
-            const ci = _visit(Object.freeze(path2.concat([[field, i]])), token.items[i], visitor);
+            const ci = _visit(Object.freeze(path3.concat([[field, i]])), token.items[i], visitor);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -20734,10 +20734,10 @@ var require_cst_visit = __commonJS({
             }
           }
           if (typeof ctrl === "function" && field === "key")
-            ctrl = ctrl(item, path2);
+            ctrl = ctrl(item, path3);
         }
       }
-      return typeof ctrl === "function" ? ctrl(item, path2) : ctrl;
+      return typeof ctrl === "function" ? ctrl(item, path3) : ctrl;
     }
     exports.visit = visit;
   }
@@ -27882,8 +27882,8 @@ var IcebergError = class extends Error {
     return this.status === 419;
   }
 };
-function buildUrl(baseUrl, path2, query) {
-  const url = new URL(path2, baseUrl);
+function buildUrl(baseUrl, path3, query) {
+  const url = new URL(path3, baseUrl);
   if (query) {
     for (const [key, value] of Object.entries(query)) {
       if (value !== void 0) {
@@ -27913,12 +27913,12 @@ function createFetchClient(options) {
   return {
     async request({
       method,
-      path: path2,
+      path: path3,
       query,
       body,
       headers
     }) {
-      const url = buildUrl(options.baseUrl, path2, query);
+      const url = buildUrl(options.baseUrl, path3, query);
       const authHeaders = await buildAuthHeaders(options.auth);
       const res = await fetchFn(url, {
         method,
@@ -28531,7 +28531,7 @@ var _getRequestParams = (method, options, parameters, body) => {
   return _objectSpread22(_objectSpread22({}, params), parameters);
 };
 async function _handleRequest(fetcher, method, url, options, parameters, body, namespace) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     fetcher(url, _getRequestParams(method, options, parameters, body)).then((result) => {
       if (!result.ok) throw result;
       if (options === null || options === void 0 ? void 0 : options.noResolveJson) return result;
@@ -28541,7 +28541,7 @@ async function _handleRequest(fetcher, method, url, options, parameters, body, n
         if (!contentType || !contentType.includes("application/json")) return {};
       }
       return result.json();
-    }).then((data) => resolve(data)).catch((error) => handleError(error, reject, options, namespace));
+    }).then((data) => resolve2(data)).catch((error) => handleError(error, reject, options, namespace));
   });
 }
 function createFetchApi(namespace = "storage") {
@@ -28737,7 +28737,7 @@ var StorageFileApi = class extends BaseApiClient {
   * @param path The relative file path. Should be of the format `folder/subfolder/filename.png`. The bucket must already exist before attempting to upload.
   * @param fileBody The body of the file to be stored in the bucket.
   */
-  async uploadOrUpdate(method, path2, fileBody, fileOptions) {
+  async uploadOrUpdate(method, path3, fileBody, fileOptions) {
     var _this = this;
     return _this.handleOperation(async () => {
       let body;
@@ -28761,7 +28761,7 @@ var StorageFileApi = class extends BaseApiClient {
         if ((typeof ReadableStream !== "undefined" && body instanceof ReadableStream || body && typeof body === "object" && "pipe" in body && typeof body.pipe === "function") && !options.duplex) options.duplex = "half";
       }
       if (fileOptions === null || fileOptions === void 0 ? void 0 : fileOptions.headers) headers = _objectSpread22(_objectSpread22({}, headers), fileOptions.headers);
-      const cleanPath = _this._removeEmptyFolders(path2);
+      const cleanPath = _this._removeEmptyFolders(path3);
       const _path = _this._getFinalPath(cleanPath);
       const data = await (method == "PUT" ? put : post)(_this.fetch, `${_this.url}/object/${_path}`, body, _objectSpread22({ headers }, (options === null || options === void 0 ? void 0 : options.duplex) ? { duplex: options.duplex } : {}));
       return {
@@ -28815,8 +28815,8 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async upload(path2, fileBody, fileOptions) {
-    return this.uploadOrUpdate("POST", path2, fileBody, fileOptions);
+  async upload(path3, fileBody, fileOptions) {
+    return this.uploadOrUpdate("POST", path3, fileBody, fileOptions);
   }
   /**
   * Upload a file with a token generated from `createSignedUploadUrl`.
@@ -28849,9 +28849,9 @@ var StorageFileApi = class extends BaseApiClient {
   * }
   * ```
   */
-  async uploadToSignedUrl(path2, token, fileBody, fileOptions) {
+  async uploadToSignedUrl(path3, token, fileBody, fileOptions) {
     var _this3 = this;
-    const cleanPath = _this3._removeEmptyFolders(path2);
+    const cleanPath = _this3._removeEmptyFolders(path3);
     const _path = _this3._getFinalPath(cleanPath);
     const url = new URL(_this3.url + `/object/upload/sign/${_path}`);
     url.searchParams.set("token", token);
@@ -28907,10 +28907,10 @@ var StorageFileApi = class extends BaseApiClient {
   * }
   * ```
   */
-  async createSignedUploadUrl(path2, options) {
+  async createSignedUploadUrl(path3, options) {
     var _this4 = this;
     return _this4.handleOperation(async () => {
-      let _path = _this4._getFinalPath(path2);
+      let _path = _this4._getFinalPath(path3);
       const headers = _objectSpread22({}, _this4.headers);
       if (options === null || options === void 0 ? void 0 : options.upsert) headers["x-upsert"] = "true";
       const data = await post(_this4.fetch, `${_this4.url}/object/upload/sign/${_path}`, {}, { headers });
@@ -28919,7 +28919,7 @@ var StorageFileApi = class extends BaseApiClient {
       if (!token) throw new StorageError("No token returned by API");
       return {
         signedUrl: url.toString(),
-        path: path2,
+        path: path3,
         token
       };
     });
@@ -28968,8 +28968,8 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async update(path2, fileBody, fileOptions) {
-    return this.uploadOrUpdate("PUT", path2, fileBody, fileOptions);
+  async update(path3, fileBody, fileOptions) {
+    return this.uploadOrUpdate("PUT", path3, fileBody, fileOptions);
   }
   /**
   * Moves an existing file to a new path in the same bucket.
@@ -29098,10 +29098,10 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async createSignedUrl(path2, expiresIn, options) {
+  async createSignedUrl(path3, expiresIn, options) {
     var _this8 = this;
     return _this8.handleOperation(async () => {
-      let _path = _this8._getFinalPath(path2);
+      let _path = _this8._getFinalPath(path3);
       const hasTransform = typeof (options === null || options === void 0 ? void 0 : options.transform) === "object" && options.transform !== null && Object.keys(options.transform).length > 0;
       let data = await post(_this8.fetch, `${_this8.url}/object/sign/${_path}`, _objectSpread22({ expiresIn }, hasTransform ? { transform: options.transform } : {}), { headers: _this8.headers });
       const downloadQueryParam = (options === null || options === void 0 ? void 0 : options.download) ? `&download=${options.download === true ? "" : options.download}` : "";
@@ -29216,11 +29216,11 @@ var StorageFileApi = class extends BaseApiClient {
   *   .download('folder/avatar1.png', {}, { signal: controller.signal })
   * ```
   */
-  download(path2, options, parameters) {
+  download(path3, options, parameters) {
     const renderPath = typeof (options === null || options === void 0 ? void 0 : options.transform) !== "undefined" ? "render/image/authenticated" : "object";
     const transformationQuery = this.transformOptsToQueryString((options === null || options === void 0 ? void 0 : options.transform) || {});
     const queryString = transformationQuery ? `?${transformationQuery}` : "";
-    const _path = this._getFinalPath(path2);
+    const _path = this._getFinalPath(path3);
     const downloadFn = () => get(this.fetch, `${this.url}/${renderPath}/${_path}${queryString}`, {
       headers: this.headers,
       noResolveJson: true
@@ -29250,9 +29250,9 @@ var StorageFileApi = class extends BaseApiClient {
   * }
   * ```
   */
-  async info(path2) {
+  async info(path3) {
     var _this10 = this;
-    const _path = _this10._getFinalPath(path2);
+    const _path = _this10._getFinalPath(path3);
     return _this10.handleOperation(async () => {
       return recursiveToCamel(await get(_this10.fetch, `${_this10.url}/object/info/${_path}`, { headers: _this10.headers }));
     });
@@ -29272,9 +29272,9 @@ var StorageFileApi = class extends BaseApiClient {
   *   .exists('folder/avatar1.png')
   * ```
   */
-  async exists(path2) {
+  async exists(path3) {
     var _this11 = this;
-    const _path = _this11._getFinalPath(path2);
+    const _path = _this11._getFinalPath(path3);
     try {
       await head(_this11.fetch, `${_this11.url}/object/${_path}`, { headers: _this11.headers });
       return {
@@ -29344,8 +29344,8 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  getPublicUrl(path2, options) {
-    const _path = this._getFinalPath(path2);
+  getPublicUrl(path3, options) {
+    const _path = this._getFinalPath(path3);
     const _queryString = [];
     const downloadQueryParam = (options === null || options === void 0 ? void 0 : options.download) ? `download=${options.download === true ? "" : options.download}` : "";
     if (downloadQueryParam !== "") _queryString.push(downloadQueryParam);
@@ -29472,10 +29472,10 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async list(path2, options, parameters) {
+  async list(path3, options, parameters) {
     var _this13 = this;
     return _this13.handleOperation(async () => {
-      const body = _objectSpread22(_objectSpread22(_objectSpread22({}, DEFAULT_SEARCH_OPTIONS), options), {}, { prefix: path2 || "" });
+      const body = _objectSpread22(_objectSpread22(_objectSpread22({}, DEFAULT_SEARCH_OPTIONS), options), {}, { prefix: path3 || "" });
       return await post(_this13.fetch, `${_this13.url}/object/list/${_this13.bucketId}`, body, { headers: _this13.headers }, parameters);
     });
   }
@@ -29539,11 +29539,11 @@ var StorageFileApi = class extends BaseApiClient {
     if (typeof Buffer !== "undefined") return Buffer.from(data).toString("base64");
     return btoa(data);
   }
-  _getFinalPath(path2) {
-    return `${this.bucketId}/${path2.replace(/^\/+/, "")}`;
+  _getFinalPath(path3) {
+    return `${this.bucketId}/${path3.replace(/^\/+/, "")}`;
   }
-  _removeEmptyFolders(path2) {
-    return path2.replace(/^\/|\/$/g, "").replace(/\/+/g, "/");
+  _removeEmptyFolders(path3) {
+    return path3.replace(/^\/|\/$/g, "").replace(/\/+/g, "/");
   }
   transformOptsToQueryString(transform) {
     const params = [];
@@ -31810,8 +31810,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path2, errorMaps, issueData } = params;
-  const fullPath = [...path2, ...issueData.path || []];
+  const { data, path: path3, errorMaps, issueData } = params;
+  const fullPath = [...path3, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -31927,11 +31927,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path2, key) {
+  constructor(parent, value, path3, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path2;
+    this._path = path3;
     this._key = key;
   }
   get path() {
@@ -35510,14 +35510,14 @@ function loadDeploymentConfig(opts = {}) {
   const env2 = opts.env ?? process.env;
   const exists = opts.existsSync ?? existsSync;
   const readFile = opts.readFileSync ?? ((p) => readFileSync(p, "utf8"));
-  const path2 = resolveDeploymentConfigPath({ configPath: opts.configPath, env: env2 });
-  if (!exists(path2)) return null;
+  const path3 = resolveDeploymentConfigPath({ configPath: opts.configPath, env: env2 });
+  if (!exists(path3)) return null;
   let raw;
   try {
-    raw = readFile(path2);
+    raw = readFile(path3);
   } catch (err) {
     throw new Error(
-      `could not read deployment config at ${path2}: ${err instanceof Error ? err.message : String(err)}`,
+      `could not read deployment config at ${path3}: ${err instanceof Error ? err.message : String(err)}`,
       { cause: err }
     );
   }
@@ -35526,13 +35526,13 @@ function loadDeploymentConfig(opts = {}) {
     parsed = JSON.parse(raw);
   } catch (err) {
     throw new Error(
-      `deployment config at ${path2} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      `deployment config at ${path3} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
       { cause: err }
     );
   }
   const result = DeploymentConfigSchema.safeParse(parsed);
   if (!result.success) {
-    throw new Error(`deployment config at ${path2} failed validation: ${result.error.message}`, {
+    throw new Error(`deployment config at ${path3} failed validation: ${result.error.message}`, {
       cause: result.error
     });
   }
@@ -36366,9 +36366,9 @@ function getLeg(env2 = process.env) {
 }
 function getRunConfig(env2 = process.env, deps = {}) {
   const readFile = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
-  const path2 = envValue(env2, "HARMONY_RUN_CONFIG_PATH");
-  if (path2) {
-    return RunConfigSchema.parse(JSON.parse(readFile(path2)));
+  const path3 = envValue(env2, "HARMONY_RUN_CONFIG_PATH");
+  if (path3) {
+    return RunConfigSchema.parse(JSON.parse(readFile(path3)));
   }
   const inline = envValue(env2, "HARMONY_RUN_CONFIG_JSON");
   if (inline) {
@@ -36512,16 +36512,16 @@ function getModelHandoffPath(env2 = process.env) {
   return nodeJoin(home, ".harmony", DEFAULT_MODEL_HANDOFF_FILENAME);
 }
 function writeModelHandoffRequest(alias, env2 = process.env) {
-  const path2 = getModelHandoffPath(env2);
-  nodeMkdirSync(nodeDirname(path2), { recursive: true });
+  const path3 = getModelHandoffPath(env2);
+  nodeMkdirSync(nodeDirname(path3), { recursive: true });
   const payload = { requested_model: alias };
-  nodeWriteFileSync(path2, JSON.stringify(payload));
+  nodeWriteFileSync(path3, JSON.stringify(payload));
 }
 function readModelHandoffRequest(env2 = process.env) {
-  const path2 = getModelHandoffPath(env2);
-  if (!nodeExistsSync(path2)) return null;
+  const path3 = getModelHandoffPath(env2);
+  if (!nodeExistsSync(path3)) return null;
   try {
-    const parsed = JSON.parse(nodeReadFileSync(path2, "utf8"));
+    const parsed = JSON.parse(nodeReadFileSync(path3, "utf8"));
     if (parsed && typeof parsed === "object" && "requested_model" in parsed && typeof parsed.requested_model === "string" && parsed.requested_model) {
       return { requested_model: parsed.requested_model };
     }
@@ -36531,9 +36531,9 @@ function readModelHandoffRequest(env2 = process.env) {
   }
 }
 function clearModelHandoffRequest(env2 = process.env) {
-  const path2 = getModelHandoffPath(env2);
+  const path3 = getModelHandoffPath(env2);
   try {
-    nodeUnlinkSync(path2);
+    nodeUnlinkSync(path3);
   } catch (err) {
     if (err?.code !== "ENOENT") throw err;
   }
@@ -37119,16 +37119,16 @@ function labelToRiskClass(label) {
       return null;
   }
 }
-function basenameOf(path2) {
-  const idx = path2.lastIndexOf("/");
-  return idx === -1 ? path2 : path2.slice(idx + 1);
+function basenameOf(path3) {
+  const idx = path3.lastIndexOf("/");
+  return idx === -1 ? path3 : path3.slice(idx + 1);
 }
 function tokenizeBasename(basename) {
   const spaced = basename.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
   return spaced.split(/\s+/).filter((t) => t.length > 0);
 }
-function authBasenameHit(path2) {
-  const tokens = tokenizeBasename(basenameOf(path2));
+function authBasenameHit(path3) {
+  const tokens = tokenizeBasename(basenameOf(path3));
   return tokens.some((t) => AUTH_WORD_REGEX.test(t) || OAUTH_WORD_REGEX.test(t));
 }
 function pathHitsClass(paths, cls) {
@@ -37205,8 +37205,8 @@ var GENERATED_VENDORED_EXCLUDE = [
   /\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|gz|tgz|tar|woff2?|ttf|eot|mp4|mov|bin)$/i
   // binary/attachment paths
 ];
-function isExcludedPath(path2) {
-  return GENERATED_VENDORED_EXCLUDE.some((re) => re.test(path2));
+function isExcludedPath(path3) {
+  return GENERATED_VENDORED_EXCLUDE.some((re) => re.test(path3));
 }
 function extractCandidateValues(text) {
   if (!text) return [];
@@ -37254,8 +37254,8 @@ function parseDiff(diffContent) {
     const line = lines[i];
     const header = /^diff --git a\/(\S+) b\/(\S+)/.exec(line);
     if (header) {
-      const path2 = header[2] ?? header[1];
-      currentExcluded = isExcludedPath(path2);
+      const path3 = header[2] ?? header[1];
+      currentExcluded = isExcludedPath(path3);
       continue;
     }
     if (currentExcluded) continue;
@@ -37365,7 +37365,7 @@ function firstToken(command) {
 function looksLikeScriptPath(token) {
   return token.includes("/");
 }
-function validateSteps(file, extensionPoint, steps, projectRoot, existsSync2) {
+function validateSteps(file, extensionPoint, steps, projectRoot, existsSync3) {
   if (!steps) return void 0;
   for (const step of steps) {
     if (isAgentTaskStep(step)) {
@@ -37378,7 +37378,7 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync2) {
     const token = firstToken(step.run);
     if (looksLikeScriptPath(token)) {
       const resolved = nodeResolve(projectRoot, token);
-      if (!existsSync2(resolved)) {
+      if (!existsSync3(resolved)) {
         return {
           file,
           reason: "missing-script",
@@ -37390,11 +37390,11 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync2) {
   return void 0;
 }
 function loadProjectManifest(projectRoot, deps = {}) {
-  const existsSync2 = deps.existsSync ?? nodeExistsSync2;
-  const readFileSync7 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
+  const existsSync3 = deps.existsSync ?? nodeExistsSync2;
+  const readFileSync8 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin2(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
-  if (!existsSync2(file)) return { kind: "absent" };
-  const raw = readFileSync7(file);
+  if (!existsSync3(file)) return { kind: "absent" };
+  const raw = readFileSync8(file);
   let parsed;
   try {
     parsed = (0, import_yaml.parse)(raw);
@@ -37489,17 +37489,17 @@ function loadProjectManifest(projectRoot, deps = {}) {
     };
   }
   const stepErrors = {};
-  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync2);
+  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync3);
   if (buildErr) stepErrors["build.before_pr"] = buildErr;
   const releaseErr = validateSteps(
     file,
     "release.before_merge",
     manifest.release?.before_merge,
     projectRoot,
-    existsSync2
+    existsSync3
   );
   if (releaseErr) stepErrors["release.before_merge"] = releaseErr;
-  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync2);
+  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync3);
   if (verifyErr) stepErrors["verify.before_ack"] = verifyErr;
   return { kind: "ok", file, manifest, stepErrors };
 }
@@ -42302,6 +42302,15 @@ var HARMONY_MCP_CONNECTION = {
   command: "node",
   args: [`${PLUGIN_ROOT_PLACEHOLDER}/dist/index.js`]
 };
+var CAPABILITIES = [
+  "subagents",
+  "hooks",
+  "skills",
+  "mcp",
+  "resume",
+  "modelSwitch",
+  "structuredOutput"
+];
 
 // src/agents/credentials.ts
 var CREDENTIAL_MODES = [
@@ -42528,8 +42537,8 @@ var claudeCodeAdapter = {
     extension: SESSION_EXT,
     resumeFlag: CLAUDE_RESUME_FLAG,
     sessionGlob: (id) => `${SESSION_ROOT}/*/${id}${SESSION_EXT}`,
-    sessionIdFromPath: (path2) => {
-      const m = /\/\.claude\/projects\/[^/]+\/([^/]+)\.jsonl$/.exec(path2);
+    sessionIdFromPath: (path3) => {
+      const m = /\/\.claude\/projects\/[^/]+\/([^/]+)\.jsonl$/.exec(path3);
       return m ? m[1] : null;
     }
   },
@@ -42595,8 +42604,275 @@ var claudeCodeAdapter = {
   }
 };
 
+// src/agents/codex.ts
+import { posix as path2 } from "node:path";
+var CODEX_AUTH_FILE_ENV = "HARMONY_CODEX_AUTH_FILE";
+var CODEX_REFUSED_CREDENTIAL_ENV = ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"];
+var CODEX_AUTH_FILE_NAME = "auth.json";
+var CODEX_DEFAULT_PLUGIN_ROOT = "/workspace/workspace/plugin";
+var CODEX_EXEC_SUBCOMMAND = "exec";
+var CODEX_RESUME_SUBCOMMAND = "resume";
+var CODEX_JSON_FLAG = "--json";
+var CODEX_CD_FLAG = "--cd";
+var CODEX_ADD_DIR_FLAG = "--add-dir";
+var CODEX_MODEL_FLAG = "-m";
+var CODEX_BYPASS_FLAG = "--dangerously-bypass-approvals-and-sandbox";
+var CODEX_SKILLS_LINK = ".agents/skills";
+var CODEX_PROJECT_DOC_MAX_BYTES = 262144;
+var CODEX_MCP_STARTUP_TIMEOUT_SEC = 60;
+var CODEX_MCP_TOOL_TIMEOUT_SEC = 600;
+var CODEX_MCP_ENV_VARS = [
+  "HARMONY_API_TOKEN",
+  "HARMONY_SUPABASE_URL",
+  "HARMONY_SUPABASE_ANON_KEY",
+  "HARMONY_LEG",
+  "HARMONY_CONDUCTION_ID",
+  "HARMONY_MODEL",
+  "HARMONY_PLUGIN_POSTURE",
+  "HARMONY_RUN_CONFIG_JSON",
+  "HARMONY_RUN_CONFIG_PATH",
+  "HARMONY_WEB_ROOT",
+  "HARMONY_DEPLOYMENT_CONFIG",
+  "HARMONY_CONFIG_DIR"
+];
+function present2(env2, name) {
+  const v = env2[name];
+  return typeof v === "string" && v !== "";
+}
+var LOGIN_HOWTO = `On the daemon host run 'CODEX_HOME=~/.harmony/codex-automation codex login --device-auth' once, then mount that auth.json into the worker (container/README.md "Codex credential runbook").`;
+function resolveCodexCredential(env2) {
+  const refused = CODEX_REFUSED_CREDENTIAL_ENV.filter((n) => present2(env2, n));
+  if (refused.length > 0) {
+    return {
+      ok: false,
+      error: `${refused.join(" and ")} ${refused.length > 1 ? "are" : "is"} set \u2014 the Codex adapter runs on the plan-included login cache (${CODEX_AUTH_FILE_ENV}) and refuses a metered or token credential beside it (B-934: no silent fallback between regimes). Unset ${refused.join(" and ")}.`
+    };
+  }
+  if (present2(env2, CODEX_AUTH_FILE_ENV)) return { ok: true, credential: "login-cache" };
+  return {
+    ok: false,
+    error: `headless Codex needs auth: set ${CODEX_AUTH_FILE_ENV} to the path of the mounted login-cache file (login-cache, plan-included). ${LOGIN_HOWTO}`
+  };
+}
+function codexPrompt(prompt) {
+  const m = /^\/([A-Za-z0-9_-]+:[A-Za-z0-9_-]+)(?=\s|$)/.exec(prompt);
+  return m ? `$${m[1]}${prompt.slice(m[0].length)}` : prompt;
+}
+function buildCodexArgv(input) {
+  const extra = [...input.extraFlags ?? []];
+  const resume = input.resumeSessionId;
+  const argv = [CODEX_EXEC_SUBCOMMAND];
+  if (resume) {
+    argv.push(CODEX_RESUME_SUBCOMMAND, resume, CODEX_JSON_FLAG, CODEX_BYPASS_FLAG);
+  } else {
+    argv.push(CODEX_JSON_FLAG);
+    if (!extra.includes(CODEX_CD_FLAG) && !extra.includes("-C")) argv.push(CODEX_CD_FLAG, path2.dirname(input.pluginDir));
+    argv.push(CODEX_ADD_DIR_FLAG, input.pluginDir, CODEX_BYPASS_FLAG);
+  }
+  if (input.model) argv.push(CODEX_MODEL_FLAG, input.model);
+  argv.push(...extra);
+  argv.push(codexPrompt(input.prompt));
+  return argv;
+}
+var SESSION_ROOT2 = "$HOME/.codex/sessions";
+var SESSION_EXT2 = ".jsonl";
+var ROLLOUT_PATH = /\/\.codex\/sessions\/(?:[^/]+\/){3}rollout-(?:\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}|\*)-(.+)\.jsonl$/;
+function tomlString(s) {
+  return JSON.stringify(s);
+}
+function tomlStringArray(a) {
+  return `[${a.map(tomlString).join(", ")}]`;
+}
+function renderCodexConfig(connection, opts = {}) {
+  const root = opts.pluginRoot ?? CODEX_DEFAULT_PLUGIN_ROOT;
+  const args = connection.args.map((a) => a.split(PLUGIN_ROOT_PLACEHOLDER).join(root));
+  const lines = [
+    "# Generated by `harmony agent render` (B-1076) from the canonical MCP connection. Do not edit.",
+    "# approval_policy never: an unattended worker must never wait on an approval UI.",
+    'approval_policy = "never"',
+    "# The aggregated AGENTS.md is larger than Codex's 32 KiB default, which TRUNCATES silently.",
+    `project_doc_max_bytes = ${CODEX_PROJECT_DOC_MAX_BYTES}`,
+    "",
+    `[mcp_servers.${connection.name}]`,
+    `command = ${tomlString(connection.command)}`,
+    `args = ${tomlStringArray(args)}`,
+    "# required: a worker without Harmony tools must fail BEFORE doing repository work.",
+    "required = true",
+    `startup_timeout_sec = ${CODEX_MCP_STARTUP_TIMEOUT_SEC}`,
+    `tool_timeout_sec = ${CODEX_MCP_TOOL_TIMEOUT_SEC}`,
+    'default_tools_approval_mode = "auto"',
+    `env_vars = ${tomlStringArray(CODEX_MCP_ENV_VARS)}`,
+    ""
+  ];
+  return { fileName: "config.toml", content: lines.join("\n") };
+}
+var CODEX_WORKER_OVERLAY = [
+  "## Codex worker overlay (B-1076)",
+  "",
+  "You are running as a Codex worker inside a disposable single-ticket container. The sections above are the",
+  "repository guidance written for Claude Code; read them with these substitutions:",
+  "",
+  "- Skills are invoked as `$harmony-plugin:<skill>` (for example `$harmony-plugin:harmony-conduct`), not as",
+  "  `/harmony-plugin:<skill>`. Harmony tools are the `harmony` MCP server's tools.",
+  "- There are no subagents and no `harmony-build` agent: do the build in this thread.",
+  "- There is no in-worker model switch: skip any step that asks you to compare or switch models.",
+  "- There are no hooks: do not rely on a session-start or stop hook having run.",
+  ""
+].join("\n");
+var GENERATED_AGENTS_HEADER = "# Harmony worker instructions (generated)";
+var SOURCE_MARKER = (label) => `<!-- harmony-agents-md source: ${label} -->`;
+function renderCodexAgentsMd(sources, overlay = CODEX_WORKER_OVERLAY) {
+  const parts = [
+    GENERATED_AGENTS_HEADER,
+    "",
+    "Generated by `harmony agent render` from the canonical CLAUDE.md files. Do not edit; do not commit.",
+    ""
+  ];
+  for (const s of sources) {
+    parts.push(SOURCE_MARKER(s.label), `# Source: ${s.label}`, "", s.content.replace(/\s+$/, ""), "");
+  }
+  parts.push(SOURCE_MARKER("codex-overlay"), overlay.replace(/\s+$/, ""), "");
+  return parts.join("\n");
+}
+function verifyCodexAgentsMd(content, sources, maxBytes = CODEX_PROJECT_DOC_MAX_BYTES) {
+  const problems = [];
+  for (const s of [...sources.map((x) => x.label), "codex-overlay"]) {
+    if (!content.includes(SOURCE_MARKER(s))) problems.push(`source '${s}' is missing from AGENTS.md`);
+  }
+  const bytes = Buffer.byteLength(content, "utf8");
+  if (bytes > maxBytes) problems.push(`AGENTS.md is ${bytes} bytes, over project_doc_max_bytes (${maxBytes}) \u2014 Codex would truncate it`);
+  return problems;
+}
+function events(stdout) {
+  const out = [];
+  for (const line of stdout.split("\n")) {
+    const t = line.trim();
+    if (!t.startsWith("{")) continue;
+    try {
+      const v = JSON.parse(t);
+      if (v && typeof v === "object" && typeof v.type === "string") out.push(v);
+    } catch {
+    }
+  }
+  return out;
+}
+function parseCodexThreadId(stdout) {
+  const e = events(stdout).find((x) => x.type === "thread.started" && typeof x.thread_id === "string" && x.thread_id !== "");
+  return e ? e.thread_id : null;
+}
+var SAMPLE_OUTPUT = [
+  JSON.stringify({ type: "thread.started", thread_id: "00000000-0000-4000-8000-000000000000" }),
+  JSON.stringify({ type: "turn.started" }),
+  JSON.stringify({ type: "item.completed", item: { id: "item_0", type: "agent_message", text: "done" } }),
+  JSON.stringify({
+    type: "turn.completed",
+    usage: { input_tokens: 10, cached_input_tokens: 2, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 4 }
+  })
+].join("\n");
+var codexAdapter = {
+  id: "codex",
+  family: "codex",
+  displayName: "Codex",
+  // 1. launch — `codex --version` (the image's smoke gate runs the same probe).
+  launch: { binary: "codex", probeArgv: ["codex", "--version"] },
+  // 2. auth — the login-cache file, addressed by a non-secret path variable. Plan-included (B-934).
+  auth: {
+    acceptedCredentials: ["login-cache"],
+    credentialEnv: { "login-cache": CODEX_AUTH_FILE_ENV },
+    primaryCredential: "login-cache",
+    resolveCredential: resolveCodexCredential
+  },
+  // 3. headless — `codex exec --json --cd <root> … <prompt>`; exit 0 = the leg completed, any other
+  //    exit fails it (verified: a failed turn exits 1 with a turn.failed event). The exit code is
+  //    authoritative, so there is no structured error field to consult.
+  headless: {
+    buildArgv: buildCodexArgv,
+    exit: { successCode: 0, nonZeroIsFailure: true, structuredErrorField: null }
+  },
+  // 4. session — per-conduction CODEX_HOME/sessions (mounted per conduction by the launch profile);
+  //    `codex exec resume <id>`; the id comes from the thread.started event, the rollout glob is the
+  //    version-pinned fallback.
+  session: {
+    root: SESSION_ROOT2,
+    extension: SESSION_EXT2,
+    resumeFlag: CODEX_RESUME_SUBCOMMAND,
+    sessionGlob: (id) => `${SESSION_ROOT2}/*/*/*/rollout-*-${id}${SESSION_EXT2}`,
+    sessionIdFromPath: (p) => {
+      const m = ROLLOUT_PATH.exec(p);
+      return m ? m[1] : null;
+    }
+  },
+  // 5. instructions — ONE generated AGENTS.md (workspace + plugin + web CLAUDE.md + a short overlay).
+  instructions: {
+    fileName: "AGENTS.md",
+    render: (body) => ({ fileName: "AGENTS.md", content: body.endsWith("\n") ? body : body + "\n" })
+  },
+  // 6. skills — `.agents/skills` symlinked to the plugin's skills/. No agent files: no subagents.
+  skills: {
+    mechanism: `${CODEX_SKILLS_LINK} symlink`,
+    skillsRoot: "skills",
+    agentFiles: []
+  },
+  // 7. mcp — config.toml rendered from the canonical connection, required = true.
+  mcp: { render: (connection) => renderCodexConfig(connection) },
+  // 8. worker env allowlist — the same per-leg set the launch scripts forward for every adapter
+  //    (container/cloud-worker-launch.sh write_exec_env_file()). The login-cache PATH variable is a
+  //    standing binding of the launcher, not a per-leg value, and the file itself never rides env.
+  env: {
+    allowlist: [
+      "CONDUCTION_ID",
+      "TICKET",
+      "GIT_TOKEN",
+      "HARMONY_TRANSCRIPT_MOUNT_ROOT",
+      "HARMONY_PLUGIN_POSTURE",
+      "HARMONY_REPOS_JSON",
+      "HARMONY_RUN_CONFIG_JSON",
+      "HARMONY_MODEL",
+      "GIT_TOKEN_EXPIRES_AT",
+      "HARMONY_LEG",
+      "HARMONY_CONDUCTION_ID"
+    ],
+    standingSecrets: ["HARMONY_API_TOKEN", CODEX_AUTH_FILE_ENV]
+  },
+  // 9. capabilities — Codex has subagents and hooks, but this adapter does not use them (build in the
+  //    root thread, daemon one-shot workers need no hook), and `exec resume` cannot be relied on for an
+  //    in-worker model switch (a switch cold-starts a new thread), so the loop is not offered.
+  capabilities: {
+    subagents: false,
+    hooks: false,
+    skills: true,
+    mcp: true,
+    resume: true,
+    modelSwitch: false,
+    structuredOutput: true
+  },
+  // 10. telemetry — the `--json` JSONL stream: thread id from thread.started, the terminal turn event.
+  //     Plan-included login cache ⇒ the cost regime is derived (never chosen) and costUsd is null.
+  telemetry: {
+    parse: (stdout, ctx) => {
+      const evs = events(stdout);
+      const terminal = [...evs].reverse().find((e) => e.type === "turn.completed" || e.type === "turn.failed");
+      if (!terminal) return null;
+      return {
+        runtime: "codex",
+        model: ctx.model,
+        credential: ctx.credential,
+        costRegime: deriveCostRegime(ctx.credential),
+        costUsd: null,
+        sessionId: parseCodexThreadId(stdout),
+        isError: terminal.type === "turn.failed"
+      };
+    },
+    sampleOutput: SAMPLE_OUTPUT
+  }
+};
+
 // src/agents/registry.ts
-var ADAPTERS = /* @__PURE__ */ new Map([[claudeCodeAdapter.id, claudeCodeAdapter]]);
+var ADAPTERS = /* @__PURE__ */ new Map([
+  [claudeCodeAdapter.id, claudeCodeAdapter],
+  [codexAdapter.id, codexAdapter]
+  // B-1076
+]);
 var DEFAULT_ADAPTER_ID = claudeCodeAdapter.id;
 function listAdapterIds() {
   return [...ADAPTERS.keys()];
@@ -42633,7 +42909,124 @@ function encodeNulArgv(argv) {
   return argv.map((a) => `${a}\0`).join("");
 }
 
+// src/agents/codex-provision.ts
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync as existsSync2,
+  lstatSync,
+  mkdirSync,
+  readFileSync as readFileSync3,
+  readlinkSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+  appendFileSync
+} from "node:fs";
+import { join as join3, resolve } from "node:path";
+function isFile(p) {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+function collectInstructionSources(input) {
+  const ws = resolve(input.workspaceDir);
+  const plugin = resolve(input.pluginDir);
+  const candidates = [
+    { label: "workspace/CLAUDE.md", path: join3(ws, "CLAUDE.md") },
+    { label: "plugin/CLAUDE.md", path: join3(plugin, "CLAUDE.md") },
+    { label: "web/CLAUDE.md", path: join3(ws, "web", "CLAUDE.md") }
+  ];
+  for (const p of input.extraRepoPaths ?? []) {
+    const abs = resolve(p);
+    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join3(abs, "CLAUDE.md") });
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const c of candidates) {
+    if (seen.has(c.path) || !isFile(c.path)) continue;
+    seen.add(c.path);
+    out.push({ label: c.label, content: readFileSync3(c.path, "utf8") });
+  }
+  return out;
+}
+function excludeFromGit(workspaceDir, entries) {
+  const gitDir = join3(workspaceDir, ".git");
+  if (!existsSync2(gitDir)) return;
+  const infoDir = join3(gitDir, "info");
+  mkdirSync(infoDir, { recursive: true });
+  const excludePath = join3(infoDir, "exclude");
+  const current = existsSync2(excludePath) ? readFileSync3(excludePath, "utf8") : "";
+  const have = new Set(current.split("\n"));
+  const missing = entries.filter((e) => !have.has(e));
+  if (missing.length) appendFileSync(excludePath, (current === "" || current.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
+}
+function linkSkills(workspaceDir, pluginDir) {
+  const link = join3(workspaceDir, CODEX_SKILLS_LINK);
+  const target = join3(resolve(pluginDir), "skills");
+  if (!existsSync2(target)) throw new Error(`skills directory not found at ${target}`);
+  mkdirSync(join3(workspaceDir, ".agents"), { recursive: true });
+  let st;
+  try {
+    st = lstatSync(link);
+  } catch {
+    st = null;
+  }
+  if (st) {
+    if (!st.isSymbolicLink()) throw new Error(`${link} exists and is not a symlink \u2014 refusing to replace a real skills directory`);
+    if (readlinkSync(link) === target) return link;
+    unlinkSync(link);
+  }
+  symlinkSync(target, link, "dir");
+  return link;
+}
+function installAuth(authFile, codexHome) {
+  if (!isFile(authFile)) {
+    throw new Error(`the Codex login-cache file is missing at ${authFile} (HARMONY_CODEX_AUTH_FILE) \u2014 mount it, see container/README.md "Codex credential runbook"`);
+  }
+  const dest = join3(codexHome, CODEX_AUTH_FILE_NAME);
+  if (resolve(authFile) !== resolve(dest)) {
+    copyFileSync(authFile, dest);
+  }
+  chmodSync(dest, 384);
+  return dest;
+}
+function provisionCodex(input) {
+  const workspaceDir = resolve(input.workspaceDir);
+  const codexHome = resolve(input.codexHome);
+  const sources = collectInstructionSources(input);
+  if (sources.length === 0) throw new Error(`no CLAUDE.md found under ${workspaceDir} / ${input.pluginDir} \u2014 nothing to build AGENTS.md from`);
+  const agentsMd = renderCodexAgentsMd(sources);
+  const problems = verifyCodexAgentsMd(agentsMd, sources);
+  if (problems.length) throw new Error(`AGENTS.md preflight failed: ${problems.join("; ")}`);
+  const agentsMdPath = join3(workspaceDir, "AGENTS.md");
+  if (existsSync2(agentsMdPath) && !readFileSync3(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
+    throw new Error(`${agentsMdPath} exists and is not a generated file \u2014 refusing to overwrite a repository's own AGENTS.md`);
+  }
+  mkdirSync(codexHome, { recursive: true });
+  const config = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve(input.pluginDir) });
+  const configPath = join3(codexHome, config.fileName);
+  writeFileSync(configPath, config.content, { mode: 420 });
+  writeFileSync(agentsMdPath, agentsMd);
+  const skillsLink = linkSkills(workspaceDir, input.pluginDir);
+  excludeFromGit(workspaceDir, ["AGENTS.md", ".agents/"]);
+  const authInstalledAt = installAuth(input.authFile, codexHome);
+  return {
+    configPath,
+    agentsMdPath,
+    agentsMdBytes: Buffer.byteLength(agentsMd, "utf8"),
+    sources: sources.map((s) => s.label),
+    skillsLink,
+    authInstalledAt
+  };
+}
+
 // src/cli/commands/agent.ts
+import { homedir as homedir2 } from "node:os";
+import { join as join4 } from "node:path";
 function launchRunConfig() {
   try {
     return getRunConfig();
@@ -42674,6 +43067,40 @@ function registerAgentCommands(program3) {
     process.stdout.write(`${verdict.credential}
 `);
   });
+  agent.command("capability").description(
+    `B-1076: print \`true\` or \`false\` \u2014 whether this leg's adapter declares the capability (${CAPABILITIES.join(" | ")}). The skills read this instead of assuming Claude's feature set (e.g. start-work builds in the root thread when \`subagents\` is false; harmony-conduct skips step 1d when \`modelSwitch\` is false). Exit 1 on an unknown capability name or adapter.`
+  ).argument("<name>", "The capability to ask about").action((name) => {
+    if (!CAPABILITIES.includes(name)) {
+      refuse(`unknown capability '${name}' \u2014 expected one of: ${CAPABILITIES.join(", ")}.`);
+    }
+    process.stdout.write(`${adapterOrRefuse().capabilities[name]}
+`);
+  });
+  agent.command("render").description(
+    `B-1076: render the adapter's on-disk runtime config for this leg (container/provision.sh calls it before launch). For Codex: the worker CODEX_HOME/config.toml (harmony MCP, required = true), one generated AGENTS.md at the workspace root, the .agents/skills link, and the copy-in of the mounted login cache. Nothing to render for claude-code (it loads the plugin by flag). Never prints the credential file or its content; exit 1 with "Refusing to start: \u2026" on any problem.`
+  ).requiredOption("--plugin-dir <dir>", "The plugin checkout").requiredOption("--workspace <dir>", "The workspace clone the agent is rooted at").option("--codex-home <dir>", "The worker CODEX_HOME (default: $CODEX_HOME or ~/.codex)").option("--extra-repo <path...>", "Additional repo paths whose CLAUDE.md is appended after the plugin's").action((opts) => {
+    const adapter = adapterOrRefuse();
+    if (adapter.id !== "codex") {
+      console.error(`harmony agent render: ${adapter.displayName} needs no rendered runtime config.`);
+      return;
+    }
+    const authFile = process.env[CODEX_AUTH_FILE_ENV];
+    if (!authFile) refuse(`${CODEX_AUTH_FILE_ENV} is not set.`);
+    try {
+      const r = provisionCodex({
+        pluginDir: opts.pluginDir,
+        workspaceDir: opts.workspace,
+        codexHome: opts.codexHome || process.env.CODEX_HOME || join4(homedir2(), ".codex"),
+        authFile,
+        extraRepoPaths: opts.extraRepo
+      });
+      console.error(
+        `harmony agent render: codex config ${r.configPath}; AGENTS.md ${r.agentsMdPath} (${r.agentsMdBytes} bytes from ${r.sources.join(", ")}); skills ${r.skillsLink}; login cache installed at ${r.authInstalledAt}`
+      );
+    } catch (err) {
+      refuse(`Codex provisioning failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
   agent.command("argv").description(
     "Print the full launch command (the adapter's binary, then its headless argv) as NUL-terminated elements. Read in bash with: while IFS= read -r -d '' t; do a+=(\"$t\"); done. Upstream flags (CLAUDE_HEADLESS_FLAGS) go after `--`, already word-split."
   ).requiredOption("--plugin-dir <dir>", "The plugin checkout the agent loads").requiredOption("--prompt <prompt>", "The headless prompt").option("--resume <session-id>", "Resume this session id").option("--model <alias>", "Launch on this model alias").argument("[extra...]", "Upstream flags, passed through in order (put them after `--`)").action((extra, opts) => {
@@ -42690,7 +43117,7 @@ function registerAgentCommands(program3) {
 }
 
 // src/cli/commands/leg-cost.ts
-import { readFileSync as readFileSync3 } from "node:fs";
+import { readFileSync as readFileSync4 } from "node:fs";
 
 // src/tools/leg-cost-record.ts
 var LEG_COST_COLS = "id, conduction_id, task_id, leg_key, gate, model, invocation_index, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_creation_1h_input_tokens, cache_creation_5m_input_tokens, thinking_tokens, total_cost_usd, cost_source, num_turns, duration_ms, duration_api_ms, session_id, is_error, service_tier, created_at";
@@ -42880,7 +43307,7 @@ function registerLegCostCommands(program3) {
       }
       let captured;
       try {
-        captured = readFileSync3(opts.file, "utf8");
+        captured = readFileSync4(opts.file, "utf8");
       } catch (err) {
         console.error(
           `harmony leg-cost record: WARNING \u2014 could not read the capture file ${opts.file} (${err?.message ?? String(err)}); nothing recorded`
@@ -42929,7 +43356,7 @@ function registerLegCostCommands(program3) {
 }
 
 // src/cli/commands/leg-output.ts
-import { readFileSync as readFileSync4 } from "node:fs";
+import { readFileSync as readFileSync5 } from "node:fs";
 
 // src/tools/leg-output-record.ts
 var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
@@ -42978,6 +43405,31 @@ async function recordLegOutput(client, args) {
   }
 }
 
+// src/agents/redaction.ts
+var REDACTED = "[REDACTED]";
+var KEY_NAMES = "(?:refresh_token|access_token|id_token|api[_-]?key|OPENAI_API_KEY|CODEX_API_KEY|CODEX_ACCESS_TOKEN)";
+var RULES = [
+  // Bearer <token> (header or prose). The token charset covers opaque tokens and JWTs.
+  { re: /(\bBearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, replace: `$1${REDACTED}` },
+  // "refresh_token": "value" — JSON, with optional escaped quotes (\"…\") when nested in a string.
+  {
+    re: new RegExp(`((?:\\\\?["'])?${KEY_NAMES}(?:\\\\?["'])?\\s*[:=]\\s*(?:\\\\?["'])?)[^\\s"'\\\\,;&}]{4,}`, "gi"),
+    replace: `$1${REDACTED}`
+  },
+  // bare JWT
+  { re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g, replace: REDACTED },
+  // sk-… secret keys
+  { re: /\bsk-[A-Za-z0-9_-]{16,}/g, replace: REDACTED }
+];
+function redactSecrets(text) {
+  if (typeof text !== "string" || text === "") return text;
+  let out = text;
+  for (const { re, replace } of RULES) {
+    out = out.replace(re, replace);
+  }
+  return out;
+}
+
 // src/cli/commands/leg-output.ts
 async function getClient2() {
   try {
@@ -42988,12 +43440,12 @@ async function getClient2() {
   }
 }
 var SOURCES = ["worker", "launcher"];
-function readCapture(path2) {
+function readCapture(path3) {
   try {
-    return readFileSync4(path2, "utf8");
+    return readFileSync5(path3, "utf8");
   } catch (err) {
     console.error(
-      `harmony leg-output record: WARNING \u2014 could not read the capture file ${path2} (${err?.message ?? String(err)}); it contributes nothing to this row`
+      `harmony leg-output record: WARNING \u2014 could not read the capture file ${path3} (${err?.message ?? String(err)}); it contributes nothing to this row`
     );
     return null;
   }
@@ -43025,7 +43477,7 @@ function registerLegOutputCommands(program3) {
       const parts = [readCapture(opts.file)];
       if (opts.stderrFile) parts.push(readCapture(opts.stderrFile));
       const captured = parts.filter((p) => p !== null).join("");
-      const storedText = source === "worker" ? resolveWorkerStoredText(captured) : captured;
+      const storedText = redactSecrets(source === "worker" ? resolveWorkerStoredText(captured) : captured);
       const totalBytes = Buffer.byteLength(storedText, "utf8");
       const tail = boundedTail(storedText, LEG_OUTPUT_TAIL_BYTES);
       const client = await getClient2();
@@ -43045,7 +43497,7 @@ function registerLegOutputCommands(program3) {
 
 // src/cli/commands/gates.ts
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync as readFileSync5, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync6, renameSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { dirname as dirname2 } from "node:path";
 
 // src/config/notify-sync.ts
@@ -43076,10 +43528,10 @@ function hashNotifyDeclaration(subscriptions) {
   return createHash("sha256").update(`v${NORMALIZATION_VERSION}
 ${JSON.stringify(subscriptions)}`).digest("hex");
 }
-function readCachedHash(io, path2) {
+function readCachedHash(io, path3) {
   let raw;
   try {
-    raw = io.readCache(path2);
+    raw = io.readCache(path3);
   } catch {
     return null;
   }
@@ -43336,9 +43788,9 @@ function registerGatesCommands(program3) {
 }
 function writeGateEvidenceMarker(projectRoot, marker) {
   const filePath = gateEvidenceMarkerPath(projectRoot, marker.extension_point);
-  mkdirSync(dirname2(filePath), { recursive: true });
+  mkdirSync2(dirname2(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  writeFileSync(tmpPath, `${JSON.stringify(marker, null, 2)}
+  writeFileSync2(tmpPath, `${JSON.stringify(marker, null, 2)}
 `, "utf8");
   renameSync(tmpPath, filePath);
 }
@@ -43357,24 +43809,24 @@ function productionNotifySyncIO() {
       }
       return data;
     },
-    readCache: (path2) => {
+    readCache: (path3) => {
       try {
-        return readFileSync5(path2, "utf8");
+        return readFileSync6(path3, "utf8");
       } catch {
         return null;
       }
     },
-    writeCache: (path2, contents) => {
-      mkdirSync(dirname2(path2), { recursive: true });
-      const tmpPath = `${path2}.tmp-${process.pid}-${Date.now()}`;
-      writeFileSync(tmpPath, contents, "utf8");
-      renameSync(tmpPath, path2);
+    writeCache: (path3, contents) => {
+      mkdirSync2(dirname2(path3), { recursive: true });
+      const tmpPath = `${path3}.tmp-${process.pid}-${Date.now()}`;
+      writeFileSync2(tmpPath, contents, "utf8");
+      renameSync(tmpPath, path3);
     }
   };
 }
 
 // src/cli/commands/notify.ts
-import { readFileSync as readFileSync6 } from "node:fs";
+import { readFileSync as readFileSync7 } from "node:fs";
 function errorMessage(err) {
   const message = err?.message;
   return message && message.trim() ? message.trim() : String(err);
@@ -43465,7 +43917,7 @@ function productionDeps() {
 }
 function readSecretFromStdin() {
   try {
-    return readFileSync6(0, "utf8");
+    return readFileSync7(0, "utf8");
   } catch {
     return "";
   }
@@ -43648,8 +44100,8 @@ function registerDoctorCommands(program3) {
 
 // src/tools/fasttrack-scope.ts
 var DEFAULT_SCOPE_BUDGET = { files: 5, lines: 150 };
-function isTestPath(path2) {
-  const p = path2.replace(/\\/g, "/");
+function isTestPath(path3) {
+  const p = path3.replace(/\\/g, "/");
   if (/(^|\/)(e2e|__tests__)\//.test(p)) return true;
   if (/(^|\/)supabase\/tests\//.test(p)) return true;
   return /\.(test|spec)\.[A-Za-z0-9]+$/.test(p);
@@ -43670,10 +44122,10 @@ function parseNumstatLine(line) {
   const trimmed = line.trim();
   if (!trimmed) return null;
   const [addedRaw, deletedRaw, ...pathParts] = trimmed.split("	");
-  const path2 = pathParts.join("	");
+  const path3 = pathParts.join("	");
   const added = addedRaw === "-" ? null : Number(addedRaw);
   const deleted = deletedRaw === "-" ? null : Number(deletedRaw);
-  return { added: Number.isFinite(added) ? added : null, deleted: Number.isFinite(deleted) ? deleted : null, path: path2 };
+  return { added: Number.isFinite(added) ? added : null, deleted: Number.isFinite(deleted) ? deleted : null, path: path3 };
 }
 
 // src/tools/record-eligibility.ts
@@ -43790,10 +44242,10 @@ function evaluateEligibility(input) {
 var GITHUB_PR_URL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?/i;
 async function runGhCommand(args) {
   const { execFile } = await import("node:child_process");
-  return await new Promise((resolve, reject) => {
+  return await new Promise((resolve2, reject) => {
     execFile("gh", args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
-      else resolve(stdout);
+      else resolve2(stdout);
     });
   });
 }
@@ -43885,10 +44337,10 @@ function buildAttestation(args, userId) {
 var GH_RELEASE_INFO_TIMEOUT_MS = 5e3;
 async function runGhForReleaseInfo(args) {
   const { execFile } = await import("node:child_process");
-  return await new Promise((resolve, reject) => {
+  return await new Promise((resolve2, reject) => {
     execFile("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
-      else resolve(String(stdout));
+      else resolve2(String(stdout));
     });
   });
 }
