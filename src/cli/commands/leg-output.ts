@@ -36,6 +36,7 @@ import {
 } from '../../tools/leg-output-record.js';
 import { parseClaudeResultJson } from '../../tools/claude-result-parse.js';
 import { getAuthenticatedContext } from '../auth.js';
+import { redactSecrets } from '../../agents/redaction.js';
 
 /** Best-effort authenticated client, or null when this process has no login/config to authenticate
  *  with. NOT a WARNING-worthy event on its own — mirrors leg-cost.ts's `getClient` exactly: an
@@ -153,7 +154,9 @@ export function registerLegOutputCommands(program: Command): void {
         // `total_bytes` is deliberately computed over whatever text is actually STORED (the
         // extracted prose when parsing succeeds, else the raw captured text) — never over the raw
         // envelope — so it stays directly comparable to `tail`'s own length.
-        const storedText = source === 'worker' ? resolveWorkerStoredText(captured) : captured;
+        // B-1076: bearer / refresh-token shapes are redacted from EVERY recorded tail — a failing Codex
+        // run can echo its login cache's tokens, and a failure tail is the thing that gets read.
+        const storedText = redactSecrets(source === 'worker' ? resolveWorkerStoredText(captured) : captured);
         const totalBytes = Buffer.byteLength(storedText, 'utf8');
         const tail = boundedTail(storedText, LEG_OUTPUT_TAIL_BYTES);
 

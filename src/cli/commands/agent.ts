@@ -25,7 +25,11 @@ import {
   encodeNulArgv,
   resolveLaunchAdapter,
 } from '../../agents/launch-routing.js';
-import type { AgentAdapter } from '../../agents/contract.js';
+import { CAPABILITIES, type AgentAdapter, type Capability } from '../../agents/contract.js';
+import { CODEX_AUTH_FILE_ENV } from '../../agents/codex.js';
+import { provisionCodex } from '../../agents/codex-provision.js';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 /** This leg's run_config from its launch env. An UNPARSEABLE payload degrades to `{}` with a loud
  *  warning — the same best-effort treatment provision.sh gives `session_resume` on the identical
@@ -97,6 +101,61 @@ export function registerAgentCommands(program: Command): void {
       const verdict = checkLaunchCredentials(adapter, process.env);
       if (!verdict.ok) refuse(`${adapter.displayName}: ${verdict.error}`);
       process.stdout.write(`${verdict.credential}\n`);
+    });
+
+  agent
+    .command('capability')
+    .description(
+      "B-1076: print `true` or `false` — whether this leg's adapter declares the capability " +
+        `(${CAPABILITIES.join(' | ')}). The skills read this instead of assuming Claude's feature set ` +
+        '(e.g. start-work builds in the root thread when `subagents` is false; harmony-conduct skips ' +
+        'step 1d when `modelSwitch` is false). Exit 1 on an unknown capability name or adapter.',
+    )
+    .argument('<name>', 'The capability to ask about')
+    .action((name: string) => {
+      if (!(CAPABILITIES as readonly string[]).includes(name)) {
+        refuse(`unknown capability '${name}' — expected one of: ${CAPABILITIES.join(', ')}.`);
+      }
+      process.stdout.write(`${adapterOrRefuse().capabilities[name as Capability]}\n`);
+    });
+
+  agent
+    .command('render')
+    .description(
+      "B-1076: render the adapter's on-disk runtime config for this leg (container/provision.sh calls it " +
+        'before launch). For Codex: the worker CODEX_HOME/config.toml (harmony MCP, required = true), one ' +
+        'generated AGENTS.md at the workspace root, the .agents/skills link, and the copy-in of the mounted ' +
+        'login cache. Nothing to render for claude-code (it loads the plugin by flag). Never prints the ' +
+        'credential file or its content; exit 1 with "Refusing to start: …" on any problem.',
+    )
+    .requiredOption('--plugin-dir <dir>', 'The plugin checkout')
+    .requiredOption('--workspace <dir>', 'The workspace clone the agent is rooted at')
+    .option('--codex-home <dir>', 'The worker CODEX_HOME (default: $CODEX_HOME or ~/.codex)')
+    .option('--extra-repo <path...>', "Additional repo paths whose CLAUDE.md is appended after the plugin's")
+    .action((opts: { pluginDir: string; workspace: string; codexHome?: string; extraRepo?: string[] }) => {
+      const adapter = adapterOrRefuse();
+      if (adapter.id !== 'codex') {
+        console.error(`harmony agent render: ${adapter.displayName} needs no rendered runtime config.`);
+        return;
+      }
+      const authFile = process.env[CODEX_AUTH_FILE_ENV];
+      if (!authFile) refuse(`${CODEX_AUTH_FILE_ENV} is not set.`);
+      try {
+        const r = provisionCodex({
+          pluginDir: opts.pluginDir,
+          workspaceDir: opts.workspace,
+          codexHome: opts.codexHome || process.env.CODEX_HOME || join(homedir(), '.codex'),
+          authFile: authFile as string,
+          extraRepoPaths: opts.extraRepo,
+        });
+        // Paths and counts only — never the credential file's content.
+        console.error(
+          `harmony agent render: codex config ${r.configPath}; AGENTS.md ${r.agentsMdPath} (${r.agentsMdBytes} bytes from ` +
+            `${r.sources.join(', ')}); skills ${r.skillsLink}; login cache installed at ${r.authInstalledAt}`,
+        );
+      } catch (err) {
+        refuse(`Codex provisioning failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     });
 
   agent

@@ -2,8 +2,12 @@
 
 import type { AgentAdapter } from './contract.js';
 import { claudeCodeAdapter } from './claude-code.js';
+import { codexAdapter } from './codex.js';
 
-const ADAPTERS: ReadonlyMap<string, AgentAdapter> = new Map([[claudeCodeAdapter.id, claudeCodeAdapter]]);
+const ADAPTERS: ReadonlyMap<string, AgentAdapter> = new Map([
+  [claudeCodeAdapter.id, claudeCodeAdapter],
+  [codexAdapter.id, codexAdapter], // B-1076
+]);
 
 export const DEFAULT_ADAPTER_ID = claudeCodeAdapter.id;
 
