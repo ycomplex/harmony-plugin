@@ -42693,6 +42693,16 @@ function registerAgentCommands(program3) {
 import { readFileSync as readFileSync3 } from "node:fs";
 
 // src/tools/leg-cost-record.ts
+var LEG_COST_COLS = "id, conduction_id, task_id, leg_key, gate, model, invocation_index, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_creation_1h_input_tokens, cache_creation_5m_input_tokens, thinking_tokens, total_cost_usd, cost_source, num_turns, duration_ms, duration_api_ms, session_id, is_error, service_tier, created_at";
+var RUNTIME_COLS = ["runtime", "credential_kind", "cost_regime"];
+var LEG_COST_COLS_WITH_RUNTIME = `${LEG_COST_COLS}, ${RUNTIME_COLS.join(", ")}`;
+function isRuntimeColumnError(err) {
+  if (!err) return false;
+  const e = err;
+  const text = [e.message, e.details, e.hint].filter(Boolean).join(" ").toLowerCase();
+  if (!RUNTIME_COLS.some((c) => text.includes(c))) return false;
+  return e.code === "42703" || e.code === "PGRST204" || e.code === "PGRST200" || /column|schema cache|does not exist|not found|unknown/.test(text);
+}
 function warn(message) {
   console.error(`harmony leg-cost: WARNING \u2014 ${message}`);
 }
@@ -42755,7 +42765,18 @@ async function recordLegCost(client, args) {
       is_error: args.is_error ?? false,
       service_tier: args.service_tier ?? null
     };
-    const { error } = await client.from("conduction_leg_costs").insert(row);
+    const runtimeFields = {
+      runtime: args.runtime ?? null,
+      credential_kind: args.credential_kind ?? null,
+      cost_regime: args.cost_regime ?? null
+    };
+    let { error } = await client.from("conduction_leg_costs").insert({ ...row, ...runtimeFields });
+    if (error && isRuntimeColumnError(error)) {
+      warn(
+        `the leg-cost row was rejected for the B-1078 runtime columns (${errText(error)}); retrying without runtime/credential_kind/cost_regime \u2014 expected until the web migration is promoted.`
+      );
+      ({ error } = await client.from("conduction_leg_costs").insert(row));
+    }
     if (error) {
       warn(
         `the leg-cost row was not written (${errText(error)}). This is the EXPECTED shape while harmony-web's conduction_leg_costs migration has not yet landed on this environment's Supabase project (B-383 prod-before-promote) \u2014 the leg itself is unaffected.`
@@ -42778,6 +42799,61 @@ async function getClient() {
     return null;
   }
 }
+function resolveRuntimeFacts(captured, model, overrides = {}, env2 = process.env, runConfigOverride) {
+  const facts = { runtime: null, credential_kind: null, cost_regime: null };
+  const warnIgnored = (msg) => console.error(`harmony leg-cost record: WARNING \u2014 ${msg}`);
+  try {
+    let runConfig = runConfigOverride ?? {};
+    if (!runConfigOverride) {
+      try {
+        runConfig = getRunConfig(env2);
+      } catch {
+        runConfig = {};
+      }
+    }
+    const resolved = resolveLaunchAdapter(runConfig);
+    let adapter = null;
+    if (resolved.ok) {
+      adapter = resolved.adapter;
+      facts.runtime = adapter.id;
+      const cred = adapter.auth.resolveCredential(env2);
+      if (cred.ok) {
+        facts.credential_kind = cred.credential;
+        facts.cost_regime = deriveCostRegime(cred.credential);
+        const rec = adapter.telemetry.parse(captured, { model, credential: cred.credential });
+        if (rec) {
+          facts.runtime = rec.runtime;
+          facts.credential_kind = rec.credential;
+          facts.cost_regime = rec.costRegime;
+        }
+      }
+    }
+    if (overrides.runtime) facts.runtime = overrides.runtime;
+    if (overrides.credentialKind) {
+      if (isCredentialMode(overrides.credentialKind)) {
+        facts.credential_kind = overrides.credentialKind;
+        facts.cost_regime = deriveCostRegime(overrides.credentialKind);
+      } else {
+        warnIgnored(
+          `--credential-kind '${overrides.credentialKind}' is not one of ${CREDENTIAL_MODES.join(", ")}; ignored (derived value kept)`
+        );
+      }
+    }
+    if (overrides.costRegime) {
+      const expected = facts.credential_kind ? deriveCostRegime(facts.credential_kind) : null;
+      if (expected === null) {
+        warnIgnored(`--cost-regime '${overrides.costRegime}' given with no credential kind to derive it from; ignored`);
+      } else if (overrides.costRegime !== expected) {
+        warnIgnored(
+          `--cost-regime '${overrides.costRegime}' is inconsistent with credential '${facts.credential_kind}' (derives '${expected}'); ignored (derived value kept)`
+        );
+      }
+    }
+  } catch (err) {
+    warnIgnored(`could not resolve runtime facts (${err instanceof Error ? err.message : String(err)}); recording them as null`);
+  }
+  return facts;
+}
 function registerLegCostCommands(program3) {
   const legCost = program3.command("leg-cost").description(
     "B-916 per-invocation cost capture \u2014 the ONE place container/provision.sh records what each `claude` invocation of a leg cost, and resolves the gate to stamp on it. Capture for DISPLAY only: nothing the daemon decides ever reads these rows."
@@ -42796,7 +42872,7 @@ function registerLegCostCommands(program3) {
   });
   legCost.command("record").description(
     "Record ONE claude invocation's cost from its captured `--output-format json` stdout. Parses the result envelope (keyed on `is_error`, NOT `subtype` \u2014 an errored run still reports subtype 'success'), resolves the cost (the CLI's own total_cost_usd, else the derived price-table figure, else 'unknown'), and inserts one conduction_leg_costs row. Always exits 0 and NEVER throws: a missing conduction id, an unparseable capture, an unreachable board or a not-yet-migrated table all degrade to \"nothing recorded\" with one stderr WARNING. The leg is never affected."
-  ).requiredOption("--file <path>", "The file this invocation's stdout was captured to").requiredOption("--gate <gate>", "The gate that was running when the invocation STARTED (see `resolve-gate`)").requiredOption("--leg-key <key>", "The worker-generated key grouping this leg's invocations").option("--model <alias>", "The model alias this invocation actually launched with").option("--invocation-index <n>", "This invocation's 0-based position within the leg").option("--conduction-id <id>", "The conduction to record against; defaults to this worker's HARMONY_CONDUCTION_ID").action(
+  ).requiredOption("--file <path>", "The file this invocation's stdout was captured to").requiredOption("--gate <gate>", "The gate that was running when the invocation STARTED (see `resolve-gate`)").requiredOption("--leg-key <key>", "The worker-generated key grouping this leg's invocations").option("--model <alias>", "The model alias this invocation actually launched with").option("--invocation-index <n>", "This invocation's 0-based position within the leg").option("--conduction-id <id>", "The conduction to record against; defaults to this worker's HARMONY_CONDUCTION_ID").option("--runtime <id>", "B-1078: override the derived runtime (adapter id)").option("--credential-kind <kind>", "B-1078: override the derived credential kind (a CredentialMode)").option("--cost-regime <regime>", "B-1078: must agree with the credential-derived regime, else ignored with a warning").action(
     async (opts) => {
       const conductionId = opts.conductionId ?? getConductionId();
       if (!conductionId) {
@@ -42814,6 +42890,11 @@ function registerLegCostCommands(program3) {
       const parsed = parseClaudeResultJson(captured);
       const model = opts.model || null;
       const cost = parsed ? resolveCost(parsed, model) : { total_cost_usd: null, cost_source: "unknown" };
+      const facts = resolveRuntimeFacts(captured, model, {
+        runtime: opts.runtime,
+        credentialKind: opts.credentialKind,
+        costRegime: opts.costRegime
+      });
       const index = Number(opts.invocationIndex);
       const client = await getClient();
       const context = await resolveLegCostContext(client, conductionId);
@@ -42838,7 +42919,10 @@ function registerLegCostCommands(program3) {
         duration_api_ms: parsed?.duration_api_ms ?? null,
         session_id: parsed?.session_id ?? null,
         is_error: parsed?.is_error ?? false,
-        service_tier: parsed?.service_tier ?? null
+        service_tier: parsed?.service_tier ?? null,
+        runtime: facts.runtime,
+        credential_kind: facts.credential_kind,
+        cost_regime: facts.cost_regime
       });
     }
   );

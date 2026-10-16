@@ -20,7 +20,16 @@
 import { readFileSync } from 'node:fs';
 import { Command } from 'commander';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getConductionId } from '../../config/run-config.js';
+import { getConductionId, getRunConfig, type RunConfig } from '../../config/run-config.js';
+import type { AgentAdapter } from '../../agents/contract.js';
+import {
+  deriveCostRegime,
+  isCredentialMode,
+  CREDENTIAL_MODES,
+  type CredentialMode,
+  type CostRegime,
+} from '../../agents/credentials.js';
+import { resolveLaunchAdapter } from '../../agents/launch-routing.js';
 import { resolveGatePhase } from '../../daemon/gate-phase.js';
 import { parseClaudeResultJson, resolveCost } from '../../tools/claude-result-parse.js';
 import { recordLegCost, resolveLegCostContext } from '../../tools/leg-cost-record.js';
@@ -37,6 +46,84 @@ async function getClient(): Promise<SupabaseClient | null> {
   } catch {
     return null;
   }
+}
+
+export interface RuntimeFacts {
+  runtime: string | null;
+  credential_kind: CredentialMode | null;
+  cost_regime: CostRegime | null;
+}
+
+/** B-1078: the three runtime-observability facts for ONE invocation, from the SAME B-1075 seam the
+ *  launch used — resolveLaunchAdapter for the adapter, adapter.auth.resolveCredential for the
+ *  credential (presence only; no secret VALUE is read into the result), deriveCostRegime for the
+ *  regime (never re-derived here), and adapter.telemetry.parse's own runtime/costRegime when the
+ *  capture parses. A capture that does not parse still records the env-derived facts: that an
+ *  invocation ran under a runtime/credential is true even when its envelope is unreadable.
+ *
+ *  Overrides (--runtime/--credential-kind/--cost-regime) are for a later adapter: an unknown
+ *  credential kind, or a regime inconsistent with the credential, is ignored with a stderr warning
+ *  (derived wins). NEVER THROWS; every failure degrades to null fields. */
+export function resolveRuntimeFacts(
+  captured: string,
+  model: string | null,
+  overrides: { runtime?: string; credentialKind?: string; costRegime?: string } = {},
+  env: NodeJS.ProcessEnv = process.env,
+  runConfigOverride?: RunConfig,
+): RuntimeFacts {
+  const facts: RuntimeFacts = { runtime: null, credential_kind: null, cost_regime: null };
+  const warnIgnored = (msg: string) => console.error(`harmony leg-cost record: WARNING — ${msg}`);
+  try {
+    let runConfig: RunConfig = runConfigOverride ?? {};
+    if (!runConfigOverride) {
+      try {
+        runConfig = getRunConfig(env);
+      } catch {
+        runConfig = {};
+      }
+    }
+    const resolved = resolveLaunchAdapter(runConfig);
+    let adapter: AgentAdapter | null = null;
+    if (resolved.ok) {
+      adapter = resolved.adapter;
+      facts.runtime = adapter.id;
+      const cred = adapter.auth.resolveCredential(env);
+      if (cred.ok) {
+        facts.credential_kind = cred.credential;
+        facts.cost_regime = deriveCostRegime(cred.credential);
+        const rec = adapter.telemetry.parse(captured, { model, credential: cred.credential });
+        if (rec) {
+          facts.runtime = rec.runtime;
+          facts.credential_kind = rec.credential;
+          facts.cost_regime = rec.costRegime;
+        }
+      }
+    }
+    if (overrides.runtime) facts.runtime = overrides.runtime;
+    if (overrides.credentialKind) {
+      if (isCredentialMode(overrides.credentialKind)) {
+        facts.credential_kind = overrides.credentialKind;
+        facts.cost_regime = deriveCostRegime(overrides.credentialKind);
+      } else {
+        warnIgnored(
+          `--credential-kind '${overrides.credentialKind}' is not one of ${CREDENTIAL_MODES.join(', ')}; ignored (derived value kept)`,
+        );
+      }
+    }
+    if (overrides.costRegime) {
+      const expected = facts.credential_kind ? deriveCostRegime(facts.credential_kind) : null;
+      if (expected === null) {
+        warnIgnored(`--cost-regime '${overrides.costRegime}' given with no credential kind to derive it from; ignored`);
+      } else if (overrides.costRegime !== expected) {
+        warnIgnored(
+          `--cost-regime '${overrides.costRegime}' is inconsistent with credential '${facts.credential_kind}' (derives '${expected}'); ignored (derived value kept)`,
+        );
+      }
+    }
+  } catch (err: unknown) {
+    warnIgnored(`could not resolve runtime facts (${err instanceof Error ? err.message : String(err)}); recording them as null`);
+  }
+  return facts;
 }
 
 export function registerLegCostCommands(program: Command): void {
@@ -90,6 +177,9 @@ export function registerLegCostCommands(program: Command): void {
     .option('--model <alias>', 'The model alias this invocation actually launched with')
     .option('--invocation-index <n>', "This invocation's 0-based position within the leg")
     .option('--conduction-id <id>', "The conduction to record against; defaults to this worker's HARMONY_CONDUCTION_ID")
+    .option('--runtime <id>', 'B-1078: override the derived runtime (adapter id)')
+    .option('--credential-kind <kind>', 'B-1078: override the derived credential kind (a CredentialMode)')
+    .option('--cost-regime <regime>', 'B-1078: must agree with the credential-derived regime, else ignored with a warning')
     .action(
       async (opts: {
         file: string;
@@ -98,6 +188,9 @@ export function registerLegCostCommands(program: Command): void {
         model?: string;
         invocationIndex?: string;
         conductionId?: string;
+        runtime?: string;
+        credentialKind?: string;
+        costRegime?: string;
       }) => {
         const conductionId = opts.conductionId ?? getConductionId();
         if (!conductionId) {
@@ -124,6 +217,12 @@ export function registerLegCostCommands(program: Command): void {
         const cost = parsed
           ? resolveCost(parsed, model)
           : { total_cost_usd: null, cost_source: 'unknown' as const };
+
+        const facts = resolveRuntimeFacts(captured, model, {
+          runtime: opts.runtime,
+          credentialKind: opts.credentialKind,
+          costRegime: opts.costRegime,
+        });
 
         const index = Number(opts.invocationIndex);
         // ONE client for both the context read and the write — authenticating twice per invocation
@@ -153,6 +252,9 @@ export function registerLegCostCommands(program: Command): void {
           session_id: parsed?.session_id ?? null,
           is_error: parsed?.is_error ?? false,
           service_tier: parsed?.service_tier ?? null,
+          runtime: facts.runtime,
+          credential_kind: facts.credential_kind,
+          cost_regime: facts.cost_regime,
         });
       },
     );

@@ -92,6 +92,9 @@ describe('recordLegCost', () => {
       session_id: 'sess-abc',
       is_error: true,
       service_tier: 'standard',
+      runtime: null,
+      credential_kind: null,
+      cost_regime: null,
     });
   });
 
@@ -192,6 +195,84 @@ describe('resolveLegCostContext', () => {
     expect(await resolveLegCostContext(makeClient([{ error: TABLE_ABSENT }]), 'cond-1')).toBeNull();
     expect(await resolveLegCostContext(makeClient([{ data: null }]), 'cond-1')).toBeNull();
     expect(await resolveLegCostContext(throwingClient(), 'cond-1')).toBeNull();
+    warn.mockRestore();
+  });
+});
+
+describe('B-1078 runtime columns', () => {
+  const COLUMN_ABSENT = {
+    code: 'PGRST204',
+    message: "Could not find the 'cost_regime' column of 'conduction_leg_costs' in the schema cache",
+  };
+  const inserted = (c: any) => c.calls.filter((x: any) => x.method === 'insert').map((x: any) => x.args[0]);
+
+  it('includes runtime, credential_kind and cost_regime in the insert', async () => {
+    const client = makeClient([{ error: null }]);
+    const ok = await recordLegCost(client, {
+      ...baseArgs,
+      runtime: 'claude-code',
+      credential_kind: 'subscription-token',
+      cost_regime: 'plan-included',
+    });
+    expect(ok).toBe(true);
+    expect(inserted(client)[0]).toMatchObject({
+      runtime: 'claude-code',
+      credential_kind: 'subscription-token',
+      cost_regime: 'plan-included',
+    });
+  });
+
+  it('writes nulls when the facts are absent', async () => {
+    const client = makeClient([{ error: null }]);
+    await recordLegCost(client, baseArgs);
+    expect(inserted(client)[0]).toMatchObject({ runtime: null, credential_kind: null, cost_regime: null });
+  });
+
+  it('retries ONCE without the three fields on a column-absent error', async () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const client = makeClient([{ error: COLUMN_ABSENT }, { error: null }]);
+    const ok = await recordLegCost(client, { ...baseArgs, runtime: 'claude-code', credential_kind: 'api-key', cost_regime: 'metered' });
+    expect(ok).toBe(true);
+    const rows = inserted(client);
+    expect(rows).toHaveLength(2);
+    expect(rows[1]).not.toHaveProperty('runtime');
+    expect(rows[1]).not.toHaveProperty('credential_kind');
+    expect(rows[1]).not.toHaveProperty('cost_regime');
+    expect(rows[1]).toMatchObject({ conduction_id: 'cond-1', leg_key: 'leg-1' });
+    warn.mockRestore();
+  });
+
+  it('matches Postgres 42703 wording too', async () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const client = makeClient([{ error: { code: '42703', message: 'column "runtime" of relation "conduction_leg_costs" does not exist' } }, { error: null }]);
+    expect(await recordLegCost(client, baseArgs)).toBe(true);
+    expect(inserted(client)).toHaveLength(2);
+    warn.mockRestore();
+  });
+
+  it('does NOT retry on an unrelated error, and never throws', async () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const client = makeClient([{ error: TABLE_ABSENT }, { error: null }]);
+    expect(await recordLegCost(client, baseArgs)).toBe(false);
+    expect(inserted(client)).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it('returns false (no throw) when the retry also fails', async () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const client = makeClient([{ error: COLUMN_ABSENT }, { error: TABLE_ABSENT }]);
+    expect(await recordLegCost(client, baseArgs)).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('listLegCosts selects the new columns, and falls back to the old set on a column error', async () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const client = makeClient([{ data: null, error: COLUMN_ABSENT }, { data: [{ id: 'r1' }], error: null }]);
+    const rows = await listLegCosts(client, { conduction_id: 'cond-1' });
+    expect(rows).toEqual([{ id: 'r1' }]);
+    const selects = client.calls.filter((x: any) => x.method === 'select').map((x: any) => x.args[0]);
+    expect(selects[0]).toContain('cost_regime');
+    expect(selects[1]).not.toContain('cost_regime');
     warn.mockRestore();
   });
 });

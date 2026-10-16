@@ -30780,6 +30780,9 @@ async function getAuthenticatedContext(projectConfig) {
 }
 
 // src/tools/leg-cost-record.ts
+var LEG_COST_COLS = "id, conduction_id, task_id, leg_key, gate, model, invocation_index, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_creation_1h_input_tokens, cache_creation_5m_input_tokens, thinking_tokens, total_cost_usd, cost_source, num_turns, duration_ms, duration_api_ms, session_id, is_error, service_tier, created_at";
+var RUNTIME_COLS = ["runtime", "credential_kind", "cost_regime"];
+var LEG_COST_COLS_WITH_RUNTIME = `${LEG_COST_COLS}, ${RUNTIME_COLS.join(", ")}`;
 function warn(message) {
   console.error(`harmony leg-cost: WARNING \u2014 ${message}`);
 }
