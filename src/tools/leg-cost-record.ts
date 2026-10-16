@@ -71,6 +71,13 @@ export interface LegCostRecord {
   session_id: string | null;
   is_error: boolean;
   service_tier: string | null;
+  /** B-1078: the agent adapter id that ran this invocation (e.g. 'claude-code'). Null/absent on rows
+   *  written before the columns existed or by a capture that could not resolve it. */
+  runtime?: string | null;
+  /** B-1078: the CredentialMode kind (never a secret value). */
+  credential_kind?: string | null;
+  /** B-1078: 'plan-included' | 'metered', derived from the credential (deriveCostRegime). */
+  cost_regime?: string | null;
   created_at: string;
 }
 
@@ -80,6 +87,28 @@ const LEG_COST_COLS =
   'cache_creation_1h_input_tokens, cache_creation_5m_input_tokens, thinking_tokens, ' +
   'total_cost_usd, cost_source, num_turns, duration_ms, duration_api_ms, ' +
   'session_id, is_error, service_tier, created_at';
+
+/** B-1078: the three runtime-observability columns. They land in harmony-web's migration on its OWN
+ *  schedule, so every read/write below tolerates their absence. */
+const RUNTIME_COLS = ['runtime', 'credential_kind', 'cost_regime'] as const;
+const LEG_COST_COLS_WITH_RUNTIME = `${LEG_COST_COLS}, ${RUNTIME_COLS.join(', ')}`;
+
+/** True when an error reads as "one of the B-1078 columns is unknown/missing" — PostgREST schema-cache
+ *  wording ("Could not find the 'runtime' column ... in the schema cache", PGRST204/PGRST200), Postgres
+ *  42703 ("column ... does not exist"). Deliberately generous on wording, but it must NAME one of the
+ *  three columns so an unrelated failure is never retried. */
+export function isRuntimeColumnError(err: unknown): boolean {
+  if (!err) return false;
+  const e = err as { code?: string; message?: string; details?: string; hint?: string };
+  const text = [e.message, e.details, e.hint].filter(Boolean).join(' ').toLowerCase();
+  if (!RUNTIME_COLS.some((c) => text.includes(c))) return false;
+  return (
+    e.code === '42703' ||
+    e.code === 'PGRST204' ||
+    e.code === 'PGRST200' ||
+    /column|schema cache|does not exist|not found|unknown/.test(text)
+  );
+}
 
 /** Everything `recordLegCost` needs. `conduction_id` and `leg_key` are the only required fields —
  *  every measurement is optional, because a capture that read a malformed/absent result envelope
@@ -110,6 +139,10 @@ export interface RecordLegCostArgs {
   session_id?: string | null;
   is_error?: boolean;
   service_tier?: string | null;
+  /** B-1078: adapter id / CredentialMode / CostRegime. Never a secret value. */
+  runtime?: string | null;
+  credential_kind?: string | null;
+  cost_regime?: string | null;
 }
 
 /** One WARNING line, stderr only — this module's single failure channel. Mirrors
@@ -229,7 +262,21 @@ export async function recordLegCost(
       service_tier: args.service_tier ?? null,
     };
 
-    const { error } = await client.from('conduction_leg_costs').insert(row);
+    const runtimeFields = {
+      runtime: args.runtime ?? null,
+      credential_kind: args.credential_kind ?? null,
+      cost_regime: args.cost_regime ?? null,
+    };
+    let { error } = await client.from('conduction_leg_costs').insert({ ...row, ...runtimeFields });
+    if (error && isRuntimeColumnError(error)) {
+      // B-1078 tolerance: the web migration adding the three columns has not reached this
+      // environment yet. Retry ONCE without them so cost capture is exactly what it was before.
+      warn(
+        `the leg-cost row was rejected for the B-1078 runtime columns (${errText(error)}); retrying ` +
+          'without runtime/credential_kind/cost_regime — expected until the web migration is promoted.',
+      );
+      ({ error } = await client.from('conduction_leg_costs').insert(row));
+    }
     if (error) {
       warn(
         `the leg-cost row was not written (${errText(error)}). This is the EXPECTED shape while ` +
@@ -255,14 +302,21 @@ export async function listLegCosts(
 ): Promise<LegCostRecord[]> {
   if (!client || !args.conduction_id) return [];
   try {
-    let query = client
-      .from('conduction_leg_costs')
-      .select(LEG_COST_COLS)
-      .eq('conduction_id', args.conduction_id);
-    if (args.leg_key) query = query.eq('leg_key', args.leg_key);
-    const { data, error } = await query
-      .order('created_at', { ascending: true })
-      .order('invocation_index', { ascending: true });
+    const run = (cols: string) => {
+      let query = client
+        .from('conduction_leg_costs')
+        .select(cols)
+        .eq('conduction_id', args.conduction_id);
+      if (args.leg_key) query = query.eq('leg_key', args.leg_key);
+      return query
+        .order('created_at', { ascending: true })
+        .order('invocation_index', { ascending: true });
+    };
+    let { data, error } = await run(LEG_COST_COLS_WITH_RUNTIME);
+    if (error && isRuntimeColumnError(error)) {
+      // B-1078 tolerance: pre-migration environment — read the old column set.
+      ({ data, error } = await run(LEG_COST_COLS));
+    }
     if (error) {
       warn(`could not read leg costs for conduction ${args.conduction_id} (${errText(error)})`);
       return [];
