@@ -54,6 +54,26 @@ RUN_CONFIG_JSON="${3:-$DEFAULT_RUN_CONFIG}"
 # mint invocation below and write_exec_env_file() forward it conditionally, only when non-empty.
 MODEL="${4:-}"
 
+# --- B-1076: which agent adapter this run launches — the SAME probe as docker-host-worker-launch.sh --
+# A Codex run adds ONE per-execution env var (HARMONY_CODEX_AUTH_FILE, a PATH) and a pre-flight check
+# that the job definition mounts the login-cache secret; any other run's gcloud calls are byte-for-byte
+# what they were before. The login cache itself never passes through this script: on Cloud Run it is a
+# Secret Manager secret mounted onto the JOB (container/README.md "Codex credential runbook", cloud).
+CODEX_RUN=0
+CODEX_AUTH_CONTAINER_PATH="/home/worker/.codex-auth-src/auth.json"   # provision.sh copies it into ~/.codex
+CODEX_SECRET_MOUNT_DIR="/home/worker/.codex-auth-src"
+# run_config arrives as base64 JSON from the daemon (or raw JSON from a manual invocation): accept both.
+ADAPTER_PROBE="$(node -e 'let s=process.argv[1];try{JSON.parse(s)}catch{try{s=Buffer.from(s,"base64").toString("utf8")}catch{}}try{const a=JSON.parse(s).agent;process.stdout.write(a&&typeof a.adapter==="string"?a.adapter:"")}catch{}' "$RUN_CONFIG_JSON" 2>/dev/null || true)"
+if [ "$ADAPTER_PROBE" = "codex" ]; then CODEX_RUN=1; fi
+if [ "$CODEX_RUN" = "1" ]; then
+  for CODEX_REFUSED_VAR in OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN; do
+    if [ -n "${!CODEX_REFUSED_VAR:-}" ]; then
+      echo "cloud-worker-launch: Refusing to start: $CODEX_REFUSED_VAR is set in the launcher's environment — a Codex leg runs on the plan-included login cache only (B-934: no metered fallback)" >&2
+      exit 1
+    fi
+  done
+fi
+
 : "${HARMONY_PLUGIN_DIR:?HARMONY_PLUGIN_DIR is required (checkout the mint script runs from, same knob the docker profile uses)}"
 
 # --- Config knobs (B-711 "config not constants") ----------------------------------------------
@@ -126,6 +146,27 @@ fi
 # the job's volume mount must use this SAME path as the mount destination.
 : "${HARMONY_TRANSCRIPT_GCS_MOUNT_ROOT:=/mnt/harmony-transcripts}"
 export CLOUDSDK_CORE_PROJECT CLOUDSDK_CORE_ACCOUNT
+
+# --- B-1076: a Codex run needs the login-cache secret mounted on the JOB definition. ---------------
+# Checked BEFORE anything is minted, locked, updated or executed: without the mount the worker's
+# `harmony agent render` refuses after a full cold start, so refusing here costs nothing. The parse is
+# best-effort over `gcloud run jobs describe --format=json` (a secret volume whose mount path is the
+# copy-in source dir); a describe that fails is also a refusal — the mount cannot be confirmed.
+if [ "$CODEX_RUN" = "1" ]; then
+  set +e
+  JOB_DESCRIBE_JSON="$(gcloud run jobs describe "$HARMONY_CLOUD_RUN_JOB" --region="$HARMONY_CLOUD_RUN_REGION" --format=json 2>/dev/null)"
+  JOB_DESCRIBE_EXIT=$?
+  set -e
+  if [ "$JOB_DESCRIBE_EXIT" -ne 0 ]; then
+    echo "cloud-worker-launch: Refusing to start: this run selects the codex adapter and 'gcloud run jobs describe $HARMONY_CLOUD_RUN_JOB' failed (exit $JOB_DESCRIBE_EXIT), so the login-cache secret mount cannot be confirmed — no execution started" >&2
+    exit 1
+  fi
+  SECRET_MOUNTED="$(printf '%s' "$JOB_DESCRIBE_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{let ok=false;try{const j=JSON.parse(d);const t=(((j.spec||{}).template||{}).spec||{}).template||{};const ps=t.spec||{};const secretVols=new Set((ps.volumes||[]).filter(v=>v&&v.secret).map(v=>v.name));for(const c of ps.containers||[])for(const m of c.volumeMounts||[])if(m&&secretVols.has(m.name)&&String(m.mountPath).replace(/\/+$/,"")===process.argv[1])ok=true}catch{}process.stdout.write(ok?"yes":"no")})' "$CODEX_SECRET_MOUNT_DIR" 2>/dev/null || true)"
+  if [ "$SECRET_MOUNTED" != "yes" ]; then
+    echo "cloud-worker-launch: Refusing to start: this run selects the codex adapter but Cloud Run job $HARMONY_CLOUD_RUN_JOB has no secret volume mounted at $CODEX_SECRET_MOUNT_DIR — mount the login-cache secret first (container/README.md \"Codex credential runbook\", Cloud). No execution started" >&2
+    exit 1
+  fi
+fi
 
 # B-717 item 6 / plan-gate correction 3: the lock directory is SHARED across every concurrent
 # wrapper invocation on THIS daemon host (it narrows the update+execute race against the one shared
@@ -361,6 +402,11 @@ write_exec_env_file() {
       # is needed here.
       if [ -n "${CONDUCTION_ID:-}" ]; then
         printf 'HARMONY_CONDUCTION_ID: "%s"\n' "$CONDUCTION_ID"
+      fi
+      # B-1076: a Codex leg's login-cache PATH (never the secret) — the job's secret volume puts the file
+      # there; provision.sh's `harmony agent render` copies it into ~/.codex.
+      if [ "${CODEX_RUN:-0}" = "1" ]; then
+        printf 'HARMONY_CODEX_AUTH_FILE: "%s"\n' "$CODEX_AUTH_CONTAINER_PATH"
       fi
     } > "$file"
   )

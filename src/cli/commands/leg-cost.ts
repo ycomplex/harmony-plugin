@@ -21,7 +21,8 @@ import { readFileSync } from 'node:fs';
 import { Command } from 'commander';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getConductionId, getRunConfig, type RunConfig } from '../../config/run-config.js';
-import type { AgentAdapter } from '../../agents/contract.js';
+import type { AgentAdapter, TelemetryRecord } from '../../agents/contract.js';
+import { DEFAULT_ADAPTER_ID, getAdapter, hasAdapter } from '../../agents/registry.js';
 import {
   deriveCostRegime,
   isCredentialMode,
@@ -126,6 +127,21 @@ export function resolveRuntimeFacts(
   return facts;
 }
 
+/** B-1076: the telemetry record of a NON-Claude runtime's capture (Codex's `--json` JSONL), which the
+ *  Claude result-envelope parse below cannot read. Keyed on the runtime resolveRuntimeFacts already
+ *  derived; the credential is the derived one, else the adapter's primary. Null for claude-code (its
+ *  envelope is parsed by parseClaudeResultJson, unchanged), an unknown runtime, or an unparseable
+ *  capture. NEVER THROWS. */
+export function resolveAdapterTelemetry(captured: string, model: string | null, facts: RuntimeFacts): TelemetryRecord | null {
+  try {
+    if (!facts.runtime || facts.runtime === DEFAULT_ADAPTER_ID || !hasAdapter(facts.runtime)) return null;
+    const adapter = getAdapter(facts.runtime);
+    return adapter.telemetry.parse(captured, { model, credential: facts.credential_kind ?? adapter.auth.primaryCredential });
+  } catch {
+    return null;
+  }
+}
+
 export function registerLegCostCommands(program: Command): void {
   const legCost = program
     .command('leg-cost')
@@ -212,17 +228,25 @@ export function registerLegCostCommands(program: Command): void {
         // A null parse is EXPECTED, not exceptional (an older CLI that ignored --output-format, a
         // stub, an invocation that died before emitting anything). The row is still written, with
         // no measurements: that an invocation happened at all is itself worth showing.
-        const parsed = parseClaudeResultJson(captured);
         const model = opts.model || null;
-        const cost = parsed
-          ? resolveCost(parsed, model)
-          : { total_cost_usd: null, cost_source: 'unknown' as const };
-
         const facts = resolveRuntimeFacts(captured, model, {
           runtime: opts.runtime,
           credentialKind: opts.credentialKind,
           costRegime: opts.costRegime,
         });
+
+        // B-1076: a NON-Claude runtime's capture (Codex's `--json` JSONL) is read by its OWN adapter's
+        // telemetry — the tokens, session and error flag. The Claude envelope parse is skipped for it
+        // entirely: it can half-match a JSONL usage object (input/output but not cached tokens) and
+        // would price it against the Claude table. Cost stays null/'unknown': a plan-included regime
+        // has no per-invocation price (docs/codex-phase0-findings.md, "Cost capture"). Claude legs are
+        // untouched (resolveAdapterTelemetry is null for claude-code).
+        const adapterRec = resolveAdapterTelemetry(captured, model, facts);
+        const usage = adapterRec?.usage ?? null;
+        const parsed = adapterRec ? null : parseClaudeResultJson(captured);
+        const cost = parsed
+          ? resolveCost(parsed, model)
+          : { total_cost_usd: null, cost_source: 'unknown' as const };
 
         const index = Number(opts.invocationIndex);
         // ONE client for both the context read and the write — authenticating twice per invocation
@@ -237,9 +261,9 @@ export function registerLegCostCommands(program: Command): void {
           gate: opts.gate || null,
           model,
           invocation_index: Number.isFinite(index) ? index : null,
-          input_tokens: parsed?.input_tokens ?? null,
-          output_tokens: parsed?.output_tokens ?? null,
-          cache_read_input_tokens: parsed?.cache_read_input_tokens ?? null,
+          input_tokens: parsed?.input_tokens ?? usage?.inputTokens ?? null,
+          output_tokens: parsed?.output_tokens ?? usage?.outputTokens ?? null,
+          cache_read_input_tokens: parsed?.cache_read_input_tokens ?? usage?.cacheReadInputTokens ?? null,
           cache_creation_input_tokens: parsed?.cache_creation_input_tokens ?? null,
           cache_creation_1h_input_tokens: parsed?.cache_creation_1h_input_tokens ?? null,
           cache_creation_5m_input_tokens: parsed?.cache_creation_5m_input_tokens ?? null,
@@ -249,8 +273,8 @@ export function registerLegCostCommands(program: Command): void {
           num_turns: parsed?.num_turns ?? null,
           duration_ms: parsed?.duration_ms ?? null,
           duration_api_ms: parsed?.duration_api_ms ?? null,
-          session_id: parsed?.session_id ?? null,
-          is_error: parsed?.is_error ?? false,
+          session_id: parsed?.session_id ?? adapterRec?.sessionId ?? null,
+          is_error: parsed?.is_error ?? adapterRec?.isError ?? false,
           service_tier: parsed?.service_tier ?? null,
           runtime: facts.runtime,
           credential_kind: facts.credential_kind,

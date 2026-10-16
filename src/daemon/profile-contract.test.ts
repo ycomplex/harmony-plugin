@@ -25,6 +25,7 @@ import { execFileSync } from 'node:child_process';
 // default, rather than only pattern-matching the raw text.
 import { renderTemplate } from './config.js';
 import { WORKER_IMAGE_DEFAULT } from '../config/deployment-config.js';
+import { LEGACY_LOCAL_DOCKER_LAUNCH } from './local-docker-legacy-launch.js';
 
 // --- B-869/B-826: hermetic-test capability probe -----------------------------------------------
 // AC1 of B-869 requires that a clean checkout either goes GREEN or announces an environment-driven
@@ -1110,9 +1111,17 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
   });
 });
 
+/** B-1076: the local-docker profile with its launch set to the FROZEN pre-B-1076 inline template —
+ *  the static contracts below pin that text, and src/daemon/local-docker-launch.test.ts executes it
+ *  beside container/docker-worker-launch.sh to prove the wrapper launches identically. */
+function legacyLocalDockerProfile(): Record<string, unknown> & { launch: string } {
+  const live = JSON.parse(readFileSync(profilePath, 'utf8')) as Record<string, unknown>;
+  return { ...live, launch: LEGACY_LOCAL_DOCKER_LAUNCH };
+}
+
 describe('daemon-profile.example.json ↔ provision.sh mode contract', () => {
   it('the launch template passes a REAL provision.sh mode as the first arg after the image name', () => {
-    const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as { launch: string };
+    const profile = legacyLocalDockerProfile() as { launch: string };
     const script = readFileSync(provisionPath, 'utf8');
 
     const modes = provisionModes(script);
@@ -1130,7 +1139,7 @@ describe('daemon-profile.example.json ↔ provision.sh mode contract', () => {
   // every following word). This renders the REAL template with the REAL renderer and asserts the
   // schema default lands and the mode token still follows the image.
   it('renders {worker_image} to the schema default and STILL puts a real provision.sh mode right after it', () => {
-    const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as { launch: string };
+    const profile = legacyLocalDockerProfile() as { launch: string };
     const script = readFileSync(provisionPath, 'utf8');
     const modes = provisionModes(script);
     expect(modes.length).toBeGreaterThan(0);
@@ -1151,7 +1160,7 @@ describe('daemon-profile.example.json ↔ provision.sh mode contract', () => {
   });
 
   it('substitutes a deployment-configured override image in place of the default, mode token still intact', () => {
-    const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as { launch: string };
+    const profile = legacyLocalDockerProfile() as { launch: string };
     const modes = provisionModes(readFileSync(provisionPath, 'utf8'));
     const override = 'us-central1-docker.pkg.dev/acme/workers/acme-build-env:v3';
     const rendered = renderTemplate(profile.launch, {
@@ -1194,7 +1203,7 @@ function volumeMappings(launch: string): Array<{ host: string; container: string
 }
 
 describe('daemon-profile.example.json transcript-mount contract (B-724)', () => {
-  const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as { launch: string };
+  const profile = legacyLocalDockerProfile() as { launch: string };
   const mounts = volumeMappings(profile.launch);
   // B-846: the run-config.json mount is a FILE, written by mint-installation-token.mjs itself
   // (never mkdir'd — you cannot `mkdir -p` a file path). Its parent dir needs no dedicated
@@ -1232,7 +1241,7 @@ describe('daemon-profile.example.json transcript-mount contract (B-724)', () => 
 // mint-installation-token.mjs, never argv/shell-interpolated) into the container read-only.
 
 describe('daemon-profile.example.json run-config bind-mount contract (B-846)', () => {
-  const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as { launch: string };
+  const profile = legacyLocalDockerProfile() as { launch: string };
   const mounts = volumeMappings(profile.launch);
   const runConfigMount = mounts.find((m) => m.container.startsWith('/home/worker/.claude/run-config.json'));
 
@@ -1276,7 +1285,7 @@ describe('daemon-profile.example.json run-config bind-mount contract (B-846)', (
 // docker profile specifically, since `docker run` only ever bind-mounts THIS conduction's own
 // directories — see scripts/resume-discovery.mjs's own header for the full rationale.
 describe('daemon-profile.example.json resume-discovery wiring (B-718)', () => {
-  const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as { launch: string };
+  const profile = legacyLocalDockerProfile() as { launch: string };
 
   it('runs resume-discovery.mjs AFTER the mint step and BEFORE docker run', () => {
     const mintAt = profile.launch.indexOf('mint-installation-token.mjs');
@@ -1312,7 +1321,7 @@ describe('daemon-profile.example.json resume-discovery wiring (B-718)', () => {
 const dockerfilePath = fileURLToPath(new URL('../../container/Dockerfile', import.meta.url));
 
 describe('daemon-profile.example.json ↔ Dockerfile mount-parent ownership contract (B-724)', () => {
-  const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as { launch: string };
+  const profile = legacyLocalDockerProfile() as { launch: string };
   const dockerfile = readFileSync(dockerfilePath, 'utf8');
   const mounts = volumeMappings(profile.launch);
   // B-846: run-config.json is a FILE mounted directly under /home/worker/.claude, which the
@@ -1403,7 +1412,7 @@ function envFileArg(launch: string): string | undefined {
 }
 
 describe('daemon-profile.example.json bot-identity credential contract (B-732)', () => {
-  const profile = JSON.parse(readFileSync(profilePath, 'utf8')) as {
+  const profile = legacyLocalDockerProfile() as {
     launch: string;
     reap: string;
   };

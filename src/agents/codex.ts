@@ -16,7 +16,7 @@
 // fallback (B-934).
 
 import { posix as path } from 'node:path';
-import type { AgentAdapter, CredentialResolution, HeadlessInput, McpConnection } from './contract.js';
+import type { AgentAdapter, CredentialResolution, HeadlessInput, McpConnection, TelemetryUsage } from './contract.js';
 import { PLUGIN_ROOT_PLACEHOLDER } from './contract.js';
 import { deriveCostRegime } from './credentials.js';
 
@@ -298,6 +298,17 @@ export function parseCodexUsage(stdout: string): CodexUsage | null {
   };
 }
 
+/** B-1076: the LAST `turn.completed` usage, mapped onto conduction_leg_costs' columns: input_tokens
+ *  (as Codex reports it — OpenAI's figure INCLUDES the cached part), cached_input_tokens ->
+ *  cache_read_input_tokens, output_tokens. Codex's cache_write / reasoning_output figures have no
+ *  column with matching semantics and are not recorded (docs/codex-phase0-findings.md, "Cost capture").
+ *  Null when no `turn.completed` carried a usage object. */
+export function codexTelemetryUsage(stdout: string): TelemetryUsage | null {
+  const u = parseCodexUsage(stdout);
+  if (!u) return null;
+  return { inputTokens: u.inputTokens, cacheReadInputTokens: u.cachedInputTokens, outputTokens: u.outputTokens };
+}
+
 const SAMPLE_OUTPUT = [
   JSON.stringify({ type: 'thread.started', thread_id: '00000000-0000-4000-8000-000000000000' }),
   JSON.stringify({ type: 'turn.started' }),
@@ -365,8 +376,10 @@ export const codexAdapter: AgentAdapter = {
   mcp: { render: (connection) => renderCodexConfig(connection) },
 
   // 8. worker env allowlist — the same per-leg set the launch scripts forward for every adapter
-  //    (container/cloud-worker-launch.sh write_exec_env_file()). The login-cache PATH variable is a
-  //    standing binding of the launcher, not a per-leg value, and the file itself never rides env.
+  //    (container/cloud-worker-launch.sh write_exec_env_file()). The login-cache PATH variable is the
+  //    credential env, outside this list: each launcher adds it only for a Codex run (B-1076 — on cloud
+  //    in the per-execution env, since --env-vars-file replaces the job's literal env), and the file
+  //    itself never rides env.
   env: {
     allowlist: [
       'CONDUCTION_ID',
@@ -412,6 +425,7 @@ export const codexAdapter: AgentAdapter = {
         costUsd: null,
         sessionId: parseCodexThreadId(stdout),
         isError: terminal.type === 'turn.failed',
+        usage: codexTelemetryUsage(stdout),
       };
     },
     sampleOutput: SAMPLE_OUTPUT,
