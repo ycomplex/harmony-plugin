@@ -42760,6 +42760,24 @@ function parseCodexThreadId(stdout) {
   const e = events(stdout).find((x) => x.type === "thread.started" && typeof x.thread_id === "string" && x.thread_id !== "");
   return e ? e.thread_id : null;
 }
+function parseCodexUsage(stdout) {
+  const done = events(stdout).filter((x) => x.type === "turn.completed" && x.usage && typeof x.usage === "object");
+  const u = done.length ? done[done.length - 1].usage : null;
+  if (!u) return null;
+  const n = (k) => typeof u[k] === "number" && Number.isFinite(u[k]) ? u[k] : 0;
+  return {
+    inputTokens: n("input_tokens"),
+    cachedInputTokens: n("cached_input_tokens"),
+    cacheWriteInputTokens: n("cache_write_input_tokens"),
+    outputTokens: n("output_tokens"),
+    reasoningOutputTokens: n("reasoning_output_tokens")
+  };
+}
+function codexTelemetryUsage(stdout) {
+  const u = parseCodexUsage(stdout);
+  if (!u) return null;
+  return { inputTokens: u.inputTokens, cacheReadInputTokens: u.cachedInputTokens, outputTokens: u.outputTokens };
+}
 var SAMPLE_OUTPUT = [
   JSON.stringify({ type: "thread.started", thread_id: "00000000-0000-4000-8000-000000000000" }),
   JSON.stringify({ type: "turn.started" }),
@@ -42816,8 +42834,10 @@ var codexAdapter = {
   // 7. mcp — config.toml rendered from the canonical connection, required = true.
   mcp: { render: (connection) => renderCodexConfig(connection) },
   // 8. worker env allowlist — the same per-leg set the launch scripts forward for every adapter
-  //    (container/cloud-worker-launch.sh write_exec_env_file()). The login-cache PATH variable is a
-  //    standing binding of the launcher, not a per-leg value, and the file itself never rides env.
+  //    (container/cloud-worker-launch.sh write_exec_env_file()). The login-cache PATH variable is the
+  //    credential env, outside this list: each launcher adds it only for a Codex run (B-1076 — on cloud
+  //    in the per-execution env, since --env-vars-file replaces the job's literal env), and the file
+  //    itself never rides env.
   env: {
     allowlist: [
       "CONDUCTION_ID",
@@ -42860,7 +42880,8 @@ var codexAdapter = {
         costRegime: deriveCostRegime(ctx.credential),
         costUsd: null,
         sessionId: parseCodexThreadId(stdout),
-        isError: terminal.type === "turn.failed"
+        isError: terminal.type === "turn.failed",
+        usage: codexTelemetryUsage(stdout)
       };
     },
     sampleOutput: SAMPLE_OUTPUT
@@ -42876,6 +42897,9 @@ var ADAPTERS = /* @__PURE__ */ new Map([
 var DEFAULT_ADAPTER_ID = claudeCodeAdapter.id;
 function listAdapterIds() {
   return [...ADAPTERS.keys()];
+}
+function hasAdapter(id) {
+  return ADAPTERS.has(id);
 }
 function getAdapter(id) {
   const adapter = ADAPTERS.get(id);
@@ -43281,6 +43305,15 @@ function resolveRuntimeFacts(captured, model, overrides = {}, env2 = process.env
   }
   return facts;
 }
+function resolveAdapterTelemetry(captured, model, facts) {
+  try {
+    if (!facts.runtime || facts.runtime === DEFAULT_ADAPTER_ID || !hasAdapter(facts.runtime)) return null;
+    const adapter = getAdapter(facts.runtime);
+    return adapter.telemetry.parse(captured, { model, credential: facts.credential_kind ?? adapter.auth.primaryCredential });
+  } catch {
+    return null;
+  }
+}
 function registerLegCostCommands(program3) {
   const legCost = program3.command("leg-cost").description(
     "B-916 per-invocation cost capture \u2014 the ONE place container/provision.sh records what each `claude` invocation of a leg cost, and resolves the gate to stamp on it. Capture for DISPLAY only: nothing the daemon decides ever reads these rows."
@@ -43314,14 +43347,16 @@ function registerLegCostCommands(program3) {
         );
         return;
       }
-      const parsed = parseClaudeResultJson(captured);
       const model = opts.model || null;
-      const cost = parsed ? resolveCost(parsed, model) : { total_cost_usd: null, cost_source: "unknown" };
       const facts = resolveRuntimeFacts(captured, model, {
         runtime: opts.runtime,
         credentialKind: opts.credentialKind,
         costRegime: opts.costRegime
       });
+      const adapterRec = resolveAdapterTelemetry(captured, model, facts);
+      const usage = adapterRec?.usage ?? null;
+      const parsed = adapterRec ? null : parseClaudeResultJson(captured);
+      const cost = parsed ? resolveCost(parsed, model) : { total_cost_usd: null, cost_source: "unknown" };
       const index = Number(opts.invocationIndex);
       const client = await getClient();
       const context = await resolveLegCostContext(client, conductionId);
@@ -43332,9 +43367,9 @@ function registerLegCostCommands(program3) {
         gate: opts.gate || null,
         model,
         invocation_index: Number.isFinite(index) ? index : null,
-        input_tokens: parsed?.input_tokens ?? null,
-        output_tokens: parsed?.output_tokens ?? null,
-        cache_read_input_tokens: parsed?.cache_read_input_tokens ?? null,
+        input_tokens: parsed?.input_tokens ?? usage?.inputTokens ?? null,
+        output_tokens: parsed?.output_tokens ?? usage?.outputTokens ?? null,
+        cache_read_input_tokens: parsed?.cache_read_input_tokens ?? usage?.cacheReadInputTokens ?? null,
         cache_creation_input_tokens: parsed?.cache_creation_input_tokens ?? null,
         cache_creation_1h_input_tokens: parsed?.cache_creation_1h_input_tokens ?? null,
         cache_creation_5m_input_tokens: parsed?.cache_creation_5m_input_tokens ?? null,
@@ -43344,8 +43379,8 @@ function registerLegCostCommands(program3) {
         num_turns: parsed?.num_turns ?? null,
         duration_ms: parsed?.duration_ms ?? null,
         duration_api_ms: parsed?.duration_api_ms ?? null,
-        session_id: parsed?.session_id ?? null,
-        is_error: parsed?.is_error ?? false,
+        session_id: parsed?.session_id ?? adapterRec?.sessionId ?? null,
+        is_error: parsed?.is_error ?? adapterRec?.isError ?? false,
         service_tier: parsed?.service_tier ?? null,
         runtime: facts.runtime,
         credential_kind: facts.credential_kind,

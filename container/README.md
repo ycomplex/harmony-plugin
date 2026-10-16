@@ -1028,6 +1028,64 @@ worker's environment, or in the launcher's, **refuses the start**.
 4. A Codex leg's model comes from `HARMONY_CODEX_MODEL` in the base env file (or the CLI default); the
    daemon's `HARMONY_MODEL` is a Claude alias and is ignored. Per-run flags go in `CODEX_HEADLESS_FLAGS`.
 
+#### Codex on the local-docker profile
+
+`container/docker-worker-launch.sh` (the example profile's `launch` since B-1076) handles it. On the
+daemon host, do step 1 above; nothing else.
+
+- A Codex run bind-mounts `~/.harmony/codex-automation/auth.json` (override: `HARMONY_CODEX_AUTH_SRC`)
+  **read-only** at `/home/worker/.codex-auth-src/auth.json`, mounts a per-conduction
+  `~/.harmony-conductions/<ticket>/<conduction>/codex-sessions` at `/home/worker/.codex/sessions`, and sets
+  `HARMONY_CODEX_AUTH_FILE`. It skips the host-side resume discovery (that only finds Claude sessions).
+- It refuses, before minting anything, when the file is missing or `OPENAI_API_KEY` / `CODEX_API_KEY` /
+  `CODEX_ACCESS_TOKEN` is set in the daemon's environment.
+- The worker runs as uid 1001 and must be able to read the mounted file. Docker Desktop (macOS) presents
+  it readable; on a native Linux Docker host whose user is not uid 1001 it is not. That case is unproven
+  (`docs/codex-phase0-findings.md`); use the docker-host profile there, which ships a chowned copy.
+- Add `"codex"` to the live profile's `agents` list (the example already lists `["claude-code", "codex"]`;
+  a live profile copied before B-1076 does not), point `worker_image` at the `agent-codex` image target,
+  and restart the daemon.
+
+#### Codex on the cloud profile
+
+On Cloud Run the login cache is a Secret Manager secret mounted on the **job definition**, once.
+`container/cloud-worker-launch.sh` then only adds `HARMONY_CODEX_AUTH_FILE` to each execution's env, and
+refuses a Codex run (no execution started) when `gcloud run jobs describe` shows no secret volume at
+`/home/worker/.codex-auth-src`. Run these as the project owner (`unset CLOUDSDK_CORE_ACCOUNT`), after step 1:
+
+```bash
+# 1. the secret, from the login cache minted on the daemon host
+gcloud secrets create harmony-codex-auth --data-file=$HOME/.harmony/codex-automation/auth.json
+
+# 2. the worker runtime service account may read it
+gcloud secrets add-iam-policy-binding harmony-codex-auth \
+  --member=serviceAccount:harmony-worker@harmony-conductor.iam.gserviceaccount.com \
+  --role=roles/secretmanager.secretAccessor
+
+# 3. mount it on the job, as a FILE in the copy-in source dir
+#    (the job is $HARMONY_CLOUD_RUN_JOB on the daemon host; the scripts' default is harmony-build-worker)
+gcloud run jobs update harmony-build-worker --region us-central1 \
+  --update-secrets=/home/worker/.codex-auth-src/auth.json=harmony-codex-auth:latest
+```
+
+> **Use `--update-secrets`, never `--set-secrets`.** `--set-secrets` REPLACES every secret binding on the
+> job: it would drop the existing `HARMONY_API_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` bindings and break every
+> leg, Claude ones included.
+
+4. Add `"codex"` to the deployment profile's `agents` list (`profiles.cloud.agents` in
+   `~/.harmony/deployment.json`, or the live profile file) and make sure `worker_image` is the `agent-codex`
+   image.
+5. Restart the daemon so it reads the new list.
+6. If the daemon host's login is re-done (step 1 again, e.g. after a refresh token went stale), push it as
+   a new version — the job reads `:latest` at each execution:
+
+   ```bash
+   gcloud secrets versions add harmony-codex-auth --data-file=$HOME/.harmony/codex-automation/auth.json
+   ```
+
+The cloud path is wired but has not run a live leg (`docs/codex-phase0-findings.md`, "Local-docker and
+cloud profiles").
+
 **Copy-in, not a read-write mount, and why.** It is unproven whether Codex rewrites `auth.json` when it
 refreshes the token, or whether refresh tokens rotate (single use). That needs a live plan login to
 establish (BLOCKED, `docs/codex-phase0-findings.md`). A copy is the safe default: a refresh inside a leg

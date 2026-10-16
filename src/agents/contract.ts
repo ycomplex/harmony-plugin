@@ -176,6 +176,17 @@ export interface TelemetryRecord {
   costUsd: number | null;
   sessionId: string | null;
   isError: boolean;
+  /** B-1076: token usage, for an adapter whose capture is NOT the Claude result envelope (which
+   *  `harmony leg-cost record` parses itself). Absent/null = not reported; each field is null when the
+   *  runtime does not report it. */
+  usage?: TelemetryUsage | null;
+}
+
+/** B-1076: the token counts a non-Claude runtime reports, in conduction_leg_costs' column vocabulary. */
+export interface TelemetryUsage {
+  inputTokens: number | null;
+  cacheReadInputTokens: number | null;
+  outputTokens: number | null;
 }
 
 export interface TelemetrySeam {

@@ -2,6 +2,8 @@
 // seams behave as documented (docs/agent-adapter-contract.md, docs/codex-phase0-findings.md).
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { HARMONY_MCP_CONNECTION, SEAMS } from './contract.js';
 import { runConformance } from './conformance.js';
 import {
@@ -233,7 +235,15 @@ describe('10. telemetry', () => {
       costUsd: null,
       sessionId: 't-9',
       isError: false,
+      // B-1076: the LAST turn.completed usage, in conduction_leg_costs' vocabulary
+      usage: { inputTokens: 5, cacheReadInputTokens: 2, outputTokens: 7 },
     });
+  });
+  it('B-1076: usage is the LAST turn.completed of several (fixture capture), null when no terminal turn carried one', () => {
+    const fixture = readFileSync(fileURLToPath(new URL('./fixtures/codex-exec-two-turns.jsonl', import.meta.url)), 'utf8');
+    expect(A.telemetry.parse(fixture, ctx)?.usage).toEqual({ inputTokens: 5400, cacheReadInputTokens: 4100, outputTokens: 610 });
+    const failedOnly = '{"type":"thread.started","thread_id":"t"}\n{"type":"turn.failed","error":{"message":"boom"}}';
+    expect(A.telemetry.parse(failedOnly, ctx)?.usage).toBeNull();
   });
   it('a failed turn is an error', () => {
     const failed = '{"type":"thread.started","thread_id":"t"}\n{"type":"turn.failed","error":{"message":"boom"}}';

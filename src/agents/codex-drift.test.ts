@@ -27,6 +27,7 @@ import {
   CODEX_BYPASS_FLAG,
   CODEX_CD_FLAG,
   CODEX_JSON_FLAG,
+  CODEX_AUTH_FILE_ENV,
   CODEX_MODEL_FLAG,
   CODEX_MCP_ENV_VARS,
   codexAdapter as A,
@@ -152,9 +153,16 @@ function envFileBody(cloudLaunch: string): string {
 function envProblems(cloudLaunch: string): string[] {
   const body = envFileBody(cloudLaunch);
   if (!body) return ['write_exec_env_file() not found'];
-  const shell = [...new Set([...body.matchAll(/printf '([A-Z_]+):/g)].map((m) => m[1]))].sort();
+  // B-1076: the ONE launcher-forwarded name outside the shared per-leg allowlist is the login-cache
+  // PATH variable (the adapter's credential env), forwarded only for a Codex run — conformance keeps a
+  // credential env out of the allowlist, so it is subtracted here and its CODEX_RUN gate is pinned.
+  const credVar = CODEX_AUTH_FILE_ENV;
+  const p: string[] = [];
+  if (!new RegExp(`if \\[ "\\$\\{CODEX_RUN:-0\\}" = "1" \\]; then\\n\\s*printf '${credVar}:`).test(body)) p.push(`${credVar} is not forwarded behind the CODEX_RUN gate`);
+  const shell = [...new Set([...body.matchAll(/printf '([A-Z_]+):/g)].map((m) => m[1]))].filter((n) => n !== credVar).sort();
   const adapter = [...A.env.allowlist].sort();
-  return JSON.stringify(shell) === JSON.stringify(adapter) ? [] : [`env allowlist: shell [${shell}] ≠ adapter [${adapter}]`];
+  if (JSON.stringify(shell) !== JSON.stringify(adapter)) p.push(`env allowlist: shell [${shell}] ≠ adapter [${adapter}]`);
+  return p;
 }
 
 describe('scripts ⇄ Codex adapter drift', () => {

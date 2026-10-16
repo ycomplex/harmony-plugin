@@ -3,6 +3,10 @@
   "reap": "bash \"$HARMONY_PLUGIN_DIR/container/cloud-worker-reap.sh\" {conduction_id} {ticket}",
   "probe": "bash \"$HARMONY_PLUGIN_DIR/container/cloud-worker-probe.sh\" {conduction_id} {ticket}",
   "maxConcurrentWorkers": 2,
+  "agents": [
+    "claude-code",
+    "codex"
+  ],
   "required_tools": {
     "launch": [
       "node",

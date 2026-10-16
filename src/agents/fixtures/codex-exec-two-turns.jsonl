@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"0199b1c7-1076-7000-8000-c0de0000beef"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"first turn"}}
+{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":300,"cache_write_input_tokens":0,"output_tokens":90,"reasoning_output_tokens":40}}
+WARNING: a non-JSON line the CLI may print between events
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"second turn"}}
+{"type":"turn.completed","usage":{"input_tokens":5400,"cached_input_tokens":4100,"cache_write_input_tokens":0,"output_tokens":610,"reasoning_output_tokens":220}}
