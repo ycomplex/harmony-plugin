@@ -195,6 +195,7 @@ harmony-plugin/
 │   ├── auth.ts                  # Token exchange (shared)
 │   ├── supabase.ts              # Supabase client (shared)
 │   ├── tools/                   # Handlers — shared core for MCP + CLI
+│   ├── agents/                  # Agent-adapter contract + registry (docs/agent-adapter-contract.md)
 │   ├── bin/harmony.ts           # CLI binary entry point
 │   └── cli/                     # CLI commands and formatting
 ├── package.json
