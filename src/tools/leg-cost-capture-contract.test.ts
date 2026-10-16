@@ -34,6 +34,8 @@ import { execFileSync } from 'node:child_process';
 
 const provisionPath = fileURLToPath(new URL('../../container/provision.sh', import.meta.url));
 const provisionScript = readFileSync(provisionPath, 'utf8');
+/** B-1077: the real built CLI (vitest's globalSetup builds dist/ when absent). */
+const REAL_CLI = fileURLToPath(new URL('../../dist/bin/harmony.js', import.meta.url));
 
 /** Extract the headless branch's invocation block verbatim: from the B-718 header comment through
  *  the closing `exit "$LEG_EXIT"`, EXCLUDING the case-arm's own trailing `;;` (the harness supplies
@@ -94,6 +96,14 @@ function fakePluginDir(dir: string, logFile: string, opts: { recordExitCode?: nu
     [
       "const { appendFileSync, existsSync, writeFileSync, unlinkSync, readFileSync } = require('node:fs');",
       'const argv = process.argv.slice(2);',
+      // B-1077: provision.sh builds every launch command through `harmony agent argv` (the adapter
+      // registry). Forwarded to the REAL built CLI so the launched command is the adapter's own, and
+      // deliberately NOT logged: these tests pin the cost/output accessor calls and their order
+      // around each invocation, which the launch-command build is not part of.
+      "if (argv[0] === 'agent') {",
+      `  const r = require('node:child_process').spawnSync(process.execPath, [${JSON.stringify(REAL_CLI)}, ...argv], { stdio: 'inherit' });`,
+      '  process.exit(r.status ?? 1);',
+      '}',
       `appendFileSync(${JSON.stringify(logFile)}, 'HARMONY ' + JSON.stringify(argv) + '\\n');`,
       "const handoff = process.env.HOME + '/handoff';",
       "if (argv[0] === 'model' && argv[1] === 'read-handoff') {",

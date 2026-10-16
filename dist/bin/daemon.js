@@ -119,14 +119,14 @@ function __esDecorate(ctor, descriptorIn, decorators, contextIn, initializers, e
   var descriptor = descriptorIn || (target ? Object.getOwnPropertyDescriptor(target, contextIn.name) : {});
   var _, done = false;
   for (var i = decorators.length - 1; i >= 0; i--) {
-    var context = {};
-    for (var p in contextIn) context[p] = p === "access" ? {} : contextIn[p];
-    for (var p in contextIn.access) context.access[p] = contextIn.access[p];
-    context.addInitializer = function(f) {
+    var context2 = {};
+    for (var p in contextIn) context2[p] = p === "access" ? {} : contextIn[p];
+    for (var p in contextIn.access) context2.access[p] = contextIn.access[p];
+    context2.addInitializer = function(f) {
       if (done) throw new TypeError("Cannot add initializers after decoration has completed");
       extraInitializers.push(accept(f || null));
     };
-    var result = (0, decorators[i])(kind === "accessor" ? { get: descriptor.get, set: descriptor.set } : descriptor[key], context);
+    var result = (0, decorators[i])(kind === "accessor" ? { get: descriptor.get, set: descriptor.set } : descriptor[key], context2);
     if (kind === "accessor") {
       if (result === void 0) continue;
       if (result === null || typeof result !== "object") throw new TypeError("Object expected");
@@ -589,28 +589,28 @@ var require_types = __commonJS({
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.FunctionRegion = exports.FunctionsHttpError = exports.FunctionsRelayError = exports.FunctionsFetchError = exports.FunctionsError = void 0;
     var FunctionsError2 = class extends Error {
-      constructor(message, name = "FunctionsError", context) {
+      constructor(message, name = "FunctionsError", context2) {
         super(message);
         this.name = name;
-        this.context = context;
+        this.context = context2;
       }
     };
     exports.FunctionsError = FunctionsError2;
     var FunctionsFetchError2 = class extends FunctionsError2 {
-      constructor(context) {
-        super("Failed to send a request to the Edge Function", "FunctionsFetchError", context);
+      constructor(context2) {
+        super("Failed to send a request to the Edge Function", "FunctionsFetchError", context2);
       }
     };
     exports.FunctionsFetchError = FunctionsFetchError2;
     var FunctionsRelayError2 = class extends FunctionsError2 {
-      constructor(context) {
-        super("Relay Error invoking the Edge Function", "FunctionsRelayError", context);
+      constructor(context2) {
+        super("Relay Error invoking the Edge Function", "FunctionsRelayError", context2);
       }
     };
     exports.FunctionsRelayError = FunctionsRelayError2;
     var FunctionsHttpError2 = class extends FunctionsError2 {
-      constructor(context) {
-        super("Edge Function returned a non-2xx status code", "FunctionsHttpError", context);
+      constructor(context2) {
+        super("Edge Function returned a non-2xx status code", "FunctionsHttpError", context2);
       }
     };
     exports.FunctionsHttpError = FunctionsHttpError2;
@@ -4591,10 +4591,10 @@ Option 2: Install and provide the "ws" package:
        * Safely call setAuth with standardized error handling
        * @internal
        */
-      _setAuthSafely(context = "general") {
+      _setAuthSafely(context2 = "general") {
         if (!this._isManualToken()) {
           this.setAuth().catch((e) => {
-            this.log("error", `Error setting auth in ${context}`, e);
+            this.log("error", `Error setting auth in ${context2}`, e);
           });
         }
       }
@@ -15365,15 +15365,15 @@ var require_cst_scalar = __commonJS({
       }
       return null;
     }
-    function createScalarToken(value, context) {
-      const { implicitKey = false, indent, inFlow = false, offset = -1, type = "PLAIN" } = context;
+    function createScalarToken(value, context2) {
+      const { implicitKey = false, indent, inFlow = false, offset = -1, type = "PLAIN" } = context2;
       const source = stringifyString.stringifyString({ type, value }, {
         implicitKey,
         indent: indent > 0 ? " ".repeat(indent) : "",
         inFlow,
         options: { blockQuote: true, lineWidth: -1 }
       });
-      const end = context.end ?? [
+      const end = context2.end ?? [
         { type: "newline", offset: -1, indent, source: "\n" }
       ];
       switch (source[0]) {
@@ -15397,8 +15397,8 @@ var require_cst_scalar = __commonJS({
           return { type: "scalar", offset, indent, source, end };
       }
     }
-    function setScalarValue(token, value, context = {}) {
-      let { afterKey = false, implicitKey = false, inFlow = false, type } = context;
+    function setScalarValue(token, value, context2 = {}) {
+      let { afterKey = false, implicitKey = false, inFlow = false, type } = context2;
       let indent = "indent" in token ? token.indent : null;
       if (afterKey && typeof indent === "number")
         indent += 2;
@@ -17520,12 +17520,12 @@ var PostgrestError = class extends Error {
   * })
   * ```
   */
-  constructor(context) {
-    super(context.message);
+  constructor(context2) {
+    super(context2.message);
     this.name = "PostgrestError";
-    this.details = context.details;
-    this.hint = context.hint;
-    this.code = context.code;
+    this.details = context2.details;
+    this.hint = context2.hint;
+    this.code = context2.code;
   }
 };
 var PostgrestBuilder = class {
@@ -29838,7 +29838,13 @@ var LaunchProfileSchema = external_exports.object({
    *  regenerated after an upgrade) gets flagged by the boot preflight's soft audit instead of just
    *  silently lacking the new capability. Defaults to 1 (this ticket's baseline) when absent — see
    *  src/daemon/preflight.ts's CURRENT_SCHEMA_VERSION. */
-  schema_version: external_exports.number().int().positive().optional()
+  schema_version: external_exports.number().int().positive().optional(),
+  /** B-1077: the agent adapters (src/agents/registry.ts ids) legs on this profile may launch
+   *  through. Absent = `["claude-code"]` only (src/daemon/agent-eligibility.ts's
+   *  DEFAULT_PROFILE_AGENTS), so every existing profile behaves exactly as before. A run whose
+   *  run_config.agent.adapter is not in this list is parked at fire time, never launched. Mirrors
+   *  src/daemon/config.ts's LaunchProfile field of the same name. */
+  agents: external_exports.array(external_exports.string().min(1)).min(1).optional()
 });
 var RepoEntrySchema = external_exports.object({
   /** Clone URL. */
@@ -30439,7 +30445,13 @@ var RunConfigSchema = external_exports.object({
    *  single axis key. Mirrors `session_resume`'s own shape (a bare optional boolean, not a nested
    *  `{ enabled }` object — there is no second sub-field this flag will ever need). See
    *  `isFastTrackEnabled` below for the absence/false-both-read-as-disabled convention. */
-  fast_track: external_exports.boolean().optional()
+  fast_track: external_exports.boolean().optional(),
+  /** B-1077: which agent adapter (src/agents/registry.ts) this run's legs launch through —
+   *  `{ adapter: '<registry id>' }`. Deliberately `z.unknown()` here, NOT a strict object: a
+   *  malformed `agent` value must not make the WHOLE payload unparseable (that would silently
+   *  disable every other axis — session_resume, note, model, ...). Its shape is judged by
+   *  `getAgentAdapter` below instead, which REFUSES a malformed value rather than falling back. */
+  agent: external_exports.unknown().optional()
 }).passthrough();
 var EMPTY_RUN_CONFIG = {};
 function isFastTrackEnabled(runConfig) {
@@ -30450,6 +30462,20 @@ function getOperatorNote(runConfig) {
 }
 function getAutoApproveGates(runConfig) {
   return new Set(runConfig.auto_approve_gates ?? []);
+}
+var DEFAULT_AGENT_ADAPTER = "claude-code";
+function getAgentAdapter(runConfig) {
+  const agent = runConfig.agent;
+  if (agent === void 0 || agent === null) return { ok: true, adapter: DEFAULT_AGENT_ADAPTER, explicit: false };
+  if (typeof agent !== "object" || Array.isArray(agent)) {
+    return { ok: false, error: `run_config.agent must be an object like { "adapter": "<id>" }; got ${JSON.stringify(agent)}` };
+  }
+  const adapter = agent.adapter;
+  if (adapter === void 0) return { ok: true, adapter: DEFAULT_AGENT_ADAPTER, explicit: false };
+  if (typeof adapter !== "string" || adapter.trim() === "") {
+    return { ok: false, error: `run_config.agent.adapter must be a non-empty adapter id string; got ${JSON.stringify(adapter)}` };
+  }
+  return { ok: true, adapter, explicit: true };
 }
 function envValue(env, key) {
   const v = env[key];
@@ -32033,8 +32059,8 @@ function renderEntry(doc, ctx) {
   if (why.length) out.push("**Why:**", ...markAll(why), "");
   const alternatives = alternativeLines(doc);
   if (alternatives.length) out.push("**Alternatives:**", ...markAll(alternatives), "");
-  const context = contextLines(doc);
-  if (context.length) out.push("**Context:**", ...markAll(context), "");
+  const context2 = contextLines(doc);
+  if (context2.length) out.push("**Context:**", ...markAll(context2), "");
   const isClarify = ctx?.reason === "clarification-draft";
   if (isClarify) {
     const criteria = proposedAcLines(doc.payload);
@@ -35169,6 +35195,11 @@ function loadDaemonConfig(env, readFile, opts = {}) {
         `launch profile ${profilePath}'s "schema_version", when present, must be a positive integer`
       );
     }
+    if (profile.agents !== void 0 && (!Array.isArray(profile.agents) || profile.agents.length === 0 || profile.agents.some((a) => typeof a !== "string" || a.length === 0))) {
+      throw new Error(
+        `launch profile ${profilePath}'s "agents", when present, must be a non-empty array of agent adapter ids`
+      );
+    }
   }
   const validatedProfile = profile;
   return {
@@ -35197,7 +35228,9 @@ function loadDaemonConfig(env, readFile, opts = {}) {
       // routes.
       required_tools: validatedProfile.required_tools,
       requires_app_mint: validatedProfile.requires_app_mint,
-      schema_version: validatedProfile.schema_version
+      schema_version: validatedProfile.schema_version,
+      // B-1077: carried through on BOTH routes so the fire-time agent eligibility check sees it.
+      agents: validatedProfile.agents
     },
     logPath: envValue2(env, "HARMONY_DAEMON_LOG")
   };
@@ -35417,6 +35450,382 @@ function evaluateFastTrackAdmission(summary, declaredRepos) {
   const report = evaluateEligibility({ summary, evidence });
   const { admissible } = admissibleForFastTrack(report);
   return { admissible, report };
+}
+
+// src/agents/contract.ts
+var SEAMS = [
+  "launch",
+  //        1. install / launch: which binary, how its presence is probed
+  "auth",
+  //          2. accepted credentials, their env vars, the derived cost regime
+  "headless",
+  //      3. headless invocation argv + exit semantics
+  "session",
+  //       4. session storage + resume
+  "instructions",
+  //  5. instruction-file rendering
+  "skills",
+  //        6. skill delivery
+  "mcp",
+  //           7. MCP rendering from one canonical connection definition
+  "env",
+  //           8. worker environment allowlist
+  "capabilities",
+  //  9. capability map
+  "telemetry"
+  //    10. telemetry: runtime, model, credential, cost regime (read by B-1078)
+];
+var SEAM_NUMBER = Object.fromEntries(
+  SEAMS.map((s, i) => [s, i + 1])
+);
+var PLUGIN_ROOT_PLACEHOLDER = "{pluginRoot}";
+var HARMONY_MCP_CONNECTION = {
+  name: "harmony",
+  command: "node",
+  args: [`${PLUGIN_ROOT_PLACEHOLDER}/dist/index.js`]
+};
+
+// src/agents/credentials.ts
+var CREDENTIAL_MODES = [
+  "subscription-token",
+  "api-key",
+  "login-cache",
+  "workload-identity",
+  "enterprise-access-token"
+];
+var COST_REGIME_BY_CREDENTIAL = {
+  "login-cache": "plan-included",
+  "enterprise-access-token": "plan-included",
+  "subscription-token": "plan-included",
+  "api-key": "metered",
+  "workload-identity": "metered"
+};
+function isCredentialMode(value) {
+  return typeof value === "string" && CREDENTIAL_MODES.includes(value);
+}
+function deriveCostRegime(credential) {
+  if (!isCredentialMode(credential)) {
+    throw new Error(`Unknown credential mode '${String(credential)}' \u2014 expected one of: ${CREDENTIAL_MODES.join(", ")}`);
+  }
+  return COST_REGIME_BY_CREDENTIAL[credential];
+}
+
+// src/tools/claude-result-parse.ts
+var MODEL_PRICING = {
+  "opus-5-5": {
+    input_per_mtok: 4,
+    output_per_mtok: 20,
+    cache_write_1h_per_mtok: 8,
+    cache_write_5m_per_mtok: 5,
+    cache_read_per_mtok: 0.2
+  },
+  /** Opus 5 and the 4.x line ($5/$25). */
+  opus: {
+    input_per_mtok: 5,
+    output_per_mtok: 25,
+    cache_write_1h_per_mtok: 10,
+    cache_write_5m_per_mtok: 6.25,
+    cache_read_per_mtok: 0.5
+  },
+  /** Sonnet 5 and Sonnet 5.5 share one price. */
+  "sonnet-5": {
+    input_per_mtok: 2,
+    output_per_mtok: 10,
+    cache_write_1h_per_mtok: 4,
+    cache_write_5m_per_mtok: 2.5,
+    cache_read_per_mtok: 0.2
+  },
+  "fable-5-1": {
+    input_per_mtok: 10,
+    output_per_mtok: 50,
+    cache_write_1h_per_mtok: 20,
+    cache_write_5m_per_mtok: 12.5,
+    cache_read_per_mtok: 0.25
+  },
+  "fable-5": {
+    input_per_mtok: 10,
+    output_per_mtok: 50,
+    cache_write_1h_per_mtok: 20,
+    cache_write_5m_per_mtok: 12.5,
+    cache_read_per_mtok: 1
+  }
+};
+var PRICING_KEYS_BY_SPECIFICITY = Object.keys(MODEL_PRICING).sort((x, y) => y.length - x.length);
+function resolvePricing(model) {
+  if (!model) return null;
+  const alias = model.toLowerCase();
+  const key = PRICING_KEYS_BY_SPECIFICITY.find((k) => alias.includes(k));
+  return key ? MODEL_PRICING[key] : null;
+}
+var MTOK = 1e6;
+function deriveCostUsd(parsed, pricing) {
+  if (!pricing) return null;
+  const measured = [
+    parsed.input_tokens,
+    parsed.output_tokens,
+    parsed.cache_read_input_tokens,
+    parsed.cache_creation_input_tokens,
+    parsed.cache_creation_1h_input_tokens,
+    parsed.cache_creation_5m_input_tokens
+  ].some((v) => typeof v === "number");
+  if (!measured) return null;
+  const hasBreakdown = typeof parsed.cache_creation_1h_input_tokens === "number" || typeof parsed.cache_creation_5m_input_tokens === "number";
+  const write1h = hasBreakdown ? parsed.cache_creation_1h_input_tokens ?? 0 : 0;
+  const write5m = hasBreakdown ? parsed.cache_creation_5m_input_tokens ?? 0 : parsed.cache_creation_input_tokens ?? 0;
+  const usd = ((parsed.input_tokens ?? 0) * pricing.input_per_mtok + (parsed.output_tokens ?? 0) * pricing.output_per_mtok + (parsed.cache_read_input_tokens ?? 0) * pricing.cache_read_per_mtok + write1h * pricing.cache_write_1h_per_mtok + write5m * pricing.cache_write_5m_per_mtok) / MTOK;
+  return usd;
+}
+function resolveCost(parsed, model) {
+  if (typeof parsed.cli_cost_usd === "number" && parsed.cli_cost_usd > 0) {
+    return { total_cost_usd: parsed.cli_cost_usd, cost_source: "cli" };
+  }
+  const derived = deriveCostUsd(parsed, resolvePricing(model));
+  if (derived !== null) return { total_cost_usd: derived, cost_source: "derived" };
+  return { total_cost_usd: null, cost_source: "unknown" };
+}
+var asNumber = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
+var asString = (v) => typeof v === "string" ? v : null;
+function parseEnvelope(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  try {
+    const whole = JSON.parse(trimmed);
+    if (whole && typeof whole === "object" && !Array.isArray(whole)) {
+      return whole;
+    }
+  } catch {
+  }
+  const lines = trimmed.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+function parseClaudeResultJson(text) {
+  const envelope = parseEnvelope(text);
+  if (!envelope) return null;
+  if (!("result" in envelope) && !("usage" in envelope)) return null;
+  const usage = envelope.usage ?? {};
+  const cacheCreation = usage.cache_creation ?? {};
+  return {
+    // The trap: `is_error`, never `subtype` — an errored run still reports subtype 'success'.
+    is_error: envelope.is_error === true,
+    result: asString(envelope.result),
+    session_id: asString(envelope.session_id),
+    num_turns: asNumber(envelope.num_turns),
+    duration_ms: asNumber(envelope.duration_ms),
+    duration_api_ms: asNumber(envelope.duration_api_ms),
+    service_tier: asString(envelope.service_tier) ?? asString(usage.service_tier),
+    input_tokens: asNumber(usage.input_tokens),
+    output_tokens: asNumber(usage.output_tokens),
+    cache_read_input_tokens: asNumber(usage.cache_read_input_tokens),
+    cache_creation_input_tokens: asNumber(usage.cache_creation_input_tokens),
+    cache_creation_1h_input_tokens: asNumber(cacheCreation.ephemeral_1h_input_tokens),
+    cache_creation_5m_input_tokens: asNumber(cacheCreation.ephemeral_5m_input_tokens),
+    thinking_tokens: asNumber(usage.output_tokens_details?.thinking_tokens),
+    cli_cost_usd: asNumber(envelope.total_cost_usd)
+  };
+}
+
+// src/agents/claude-code.ts
+var CLAUDE_OUTPUT_FORMAT_FLAGS = ["--output-format", "json"];
+var CLAUDE_MODEL_FLAG = "--model";
+var CLAUDE_RESUME_FLAG = "--resume";
+var CLAUDE_PLUGIN_DIR_FLAG = "--plugin-dir";
+var CLAUDE_PROMPT_FLAG = "-p";
+var OAUTH_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
+var API_KEY_ENV = "ANTHROPIC_API_KEY";
+function present(env, name) {
+  const v = env[name];
+  return typeof v === "string" && v !== "";
+}
+function resolveClaudeCredential(env) {
+  const oauth = present(env, OAUTH_ENV);
+  const apiKey = present(env, API_KEY_ENV);
+  if (oauth && apiKey) {
+    return { ok: false, error: `${API_KEY_ENV} is set beside ${OAUTH_ENV} \u2014 two credentials at once is a config error (B-934: no silent fallback between regimes). Unset one.` };
+  }
+  if (oauth) return { ok: true, credential: "subscription-token" };
+  if (apiKey) return { ok: true, credential: "api-key" };
+  return { ok: false, error: `headless mode needs auth: set ${OAUTH_ENV} (subscription-token; mint via 'claude setup-token') or ${API_KEY_ENV} (api-key, metered).` };
+}
+function buildClaudeArgv(input) {
+  const argv = [CLAUDE_PLUGIN_DIR_FLAG, input.pluginDir, CLAUDE_PROMPT_FLAG, input.prompt];
+  if (input.resumeSessionId) argv.push(CLAUDE_RESUME_FLAG, input.resumeSessionId);
+  const extra = [...input.extraFlags ?? []];
+  argv.push(...extra);
+  if (!extra.includes(CLAUDE_OUTPUT_FORMAT_FLAGS[0])) argv.push(...CLAUDE_OUTPUT_FORMAT_FLAGS);
+  if (input.model) argv.push(CLAUDE_MODEL_FLAG, input.model);
+  return argv;
+}
+var SESSION_ROOT = "$HOME/.claude/projects";
+var SESSION_EXT = ".jsonl";
+function renderClaudeMcp(connection) {
+  const args = connection.args.map((a) => a.split(PLUGIN_ROOT_PLACEHOLDER).join("${CLAUDE_PLUGIN_ROOT}"));
+  const doc = { [connection.name]: { command: connection.command, args } };
+  return { fileName: ".mcp.json", content: JSON.stringify(doc, null, 2) + "\n" };
+}
+var SAMPLE_RESULT = JSON.stringify({
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  result: "done",
+  session_id: "00000000-0000-4000-8000-000000000000",
+  num_turns: 3,
+  duration_ms: 1200,
+  total_cost_usd: 0.42,
+  usage: { input_tokens: 10, output_tokens: 20 }
+});
+var claudeCodeAdapter = {
+  id: "claude-code",
+  family: "claude-code",
+  displayName: "Claude Code",
+  // 1. launch — provision.sh: `command -v claude` (fails the leg when the image has no claude).
+  launch: { binary: "claude", probeArgv: ["command", "-v", "claude"] },
+  // 2. auth — provision.sh's headless auth block.
+  auth: {
+    acceptedCredentials: ["subscription-token", "api-key"],
+    credentialEnv: { "subscription-token": OAUTH_ENV, "api-key": API_KEY_ENV },
+    primaryCredential: "subscription-token",
+    resolveCredential: resolveClaudeCredential
+  },
+  // 3. headless invocation + exit semantics — every `_b772_run claude ...` line in provision.sh; the
+  //    leg exits with claude's own status, and `is_error` (never `subtype`) marks an errored run.
+  headless: {
+    buildArgv: buildClaudeArgv,
+    exit: { successCode: 0, nonZeroIsFailure: true, structuredErrorField: "is_error" }
+  },
+  // 4. session storage + resume — `"$HOME/.claude/projects"/*/"$RESUME_SESSION_ID.jsonl"`.
+  session: {
+    root: SESSION_ROOT,
+    extension: SESSION_EXT,
+    resumeFlag: CLAUDE_RESUME_FLAG,
+    sessionGlob: (id) => `${SESSION_ROOT}/*/${id}${SESSION_EXT}`,
+    sessionIdFromPath: (path) => {
+      const m = /\/\.claude\/projects\/[^/]+\/([^/]+)\.jsonl$/.exec(path);
+      return m ? m[1] : null;
+    }
+  },
+  // 5. instruction rendering — Claude Code reads the project's CLAUDE.md.
+  instructions: {
+    fileName: "CLAUDE.md",
+    render: (body) => ({ fileName: "CLAUDE.md", content: body.endsWith("\n") ? body : body + "\n" })
+  },
+  // 6. skill delivery — `--plugin-dir "$PLUGIN_DIR"` loads skills/; provision.sh copies the build
+  //    subagent definition into ~/.claude/agents (config levers do not reach Task-tool subagents).
+  skills: {
+    mechanism: CLAUDE_PLUGIN_DIR_FLAG,
+    skillsRoot: "skills",
+    agentFiles: [{ source: "container/agents/harmony-build.md", target: "$HOME/.claude/agents/harmony-build.md" }]
+  },
+  // 7. MCP rendering — renders the canonical connection as the plugin's .mcp.json.
+  mcp: { render: renderClaudeMcp },
+  // 8. worker env allowlist — container/cloud-worker-launch.sh write_exec_env_file(): the per-leg
+  //    literal env set (`--env-vars-file` REPLACES the job's literal env, so this is exhaustive).
+  //    Credentials ride `--set-secrets` bindings, never this list.
+  env: {
+    allowlist: [
+      "CONDUCTION_ID",
+      "TICKET",
+      "GIT_TOKEN",
+      "HARMONY_TRANSCRIPT_MOUNT_ROOT",
+      "HARMONY_PLUGIN_POSTURE",
+      "HARMONY_REPOS_JSON",
+      "HARMONY_RUN_CONFIG_JSON",
+      "HARMONY_MODEL",
+      "GIT_TOKEN_EXPIRES_AT",
+      "HARMONY_LEG",
+      "HARMONY_CONDUCTION_ID"
+    ],
+    standingSecrets: ["HARMONY_API_TOKEN", OAUTH_ENV]
+  },
+  // 9. capability map.
+  capabilities: {
+    subagents: true,
+    hooks: true,
+    skills: true,
+    mcp: true,
+    resume: true,
+    modelSwitch: true,
+    structuredOutput: true
+  },
+  // 10. telemetry — the `--output-format json` result envelope (src/tools/claude-result-parse.ts).
+  telemetry: {
+    parse: (stdout, ctx) => {
+      const parsed = parseClaudeResultJson(stdout);
+      if (!parsed) return null;
+      return {
+        runtime: "claude-code",
+        model: ctx.model,
+        credential: ctx.credential,
+        costRegime: deriveCostRegime(ctx.credential),
+        costUsd: resolveCost(parsed, ctx.model).total_cost_usd,
+        sessionId: parsed.session_id,
+        isError: parsed.is_error
+      };
+    },
+    sampleOutput: SAMPLE_RESULT
+  }
+};
+
+// src/agents/registry.ts
+var ADAPTERS = /* @__PURE__ */ new Map([[claudeCodeAdapter.id, claudeCodeAdapter]]);
+var DEFAULT_ADAPTER_ID = claudeCodeAdapter.id;
+function listAdapterIds() {
+  return [...ADAPTERS.keys()];
+}
+
+// src/daemon/agent-eligibility.ts
+var DEFAULT_PROFILE_AGENTS = [DEFAULT_ADAPTER_ID];
+function context(registered, profileAgents) {
+  return `Registered agent adapters: ${registered.join(", ")}. This launch profile allows: ${profileAgents.join(", ")}.`;
+}
+function unknownAdapterMessage(id, registered) {
+  return `Unknown agent adapter '${id}' \u2014 registered: ${registered.join(", ")}`;
+}
+function evaluateAgentEligibility(input) {
+  const profileAgents = input.profileAgents ?? DEFAULT_PROFILE_AGENTS;
+  const registered = input.registeredAdapters ?? listAdapterIds();
+  const ctx = context(registered, profileAgents);
+  const selection = getAgentAdapter(input.runConfig);
+  if (!selection.ok) {
+    return { eligible: false, adapter: null, reason: `${selection.error}. ${ctx}` };
+  }
+  const id = selection.adapter;
+  if (!registered.includes(id)) {
+    return { eligible: false, adapter: id, reason: `${unknownAdapterMessage(id, registered)}. ${ctx}` };
+  }
+  if (!profileAgents.includes(id)) {
+    return {
+      eligible: false,
+      adapter: id,
+      reason: `Agent adapter '${id}' is not allowed on this launch profile. ${ctx}`
+    };
+  }
+  if (id !== DEFAULT_ADAPTER_ID && !input.templateDeliversRunConfig) {
+    return {
+      eligible: false,
+      adapter: id,
+      reason: `Agent adapter '${id}' needs run_config to reach the worker, but the active launch template has no {run_config_json} placeholder \u2014 the worker would resolve the default adapter instead. ${ctx}`
+    };
+  }
+  return { eligible: true, adapter: id };
+}
+function formatAgentIneligibleComment(result) {
+  return `harmony daemon refused to launch this leg \u2014 agent adapter not eligible on this launch profile.
+
+${result.reason}
+
+Fix: set run_config.agent.adapter to an allowed adapter (or remove it to use the default, ${DEFAULT_ADAPTER_ID}), or add the adapter to the profile's \`agents\` list once it is registered, then re-conduct.`;
 }
 
 // src/daemon/fasttrack-release-recording.ts
@@ -36115,6 +36524,43 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
       });
       return;
     }
+  }
+  const agentEligibility = evaluateAgentEligibility({
+    runConfig,
+    profileAgents: deps.config.profile.agents,
+    templateDeliversRunConfig: deps.config.profile.launch.includes("{run_config_json}")
+  });
+  if (!agentEligibility.eligible) {
+    deps.log(
+      `${label(row, current, deps.projectKey)}: agent adapter not eligible \u2014 parking, no worker launched (${agentEligibility.reason})`
+    );
+    runtime.ready.delete(row.id);
+    state.delete(row.id);
+    keeper.stop(row.id);
+    if (deps.advanceTicketWorkflow) {
+      try {
+        await deps.advanceTicketWorkflow(row.task_id, "parking");
+      } catch (err) {
+        deps.log(
+          `${label(row, current, deps.projectKey)}: agent-ineligible park \u2014 advance_workflow failed (${formatDaemonError(err)})`
+        );
+      }
+    }
+    if (deps.addTicketComment) {
+      try {
+        await deps.addTicketComment(row.task_id, formatAgentIneligibleComment(agentEligibility));
+      } catch (err) {
+        deps.log(
+          `${label(row, current, deps.projectKey)}: agent-ineligible park \u2014 add_comment failed (${formatDaemonError(err)})`
+        );
+      }
+    }
+    await writeIfHeld(deps, state, keeper, row, {
+      status: "parked",
+      last_worker_exit_code: null,
+      last_worker_exit_class: "agent-ineligible"
+    });
+    return;
   }
   const leg = (row.leg_count ?? 0) + 1;
   if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: iso(deps.now()), leg_count: leg })) {

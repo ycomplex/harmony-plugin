@@ -1,13 +1,16 @@
-// B-1075 drift guard: the Claude adapter is a DESCRIPTION of the launch container/provision.sh and
-// the launch scripts perform today (B-1077 makes it the launch). Both sides are read from disk, so a
-// change to either — a new flag, a renamed env var, a moved session dir — fails this file until the
-// other side matches. Each check is a pure function of the script text, with a positive control
-// proving it catches a mutation.
+// B-1075 drift guard, rewritten by B-1077. Since B-1077 the Claude adapter IS the launch:
+// container/provision.sh no longer hand-assembles the runtime command — every launch site runs the
+// argv `harmony agent argv` (src/cli/commands/agent.ts) prints from the adapter registry, and the
+// credential verdict comes from the adapter's auth seam via `harmony agent check-credentials`. So the
+// headless/auth checks below no longer compare two copies of the command; they assert provision.sh
+// launches THROUGH the adapter and keeps no copy of its own. The session/skills/env/mcp checks still
+// compare the adapter's description against the scripts that implement those seams. Each check is a
+// pure function of the script text, with a positive control proving it catches a mutation.
 
 import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { claudeCodeAdapter as A, CLAUDE_MODEL_FLAG, CLAUDE_OUTPUT_FORMAT_FLAGS } from './claude-code.js';
+import { claudeCodeAdapter as A, CLAUDE_OUTPUT_FORMAT_FLAGS, CLAUDE_PROMPT_FLAG } from './claude-code.js';
 import { HARMONY_MCP_CONNECTION } from './contract.js';
 
 const root = (rel: string) => fileURLToPath(new URL(`../../${rel}`, import.meta.url));
@@ -17,53 +20,74 @@ const PROVISION = read('container/provision.sh');
 const CLOUD_LAUNCH = read('container/cloud-worker-launch.sh');
 const DOCKER_HOST_LAUNCH = read('container/docker-host-worker-launch.sh');
 
-const SH = { pluginDir: '"$PLUGIN_DIR"', prompt: '"$PROMPT"', resume: '"$RESUME_SESSION_ID"', model: '"$CURRENT_MODEL"' };
-const EXTRA = '"${EXTRA_HEADLESS_FLAGS[@]}"';
-
 function words(s: string): string[] {
   return s.trim().split(/\s+/).filter(Boolean);
 }
 
-/** Every headless invocation line, binary + argv tokens up to the stdout redirect. */
-function headlessInvocations(provision: string): { binary: string; args: string[] }[] {
-  return [...provision.matchAll(/^\s*_b772_run (\S+) (.*?)\s+>/gm)].map((m) => ({ binary: m[1], args: words(m[2]) }));
+/** Script lines with comments dropped (a whole-line `#` comment is prose, not code). */
+function codeLines(script: string): string[] {
+  return script.split('\n').filter((l) => !/^\s*#/.test(l));
+}
+
+/** Every `_b772_run ...` invocation line (the launch sites), first token after `_b772_run`. */
+function launchSites(provision: string): string[] {
+  return codeLines(provision)
+    .map((l) => /^\s*_b772_run (\S+)/.exec(l))
+    .filter((m): m is RegExpExecArray => m !== null)
+    .map((m) => m[1]);
+}
+
+/** The `_agent_argv() { ... }` function body. */
+function agentArgvFn(provision: string): string {
+  const m = /^\s*_agent_argv\(\) \{\n([\s\S]*?)\n\s*\}\n/m.exec(provision);
+  return m ? m[1] : '';
 }
 
 function headlessProblems(provision: string): string[] {
   const p: string[] = [];
-  if (!provision.includes(`command -v ${A.launch.binary} `)) p.push(`no 'command -v ${A.launch.binary}' probe`);
-  if (!provision.includes('EXTRA_HEADLESS_FLAGS_BASE=(${CLAUDE_HEADLESS_FLAGS:-})')) p.push('CLAUDE_HEADLESS_FLAGS passthrough moved');
-  const outFmt = /EXTRA_HEADLESS_FLAGS_BASE\+=\(([^)]*)\)/.exec(provision);
-  if (!outFmt || JSON.stringify(words(outFmt[1])) !== JSON.stringify(CLAUDE_OUTPUT_FORMAT_FLAGS)) p.push('output-format flags differ');
-  if (!provision.includes(`"$b916_flag" = "${CLAUDE_OUTPUT_FORMAT_FLAGS[0]}"`)) p.push('output-format override guard differs');
-  const model = /EXTRA_HEADLESS_FLAGS\+=\(([^)]*)\)/.exec(provision);
-  if (!model || JSON.stringify(words(model[1])) !== JSON.stringify([CLAUDE_MODEL_FLAG, SH.model])) p.push('model flag differs');
-
-  // Expand "${EXTRA_HEADLESS_FLAGS[@]}" the way the script builds it (no upstream flags) and compare
-  // each invocation against the adapter's argv for the same symbolic inputs.
-  const expanded = [...(outFmt ? words(outFmt[1]) : []), ...(model ? words(model[1]) : [])];
-  const calls = headlessInvocations(provision);
-  if (calls.length < 2) p.push(`expected the resume + cold invocations, found ${calls.length}`);
-  if (!calls.some((c) => c.args.includes(A.session.resumeFlag))) p.push('no resume invocation');
-  for (const c of calls) {
-    if (c.binary !== A.launch.binary) p.push(`invocation binary '${c.binary}' ≠ '${A.launch.binary}'`);
-    const shellArgv = c.args.flatMap((t) => (t === EXTRA ? expanded : [t]));
-    const resumeIdx = c.args.indexOf(A.session.resumeFlag);
-    const adapterArgv = A.headless.buildArgv({
-      pluginDir: SH.pluginDir,
-      prompt: SH.prompt,
-      resumeSessionId: resumeIdx >= 0 ? c.args[resumeIdx + 1] : undefined,
-      model: SH.model,
-    });
-    if (JSON.stringify(shellArgv) !== JSON.stringify(adapterArgv)) {
-      p.push(`argv drift:\n  shell:   ${shellArgv.join(' ')}\n  adapter: ${adapterArgv.join(' ')}`);
-    }
+  const code = codeLines(provision).join('\n');
+  const sites = launchSites(provision);
+  if (sites.length < 3) p.push(`expected the resume, resume-fallback and cold launch sites, found ${sites.length}`);
+  for (const s of sites) {
+    if (s !== '"${AGENT_ARGV[@]}"') p.push(`launch site runs '${s}', not the adapter-built "\${AGENT_ARGV[@]}"`);
   }
+  // Each launch site is preceded by its own argv build; the resume site passes the resume id.
+  const builds = [...code.matchAll(/^\s*_agent_argv( .*)?$/gm)].map((m) => words(m[1] ?? ''));
+  if (builds.length !== sites.length) p.push(`${builds.length} _agent_argv builds for ${sites.length} launch sites`);
+  if (!builds.some((b) => b[0] === '"$RESUME_SESSION_ID"')) p.push('no _agent_argv build carries the resume id');
+  // The build itself is `harmony agent argv`, fed the plugin dir, prompt, model and upstream flags.
+  const fn = agentArgvFn(provision);
+  if (!fn) p.push('_agent_argv() not found');
+  for (const needle of [
+    'node "$PLUGIN_DIR/dist/bin/harmony.js" agent argv',
+    `--plugin-dir "$PLUGIN_DIR" --prompt "$PROMPT"`,
+    `resume_args=(--resume "$1")`,
+    `model_args=(--model "$CURRENT_MODEL")`,
+    '-- "${EXTRA_HEADLESS_FLAGS_BASE[@]}"',
+    "read -r -d ''",
+  ]) {
+    if (!fn.includes(needle)) p.push(`_agent_argv() lacks ${needle}`);
+  }
+  if (!code.includes('EXTRA_HEADLESS_FLAGS_BASE=(${CLAUDE_HEADLESS_FLAGS:-})')) p.push('CLAUDE_HEADLESS_FLAGS passthrough moved');
+  // No hand-assembled launch anywhere: the binary is never invoked as a command, and the flags the
+  // adapter owns are never spelled out in code.
+  const bin = A.launch.binary;
+  const handBuilt = new RegExp(`^\\s*(?:exec\\s+|_b772_run\\s+)?${bin}\\s`, 'm');
+  if (handBuilt.test(code)) p.push(`a hand-assembled '${bin} ...' invocation is back`);
+  // (`--model "$CURRENT_MODEL"` legitimately appears as the `harmony agent argv` / `leg-cost
+  // record` OPTION, so the model flag is pinned by the executed tests instead.)
+  for (const flag of [CLAUDE_OUTPUT_FORMAT_FLAGS[0], `${CLAUDE_PROMPT_FLAG} "$PROMPT"`]) {
+    if (code.includes(flag)) p.push(`provision.sh spells out adapter-owned flag '${flag}'`);
+  }
+  if (/EXTRA_HEADLESS_FLAGS_BASE\+=/.test(code)) p.push('provision.sh appends to the flag base itself (the adapter owns the output format)');
+  // The presence probe asks the adapter for its binary instead of naming it.
+  if (!code.includes('node "$PLUGIN_DIR/dist/bin/harmony.js" agent binary')) p.push("no 'harmony agent binary' lookup");
+  if (!code.includes('command -v "$AGENT_BINARY"')) p.push('presence probe does not use $AGENT_BINARY');
   return p;
 }
 
 function authBlock(provision: string): string {
-  const start = provision.indexOf(`command -v ${A.launch.binary} `);
+  const start = provision.indexOf('agent binary)');
   const end = provision.indexOf('CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS', start);
   return start >= 0 && end > start ? provision.slice(start, end) : '';
 }
@@ -72,12 +96,18 @@ function authProblems(provision: string): string[] {
   const p: string[] = [];
   const block = authBlock(provision);
   if (!block) return ['auth block not found'];
-  const shellVars = [...new Set([...block.matchAll(/\$\{([A-Z_]+):-\}/g)].map((m) => m[1]))].sort();
+  const code = codeLines(block).join('\n');
+  // The verdict is the adapter's: provision.sh refuses on a non-zero check, it never decides itself.
+  if (!/if ! AGENT_CREDENTIAL="\$\(node "\$PLUGIN_DIR\/dist\/bin\/harmony\.js" agent check-credentials\)"; then\n[\s\S]*?exit 1\n\s*fi/.test(code)) {
+    p.push("credential check is not a refusing 'harmony agent check-credentials' call");
+  }
+  if (/Warning: ANTHROPIC_API_KEY/.test(code)) p.push('the old warn-and-continue API-key branch is back');
+  const shellVars = [...new Set([...code.matchAll(/\$\{([A-Z_]+):-\}/g)].map((m) => m[1]))].sort();
   const adapterVars = Object.values(A.auth.credentialEnv).sort();
   if (JSON.stringify(shellVars) !== JSON.stringify(adapterVars)) p.push(`auth env vars: shell ${shellVars} ≠ adapter ${adapterVars}`);
   for (const v of adapterVars) {
     // an empty value is treated as unset on both sides
-    if (!block.includes(`[ -z "\${${v}:-}" ] && unset ${v}`)) p.push(`${v}: empty-value unset missing`);
+    if (!code.includes(`[ -z "\${${v}:-}" ] && unset ${v}`)) p.push(`${v}: empty-value unset missing`);
   }
   return p;
 }
@@ -117,15 +147,17 @@ function envProblems(cloudLaunch: string, dockerHost: string): string[] {
   return p;
 }
 
-describe('Claude adapter ⇄ container scripts (drift)', () => {
-  it('headless invocation: binary, flags and their order match provision.sh', () => {
+describe('provision.sh launches THROUGH the adapter (B-1077) + adapter ⇄ scripts drift', () => {
+  it('headless: every launch site runs the adapter-built argv, and provision.sh hand-assembles no launch of its own', () => {
     expect(headlessProblems(PROVISION)).toEqual([]);
   });
-  it('auth: credential env vars match provision.sh', () => {
+  it('auth: the credential verdict is the adapter check (refusing), over the same env vars the adapter names', () => {
     expect(authProblems(PROVISION)).toEqual([]);
   });
-  it('the refused API-key var is the one provision.sh detects', () => {
-    expect(authBlock(PROVISION)).toContain(`if [ -n "\${${A.auth.credentialEnv['api-key']}:-}" ]`);
+  it('the refused API-key var is the adapter api-key var, and provision.sh no longer warns-and-continues on it', () => {
+    expect(A.auth.credentialEnv['api-key']).toBe('ANTHROPIC_API_KEY');
+    expect(authBlock(PROVISION)).toContain('agent check-credentials');
+    expect(authBlock(PROVISION)).not.toContain('OVERRIDES subscription auth');
   });
   it('session: storage path matches provision.sh and the docker-host mount', () => {
     expect(sessionProblems(PROVISION, DOCKER_HOST_LAUNCH)).toEqual([]);
@@ -144,14 +176,33 @@ describe('Claude adapter ⇄ container scripts (drift)', () => {
 });
 
 describe('drift checks catch a mutation (positive controls)', () => {
+  const HAND_BUILT_COLD = '_b772_run claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" "${EXTRA_HEADLESS_FLAGS_BASE[@]}" >"$COLD_STDOUT_FILE"';
   it.each<[string, string, string]>([
-    ['prompt flag renamed', '-p "$PROMPT"', '--print "$PROMPT"'],
-    ['binary renamed', '_b772_run claude ', '_b772_run claude-next '],
-    ['model flag renamed', '(--model "$CURRENT_MODEL")', '(--model-id "$CURRENT_MODEL")'],
-    ['output format changed', '+=(--output-format json)', '+=(--output-format stream-json)'],
+    ['a launch site hand-assembles the command again', '_b772_run "${AGENT_ARGV[@]}" >"$COLD_STDOUT_FILE"', HAND_BUILT_COLD],
+    ['a launch site runs some other array', '_b772_run "${AGENT_ARGV[@]}" >"$FALLBACK_STDOUT_FILE"', '_b772_run "${MY_ARGV[@]}" >"$FALLBACK_STDOUT_FILE"'],
+    ['the resume build drops its session id', '_agent_argv "$RESUME_SESSION_ID"', '_agent_argv ""'],
+    ['a launch site loses its argv build', '        _agent_argv ""\n        COLD_STDOUT_FILE', '        COLD_STDOUT_FILE'],
+    ['the argv build stops passing the model', 'model_args=(--model "$CURRENT_MODEL")', 'model_args=()'],
+    ['the argv build stops passing upstream flags', '-- "${EXTRA_HEADLESS_FLAGS_BASE[@]}"', '--'],
+    ['provision.sh adds the output format itself again', 'EXTRA_HEADLESS_FLAGS_BASE=(${CLAUDE_HEADLESS_FLAGS:-})\n', 'EXTRA_HEADLESS_FLAGS_BASE=(${CLAUDE_HEADLESS_FLAGS:-})\n    EXTRA_HEADLESS_FLAGS_BASE+=(--output-format json)\n'],
+    ['the presence probe hardcodes the binary', 'command -v "$AGENT_BINARY"', 'command -v claude'],
   ])('headless: %s', (_label, from, to) => {
     expect(PROVISION.includes(from)).toBe(true);
     expect(headlessProblems(PROVISION.split(from).join(to))).not.toEqual([]);
+  });
+  it('auth: the old warn-and-continue branch comes back', () => {
+    const from = 'if ! AGENT_CREDENTIAL=';
+    expect(PROVISION.includes(from)).toBe(true);
+    const mutated = PROVISION.replace(
+      from,
+      'if [ -n "${ANTHROPIC_API_KEY:-}" ]; then\n      echo "Warning: ANTHROPIC_API_KEY is set" >&2\n    fi\n    ' + from,
+    );
+    expect(authProblems(mutated)).not.toEqual([]);
+  });
+  it('auth: the credential check stops refusing', () => {
+    const mutated = PROVISION.replace('agent check-credentials)"; then', 'agent check-credentials || true)"; then');
+    expect(mutated).not.toBe(PROVISION);
+    expect(authProblems(mutated)).not.toEqual([]);
   });
   it('auth: a new credential var', () => {
     const mutated = PROVISION.replace('[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && unset', '[ -z "${CLAUDE_API_TOKEN:-}" ] && unset');

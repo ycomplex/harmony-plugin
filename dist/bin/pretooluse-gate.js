@@ -21536,7 +21536,13 @@ var LaunchProfileSchema = external_exports.object({
    *  regenerated after an upgrade) gets flagged by the boot preflight's soft audit instead of just
    *  silently lacking the new capability. Defaults to 1 (this ticket's baseline) when absent — see
    *  src/daemon/preflight.ts's CURRENT_SCHEMA_VERSION. */
-  schema_version: external_exports.number().int().positive().optional()
+  schema_version: external_exports.number().int().positive().optional(),
+  /** B-1077: the agent adapters (src/agents/registry.ts ids) legs on this profile may launch
+   *  through. Absent = `["claude-code"]` only (src/daemon/agent-eligibility.ts's
+   *  DEFAULT_PROFILE_AGENTS), so every existing profile behaves exactly as before. A run whose
+   *  run_config.agent.adapter is not in this list is parked at fire time, never launched. Mirrors
+   *  src/daemon/config.ts's LaunchProfile field of the same name. */
+  agents: external_exports.array(external_exports.string().min(1)).min(1).optional()
 });
 var RepoEntrySchema = external_exports.object({
   /** Clone URL. */
@@ -21887,7 +21893,13 @@ var RunConfigSchema = external_exports.object({
    *  single axis key. Mirrors `session_resume`'s own shape (a bare optional boolean, not a nested
    *  `{ enabled }` object — there is no second sub-field this flag will ever need). See
    *  `isFastTrackEnabled` below for the absence/false-both-read-as-disabled convention. */
-  fast_track: external_exports.boolean().optional()
+  fast_track: external_exports.boolean().optional(),
+  /** B-1077: which agent adapter (src/agents/registry.ts) this run's legs launch through —
+   *  `{ adapter: '<registry id>' }`. Deliberately `z.unknown()` here, NOT a strict object: a
+   *  malformed `agent` value must not make the WHOLE payload unparseable (that would silently
+   *  disable every other axis — session_resume, note, model, ...). Its shape is judged by
+   *  `getAgentAdapter` below instead, which REFUSES a malformed value rather than falling back. */
+  agent: external_exports.unknown().optional()
 }).passthrough();
 var EMPTY_RUN_CONFIG = {};
 function isFastTrackEnabled(runConfig) {

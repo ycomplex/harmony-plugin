@@ -123,6 +123,12 @@ const LaunchProfileSchema = z.object({
    *  silently lacking the new capability. Defaults to 1 (this ticket's baseline) when absent — see
    *  src/daemon/preflight.ts's CURRENT_SCHEMA_VERSION. */
   schema_version: z.number().int().positive().optional(),
+  /** B-1077: the agent adapters (src/agents/registry.ts ids) legs on this profile may launch
+   *  through. Absent = `["claude-code"]` only (src/daemon/agent-eligibility.ts's
+   *  DEFAULT_PROFILE_AGENTS), so every existing profile behaves exactly as before. A run whose
+   *  run_config.agent.adapter is not in this list is parked at fire time, never launched. Mirrors
+   *  src/daemon/config.ts's LaunchProfile field of the same name. */
+  agents: z.array(z.string().min(1)).min(1).optional(),
 });
 
 // --- repos: the ordered repo set a deployment declares (B-814) -----------------------------------

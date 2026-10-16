@@ -69,6 +69,29 @@ const JQ_AVAILABLE = commandAvailable('jq');
  *  testing nothing while still reporting green. */
 const SUBPROCESS_CAPABLE = BASH_VERSION !== undefined && GIT_AVAILABLE && JQ_AVAILABLE;
 
+/** B-1077: provision.sh now launches every leg through `node "$PLUGIN_DIR/dist/bin/harmony.js" agent
+ *  argv` (the adapter registry), so a PLUGIN_DIR with no bundle at all can no longer launch. The
+ *  B-718/B-772 harnesses below used a nonexistent `/fake/plugin` precisely so every OTHER accessor
+ *  call (`model read-handoff`, `model context-budget`, `leg-cost ...`) fails and degrades. This stub
+ *  keeps that exactly — every non-`agent` call exits 1 with no stdout, as the missing bundle did —
+ *  while forwarding `agent ...` to the REAL built CLI, so the launch command is the adapter's own. */
+const AGENT_ONLY_PLUGIN_DIR = (() => {
+  const dir = mkdtempSync(join(tmpdir(), 'b1077-agent-only-plugin-'));
+  const realCli = fileURLToPath(new URL('../../dist/bin/harmony.js', import.meta.url));
+  mkdirSync(join(dir, 'dist', 'bin'), { recursive: true });
+  writeFileSync(
+    join(dir, 'dist', 'bin', 'harmony.js'),
+    [
+      "const argv = process.argv.slice(2);",
+      "if (argv[0] !== 'agent') process.exit(1);",
+      "const r = require('node:child_process').spawnSync(process.execPath, [" + JSON.stringify(realCli) + ", ...argv], { stdio: 'inherit' });",
+      'process.exit(r.status ?? 1);',
+      '',
+    ].join('\n'),
+  );
+  return dir;
+})();
+
 /** B-826: stock macOS ships bash 3.2 (frozen there since 2007 at the GPLv3 license boundary) and
  *  that version has a real, version-specific bug this ticket fixes around (bash <4 uses byte 0x01
  *  internally as its own quote-removal escape marker, corrupting an IFS split on that byte — see
@@ -165,7 +188,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
       [
         '#!/usr/bin/env bash',
         'set -euo pipefail',
-        `PLUGIN_DIR="${opts.pluginDir ?? '/fake/plugin'}"`,
+        `PLUGIN_DIR="${opts.pluginDir ?? AGENT_ONLY_PLUGIN_DIR}"`,
         'PROMPT="do the leg"',
         block,
         '',
@@ -242,7 +265,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
       [
         '#!/usr/bin/env bash',
         'set -euo pipefail',
-        'PLUGIN_DIR="/fake/plugin"',
+        `PLUGIN_DIR="${AGENT_ONLY_PLUGIN_DIR}"`,
         'PROMPT="say hi"',
         block,
         '',
@@ -305,7 +328,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
         '#!/usr/bin/env bash',
         'set -euo pipefail',
         'exec 2>&1', // merge stderr into stdout so a successful (exit 0) cold fallback still lets the test observe the logged fallback line
-        'PLUGIN_DIR="/fake/plugin"',
+        `PLUGIN_DIR="${AGENT_ONLY_PLUGIN_DIR}"`,
         'PROMPT="do it"',
         block,
         '',
@@ -370,7 +393,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
     const scriptFile = join(dir, 'harness.sh');
     writeFileSync(
       scriptFile,
-      ['#!/usr/bin/env bash', 'set -euo pipefail', 'PLUGIN_DIR="/fake/plugin"', 'PROMPT="do it"', block, ''].join(
+      ['#!/usr/bin/env bash', 'set -euo pipefail', `PLUGIN_DIR="${AGENT_ONLY_PLUGIN_DIR}"`, 'PROMPT="do it"', block, ''].join(
         '\n',
       ),
       { mode: 0o700 },
@@ -410,7 +433,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
         '#!/usr/bin/env bash',
         'set -euo pipefail',
         'exec 2>&1', // merge stderr into stdout so a successful (exit 0) cold fallback still lets the test observe the logged fallback line
-        'PLUGIN_DIR="/fake/plugin"',
+        `PLUGIN_DIR="${AGENT_ONLY_PLUGIN_DIR}"`,
         'PROMPT="do it"',
         block,
         '',
@@ -482,7 +505,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
     const scriptFile = join(dir, 'harness.sh');
     writeFileSync(
       scriptFile,
-      ['#!/usr/bin/env bash', 'set -euo pipefail', 'PLUGIN_DIR="/fake/plugin"', 'PROMPT="do it"', block, ''].join(
+      ['#!/usr/bin/env bash', 'set -euo pipefail', `PLUGIN_DIR="${AGENT_ONLY_PLUGIN_DIR}"`, 'PROMPT="do it"', block, ''].join(
         '\n',
       ),
       { mode: 0o700 },
@@ -897,7 +920,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
           '#!/usr/bin/env bash',
           'set -euo pipefail',
           'exec 2>&1',
-          'PLUGIN_DIR="/fake/plugin"',
+          `PLUGIN_DIR="${AGENT_ONLY_PLUGIN_DIR}"`,
           'PROMPT="do it"',
           block,
           '',
@@ -1028,7 +1051,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
           '#!/usr/bin/env bash',
           'set -euo pipefail',
           'exec 2>&1',
-          'PLUGIN_DIR="/fake/plugin"',
+          `PLUGIN_DIR="${AGENT_ONLY_PLUGIN_DIR}"`,
           'PROMPT="do it"',
           block,
           '',
@@ -2991,9 +3014,10 @@ describe('provision.sh headless branch: background-wait ceiling lifted (B-825)',
     const block = caseBlock![1];
     const exportIdx = block.indexOf('export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0');
     // B-772 round 2: the bounded model-switch loop converted both `exec claude` invocations to
-    // plain `_b772_run claude` calls (see provision.sh's own header comment on the exec -> plain-
-    // call conversion) — the FIRST real claude invocation site is now this one, inside the loop.
-    const claudeIdx = block.search(/^\s*_b772_run claude /m);
+    // plain `_b772_run` calls (see provision.sh's own header comment on the exec -> plain-call
+    // conversion). B-1077: they now launch the adapter-built command (`_b772_run "${AGENT_ARGV[@]}"`)
+    // — the FIRST real agent invocation site is still inside the loop.
+    const claudeIdx = block.search(/^\s*_b772_run "\$\{AGENT_ARGV\[@\]\}"/m);
     expect(claudeIdx).toBeGreaterThan(-1); // the guard's anchor must still exist
     expect(exportIdx).toBeGreaterThan(-1); // the ceiling lift must be present
     expect(exportIdx).toBeLessThan(claudeIdx); // and must precede it so the env reaches claude

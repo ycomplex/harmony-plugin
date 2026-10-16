@@ -35445,7 +35445,13 @@ var LaunchProfileSchema = external_exports.object({
    *  regenerated after an upgrade) gets flagged by the boot preflight's soft audit instead of just
    *  silently lacking the new capability. Defaults to 1 (this ticket's baseline) when absent — see
    *  src/daemon/preflight.ts's CURRENT_SCHEMA_VERSION. */
-  schema_version: external_exports.number().int().positive().optional()
+  schema_version: external_exports.number().int().positive().optional(),
+  /** B-1077: the agent adapters (src/agents/registry.ts ids) legs on this profile may launch
+   *  through. Absent = `["claude-code"]` only (src/daemon/agent-eligibility.ts's
+   *  DEFAULT_PROFILE_AGENTS), so every existing profile behaves exactly as before. A run whose
+   *  run_config.agent.adapter is not in this list is parked at fire time, never launched. Mirrors
+   *  src/daemon/config.ts's LaunchProfile field of the same name. */
+  agents: external_exports.array(external_exports.string().min(1)).min(1).optional()
 });
 var RepoEntrySchema = external_exports.object({
   /** Clone URL. */
@@ -36313,7 +36319,13 @@ var RunConfigSchema = external_exports.object({
    *  single axis key. Mirrors `session_resume`'s own shape (a bare optional boolean, not a nested
    *  `{ enabled }` object — there is no second sub-field this flag will ever need). See
    *  `isFastTrackEnabled` below for the absence/false-both-read-as-disabled convention. */
-  fast_track: external_exports.boolean().optional()
+  fast_track: external_exports.boolean().optional(),
+  /** B-1077: which agent adapter (src/agents/registry.ts) this run's legs launch through —
+   *  `{ adapter: '<registry id>' }`. Deliberately `z.unknown()` here, NOT a strict object: a
+   *  malformed `agent` value must not make the WHOLE payload unparseable (that would silently
+   *  disable every other axis — session_resume, note, model, ...). Its shape is judged by
+   *  `getAgentAdapter` below instead, which REFUSES a malformed value rather than falling back. */
+  agent: external_exports.unknown().optional()
 }).passthrough();
 var EMPTY_RUN_CONFIG = {};
 function isFastTrackEnabled(runConfig) {
@@ -36324,6 +36336,20 @@ function getOperatorNote(runConfig) {
 }
 function getAutoApproveGates(runConfig) {
   return new Set(runConfig.auto_approve_gates ?? []);
+}
+var DEFAULT_AGENT_ADAPTER = "claude-code";
+function getAgentAdapter(runConfig) {
+  const agent = runConfig.agent;
+  if (agent === void 0 || agent === null) return { ok: true, adapter: DEFAULT_AGENT_ADAPTER, explicit: false };
+  if (typeof agent !== "object" || Array.isArray(agent)) {
+    return { ok: false, error: `run_config.agent must be an object like { "adapter": "<id>" }; got ${JSON.stringify(agent)}` };
+  }
+  const adapter = agent.adapter;
+  if (adapter === void 0) return { ok: true, adapter: DEFAULT_AGENT_ADAPTER, explicit: false };
+  if (typeof adapter !== "string" || adapter.trim() === "") {
+    return { ok: false, error: `run_config.agent.adapter must be a non-empty adapter id string; got ${JSON.stringify(adapter)}` };
+  }
+  return { ok: true, adapter, explicit: true };
 }
 function envValue(env2, key) {
   const v = env2[key];
@@ -42244,8 +42270,63 @@ function registerModelCommands(program3) {
   });
 }
 
-// src/cli/commands/leg-cost.ts
-import { readFileSync as readFileSync3 } from "node:fs";
+// src/agents/contract.ts
+var SEAMS = [
+  "launch",
+  //        1. install / launch: which binary, how its presence is probed
+  "auth",
+  //          2. accepted credentials, their env vars, the derived cost regime
+  "headless",
+  //      3. headless invocation argv + exit semantics
+  "session",
+  //       4. session storage + resume
+  "instructions",
+  //  5. instruction-file rendering
+  "skills",
+  //        6. skill delivery
+  "mcp",
+  //           7. MCP rendering from one canonical connection definition
+  "env",
+  //           8. worker environment allowlist
+  "capabilities",
+  //  9. capability map
+  "telemetry"
+  //    10. telemetry: runtime, model, credential, cost regime (read by B-1078)
+];
+var SEAM_NUMBER = Object.fromEntries(
+  SEAMS.map((s, i) => [s, i + 1])
+);
+var PLUGIN_ROOT_PLACEHOLDER = "{pluginRoot}";
+var HARMONY_MCP_CONNECTION = {
+  name: "harmony",
+  command: "node",
+  args: [`${PLUGIN_ROOT_PLACEHOLDER}/dist/index.js`]
+};
+
+// src/agents/credentials.ts
+var CREDENTIAL_MODES = [
+  "subscription-token",
+  "api-key",
+  "login-cache",
+  "workload-identity",
+  "enterprise-access-token"
+];
+var COST_REGIME_BY_CREDENTIAL = {
+  "login-cache": "plan-included",
+  "enterprise-access-token": "plan-included",
+  "subscription-token": "plan-included",
+  "api-key": "metered",
+  "workload-identity": "metered"
+};
+function isCredentialMode(value) {
+  return typeof value === "string" && CREDENTIAL_MODES.includes(value);
+}
+function deriveCostRegime(credential) {
+  if (!isCredentialMode(credential)) {
+    throw new Error(`Unknown credential mode '${String(credential)}' \u2014 expected one of: ${CREDENTIAL_MODES.join(", ")}`);
+  }
+  return COST_REGIME_BY_CREDENTIAL[credential];
+}
 
 // src/tools/claude-result-parse.ts
 var MODEL_PRICING = {
@@ -42372,6 +42453,244 @@ function parseClaudeResultJson(text) {
     cli_cost_usd: asNumber(envelope.total_cost_usd)
   };
 }
+
+// src/agents/claude-code.ts
+var CLAUDE_OUTPUT_FORMAT_FLAGS = ["--output-format", "json"];
+var CLAUDE_MODEL_FLAG = "--model";
+var CLAUDE_RESUME_FLAG = "--resume";
+var CLAUDE_PLUGIN_DIR_FLAG = "--plugin-dir";
+var CLAUDE_PROMPT_FLAG = "-p";
+var OAUTH_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
+var API_KEY_ENV = "ANTHROPIC_API_KEY";
+function present(env2, name) {
+  const v = env2[name];
+  return typeof v === "string" && v !== "";
+}
+function resolveClaudeCredential(env2) {
+  const oauth = present(env2, OAUTH_ENV);
+  const apiKey = present(env2, API_KEY_ENV);
+  if (oauth && apiKey) {
+    return { ok: false, error: `${API_KEY_ENV} is set beside ${OAUTH_ENV} \u2014 two credentials at once is a config error (B-934: no silent fallback between regimes). Unset one.` };
+  }
+  if (oauth) return { ok: true, credential: "subscription-token" };
+  if (apiKey) return { ok: true, credential: "api-key" };
+  return { ok: false, error: `headless mode needs auth: set ${OAUTH_ENV} (subscription-token; mint via 'claude setup-token') or ${API_KEY_ENV} (api-key, metered).` };
+}
+function buildClaudeArgv(input) {
+  const argv = [CLAUDE_PLUGIN_DIR_FLAG, input.pluginDir, CLAUDE_PROMPT_FLAG, input.prompt];
+  if (input.resumeSessionId) argv.push(CLAUDE_RESUME_FLAG, input.resumeSessionId);
+  const extra = [...input.extraFlags ?? []];
+  argv.push(...extra);
+  if (!extra.includes(CLAUDE_OUTPUT_FORMAT_FLAGS[0])) argv.push(...CLAUDE_OUTPUT_FORMAT_FLAGS);
+  if (input.model) argv.push(CLAUDE_MODEL_FLAG, input.model);
+  return argv;
+}
+var SESSION_ROOT = "$HOME/.claude/projects";
+var SESSION_EXT = ".jsonl";
+function renderClaudeMcp(connection) {
+  const args = connection.args.map((a) => a.split(PLUGIN_ROOT_PLACEHOLDER).join("${CLAUDE_PLUGIN_ROOT}"));
+  const doc = { [connection.name]: { command: connection.command, args } };
+  return { fileName: ".mcp.json", content: JSON.stringify(doc, null, 2) + "\n" };
+}
+var SAMPLE_RESULT = JSON.stringify({
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  result: "done",
+  session_id: "00000000-0000-4000-8000-000000000000",
+  num_turns: 3,
+  duration_ms: 1200,
+  total_cost_usd: 0.42,
+  usage: { input_tokens: 10, output_tokens: 20 }
+});
+var claudeCodeAdapter = {
+  id: "claude-code",
+  family: "claude-code",
+  displayName: "Claude Code",
+  // 1. launch — provision.sh: `command -v claude` (fails the leg when the image has no claude).
+  launch: { binary: "claude", probeArgv: ["command", "-v", "claude"] },
+  // 2. auth — provision.sh's headless auth block.
+  auth: {
+    acceptedCredentials: ["subscription-token", "api-key"],
+    credentialEnv: { "subscription-token": OAUTH_ENV, "api-key": API_KEY_ENV },
+    primaryCredential: "subscription-token",
+    resolveCredential: resolveClaudeCredential
+  },
+  // 3. headless invocation + exit semantics — every `_b772_run claude ...` line in provision.sh; the
+  //    leg exits with claude's own status, and `is_error` (never `subtype`) marks an errored run.
+  headless: {
+    buildArgv: buildClaudeArgv,
+    exit: { successCode: 0, nonZeroIsFailure: true, structuredErrorField: "is_error" }
+  },
+  // 4. session storage + resume — `"$HOME/.claude/projects"/*/"$RESUME_SESSION_ID.jsonl"`.
+  session: {
+    root: SESSION_ROOT,
+    extension: SESSION_EXT,
+    resumeFlag: CLAUDE_RESUME_FLAG,
+    sessionGlob: (id) => `${SESSION_ROOT}/*/${id}${SESSION_EXT}`,
+    sessionIdFromPath: (path2) => {
+      const m = /\/\.claude\/projects\/[^/]+\/([^/]+)\.jsonl$/.exec(path2);
+      return m ? m[1] : null;
+    }
+  },
+  // 5. instruction rendering — Claude Code reads the project's CLAUDE.md.
+  instructions: {
+    fileName: "CLAUDE.md",
+    render: (body) => ({ fileName: "CLAUDE.md", content: body.endsWith("\n") ? body : body + "\n" })
+  },
+  // 6. skill delivery — `--plugin-dir "$PLUGIN_DIR"` loads skills/; provision.sh copies the build
+  //    subagent definition into ~/.claude/agents (config levers do not reach Task-tool subagents).
+  skills: {
+    mechanism: CLAUDE_PLUGIN_DIR_FLAG,
+    skillsRoot: "skills",
+    agentFiles: [{ source: "container/agents/harmony-build.md", target: "$HOME/.claude/agents/harmony-build.md" }]
+  },
+  // 7. MCP rendering — renders the canonical connection as the plugin's .mcp.json.
+  mcp: { render: renderClaudeMcp },
+  // 8. worker env allowlist — container/cloud-worker-launch.sh write_exec_env_file(): the per-leg
+  //    literal env set (`--env-vars-file` REPLACES the job's literal env, so this is exhaustive).
+  //    Credentials ride `--set-secrets` bindings, never this list.
+  env: {
+    allowlist: [
+      "CONDUCTION_ID",
+      "TICKET",
+      "GIT_TOKEN",
+      "HARMONY_TRANSCRIPT_MOUNT_ROOT",
+      "HARMONY_PLUGIN_POSTURE",
+      "HARMONY_REPOS_JSON",
+      "HARMONY_RUN_CONFIG_JSON",
+      "HARMONY_MODEL",
+      "GIT_TOKEN_EXPIRES_AT",
+      "HARMONY_LEG",
+      "HARMONY_CONDUCTION_ID"
+    ],
+    standingSecrets: ["HARMONY_API_TOKEN", OAUTH_ENV]
+  },
+  // 9. capability map.
+  capabilities: {
+    subagents: true,
+    hooks: true,
+    skills: true,
+    mcp: true,
+    resume: true,
+    modelSwitch: true,
+    structuredOutput: true
+  },
+  // 10. telemetry — the `--output-format json` result envelope (src/tools/claude-result-parse.ts).
+  telemetry: {
+    parse: (stdout, ctx) => {
+      const parsed = parseClaudeResultJson(stdout);
+      if (!parsed) return null;
+      return {
+        runtime: "claude-code",
+        model: ctx.model,
+        credential: ctx.credential,
+        costRegime: deriveCostRegime(ctx.credential),
+        costUsd: resolveCost(parsed, ctx.model).total_cost_usd,
+        sessionId: parsed.session_id,
+        isError: parsed.is_error
+      };
+    },
+    sampleOutput: SAMPLE_RESULT
+  }
+};
+
+// src/agents/registry.ts
+var ADAPTERS = /* @__PURE__ */ new Map([[claudeCodeAdapter.id, claudeCodeAdapter]]);
+var DEFAULT_ADAPTER_ID = claudeCodeAdapter.id;
+function listAdapterIds() {
+  return [...ADAPTERS.keys()];
+}
+function getAdapter(id) {
+  const adapter = ADAPTERS.get(id);
+  if (!adapter) {
+    throw new Error(`Unknown agent adapter '${id}' \u2014 registered: ${listAdapterIds().join(", ")}`);
+  }
+  return adapter;
+}
+
+// src/agents/launch-routing.ts
+var REFUSAL_PREFIX = "Refusing to start:";
+function resolveLaunchAdapter(runConfig) {
+  const selection = getAgentAdapter(runConfig);
+  if (!selection.ok) return { ok: false, error: selection.error };
+  try {
+    return { ok: true, adapter: getAdapter(selection.adapter) };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+function buildLaunchCommand(adapter, input) {
+  return [adapter.launch.binary, ...adapter.headless.buildArgv(input)];
+}
+function checkLaunchCredentials(adapter, env2) {
+  return adapter.auth.resolveCredential(env2);
+}
+function encodeNulArgv(argv) {
+  for (const a of argv) {
+    if (a.includes("\0")) throw new Error("argv element contains a NUL byte");
+  }
+  return argv.map((a) => `${a}\0`).join("");
+}
+
+// src/cli/commands/agent.ts
+function launchRunConfig() {
+  try {
+    return getRunConfig();
+  } catch (err) {
+    console.error(
+      `harmony agent: WARNING \u2014 failed to parse this leg's run_config (${err instanceof Error ? err.message : String(err)}); resolving the agent adapter as if run_config were {} (claude-code)`
+    );
+    return {};
+  }
+}
+function refuse(message) {
+  console.error(`${REFUSAL_PREFIX} ${message}`);
+  process.exit(1);
+}
+function adapterOrRefuse() {
+  const resolved = resolveLaunchAdapter(launchRunConfig());
+  if (!resolved.ok) refuse(`${resolved.error} (run_config.agent.adapter; no fallback to the default adapter).`);
+  return resolved.adapter;
+}
+function registerAgentCommands(program3) {
+  const agent = program3.command("agent").description(
+    "B-1077 agent-adapter routing accessor \u2014 the ONE place container/provision.sh learns which agent runtime this leg runs and how to launch it (run_config.agent.adapter \u2192 src/agents/registry.ts). Never hand-assemble the launch in bash."
+  );
+  agent.command("resolve").description("Print this leg's adapter id (exit 0), or refuse (exit 1) on a malformed/unregistered adapter.").action(() => {
+    process.stdout.write(`${adapterOrRefuse().id}
+`);
+  });
+  agent.command("binary").description("Print the adapter's executable name (for provision.sh's presence probe).").action(() => {
+    process.stdout.write(`${adapterOrRefuse().launch.binary}
+`);
+  });
+  agent.command("check-credentials").description(
+    `Run the adapter's credential check against this process's env. Exit 0 printing the credential mode; exit 1 with "Refusing to start: \u2026" when two credentials are set at once (B-934: a config error, never a precedence rule) or none is. Empty values count as unset.`
+  ).action(() => {
+    const adapter = adapterOrRefuse();
+    const verdict = checkLaunchCredentials(adapter, process.env);
+    if (!verdict.ok) refuse(`${adapter.displayName}: ${verdict.error}`);
+    process.stdout.write(`${verdict.credential}
+`);
+  });
+  agent.command("argv").description(
+    "Print the full launch command (the adapter's binary, then its headless argv) as NUL-terminated elements. Read in bash with: while IFS= read -r -d '' t; do a+=(\"$t\"); done. Upstream flags (CLAUDE_HEADLESS_FLAGS) go after `--`, already word-split."
+  ).requiredOption("--plugin-dir <dir>", "The plugin checkout the agent loads").requiredOption("--prompt <prompt>", "The headless prompt").option("--resume <session-id>", "Resume this session id").option("--model <alias>", "Launch on this model alias").argument("[extra...]", "Upstream flags, passed through in order (put them after `--`)").action((extra, opts) => {
+    const adapter = adapterOrRefuse();
+    const argv = buildLaunchCommand(adapter, {
+      pluginDir: opts.pluginDir,
+      prompt: opts.prompt,
+      resumeSessionId: opts.resume || void 0,
+      model: opts.model || void 0,
+      extraFlags: extra ?? []
+    });
+    process.stdout.write(encodeNulArgv(argv));
+  });
+}
+
+// src/cli/commands/leg-cost.ts
+import { readFileSync as readFileSync3 } from "node:fs";
 
 // src/tools/leg-cost-record.ts
 function warn(message) {
@@ -44109,6 +44428,7 @@ registerBriefCommands(program2);
 registerConductCommand(program2);
 registerConfigCommands(program2);
 registerModelCommands(program2);
+registerAgentCommands(program2);
 registerLegCostCommands(program2);
 registerLegOutputCommands(program2);
 registerGatesCommands(program2);
