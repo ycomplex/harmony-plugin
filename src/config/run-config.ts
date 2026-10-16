@@ -118,6 +118,12 @@ export const RunConfigSchema = z
      *  `{ enabled }` object — there is no second sub-field this flag will ever need). See
      *  `isFastTrackEnabled` below for the absence/false-both-read-as-disabled convention. */
     fast_track: z.boolean().optional(),
+    /** B-1077: which agent adapter (src/agents/registry.ts) this run's legs launch through —
+     *  `{ adapter: '<registry id>' }`. Deliberately `z.unknown()` here, NOT a strict object: a
+     *  malformed `agent` value must not make the WHOLE payload unparseable (that would silently
+     *  disable every other axis — session_resume, note, model, ...). Its shape is judged by
+     *  `getAgentAdapter` below instead, which REFUSES a malformed value rather than falling back. */
+    agent: z.unknown().optional(),
   })
   .passthrough();
 export type RunConfig = z.infer<typeof RunConfigSchema>;
@@ -162,6 +168,36 @@ export function getOperatorNote(runConfig: RunConfig): string | undefined {
  *  `skills/harmony-conduct/SKILL.md`'s delegation-test step 2a), never order or duplicates. */
 export function getAutoApproveGates(runConfig: RunConfig): Set<AutoApproveGate> {
   return new Set(runConfig.auto_approve_gates ?? []);
+}
+
+/** B-1077: the adapter a run launches through when run_config names none. Equal to
+ *  src/agents/registry.ts's DEFAULT_ADAPTER_ID (pinned by run-config.test.ts) — kept as a literal
+ *  here so this widely-imported module does not pull the adapter registry into every consumer. */
+export const DEFAULT_AGENT_ADAPTER = 'claude-code';
+
+export type AgentAdapterSelection =
+  | { ok: true; adapter: string; explicit: boolean }
+  | { ok: false; error: string };
+
+/** B-1077: which agent adapter this run_config selects. An ABSENT (or null) `agent` key (or an `agent` object
+ *  with no `adapter` key) reads as the default, `claude-code` — so every run_config written before
+ *  this axis existed launches exactly as it always did. A PRESENT but malformed value (a non-object
+ *  `agent`, a non-string or empty `adapter`) is `ok: false` — never a silent fallback to the
+ *  default. Whether a well-formed id is actually REGISTERED is not judged here (that is the
+ *  registry's job: src/daemon/agent-eligibility.ts at fire time, src/agents/launch-routing.ts in the
+ *  worker). Never throws. */
+export function getAgentAdapter(runConfig: RunConfig): AgentAdapterSelection {
+  const agent = (runConfig as { agent?: unknown }).agent;
+  if (agent === undefined || agent === null) return { ok: true, adapter: DEFAULT_AGENT_ADAPTER, explicit: false };
+  if (typeof agent !== 'object' || Array.isArray(agent)) {
+    return { ok: false, error: `run_config.agent must be an object like { "adapter": "<id>" }; got ${JSON.stringify(agent)}` };
+  }
+  const adapter = (agent as { adapter?: unknown }).adapter;
+  if (adapter === undefined) return { ok: true, adapter: DEFAULT_AGENT_ADAPTER, explicit: false };
+  if (typeof adapter !== 'string' || adapter.trim() === '') {
+    return { ok: false, error: `run_config.agent.adapter must be a non-empty adapter id string; got ${JSON.stringify(adapter)}` };
+  }
+  return { ok: true, adapter, explicit: true };
 }
 
 /** B-694 empty-env-value shadow class, matching src/daemon/config.ts's own envValue convention: a

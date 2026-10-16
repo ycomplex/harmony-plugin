@@ -1,6 +1,7 @@
 // B-1075: no src/daemon file assembles an agent-runtime command. The daemon renders a launch
-// TEMPLATE and runs it; the runtime argv belongs to the worker (provision.sh, then the adapter
-// registry from B-1077). A daemon file that starts building `claude`/`codex` argv itself would fork
+// TEMPLATE and runs it; the runtime argv belongs to the worker (provision.sh → the adapter
+// registry, B-1077). The daemon's only adapter logic is an id lookup + profile-list comparison
+// (src/daemon/agent-eligibility.ts). A daemon file that starts building `claude`/`codex` argv itself would fork
 // the launch description away from the adapter — this test stops that at CI.
 
 import { describe, it, expect } from 'vitest';

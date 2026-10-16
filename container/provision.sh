@@ -272,8 +272,15 @@ case "$MODE" in
       exit 1
     fi
 
-    command -v claude >/dev/null 2>&1 || {
-      echo "headless mode needs the agent image (this looks like the base target — no claude installed)." >&2
+    # B-1077: every leg launches THROUGH the agent-adapter registry (src/agents/registry.ts),
+    # selected per run by run_config.agent.adapter (absent = claude-code). `harmony agent ...`
+    # (src/cli/commands/agent.ts) is the only thing that knows the runtime's binary, argv and
+    # credential rules — this script never names the runtime's command itself. Every `harmony
+    # agent` subcommand exits non-zero with a "Refusing to start: ..." line on stderr for an
+    # unknown or malformed adapter (no fallback to claude-code).
+    AGENT_BINARY="$(node "$PLUGIN_DIR/dist/bin/harmony.js" agent binary)" || exit 1
+    command -v "$AGENT_BINARY" >/dev/null 2>&1 || {
+      echo "headless mode needs the agent image (this looks like the base target — no $AGENT_BINARY installed)." >&2
       exit 1
     }
     # Empty-value shadow guard (same class as the anon-key omit): --env-file
@@ -281,14 +288,14 @@ case "$MODE" in
     # ANTHROPIC_API_KEY would shadow the OAuth token.
     [ -z "${ANTHROPIC_API_KEY:-}" ] && unset ANTHROPIC_API_KEY
     [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && unset CLAUDE_CODE_OAUTH_TOKEN
-    if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-      echo "Warning: ANTHROPIC_API_KEY is set — it OVERRIDES subscription auth and bills per-token." >&2
-      echo "Unset it and set CLAUDE_CODE_OAUTH_TOKEN (minted via 'claude setup-token') for subscription runs." >&2
-    elif [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-      echo "headless mode needs auth: set CLAUDE_CODE_OAUTH_TOKEN (primary; mint via 'claude setup-token')" >&2
-      echo "or ANTHROPIC_API_KEY (fallback; per-token API billing) — see plugin/container/env.example (copy it and fill it in — container/README.md Quick start)." >&2
+    # B-1077 / B-934: the adapter's auth seam decides. Two credentials at once (e.g.
+    # ANTHROPIC_API_KEY beside CLAUDE_CODE_OAUTH_TOKEN) is a config error and REFUSES the leg —
+    # before B-1077 this only warned and let the API key win. No credential at all refuses too.
+    if ! AGENT_CREDENTIAL="$(node "$PLUGIN_DIR/dist/bin/harmony.js" agent check-credentials)"; then
+      echo "See plugin/container/env.example (copy it and fill it in — container/README.md Quick start)." >&2
       exit 1
     fi
+    echo "B-1077: agent credential: $AGENT_CREDENTIAL." >&2
     # B-825: never let the headless runtime's 600s background-task ceiling kill a
     # still-running delegated build (B-688's build died exactly this way — twice).
     # Build subagents are foreground by rule (start-work O3); this export is the
@@ -424,35 +431,58 @@ case "$MODE" in
       fi
     fi
 
-    # The flags are deliberately word-split. EXTRA_HEADLESS_FLAGS_BASE never carries --model — the
-    # switch loop below layers the CURRENT_MODEL on top of it fresh every iteration, so a switch
-    # never accumulates a second/stale --model flag.
+    # The upstream flags are deliberately word-split. EXTRA_HEADLESS_FLAGS_BASE never carries
+    # --model — the switch loop below hands the CURRENT_MODEL to the adapter fresh every iteration,
+    # so a switch never accumulates a second/stale --model flag.
     # shellcheck disable=SC2206
     EXTRA_HEADLESS_FLAGS_BASE=(${CLAUDE_HEADLESS_FLAGS:-})
 
-    # --- B-916: per-invocation cost capture, wired into the SAME flag base. ----------------------
-    # `--output-format json` makes each invocation emit ONE JSON line at the END of its stdout,
-    # carrying THAT invocation's usage / total_cost_usd / num_turns / duration. It is added here (to
-    # the base, not per-iteration) so every invocation of the leg is measured identically — the
-    # B-718 resume attempt, its cold fallback, and every B-772 model-switch iteration.
+    # --- B-916: per-invocation cost capture — the structured result format. -----------------------
+    # The adapter's headless seam (B-1077) adds the runtime's structured-output flag (for Claude
+    # Code, the JSON output format) to EVERY invocation it builds, unless the upstream flags already
+    # chose a format — their choice wins, and the capture degrades to "no measurements recorded".
+    # Each invocation then emits ONE JSON line at the END of its stdout, carrying THAT invocation's
+    # usage / total_cost_usd / num_turns / duration, so every invocation of the leg is measured
+    # identically — the B-718 resume attempt, its cold fallback, and every B-772 model-switch
+    # iteration. This script no longer adds that flag itself (it would then appear twice).
     #
-    # This flag is why the loop below captures each invocation's stdout to a file and RE-ECHOES its
-    # `.result` verbatim afterwards: the entire stdout becomes that one JSON line, so wiring the
-    # flag WITHOUT the re-echo would silently replace B-720's readable operator tail (the last few
-    # tool calls, the "I'm parking because..." line) with a machine blob.
-    #
-    # Skipped when an upstream caller already chose an output format via CLAUDE_HEADLESS_FLAGS —
-    # their choice wins, and the capture simply degrades to "no measurements recorded" rather than
-    # fighting it (the re-echo's verbatim-passthrough fallback keeps their output intact).
-    B916_OUTPUT_FORMAT_SET=0
-    for b916_flag in "${EXTRA_HEADLESS_FLAGS_BASE[@]}"; do
-      if [ "$b916_flag" = "--output-format" ]; then
-        B916_OUTPUT_FORMAT_SET=1
+    # It is why the loop below captures each invocation's stdout to a file and RE-ECHOES its
+    # `.result` verbatim afterwards: the entire stdout becomes that one JSON line, so launching
+    # WITHOUT the re-echo would silently replace B-720's readable operator tail (the last few tool
+    # calls, the "I'm parking because..." line) with a machine blob.
+
+    # --- B-1077: build ONE invocation's launch command through the adapter. ---------------------
+    # Fills AGENT_ARGV with the full command (binary first) for the given resume id ($1, may be
+    # empty) and the CURRENT_MODEL, from `harmony agent argv`'s NUL-separated output — the only
+    # encoding that survives a prompt with spaces, quotes or newlines. A refusal (unknown/malformed
+    # adapter) or an empty answer ends the leg: there is no hand-assembled fallback command.
+    AGENT_ARGV=()
+    _agent_argv() {
+      local resume_args=() model_args=() argv_file tok
+      if [ -n "${1:-}" ]; then
+        resume_args=(--resume "$1")
       fi
-    done
-    if [ "$B916_OUTPUT_FORMAT_SET" -eq 0 ]; then
-      EXTRA_HEADLESS_FLAGS_BASE+=(--output-format json)
-    fi
+      if [ -n "$CURRENT_MODEL" ]; then
+        model_args=(--model "$CURRENT_MODEL")
+      fi
+      AGENT_ARGV=()
+      argv_file="$(mktemp)"
+      if ! node "$PLUGIN_DIR/dist/bin/harmony.js" agent argv \
+        --plugin-dir "$PLUGIN_DIR" --prompt "$PROMPT" "${resume_args[@]}" "${model_args[@]}" \
+        -- "${EXTRA_HEADLESS_FLAGS_BASE[@]}" >"$argv_file"; then
+        rm -f "$argv_file"
+        echo "B-1077: \`harmony agent argv\` refused or failed (see stderr above) — no worker launched." >&2
+        exit 1
+      fi
+      while IFS= read -r -d '' tok; do
+        AGENT_ARGV+=("$tok")
+      done <"$argv_file"
+      rm -f "$argv_file"
+      if [ "${#AGENT_ARGV[@]}" -eq 0 ]; then
+        echo "B-1077: \`harmony agent argv\` printed no launch command — no worker launched." >&2
+        exit 1
+      fi
+    }
 
     # B-772: HARMONY_MODEL is the daemon's already-resolved per-gate/per-run/pinned-default model
     # choice (src/config/run-config.ts's getModelForGate, delivered via the minted run.env file —
@@ -617,12 +647,6 @@ case "$MODE" in
       # moved past it.
       export HARMONY_MODEL="$CURRENT_MODEL"
 
-      # shellcheck disable=SC2206
-      EXTRA_HEADLESS_FLAGS=("${EXTRA_HEADLESS_FLAGS_BASE[@]}")
-      if [ -n "$CURRENT_MODEL" ]; then
-        EXTRA_HEADLESS_FLAGS+=(--model "$CURRENT_MODEL")
-      fi
-
       # B-916: stamp the gate ONCE per iteration, before this iteration's invocation(s). One stamp
       # covers both halves of the resume/cold-fallback pair below because nothing can advance the
       # gate between them (the resume attempt failed to ATTACH — it never ran a turn).
@@ -643,10 +667,11 @@ case "$MODE" in
         # during the (expected-brief) resume-attach window. Dumping stderr verbatim is what keeps an
         # unfamiliar failure visible even though the fallback no longer requires recognizing it.
         echo "B-718: attempting to resume prior session $RESUME_SESSION_ID (run_config.session_resume.enabled=true)." >&2
+        _agent_argv "$RESUME_SESSION_ID"
         RESUME_STDERR_FILE="$(mktemp)"
         RESUME_STDOUT_FILE="$(mktemp)"
         set +e
-        _b772_run claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" --resume "$RESUME_SESSION_ID" "${EXTRA_HEADLESS_FLAGS[@]}" >"$RESUME_STDOUT_FILE" 2>"$RESUME_STDERR_FILE"
+        _b772_run "${AGENT_ARGV[@]}" >"$RESUME_STDOUT_FILE" 2>"$RESUME_STDERR_FILE"
         RESUME_EXIT=$?
         set -e
         cat "$RESUME_STDERR_FILE" >&2
@@ -663,9 +688,10 @@ case "$MODE" in
         _b916_record_invocation "$RESUME_STDOUT_FILE"
         if [ "$RESUME_EXIT" -ne 0 ]; then
           echo "B-718: --resume $RESUME_SESSION_ID failed to attach (exit $RESUME_EXIT; see stderr above) — falling back to a COLD start. Resume was attempted and degraded gracefully; this is expected to be rare — investigate the persisted transcript mount if it recurs." >&2
+          _agent_argv ""
           FALLBACK_STDOUT_FILE="$(mktemp)"
           set +e
-          _b772_run claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" "${EXTRA_HEADLESS_FLAGS[@]}" >"$FALLBACK_STDOUT_FILE"
+          _b772_run "${AGENT_ARGV[@]}" >"$FALLBACK_STDOUT_FILE"
           INVOCATION_EXIT=$?
           set -e
           _b916_echo_result "$FALLBACK_STDOUT_FILE"
@@ -694,9 +720,10 @@ case "$MODE" in
         # injected — passed through untouched here, exactly as it always has been. Every iteration
         # PAST the first is ALWAYS a cold start regardless — a model switch is itself a session
         # boundary (this ticket's accepted design), so there is never a `--resume` on iteration 2+.
+        _agent_argv ""
         COLD_STDOUT_FILE="$(mktemp)"
         set +e
-        _b772_run claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" "${EXTRA_HEADLESS_FLAGS[@]}" >"$COLD_STDOUT_FILE"
+        _b772_run "${AGENT_ARGV[@]}" >"$COLD_STDOUT_FILE"
         INVOCATION_EXIT=$?
         set -e
         _b916_echo_result "$COLD_STDOUT_FILE"

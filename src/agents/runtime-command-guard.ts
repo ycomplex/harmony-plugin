@@ -1,7 +1,7 @@
 // B-1075: detect source that assembles an agent-runtime command (claude / codex) itself.
 //
-// The daemon must never build a runtime argv: the launch belongs to the worker (provision.sh
-// today, the adapter registry from B-1077). src/agents/daemon-runtime-guard.test.ts runs this over
+// The daemon must never build a runtime argv: the launch belongs to the worker (provision.sh,
+// which since B-1077 runs the command the adapter registry builds via `harmony agent argv`). src/agents/daemon-runtime-guard.test.ts runs this over
 // src/daemon. Comments are stripped first, so prose that mentions `claude -p` is not a finding.
 
 const RUNTIMES = '(?:claude|codex)';

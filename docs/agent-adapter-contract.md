@@ -1,4 +1,4 @@
-# The agent-adapter contract (B-1075)
+# The agent-adapter contract (B-1075, routed by B-1077)
 
 An **agent adapter** describes, declaratively, how one coding-agent runtime runs a Harmony leg.
 Claude Code is the first one (`src/agents/claude-code.ts`). Codex is next (B-1076). An adapter is pure
@@ -12,13 +12,45 @@ data and pure functions. It never spawns anything.
 | `src/agents/claude-code.ts` | The Claude Code adapter (registry id `claude-code`) |
 | `src/agents/conformance.ts` | `runConformance(adapter)` → one `{seam, number, pass, problems[]}` per seam |
 | `src/agents/runtime-command-guard.ts` | Detects source that builds a `claude`/`codex` command itself |
+| `src/agents/launch-routing.ts` | B-1077 worker-side routing: run_config → adapter, launch command, credential verdict, NUL argv encoding |
+| `src/cli/commands/agent.ts` | `harmony agent resolve / binary / check-credentials / argv` — what `provision.sh` calls |
+| `src/daemon/agent-eligibility.ts` | B-1077 fire-time check: adapter registered AND on the profile's `agents` list, else park |
 
-**Today the adapter describes the launch. It does not perform it.** `container/provision.sh` still
-composes the `claude` invocation, and the launch scripts still forward the environment. The drift test
-(`src/agents/claude-code-drift.test.ts`) reads those scripts as text and fails when the adapter and the
-scripts disagree. A change to the launch therefore has to change both sides until B-1077 makes
-provision.sh dispatch through the registry. The daemon assembles no runtime command, and
-`src/agents/daemon-runtime-guard.test.ts` keeps it that way.
+**The routing seam is live (B-1077): the adapter performs the launch.** `container/provision.sh`
+no longer composes the runtime command. Each launch site (the B-718 resume attempt, its cold
+fallback, and every B-772 cold/model-switch invocation) runs exactly the argv that
+`harmony agent argv --plugin-dir <dir> --prompt <prompt> [--resume <id>] [--model <alias>] -- <upstream flags>`
+prints. That argv is the adapter's binary followed by its `buildArgv`, NUL-separated, and read back
+with `while IFS= read -r -d '' t`. The rest of the B-772/B-916/B-718 loop around those sites is
+unchanged. provision.sh no longer adds `--output-format json` itself, because the adapter's argv
+already carries it. The presence probe asks `harmony agent binary`.
+
+- **Selecting an adapter.** It is set per run by `run_config.agent.adapter`. An absent key means
+  `claude-code`, so every existing run launches exactly as before. Changing the value back to
+  `claude-code` (or removing it) is a config-only rollback, and the launch command is then
+  byte-identical to the pre-B-1077 one (`src/agents/launch-routing.test.ts`). A malformed value or
+  an unregistered id is **refused**, both by the worker (`Refusing to start: Unknown agent adapter
+  'codex' — registered: claude-code`) and by the daemon. It never falls back to `claude-code`.
+- **Profiles.** Each launch profile has an optional `agents` list of registry ids, in both
+  `deployment.json`'s `profiles.<name>` and the legacy profile file. An absent list means
+  `["claude-code"]` only. Before a leg fires, `fireLaunch` checks that the run's adapter is
+  registered and is in that list. It also refuses a non-default adapter on a launch template without
+  `{run_config_json}`, because the worker would never see the choice. On a refusal it parks the
+  ticket the way a fast-track admission refusal does: the conduction is parked
+  (`last_worker_exit_class: agent-ineligible`), the ticket is advanced to `parking`, a comment names
+  the registered adapters and the profile's list, and no worker is launched. The daemon only looks
+  up an id and compares it to a list. It still builds no runtime command, and
+  `src/agents/daemon-runtime-guard.test.ts` keeps it that way.
+- **Credentials.** `harmony agent check-credentials` runs the adapter's `resolveCredential`.
+  provision.sh **refuses to start** (non-zero exit, `Refusing to start: …` on stderr) when
+  `ANTHROPIC_API_KEY` is set beside `CLAUDE_CODE_OAUTH_TOKEN`, and also when neither is set. Before
+  B-1077 it only warned and let the API key win. Empty values are unset first.
+
+The drift test (`src/agents/claude-code-drift.test.ts`) now asserts that provision.sh launches
+*through* the adapter: every `_b772_run` site runs `"${AGENT_ARGV[@]}"`, each one has its own
+`_agent_argv` build, and there is no hand-assembled `claude …` invocation and no literal
+`--output-format`. For the seams the scripts still implement (session paths, agent-file delivery,
+the env allowlist and MCP), it still compares the adapter against the scripts.
 
 ## The ten seams
 
@@ -55,10 +87,8 @@ env allowlist", split in two so that there are ten seams.
   ceiling. A metered credential without a ceiling is a loud config error. The function is
   `validateCredentialDeclaration({deployment, credential, runtime?, spendCeiling?, warnAt?})`.
 - **No silent fallback between regimes.** `ANTHROPIC_API_KEY` set beside `CLAUDE_CODE_OAUTH_TOKEN` is
-  a config error, not a precedence rule. *Known gap:* `provision.sh` today only **warns** in that case
-  and lets the API key win. The adapter's `resolveCredential` encodes the policy, and enforcement
-  lands when B-1077 routes the launch through the adapter. The drift test pins only that both sides
-  name the same variables.
+  a config error, not a precedence rule. Since B-1077 this is enforced at launch: `provision.sh`
+  refuses to start on the adapter's verdict (`harmony agent check-credentials`).
 
 ## Running the conformance suite
 
@@ -83,9 +113,9 @@ expect(runConformance(myAdapter).filter((r) => !r.pass)).toEqual([]);
   with `family: 'codex'`, using only the Codex credential vocabulary above. Register it in
   `registry.ts` and pass the same `runConformance` with no exceptions. Add a drift test of its own if
   it gets launch-script support.
-- **B-1077 (per-leg launch-profile routing): seam 1 (launch) and the registry.** Route each leg by
-  registry id and rewire `provision.sh` to dispatch through the adapter, so that `buildArgv`, the
-  auth resolution and the env allowlist stop being descriptions and become the launch. This is also
-  where the API-key-beside-OAuth refusal becomes enforced. Update the drift test in the same change.
+- **B-1077 (per-leg launch-profile routing): done.** See "The routing seam is live" above.
+  `buildArgv` and the auth resolution are now the launch. The env allowlist is still
+  implemented by the launch scripts and pinned by the drift test. A new adapter (B-1076) becomes
+  launchable once it is registered and listed in a profile's `agents`.
 - **B-1078 (observability): seam 10 (telemetry).** Read `telemetry.parse` for runtime, model,
   credential and cost regime per invocation. Do not re-derive the regime. Use `deriveCostRegime`.

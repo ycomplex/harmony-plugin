@@ -69,6 +69,10 @@ export interface LaunchProfile {
    *  src/daemon/preflight.ts's CURRENT_SCHEMA_VERSION. Mirrors
    *  src/config/deployment-config.ts's LaunchProfileSchema field of the same name. */
   schema_version?: number;
+  /** B-1077: the agent adapter ids legs on this profile may launch through; absent = only
+   *  `claude-code`. Checked before every fire by src/daemon/agent-eligibility.ts. Mirrors
+   *  src/config/deployment-config.ts's LaunchProfileSchema field of the same name. */
+  agents?: string[];
 }
 
 export interface DaemonConfig {
@@ -261,6 +265,18 @@ export function loadDaemonConfig(
         `launch profile ${profilePath}'s "schema_version", when present, must be a positive integer`,
       );
     }
+    // B-1077: mirrors src/config/deployment-config.ts's LaunchProfileSchema
+    // z.array(z.string().min(1)).min(1).optional() for the same field.
+    if (
+      profile.agents !== undefined &&
+      (!Array.isArray(profile.agents) ||
+        profile.agents.length === 0 ||
+        profile.agents.some((a) => typeof a !== 'string' || a.length === 0))
+    ) {
+      throw new Error(
+        `launch profile ${profilePath}'s "agents", when present, must be a non-empty array of agent adapter ids`,
+      );
+    }
   }
 
   // Both branches above guarantee launch/reap are non-empty strings by this point (validated
@@ -295,6 +311,8 @@ export function loadDaemonConfig(
       required_tools: validatedProfile.required_tools,
       requires_app_mint: validatedProfile.requires_app_mint,
       schema_version: validatedProfile.schema_version,
+      // B-1077: carried through on BOTH routes so the fire-time agent eligibility check sees it.
+      agents: validatedProfile.agents,
     },
     logPath: envValue(env, 'HARMONY_DAEMON_LOG'),
   };
