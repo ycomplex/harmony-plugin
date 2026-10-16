@@ -277,6 +277,15 @@ checklist step as it lands (`mcp__harmony__manage_checklist_items({ task_id, upd
 - **`harmony-build` path (container-provisioned)** → no extra injection needed: `container/agents/harmony-build.md` carries its own proactive per-write check for this exact glob and the agent applies it directly.
 - **Ad-hoc subagent path (human machines, no `harmony-build`)** → the ad-hoc subagent does NOT read `container/agents/harmony-build.md`, so inject the equivalent instruction directly into its prompt, inline, before spawning: "If your planned change touches `.github/workflows/**`, do NOT call Edit/Write on that path — it is denied by the harness regardless of permission mode. Instead: write the intended content to a scratch path, generate a labelled diff (`diff -u --label a/<path> --label b/<path> <real> <scratch>`), verify it with `git apply --stat --summary` (never `--check` alone — it returns 0 even on a patch that targets the wrong path), commit+push everything else, and end your report with a `WORKER-QUESTION: capability-denial` marker embedding the verified patch text and the pushed branch name."
 
+**No subagents ⇒ build in THIS thread (B-1076).** Ask the runtime first: `harmony agent capability subagents`
+prints `true` or `false` for this leg's agent adapter. If it prints `false` (a Codex worker — there is no
+`harmony-build` agent and no Task tool), do NOT delegate: implement, test, commit and push yourself in this
+thread, in the same order and with the same evidence obligations as below. Skip the whole three-way
+delegation split that follows, and never park for a missing `harmony-build` (the `HARMONY_BUILD_CONTAINER`
+discriminator applies only when subagents are declared). Wherever this skill says "the build subagent" or
+"re-delegate", do that work yourself. The `.github/workflows/**` rule above binds your own Edit/Write. If the
+command is unavailable or prints anything but `false`, continue below unchanged.
+
 **Build delegation is CONDITIONAL on the declared build agent (B-719).** The implementation runs in a
 build subagent (context-thinning; worktree per B-628) — WHICH subagent depends on what the session has:
 
