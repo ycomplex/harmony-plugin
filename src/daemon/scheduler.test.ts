@@ -3676,6 +3676,68 @@ describe('B-1073 (post-review wiring): fast-track admission check at fireLaunch'
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-1077 — the agent-adapter ELIGIBILITY CHECK at fireLaunch: the run's adapter
+// (run_config.agent.adapter, absent = claude-code) must be registered AND in the profile's `agents`
+// list (absent = claude-code only). Refused ⇒ parked like a fast-track refusal, no worker launched,
+// no leg counted. The pure rules are pinned in agent-eligibility.test.ts; these pin the wiring.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('B-1077: agent-adapter eligibility check at fireLaunch', () => {
+  const task = () => ({ 'task-1': pausedTask({ workflow_state: 'Building', title: 'Wire the thing.' }) });
+
+  it('no agent key on a profile with no agents list: launches exactly as before', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: task() });
+    const addTicketComment = vi.fn(async () => {});
+    h.deps.addTicketComment = addTicketComment;
+    await wakeAndFire(h);
+    expect(h.launches()).toEqual(['launch cond-1 task-1']);
+    expect(addTicketComment).not.toHaveBeenCalled();
+  });
+
+  it('an unregistered adapter: parks the conduction, advances the ticket to parking, comments the registered adapters, launches NO worker and counts no leg', async () => {
+    const h = makeHarness({ conductions: [conduction({ run_config: { agent: { adapter: 'codex' } } })], tasks: task() });
+    const advanceTicketWorkflow = vi.fn(async () => {});
+    const addTicketComment = vi.fn(async () => {});
+    h.deps.advanceTicketWorkflow = advanceTicketWorkflow;
+    h.deps.addTicketComment = addTicketComment;
+
+    await wakeAndFire(h);
+
+    expect(h.launches()).toEqual([]);
+    expect(h.running()).toEqual([]);
+    expect(h.statusWrites()).toEqual([
+      { status: 'parked', last_worker_exit_code: null, last_worker_exit_class: 'agent-ineligible' },
+    ]);
+    expect(h.getConduction('cond-1').leg_count ?? 0).toBe(0);
+    expect(advanceTicketWorkflow).toHaveBeenCalledWith('task-1', 'parking');
+    expect(addTicketComment).toHaveBeenCalledTimes(1);
+    const [taskId, comment] = addTicketComment.mock.calls[0] as unknown as [string, string];
+    expect(taskId).toBe('task-1');
+    expect(comment).toContain("Unknown agent adapter 'codex' — registered: claude-code");
+    expect(comment).toContain('This launch profile allows: claude-code.');
+  });
+
+  it("a registered adapter missing from the profile's agents list is refused too", async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: task(),
+      config: { ...config, profile: { ...config.profile, agents: ['codex'] } },
+    });
+    await wakeAndFire(h);
+    expect(h.launches()).toEqual([]);
+    expect(h.statusWrites()).toEqual([
+      { status: 'parked', last_worker_exit_code: null, last_worker_exit_class: 'agent-ineligible' },
+    ]);
+  });
+
+  it('config-only rollback: the same conduction with agent.adapter switched back to claude-code launches', async () => {
+    const h = makeHarness({ conductions: [conduction({ run_config: { agent: { adapter: 'claude-code' } } })], tasks: task() });
+    await wakeAndFire(h);
+    expect(h.launches()).toEqual(['launch cond-1 task-1']);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // B-1073 x B-1020 interaction: a fast-track leg the admission check parks BEFORE launch must never
 // be counted as a leg (B-1020's leg_count) or receive a HARMONY_LEG assignment it will never use —
 // the admission check runs strictly before the leg-number computation in fireLaunch, so an

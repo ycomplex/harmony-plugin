@@ -563,3 +563,38 @@ describe('B-801: required_tools / requires_app_mint / schema_version — schema 
     );
   });
 });
+
+// B-1077: the launch profile's optional `agents` list, mirrored in BOTH schema surfaces.
+describe('B-1077: profile agents list — schema parity across BOTH surfaces', () => {
+  const deploymentIo = (cloud: Record<string, unknown>) => ({
+    existsSync: (p: string) => p === '/deployment.json',
+    readFileSync: () => JSON.stringify({ profiles: { cloud: { launch: 'l {conduction_id}', reap: 'r {conduction_id}', ...cloud } } }),
+  });
+
+  it('absent on both routes (the default: claude-code only, decided at fire time)', () => {
+    const cfg = loadDaemonConfig(envWith(), () => JSON.stringify({ launch: 'l {conduction_id}', reap: 'r {conduction_id}' }));
+    expect(cfg.profile.agents).toBeUndefined();
+    expect(loadDeploymentConfig({ configPath: '/deployment.json', ...deploymentIo({}) })?.profiles?.cloud.agents).toBeUndefined();
+  });
+
+  it('both routes accept and carry a list through', () => {
+    const cfg = loadDaemonConfig(envWith(), () =>
+      JSON.stringify({ launch: 'l {conduction_id}', reap: 'r {conduction_id}', agents: ['claude-code', 'codex'] }),
+    );
+    expect(cfg.profile.agents).toEqual(['claude-code', 'codex']);
+    const loaded = loadDeploymentConfig({ configPath: '/deployment.json', ...deploymentIo({ agents: ['claude-code'] }) });
+    expect(loaded?.profiles?.cloud.agents).toEqual(['claude-code']);
+  });
+
+  it.each<[string, unknown]>([
+    ['an empty list', []],
+    ['a bare string', 'claude-code'],
+    ['an empty id', ['']],
+    ['a non-string id', [7]],
+  ])('both routes reject %s', (_label, agents) => {
+    expect(() =>
+      loadDaemonConfig(envWith(), () => JSON.stringify({ launch: 'l {conduction_id}', reap: 'r {conduction_id}', agents })),
+    ).toThrow(/"agents"/);
+    expect(() => loadDeploymentConfig({ configPath: '/deployment.json', ...deploymentIo({ agents }) })).toThrow(/failed validation/);
+  });
+});

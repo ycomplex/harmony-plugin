@@ -3,8 +3,8 @@
 // An agent adapter describes, declaratively, how ONE coding-agent runtime (Claude Code today; Codex
 // in B-1076) is installed, authenticated, invoked headless, resumed, instructed, given skills and
 // MCP, fed its environment, what it can do, and what it reports back. Pure types + pure data: no
-// adapter spawns anything. Today the launch itself is still composed by container/provision.sh;
-// B-1077 rewires it to dispatch through src/agents/registry.ts. The page is
+// adapter spawns anything. Since B-1077 container/provision.sh launches every leg through
+// src/agents/registry.ts (`harmony agent argv` / `check-credentials`). The page is
 // docs/agent-adapter-contract.md; the suite that checks an adapter is src/agents/conformance.ts.
 
 import type { CostRegime, CredentialMode, RuntimeFamily } from './credentials.js';

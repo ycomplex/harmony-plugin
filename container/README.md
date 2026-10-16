@@ -36,10 +36,13 @@ docker run --rm --env-file ~/.harmony-container.env harmony-build-env \
 
 Headless auth is **`CLAUDE_CODE_OAUTH_TOKEN`** (mint once via `claude
 setup-token` — a ~1-year subscription token), keeping workers on Max
-subscription economics. `ANTHROPIC_API_KEY` is a labelled fallback only: it
-**overrides subscription auth and bills per-token**. provision.sh unsets
-empty values of either so a blank env-file line can't shadow the real token,
-and refuses headless mode with neither set.
+subscription economics. `ANTHROPIC_API_KEY` is the metered alternative (it bills
+per-token) — set **one or the other, never both**: since B-1077 provision.sh
+**refuses** headless mode (`Refusing to start: ...`, non-zero exit) when both are
+set (B-934: two credentials at once is a config error, not a precedence rule),
+and refuses it with neither set. It unsets empty values of either first, so a
+blank env-file line counts as unset. The verdict is the agent adapter's own
+(`harmony agent check-credentials`, `src/agents/`).
 
 ## Interactive login
 

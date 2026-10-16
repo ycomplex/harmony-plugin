@@ -16,6 +16,8 @@ import {
   RunConfigSchema,
   clearModelHandoffRequest,
   fetchModelCatalog,
+  getAgentAdapter,
+  DEFAULT_AGENT_ADAPTER,
   getAutoApproveGates,
   getConductionId,
   getLeg,
@@ -32,6 +34,7 @@ import {
   writeModelHandoffRequest,
 } from './run-config.js';
 import type { ModelCatalogEntry } from './run-config.js';
+import { DEFAULT_ADAPTER_ID } from '../agents/registry.js';
 import type { RunConfig } from './run-config.js';
 
 describe('RunConfigSchema', () => {
@@ -784,5 +787,35 @@ describe('B-892 resolveRunConfigFromConduction', () => {
   it('returns null when the row carries a null run_config (a pre-migration/absent column)', async () => {
     const { client } = fakeConductionClient(conductionRow(null));
     await expect(resolveRunConfigFromConduction(client, 'cond-892')).resolves.toBeNull();
+  });
+});
+
+describe('getAgentAdapter (B-1077)', () => {
+  it('an absent agent key reads as the default claude-code (not explicit)', () => {
+    expect(getAgentAdapter(EMPTY_RUN_CONFIG)).toEqual({ ok: true, adapter: 'claude-code', explicit: false });
+  });
+  it('an agent object with no adapter key also reads as the default', () => {
+    expect(getAgentAdapter(RunConfigSchema.parse({ agent: {} }))).toEqual({ ok: true, adapter: 'claude-code', explicit: false });
+  });
+  it('an explicit adapter id is returned as-is (registration is judged elsewhere)', () => {
+    expect(getAgentAdapter(RunConfigSchema.parse({ agent: { adapter: 'codex' } }))).toEqual({ ok: true, adapter: 'codex', explicit: true });
+    expect(getAgentAdapter(RunConfigSchema.parse({ agent: { adapter: 'claude-code' } }))).toEqual({ ok: true, adapter: 'claude-code', explicit: true });
+  });
+  it.each<[string, unknown]>([
+    ['a string agent', 'codex'],
+    ['an array agent', ['codex']],
+    ['a numeric adapter', { adapter: 5 }],
+    ['an empty adapter', { adapter: '' }],
+    ['a blank adapter', { adapter: '   ' }],
+  ])('REFUSES %s — never a silent fallback to claude-code', (_label, agent) => {
+    const r = getAgentAdapter(RunConfigSchema.parse({ agent }));
+    expect(r.ok).toBe(false);
+  });
+  it('a malformed agent value does NOT make the whole payload unparseable (other axes survive)', () => {
+    const parsed = RunConfigSchema.parse({ agent: 'codex', session_resume: { enabled: true } });
+    expect(isSessionResumeEnabled(parsed)).toBe(true);
+  });
+  it('DEFAULT_AGENT_ADAPTER is the registry default', () => {
+    expect(DEFAULT_AGENT_ADAPTER).toBe(DEFAULT_ADAPTER_ID);
   });
 });

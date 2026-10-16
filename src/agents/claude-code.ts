@@ -1,20 +1,18 @@
-// B-1075: the Claude Code adapter — a declarative description of how a leg launches TODAY.
-//
-// Nothing here spawns anything, and nothing here is (yet) on the launch path: container/provision.sh
-// still composes the invocation itself. This file is the description of what it does, pinned to the
-// shell by src/agents/claude-code-drift.test.ts so either side drifting fails CI. B-1077 rewires
-// provision.sh to dispatch through the registry; until then a change to the launch must change
-// both. Every value below cites the script line it mirrors.
+// B-1075: the Claude Code adapter. Since B-1077 it IS the launch: container/provision.sh runs the
+// command `harmony agent argv` builds from this adapter (binary + buildArgv) and refuses to start on
+// this adapter's credential verdict (`harmony agent check-credentials`). Nothing here spawns
+// anything. src/agents/claude-code-drift.test.ts pins that provision.sh keeps no hand-assembled copy
+// of the command, and that the seams still implemented by the scripts (session, skills, env) match.
 
 import type { AgentAdapter, CredentialResolution, HeadlessInput, McpConnection } from './contract.js';
 import { PLUGIN_ROOT_PLACEHOLDER } from './contract.js';
 import { deriveCostRegime } from './credentials.js';
 import { parseClaudeResultJson, resolveCost } from '../tools/claude-result-parse.js';
 
-/** provision.sh: `EXTRA_HEADLESS_FLAGS_BASE+=(--output-format json)`, added only when the
- *  upstream CLAUDE_HEADLESS_FLAGS carry no `--output-format` of their own (B-916). */
+/** B-916's structured result format, added by buildArgv only when the upstream
+ *  CLAUDE_HEADLESS_FLAGS carry no `--output-format` of their own (provision.sh no longer adds it). */
 export const CLAUDE_OUTPUT_FORMAT_FLAGS: readonly string[] = ['--output-format', 'json'];
-/** provision.sh: `EXTRA_HEADLESS_FLAGS+=(--model "$CURRENT_MODEL")`, layered last (B-772). */
+/** The B-772 model flag, layered last (provision.sh passes CURRENT_MODEL to `harmony agent argv`). */
 export const CLAUDE_MODEL_FLAG = '--model';
 export const CLAUDE_RESUME_FLAG = '--resume';
 export const CLAUDE_PLUGIN_DIR_FLAG = '--plugin-dir';
@@ -33,8 +31,8 @@ function resolveClaudeCredential(env: Readonly<Record<string, string | undefined
   const oauth = present(env, OAUTH_ENV);
   const apiKey = present(env, API_KEY_ENV);
   if (oauth && apiKey) {
-    // B-934: no silent fallback between regimes. (provision.sh today only WARNS here and lets the
-    // API key win; the refusal is the policy, enforced when B-1077 routes the launch through this.)
+    // B-934: no silent fallback between regimes. Enforced at launch since B-1077: provision.sh
+    // refuses to start on this verdict (`harmony agent check-credentials`).
     return { ok: false, error: `${API_KEY_ENV} is set beside ${OAUTH_ENV} — two credentials at once is a config error (B-934: no silent fallback between regimes). Unset one.` };
   }
   if (oauth) return { ok: true, credential: 'subscription-token' };
@@ -43,9 +41,9 @@ function resolveClaudeCredential(env: Readonly<Record<string, string | undefined
 }
 
 function buildClaudeArgv(input: HeadlessInput): string[] {
-  // provision.sh: claude --plugin-dir "$PLUGIN_DIR" -p "$PROMPT" [--resume "$RESUME_SESSION_ID"] "${EXTRA_HEADLESS_FLAGS[@]}"
-  // where EXTRA_HEADLESS_FLAGS = CLAUDE_HEADLESS_FLAGS (+ --output-format json unless already set)
-  // (+ --model "$CURRENT_MODEL" when non-empty).
+  // The launch provision.sh runs (via `harmony agent argv`), byte-identical to its pre-B-1077 hand
+  // assembly: --plugin-dir <dir> -p <prompt> [--resume <id>] <CLAUDE_HEADLESS_FLAGS>
+  // (+ --output-format json unless already set) (+ --model <alias> when non-empty).
   const argv = [CLAUDE_PLUGIN_DIR_FLAG, input.pluginDir, CLAUDE_PROMPT_FLAG, input.prompt];
   if (input.resumeSessionId) argv.push(CLAUDE_RESUME_FLAG, input.resumeSessionId);
   const extra = [...(input.extraFlags ?? [])];

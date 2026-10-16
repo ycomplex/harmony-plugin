@@ -137,6 +137,7 @@ import { renderQuietReapOutcome } from './quiet-reap.js';
 import { exchangeWentInactive } from '../conductor/ball-axis.js';
 import { renderTemplate, type DaemonConfig } from './config.js';
 import { resolveLegGate, isFastTrackBuildLeg, evaluateFastTrackAdmission } from './leg-gate.js';
+import { evaluateAgentEligibility, formatAgentIneligibleComment } from './agent-eligibility.js';
 import { getModelForGate, isFastTrackEnabled, type RunConfig } from '../config/run-config.js';
 import { formatInadmissibleFastTrackVerdict } from '../tools/record-eligibility.js';
 // B-929: the ONE place the worker-image default is written (src/config/deployment-config.ts's
@@ -349,12 +350,14 @@ export interface SchedulerDeps extends WriteRetryDeps {
    *  fails before any worker launches. OPTIONAL: absent on every existing test fixture and on any
    *  daemon build that predates this ticket — the admission check still declines to launch and still
    *  parks the CONDUCTION row either way (see fireLaunch), it just cannot also move the ticket's own
-   *  `workflow_state` to Parked without this dep wired. */
+   *  `workflow_state` to Parked without this dep wired. B-1077 reuses it, same degrade posture,
+   *  for the agent-adapter eligibility park (src/daemon/agent-eligibility.ts). */
   advanceTicketWorkflow?: (taskId: string, activity: string) => Promise<void>;
   /** B-1073 (post-review wiring) — post a comment on a ticket, the SAME `addComment`
    *  (`src/tools/comments.ts`, the `add_comment` MCP tool's underlying function) already implements.
    *  OPTIONAL, same degrade posture as `advanceTicketWorkflow` above — the admission-check park
-   *  proceeds regardless, it just carries no human-readable verdict comment without this dep wired. */
+   *  proceeds regardless, it just carries no human-readable verdict comment without this dep wired.
+   *  B-1077 reuses it for the agent-adapter eligibility park's comment. */
   addTicketComment?: (taskId: string, content: string) => Promise<void>;
 }
 
@@ -1737,6 +1740,54 @@ async function fireLaunch(
       });
       return;
     }
+  }
+
+  // B-1077 — the agent-adapter ELIGIBILITY CHECK, also run BEFORE the leg is counted: the run's
+  // adapter (run_config.agent.adapter, absent = claude-code) must be registered AND in the active
+  // profile's `agents` list (absent = claude-code only), and a non-default adapter needs a template
+  // that delivers {run_config_json}. An id lookup and a list comparison only — the daemon never
+  // builds the runtime command (src/agents/daemon-runtime-guard.test.ts). Refused ⇒ parked exactly
+  // like the fast-track admission refusal above: conduction parked, ticket advanced to 'parking',
+  // the reason (naming the registered adapters and the profile's list) commented, NO worker.
+  const agentEligibility = evaluateAgentEligibility({
+    runConfig,
+    profileAgents: deps.config.profile.agents,
+    templateDeliversRunConfig: deps.config.profile.launch.includes('{run_config_json}'),
+  });
+  if (!agentEligibility.eligible) {
+    deps.log(
+      `${label(row, current, deps.projectKey)}: agent adapter not eligible — parking, no worker ` +
+        `launched (${agentEligibility.reason})`,
+    );
+    runtime.ready.delete(row.id);
+    state.delete(row.id);
+    keeper.stop(row.id);
+    if (deps.advanceTicketWorkflow) {
+      try {
+        await deps.advanceTicketWorkflow(row.task_id, 'parking');
+      } catch (err) {
+        deps.log(
+          `${label(row, current, deps.projectKey)}: agent-ineligible park — advance_workflow ` +
+            `failed (${formatDaemonError(err)})`,
+        );
+      }
+    }
+    if (deps.addTicketComment) {
+      try {
+        await deps.addTicketComment(row.task_id, formatAgentIneligibleComment(agentEligibility));
+      } catch (err) {
+        deps.log(
+          `${label(row, current, deps.projectKey)}: agent-ineligible park — add_comment ` +
+            `failed (${formatDaemonError(err)})`,
+        );
+      }
+    }
+    await writeIfHeld(deps, state, keeper, row, {
+      status: 'parked',
+      last_worker_exit_code: null,
+      last_worker_exit_class: 'agent-ineligible',
+    });
+    return;
   }
 
   // B-1020: the leg this fire is about to start — one more than the conduction's count so far.
