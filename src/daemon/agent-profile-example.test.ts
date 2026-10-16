@@ -3,6 +3,7 @@
 //
 //   1. BOOT: a profile `agents` list that names an unregistered adapter id is refused at daemon boot,
 //      on both profile routes, with a message that names the registered adapters.
+//   (B-1076 send-back: all three example profiles now list claude-code + codex.)
 //   2. FIRE TIME: a conduction requesting a non-default adapter on a launch template that lacks
 //      {run_config_json} is refused before any worker launches (the worker would never see the choice
 //      and would silently run the default adapter). The same conduction on a template that delivers it
@@ -39,10 +40,11 @@ describe('boot: the real example profiles', () => {
     expect(DeploymentConfigSchema.parse({ profiles: { 'docker-host': DOCKER_HOST } }).profiles?.['docker-host'].agents).toEqual(['claude-code', 'codex']);
   });
 
-  it('the local-docker and cloud examples declare no list and still boot (claude-code only)', () => {
+  it('B-1076: the local-docker and cloud examples list both adapters and boot on both routes', () => {
     for (const p of [LOCAL_DOCKER, CLOUD]) {
-      expect(p.agents).toBeUndefined();
-      expect(viaFile(p)().profile.agents).toBeUndefined();
+      expect(p.agents).toEqual(['claude-code', 'codex']);
+      expect(viaFile(p)().profile.agents).toEqual(['claude-code', 'codex']);
+      expect(viaOverride(p)().profile.agents).toEqual(['claude-code', 'codex']);
     }
   });
 
@@ -86,14 +88,18 @@ describe('fire time: the real example launch templates', () => {
     }
   });
 
-  it('the local-docker and cloud examples (no agents list) refuse a codex run as not allowed on the profile; a Claude run is untouched', () => {
+  it('B-1076: the local-docker and cloud templates deliver {run_config_json}: a codex run AND a Claude run are eligible', () => {
     for (const p of [LOCAL_DOCKER, CLOUD]) {
-      const codex = evaluateAgentEligibility({ runConfig: codexRun, profileAgents: p.agents, templateDeliversRunConfig: p.launch.includes('{run_config_json}') });
-      expect(codex.eligible).toBe(false);
-      if (!codex.eligible) expect(codex.reason).toContain("Agent adapter 'codex' is not allowed on this launch profile");
-      expect(
-        evaluateAgentEligibility({ runConfig: {}, profileAgents: p.agents, templateDeliversRunConfig: p.launch.includes('{run_config_json}') }),
-      ).toEqual({ eligible: true, adapter: 'claude-code' });
+      expect(p.launch).toContain('{run_config_json}');
+      const delivers = p.launch.includes('{run_config_json}');
+      expect(evaluateAgentEligibility({ runConfig: codexRun, profileAgents: p.agents, templateDeliversRunConfig: delivers })).toEqual({ eligible: true, adapter: 'codex' });
+      expect(evaluateAgentEligibility({ runConfig: {}, profileAgents: p.agents, templateDeliversRunConfig: delivers })).toEqual({ eligible: true, adapter: 'claude-code' });
     }
+  });
+
+  it('a profile WITHOUT codex in its agents list still refuses a codex run (the gate itself is unchanged)', () => {
+    const r = evaluateAgentEligibility({ runConfig: codexRun, profileAgents: ['claude-code'], templateDeliversRunConfig: true });
+    expect(r.eligible).toBe(false);
+    if (!r.eligible) expect(r.reason).toContain("Agent adapter 'codex' is not allowed on this launch profile");
   });
 });
