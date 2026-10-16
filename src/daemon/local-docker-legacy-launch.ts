@@ -1,0 +1,10 @@
+// B-1076: the local-docker profile's launch template as it stood BEFORE B-1076 moved it into
+// container/docker-worker-launch.sh — frozen here as the parity reference. Two things read it:
+//   * src/daemon/profile-contract.test.ts's static local-docker contracts (B-718 / B-724 / B-732 /
+//     B-846 / B-929), which were written against this text and still pin it;
+//   * src/daemon/local-docker-launch.test.ts, which EXECUTES this template and the new wrapper against
+//     the same stubs and asserts they produce the same mint / resume-discovery / `docker run` argv.
+// Together that carries every old contract onto the wrapper. Never edit this string to "keep up" with
+// the wrapper — a change to the launch is a change to the parity test's expectations instead.
+export const LEGACY_LOCAL_DOCKER_LAUNCH =
+  "mkdir -p $HOME/.harmony-conductions/{ticket}/{conduction_id}/projects $HOME/.harmony-conductions/{ticket}/{conduction_id}/logs && node $HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs --base $HOME/.harmony-container.env --out $HOME/.harmony-conductions/{ticket}/{conduction_id}/run.env --conduction-id {conduction_id} --model '{model}' --run-config '{run_config_json}' --run-config-path /home/worker/.claude/run-config.json && node $HARMONY_PLUGIN_DIR/scripts/resume-discovery.mjs --conductions-root $HOME/.harmony-conductions --ticket {ticket} --conduction-id {conduction_id} --run-config-file $HOME/.harmony-conductions/{ticket}/{conduction_id}/run-config.json --env-file $HOME/.harmony-conductions/{ticket}/{conduction_id}/run.env && docker run --rm --name harmony-worker-{conduction_id} -v $HOME/.harmony-conductions/{ticket}/{conduction_id}/projects:/home/worker/.claude/projects -v $HOME/.harmony-conductions/{ticket}/{conduction_id}/logs:/home/worker/.claude/logs -v $HOME/.harmony-conductions/{ticket}/{conduction_id}/run-config.json:/home/worker/.claude/run-config.json:ro --env-file $HOME/.harmony-conductions/{ticket}/{conduction_id}/run.env {worker_image} headless '/harmony-plugin:harmony-conduct {ticket} --one-shot'";
