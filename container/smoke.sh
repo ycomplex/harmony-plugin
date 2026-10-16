@@ -105,7 +105,18 @@ if docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'command -v claude >/dev/nul
     *"$baked"*) [ -n "$baked" ] || fail "/etc/harmony-codex-version is missing or empty" ;;
     *) fail "'codex --version' ($codex_out) does not match the baked /etc/harmony-codex-version ($baked)" ;;
   esac
-  ok "agent CLIs present: claude, codex ($codex_out)"
+  # The flags src/agents/codex.ts emits must still exist on THIS image's CLI (an upstream rename would
+  # otherwise only surface as a dead leg). src/agents/codex-drift.test.ts runs the same assertion plus a
+  # mock-provider end-to-end whenever a codex binary is on the test machine's PATH.
+  exec_help="$(docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'codex exec --help' 2>&1)" \
+    || fail "'codex exec --help' does not run; got: $exec_help"
+  for flag in --json --cd --add-dir --dangerously-bypass-approvals-and-sandbox --strict-config; do
+    case "$exec_help" in
+      *"$flag"*) ;;
+      *) fail "'codex exec --help' no longer lists $flag (src/agents/codex.ts emits it)" ;;
+    esac
+  done
+  ok "agent CLIs present: claude, codex ($codex_out); codex exec flags match the adapter"
   # The Codex home must be pre-created worker-owned (B-724 applied to ~/.codex).
   docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'test -w /home/worker/.codex && test -w /home/worker/.codex/sessions' \
     || fail "/home/worker/.codex (and sessions/) is not pre-created and writable by the worker"

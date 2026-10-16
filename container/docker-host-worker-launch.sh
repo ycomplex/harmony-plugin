@@ -41,6 +41,31 @@ dh_resolve_target docker-host-worker-launch
 
 : "${HARMONY_PLUGIN_DIR:?HARMONY_PLUGIN_DIR is required (checkout the mint script runs from, same knob the docker profile uses)}"
 
+# --- B-1076: which agent adapter this run launches (read from the run-config, which is plain JSON) --
+# A Codex run ships its login cache to the host and mounts it; any other run is byte-for-byte what it
+# was before. Everything Codex-specific below is gated on CODEX_RUN.
+CODEX_RUN=0
+CODEX_AUTH_SRC=""
+CODEX_AUTH_CONTAINER_PATH="/home/worker/.codex-auth-src/auth.json"   # provision.sh copies it into ~/.codex
+# run_config arrives as base64 JSON from the daemon (or raw JSON from a manual invocation): accept both.
+ADAPTER_PROBE="$(node -e 'let s=process.argv[1];try{JSON.parse(s)}catch{try{s=Buffer.from(s,"base64").toString("utf8")}catch{}}try{const a=JSON.parse(s).agent;process.stdout.write(a&&typeof a.adapter==="string"?a.adapter:"")}catch{}' "$RUN_CONFIG_JSON" 2>/dev/null || true)"
+if [ "$ADAPTER_PROBE" = "codex" ]; then CODEX_RUN=1; fi
+if [ "$CODEX_RUN" = "1" ]; then
+  # The login cache is minted ONCE on this machine (container/README.md "Codex credential runbook") and
+  # only its existence is checked here — this script never opens, prints or hashes it.
+  CODEX_AUTH_SRC="${HARMONY_CODEX_AUTH_SRC:-$HOME/.harmony/codex-automation/auth.json}"
+  if [ ! -f "$CODEX_AUTH_SRC" ]; then
+    echo "docker-host-worker-launch: Refusing to start: this run selects the codex adapter but the login-cache file is missing at $CODEX_AUTH_SRC (see container/README.md \"Codex credential runbook\") — no host woken, no worker launched" >&2
+    exit 1
+  fi
+  for CODEX_REFUSED_VAR in OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN; do
+    if [ -n "${!CODEX_REFUSED_VAR:-}" ]; then
+      echo "docker-host-worker-launch: Refusing to start: $CODEX_REFUSED_VAR is set in the launcher's environment — a Codex leg runs on the plan-included login cache only (B-934: no metered fallback)" >&2
+      exit 1
+    fi
+  done
+fi
+
 # --- Config knobs (B-711 "config not constants") ----------------------------------------------
 WAKE_CMD="${HARMONY_DOCKER_HOST_WAKE:-}"
 [ -n "$WAKE_CMD" ] || WAKE_CMD="$(dh_config_get "profiles.$DH_PROFILE.docker_host.wake")"
@@ -105,8 +130,10 @@ done
 # minted token and the stopped worker container. The container is started WITHOUT --rm (step 7), so
 # this is what removes it; removing it is also what tears down everything the leg started inside
 # its own engine. Best-effort and silent — it must never change this wrapper's exit code.
+CODEX_RM=""
+if [ "$CODEX_RUN" = "1" ]; then CODEX_RM=" \"$REMOTE_RUN/codex-auth.json\""; fi   # B-1076: the host copy of the login cache goes with the run
 cleanup() {
-  dh_ssh "rm -f \"$REMOTE_RUN/run.env\"; docker rm $CONTAINER" </dev/null >/dev/null 2>&1 || true
+  dh_ssh "rm -f \"$REMOTE_RUN/run.env\"$CODEX_RM; docker rm $CONTAINER" </dev/null >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -124,7 +151,9 @@ node "$HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs" --base "$HOME/.ha
 #    idle script reads (.last-launch: "a launch happened now"; .engine-volumes/<ticket>: "this
 #    ticket's engine volume was used now"), then ship the per-run files over ssh's STDIN. The token
 #    is never an argument to anything.
-dh_ssh_setup /dev/null "umask 077; mkdir -p \"$REMOTE_RUN/projects\" \"$REMOTE_RUN/logs\" \"$DH_REMOTE_ROOT/.engine-volumes\" && chmod 700 \"$DH_REMOTE_ROOT\" \"$DH_REMOTE_ROOT/$TICKET\" \"$REMOTE_RUN\" && touch \"$DH_REMOTE_ROOT/.last-launch\" \"$DH_REMOTE_ROOT/.engine-volumes/$TICKET\""
+CODEX_SESSIONS_MKDIR=""
+if [ "$CODEX_RUN" = "1" ]; then CODEX_SESSIONS_MKDIR="\"$REMOTE_RUN/codex-sessions\""; fi
+dh_ssh_setup /dev/null "umask 077; mkdir -p \"$REMOTE_RUN/projects\" \"$REMOTE_RUN/logs\" $CODEX_SESSIONS_MKDIR \"$DH_REMOTE_ROOT/.engine-volumes\" && chmod 700 \"$DH_REMOTE_ROOT\" \"$DH_REMOTE_ROOT/$TICKET\" \"$REMOTE_RUN\" && touch \"$DH_REMOTE_ROOT/.last-launch\" \"$DH_REMOTE_ROOT/.engine-volumes/$TICKET\""
 dh_ssh_setup "$ENV_FILE" "umask 077; cat > \"$REMOTE_RUN/run.env\""
 RUN_CONFIG_MOUNT=""
 RUN_CONFIG_CHOWN=""
@@ -132,6 +161,18 @@ if [ -f "$RUN_CONFIG_FILE" ]; then
   dh_ssh_setup "$RUN_CONFIG_FILE" "umask 077; cat > \"$REMOTE_RUN/run-config.json\""
   RUN_CONFIG_MOUNT="-v \"$REMOTE_RUN/run-config.json\":/home/worker/.claude/run-config.json:ro"
   RUN_CONFIG_CHOWN="/r/run-config.json"
+fi
+
+# 4b. B-1076: ship the Codex login cache the same way as run.env — through ssh's STDIN into a mode-600
+#     file in the private run dir, never on a command line. The cleanup trap above removes it with the
+#     run; the worker copies it into its own ~/.codex (copy-in: rotation write-back is unproven, see
+#     docs/codex-phase0-findings.md) and the image's chown step below hands the mount to `worker`.
+CODEX_MOUNTS=""
+CODEX_CHOWN=""
+if [ "$CODEX_RUN" = "1" ]; then
+  dh_ssh_setup "$CODEX_AUTH_SRC" "umask 077; cat > \"$REMOTE_RUN/codex-auth.json\""
+  CODEX_MOUNTS="-v \"$REMOTE_RUN/codex-sessions\":/home/worker/.codex/sessions -v \"$REMOTE_RUN/codex-auth.json\":$CODEX_AUTH_CONTAINER_PATH:ro -e HARMONY_CODEX_AUTH_FILE=$CODEX_AUTH_CONTAINER_PATH"
+  CODEX_CHOWN="/r/codex-sessions /r/codex-auth.json"
 fi
 
 # 5. Cross-conduction resume discovery (B-718), ON THE HOST — that is where every sibling
@@ -149,7 +190,7 @@ dh_ssh "docker run --rm -i --user 0 --entrypoint sh -v \"$DH_REMOTE_ROOT\":/c $I
 #    `worker` user's uid from the image and never depends on the host's own uid numbering.
 #    run.env is deliberately NOT included: it stays the SSH user's, mode 600 — the docker CLI on the
 #    host reads it for --env-file.
-dh_ssh_setup /dev/null "docker run --rm --user 0 --entrypoint chown -v \"$REMOTE_RUN\":/r $IMAGE_Q -R worker:worker /r/projects /r/logs $RUN_CONFIG_CHOWN" >&2
+dh_ssh_setup /dev/null "docker run --rm --user 0 --entrypoint chown -v \"$REMOTE_RUN\":/r $IMAGE_Q -R worker:worker /r/projects /r/logs $RUN_CONFIG_CHOWN $CODEX_CHOWN" >&2
 
 # 7. Run the worker, in the foreground over ssh.
 #    --privileged + the engine volume at /var/lib/docker: what the in-container Docker engine needs.
@@ -158,7 +199,7 @@ dh_ssh_setup /dev/null "docker run --rm --user 0 --entrypoint chown -v \"$REMOTE
 #    The prompt is one argument containing spaces — quoted for the remote shell (dh_quote).
 PROMPT_Q="$(dh_quote "/harmony-plugin:harmony-conduct $TICKET --one-shot")"
 set +e
-dh_ssh "docker run --privileged --name $CONTAINER -v $ENGINE_VOLUME:/var/lib/docker -v \"$REMOTE_RUN/projects\":/home/worker/.claude/projects -v \"$REMOTE_RUN/logs\":/home/worker/.claude/logs $RUN_CONFIG_MOUNT --env-file \"$REMOTE_RUN/run.env\" $IMAGE_Q headless $PROMPT_Q" </dev/null
+dh_ssh "docker run --privileged --name $CONTAINER -v $ENGINE_VOLUME:/var/lib/docker -v \"$REMOTE_RUN/projects\":/home/worker/.claude/projects -v \"$REMOTE_RUN/logs\":/home/worker/.claude/logs $RUN_CONFIG_MOUNT $CODEX_MOUNTS --env-file \"$REMOTE_RUN/run.env\" $IMAGE_Q headless $PROMPT_Q" </dev/null
 WORKER_EXIT=$?
 set -e
 

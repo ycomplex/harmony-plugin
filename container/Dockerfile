@@ -151,12 +151,15 @@ LABEL harmony.codex_version="${CODEX_VERSION}"
 
 # B-724 (applied to Codex): pre-create the worker's Codex home WORKER-OWNED.
 # The launch profile bind-mounts ~/.codex/sessions (and, in rw mode, the single
-# auth.json FILE) per conduction; Docker otherwise creates the mount-point
+# auth.json FILE source) per conduction; Docker otherwise creates the mount-point
 # parent ~/.codex AS ROOT, which would make provision.sh's own writes there
-# (config.toml, AGENTS.md, the copied-in auth.json) die with Permission denied.
+# (config.toml, the copied-in auth.json) die with Permission denied.
+# ~/.codex-auth-src is where the launcher mounts the login-cache FILE read-only;
+# provision.sh copies it into ~/.codex (copy-in, not a direct mount: rotation
+# write-back is unproven — docs/codex-phase0-findings.md).
 # src/daemon/profile-contract.test.ts pins every Codex mount target to this.
-RUN mkdir -p /home/worker/.codex/sessions \
-    && chown -R worker:worker /home/worker/.codex
+RUN mkdir -p /home/worker/.codex/sessions /home/worker/.codex-auth-src \
+    && chown -R worker:worker /home/worker/.codex /home/worker/.codex-auth-src
 USER worker
 
 # Codex headless needs no permission-envelope ENV: the adapter's argv carries
