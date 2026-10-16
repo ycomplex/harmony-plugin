@@ -65,13 +65,14 @@ describe('runConformance(broken fake adapter)', () => {
 
 describe('registry', () => {
   it('registers claude-code as the default', () => {
-    expect(listAdapterIds()).toEqual(['claude-code']);
+    expect(listAdapterIds()).toEqual(['claude-code', 'codex']);
     expect(DEFAULT_ADAPTER_ID).toBe('claude-code');
     expect(getAdapter('claude-code')).toBe(claudeCodeAdapter);
-    expect(hasAdapter('codex')).toBe(false);
+    expect(hasAdapter('codex')).toBe(true);
+    expect(hasAdapter('opencode')).toBe(false);
   });
   it('throws a clear error on an unknown id', () => {
-    expect(() => getAdapter('codex')).toThrow("Unknown agent adapter 'codex' — registered: claude-code");
+    expect(() => getAdapter('opencode')).toThrow("Unknown agent adapter 'opencode' — registered: claude-code, codex");
   });
 });
 

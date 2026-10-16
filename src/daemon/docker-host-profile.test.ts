@@ -228,6 +228,7 @@ function makeWorld(opts: WorldOptions = {}): World {
     '    esac',
     '    [ -n "$v" ] || exit 1',
     '    printf \'%s\\n\' "$v" ;;',
+    '  *"JSON.parse(s).agent"*) printf \'%s\' "${STUB_ADAPTER:-}" ;;', // B-1076: the launcher's adapter probe
     '  *mint-installation-token.mjs*)',
     '    echo "mint" >> "$STUB_LOGS/order.log"',
     '    out=""; prev=""',
@@ -947,5 +948,89 @@ describe.skipIf(!BASH_AVAILABLE)('provision.sh: B-708 container-runtime block (E
     const engineDockerfile = readFileSync(repoPath('container/docker-engine/Dockerfile'), 'utf8');
     expect(engineDockerfile).toContain(`COPY start-dockerd.sh ${START_SCRIPT}`);
     expect(engineDockerfile).toContain(`worker ALL=(root) NOPASSWD: ${START_SCRIPT}`);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-1076: a Codex run ships the login cache to the host, mounts it read-only for a copy-in, mounts a
+// per-conduction sessions dir, and never lets the credential near a command line, a log or the env.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe.skipIf(!BASH_AVAILABLE)('docker-host-worker-launch.sh — the Codex adapter (B-1076)', () => {
+  const AUTH_SENTINEL = 'CODEX-AUTH-JSON-SENTINEL-must-not-appear-anywhere-1a2b3c';
+  const CODEX_RC = Buffer.from('{"agent":{"adapter":"codex"}}').toString('base64');
+  const codexArgs = [CONDUCTION_ID, TICKET, CODEX_RC, ''];
+
+  function withAuth(world: World): string {
+    const path = join(world.dir, 'codex-automation', 'auth.json');
+    mkdirSync(join(world.dir, 'codex-automation'), { recursive: true });
+    writeFileSync(path, `{"tokens":{"refresh_token":"${AUTH_SENTINEL}"}}`, { mode: 0o600 });
+    return path;
+  }
+  const remoteAuth = (w: World) => join(w.remoteRunDir, 'codex-auth.json');
+  const workerRun = (w: World) => dockerCalls(w).find((c) => c.includes('--privileged'))!;
+
+  it('mounts the sessions dir and the login cache (read-only, to a copy-in source path), names it by a PATH variable only, and cleans the host copy up', () => {
+    const world = makeWorld({
+      dockerBody: 'case " $* " in *" --privileged "*) stat -c "%a" "$STUB_REMOTE_HOME/.harmony-conductions/B-708/cond-b708-1/codex-auth.json" > "$STUB_LOGS/auth-mode" ;; esac',
+    });
+    const auth = withAuth(world);
+    const result = launch(world, { STUB_ADAPTER: 'codex', HARMONY_CODEX_AUTH_SRC: auth }, codexArgs);
+    expect(result.status).toBe(0);
+
+    const worker = workerRun(world);
+    const joined = worker.join('\n');
+    expect(joined).toContain(`${join(world.remoteRunDir, 'codex-sessions')}:/home/worker/.codex/sessions`);
+    expect(joined).toContain(`${remoteAuth(world)}:/home/worker/.codex-auth-src/auth.json:ro`);
+    expect(worker).toContain('HARMONY_CODEX_AUTH_FILE=/home/worker/.codex-auth-src/auth.json');
+    expect(worker).toContain('headless');
+    // a mode-600 file in the private run dir while the worker ran
+    expect(log(world, 'auth-mode').trim()).toBe('600');
+    // the chown-through-the-image step hands both new mounts to `worker`
+    const chown = dockerCalls(world).find((c) => c.includes('chown'))!;
+    expect(chown.join(' ')).toContain('/r/codex-sessions /r/codex-auth.json');
+    // gone with the run
+    expect(existsSync(remoteAuth(world))).toBe(false);
+  });
+
+  it('the credential file content appears in NO argv, log or env-file — only its path is ever named', () => {
+    const world = makeWorld();
+    const auth = withAuth(world);
+    expect(launch(world, { STUB_ADAPTER: 'codex', HARMONY_CODEX_AUTH_SRC: auth }, codexArgs).status).toBe(0);
+    for (const name of ['ssh-argv.log', 'ssh.log', 'docker.log', 'node.log', 'order.log', 'env-file-at-run']) {
+      expect(log(world, name)).not.toContain(AUTH_SENTINEL);
+    }
+    expect(log(world, 'env-file-at-run')).not.toContain('refresh_token');
+  });
+
+  it('REFUSES to start — before waking the host — when the login-cache file is missing', () => {
+    const world = makeWorld();
+    const result = launch(world, { STUB_ADAPTER: 'codex', HARMONY_CODEX_AUTH_SRC: join(world.dir, 'absent.json') }, codexArgs);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Refusing to start');
+    expect(result.stderr).toContain('login-cache file is missing');
+    expect(log(world, 'ssh.log')).toBe('');
+    expect(dockerCalls(world)).toEqual([]);
+    expect(log(world, 'node.log')).not.toContain('mint-installation-token');
+  });
+
+  it.each(['OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN'])('REFUSES to start when %s is set (no metered fallback)', (name) => {
+    const world = makeWorld();
+    const auth = withAuth(world);
+    const result = launch(world, { STUB_ADAPTER: 'codex', HARMONY_CODEX_AUTH_SRC: auth, [name]: 'sk-not-echoed-0123456789' }, codexArgs);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(name);
+    expect(result.stderr).not.toContain('sk-not-echoed');
+    expect(log(world, 'ssh.log')).toBe('');
+  });
+
+  it('a Claude run is untouched: no Codex mount, no Codex env var, no auth shipped, even if a login cache exists', () => {
+    const world = makeWorld();
+    const auth = withAuth(world);
+    expect(launch(world, { STUB_ADAPTER: '', HARMONY_CODEX_AUTH_SRC: auth }).status).toBe(0);
+    const joined = workerRun(world).join('\n');
+    expect(joined).not.toContain('codex');
+    expect(joined).not.toContain('HARMONY_CODEX_AUTH_FILE');
+    expect(log(world, 'ssh.log')).not.toContain('codex-auth');
   });
 });

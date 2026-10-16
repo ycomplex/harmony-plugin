@@ -17,6 +17,11 @@
 # runs last — not necessarily the `prod` one — wins the race for :latest.
 # push-version stays unconditional: the version tag is always pushed regardless
 # of the guard's decision.
+#
+# B-1076: the image is the Dockerfile's `agent-codex` target (FROM agent), a superset carrying BOTH
+# the Claude Code and the Codex CLIs, so the single deployment worker_image serves either adapter.
+# resolve-codex-version applies the same unpinned-latest policy to @openai/codex, and smoke.sh
+# requires `codex --version` to run before anything is published.
 
 substitutions:
   _IMAGE: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-build-env
@@ -31,6 +36,16 @@ steps:
         set -euo pipefail
         npm view @anthropic-ai/claude-code version > /workspace/claude_code_version.txt
         echo "Resolved Claude Code version: $(cat /workspace/claude_code_version.txt)"
+
+  - id: resolve-codex-version
+    name: node:22-bookworm-slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        npm view @openai/codex version > /workspace/codex_version.txt
+        echo "Resolved Codex version: $(cat /workspace/codex_version.txt)"
 
   - id: resolve-commit-time
     name: gcr.io/cloud-builders/git
@@ -50,7 +65,9 @@ steps:
       - |
         set -euo pipefail
         docker build \
+          --target agent-codex \
           --build-arg CLAUDE_CODE_VERSION="$(cat /workspace/claude_code_version.txt)" \
+          --build-arg CODEX_VERSION="$(cat /workspace/codex_version.txt)" \
           --build-arg SOURCE_COMMIT_TIME="$(cat /workspace/source_commit_time.txt)" \
           -t '${_IMAGE}:latest' container/
 

@@ -1348,6 +1348,34 @@ describe('daemon-profile.example.json ↔ Dockerfile mount-parent ownership cont
   });
 });
 
+// B-1076: the Codex mounts follow the same rule. The docker-host launcher bind-mounts a per-conduction
+// ~/.codex/sessions DIRECTORY and the login-cache FILE (read-only, to a copy-in source dir); Docker
+// would create each mount parent root-owned, so the agent-codex stage pre-creates both worker-owned.
+describe('docker-host launcher ↔ Dockerfile agent-codex mount-parent ownership contract (B-1076)', () => {
+  const launcher = readFileSync(fileURLToPath(new URL('../../container/docker-host-worker-launch.sh', import.meta.url)), 'utf8');
+  const dockerfile = readFileSync(dockerfilePath, 'utf8');
+  const codexStage = dockerfile.slice(dockerfile.indexOf('AS agent-codex'));
+  const mountLine = launcher.split('\n').find((l) => l.includes('CODEX_MOUNTS="-v')) ?? '';
+  const sessionsTarget = /:(\/home\/worker\/\.codex\/sessions)/.exec(mountLine)?.[1];
+  const authTarget = /^CODEX_AUTH_CONTAINER_PATH="([^"]+)"/m.exec(launcher)?.[1];
+
+  it('finds both Codex mount targets in the launcher (guard the guard)', () => {
+    expect(sessionsTarget).toBe('/home/worker/.codex/sessions');
+    expect(authTarget).toBe('/home/worker/.codex-auth-src/auth.json');
+  });
+
+  it('the agent-codex stage pre-creates the sessions dir and the login-cache parent, and chowns both to worker', () => {
+    expect(codexStage).toContain(sessionsTarget as string);
+    expect(codexStage).toContain((authTarget as string).replace(/\/auth\.json$/, ''));
+    expect(codexStage).toMatch(/chown -R worker:worker \/home\/worker\/\.codex \/home\/worker\/\.codex-auth-src/);
+  });
+
+  it('the login-cache FILE needs no Dockerfile entry of its own, and is mounted read-only', () => {
+    expect(dockerfile).not.toContain(authTarget as string);
+    expect(mountLine).toContain('$CODEX_AUTH_CONTAINER_PATH:ro');
+  });
+});
+
 // B-732 bot-identity credential contract: daemon workers must author PRs as the harmony-daemon
 // App, not as the founder. That hinges entirely on WHICH token reaches the container, so the
 // launch template must mint a fresh installation token into a PER-RUN env-file and hand THAT to

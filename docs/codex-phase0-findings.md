@@ -1,0 +1,178 @@
+# Codex Phase-0 spike findings (B-1076)
+
+The Phase-0 deliverable of `docs/2026-09-03-codex-conductor-worker-plan.md` in the workspace repo, recorded
+against the CLI the adapter was built on. Every row says exactly what was **run**, so nothing here is a claim
+about a spike that was not executed.
+
+## How the spikes were run
+
+- **Resolved CLI version: `@openai/codex` 0.163.0** (`npm view @openai/codex version` on 2026-10-16;
+  `codex --version` → `codex-cli 0.163.0`, linux-x64, installed into a scratch directory with
+  `npm install @openai/codex@0.163.0`). The image does **not** pin it: `container/cloudbuild.yaml`
+  resolves the current release with `npm view` at build time and passes it as `CODEX_VERSION`, the same
+  policy as Claude Code (B-1074). The 0.163.0 figures below are what the adapter was verified against;
+  `src/agents/codex-drift.test.ts` re-checks them against whatever CLI is installed.
+- **No Codex install and no `~/.codex` existed in the build worker, and there is no ChatGPT plan login.**
+  So there are three evidence classes:
+  - **RAN** — executed against the real 0.163.0 binary with no model call (`--help`, `--version`,
+    `mcp list/get`, `doctor`, `--strict-config`, `login --help`, `features list`).
+  - **RAN (mock provider)** — the real 0.163.0 binary driven end to end at a local HTTP server that speaks
+    the Responses-API SSE protocol (`[model_providers.mock]`, `wire_api = "responses"`,
+    `env_key = "MOCK_KEY"`). Everything the CLI does *around* the model is real: config load, AGENTS.md and
+    skill discovery, MCP startup, event stream, rollout files, resume, exit codes. What the *model* does is
+    scripted. This is not a substitute for a plan-login run and is labelled separately everywhere.
+  - **BLOCKED** — needs a live plan login, a live model, or a live Harmony MCP session against staging.
+    Not run. What is needed is stated for each.
+- The mock-provider harness is reproduced by `src/agents/codex-drift.test.ts` (it runs whenever a `codex`
+  binary is on `PATH` or `HARMONY_CODEX_BIN` names one, and skips cleanly otherwise).
+
+## Decisions (the Phase-0 exit criterion)
+
+| Question | Decision | Basis |
+|---|---|---|
+| Packaging shape | No Codex plugin package. Render `config.toml` + one `AGENTS.md`, and symlink `.agents/skills` to the plugin's `skills/` | RAN (mock) |
+| Auth method | The plan-included **login cache**: `auth.json` from `CODEX_HOME=~/.harmony/codex-automation codex login --device-auth`, addressed by a path variable, never an API key | policy (B-934); login itself BLOCKED |
+| Build strategy | Root thread, no subagent (`capabilities.subagents = false`; start-work reads it) | design; subagent behaviour not spiked |
+| Exit contract | `codex exec --json --cd <root> --add-dir <plugin> --dangerously-bypass-approvals-and-sandbox …`; exit 0 = complete, non-zero = failed | RAN (mock) |
+| Resume | `codex exec resume <thread-id> --json … <prompt>`; adapter supports it, **launcher discovery for Codex is not wired** — Codex legs cold-start | RAN (mock) for the argv; discovery not built |
+| Credential delivery | **Copy-in** at startup (read-only mount at `/home/worker/.codex-auth-src/auth.json`, copied to `~/.codex/auth.json`, mode 600) | rotation unproven — see Auth |
+
+## Findings by spike
+
+### CLI surface — RAN
+
+- `codex exec [OPTIONS] [PROMPT]` with subcommands `resume`, `fork`, `review`. Options present on 0.163.0:
+  `--json`, `-C/--cd <DIR>`, `--add-dir <DIR>`, `-m/--model`, `--dangerously-bypass-approvals-and-sandbox`,
+  `--skip-git-repo-check`, `--ignore-user-config`, `--ephemeral`, `--output-schema`, `-o/--output-last-message`,
+  `--strict-config`, `-c key=value`, `-s/--sandbox`, `--approve-for-me`. `--full-auto` is not listed (do not use).
+- **`codex exec resume [SESSION_ID] [PROMPT]` accepts a reduced set**: `--json`, `-m`,
+  `--dangerously-bypass-approvals-and-sandbox`, `--skip-git-repo-check`, `--ephemeral`, `--output-schema`,
+  `-o`, `-c`, `-i`, `--last`, `--all`. It does **not** accept `--cd`, `--add-dir` or `--sandbox`. The
+  adapter therefore relies on the process cwd for a resumed leg (provision.sh `cd "$WORKDIR"` always runs).
+- `--strict-config` rejects an unknown config field at load (`unknown configuration field …`) and is not
+  supported by `codex mcp`. Used by the drift test as the config-validity oracle.
+- `codex exec` **blocks on a non-closed stdin** ("Reading additional input from stdin…") when stdin is not a
+  TTY and not `/dev/null`. provision.sh backgrounds every invocation (`"$@" &`), so bash gives it
+  `/dev/null`; a hand launch must redirect `</dev/null`.
+
+### Instruction discovery and aggregation — RAN (mock)
+
+- Codex reads `AGENTS.md` from the git root of `--cd` down to the cwd. With three independent nested repos
+  (`ws/`, `ws/plugin/`, `ws/web/`, each its own `.git`, each with its own marker): `--cd ws` loaded **only**
+  the root's; `--cd ws/plugin` **only** the plugin's; `--cd ws/web` **only** web's. Confirms the plan's reason
+  for aggregation: guidance is never merged across independent repos.
+- Default `project_doc_max_bytes` (32 KiB) **silently truncates**: a 40,453-byte AGENTS.md lost its tail
+  marker; with `project_doc_max_bytes = 200000` the marker was present. The three canonical CLAUDE.md files
+  measure **49,502 bytes** today (18,493 + 16,106 + 14,903); the adapter sets 262,144 (~5x headroom) and
+  `verifyCodexAgentsMd` fails a render that exceeds it or drops a source marker.
+- The generated file is `<workspace>/AGENTS.md` plus `.agents/` in `.git/info/exclude`, so it is never
+  committed. `provisionCodex` refuses to overwrite an AGENTS.md that is not its own.
+
+### Skills — RAN (mock)
+
+- A symlinked `<workspace>/.agents/skills → <plugin>/skills` is discovered: all 15 skills listed (the skill
+  list block was 11,184 bytes). **Claude frontmatter is accepted** (`allowed-tools`, long descriptions): no
+  warning, no rejection. The skills appear namespaced **`harmony-plugin:<skill>`** (Codex read the plugin
+  manifest next to the symlink target).
+- **Explicit invocation**: a prompt of `$harmony-plugin:harmony-conduct B-1 --one-shot` injects the skill body
+  into the request; `$harmony-conduct …` and the Claude form `/harmony-plugin:harmony-conduct …` do **not**.
+  The adapter translates the leading slash-skill of every launch template's prompt (`codexPrompt`).
+- Not measured: the skill-description budget on a live model, implicit-invocation suppression
+  (`agents/openai.yaml`). **BLOCKED**: needs a live model.
+
+### MCP — RAN (mock) / RAN
+
+- `[mcp_servers.harmony]` with `required`, `startup_timeout_sec`, `tool_timeout_sec`,
+  `default_tools_approval_mode`, `env_vars` is accepted by `--strict-config`; `codex mcp get harmony` echoes
+  the timeouts, approval mode and (masked) env names.
+- **`env_vars` forwards only what is listed**: an unlisted variable set in the launcher's env did not reach
+  the server (`has_unlisted: false`); the listed `HARMONY_*` ones did.
+- **`required = true` fails closed**: a server that cannot start ends the run **before any model request**
+  with `required MCP servers failed to initialize: harmony: …`, exit 1. (Verified with an unreachable
+  Supabase URL against the real `dist/index.js`, and with a missing server path in the drift test.)
+- Tool presentation: the server's tools arrive as a namespace `mcp__harmony` containing the bare tool name
+  (`get_task`), which concatenates to the skill corpus' `mcp__harmony__get_task`. How the *model* addresses
+  it is model-side — BLOCKED.
+- **BLOCKED**: `get_project` against **staging** with the real `dist/index.js` and a staging token (needs
+  staging credentials and network); a trust/elicitation prompt in headless mode (needs a model that calls a
+  tool needing approval).
+
+### Events, exit codes, thread id — RAN (mock)
+
+```
+{"type":"thread.started","thread_id":"<uuid>"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"…"}}
+{"type":"turn.completed","usage":{"input_tokens":111,"cached_input_tokens":22,"cache_write_input_tokens":0,"output_tokens":33,"reasoning_output_tokens":4}}
+```
+
+- Success exits **0**; a failed turn emits `error` + `turn.failed` and exits **1**; a failed required MCP
+  server exits 1 with no event stream beyond the error. The exit code is authoritative.
+- **Thread id from `thread.started` is reliable on 0.163.0** (also re-emitted, same id, on resume), so it is
+  the primary source. The rollout fallback layout was also confirmed:
+  `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<YYYY-MM-DDTHH-MM-SS>-<thread-id>.jsonl`. State otherwise lives in
+  sqlite (`state_5.sqlite`, `thread_history_1.sqlite`) and the CLI ships a `migrate-rollouts` command: the
+  rollout layout is a version-pinned detail, not a promise.
+- **Usage on a resumed thread is cumulative.** Two requests of 111/22/33/4 tokens each reported
+  222/44/66/8 on the second `turn.completed`. A per-invocation cost must subtract the previous figure
+  (B-1078). The adapter exposes `parseCodexUsage` and reports `costUsd: null` (plan-included).
+- `--output-schema` was not used as a control plane (plan, issue #15451).
+
+### Resume — RAN (mock)
+
+- `codex exec resume <id> --json --dangerously-bypass-approvals-and-sandbox -m other-model "next"` against the
+  same `CODEX_HOME` continued the thread (history carried the first prompt) and **`-m` is legal and
+  effective on resume** (the CLI warns that the session was recorded with another model). A model change
+  therefore *could* resume; the adapter still declares `modelSwitch: false` because no in-worker switch loop
+  exists for Codex.
+- **BLOCKED**: resume from a *remounted* `CODEX_HOME` on a different container (the test reused one
+  directory); same-conduction discovery for Codex in `provision.sh` and the cross-conduction case are not
+  built, so Codex legs cold-start. Needs a live run across two containers.
+
+### Shell tool and environment — RAN (mock)
+
+- Scripted `exec_command` calls ran: under `--dangerously-bypass-approvals-and-sandbox` the model's shell
+  inherits the **full** environment, including `*_TOKEN`/`*_KEY` names (no default exclusion applied), so
+  `git`, `gh` and the `harmony` CLI see what they see under Claude.
+- A command that outlives 10 seconds **yields** with a session id (`Process running with session ID …`) and
+  is continued by the model via `write_stdin`; no inner hard kill was observed at 25 s. The 90-minute
+  worker deadline stays authoritative. **BLOCKED**: the behaviour for a multi-minute build under a live
+  model (does the session survive until the model polls, is there a ceiling above 25 s).
+
+### Auth — RAN / BLOCKED
+
+- RAN: `codex login --help` offers `--device-auth`, `--with-api-key`, `--with-access-token`;
+  `codex login status` with an empty home prints `Not logged in`; `codex doctor` reports
+  `no Codex credentials were found`. Credential env names present in the binary: `OPENAI_API_KEY`,
+  `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`; the login file is `auth.json` under `CODEX_HOME`.
+  The adapter refuses all three beside the login cache (no metered fallback, B-934).
+- **BLOCKED — needs a founder ChatGPT plan login on the daemon host**
+  (`CODEX_HOME=~/.harmony/codex-automation codex login --device-auth`), then a run with that `auth.json`:
+  1. that a headless `codex exec` authenticates from a copied `auth.json`;
+  2. **whether Codex rewrites `auth.json` on token refresh and whether refresh tokens rotate (single-use)**.
+     This decides copy-in versus a read-write file mount. Until it is known the launcher does **copy-in**
+     (read-only mount, then copy): a refresh inside a leg works on the copy, but the daemon host's master
+     file is **not** updated. If tokens do rotate, the master goes stale after the first refreshing leg and
+     needs a re-login, or a write-back step must be added;
+  3. quota/rate-limit classification (429 versus an exhausted plan) — needs a live account.
+
+### Other plan items
+
+| Plan item | Status |
+|---|---|
+| `codex exec` can edit, run tests, commit, push, `gh` in the container | **BLOCKED** (needs a live model + GitHub token; the shell tool path itself was RAN with scripted calls) |
+| Approval/elicitation behaviour headless | **BLOCKED** (needs a live model); mitigated by `approval_policy = "never"` and `default_tools_approval_mode = "auto"` |
+| Network behaviour per sandbox envelope | **BLOCKED**; v1 uses the bypass envelope, so no sandbox network policy applies |
+| Skill-description budget, implicit-invocation restriction | **BLOCKED** (live model) |
+| Subagent (`multi_agent_v1` is present in the tool list) as an alternative build strategy | not spiked; root-thread build chosen |
+| Hooks (`SessionStart`/`Stop`) | out of scope for daemon parity (`hooks: false`) |
+| Cloud Run profile (Phase 4) | not wired; the Docker-host profile is the first Codex profile |
+| Provider-qualified model catalog (Phase 3) | not built. Interim: a Codex leg ignores the daemon's `HARMONY_MODEL` (a Claude alias) and takes `HARMONY_CODEX_MODEL` from the base env, or the CLI default |
+
+## What the contract needed
+
+`src/agents/contract.ts` is **unchanged**. Two places where the contract is a poor fit are absorbed in the
+adapter rather than widening the contract: `HeadlessInput` has no working-directory field, so `--cd` is
+derived from the plugin checkout's parent (an upstream `--cd`/`-C` in `extraFlags` wins), and the plugin
+dir is also passed as `--add-dir` so it is an argv element as the conformance suite requires; and
+`TelemetryRecord` carries no token usage, so usage is exposed through `parseCodexUsage` for B-1078.

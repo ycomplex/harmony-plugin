@@ -1,8 +1,8 @@
 # The agent-adapter contract (B-1075, routed by B-1077)
 
 An **agent adapter** describes, declaratively, how one coding-agent runtime runs a Harmony leg.
-Claude Code is the first one (`src/agents/claude-code.ts`). Codex is next (B-1076). An adapter is pure
-data and pure functions. It never spawns anything.
+Claude Code is the first one (`src/agents/claude-code.ts`). Codex is the second (`src/agents/codex.ts`,
+B-1076). An adapter is pure data and pure functions. It never spawns anything.
 
 | File | What it is |
 |---|---|
@@ -10,10 +10,13 @@ data and pure functions. It never spawns anything.
 | `src/agents/credentials.ts` | The B-934 credential vocabulary, `deriveCostRegime`, `validateCredentialDeclaration` |
 | `src/agents/registry.ts` | Registry id → adapter. `getAdapter(id)` throws on an unknown id and names the registered ones |
 | `src/agents/claude-code.ts` | The Claude Code adapter (registry id `claude-code`) |
+| `src/agents/codex.ts` | The Codex adapter (registry id `codex`, B-1076), plus the pure renderers for its `config.toml` and `AGENTS.md` |
+| `src/agents/codex-provision.ts` | The one filesystem half of the Codex adapter: what `harmony agent render` writes (config, AGENTS.md, skills link, login-cache copy-in) |
+| `src/agents/redaction.ts` | `redactSecrets`: bearer / refresh-token / JWT / API-key patterns, applied to every recorded output tail |
 | `src/agents/conformance.ts` | `runConformance(adapter)` → one `{seam, number, pass, problems[]}` per seam |
 | `src/agents/runtime-command-guard.ts` | Detects source that builds a `claude`/`codex` command itself |
 | `src/agents/launch-routing.ts` | B-1077 worker-side routing: run_config → adapter, launch command, credential verdict, NUL argv encoding |
-| `src/cli/commands/agent.ts` | `harmony agent resolve / binary / check-credentials / argv` — what `provision.sh` calls |
+| `src/cli/commands/agent.ts` | `harmony agent resolve / binary / check-credentials / argv / render / capability` — what `provision.sh` and the skills call |
 | `src/daemon/agent-eligibility.ts` | B-1077 fire-time check: adapter registered AND on the profile's `agents` list, else park |
 
 **The routing seam is live (B-1077): the adapter performs the launch.** `container/provision.sh`
@@ -30,7 +33,7 @@ already carries it. The presence probe asks `harmony agent binary`.
   `claude-code` (or removing it) is a config-only rollback, and the launch command is then
   byte-identical to the pre-B-1077 one (`src/agents/launch-routing.test.ts`). A malformed value or
   an unregistered id is **refused**, both by the worker (`Refusing to start: Unknown agent adapter
-  'codex' — registered: claude-code`) and by the daemon. It never falls back to `claude-code`.
+  'opencode' — registered: claude-code, codex`) and by the daemon. It never falls back to `claude-code`.
 - **Profiles.** Each launch profile has an optional `agents` list of registry ids, in both
   `deployment.json`'s `profiles.<name>` and the legacy profile file. An absent list means
   `["claude-code"]` only. Before a leg fires, `fireLaunch` checks that the run's adapter is
@@ -69,6 +72,41 @@ the env allowlist and MCP), it still compares the adapter against the scripts.
 
 Seams 7 and 8 are the ticket's "MCP rendering from one canonical connection definition + the worker
 env allowlist", split in two so that there are ten seams.
+
+## The Codex adapter (B-1076)
+
+The same ten seams, as implemented in `src/agents/codex.ts`. The Phase-0 evidence behind each row, and every
+spike that is still **BLOCKED** on a live plan login, is in `docs/codex-phase0-findings.md`.
+
+| # | Seam | Codex |
+|---|---|---|
+| 1 | **launch** | `codex`; probe `codex --version` (the image smoke gate runs the same) |
+| 2 | **auth** | `login-cache` only (plan-included), carried by the **non-secret path variable** `HARMONY_CODEX_AUTH_FILE`; `resolveCredential` is env-only and never opens the file. `OPENAI_API_KEY`, `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN` set beside it, or alone, is **refused** (no metered fallback, B-934) |
+| 3 | **headless** | `exec --json --cd <plugin parent> --add-dir <plugin> --dangerously-bypass-approvals-and-sandbox [-m <model>] <flags> <prompt>`. Resume is `exec resume <id> --json --dangerously-bypass-approvals-and-sandbox [-m …] <prompt>` (resume accepts neither `--cd` nor `--add-dir`; the cwd carries the root). Exit 0 = the leg completed, non-zero fails it. A leading `/harmony-plugin:<skill>` in the prompt becomes `$harmony-plugin:<skill>` |
+| 4 | **session** | `$HOME/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<thread-id>.jsonl`, mounted per conduction; resume is the `resume` subcommand. The thread id comes from the `thread.started` event, the rollout glob is the version-pinned fallback |
+| 5 | **instructions** | ONE generated `AGENTS.md` at the workspace root: workspace + plugin + web `CLAUDE.md`, each under a source header, then a short Codex overlay; `project_doc_max_bytes` raised to 262,144 |
+| 6 | **skills** | `<workspace>/.agents/skills` symlinked to the plugin's `skills/`; no agent files |
+| 7 | **mcp** | `config.toml` rendered from `HARMONY_MCP_CONNECTION` with `required = true`, `startup_timeout_sec = 60`, `tool_timeout_sec = 600`, `default_tools_approval_mode = "auto"` and an explicit `env_vars` list; `approval_policy = "never"` |
+| 8 | **env** | The same eleven per-leg vars as Claude (the launch scripts serve both); standing: `HARMONY_API_TOKEN` and the path variable |
+| 9 | **capabilities** | `subagents` false, `hooks` false, `modelSwitch` false; `skills`, `mcp`, `resume`, `structuredOutput` true |
+| 10 | **telemetry** | The `--json` JSONL stream: `thread.started` → session id, a terminal `turn.completed` / `turn.failed` → `isError`; regime derived (`plan-included`), `costUsd` null. `parseCodexUsage` reads the last `turn.completed` usage (cumulative on a resumed thread) |
+
+`contract.ts` was **not** changed. Because `HeadlessInput` carries no working directory, the root is derived
+from the plugin checkout's parent, and the plugin dir is passed as `--add-dir` so it appears in argv.
+
+**What reads the capability map.** `harmony agent capability <name>` prints `true`/`false` for the leg's
+adapter. `skills/start-work` builds in the root thread when `subagents` is false instead of delegating to
+`harmony-build`; `skills/harmony-conduct` step 1d is skipped when `modelSwitch` is false.
+
+**Rendering.** `harmony agent render` (called by `provision.sh` for any non-default adapter) writes the
+Codex files above and **copies** the mounted login cache to `~/.codex/auth.json` (mode 600). Nothing prints
+or reads that file; `src/agents/codex-auth-file.test.ts` scans every script and source for a read, a cat or
+a log of it. `provision.sh` still has no Codex command in it: the launch is `harmony agent argv`.
+
+**Daemon.** The daemon refuses to **boot** a profile whose `agents` list names an unregistered adapter
+(`src/daemon/config.ts`, both profile routes; the message names the registered adapters), and refuses at
+**fire time** a non-default adapter on a launch template without `{run_config_json}` or not in the list.
+The example Docker-host profile now lists `["claude-code", "codex"]`; the other two examples stay Claude-only.
 
 ## Credentials and cost regime (B-934)
 
@@ -109,10 +147,10 @@ expect(runConformance(myAdapter).filter((r) => !r.pass)).toEqual([]);
 
 ## Where the next tickets plug in
 
-- **B-1076 (Codex adapter): all ten seams.** Add `src/agents/codex.ts` implementing `AgentAdapter`
-  with `family: 'codex'`, using only the Codex credential vocabulary above. Register it in
-  `registry.ts` and pass the same `runConformance` with no exceptions. Add a drift test of its own if
-  it gets launch-script support.
+- **B-1076 (Codex adapter): done.** See "The Codex adapter" above. `runConformance(codexAdapter)` passes
+  with no exceptions; `src/agents/codex-drift.test.ts` is its drift test (scripts always, the installed CLI
+  when present). Still open after it: Cloud Run and local-Docker Codex profiles, Codex resume discovery, the
+  provider-qualified model catalog, and everything marked BLOCKED in `docs/codex-phase0-findings.md`.
 - **B-1077 (per-leg launch-profile routing): done.** See "The routing seam is live" above.
   `buildArgv` and the auth resolution are now the launch. The env allowlist is still
   implemented by the launch scripts and pinned by the drift test. A new adapter (B-1076) becomes

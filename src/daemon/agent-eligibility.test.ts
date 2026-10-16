@@ -34,21 +34,21 @@ describe('evaluateAgentEligibility', () => {
   it('an unregistered adapter is REFUSED with the registry message naming the registered adapters — no fallback', () => {
     const r = refused(
       evaluateAgentEligibility({
-        runConfig: rc({ agent: { adapter: 'codex' } }),
-        profileAgents: ['claude-code', 'codex'],
+        runConfig: rc({ agent: { adapter: 'opencode' } }),
+        profileAgents: ['claude-code', 'opencode'],
         templateDeliversRunConfig: true,
       }),
     );
-    expect(r.adapter).toBe('codex');
-    expect(r.reason).toContain("Unknown agent adapter 'codex' — registered: claude-code");
-    expect(r.reason).toContain('This launch profile allows: claude-code, codex.');
+    expect(r.adapter).toBe('opencode');
+    expect(r.reason).toContain("Unknown agent adapter 'opencode' — registered: claude-code, codex");
+    expect(r.reason).toContain('This launch profile allows: claude-code, opencode.');
   });
 
   it('a malformed agent value is REFUSED (never read as claude-code)', () => {
     const r = refused(evaluateAgentEligibility({ runConfig: rc({ agent: { adapter: 7 } }), templateDeliversRunConfig: true }));
     expect(r.adapter).toBeNull();
     expect(r.reason).toMatch(/run_config\.agent\.adapter must be a non-empty adapter id string/);
-    expect(r.reason).toContain('Registered agent adapters: claude-code.');
+    expect(r.reason).toContain('Registered agent adapters: claude-code, codex.');
   });
 
   it("a registered adapter missing from the profile's agents list is REFUSED", () => {
@@ -61,7 +61,7 @@ describe('evaluateAgentEligibility', () => {
   });
 
   it('the unknown-adapter message is byte-identical to the registry getAdapter error', () => {
-    expect(() => getAdapter('codex')).toThrow(unknownAdapterMessage('codex', ['claude-code']));
+    expect(() => getAdapter('opencode')).toThrow(unknownAdapterMessage('opencode', ['claude-code', 'codex']));
   });
 
   it('a registered NON-default adapter on a template without {run_config_json} is REFUSED (the worker would silently run claude-code)', () => {
@@ -81,7 +81,7 @@ describe('evaluateAgentEligibility', () => {
 
   it('config-only rollback: switching an unknown adapter back to claude-code makes eligibility pass', () => {
     const base = { profileAgents: ['claude-code'], templateDeliversRunConfig: true };
-    expect(evaluateAgentEligibility({ ...base, runConfig: rc({ agent: { adapter: 'codex' } }) }).eligible).toBe(false);
+    expect(evaluateAgentEligibility({ ...base, runConfig: rc({ agent: { adapter: 'opencode' } }) }).eligible).toBe(false);
     expect(evaluateAgentEligibility({ ...base, runConfig: rc({ agent: { adapter: 'claude-code' } }) })).toEqual({
       eligible: true,
       adapter: 'claude-code',
@@ -90,9 +90,9 @@ describe('evaluateAgentEligibility', () => {
   });
 
   it('the refusal comment carries the reason and the fix', () => {
-    const r = refused(evaluateAgentEligibility({ runConfig: rc({ agent: { adapter: 'codex' } }), templateDeliversRunConfig: true }));
+    const r = refused(evaluateAgentEligibility({ runConfig: rc({ agent: { adapter: 'opencode' } }), templateDeliversRunConfig: true }));
     const comment = formatAgentIneligibleComment(r);
-    expect(comment).toContain("Unknown agent adapter 'codex' — registered: claude-code");
+    expect(comment).toContain("Unknown agent adapter 'opencode' — registered: claude-code, codex");
     expect(comment).toContain('run_config.agent.adapter');
   });
 });

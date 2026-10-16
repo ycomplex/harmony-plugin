@@ -23,6 +23,11 @@
 # message, which is exactly what a broken image (missing bash/jq/base64, unexecutable entrypoint,
 # wrong user, truncated COPY) would NOT do. A real clone/agent run needs a live GitHub credential
 # and is out of scope for a publish gate.
+#
+# B-1076 adds step 4 (agent CLIs). It applies ONLY to an image that carries an agent layer — the
+# PR's toolchain-contract job smokes the agent-neutral `base` target, which has neither CLI and is
+# skipped there with a message. The published `agent-codex` image carries BOTH, and a missing or
+# non-running `codex` fails the publish, so a bad Codex release never becomes :latest.
 set -euo pipefail
 
 IMAGE="${1:?usage: smoke.sh <image-ref>}"
@@ -85,5 +90,39 @@ case "$out" in
     ok "dispatch runs: base64 + jq + the repo-selection branch all executed" ;;
   *) fail "well-formed-repos run did not reach the is_plugin guard; got: $out" ;;
 esac
+
+# --- 4. Agent CLIs (B-1076) --------------------------------------------------
+# Only meaningful for an image with an agent layer. `base` has no agent by design (CI asserts it).
+if docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'command -v claude >/dev/null' 2>/dev/null; then
+  docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'claude --version >/dev/null' \
+    || fail "claude is on PATH but 'claude --version' does not run"
+  docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'command -v codex >/dev/null' \
+    || fail "codex is not on PATH for the image's default user (the agent-codex target installs it)"
+  codex_out="$(docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'codex --version' 2>&1)" \
+    || fail "'codex --version' does not run; got: $codex_out"
+  baked="$(docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'cat /etc/harmony-codex-version' 2>/dev/null || true)"
+  case "$codex_out" in
+    *"$baked"*) [ -n "$baked" ] || fail "/etc/harmony-codex-version is missing or empty" ;;
+    *) fail "'codex --version' ($codex_out) does not match the baked /etc/harmony-codex-version ($baked)" ;;
+  esac
+  # The flags src/agents/codex.ts emits must still exist on THIS image's CLI (an upstream rename would
+  # otherwise only surface as a dead leg). src/agents/codex-drift.test.ts runs the same assertion plus a
+  # mock-provider end-to-end whenever a codex binary is on the test machine's PATH.
+  exec_help="$(docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'codex exec --help' 2>&1)" \
+    || fail "'codex exec --help' does not run; got: $exec_help"
+  for flag in --json --cd --add-dir --dangerously-bypass-approvals-and-sandbox --strict-config; do
+    case "$exec_help" in
+      *"$flag"*) ;;
+      *) fail "'codex exec --help' no longer lists $flag (src/agents/codex.ts emits it)" ;;
+    esac
+  done
+  ok "agent CLIs present: claude, codex ($codex_out); codex exec flags match the adapter"
+  # The Codex home must be pre-created worker-owned (B-724 applied to ~/.codex).
+  docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'test -w /home/worker/.codex && test -w /home/worker/.codex/sessions' \
+    || fail "/home/worker/.codex (and sessions/) is not pre-created and writable by the worker"
+  ok "~/.codex pre-created worker-owned"
+else
+  ok "no agent layer in this image (the base target) — agent CLI probes skipped"
+fi
 
 echo "smoke: PASS — $IMAGE"

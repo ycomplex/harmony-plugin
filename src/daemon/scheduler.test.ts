@@ -3695,7 +3695,7 @@ describe('B-1077: agent-adapter eligibility check at fireLaunch', () => {
   });
 
   it('an unregistered adapter: parks the conduction, advances the ticket to parking, comments the registered adapters, launches NO worker and counts no leg', async () => {
-    const h = makeHarness({ conductions: [conduction({ run_config: { agent: { adapter: 'codex' } } })], tasks: task() });
+    const h = makeHarness({ conductions: [conduction({ run_config: { agent: { adapter: 'opencode' } } })], tasks: task() });
     const advanceTicketWorkflow = vi.fn(async () => {});
     const addTicketComment = vi.fn(async () => {});
     h.deps.advanceTicketWorkflow = advanceTicketWorkflow;
@@ -3713,7 +3713,7 @@ describe('B-1077: agent-adapter eligibility check at fireLaunch', () => {
     expect(addTicketComment).toHaveBeenCalledTimes(1);
     const [taskId, comment] = addTicketComment.mock.calls[0] as unknown as [string, string];
     expect(taskId).toBe('task-1');
-    expect(comment).toContain("Unknown agent adapter 'codex' — registered: claude-code");
+    expect(comment).toContain("Unknown agent adapter 'opencode' — registered: claude-code, codex");
     expect(comment).toContain('This launch profile allows: claude-code.');
   });
 
@@ -3728,6 +3728,37 @@ describe('B-1077: agent-adapter eligibility check at fireLaunch', () => {
     expect(h.statusWrites()).toEqual([
       { status: 'parked', last_worker_exit_code: null, last_worker_exit_class: 'agent-ineligible' },
     ]);
+  });
+
+  // B-1076: codex is now a REGISTERED adapter, so these are the two real second-adapter cases.
+  it('B-1076: codex on a profile that allows it but whose launch template lacks {run_config_json}: parked before any worker, naming the placeholder', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ run_config: { agent: { adapter: 'codex' } } })],
+      tasks: task(),
+      config: { ...config, profile: { ...config.profile, agents: ['claude-code', 'codex'] } },
+    });
+    const addTicketComment = vi.fn(async () => {});
+    h.deps.advanceTicketWorkflow = vi.fn(async () => {});
+    h.deps.addTicketComment = addTicketComment;
+    await wakeAndFire(h);
+    expect(h.launches()).toEqual([]);
+    expect(h.statusWrites()).toEqual([
+      { status: 'parked', last_worker_exit_code: null, last_worker_exit_class: 'agent-ineligible' },
+    ]);
+    const comment = (addTicketComment.mock.calls[0] as unknown as [string, string])[1];
+    expect(comment).toContain('no {run_config_json} placeholder');
+    expect(comment).toContain('Registered agent adapters: claude-code, codex.');
+  });
+
+  it('B-1076: codex on a profile that allows it AND delivers {run_config_json}: launches', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ run_config: { agent: { adapter: 'codex' } } })],
+      tasks: task(),
+      config: { ...config, profile: { ...config.profile, launch: 'launch {conduction_id} {ticket} {run_config_json}', agents: ['claude-code', 'codex'] } },
+    });
+    await wakeAndFire(h);
+    expect(h.launches()).toHaveLength(1);
+    expect(h.statusWrites()).not.toContainEqual(expect.objectContaining({ last_worker_exit_class: 'agent-ineligible' }));
   });
 
   it('config-only rollback: the same conduction with agent.adapter switched back to claude-code launches', async () => {
