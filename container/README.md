@@ -71,6 +71,16 @@ not this interactive session.
 |---|---|---|
 | `base` | git, node 22, gh, python3/jq, **fnm + corepack (the toolchain manager, B-929)**, the bootstrap entrypoint — agent-neutral | never changes |
 | `agent` | `FROM base` + Claude Code + `CLAUDE_HEADLESS_FLAGS` | replace to swap agents |
+| `agent-codex` | `FROM agent` + the Codex CLI (`@openai/codex`) + a worker-owned `~/.codex` (B-1076) — a **superset**: both CLIs | what `cloudbuild.yaml` publishes; the single deployment `worker_image` serves either adapter |
+
+`agent-codex` is a superset on purpose: the adapter is chosen per leg (`run_config.agent.adapter`), so
+one `worker_image` per deployment serves both. Base stays agent-neutral and `agent` stays
+Claude-only; neither gains a Codex byte. The Codex CLI version follows the Claude Code policy
+(B-1074): **not pinned in the Dockerfile** — `cloudbuild.yaml` resolves the current `@openai/codex`
+release with `npm view` at build time and passes it as `CODEX_VERSION`, so every promote rebuild
+refreshes it. The resolved version is in `/etc/harmony-codex-version`, the `harmony.codex_version`
+label and `provision.sh`'s startup echo, and `smoke.sh` requires `codex --version` to run before
+anything is published (it skips that probe on the agent-neutral `base` target).
 
 The `container-base` CI job rebuilds `base` on every PR and **fails if any
 agent install is present in it** — the layering guardrail is continuously

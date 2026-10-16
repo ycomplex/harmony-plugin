@@ -9,6 +9,10 @@
 #           and asserts no agent is present in it.
 #   agent — FROM base: the Claude Code install + the headless permission
 #           envelope. This is the ONLY layer an agent swap replaces.
+#   agent-codex — FROM agent (B-1076): a SUPERSET carrying BOTH CLIs, so the
+#           ONE deployment worker_image serves either adapter, selected per leg
+#           by run_config.agent.adapter. The Codex install is its own stage so
+#           base stays agent-neutral and `agent` stays Claude-only.
 #
 # Config and secrets are runtime-injected (docker run --env-file; see
 # env.example). No Supabase ref, token, or repo snapshot is baked — switching
@@ -126,3 +130,37 @@ ENV CLAUDE_HEADLESS_FLAGS="--dangerously-skip-permissions"
 # misprovisioned container still fails visibly without it — see the B-719
 # design entry).
 ENV HARMONY_BUILD_CONTAINER=1
+
+
+FROM agent AS agent-codex
+
+# B-1076: the Codex layer. Same policy as the Claude Code install above
+# (B-1074): the CLI version is NOT pinned in this file. container/cloudbuild.yaml
+# resolves the current @openai/codex release from npm at build time and passes
+# it as CODEX_VERSION, so every promote rebuild carries a current CLI; the
+# resolved version is reported by /etc/harmony-codex-version, the
+# harmony.codex_version label and provision.sh's startup echo. A bad release is
+# kept off :latest by container/smoke.sh (it runs `codex --version`).
+USER root
+ARG CODEX_VERSION=latest
+
+RUN npm install -g @openai/codex@${CODEX_VERSION} \
+    && codex --version | awk '{print $NF}' | tee /etc/harmony-codex-version
+
+LABEL harmony.codex_version="${CODEX_VERSION}"
+
+# B-724 (applied to Codex): pre-create the worker's Codex home WORKER-OWNED.
+# The launch profile bind-mounts ~/.codex/sessions (and, in rw mode, the single
+# auth.json FILE) per conduction; Docker otherwise creates the mount-point
+# parent ~/.codex AS ROOT, which would make provision.sh's own writes there
+# (config.toml, AGENTS.md, the copied-in auth.json) die with Permission denied.
+# src/daemon/profile-contract.test.ts pins every Codex mount target to this.
+RUN mkdir -p /home/worker/.codex/sessions \
+    && chown -R worker:worker /home/worker/.codex
+USER worker
+
+# Codex headless needs no permission-envelope ENV: the adapter's argv carries
+# --dangerously-bypass-approvals-and-sandbox itself (the container IS the
+# sandbox). CODEX_HEADLESS_FLAGS is the per-run upstream-flag passthrough that
+# stands in for CLAUDE_HEADLESS_FLAGS on a Codex leg; empty by default.
+ENV CODEX_HEADLESS_FLAGS=""
