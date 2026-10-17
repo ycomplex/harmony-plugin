@@ -522,3 +522,27 @@ describe('classifyCleanRowShape / classifyWorkerExit — B-818: an outstanding B
     expect(exitClass(outcome, a)).toBe('stale');
   });
 });
+
+describe('B-1149: a refusal on the leg-cost row classifies quota / rate-limit ahead of dirty-exit', () => {
+  it("a quota refusal with a non-zero exit ⇒ park / 'quota' (not 'dirty-exit')", () => {
+    const a = args({ exitCode: 1, refusal: { kind: 'quota', resets_at: null } });
+    const o = classifyWorkerExit(a);
+    expect(o).toEqual({ action: 'park', reason: 'quota' });
+    expect(exitClass(o, a)).toBe('quota');
+  });
+  it("a rate-limit refusal ⇒ park / 'rate-limit'", () => {
+    expect(classifyWorkerExit(args({ exitCode: 1, refusal: { kind: 'rate-limit', resets_at: null } }))).toEqual({ action: 'park', reason: 'rate-limit' });
+  });
+  it('an awaiting-human or terminal row shape still wins over a refusal', () => {
+    expect(classifyWorkerExit(args({ exitCode: 1, row: { workflow_state: 'Built', awaiting_human_input: true, stale: false }, refusal: { kind: 'quota', resets_at: null } }))).toEqual({ action: 'wait' });
+    expect(classifyWorkerExit(args({ exitCode: 1, row: { workflow_state: 'Verified', awaiting_human_input: false, stale: false }, refusal: { kind: 'quota', resets_at: null } }))).toEqual({ action: 'complete' });
+  });
+  it("this daemon's own timeout / operator reap still win over a refusal", () => {
+    expect(classifyWorkerExit(args({ exitCode: 137, timedOut: true, refusal: { kind: 'quota', resets_at: null } }))).toEqual({ action: 'park', reason: 'worker-timeout' });
+    expect(classifyWorkerExit(args({ exitCode: 137, operatorReaped: true, refusal: { kind: 'quota', resets_at: null } }))).toEqual({ action: 'park', reason: 'operator-reap' });
+  });
+  it('no refusal (absent or null) ⇒ an unrecognised failure stays dirty-exit', () => {
+    expect(classifyWorkerExit(args({ exitCode: 1 }))).toEqual({ action: 'park', reason: 'dirty-exit' });
+    expect(classifyWorkerExit(args({ exitCode: 1, refusal: null }))).toEqual({ action: 'park', reason: 'dirty-exit' });
+  });
+});

@@ -138,7 +138,8 @@ import { exchangeWentInactive } from '../conductor/ball-axis.js';
 import { renderTemplate, type DaemonConfig } from './config.js';
 import { resolveLegGate, isFastTrackBuildLeg, evaluateFastTrackAdmission } from './leg-gate.js';
 import { evaluateAgentEligibility, formatAgentIneligibleComment } from './agent-eligibility.js';
-import { getModelForGate, isFastTrackEnabled, type RunConfig } from '../config/run-config.js';
+import { getAgentAdapter, getModelForGate, isFastTrackEnabled, type RunConfig } from '../config/run-config.js';
+import type { QuotaState } from '../tools/conduction-record.js';
 import { formatInadmissibleFastTrackVerdict } from '../tools/record-eligibility.js';
 // B-929: the ONE place the worker-image default is written (src/config/deployment-config.ts's
 // zod schema) — imported rather than re-typed so this file can never drift from it.
@@ -359,7 +360,27 @@ export interface SchedulerDeps extends WriteRetryDeps {
    *  proceeds regardless, it just carries no human-readable verdict comment without this dep wired.
    *  B-1077 reuses it for the agent-adapter eligibility park's comment. */
   addTicketComment?: (taskId: string, content: string) => Promise<void>;
+  /** B-1149 — OPTIONAL: the refusal verdict on the conduction's LAST conduction_leg_costs row written
+   *  at or after `sinceIso` (this leg's fire time): `refusal_kind` / `refusal_resets_at`, which the
+   *  WORKER's adapter derived from its own capture. A typed column, never worker output — the exit
+   *  code stays the only signal the daemon takes from the worker PROCESS. Must never throw (null on
+   *  any failure, including the columns being absent). Absent dep ⇒ no refusal is ever seen
+   *  (today's dirty-exit behaviour). */
+  getLastLegRefusal?: (conductionId: string, sinceIso: string) => Promise<{ kind: 'quota' | 'rate-limit'; resets_at: string | null } | null>;
+  /** B-1149 — OPTIONAL: read conductions.paused_until / quota_pauses for the given ids; null when the
+   *  columns do not exist yet (the daemon then holds in memory only). May throw (logged, skipped). */
+  readQuotaState?: (ids: string[]) => Promise<Map<string, QuotaState> | null>;
+  /** B-1149 — OPTIONAL: the lease-guarded write of those columns; 'missing-columns' when absent. */
+  writeQuotaState?: (id: string, patch: Partial<QuotaState>) => Promise<'ok' | 'lease-lost' | 'missing-columns'>;
 }
+
+/** B-1149: a rate-limit refusal gets its OWN retry budget — 2 retries, 30s then 120s — and then
+ *  converts to a quota pause. Never B-713's dirty-exit ladder. */
+export const RATE_LIMIT_BACKOFFS_MS: readonly number[] = [30_000, 120_000];
+/** B-1149: the hold when a quota refusal names no reset time: leg end + 60 minutes. */
+export const QUOTA_DEFAULT_PAUSE_MS = 60 * 60 * 1000;
+/** B-1149: this many CONSECUTIVE quota pauses (no board progress between them) parks the conduction. */
+export const QUOTA_PAUSE_CAP = 3;
 
 /** B-720: the hard cap on how much of the LAUNCH COMMAND's combined stdout/stderr is retained for
  *  display. 64 KB — enough to hold the end of a launch (the stack trace / the gcloud refusal / the
@@ -720,6 +741,18 @@ export interface TrackedLaunch {
   /** B-720: the TOTAL bytes this LAUNCH COMMAND emitted (may exceed `launchOutputTail`'s length —
    *  that difference is what the board renders as "showing the last N of M"). */
   launchOutputBytes: number;
+  /** B-1149: when this leg fired (ms) — bounds the settle-time refusal read to THIS leg's rows.
+   *  Absent (an older literal) ⇒ no refusal read. */
+  firedAt?: number;
+}
+
+/** B-1149: one conduction's in-memory quota hold — the fallback when conductions.paused_until /
+ *  quota_pauses do not exist yet, and the same-pass cache when they do. `until` 0 = no active hold
+ *  (the re-check leg was already queued); `pauses` = consecutive quota pauses so far. */
+export interface QuotaHold {
+  runtime: string;
+  until: number;
+  pauses: number;
 }
 
 export interface SchedulerRuntime {
@@ -729,10 +762,72 @@ export interface SchedulerRuntime {
    *  per-conduction and per-pass error isolation — see PersistentReapFailure's class doc. Every
    *  pass checks this FIRST, before touching a single row. */
   fatal: Error | null;
+  /** B-1149: in-memory quota holds, by conduction id (see QuotaHold). */
+  quotaHolds?: Map<string, QuotaHold>;
+  /** B-1149: the last pass's DB read of paused_until / quota_pauses, by conduction id. */
+  quotaState?: Map<string, QuotaState>;
+  /** B-1149: rate-limit retries used so far, by conduction id (reset by any non-rate-limit settle). */
+  rateLimitRetries?: Map<string, number>;
+  /** B-1149: conductions whose "runtime held" skip was already logged (log once per hold). */
+  heldLogged?: Set<string>;
 }
 
 export function createSchedulerRuntime(): SchedulerRuntime {
-  return { ready: new Map(), running: new Map(), fatal: null };
+  return {
+    ready: new Map(),
+    running: new Map(),
+    fatal: null,
+    quotaHolds: new Map(),
+    quotaState: new Map(),
+    rateLimitRetries: new Map(),
+    heldLogged: new Set(),
+  };
+}
+
+function quotaMaps(runtime: SchedulerRuntime) {
+  runtime.quotaHolds ??= new Map();
+  runtime.quotaState ??= new Map();
+  runtime.rateLimitRetries ??= new Map();
+  runtime.heldLogged ??= new Set();
+  return { holds: runtime.quotaHolds, db: runtime.quotaState, rateLimit: runtime.rateLimitRetries, logged: runtime.heldLogged };
+}
+
+/** B-1149: the agent runtime (adapter id) a conduction runs on — run_config.agent.adapter, else the
+ *  default. An unreadable selection reads as the default (fireLaunch's eligibility check parks it). */
+export function runtimeOfConduction(row: ConductionRecord): string {
+  const sel = getAgentAdapter((row.run_config ?? {}) as RunConfig);
+  return sel.ok ? sel.adapter : 'claude-code';
+}
+
+/** B-1149: a conduction's effective hold-until (ms): the later of the persisted paused_until and the
+ *  in-memory hold, or null when neither is set. */
+function holdUntil(runtime: SchedulerRuntime, id: string): number | null {
+  const { holds, db } = quotaMaps(runtime);
+  const persisted = db.get(id)?.paused_until ?? null;
+  const p = persisted ? Date.parse(persisted) : NaN;
+  const m = holds.get(id)?.until ?? 0;
+  const best = Math.max(Number.isFinite(p) ? p : 0, m);
+  return best > 0 ? best : null;
+}
+
+/** B-1149: consecutive quota pauses so far — the in-memory count when this daemon has one, else the
+ *  persisted column. */
+function quotaPausesOf(runtime: SchedulerRuntime, id: string): number {
+  const { holds, db } = quotaMaps(runtime);
+  const mem = holds.get(id);
+  if (mem) return mem.pauses;
+  return db.get(id)?.quota_pauses ?? 0;
+}
+
+/** B-1149: the runtimes held right now — any ACTIVE conduction on that runtime with a hold in the
+ *  future (persisted or in memory). */
+export function heldRuntimes(runtime: SchedulerRuntime, rows: Iterable<ConductionRecord>, now: number): Set<string> {
+  const held = new Set<string>();
+  for (const row of rows) {
+    const until = holdUntil(runtime, row.id);
+    if (until !== null && until > now) held.add(runtimeOfConduction(row));
+  }
+  return held;
 }
 
 const PRIORITY_RANK: Record<string, number> = { low: 0, medium: 1, high: 2 };
@@ -775,6 +870,22 @@ export async function runSchedulerPass(
   keeper.retain(activeIds);
   for (const id of [...runtime.ready.keys()]) if (!activeIds.has(id)) runtime.ready.delete(id);
   for (const id of [...runtime.running.keys()]) if (!activeIds.has(id)) runtime.running.delete(id);
+  {
+    const q = quotaMaps(runtime);
+    for (const id of [...q.holds.keys()]) if (!activeIds.has(id)) q.holds.delete(id);
+    for (const id of [...q.rateLimit.keys()]) if (!activeIds.has(id)) q.rateLimit.delete(id);
+    for (const id of [...q.logged]) if (!activeIds.has(id)) q.logged.delete(id);
+    // B-1149: the persisted quota state, read ONCE per pass. null = the columns are not live yet
+    // (in-memory holds only); a throw keeps last pass's read rather than dropping a hold.
+    if (deps.readQuotaState) {
+      try {
+        const read = await deps.readQuotaState([...activeIds]);
+        runtime.quotaState = read ?? new Map();
+      } catch (err) {
+        deps.log(`quota state read failed — keeping the previous read (${formatDaemonError(err)})`);
+      }
+    }
+  }
 
   let authShapedFailures = 0;
   const stealCandidates: StealCandidate[] = [];
@@ -823,7 +934,7 @@ export async function runSchedulerPass(
   // interleaving of local and foreign conductions.
   const byId = new Map(rows.map((r) => [r.id, r]));
   authShapedFailures += await fireReadyCandidates(deps, state, keeper, runtime, byId);
-  authShapedFailures += await fireStealCandidates(deps, state, keeper, runtime, stealCandidates);
+  authShapedFailures += await fireStealCandidates(deps, state, keeper, runtime, stealCandidates, byId);
 
   // B-761: announce the mid-leg wait ONCE per transition, not per pass — see announceWaiting.
   announceWaiting(deps, state, waitingCandidates);
@@ -955,6 +1066,28 @@ async function handleHeldConduction(
 
   // ── (c) already ready, waiting its turn — the separate fire phase decides when. ─────────────────
   if (runtime.ready.has(row.id)) return;
+
+  // ── B-1149: a quota-paused conduction waits out its hold; when the hold passes, the NEXT leg is the
+  //    re-check (queued directly — the ticket did not move, so no wake would ever fire it). ─────────
+  const until = holdUntil(runtime, row.id);
+  if (until !== null) {
+    if (until > deps.now()) return;
+    const q = quotaMaps(runtime);
+    const mem = q.holds.get(row.id);
+    q.holds.set(row.id, { runtime: mem?.runtime ?? runtimeOfConduction(row), until: 0, pauses: quotaPausesOf(runtime, row.id) });
+    const persisted = q.db.get(row.id);
+    if (persisted) persisted.paused_until = null;
+    if (deps.writeQuotaState) {
+      try {
+        await deps.writeQuotaState(row.id, { paused_until: null });
+      } catch (err) {
+        deps.log(`conduction ${row.id}: clearing paused_until failed (${formatDaemonError(err)}) — the in-memory state moves on`);
+      }
+    }
+    deps.log(`conduction ${row.id}: quota pause over — queuing the re-check leg`);
+    runtime.ready.set(row.id, { since: deps.now(), priority: row.task_priority ?? null, retryCount: row.retry_count });
+    return;
+  }
 
   // ── (b) neither tracked nor ready — today's watch logic, unchanged, except a wake QUEUES rather
   //        than fires. ─────────────────────────────────────────────────────────────────────────────
@@ -1272,6 +1405,8 @@ async function handleWonTakeover(
         // watched).
         launchOutputTail: null,
         launchOutputBytes: 0,
+        // B-1149: the leg's own fire time, when the row still carries it — bounds the refusal read.
+        firedAt: row.leg_started_at && Number.isFinite(Date.parse(row.leg_started_at)) ? Date.parse(row.leg_started_at) : undefined,
       });
       return false;
     }
@@ -1366,6 +1501,16 @@ async function settleTrackedLaunch(
   const repoProgressed =
     tracked.preFireHeadSha !== null && settleHeadSha !== null && tracked.preFireHeadSha !== settleHeadSha;
 
+  // B-1149: the refusal verdict the worker's adapter recorded on THIS leg's last leg-cost row.
+  let refusal: { kind: 'quota' | 'rate-limit'; resets_at: string | null } | null = null;
+  if (deps.getLastLegRefusal && tracked.firedAt !== undefined) {
+    try {
+      refusal = await deps.getLastLegRefusal(row.id, iso(tracked.firedAt));
+    } catch {
+      refusal = null;
+    }
+  }
+
   const classifyArgs: ClassifyArgs = {
     row: after,
     nonArchivedChildCount,
@@ -1374,6 +1519,7 @@ async function settleTrackedLaunch(
     timedOut: tracked.timedOut,
     operatorReaped: tracked.operatorReaped,
     repoProgressed,
+    refusal,
   };
   const outcome = classifyWorkerExit(classifyArgs);
   const cls = exitClass(outcome, classifyArgs);
@@ -1381,6 +1527,17 @@ async function settleTrackedLaunch(
     `${label(row, after, deps.projectKey)}: worker exit code=${tracked.exitCode ?? 'null'} → ` +
       `${outcome.action} (${cls})`,
   );
+
+  // B-1149: any leg that made BOARD progress resets the consecutive-quota-pause count.
+  if (progressed && cls !== 'quota' && cls !== 'rate-limit' && quotaPausesOf(runtime, row.id) > 0) {
+    await resetQuotaPauses(deps, runtime, row);
+  }
+  if (cls !== 'rate-limit') quotaMaps(runtime).rateLimit.delete(row.id);
+
+  if (outcome.action === 'park' && (cls === 'rate-limit' || cls === 'quota')) {
+    await settleRefusal(deps, state, keeper, runtime, row, after, tracked, cls, refusal, progressed);
+    return;
+  }
 
   if (outcome.action === 'wait') {
     // B-1040: record the leg's clean-pause ending as a board fact. Nothing existed on this branch
@@ -1443,6 +1600,121 @@ async function settleTrackedLaunch(
   // B-720: the captured LAUNCH-COMMAND output goes out as a SEPARATE, never-throwing write, AFTER
   // the terminal status patch above and never folded into it. See flushLaunchOutput.
   await flushLaunchOutput(deps, row, tracked);
+}
+
+/** B-1149: write quota_pauses back to 0 (tolerant of the column being absent). */
+async function resetQuotaPauses(deps: SchedulerDeps, runtime: SchedulerRuntime, row: ConductionRecord): Promise<void> {
+  const q = quotaMaps(runtime);
+  const mem = q.holds.get(row.id);
+  if (mem) mem.pauses = 0;
+  const persisted = q.db.get(row.id);
+  if (persisted) persisted.quota_pauses = 0;
+  if (!deps.writeQuotaState) return;
+  try {
+    await deps.writeQuotaState(row.id, { quota_pauses: 0 });
+  } catch (err) {
+    deps.log(`conduction ${row.id}: resetting quota_pauses failed (${formatDaemonError(err)})`);
+  }
+}
+
+async function commentOnTicket(deps: SchedulerDeps, row: ConductionRecord, content: string): Promise<void> {
+  if (!deps.addTicketComment) return;
+  try {
+    await deps.addTicketComment(row.task_id, content);
+  } catch (err) {
+    deps.log(`conduction ${row.id}: quota comment failed (${formatDaemonError(err)})`);
+  }
+}
+
+/** B-1149: settle a leg the runtime REFUSED (classify.ts's 'quota' / 'rate-limit').
+ *
+ *  rate-limit: up to RATE_LIMIT_BACKOFFS_MS.length retries (30s, then 120s), in-memory budget, then it
+ *  is treated as a quota pause. quota: the conduction PAUSES — it stays ACTIVE, the ticket's
+ *  workflow_state and awaiting flag are untouched (it is not in the awaiting-human queue), and the
+ *  hold (paused_until = the reported reset, else leg end + 60 min) holds the WHOLE runtime at launch
+ *  (heldRuntimes). The QUOTA_PAUSE_CAP-th consecutive pause parks it ('quota-repeated'). */
+async function settleRefusal(
+  deps: SchedulerDeps,
+  state: Map<string, WatchBaseline>,
+  keeper: HeartbeatKeeper,
+  runtime: SchedulerRuntime,
+  row: ConductionRecord,
+  after: DaemonTask,
+  tracked: TrackedLaunch,
+  cls: 'quota' | 'rate-limit',
+  refusal: { kind: 'quota' | 'rate-limit'; resets_at: string | null } | null,
+  progressed: boolean,
+): Promise<void> {
+  const q = quotaMaps(runtime);
+  const rt = runtimeOfConduction(row);
+
+  if (cls === 'rate-limit') {
+    const used = q.rateLimit.get(row.id) ?? 0;
+    if (used < RATE_LIMIT_BACKOFFS_MS.length) {
+      const backoffMs = RATE_LIMIT_BACKOFFS_MS[used];
+      q.rateLimit.set(row.id, used + 1);
+      if (!(await writeLastLegEndedAt(deps, state, keeper, row, { last_worker_exit_class: 'rate-limit', last_worker_exit_code: tracked.exitCode }))) return;
+      deps.log(
+        `${label(row, after, deps.projectKey)}: rate limit on ${rt} — retrying ` +
+          `(${used + 1}/${RATE_LIMIT_BACKOFFS_MS.length}) after reap + ${backoffMs}ms backoff`,
+      );
+      await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage)));
+      runtime.ready.set(row.id, { since: deps.now(), priority: row.task_priority ?? null, notBefore: deps.now() + backoffMs, retryCount: tracked.retryCount });
+      return;
+    }
+    q.rateLimit.delete(row.id);
+    deps.log(`${label(row, after, deps.projectKey)}: rate limit on ${rt} persisted past ${RATE_LIMIT_BACKOFFS_MS.length} retries — pausing as quota`);
+  }
+
+  const pauses = (progressed ? 0 : quotaPausesOf(runtime, row.id)) + 1;
+  const now = deps.now();
+
+  if (pauses >= QUOTA_PAUSE_CAP) {
+    deps.log(`${label(row, after, deps.projectKey)}: ${pauses} consecutive quota pauses on ${rt} — parking (quota-repeated)`);
+    q.holds.delete(row.id);
+    state.delete(row.id);
+    keeper.stop(row.id);
+    if (!(await writeIfHeld(deps, state, keeper, row, { status: 'parked', last_worker_exit_code: tracked.exitCode, last_worker_exit_class: 'quota-repeated' }))) return;
+    await writeLastLegEndedAt(deps, state, keeper, row);
+    if (deps.writeQuotaState) {
+      try {
+        await deps.writeQuotaState(row.id, { paused_until: null, quota_pauses: pauses });
+      } catch (err) {
+        deps.log(`conduction ${row.id}: quota state write failed (${formatDaemonError(err)})`);
+      }
+    }
+    await commentOnTicket(
+      deps,
+      row,
+      `Parked — quota on ${rt} refused ${pauses} consecutive legs with no progress between them. ` +
+        'The plan quota looks exhausted for longer than the pauses covered; resume the conduction once it has reset.',
+    );
+    await flushLaunchOutput(deps, row, tracked);
+    return;
+  }
+
+  const reported = refusal?.resets_at ? Date.parse(refusal.resets_at) : NaN;
+  const untilMs = Number.isFinite(reported) && reported > now ? reported : now + QUOTA_DEFAULT_PAUSE_MS;
+  q.holds.set(row.id, { runtime: rt, until: untilMs, pauses });
+  q.logged.delete(row.id);
+
+  if (!(await writeLastLegEndedAt(deps, state, keeper, row, { last_worker_exit_class: 'quota', last_worker_exit_code: tracked.exitCode }))) return;
+  if (deps.writeQuotaState) {
+    try {
+      const r = await deps.writeQuotaState(row.id, { paused_until: iso(untilMs), quota_pauses: pauses });
+      if (r === 'missing-columns') {
+        deps.log(`conduction ${row.id}: paused_until/quota_pauses columns absent (pre-migration) — holding in memory only`);
+      }
+    } catch (err) {
+      deps.log(`conduction ${row.id}: quota state write failed (${formatDaemonError(err)}) — holding in memory only`);
+    }
+  }
+  deps.log(
+    `${label(row, after, deps.projectKey)}: quota refusal on ${rt} — paused until ${iso(untilMs)} ` +
+      `(pause ${pauses}/${QUOTA_PAUSE_CAP}); the ${rt} runtime is held`,
+  );
+  await commentOnTicket(deps, row, `Paused — quota on ${rt}, resumes ${iso(untilMs)}`);
+  state.set(row.id, captureBaseline(after));
 }
 
 /** B-720 (replacement capture): write the settled launch's captured output tail — its own write, its
@@ -1514,6 +1786,21 @@ async function flushLaunchOutput(
   }
 }
 
+/** B-1149: skip launching a leg on a held runtime (logged once per conduction per hold). */
+function skipHeld(deps: SchedulerDeps, runtime: SchedulerRuntime, row: ConductionRecord, held: Set<string>): boolean {
+  const rt = runtimeOfConduction(row);
+  const logged = quotaMaps(runtime).logged;
+  if (!held.has(rt)) {
+    logged.delete(row.id);
+    return false;
+  }
+  if (!logged.has(row.id)) {
+    deps.log(`conduction ${row.id}: ${rt} runtime is held (quota pause) — not launching`);
+    logged.add(row.id);
+  }
+  return true;
+}
+
 /** B-717 item 1/2: fire whatever the free running slots allow, ranked by aged priority (item 2)
  *  across the WHOLE ready set — see runSchedulerPass's call site for why this cannot be fused into
  *  the per-row loop. Returns the number of auth-shaped fire failures (folded into the pass's
@@ -1536,10 +1823,13 @@ async function fireReadyCandidates(
     return a.since - b.since; // oldest-ready-first tiebreak
   });
 
+  // B-1149: a runtime is held while any of its active conductions is quota-paused.
+  const held = heldRuntimes(runtime, byId.values(), now);
   for (const [id, entry] of eligible) {
     if (runtime.running.size >= deps.config.maxConcurrentWorkers) break;
     const row = byId.get(id);
     if (!row) continue;
+    if (skipHeld(deps, runtime, row, held)) continue;
     try {
       await fireLaunch(deps, state, keeper, runtime, row, null, entry.retryCount);
     } catch (err) {
@@ -1565,10 +1855,14 @@ async function fireStealCandidates(
   keeper: HeartbeatKeeper,
   runtime: SchedulerRuntime,
   candidates: StealCandidate[],
+  byId?: Map<string, ConductionRecord>,
 ): Promise<number> {
   let authShapedFailures = 0;
+  // B-1149: the same runtime-wide hold as fireReadyCandidates — over every ACTIVE row.
+  const held = heldRuntimes(runtime, byId ? byId.values() : candidates.map((c) => c.row), deps.now());
   for (const { row, current } of candidates) {
     if (runtime.running.size >= deps.config.maxConcurrentWorkers) break;
+    if (skipHeld(deps, runtime, row, held)) continue;
     try {
       // B-845: same 'cas' policy as takeoverConduction above — the existing null/loss handling
       // just below is the SAME idiom a post-send/ambiguous non-retry now extends, not a new one.
@@ -1828,6 +2122,7 @@ async function fireLaunch(
     // then, which is also the terminal value for a launch that never settles here.
     launchOutputTail: null,
     launchOutputBytes: 0,
+    firedAt: deps.now(),
   };
   runtime.running.set(row.id, tracked);
 

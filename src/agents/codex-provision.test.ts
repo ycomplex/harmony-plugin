@@ -7,7 +7,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { collectInstructionSources, provisionCodex } from './codex-provision.js';
+import { collectInstructionSources, MissingHookScriptError, preflightHookScripts, provisionCodex } from './codex-provision.js';
 import { decodeNulArgv } from './launch-routing.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -28,6 +28,10 @@ beforeEach(() => {
   mkdirSync(join(plugin, 'skills', 'demo'), { recursive: true });
   mkdirSync(join(ws, 'web'), { recursive: true });
   mkdirSync(join(ws, '.git', 'info'), { recursive: true });
+  // B-1149: the hook preflight needs the two gate scripts the Codex hooks.json runs.
+  mkdirSync(join(plugin, 'hooks'), { recursive: true });
+  writeFileSync(join(plugin, 'hooks', 'stop-gate.sh'), 'exit 0\n');
+  writeFileSync(join(plugin, 'hooks', 'pretooluse-gate.sh'), 'exit 0\n');
   writeFileSync(join(ws, 'CLAUDE.md'), 'WS-GUIDANCE\n');
   writeFileSync(join(plugin, 'CLAUDE.md'), 'PLUGIN-GUIDANCE\n');
   writeFileSync(join(ws, 'web', 'CLAUDE.md'), 'WEB-GUIDANCE\n');
@@ -43,9 +47,39 @@ describe('provisionCodex', () => {
     const r = provisionCodex(input());
     expect(r.hooksPath).toBe(join(home, 'hooks.json'));
     const hooks = JSON.parse(readFileSync(r.hooksPath, 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
-    expect(hooks.hooks.Stop[0].hooks[0].command).toBe(`sh "${plugin}/hooks/stop-gate.sh"`);
-    expect(hooks.hooks.PreToolUse[0].hooks[0].command).toBe(`sh "${plugin}/hooks/pretooluse-gate.sh"`);
+    const stop = `${plugin}/hooks/stop-gate.sh`;
+    const pre = `${plugin}/hooks/pretooluse-gate.sh`;
+    expect(hooks.hooks.Stop[0].hooks[0].command).toBe(`if [ -f "${stop}" ]; then sh "${stop}"; else exit 0; fi`);
+    expect(hooks.hooks.PreToolUse[0].hooks[0].command).toBe(`if [ -f "${pre}" ]; then sh "${pre}"; else exit 0; fi`);
     expect(JSON.stringify(hooks)).not.toContain('CLAUDE_PLUGIN_ROOT');
+  });
+
+  it('B-1149: a missing hook script fails fast with a named reason, BEFORE hooks.json (or anything else) is written', () => {
+    rmSync(join(plugin, 'hooks', 'stop-gate.sh'));
+    let caught: unknown;
+    try {
+      provisionCodex(input());
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MissingHookScriptError);
+    expect((caught as MissingHookScriptError).paths).toEqual([join(plugin, 'hooks', 'stop-gate.sh')]);
+    expect((caught as Error).message).toContain(join(plugin, 'hooks', 'stop-gate.sh'));
+    expect(existsSync(join(home, 'hooks.json'))).toBe(false);
+    expect(existsSync(join(home, 'config.toml'))).toBe(false);
+  });
+
+  it('B-1149: preflightHookScripts lists the scripts it checked when all are present', () => {
+    expect(preflightHookScripts(plugin)).toEqual([join(plugin, 'hooks', 'stop-gate.sh'), join(plugin, 'hooks', 'pretooluse-gate.sh')]);
+  });
+
+  it('B-1149: the guarded command keeps a blocking exit 2 and skips a vanished script with exit 0', () => {
+    const stop = join(plugin, 'hooks', 'stop-gate.sh');
+    writeFileSync(stop, 'exit 2\n');
+    const guarded = `if [ -f "${stop}" ]; then sh "${stop}"; else exit 0; fi`;
+    expect(spawnSync('sh', ['-c', guarded]).status).toBe(2);
+    rmSync(stop);
+    expect(spawnSync('sh', ['-c', guarded]).status).toBe(0);
   });
 
   it("B-1150: lists each skill's unenforced forbid: classes as AGENTS.md prose rules; skips a skill with no capabilities key", () => {

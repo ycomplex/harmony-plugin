@@ -9,6 +9,47 @@ import { PLUGIN_ROOT_PLACEHOLDER } from './contract.js';
 import { classProblems, forbiddenTool, FORBID_PREFIX, SHELL_PREFIX, type CapabilityClass } from './capabilities.js';
 import { deriveCostRegime } from './credentials.js';
 import { parseClaudeResultJson, resolveCost } from '../tools/claude-result-parse.js';
+import { absoluteResetTime, forcedRefusal, resetFromText, type Refusal } from './refusal.js';
+
+// --- B-1149: refusal verdict -------------------------------------------------------------------------
+
+/** Plan-quota exhaustion as Claude Code reports it in an errored result envelope's `result`: the
+ *  legacy "Claude AI usage limit reached|<epoch seconds>" form and the current "5-hour limit reached ∙
+ *  resets 3pm" / "Weekly limit reached" / "You've hit your limit · resets …" forms. */
+const CLAUDE_QUOTA_RE = /usage limit|(?:5-hour|five-hour|weekly|session|daily|opus|sonnet)(?: usage)? limit|hit your (?:usage )?limit|out of (?:extra )?usage|quota/i;
+/** A transient rate limit: "API Error: 429 …", `rate_limit_error`, "Too Many Requests", "overloaded"
+ *  is NOT one (529 is a capacity error, retried by the CLI itself). */
+const CLAUDE_RATE_LIMIT_RE = /\b429\b|rate[ _-]?limit|too many requests/i;
+/** A bare "… limit reached" with neither of the above: a plan limit. */
+const CLAUDE_LIMIT_REACHED_RE = /limit reached/i;
+
+/** B-1149: the refusal verdict of one `claude -p --output-format json` capture. Only an envelope with
+ *  `is_error: true` can carry one. Null when the capture is not an errored envelope or names neither a
+ *  quota nor a rate limit. `HARMONY_TEST_FORCE_REFUSAL` overrides (test hook). */
+export function parseClaudeRefusal(
+  stdout: string,
+  now: Date = new Date(),
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): Refusal | null {
+  const forced = forcedRefusal(env);
+  if (forced) return forced;
+  const parsed = parseClaudeResultJson(stdout);
+  if (!parsed || !parsed.is_error) return null;
+  const text = parsed.result ?? '';
+  if (text === '') return null;
+  const kind = CLAUDE_QUOTA_RE.test(text)
+    ? 'quota'
+    : CLAUDE_RATE_LIMIT_RE.test(text)
+      ? 'rate-limit'
+      : CLAUDE_LIMIT_REACHED_RE.test(text)
+        ? 'quota'
+        : null;
+  if (!kind) return null;
+  // "usage limit reached|1760000000" — the epoch after the pipe is the reset.
+  const pipe = /\|\s*(\d{9,13})\s*$/.exec(text);
+  const resets_at = (pipe ? absoluteResetTime(Number(pipe[1])) : null) ?? resetFromText(text, now);
+  return { kind, resets_at };
+}
 
 /** B-916's structured result format, added by buildArgv only when the upstream
  *  CLAUDE_HEADLESS_FLAGS carry no `--output-format` of their own (provision.sh no longer adds it). */
@@ -210,6 +251,7 @@ export const claudeCodeAdapter: AgentAdapter = {
         costUsd: resolveCost(parsed, ctx.model).total_cost_usd,
         sessionId: parsed.session_id,
         isError: parsed.is_error,
+        refusal: parseClaudeRefusal(stdout),
       };
     },
     sampleOutput: SAMPLE_RESULT,

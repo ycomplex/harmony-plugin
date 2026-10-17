@@ -34,7 +34,9 @@ import {
   parseCodexThreadRecord,
 } from '../../agents/codex.js';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { provisionCodex } from '../../agents/codex-provision.js';
+import { MissingHookScriptError, provisionCodex } from '../../agents/codex-provision.js';
+import { getAuthenticatedContext } from '../auth.js';
+import { addComment } from '../../tools/comments.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -52,6 +54,28 @@ function launchRunConfig(): RunConfig {
         'resolving the agent adapter as if run_config were {} (claude-code)',
     );
     return {};
+  }
+}
+
+/** B-1149: a missing hook script is posted on the leg's ticket (TICKET) before the worker exits 1, so
+ *  the board says why no codex ran. Best-effort: no ticket / no login / a failed write is logged and
+ *  the refusal still happens. */
+async function postMissingHookComment(err: MissingHookScriptError): Promise<void> {
+  const ticket = process.env.TICKET;
+  if (!ticket) {
+    console.error('harmony agent render: WARNING — no TICKET in env; the missing-hook-script comment was not posted');
+    return;
+  }
+  try {
+    const ctx = await getAuthenticatedContext();
+    await addComment(ctx.client, ctx.projectId, ctx.userId, {
+      task_id: ticket,
+      content: `Codex leg did not start — ${err.message}. Restore the script(s) in the plugin checkout (or re-provision the worker) and the next leg will launch.`,
+    });
+  } catch (e) {
+    console.error(
+      `harmony agent render: WARNING — could not post the missing-hook-script comment (${e instanceof Error ? e.message : String(e)})`,
+    );
   }
 }
 
@@ -139,7 +163,7 @@ export function registerAgentCommands(program: Command): void {
     .requiredOption('--workspace <dir>', 'The workspace clone the agent is rooted at')
     .option('--codex-home <dir>', 'The worker CODEX_HOME (default: $CODEX_HOME or ~/.codex)')
     .option('--extra-repo <path...>', "Additional repo paths whose CLAUDE.md is appended after the plugin's")
-    .action((opts: { pluginDir: string; workspace: string; codexHome?: string; extraRepo?: string[] }) => {
+    .action(async (opts: { pluginDir: string; workspace: string; codexHome?: string; extraRepo?: string[] }) => {
       const adapter = adapterOrRefuse();
       if (adapter.id !== 'codex') {
         console.error(`harmony agent render: ${adapter.displayName} needs no rendered runtime config.`);
@@ -161,6 +185,7 @@ export function registerAgentCommands(program: Command): void {
             `${r.sources.join(', ')}); skills ${r.skillsLink}; login cache installed at ${r.authInstalledAt}`,
         );
       } catch (err) {
+        if (err instanceof MissingHookScriptError) await postMissingHookComment(err);
         refuse(`Codex provisioning failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     });

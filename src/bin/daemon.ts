@@ -51,7 +51,11 @@ import {
   updateConduction,
   updateConductionIfHeld,
   markCleanShutdown,
+  readConductionQuotaState,
+  writeConductionQuotaState,
 } from '../tools/conduction-record.js';
+// B-1149: the refusal verdict the worker's adapter recorded on the leg's last leg-cost row.
+import { readLastLegRefusal } from '../tools/leg-cost-record.js';
 // B-720 (replacement capture): the launcher half of the per-leg output record — the daemon WRITES
 // `source='launcher'` rows and never reads one back (the agent-neutrality seam).
 import { recordLegOutput } from '../tools/leg-output-record.js';
@@ -580,6 +584,11 @@ async function main(): Promise<void> {
     addTicketComment: async (taskId, content) => {
       await addComment(client, projectId, auth.getUserId(), { task_id: taskId, content });
     },
+    // B-1149: quota/rate-limit refusals — the leg-cost row's typed verdict, and the tolerant
+    // paused_until / quota_pauses accessors (null / 'missing-columns' before the web migration).
+    getLastLegRefusal: (conductionId, sinceIso) => readLastLegRefusal(client, { conduction_id: conductionId, since: sinceIso }),
+    readQuotaState: (ids) => readConductionQuotaState(client, ids),
+    writeQuotaState: (id, patch) => writeConductionQuotaState(client, id, leaseHolder, patch),
   };
 
   const keeper = createHeartbeatKeeper({

@@ -4174,3 +4174,205 @@ describe('B-1073: the daemon files a fast-track release accept\'s post-merge rec
     expect(board.tables.recorded_walk_requests).toHaveLength(1);
   });
 });
+
+// ── B-1149: quota / rate-limit refusals pause the runtime instead of dirty-exiting ─────────────────
+describe('B-1149: quota and rate-limit refusals', () => {
+  type Refusal = { kind: 'quota' | 'rate-limit'; resets_at: string | null };
+  const HOUR = 60 * 60 * 1000;
+  const twoRuntimeConfig: DaemonConfig = {
+    ...config,
+    profile: { ...config.profile, launch: 'launch {conduction_id} {ticket} {run_config_json}', agents: ['claude-code', 'codex'] },
+  };
+
+  /** Wire the three optional B-1149 deps onto a harness. `columns: false` simulates the pre-migration
+   *  board (reads null, writes 'missing-columns'). */
+  function withQuota(
+    h: ReturnType<typeof makeHarness>,
+    opts: { refusals?: Array<Refusal | null>; columns?: boolean; seed?: Record<string, { paused_until: string | null; quota_pauses: number }> } = {},
+  ) {
+    const store = new Map(Object.entries(opts.seed ?? {}).map(([k, v]) => [k, { ...v }]));
+    const writes: Array<{ id: string; patch: Record<string, unknown> }> = [];
+    const comments: Array<{ taskId: string; content: string }> = [];
+    const refusals = [...(opts.refusals ?? [])];
+    const columns = opts.columns !== false;
+    h.deps.getLastLegRefusal = vi.fn(async () => (refusals.length ? refusals.shift()! : null));
+    h.deps.readQuotaState = vi.fn(async (ids: string[]) => {
+      if (!columns) return null;
+      return new Map(ids.filter((id) => store.has(id)).map((id) => [id, { ...store.get(id)! }]));
+    });
+    h.deps.writeQuotaState = vi.fn(async (id: string, patch: Record<string, unknown>) => {
+      writes.push({ id, patch: { ...patch } });
+      if (!columns) return 'missing-columns' as const;
+      const cur = store.get(id) ?? { paused_until: null, quota_pauses: 0 };
+      store.set(id, { ...cur, ...(patch as object) });
+      return 'ok' as const;
+    });
+    h.deps.addTicketComment = vi.fn(async (taskId: string, content: string) => {
+      comments.push({ taskId, content });
+    });
+    return { store, writes, comments };
+  }
+
+  it('a quota refusal PAUSES (stays active, ticket untouched, comment with the resume time) — never parked, never the dirty-exit ladder', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() }, launchExitCode: 1, config: { ...config, retryCap: 2 } });
+    const q = withQuota(h, { refusals: [{ kind: 'quota', resets_at: null }] });
+    await wakeAndFire(h);
+    const ticketBefore = { ...(h.tasks['task-1'] as DaemonTask) };
+    await h.pass(); // settle
+    const row = h.getConduction('cond-1');
+    expect(row.status).toBe('active');
+    expect(row.last_worker_exit_class).toBe('quota');
+    expect(row.retry_count).toBe(0); // B-713's dirty-exit ladder never engaged
+    expect(h.reaps()).toEqual([]);
+    const until = iso(h.now() + HOUR); // the 60-minute default: no reset reported
+    expect(q.writes).toContainEqual({ id: 'cond-1', patch: { paused_until: until, quota_pauses: 1 } });
+    expect(q.comments).toEqual([{ taskId: 'task-1', content: `Paused — quota on claude-code, resumes ${until}` }]);
+    expect(h.tasks['task-1']).toEqual(ticketBefore); // workflow state / awaiting flag unchanged
+    expect(h.deps.advanceTicketWorkflow).toBeUndefined();
+  });
+
+  it('a reported reset time is the hold; when it passes the NEXT leg is the re-check, and only one', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() }, launchExitCode: 1 });
+    const reset = iso(T0 + 2 * HOUR);
+    const q = withQuota(h, { refusals: [{ kind: 'quota', resets_at: reset }] });
+    await wakeAndFire(h);
+    await h.pass(); // settle → pause until `reset`
+    expect(q.store.get('cond-1')?.paused_until).toBe(reset);
+    expect(q.comments[0].content).toBe(`Paused — quota on claude-code, resumes ${reset}`);
+    expect(h.launches()).toHaveLength(1);
+    await h.pass();
+    await h.pass(); // still paused: no hot loop
+    expect(h.launches()).toHaveLength(1);
+    h.setNow(T0 + 2 * HOUR + 1);
+    await h.pass(); // hold over → the re-check leg is queued and fired
+    expect(h.launches()).toHaveLength(2);
+    expect(q.store.get('cond-1')?.paused_until).toBeNull();
+  });
+
+  it('the 60-minute default hold re-checks once after leg end + 60 minutes', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() }, launchExitCode: 1 });
+    withQuota(h, { refusals: [{ kind: 'quota', resets_at: null }] });
+    await wakeAndFire(h);
+    await h.pass();
+    const legEnd = h.now();
+    h.setNow(legEnd + HOUR - 1);
+    await h.pass();
+    expect(h.launches()).toHaveLength(1);
+    h.setNow(legEnd + HOUR + 1);
+    await h.pass();
+    expect(h.launches()).toHaveLength(2);
+  });
+
+  it('rate-limit: at most 2 retries (30s, then 120s), then it converts to a quota pause', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() }, launchExitCode: 1 });
+    const rl: Refusal = { kind: 'rate-limit', resets_at: null };
+    const q = withQuota(h, { refusals: [rl, rl, rl] });
+    await wakeAndFire(h);
+    await h.pass(); // settle #1 → retry 1 after 30s
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('rate-limit');
+    expect(h.logs.some((l) => l.includes('rate limit on claude-code — retrying (1/2)') && l.includes('30000ms'))).toBe(true);
+    await h.pass();
+    expect(h.launches()).toHaveLength(1); // backoff not elapsed
+    h.setNow(h.now() + 30_000);
+    await h.pass(); // fires attempt 2
+    expect(h.launches()).toHaveLength(2);
+    await h.pass(); // settle #2 → retry 2 after 120s
+    expect(h.logs.some((l) => l.includes('retrying (2/2)') && l.includes('120000ms'))).toBe(true);
+    h.setNow(h.now() + 119_000);
+    await h.pass();
+    expect(h.launches()).toHaveLength(2);
+    h.setNow(h.now() + 1_000);
+    await h.pass(); // fires attempt 3
+    expect(h.launches()).toHaveLength(3);
+    await h.pass(); // settle #3 → budget spent → quota pause
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('quota');
+    expect(q.store.get('cond-1')?.quota_pauses).toBe(1);
+    expect(q.comments).toHaveLength(1);
+    h.setNow(h.now() + 10 * 60_000);
+    await h.pass();
+    expect(h.launches()).toHaveLength(3); // paused, not retrying
+  });
+
+  it("the 3rd consecutive quota pause parks the conduction ('quota-repeated') with a comment", async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() }, launchExitCode: 1 });
+    // Two pauses already persisted (e.g. by a previous daemon process) — the hold itself has passed.
+    const q = withQuota(h, { refusals: [{ kind: 'quota', resets_at: null }], seed: { 'cond-1': { paused_until: null, quota_pauses: 2 } } });
+    await wakeAndFire(h);
+    await h.pass();
+    const row = h.getConduction('cond-1');
+    expect(row.status).toBe('parked');
+    expect(row.last_worker_exit_class).toBe('quota-repeated');
+    expect(q.store.get('cond-1')?.quota_pauses).toBe(3);
+    expect(q.comments).toHaveLength(1);
+    expect(q.comments[0].content).toMatch(/^Parked — quota on claude-code refused 3 consecutive legs/);
+  });
+
+  it('a leg that makes board progress resets quota_pauses to 0', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() }, launchExitCode: 0 });
+    const q = withQuota(h, { seed: { 'cond-1': { paused_until: null, quota_pauses: 2 } } });
+    h.hooks.onLaunch = () => {
+      (h.tasks['task-1'] as DaemonTask).workflow_state = 'Deployed';
+    };
+    await wakeAndFire(h);
+    await h.pass();
+    expect(q.writes).toContainEqual({ id: 'cond-1', patch: { quota_pauses: 0 } });
+    expect(q.store.get('cond-1')?.quota_pauses).toBe(0);
+  });
+
+  it('the WHOLE runtime is held (persisted paused_until — survives a restart); the other runtime keeps launching', async () => {
+    const codexRc = { agent: { adapter: 'codex' } } as ConductionRecord['run_config'];
+    const h = makeHarness({
+      conductions: [
+        conduction({ id: 'cond-1', task_id: 'task-1' }),
+        conduction({ id: 'cond-2', task_id: 'task-2', run_config: codexRc }),
+        conduction({ id: 'cond-3', task_id: 'task-3' }),
+      ],
+      tasks: { 'task-1': pausedTask(), 'task-2': pausedTask(), 'task-3': pausedTask() },
+      config: twoRuntimeConfig,
+    });
+    // A fresh runtime (as after a daemon restart) reading a persisted hold on cond-1 (claude-code).
+    withQuota(h, { seed: { 'cond-1': { paused_until: iso(T0 + HOUR), quota_pauses: 1 } } });
+    await h.pass(); // baselines
+    (h.tasks['task-2'] as DaemonTask).awaiting_human_input = false;
+    (h.tasks['task-3'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    expect(h.launches().map((c) => c.split(' ')[1])).toEqual(['cond-2']); // codex launched; claude-code held
+    expect(h.ready()).toEqual(['cond-3']); // queued, waiting out the hold
+    expect(h.logs.filter((l) => l.includes('cond-3: claude-code runtime is held'))).toHaveLength(1);
+    h.setNow(T0 + HOUR + 1);
+    await h.pass();
+    expect(h.launches().map((c) => c.split(' ')[1])).toEqual(expect.arrayContaining(['cond-2', 'cond-3', 'cond-1']));
+  });
+
+  it('tolerant of the columns not existing yet: the hold lives in memory and still holds the runtime', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ id: 'cond-1', task_id: 'task-1' }), conduction({ id: 'cond-3', task_id: 'task-3' })],
+      tasks: { 'task-1': pausedTask(), 'task-3': pausedTask() },
+      launchExitCodes: [1],
+    });
+    const q = withQuota(h, { refusals: [{ kind: 'quota', resets_at: null }], columns: false });
+    await h.pass(); // baselines
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass(); // cond-1 fires
+    await h.pass(); // cond-1 settles → quota pause (columns absent)
+    expect(q.writes.length).toBeGreaterThan(0);
+    expect(h.logs.some((l) => l.includes('columns absent (pre-migration) — holding in memory only'))).toBe(true);
+    expect(h.getConduction('cond-1').status).toBe('active');
+    (h.tasks['task-3'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    expect(h.launches().map((c) => c.split(' ')[1])).toEqual(['cond-1']); // cond-3 held in memory
+    h.setNow(h.now() + HOUR + 1);
+    await h.pass();
+    expect(h.launches().map((c) => c.split(' ')[1])).toEqual(expect.arrayContaining(['cond-1', 'cond-3']));
+  });
+
+  it('no refusal on the row ⇒ an unrecognised failure stays dirty-exit (today\'s ladder)', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() }, launchExitCode: 1 });
+    withQuota(h, { refusals: [null] });
+    await wakeAndFire(h);
+    await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('dirty-exit');
+  });
+});

@@ -23,6 +23,10 @@
 //       bypasses B-713's dirty-exit retry ladder by
 //       construction, for the same reason: a deliberate
 //       operator stop is not a transient failure to retry.
+//   5c. refusal on the leg's last leg-cost row (B-1149) ⇒ park    / 'quota' | 'rate-limit'
+//       — the runtime refused the turn (plan quota / rate limit exhausted). Read from the DB row the
+//       scheduler fetched (conduction_leg_costs.refusal_kind), NEVER from worker stdout. The
+//       scheduler turns it into a bounded retry / runtime-wide PAUSE, never a park on first sight.
 //   6. non-zero (or unknown) exitCode                  ⇒ park     / 'dirty-exit'
 //   7. exitCode=0, flag false, progressed=false,
 //      repoProgressed=false                            ⇒ park     / 'no-progress'
@@ -144,6 +148,10 @@ export interface ClassifyArgs {
    *  exactly the B-758 specimen's blind spot: a rebase-push updates the PR head without re-recording
    *  `build_pr.head_sha`, so the board alone cannot see the movement. */
   repoProgressed: boolean;
+  /** B-1149: the refusal verdict on THIS leg's last conduction_leg_costs row (refusal_kind /
+   *  refusal_resets_at), fetched by the scheduler at settle and passed in — classify.ts never reads
+   *  worker output. Absent/null = no refusal (today's behaviour). */
+  refusal?: { kind: 'quota' | 'rate-limit'; resets_at: string | null } | null;
 }
 
 export function classifyWorkerExit(args: ClassifyArgs): ExitOutcome {
@@ -190,6 +198,15 @@ export function classifyWorkerExit(args: ClassifyArgs): ExitOutcome {
   //     branch 5 — deliberately BEFORE the dirty-exit branch — for the identical reason: a
   //     deliberate operator stop is not a transient failure B-713's retry ladder should retry.
   if (args.operatorReaped) return { action: 'park', reason: 'operator-reap' };
+
+  // 5c. B-1149: the runtime REFUSED the turn — a plan quota or rate limit is exhausted. Placed after
+  //     branches 1-5b (a row shape that proves an outcome, and this daemon's own stops, still win) and
+  //     BEFORE the dirty-exit branch, so a refusal never enters B-713's dirty-exit retry ladder. The
+  //     verdict is the leg-cost row's typed column, never worker output; an unrecognised failure has
+  //     no refusal and stays dirty-exit.
+  if (args.refusal && (args.refusal.kind === 'quota' || args.refusal.kind === 'rate-limit')) {
+    return { action: 'park', reason: args.refusal.kind };
+  }
 
   // 6. Dirty exit — non-zero or unknown code with nothing above explaining it.
   if (exitCode !== 0) return { action: 'park', reason: 'dirty-exit' };

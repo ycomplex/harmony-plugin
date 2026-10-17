@@ -89,12 +89,44 @@ export function renderClaudeHooks(def: HooksFile = HARMONY_HOOKS): string {
   return JSON.stringify(resolveRoot(def, '${CLAUDE_PLUGIN_ROOT}'), null, 2) + '\n';
 }
 
+/** B-1149: a hook command that runs ONE script, `sh "<path>"` — the shape the preflight checks and
+ *  the guard wraps. */
+const SCRIPT_COMMAND_RE = /^sh "([^"]+\.sh)"$/;
+
+/** B-1149: every script a hooks definition runs, with `{pluginRoot}` resolved to `pluginRoot`. */
+export function hookScriptPaths(pluginRoot: string, def: HooksFile = HARMONY_HOOKS): string[] {
+  const out: string[] = [];
+  for (const groups of Object.values(resolveRoot(def, pluginRoot).hooks)) {
+    for (const g of groups) {
+      for (const h of g.hooks) {
+        const m = SCRIPT_COMMAND_RE.exec(h.command);
+        if (m && !out.includes(m[1])) out.push(m[1]);
+      }
+    }
+  }
+  return out;
+}
+
+/** B-1149: the guarded form of a script command — a script that vanished after the preflight is
+ *  skipped (exit 0) instead of failing every turn-end. Written as if/then/else, NOT
+ *  `[ -f X ] && sh X || exit 0`: that form would turn the script's own blocking exit 2 into exit 0
+ *  and silently disable the gate. */
+export function guardScriptCommand(command: string): string {
+  const m = SCRIPT_COMMAND_RE.exec(command);
+  if (!m) return command;
+  return `if [ -f "${m[1]}" ]; then sh "${m[1]}"; else exit 0; fi`;
+}
+
 /** The Codex rendering — $CODEX_HOME/hooks.json, with the absolute plugin root. The root is
  *  interpolated inside double quotes in the commands, so it must not carry a quote, `$`, backtick or
- *  backslash. */
+ *  backslash. B-1149: each script command is rendered guarded (guardScriptCommand). */
 export function renderCodexHooks(pluginRoot: string, def: HooksFile = HARMONY_HOOKS): { fileName: string; content: string } {
   if (!pluginRoot.startsWith('/') || /["$`\\]/.test(pluginRoot)) {
     throw new Error(`plugin root '${pluginRoot}' must be an absolute path with no quote, $, backtick or backslash`);
   }
-  return { fileName: 'hooks.json', content: JSON.stringify(resolveRoot(def, pluginRoot), null, 2) + '\n' };
+  const resolved = resolveRoot(def, pluginRoot);
+  for (const groups of Object.values(resolved.hooks)) {
+    for (const g of groups) g.hooks = g.hooks.map((h) => ({ ...h, command: guardScriptCommand(h.command) }));
+  }
+  return { fileName: 'hooks.json', content: JSON.stringify(resolved, null, 2) + '\n' };
 }

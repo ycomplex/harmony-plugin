@@ -32,8 +32,10 @@ import {
 } from '../../agents/credentials.js';
 import { resolveLaunchAdapter } from '../../agents/launch-routing.js';
 import { resolveGatePhase } from '../../daemon/gate-phase.js';
-import { parseClaudeResultJson, resolveCost } from '../../tools/claude-result-parse.js';
-import { recordLegCost, resolveLegCostContext } from '../../tools/leg-cost-record.js';
+import { deriveCodexCostUsd, parseClaudeResultJson, resolveCost } from '../../tools/claude-result-parse.js';
+import { ownUsageDelta, recordLegCost, resolveLegCostContext, sumPriorSessionUsage } from '../../tools/leg-cost-record.js';
+import { parseClaudeRefusal } from '../../agents/claude-code.js';
+import type { Refusal } from '../../agents/refusal.js';
 import { getAuthenticatedContext } from '../auth.js';
 
 /** Best-effort authenticated client, or null when this process has no login/config to authenticate
@@ -196,6 +198,7 @@ export function registerLegCostCommands(program: Command): void {
     .option('--runtime <id>', 'B-1078: override the derived runtime (adapter id)')
     .option('--credential-kind <kind>', 'B-1078: override the derived credential kind (a CredentialMode)')
     .option('--cost-regime <regime>', 'B-1078: must agree with the credential-derived regime, else ignored with a warning')
+    .option('--duration-ms <n>', "B-1149: wall-clock duration of the invocation, measured by the worker (used when the capture carries none — Codex)")
     .action(
       async (opts: {
         file: string;
@@ -207,6 +210,7 @@ export function registerLegCostCommands(program: Command): void {
         runtime?: string;
         credentialKind?: string;
         costRegime?: string;
+        durationMs?: string;
       }) => {
         const conductionId = opts.conductionId ?? getConductionId();
         if (!conductionId) {
@@ -242,17 +246,33 @@ export function registerLegCostCommands(program: Command): void {
         // has no per-invocation price (docs/codex-phase0-findings.md, "Cost capture"). Claude legs are
         // untouched (resolveAdapterTelemetry is null for claude-code).
         const adapterRec = resolveAdapterTelemetry(captured, model, facts);
-        const usage = adapterRec?.usage ?? null;
         const parsed = adapterRec ? null : parseClaudeResultJson(captured);
-        const cost = parsed
-          ? resolveCost(parsed, model)
-          : { total_cost_usd: null, cost_source: 'unknown' as const };
 
         const index = Number(opts.invocationIndex);
         // ONE client for both the context read and the write — authenticating twice per invocation
         // would double this accessor's cost for nothing.
         const client = await getClient();
         const context = await resolveLegCostContext(client, conductionId);
+
+        // B-1149: a resumed Codex thread reports CUMULATIVE usage — subtract what earlier rows of the
+        // same thread already recorded, so this row is the invocation's OWN usage.
+        let usage = adapterRec?.usage ?? null;
+        if (usage && adapterRec?.sessionId) {
+          const prior = await sumPriorSessionUsage(client, { conduction_id: conductionId, session_id: adapterRec.sessionId });
+          usage = ownUsageDelta(usage, prior);
+        }
+        // B-1149: a Codex row's equivalent cost from its own usage × the dated CODEX_PRICING rates
+        // ('derived'); an unpriced model stays null/'unknown'. Claude's resolution is unchanged.
+        let cost: { total_cost_usd: number | null; cost_source: 'cli' | 'derived' | 'unknown' };
+        if (parsed) cost = resolveCost(parsed, model);
+        else {
+          const codexCost = adapterRec ? deriveCodexCostUsd(usage, model) : null;
+          cost = codexCost !== null ? { total_cost_usd: codexCost, cost_source: 'derived' } : { total_cost_usd: null, cost_source: 'unknown' };
+        }
+        // B-1149: the adapter's refusal verdict (Codex via its telemetry; Claude via its envelope).
+        const refusal: Refusal | null = adapterRec ? (adapterRec.refusal ?? null) : parseClaudeRefusal(captured);
+        const workerDuration = Number(opts.durationMs);
+        const durationMs = opts.durationMs !== undefined && Number.isFinite(workerDuration) && workerDuration >= 0 ? Math.round(workerDuration) : null;
 
         await recordLegCost(client, {
           conduction_id: conductionId,
@@ -270,8 +290,8 @@ export function registerLegCostCommands(program: Command): void {
           thinking_tokens: parsed?.thinking_tokens ?? null,
           total_cost_usd: cost.total_cost_usd,
           cost_source: cost.cost_source,
-          num_turns: parsed?.num_turns ?? null,
-          duration_ms: parsed?.duration_ms ?? null,
+          num_turns: parsed?.num_turns ?? adapterRec?.numTurns ?? null,
+          duration_ms: parsed?.duration_ms ?? durationMs,
           duration_api_ms: parsed?.duration_api_ms ?? null,
           session_id: parsed?.session_id ?? adapterRec?.sessionId ?? null,
           is_error: parsed?.is_error ?? adapterRec?.isError ?? false,
@@ -279,6 +299,8 @@ export function registerLegCostCommands(program: Command): void {
           runtime: facts.runtime,
           credential_kind: facts.credential_kind,
           cost_regime: facts.cost_regime,
+          refusal_kind: refusal?.kind ?? null,
+          refusal_resets_at: refusal?.resets_at ?? null,
         });
       },
     );

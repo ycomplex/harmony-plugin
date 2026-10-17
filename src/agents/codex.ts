@@ -20,6 +20,7 @@ import type { AgentAdapter, CredentialResolution, HeadlessInput, McpConnection, 
 import { PLUGIN_ROOT_PLACEHOLDER } from './contract.js';
 import { classProblems, forbiddenClasses, forbiddenTool, type CapabilityClass } from './capabilities.js';
 import { deriveCostRegime } from './credentials.js';
+import { absoluteResetTime, forcedRefusal, resetFromText, resetsInSeconds, type Refusal } from './refusal.js';
 
 // --- constants the scripts and tests share ------------------------------------------------------------
 
@@ -295,6 +296,9 @@ interface CodexEvent {
   type?: string;
   thread_id?: string;
   usage?: Record<string, unknown>;
+  message?: unknown;
+  error?: unknown;
+  item?: { type?: unknown } | null;
 }
 
 function events(stdout: string): CodexEvent[] {
@@ -395,6 +399,84 @@ export function codexTelemetryUsage(stdout: string): TelemetryUsage | null {
   const u = parseCodexUsage(stdout);
   if (!u) return null;
   return { inputTokens: u.inputTokens, cacheReadInputTokens: u.cachedInputTokens, outputTokens: u.outputTokens };
+}
+
+// --- B-1149: refusal verdict + turn count -----------------------------------------------------------
+
+/** Plan-quota exhaustion, as Codex reports it: the ChatGPT-plan "You've hit your usage limit …"
+ *  message (error code usage_limit_reached), and an API-side insufficient_quota. Checked BEFORE the
+ *  rate-limit pattern: an exhausted quota is often delivered as an HTTP 429 too, and it is the
+ *  longer outage. */
+const CODEX_QUOTA_RE = /usage[ _-]?limit|usage_limit_reached|insufficient_quota|hit your (?:usage )?limit|quota (?:exceeded|exhausted)|exceeded your (?:current )?quota|plan limit/i;
+/** A transient rate limit: HTTP 429 / "rate limit" / "Too Many Requests" (e.g. Codex's "exceeded retry
+ *  limit, last status: 429 Too Many Requests"). */
+const CODEX_RATE_LIMIT_RE = /\b429\b|rate[ _-]?limit|too many requests/i;
+
+function errorText(e: CodexEvent): string {
+  const parts: string[] = [];
+  const push = (v: unknown) => {
+    if (typeof v === 'string') parts.push(v);
+    else if (v && typeof v === 'object') parts.push(JSON.stringify(v));
+  };
+  push(e.message);
+  push(e.error);
+  return parts.join(' ');
+}
+
+function structuredReset(e: CodexEvent, text: string, now: Date): string | null {
+  const err = e.error && typeof e.error === 'object' ? (e.error as Record<string, unknown>) : {};
+  const fromField =
+    resetsInSeconds(err.resets_in_seconds, now) ??
+    absoluteResetTime(err.resets_at) ??
+    resetsInSeconds(err.retry_after, now);
+  if (fromField) return fromField;
+  // The same fields serialised inside a message string (an upstream API error body).
+  const inSec = /"?resets_in_seconds"?\s*[:=]\s*(\d+)/i.exec(text);
+  if (inSec) return resetsInSeconds(Number(inSec[1]), now);
+  const at = /"?resets_at"?\s*[:=]\s*"?([0-9T:.\-+Z]+)"?/i.exec(text);
+  if (at) {
+    const t = absoluteResetTime(/^\d+$/.test(at[1]) ? Number(at[1]) : at[1]);
+    if (t) return t;
+  }
+  const retryAfter = /retry[- _]after\s*[:=]?\s*(\d+)\s*(?:s\b|sec|seconds)?/i.exec(text);
+  if (retryAfter) return resetsInSeconds(Number(retryAfter[1]), now);
+  return resetFromText(text, now);
+}
+
+/** B-1149: the refusal verdict of a Codex `--json` capture. Reads ONLY the run-level failure events —
+ *  a top-level `error` event and `turn.failed` — never an `item.completed` item of type `error` (the
+ *  hook-trust flag adds two of those to every run, B-1150). The LAST matching event wins. Null when no
+ *  failure event names a quota or a rate limit. `HARMONY_TEST_FORCE_REFUSAL` overrides (test hook). */
+export function parseCodexRefusal(
+  stdout: string,
+  now: Date = new Date(),
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): Refusal | null {
+  const forced = forcedRefusal(env);
+  if (forced) return forced;
+  const failures = events(stdout).filter((e) => e.type === 'error' || e.type === 'turn.failed');
+  for (const e of failures.reverse()) {
+    const text = errorText(e);
+    if (text === '') continue;
+    const kind = CODEX_QUOTA_RE.test(text) ? 'quota' : CODEX_RATE_LIMIT_RE.test(text) ? 'rate-limit' : null;
+    if (kind) return { kind, resets_at: structuredReset(e, text, now) };
+  }
+  return null;
+}
+
+/** The item types that are a MODEL-INITIATED step: what the model said (agent_message) and every
+ *  tool/command call it made (command_execution, mcp_tool_call, file_change — the apply-patch tool —
+ *  and web_search). Reasoning, todo-list and `error` items are not counted. */
+export const CODEX_TURN_ITEM_TYPES: readonly string[] = ['agent_message', 'command_execution', 'mcp_tool_call', 'file_change', 'web_search'];
+
+/** B-1149: the Codex turn count — the number of `item.completed` events whose item is a
+ *  model-initiated step (CODEX_TURN_ITEM_TYPES). Codex has no num_turns field of its own; this is the
+ *  closest equivalent of Claude's (one per assistant message / tool round). Null when the capture holds
+ *  no events at all. */
+export function countCodexTurns(stdout: string): number | null {
+  const evs = events(stdout);
+  if (evs.length === 0) return null;
+  return evs.filter((e) => e.type === 'item.completed' && typeof e.item?.type === 'string' && CODEX_TURN_ITEM_TYPES.includes(e.item.type as string)).length;
 }
 
 const SAMPLE_OUTPUT = [
@@ -509,7 +591,9 @@ export const codexAdapter: AgentAdapter = {
     parse: (stdout, ctx) => {
       const evs = events(stdout);
       const terminal = [...evs].reverse().find((e) => e.type === 'turn.completed' || e.type === 'turn.failed');
-      if (!terminal) return null;
+      // B-1149: a refusal can arrive as a bare top-level `error` event with no terminal turn event.
+      const refusal = parseCodexRefusal(stdout);
+      if (!terminal && !refusal) return null;
       // isError keys on `turn.failed` ONLY: --dangerously-bypass-hook-trust adds two `error` items to
       // every stream (B-1150), which must not mark a completed turn as errored.
       return {
@@ -519,8 +603,10 @@ export const codexAdapter: AgentAdapter = {
         costRegime: deriveCostRegime(ctx.credential),
         costUsd: null,
         sessionId: parseCodexThreadId(stdout),
-        isError: terminal.type === 'turn.failed',
+        isError: terminal ? terminal.type === 'turn.failed' : true,
         usage: codexTelemetryUsage(stdout),
+        refusal,
+        numTurns: countCodexTurns(stdout),
       };
     },
     sampleOutput: SAMPLE_OUTPUT,
