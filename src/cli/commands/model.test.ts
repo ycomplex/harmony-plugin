@@ -419,3 +419,49 @@ describe('B-881 harmony model check-alias/context-budget/request-switch/list-ali
     expect(exitSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('B-1148 harmony model pinned-default / context-budget --agent', () => {
+  const codexPinned = {
+    alias: 'codex-gpt-pinned',
+    label: 'Codex pinned',
+    context_budget_bytes: 7000,
+    active: true,
+    verified_at: null,
+    agent: 'codex',
+    model_id: 'gpt-pinned',
+    pinned_default_profiles: ['prod', 'staging'],
+  };
+  const codexOther = { ...codexPinned, alias: 'codex-gpt-other', model_id: 'gpt-other', context_budget_bytes: 9000, pinned_default_profiles: [] };
+
+  it("pinned-default --agent codex prints the live catalog's pinned Codex model for this deployment's profile", async () => {
+    vi.stubEnv('HARMONY_SUPABASE_URL', 'https://meqkdgncdzromunylyxf.supabase.co');
+    stubCatalogWith({ data: [liveOnlyRow, codexOther, codexPinned], error: null });
+    await run(['model', 'pinned-default', '--agent', 'codex']);
+    expect(logSpy).toHaveBeenCalledWith('gpt-pinned');
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('pinned-default --agent codex prints an empty line (exit 0) when nothing is pinned for the profile', async () => {
+    stubCatalogWith({ data: [liveOnlyRow, codexOther], error: null });
+    await run(['model', 'pinned-default', '--agent', 'codex']);
+    expect(logSpy).toHaveBeenCalledWith('');
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('pinned-default degrades (never throws) when the catalog is unreachable', async () => {
+    authMock.getAuthenticatedContext.mockRejectedValue(new Error('No active project.'));
+    await run(['model', 'pinned-default', '--agent', 'codex']);
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it("context-budget --agent codex weighs against the Codex row's model id, never a Claude row", async () => {
+    stubCatalogWith({ data: [liveOnlyRow, codexOther, codexPinned], error: null });
+    await run(['model', 'context-budget', '--agent', 'codex', 'gpt-other']);
+    expect(logSpy).toHaveBeenCalledWith('9000');
+    logSpy.mockClear();
+    // a Claude alias asked for as Codex does not match the Claude row
+    await run(['model', 'context-budget', '--agent', 'codex', 'live-only-alias']);
+    expect(logSpy).not.toHaveBeenCalledWith('4242');
+  });
+});

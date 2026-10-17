@@ -101,7 +101,61 @@ if [ -n "${HARMONY_TRANSCRIPT_MOUNT_ROOT:-}" ]; then
     fi
   fi
 
-  if [ "$SESSION_RESUME_ENABLED" = "true" ]; then
+  # B-1148: a Codex run links the conduction's codex-sessions folder onto ~/.codex/sessions (the
+  # local-docker and docker-host profiles bind-mount the same per-conduction folder), and its
+  # cross-conduction discovery reads ONLY the Codex layout: the sibling's thread file (which must
+  # name agent "codex") and its rollout are copied into THIS conduction's folder, and the id is
+  # exported as HARMONY_CODEX_RESUME_THREAD — never through CLAUDE_HEADLESS_FLAGS. The Claude
+  # discovery below runs only for a non-Codex run, so neither runtime ever adopts the other's id.
+  ENTRY_AGENT_ADAPTER="claude-code"
+  if [ -n "$RUN_CONFIG_JSON" ]; then
+    ENTRY_AGENT_ADAPTER="$(printf '%s' "$RUN_CONFIG_JSON" | jq -r '.agent.adapter // "claude-code"' 2>/dev/null || echo claude-code)"
+  fi
+  if [ "$ENTRY_AGENT_ADAPTER" = "codex" ]; then
+    mkdir -p "$TRANSCRIPT_SUBTREE/codex-sessions" "$HOME/.codex"
+    rm -rf "$HOME/.codex/sessions"
+    ln -s "$TRANSCRIPT_SUBTREE/codex-sessions" "$HOME/.codex/sessions"
+    CODEX_THREAD_NAME=".harmony-codex-thread.json"
+    if [ "$SESSION_RESUME_ENABLED" = "true" ] && [ ! -f "$TRANSCRIPT_SUBTREE/codex-sessions/$CODEX_THREAD_NAME" ] \
+      && [ -d "$HARMONY_TRANSCRIPT_MOUNT_ROOT/$TICKET" ]; then
+      SIBLING_CODEX_THREAD_FILE=""
+      SIBLING_CODEX_THREAD_ID=""
+      SIBLING_NEWEST_MTIME=0
+      for sibling_dir in "$HARMONY_TRANSCRIPT_MOUNT_ROOT/$TICKET"/*/; do
+        [ -d "$sibling_dir" ] || continue
+        [ "$(basename "$sibling_dir")" = "$CONDUCTION_ID" ] && continue
+        tf="${sibling_dir}codex-sessions/$CODEX_THREAD_NAME"
+        [ -f "$tf" ] || continue
+        tid="$(jq -r 'select(.agent == "codex") | .thread_id // empty' "$tf" 2>/dev/null || true)"
+        case "$tid" in '' | *[!A-Za-z0-9_-]* | -*) continue ;; esac
+        mtime="$(stat -c '%Y' "$tf" 2>/dev/null || echo 0)"
+        if [ "$mtime" -gt "$SIBLING_NEWEST_MTIME" ]; then
+          SIBLING_NEWEST_MTIME="$mtime"
+          SIBLING_CODEX_THREAD_FILE="$tf"
+          SIBLING_CODEX_THREAD_ID="$tid"
+        fi
+      done
+      if [ -n "$SIBLING_CODEX_THREAD_ID" ]; then
+        sibling_sessions="$(dirname "$SIBLING_CODEX_THREAD_FILE")"
+        b1148_copied=1
+        for rollout in "$sibling_sessions"/*/*/*/rollout-*-"$SIBLING_CODEX_THREAD_ID".jsonl; do
+          [ -f "$rollout" ] || continue
+          rel="${rollout#"$sibling_sessions"/}"
+          mkdir -p "$TRANSCRIPT_SUBTREE/codex-sessions/$(dirname "$rel")" \
+            && cp "$rollout" "$TRANSCRIPT_SUBTREE/codex-sessions/$rel" || b1148_copied=0
+        done
+        cp "$SIBLING_CODEX_THREAD_FILE" "$TRANSCRIPT_SUBTREE/codex-sessions/$CODEX_THREAD_NAME" || b1148_copied=0
+        if [ "$b1148_copied" = "1" ]; then
+          export HARMONY_CODEX_RESUME_THREAD="$SIBLING_CODEX_THREAD_ID"
+          echo "entrypoint: B-1148 copied sibling Codex thread $SIBLING_CODEX_THREAD_ID into this conduction's codex-sessions." >&2
+        else
+          echo "entrypoint: B-1148 failed to copy sibling Codex thread $SIBLING_CODEX_THREAD_ID — cold-starting instead." >&2
+        fi
+      fi
+    fi
+  fi
+
+  if [ "$SESSION_RESUME_ENABLED" = "true" ] && [ "$ENTRY_AGENT_ADAPTER" != "codex" ]; then
     CURRENT_HAS_SESSION=0
     for existing in "$TRANSCRIPT_SUBTREE"/projects/*/*.jsonl; do
       [ -f "$existing" ] && CURRENT_HAS_SESSION=1 && break

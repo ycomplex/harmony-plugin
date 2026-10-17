@@ -404,9 +404,11 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
 
    **Skipped entirely when the agent adapter declares no model switch (B-1076).** Ask first:
    `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" agent capability modelSwitch` prints `true` or `false`.
-   `false` (a Codex worker — `provision.sh` runs no switch loop and a Claude alias is not a Codex model) ⇒
-   proceed straight to step 2; make no `model ...` call. Anything else, or an unavailable command ⇒ continue
-   with the check below unchanged.
+   `false` (an adapter whose worker runs no switch loop) ⇒ proceed straight to step 2; make no `model ...`
+   call. Anything else, or an unavailable command ⇒ continue with the check below unchanged. A Codex worker
+   answers `true` since B-1148: `resolve-gate` already resolves for this run's adapter, but pass
+   `--agent codex` to `request-switch` and `list-aliases` below so the model is checked against the Codex
+   catalog rows (no `--agent` = claude-code, unchanged).
 
    ```
    RUNNING_MODEL="$(node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" model running-model)"

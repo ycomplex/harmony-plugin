@@ -26,7 +26,14 @@ import {
   resolveLaunchAdapter,
 } from '../../agents/launch-routing.js';
 import { CAPABILITIES, type AgentAdapter, type Capability } from '../../agents/contract.js';
-import { CODEX_AUTH_FILE_ENV } from '../../agents/codex.js';
+import {
+  CODEX_AUTH_FILE_ENV,
+  CODEX_THREAD_FILE_NAME,
+  buildCodexThreadRecord,
+  parseCodexThreadId,
+  parseCodexThreadRecord,
+} from '../../agents/codex.js';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { provisionCodex } from '../../agents/codex-provision.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -180,5 +187,78 @@ export function registerAgentCommands(program: Command): void {
         extraFlags: extra ?? [],
       });
       process.stdout.write(encodeNulArgv(argv));
+    });
+
+  // --- B-1148: the Codex thread file (resume + in-place model switch) ---------------------------------
+
+  agent
+    .command('thread-id')
+    .description(
+      'Print the Codex thread id parsed from a codex `--json` stdout capture (its thread.started event) ' +
+        'and exit 0; print nothing and exit 1 when the capture has none or is unreadable.',
+    )
+    .argument('<stdout-file>')
+    .action((file: string) => {
+      let text = '';
+      try {
+        text = readFileSync(file, 'utf8');
+      } catch {
+        process.exit(1);
+      }
+      const id = parseCodexThreadId(text);
+      if (!id) process.exit(1);
+      process.stdout.write(`${id}\n`);
+    });
+
+  agent
+    .command('write-thread')
+    .description(
+      `Parse the thread id from a codex stdout capture and write ${CODEX_THREAD_FILE_NAME} ({agent:"codex", ` +
+        'thread_id, model, time}) into --dir; prints the id. Exit 1, leaving any existing file untouched, ' +
+        'when the capture carries no thread id.',
+    )
+    .requiredOption('--dir <dir>', "The conduction's Codex sessions folder")
+    .requiredOption('--stdout-file <file>', 'The codex invocation\'s stdout capture')
+    .option('--model <model>', 'The model the invocation ran on')
+    .action((opts: { dir: string; stdoutFile: string; model?: string }) => {
+      let text = '';
+      try {
+        text = readFileSync(opts.stdoutFile, 'utf8');
+      } catch {
+        process.exit(1);
+      }
+      const id = parseCodexThreadId(text);
+      if (!id) process.exit(1);
+      try {
+        mkdirSync(opts.dir, { recursive: true });
+        const target = join(opts.dir, CODEX_THREAD_FILE_NAME);
+        const tmp = `${target}.tmp-${process.pid}`;
+        writeFileSync(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}\n`);
+        renameSync(tmp, target);
+      } catch (err) {
+        console.error(`harmony agent write-thread: WARNING — ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+      process.stdout.write(`${id}\n`);
+    });
+
+  agent
+    .command('read-thread')
+    .description(
+      `Print the thread id from a ${CODEX_THREAD_FILE_NAME} file and exit 0 — ONLY when the file names ` +
+        'agent "codex" and a well-formed id; otherwise print nothing and exit 1.',
+    )
+    .argument('<thread-file>')
+    .action((file: string) => {
+      if (!existsSync(file)) process.exit(1);
+      let text = '';
+      try {
+        text = readFileSync(file, 'utf8');
+      } catch {
+        process.exit(1);
+      }
+      const rec = parseCodexThreadRecord(text);
+      if (!rec) process.exit(1);
+      process.stdout.write(`${rec.thread_id}\n`);
     });
 }
