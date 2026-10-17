@@ -616,6 +616,7 @@ export async function runRecordedWalk(
   const taskId = await resolveTaskId(client, projectId, args.task_id);
   const gates: RecordWalkGateResult[] = [];
   let attestationRecorded = false;
+  let summaryCriterionFiled = false;
   const summary = trimmedOrEmpty(args.summary);
   const solving = deriveSolving(summary);
   const repos = Array.from(new Set(args.evidence.map((e) => e.repo).filter((r): r is string => !!r)));
@@ -711,25 +712,30 @@ export async function runRecordedWalk(
 
     // B-747 build-gate floor (B-1062 verify-round fix 2): the floor correctly refuses Planned->Built
     // on zero acceptance criteria — a recorded walk has no live clarify leg to file one, so nothing
-    // ever would without this. File exactly one AC here, at clarify, before the walk proceeds any
-    // further, so the floor never blocks this walk's own BUILD step below. The floor needs the AC to
+    // ever would without this. File exactly one AC here only when none exist, at clarify,
+    // before the walk proceeds further, so the floor never blocks this walk's own BUILD step below.
+    // The floor needs the AC to
     // EXIST, not to be checked (`task_criteria_floor_status` / `get_build_evidence_status.
     // has_acceptance_criteria` are presence-only — src/tools/evidence-status.ts CRITERIA_FLOOR_CONTRACT).
     // B-1073: the AC is filed TICKED, with the "verify walk attested by" suffix, ONLY for a walk that
     // runs past build AND was given an attestation. A walk bounded at or before build has verified
     // nothing yet, and an unattested one has no attestation to name — filing those ticked/suffixed
     // asserted something false. They file UNTICKED, with no suffix; the human ticks it at verify.
-    const evidenceSummary = args.evidence.map((e) => e.url).join(', ') || '(none)';
-    const attestedAc = attestationSupplied && !boundedAtOrBeforeBuild;
-    await manageAcceptanceCriteria(client, projectId, userId, {
-      task_id: taskId,
-      add: [{
-        content: attestedAc
-          ? `${summary} — recorded from ${evidenceSummary}; verify walk attested by ${userId}`
-          : `${summary} — recorded from ${evidenceSummary}`,
-        checked: attestedAc,
-      }],
-    });
+    const existingCriteria = await listAcceptanceCriteria(client, projectId, { task_id: taskId });
+    if (existingCriteria.length === 0) {
+      const evidenceSummary = args.evidence.map((e) => e.url).join(', ') || '(none)';
+      const attestedAc = attestationSupplied && !boundedAtOrBeforeBuild;
+      await manageAcceptanceCriteria(client, projectId, userId, {
+        task_id: taskId,
+        add: [{
+          content: attestedAc
+            ? `${summary} — recorded from ${evidenceSummary}; verify walk attested by ${userId}`
+            : `${summary} — recorded from ${evidenceSummary}`,
+          checked: attestedAc,
+        }],
+      });
+      summaryCriterionFiled = true;
+    }
 
     }
 
@@ -812,7 +818,9 @@ export async function runRecordedWalk(
         steps: [summary],
         attestation: { base_verified: 'recorded walk — no live base-verify run; ratified from supplied evidence' },
         carried_unproven: [],
-        ac_coverage: 'Recorded from the supplied summary and evidence; one acceptance criterion was filed at clarify to satisfy the build gate\'s B-747 floor.',
+        ac_coverage: summaryCriterionFiled
+          ? 'Recorded from the supplied summary and evidence; one acceptance criterion was filed at clarify to satisfy the build gate\'s B-747 floor.'
+          : 'Recorded from the supplied summary and evidence; this walk did not file a summary acceptance criterion.',
       },
       decisionRef: { type: 'specification', id: planDecision.id },
       payload: [{

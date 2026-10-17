@@ -53157,6 +53157,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
   const taskId = await resolveTaskId(client, projectId, args.task_id);
   const gates = [];
   let attestationRecorded = false;
+  let summaryCriterionFiled = false;
   const summary = trimmedOrEmpty(args.summary);
   const solving = deriveSolving(summary);
   const repos = Array.from(new Set(args.evidence.map((e) => e.repo).filter((r) => !!r)));
@@ -53219,15 +53220,19 @@ async function runRecordedWalk(client, projectId, userId, args) {
         await addComment(client, projectId, userId, { task_id: taskId, content: renderAttestationComment(args, userId) });
         attestationRecorded = true;
       }
-      const evidenceSummary = args.evidence.map((e) => e.url).join(", ") || "(none)";
-      const attestedAc = attestationSupplied && !boundedAtOrBeforeBuild;
-      await manageAcceptanceCriteria(client, projectId, userId, {
-        task_id: taskId,
-        add: [{
-          content: attestedAc ? `${summary} \u2014 recorded from ${evidenceSummary}; verify walk attested by ${userId}` : `${summary} \u2014 recorded from ${evidenceSummary}`,
-          checked: attestedAc
-        }]
-      });
+      const existingCriteria = await listAcceptanceCriteria(client, projectId, { task_id: taskId });
+      if (existingCriteria.length === 0) {
+        const evidenceSummary = args.evidence.map((e) => e.url).join(", ") || "(none)";
+        const attestedAc = attestationSupplied && !boundedAtOrBeforeBuild;
+        await manageAcceptanceCriteria(client, projectId, userId, {
+          task_id: taskId,
+          add: [{
+            content: attestedAc ? `${summary} \u2014 recorded from ${evidenceSummary}; verify walk attested by ${userId}` : `${summary} \u2014 recorded from ${evidenceSummary}`,
+            checked: attestedAc
+          }]
+        });
+        summaryCriterionFiled = true;
+      }
     }
     if (runs("decompose")) {
       await coupleDecomposeNoSplitConvention(client, projectId, userId, taskId);
@@ -53297,7 +53302,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
           steps: [summary],
           attestation: { base_verified: "recorded walk \u2014 no live base-verify run; ratified from supplied evidence" },
           carried_unproven: [],
-          ac_coverage: "Recorded from the supplied summary and evidence; one acceptance criterion was filed at clarify to satisfy the build gate's B-747 floor."
+          ac_coverage: summaryCriterionFiled ? "Recorded from the supplied summary and evidence; one acceptance criterion was filed at clarify to satisfy the build gate's B-747 floor." : "Recorded from the supplied summary and evidence; this walk did not file a summary acceptance criterion."
         },
         decisionRef: { type: "specification", id: planDecision.id },
         payload: [{

@@ -255,7 +255,7 @@ describe('runRecordedWalk — advances to Deployed and composes (never accepts) 
   });
 
   it('reads the ticket\'s CURRENT acceptance criteria (via list_acceptance_criteria) onto the verify frame\'s criteria ledger', async () => {
-    listAcceptanceCriteria.mockResolvedValueOnce([
+    listAcceptanceCriteria.mockResolvedValue([
       { id: 'ac-1', content: 'the recorded AC', checked: true, position: 0, created_by: USER_ID, created_at: '2026-01-01T00:00:00Z' },
       { id: 'ac-2', content: 'a second AC', checked: false, position: 1, created_by: USER_ID, created_at: '2026-01-01T00:00:00Z' },
     ] as any);
@@ -276,7 +276,7 @@ describe('runRecordedWalk — advances to Deployed and composes (never accepts) 
     // the mock for the REAL renderBrief/lintBrief so this is a genuine check against the shipped lint,
     // not a hand-rolled reimplementation of it that could drift from the real rules.
     const real = await vi.importActual<typeof import('./briefs.js')>('./briefs.js');
-    listAcceptanceCriteria.mockResolvedValueOnce([
+    listAcceptanceCriteria.mockResolvedValue([
       { id: 'ac-1', content: 'the recorded AC', checked: true, position: 0, created_by: USER_ID, created_at: '2026-01-01T00:00:00Z' },
       { id: 'ac-2', content: 'a second AC', checked: false, position: 1, created_by: USER_ID, created_at: '2026-01-01T00:00:00Z' },
     ] as any);
@@ -347,6 +347,7 @@ describe('runRecordedWalk — Captured ticket auto-advances proposing before cla
 });
 
 describe('runRecordedWalk — files a build-gate-satisfying acceptance criterion at clarify (B-1062 fix 2)', () => {
+  beforeEach(() => { listAcceptanceCriteria.mockResolvedValueOnce([]); });
   it('files exactly one CHECKED acceptance criterion, before decompose, naming the recorded origin', async () => {
     const client = makeClient('Proposed');
     const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, eligibleArgs());
@@ -815,6 +816,7 @@ const noAttestArgs = () => {
 const verifyCompose = () => composeBrief.mock.calls.find((c: any) => c[3].reason === 'verification-ack-pending')![3].doc;
 
 describe('runRecordedWalk — the clarify-time AC is filed truthfully (B-1073 daemon-files-recording round, B1)', () => {
+  beforeEach(() => { listAcceptanceCriteria.mockResolvedValueOnce([]); });
   const acCall = () => (manageAcceptanceCriteria.mock.calls[0] as any)[3].add[0];
 
   it('a FULL walk WITH an attestation files the AC TICKED with the "verify walk attested by" suffix (unchanged)', async () => {
@@ -974,5 +976,51 @@ describe('runRecordedWalk — build_pr backfill for walks bounded at or before b
     mockGh(ghData);
     await runRecordedWalk(makeRichClient(), PROJECT_ID, USER_ID, { ...eligibleArgs(), evidence: [{ url: PR, repo: 'ycomplex/harmony-web' }] });
     expect(updateTask).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('runRecordedWalk — preserves authored criteria (B-1120)', () => {
+  const planCoverage = () => composeBrief.mock.calls.find((c: any) => c[3].reason === 'plan-draft')![3].doc.frame.ac_coverage;
+
+  it.each([true, false])('preserves an existing criterion with checked=%s without adding a summary', async (checked) => {
+    const criteria = [{ id: 'authored', content: 'Founder criterion', checked, position: 0 }];
+    listAcceptanceCriteria.mockResolvedValue(criteria as any);
+    const result = await runRecordedWalk(makeClient(), PROJECT_ID, USER_ID, eligibleArgs());
+    expect(result.error).toBeUndefined();
+    expect(manageAcceptanceCriteria).not.toHaveBeenCalled();
+    expect(criteria).toEqual([{ id: 'authored', content: 'Founder criterion', checked, position: 0 }]);
+    expect(planCoverage()).toContain('did not file');
+  });
+
+  it('preserves multiple existing criteria with mixed checked states', async () => {
+    listAcceptanceCriteria.mockResolvedValue([
+      { id: 'one', content: 'First', checked: true, position: 0 },
+      { id: 'two', content: 'Second', checked: false, position: 1 },
+    ] as any);
+    await runRecordedWalk(makeClient(), PROJECT_ID, USER_ID, eligibleArgs());
+    expect(manageAcceptanceCriteria).not.toHaveBeenCalled();
+    expect(planCoverage()).toContain('did not file');
+  });
+
+  it('creates an unchecked fallback for an unattested walk bounded at build', async () => {
+    listAcceptanceCriteria.mockResolvedValueOnce([]);
+    await runRecordedWalk(makeClient(), PROJECT_ID, USER_ID, { ...noAttestArgs(), to_gate: 'build' });
+    expect(manageAcceptanceCriteria).toHaveBeenCalledTimes(1);
+    expect(manageAcceptanceCriteria.mock.calls[0][3].add[0]).toMatchObject({ checked: false });
+    expect(manageAcceptanceCriteria.mock.calls[0][3].add[0].content).not.toContain('attested by');
+  });
+
+  it('reports successful fallback creation when the set is empty', async () => {
+    listAcceptanceCriteria.mockResolvedValueOnce([]);
+    await runRecordedWalk(makeClient(), PROJECT_ID, USER_ID, eligibleArgs());
+    expect(manageAcceptanceCriteria).toHaveBeenCalledTimes(1);
+    expect(planCoverage()).toContain('one acceptance criterion was filed');
+  });
+
+  it('does not claim creation when resuming after clarify', async () => {
+    await runRecordedWalk(makeClient('Decomposed'), PROJECT_ID, USER_ID, { ...eligibleArgs(), from_gate: 'design' });
+    expect(manageAcceptanceCriteria).not.toHaveBeenCalled();
+    expect(planCoverage()).toContain('did not file');
   });
 });
