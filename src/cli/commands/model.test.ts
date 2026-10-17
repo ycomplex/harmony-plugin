@@ -117,7 +117,7 @@ describe('harmony model resolve-gate <workflow-state>', () => {
     vi.stubEnv('HARMONY_RUN_CONFIG_JSON', '');
     vi.stubEnv('HARMONY_SUPABASE_URL', '');
     await run(['model', 'resolve-gate', 'Planned']);
-    expect(logSpy).toHaveBeenCalledWith(PINNED_DEFAULT_MODEL_BY_PROFILE.prod);
+    expect(logSpy).toHaveBeenCalledWith(PINNED_DEFAULT_MODEL_BY_PROFILE['claude-code'].prod!);
   });
 
   it('honors an explicit per-gate override from HARMONY_RUN_CONFIG_JSON', async () => {
@@ -135,14 +135,14 @@ describe('harmony model resolve-gate <workflow-state>', () => {
     vi.stubEnv('HARMONY_RUN_CONFIG_PATH', '');
     vi.stubEnv('HARMONY_RUN_CONFIG_JSON', '');
     await run(['model', 'resolve-gate', 'Decomposed', '--activity', 'designing-ux-ui']);
-    expect(logSpy).toHaveBeenCalledWith(PINNED_DEFAULT_MODEL_BY_PROFILE.prod);
+    expect(logSpy).toHaveBeenCalledWith(PINNED_DEFAULT_MODEL_BY_PROFILE['claude-code'].prod!);
   });
 
   it('degrades to the empty run_config (never throws/crashes) on malformed HARMONY_RUN_CONFIG_JSON', async () => {
     vi.stubEnv('HARMONY_RUN_CONFIG_PATH', '');
     vi.stubEnv('HARMONY_RUN_CONFIG_JSON', Buffer.from('not valid json').toString('base64'));
     await run(['model', 'resolve-gate', 'Planned']);
-    expect(logSpy).toHaveBeenCalledWith(PINNED_DEFAULT_MODEL_BY_PROFILE.prod);
+    expect(logSpy).toHaveBeenCalledWith(PINNED_DEFAULT_MODEL_BY_PROFILE['claude-code'].prod!);
     expect(errSpy).toHaveBeenCalled();
   });
 });

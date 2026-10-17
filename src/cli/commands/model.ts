@@ -25,6 +25,10 @@ import {
   getConductionId,
   getModelContextBudgetBytes,
   getRunConfig,
+  catalogEntriesForAgent,
+  DEFAULT_AGENT_ADAPTER,
+  entryModelId,
+  getAgentAdapter,
   getModelForGate,
   isAllowedModelAlias,
   readModelHandoffRequest,
@@ -105,9 +109,10 @@ export function registerModelCommands(program: Command): void {
         'embedded degrade-only list when the catalog is unreachable); print "false" and exit 1 otherwise.',
     )
     .argument('<alias>')
-    .action(async (alias: string) => {
+    .option('--agent <id>', 'Agent runtime whose catalog rows to match (B-1147)', DEFAULT_AGENT_ADAPTER)
+    .action(async (alias: string, opts: { agent?: string }) => {
       const client = await getCatalogClient();
-      const ok = await isAllowedModelAlias(alias, client);
+      const ok = await isAllowedModelAlias(alias, client, opts.agent ?? DEFAULT_AGENT_ADAPTER);
       console.log(ok ? 'true' : 'false');
       process.exit(ok ? 0 : 1);
     });
@@ -133,10 +138,13 @@ export function registerModelCommands(program: Command): void {
         "skills/harmony-conduct/SKILL.md step 1d's park-on-refusal comment (B-881), so a human " +
         'reviewing the park sees exactly which aliases were selectable at the time.',
     )
-    .action(async () => {
+    .option('--agent <id>', 'Agent runtime whose model ids to list (B-1147)', DEFAULT_AGENT_ADAPTER)
+    .action(async (opts: { agent?: string }) => {
       const client = await getCatalogClient();
       const { entries } = await resolveModelCatalog(client);
-      for (const entry of entries) console.log(entry.alias);
+      for (const entry of catalogEntriesForAgent(entries, opts.agent ?? DEFAULT_AGENT_ADAPTER)) {
+        console.log(entryModelId(entry));
+      }
     });
 
   model
@@ -168,10 +176,25 @@ export function registerModelCommands(program: Command): void {
     )
     .argument('<workflow-state>')
     .option('--activity <workflow-activity>', 'The ticket\'s workflow_activity, if known')
-    .action(async (workflowState: string, opts: { activity?: string }) => {
-      const runConfig = await resolveGateRunConfig();
+    .option(
+      '--agent <id>',
+      "Agent runtime to resolve for (B-1147); defaults to the run_config's own agent.adapter, else claude-code",
+    )
+    .action(async (workflowState: string, opts: { activity?: string; agent?: string }) => {
+      let runConfig = await resolveGateRunConfig();
+      if (opts.agent) runConfig = { ...runConfig, agent: { adapter: opts.agent } };
       const gate = resolveGatePhase(workflowState, opts.activity ?? null);
-      console.log(getModelForGate(runConfig, gate));
+      const selection = getAgentAdapter(runConfig);
+      const adapter = selection.ok ? selection.adapter : DEFAULT_AGENT_ADAPTER;
+      // B-1147: Claude resolution stays catalog-free (byte-for-byte B-772); another runtime's
+      // pinned tier is read from the live catalog's pinned_default_profiles.
+      if (adapter === DEFAULT_AGENT_ADAPTER) {
+        console.log(getModelForGate(runConfig, gate));
+        return;
+      }
+      const client = await getCatalogClient();
+      const { entries } = await resolveModelCatalog(client);
+      console.log(getModelForGate(runConfig, gate, process.env, entries));
     });
 
   model
@@ -183,14 +206,19 @@ export function registerModelCommands(program: Command): void {
         'when the catalog itself is unreachable).',
     )
     .argument('<alias>')
-    .action(async (alias: string) => {
+    .option('--agent <id>', 'Agent runtime the alias must belong to (B-1147)', DEFAULT_AGENT_ADAPTER)
+    .action(async (alias: string, opts: { agent?: string }) => {
+      const agent = opts.agent ?? DEFAULT_AGENT_ADAPTER;
       const client = await getCatalogClient();
-      const ok = await isAllowedModelAlias(alias, client);
+      const ok = await isAllowedModelAlias(alias, client, agent);
       if (!ok) {
         const { entries } = await resolveModelCatalog(client);
         console.error(
-          `harmony model request-switch: '${alias}' is not in the live model catalog (${entries
-            .map((entry) => entry.alias)
+          `harmony model request-switch: '${alias}' is not in the live model catalog for runtime '${agent}' (${catalogEntriesForAgent(
+            entries,
+            agent,
+          )
+            .map((entry) => entryModelId(entry))
             .join(', ')})`,
         );
         process.exit(1);

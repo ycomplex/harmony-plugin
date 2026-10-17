@@ -329,10 +329,45 @@ export async function resolveRunConfigFromConduction(
  *  rather than imported. Placeholder alias values — update when this deployment settles on real
  *  per-environment picks; the identity that matters for THIS ticket is "always something explicit
  *  here, never silence". */
-export const PINNED_DEFAULT_MODEL_BY_PROFILE: Record<string, string> = {
-  prod: 'claude-sonnet-5-5',
-  staging: 'claude-sonnet-5-5',
+export const PINNED_DEFAULT_MODEL_BY_PROFILE: Record<string, Record<string, string | null>> = {
+  'claude-code': {
+    prod: 'claude-sonnet-5-5',
+    staging: 'claude-sonnet-5-5',
+  },
+  // B-1147: no hand-pinned Codex model — the live catalog's pinned_default_profiles row is the
+  // source; with none, the leg falls back to HARMONY_CODEX_MODEL, then the Codex CLI's own default.
+  codex: {
+    prod: null,
+    staging: null,
+  },
 };
+
+/** B-1147: the pinned default model for `adapter` on `profile` — the active catalog row of that
+ *  agent whose `pinned_default_profiles` contains the profile (when a catalog is given), else the
+ *  per-adapter constant above. Claude never returns null (falls back to its prod pin, B-772);
+ *  another runtime returns null when nothing is pinned. */
+export function getPinnedDefaultModel(
+  adapter: string,
+  profile: string,
+  catalog?: readonly ModelCatalogEntry[] | null,
+): string | null {
+  if (catalog) {
+    const pinnedRow = catalog.find(
+      (entry) =>
+        entryAgent(entry) === adapter &&
+        entry.active !== false &&
+        Array.isArray(entry.pinned_default_profiles) &&
+        entry.pinned_default_profiles.includes(profile),
+    );
+    if (pinnedRow) return entryModelId(pinnedRow);
+  }
+  const byProfile = PINNED_DEFAULT_MODEL_BY_PROFILE[adapter];
+  if (adapter === DEFAULT_AGENT_ADAPTER) {
+    const claude = PINNED_DEFAULT_MODEL_BY_PROFILE[DEFAULT_AGENT_ADAPTER];
+    return claude[profile] ?? (claude.prod as string);
+  }
+  return byProfile?.[profile] ?? null;
+}
 
 // B-772: duplicated from src/tools/environment.ts's DEFAULT_SUPABASE_URL/KNOWN_REFS, deliberately
 // NOT imported — environment.ts already imports getRunConfig/getOperatorNote FROM this file (its
@@ -381,14 +416,25 @@ export function getModelForGate(
   runConfig: RunConfig,
   gate: Gate | null,
   env: NodeJS.ProcessEnv = process.env,
+  catalog?: readonly ModelCatalogEntry[] | null,
 ): string {
   const perGate = gate ? runConfig.model?.per_gate?.[gate] : undefined;
   if (perGate) return perGate;
 
   if (runConfig.model?.default) return runConfig.model.default;
 
+  // B-1147: the pinned tier is per-adapter. A malformed `agent` reads as claude-code HERE (the
+  // launch path refuses it separately — getAgentAdapter's own callers); for a non-Claude runtime
+  // with nothing pinned this returns '' — "no model resolved", which the mint script omits
+  // (composeModelLine) and provision.sh reads as "use HARMONY_CODEX_MODEL, else the CLI default".
+  const selection = getAgentAdapter(runConfig);
+  const adapter = selection.ok ? selection.adapter : DEFAULT_AGENT_ADAPTER;
   const profile = resolveDeploymentProfile(env);
-  return PINNED_DEFAULT_MODEL_BY_PROFILE[profile] ?? PINNED_DEFAULT_MODEL_BY_PROFILE.prod;
+  if (adapter === DEFAULT_AGENT_ADAPTER && !catalog) {
+    const claude = PINNED_DEFAULT_MODEL_BY_PROFILE[DEFAULT_AGENT_ADAPTER];
+    return (claude[profile] ?? claude.prod) as string;
+  }
+  return getPinnedDefaultModel(adapter, profile, catalog) ?? '';
 }
 
 // =================================================================================================
@@ -426,6 +472,47 @@ export interface ModelCatalogEntry {
   context_budget_bytes: number;
   active: boolean;
   verified_at: string | null;
+  /** B-1147: which agent runtime (src/agents/registry.ts id) this row's model runs on. Absent on
+   *  the pre-B-1147 table shape — read as 'claude-code' (see entryAgent). */
+  agent?: string;
+  /** B-1147: the runtime-native model id (what is passed to the runtime's CLI). Absent on the old
+   *  shape — read as `alias` (see entryModelId). */
+  model_id?: string;
+  /** B-1147: the provider model this id maps to, when it differs; null = same as model_id. */
+  underlying_model?: string | null;
+  /** B-1147: free-form capability flags. */
+  capabilities?: Record<string, unknown>;
+  /** Which deployment profiles ('prod' / 'staging') pin this row as their default, when the
+   *  column exists. */
+  pinned_default_profiles?: string[] | null;
+}
+
+/** B-1147: a catalog row's agent — 'claude-code' for any row predating the agent column. */
+export function entryAgent(entry: ModelCatalogEntry): string {
+  return entry.agent || DEFAULT_AGENT_ADAPTER;
+}
+
+/** B-1147: a catalog row's runtime-native model id — the alias for any row predating model_id. */
+export function entryModelId(entry: ModelCatalogEntry): string {
+  return entry.model_id || entry.alias;
+}
+
+/** B-1147: the catalog rows that run on `agent`. */
+export function catalogEntriesForAgent(
+  entries: readonly ModelCatalogEntry[],
+  agent: string = DEFAULT_AGENT_ADAPTER,
+): ModelCatalogEntry[] {
+  return entries.filter((entry) => entryAgent(entry) === agent);
+}
+
+/** B-1147: is `error` Postgres "undefined column" (42703) or PostgREST's schema-cache miss for a
+ *  column (PGRST204) — i.e. the web migration adding the runtime columns has not landed here yet. */
+export function isMissingCatalogColumnError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const e = error as { code?: unknown; message?: unknown };
+  if (e.code === '42703' || e.code === 'PGRST204') return true;
+  const msg = typeof e.message === 'string' ? e.message : '';
+  return /column .* does not exist/i.test(msg) || /could not find the .* column/i.test(msg);
 }
 
 /** B-881: the embedded, DEGRADE-ONLY safety net — consulted ONLY when `model_catalog` is
@@ -450,6 +537,8 @@ export const MODEL_CATALOG_FALLBACK: readonly ModelCatalogEntry[] = [
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
     verified_at: null,
+    agent: 'claude-code',
+    model_id: 'claude-sonnet-5-5',
   },
   {
     alias: 'claude-sonnet-5',
@@ -457,6 +546,8 @@ export const MODEL_CATALOG_FALLBACK: readonly ModelCatalogEntry[] = [
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
     verified_at: null,
+    agent: 'claude-code',
+    model_id: 'claude-sonnet-5',
   },
   {
     alias: 'claude-opus-5-5',
@@ -464,6 +555,8 @@ export const MODEL_CATALOG_FALLBACK: readonly ModelCatalogEntry[] = [
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
     verified_at: null,
+    agent: 'claude-code',
+    model_id: 'claude-opus-5-5',
   },
   {
     alias: 'claude-opus-5',
@@ -471,6 +564,8 @@ export const MODEL_CATALOG_FALLBACK: readonly ModelCatalogEntry[] = [
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
     verified_at: null,
+    agent: 'claude-code',
+    model_id: 'claude-opus-5',
   },
   {
     alias: 'claude-haiku-5-5',
@@ -478,6 +573,8 @@ export const MODEL_CATALOG_FALLBACK: readonly ModelCatalogEntry[] = [
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
     verified_at: null,
+    agent: 'claude-code',
+    model_id: 'claude-haiku-5-5',
   },
   {
     alias: 'claude-fable-5-1',
@@ -485,6 +582,8 @@ export const MODEL_CATALOG_FALLBACK: readonly ModelCatalogEntry[] = [
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
     verified_at: null,
+    agent: 'claude-code',
+    model_id: 'claude-fable-5-1',
   },
 ];
 
@@ -495,7 +594,7 @@ export const MODEL_CATALOG_FALLBACK: readonly ModelCatalogEntry[] = [
 // CATALOG IS UNREACHABLE (the only window the fallback is ever consulted at all — see this ticket's
 // module header). This is the B-772 round-2 invariant, re-homed against the fallback list now that
 // there is no synchronous, always-available MODEL_ALIAS_ALLOWLIST to check it against.
-for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
+for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE[DEFAULT_AGENT_ADAPTER])) {
   if (!MODEL_CATALOG_FALLBACK.some((entry) => entry.alias === pinned)) {
     throw new Error(
       `B-881 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_CATALOG_FALLBACK`,
@@ -528,10 +627,29 @@ export async function fetchModelCatalog(
 ): Promise<ModelCatalogEntry[] | null> {
   if (!client) return null;
   try {
-    const { data, error } = await client
+    // B-1147: select the runtime columns first; on an undefined-column error (the web migration
+    // has not landed on this project yet — prod until promote) re-select the pre-B-1147 shape and
+    // label every row claude-code with model_id = alias.
+    type CatalogRead = { data: unknown; error: { code?: string; message?: string } | null };
+    let { data, error }: CatalogRead = await client
       .from('model_catalog')
-      .select('alias, label, context_budget_bytes, active, verified_at')
+      .select(
+        'alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities, pinned_default_profiles',
+      )
       .eq('active', true);
+    if (error && isMissingCatalogColumnError(error)) {
+      // pinned_default_profiles may predate the runtime columns or not exist at all — try without it.
+      ({ data, error } = (await client
+        .from('model_catalog')
+        .select('alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities')
+        .eq('active', true)) as CatalogRead);
+    }
+    if (error && isMissingCatalogColumnError(error)) {
+      ({ data, error } = (await client
+        .from('model_catalog')
+        .select('alias, label, context_budget_bytes, active, verified_at')
+        .eq('active', true)) as CatalogRead);
+    }
     if (error) {
       console.error(
         `harmony model_catalog: WARNING — the live catalog was unreachable (${error.message ?? String(error)}); ` +
@@ -542,7 +660,11 @@ export async function fetchModelCatalog(
       return null;
     }
     if (!data) return null;
-    return data as unknown as ModelCatalogEntry[];
+    return (data as unknown as ModelCatalogEntry[]).map((row) => ({
+      ...row,
+      agent: entryAgent(row),
+      model_id: entryModelId(row),
+    }));
   } catch (err: unknown) {
     console.error(
       `harmony model_catalog: WARNING — reading the live catalog threw (${(err as Error)?.message ?? String(err)}); ` +
@@ -583,9 +705,12 @@ export async function resolveModelCatalog(
 export async function isAllowedModelAlias(
   alias: string,
   client?: SupabaseClient | null,
+  agent: string = DEFAULT_AGENT_ADAPTER,
 ): Promise<boolean> {
   const { entries } = await resolveModelCatalog(client);
-  return entries.some((entry) => entry.alias === alias);
+  // B-1147: runtime-filtered — match on model_id within `agent`. For claude-code rows model_id ==
+  // alias, so Claude behavior is unchanged.
+  return catalogEntriesForAgent(entries, agent).some((entry) => entryModelId(entry) === alias);
 }
 
 /** B-881: per-model resumable-session-SIZE budget, in BYTES — the narrowed session-resume guard's

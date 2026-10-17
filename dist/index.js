@@ -3234,8 +3234,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path2) {
-      let input = path2;
+    function removeDotSegments(path3) {
+      let input = path3;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3434,8 +3434,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path2, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path2 && path2 !== "/" ? path2 : void 0;
+        const [path3, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path3 && path3 !== "/" ? path3 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -7239,13 +7239,13 @@ function __disposeResources(env) {
   }
   return next();
 }
-function __rewriteRelativeImportExtension(path2, preserveJsx) {
-  if (typeof path2 === "string" && /^\.\.?\//.test(path2)) {
-    return path2.replace(/\.(tsx)$|((?:\.d)?)((?:\.[^./]+?)?)\.([cm]?)ts$/i, function(m, tsx, d, ext, cm) {
+function __rewriteRelativeImportExtension(path3, preserveJsx) {
+  if (typeof path3 === "string" && /^\.\.?\//.test(path3)) {
+    return path3.replace(/\.(tsx)$|((?:\.d)?)((?:\.[^./]+?)?)\.([cm]?)ts$/i, function(m, tsx, d, ext, cm) {
       return tsx ? preserveJsx ? ".jsx" : ".js" : d && (!ext || !cm) ? m : d + ext + "." + cm.toLowerCase() + "js";
     });
   }
-  return path2;
+  return path3;
 }
 var extendStatics, __assign, __createBinding, __setModuleDefault, ownKeys, _SuppressedError, tslib_es6_default;
 var init_tslib_es6 = __esm({
@@ -8908,7 +8908,7 @@ var require_phoenix_cjs = __commonJS({
        * @param {PresenceOptions} [opts] - The options, for example `{events: {state: "state", diff: "diff"}}`
        */
       constructor(channel, opts = {}) {
-        let events = opts.events || /** @type {PresenceEvents} */
+        let events2 = opts.events || /** @type {PresenceEvents} */
         { state: "presence_state", diff: "presence_diff" };
         this.state = {};
         this.pendingDiffs = [];
@@ -8922,7 +8922,7 @@ var require_phoenix_cjs = __commonJS({
           onSync: function() {
           }
         };
-        this.channel.on(events.state, (newState) => {
+        this.channel.on(events2.state, (newState) => {
           let { onJoin, onLeave, onSync } = this.caller;
           this.joinRef = this.channel.joinRef();
           this.state = _Presence.syncState(this.state, newState, onJoin, onLeave);
@@ -8932,7 +8932,7 @@ var require_phoenix_cjs = __commonJS({
           this.pendingDiffs = [];
           onSync();
         });
-        this.channel.on(events.diff, (diff) => {
+        this.channel.on(events2.diff, (diff) => {
           let { onJoin, onLeave, onSync } = this.caller;
           if (this.inPendingSyncState()) {
             this.pendingDiffs.push(diff);
@@ -10753,8 +10753,8 @@ var require_RealtimeChannel = __commonJS({
       /** @internal */
       _notThisChannelEvent(event, ref) {
         const { close, error: error2, leave, join: join4 } = constants_1.CHANNEL_EVENTS;
-        const events = [close, error2, leave, join4];
-        return ref && events.includes(event) && ref !== this.joinPush.ref;
+        const events2 = [close, error2, leave, join4];
+        return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
       _updateFilterTransform() {
@@ -16909,17 +16909,17 @@ var require_visit = __commonJS({
     visit.BREAK = BREAK;
     visit.SKIP = SKIP;
     visit.REMOVE = REMOVE;
-    function visit_(key, node, visitor, path2) {
-      const ctrl = callVisitor(key, node, visitor, path2);
+    function visit_(key, node, visitor, path3) {
+      const ctrl = callVisitor(key, node, visitor, path3);
       if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
-        replaceNode(key, path2, ctrl);
-        return visit_(key, ctrl, visitor, path2);
+        replaceNode(key, path3, ctrl);
+        return visit_(key, ctrl, visitor, path3);
       }
       if (typeof ctrl !== "symbol") {
         if (identity.isCollection(node)) {
-          path2 = Object.freeze(path2.concat(node));
+          path3 = Object.freeze(path3.concat(node));
           for (let i = 0; i < node.items.length; ++i) {
-            const ci = visit_(i, node.items[i], visitor, path2);
+            const ci = visit_(i, node.items[i], visitor, path3);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -16930,13 +16930,13 @@ var require_visit = __commonJS({
             }
           }
         } else if (identity.isPair(node)) {
-          path2 = Object.freeze(path2.concat(node));
-          const ck = visit_("key", node.key, visitor, path2);
+          path3 = Object.freeze(path3.concat(node));
+          const ck = visit_("key", node.key, visitor, path3);
           if (ck === BREAK)
             return BREAK;
           else if (ck === REMOVE)
             node.key = null;
-          const cv = visit_("value", node.value, visitor, path2);
+          const cv = visit_("value", node.value, visitor, path3);
           if (cv === BREAK)
             return BREAK;
           else if (cv === REMOVE)
@@ -16957,17 +16957,17 @@ var require_visit = __commonJS({
     visitAsync.BREAK = BREAK;
     visitAsync.SKIP = SKIP;
     visitAsync.REMOVE = REMOVE;
-    async function visitAsync_(key, node, visitor, path2) {
-      const ctrl = await callVisitor(key, node, visitor, path2);
+    async function visitAsync_(key, node, visitor, path3) {
+      const ctrl = await callVisitor(key, node, visitor, path3);
       if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
-        replaceNode(key, path2, ctrl);
-        return visitAsync_(key, ctrl, visitor, path2);
+        replaceNode(key, path3, ctrl);
+        return visitAsync_(key, ctrl, visitor, path3);
       }
       if (typeof ctrl !== "symbol") {
         if (identity.isCollection(node)) {
-          path2 = Object.freeze(path2.concat(node));
+          path3 = Object.freeze(path3.concat(node));
           for (let i = 0; i < node.items.length; ++i) {
-            const ci = await visitAsync_(i, node.items[i], visitor, path2);
+            const ci = await visitAsync_(i, node.items[i], visitor, path3);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -16978,13 +16978,13 @@ var require_visit = __commonJS({
             }
           }
         } else if (identity.isPair(node)) {
-          path2 = Object.freeze(path2.concat(node));
-          const ck = await visitAsync_("key", node.key, visitor, path2);
+          path3 = Object.freeze(path3.concat(node));
+          const ck = await visitAsync_("key", node.key, visitor, path3);
           if (ck === BREAK)
             return BREAK;
           else if (ck === REMOVE)
             node.key = null;
-          const cv = await visitAsync_("value", node.value, visitor, path2);
+          const cv = await visitAsync_("value", node.value, visitor, path3);
           if (cv === BREAK)
             return BREAK;
           else if (cv === REMOVE)
@@ -17011,23 +17011,23 @@ var require_visit = __commonJS({
       }
       return visitor;
     }
-    function callVisitor(key, node, visitor, path2) {
+    function callVisitor(key, node, visitor, path3) {
       if (typeof visitor === "function")
-        return visitor(key, node, path2);
+        return visitor(key, node, path3);
       if (identity.isMap(node))
-        return visitor.Map?.(key, node, path2);
+        return visitor.Map?.(key, node, path3);
       if (identity.isSeq(node))
-        return visitor.Seq?.(key, node, path2);
+        return visitor.Seq?.(key, node, path3);
       if (identity.isPair(node))
-        return visitor.Pair?.(key, node, path2);
+        return visitor.Pair?.(key, node, path3);
       if (identity.isScalar(node))
-        return visitor.Scalar?.(key, node, path2);
+        return visitor.Scalar?.(key, node, path3);
       if (identity.isAlias(node))
-        return visitor.Alias?.(key, node, path2);
+        return visitor.Alias?.(key, node, path3);
       return void 0;
     }
-    function replaceNode(key, path2, node) {
-      const parent = path2[path2.length - 1];
+    function replaceNode(key, path3, node) {
+      const parent = path3[path3.length - 1];
       if (identity.isCollection(parent)) {
         parent.items[key] = node;
       } else if (identity.isPair(parent)) {
@@ -17637,10 +17637,10 @@ var require_Collection = __commonJS({
     var createNode = require_createNode();
     var identity = require_identity();
     var Node = require_Node();
-    function collectionFromPath(schema, path2, value) {
+    function collectionFromPath(schema, path3, value) {
       let v = value;
-      for (let i = path2.length - 1; i >= 0; --i) {
-        const k = path2[i];
+      for (let i = path3.length - 1; i >= 0; --i) {
+        const k = path3[i];
         if (typeof k === "number" && Number.isInteger(k) && k >= 0) {
           const a = [];
           a[k] = v;
@@ -17659,7 +17659,7 @@ var require_Collection = __commonJS({
         sourceObjects: /* @__PURE__ */ new Map()
       });
     }
-    var isEmptyPath = (path2) => path2 == null || typeof path2 === "object" && !!path2[Symbol.iterator]().next().done;
+    var isEmptyPath = (path3) => path3 == null || typeof path3 === "object" && !!path3[Symbol.iterator]().next().done;
     var Collection = class extends Node.NodeBase {
       constructor(type, schema) {
         super(type);
@@ -17689,11 +17689,11 @@ var require_Collection = __commonJS({
        * be a Pair instance or a `{ key, value }` object, which may not have a key
        * that already exists in the map.
        */
-      addIn(path2, value) {
-        if (isEmptyPath(path2))
+      addIn(path3, value) {
+        if (isEmptyPath(path3))
           this.add(value);
         else {
-          const [key, ...rest] = path2;
+          const [key, ...rest] = path3;
           const node = this.get(key, true);
           if (identity.isCollection(node))
             node.addIn(rest, value);
@@ -17707,8 +17707,8 @@ var require_Collection = __commonJS({
        * Removes a value from the collection.
        * @returns `true` if the item was found and removed.
        */
-      deleteIn(path2) {
-        const [key, ...rest] = path2;
+      deleteIn(path3) {
+        const [key, ...rest] = path3;
         if (rest.length === 0)
           return this.delete(key);
         const node = this.get(key, true);
@@ -17722,8 +17722,8 @@ var require_Collection = __commonJS({
        * scalar values from their surrounding node; to disable set `keepScalar` to
        * `true` (collections are always returned intact).
        */
-      getIn(path2, keepScalar) {
-        const [key, ...rest] = path2;
+      getIn(path3, keepScalar) {
+        const [key, ...rest] = path3;
         const node = this.get(key, true);
         if (rest.length === 0)
           return !keepScalar && identity.isScalar(node) ? node.value : node;
@@ -17741,8 +17741,8 @@ var require_Collection = __commonJS({
       /**
        * Checks if the collection includes a value with the key `key`.
        */
-      hasIn(path2) {
-        const [key, ...rest] = path2;
+      hasIn(path3) {
+        const [key, ...rest] = path3;
         if (rest.length === 0)
           return this.has(key);
         const node = this.get(key, true);
@@ -17752,8 +17752,8 @@ var require_Collection = __commonJS({
        * Sets a value in this collection. For `!!set`, `value` needs to be a
        * boolean to add/remove the item from the set.
        */
-      setIn(path2, value) {
-        const [key, ...rest] = path2;
+      setIn(path3, value) {
+        const [key, ...rest] = path3;
         if (rest.length === 0) {
           this.set(key, value);
         } else {
@@ -20268,9 +20268,9 @@ var require_Document = __commonJS({
           this.contents.add(value);
       }
       /** Adds a value to the document. */
-      addIn(path2, value) {
+      addIn(path3, value) {
         if (assertCollection(this.contents))
-          this.contents.addIn(path2, value);
+          this.contents.addIn(path3, value);
       }
       /**
        * Create a new `Alias` node, ensuring that the target `node` has the required anchor.
@@ -20345,14 +20345,14 @@ var require_Document = __commonJS({
        * Removes a value from the document.
        * @returns `true` if the item was found and removed.
        */
-      deleteIn(path2) {
-        if (Collection.isEmptyPath(path2)) {
+      deleteIn(path3) {
+        if (Collection.isEmptyPath(path3)) {
           if (this.contents == null)
             return false;
           this.contents = null;
           return true;
         }
-        return assertCollection(this.contents) ? this.contents.deleteIn(path2) : false;
+        return assertCollection(this.contents) ? this.contents.deleteIn(path3) : false;
       }
       /**
        * Returns item at `key`, or `undefined` if not found. By default unwraps
@@ -20367,10 +20367,10 @@ var require_Document = __commonJS({
        * scalar values from their surrounding node; to disable set `keepScalar` to
        * `true` (collections are always returned intact).
        */
-      getIn(path2, keepScalar) {
-        if (Collection.isEmptyPath(path2))
+      getIn(path3, keepScalar) {
+        if (Collection.isEmptyPath(path3))
           return !keepScalar && identity.isScalar(this.contents) ? this.contents.value : this.contents;
-        return identity.isCollection(this.contents) ? this.contents.getIn(path2, keepScalar) : void 0;
+        return identity.isCollection(this.contents) ? this.contents.getIn(path3, keepScalar) : void 0;
       }
       /**
        * Checks if the document includes a value with the key `key`.
@@ -20381,10 +20381,10 @@ var require_Document = __commonJS({
       /**
        * Checks if the document includes a value at `path`.
        */
-      hasIn(path2) {
-        if (Collection.isEmptyPath(path2))
+      hasIn(path3) {
+        if (Collection.isEmptyPath(path3))
           return this.contents !== void 0;
-        return identity.isCollection(this.contents) ? this.contents.hasIn(path2) : false;
+        return identity.isCollection(this.contents) ? this.contents.hasIn(path3) : false;
       }
       /**
        * Sets a value in this document. For `!!set`, `value` needs to be a
@@ -20401,13 +20401,13 @@ var require_Document = __commonJS({
        * Sets a value in this document. For `!!set`, `value` needs to be a
        * boolean to add/remove the item from the set.
        */
-      setIn(path2, value) {
-        if (Collection.isEmptyPath(path2)) {
+      setIn(path3, value) {
+        if (Collection.isEmptyPath(path3)) {
           this.contents = value;
         } else if (this.contents == null) {
-          this.contents = Collection.collectionFromPath(this.schema, Array.from(path2), value);
+          this.contents = Collection.collectionFromPath(this.schema, Array.from(path3), value);
         } else if (assertCollection(this.contents)) {
-          this.contents.setIn(path2, value);
+          this.contents.setIn(path3, value);
         }
       }
       /**
@@ -22367,9 +22367,9 @@ var require_cst_visit = __commonJS({
     visit.BREAK = BREAK;
     visit.SKIP = SKIP;
     visit.REMOVE = REMOVE;
-    visit.itemAtPath = (cst, path2) => {
+    visit.itemAtPath = (cst, path3) => {
       let item = cst;
-      for (const [field, index] of path2) {
+      for (const [field, index] of path3) {
         const tok = item?.[field];
         if (tok && "items" in tok) {
           item = tok.items[index];
@@ -22378,23 +22378,23 @@ var require_cst_visit = __commonJS({
       }
       return item;
     };
-    visit.parentCollection = (cst, path2) => {
-      const parent = visit.itemAtPath(cst, path2.slice(0, -1));
-      const field = path2[path2.length - 1][0];
+    visit.parentCollection = (cst, path3) => {
+      const parent = visit.itemAtPath(cst, path3.slice(0, -1));
+      const field = path3[path3.length - 1][0];
       const coll = parent?.[field];
       if (coll && "items" in coll)
         return coll;
       throw new Error("Parent collection not found");
     };
-    function _visit(path2, item, visitor) {
-      let ctrl = visitor(item, path2);
+    function _visit(path3, item, visitor) {
+      let ctrl = visitor(item, path3);
       if (typeof ctrl === "symbol")
         return ctrl;
       for (const field of ["key", "value"]) {
         const token = item[field];
         if (token && "items" in token) {
           for (let i = 0; i < token.items.length; ++i) {
-            const ci = _visit(Object.freeze(path2.concat([[field, i]])), token.items[i], visitor);
+            const ci = _visit(Object.freeze(path3.concat([[field, i]])), token.items[i], visitor);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -22405,10 +22405,10 @@ var require_cst_visit = __commonJS({
             }
           }
           if (typeof ctrl === "function" && field === "key")
-            ctrl = ctrl(item, path2);
+            ctrl = ctrl(item, path3);
         }
       }
-      return typeof ctrl === "function" ? ctrl(item, path2) : ctrl;
+      return typeof ctrl === "function" ? ctrl(item, path3) : ctrl;
     }
     exports.visit = visit;
   }
@@ -24637,8 +24637,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path2, errorMaps, issueData } = params;
-  const fullPath = [...path2, ...issueData.path || []];
+  const { data, path: path3, errorMaps, issueData } = params;
+  const fullPath = [...path3, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -24754,11 +24754,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path2, key) {
+  constructor(parent, value, path3, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path2;
+    this._path = path3;
     this._key = key;
   }
   get path() {
@@ -28395,10 +28395,10 @@ function assignProp(target, prop, value) {
     configurable: true
   });
 }
-function getElementAtPath(obj, path2) {
-  if (!path2)
+function getElementAtPath(obj, path3) {
+  if (!path3)
     return obj;
-  return path2.reduce((acc, key) => acc?.[key], obj);
+  return path3.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -28718,11 +28718,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path2, issues) {
+function prefixIssues(path3, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path2);
+    iss.path.unshift(path3);
     return iss;
   });
 }
@@ -40148,8 +40148,8 @@ var IcebergError = class extends Error {
     return this.status === 419;
   }
 };
-function buildUrl(baseUrl, path2, query) {
-  const url = new URL(path2, baseUrl);
+function buildUrl(baseUrl, path3, query) {
+  const url = new URL(path3, baseUrl);
   if (query) {
     for (const [key, value] of Object.entries(query)) {
       if (value !== void 0) {
@@ -40179,12 +40179,12 @@ function createFetchClient(options) {
   return {
     async request({
       method,
-      path: path2,
+      path: path3,
       query,
       body,
       headers
     }) {
-      const url = buildUrl(options.baseUrl, path2, query);
+      const url = buildUrl(options.baseUrl, path3, query);
       const authHeaders = await buildAuthHeaders(options.auth);
       const res = await fetchFn(url, {
         method,
@@ -41003,7 +41003,7 @@ var StorageFileApi = class extends BaseApiClient {
   * @param path The relative file path. Should be of the format `folder/subfolder/filename.png`. The bucket must already exist before attempting to upload.
   * @param fileBody The body of the file to be stored in the bucket.
   */
-  async uploadOrUpdate(method, path2, fileBody, fileOptions) {
+  async uploadOrUpdate(method, path3, fileBody, fileOptions) {
     var _this = this;
     return _this.handleOperation(async () => {
       let body;
@@ -41027,7 +41027,7 @@ var StorageFileApi = class extends BaseApiClient {
         if ((typeof ReadableStream !== "undefined" && body instanceof ReadableStream || body && typeof body === "object" && "pipe" in body && typeof body.pipe === "function") && !options.duplex) options.duplex = "half";
       }
       if (fileOptions === null || fileOptions === void 0 ? void 0 : fileOptions.headers) headers = _objectSpread22(_objectSpread22({}, headers), fileOptions.headers);
-      const cleanPath = _this._removeEmptyFolders(path2);
+      const cleanPath = _this._removeEmptyFolders(path3);
       const _path = _this._getFinalPath(cleanPath);
       const data = await (method == "PUT" ? put : post)(_this.fetch, `${_this.url}/object/${_path}`, body, _objectSpread22({ headers }, (options === null || options === void 0 ? void 0 : options.duplex) ? { duplex: options.duplex } : {}));
       return {
@@ -41081,8 +41081,8 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async upload(path2, fileBody, fileOptions) {
-    return this.uploadOrUpdate("POST", path2, fileBody, fileOptions);
+  async upload(path3, fileBody, fileOptions) {
+    return this.uploadOrUpdate("POST", path3, fileBody, fileOptions);
   }
   /**
   * Upload a file with a token generated from `createSignedUploadUrl`.
@@ -41115,9 +41115,9 @@ var StorageFileApi = class extends BaseApiClient {
   * }
   * ```
   */
-  async uploadToSignedUrl(path2, token, fileBody, fileOptions) {
+  async uploadToSignedUrl(path3, token, fileBody, fileOptions) {
     var _this3 = this;
-    const cleanPath = _this3._removeEmptyFolders(path2);
+    const cleanPath = _this3._removeEmptyFolders(path3);
     const _path = _this3._getFinalPath(cleanPath);
     const url = new URL(_this3.url + `/object/upload/sign/${_path}`);
     url.searchParams.set("token", token);
@@ -41173,10 +41173,10 @@ var StorageFileApi = class extends BaseApiClient {
   * }
   * ```
   */
-  async createSignedUploadUrl(path2, options) {
+  async createSignedUploadUrl(path3, options) {
     var _this4 = this;
     return _this4.handleOperation(async () => {
-      let _path = _this4._getFinalPath(path2);
+      let _path = _this4._getFinalPath(path3);
       const headers = _objectSpread22({}, _this4.headers);
       if (options === null || options === void 0 ? void 0 : options.upsert) headers["x-upsert"] = "true";
       const data = await post(_this4.fetch, `${_this4.url}/object/upload/sign/${_path}`, {}, { headers });
@@ -41185,7 +41185,7 @@ var StorageFileApi = class extends BaseApiClient {
       if (!token) throw new StorageError("No token returned by API");
       return {
         signedUrl: url.toString(),
-        path: path2,
+        path: path3,
         token
       };
     });
@@ -41234,8 +41234,8 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async update(path2, fileBody, fileOptions) {
-    return this.uploadOrUpdate("PUT", path2, fileBody, fileOptions);
+  async update(path3, fileBody, fileOptions) {
+    return this.uploadOrUpdate("PUT", path3, fileBody, fileOptions);
   }
   /**
   * Moves an existing file to a new path in the same bucket.
@@ -41364,10 +41364,10 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async createSignedUrl(path2, expiresIn, options) {
+  async createSignedUrl(path3, expiresIn, options) {
     var _this8 = this;
     return _this8.handleOperation(async () => {
-      let _path = _this8._getFinalPath(path2);
+      let _path = _this8._getFinalPath(path3);
       const hasTransform = typeof (options === null || options === void 0 ? void 0 : options.transform) === "object" && options.transform !== null && Object.keys(options.transform).length > 0;
       let data = await post(_this8.fetch, `${_this8.url}/object/sign/${_path}`, _objectSpread22({ expiresIn }, hasTransform ? { transform: options.transform } : {}), { headers: _this8.headers });
       const downloadQueryParam = (options === null || options === void 0 ? void 0 : options.download) ? `&download=${options.download === true ? "" : options.download}` : "";
@@ -41482,11 +41482,11 @@ var StorageFileApi = class extends BaseApiClient {
   *   .download('folder/avatar1.png', {}, { signal: controller.signal })
   * ```
   */
-  download(path2, options, parameters) {
+  download(path3, options, parameters) {
     const renderPath = typeof (options === null || options === void 0 ? void 0 : options.transform) !== "undefined" ? "render/image/authenticated" : "object";
     const transformationQuery = this.transformOptsToQueryString((options === null || options === void 0 ? void 0 : options.transform) || {});
     const queryString = transformationQuery ? `?${transformationQuery}` : "";
-    const _path = this._getFinalPath(path2);
+    const _path = this._getFinalPath(path3);
     const downloadFn = () => get(this.fetch, `${this.url}/${renderPath}/${_path}${queryString}`, {
       headers: this.headers,
       noResolveJson: true
@@ -41516,9 +41516,9 @@ var StorageFileApi = class extends BaseApiClient {
   * }
   * ```
   */
-  async info(path2) {
+  async info(path3) {
     var _this10 = this;
-    const _path = _this10._getFinalPath(path2);
+    const _path = _this10._getFinalPath(path3);
     return _this10.handleOperation(async () => {
       return recursiveToCamel(await get(_this10.fetch, `${_this10.url}/object/info/${_path}`, { headers: _this10.headers }));
     });
@@ -41538,9 +41538,9 @@ var StorageFileApi = class extends BaseApiClient {
   *   .exists('folder/avatar1.png')
   * ```
   */
-  async exists(path2) {
+  async exists(path3) {
     var _this11 = this;
-    const _path = _this11._getFinalPath(path2);
+    const _path = _this11._getFinalPath(path3);
     try {
       await head(_this11.fetch, `${_this11.url}/object/${_path}`, { headers: _this11.headers });
       return {
@@ -41610,8 +41610,8 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  getPublicUrl(path2, options) {
-    const _path = this._getFinalPath(path2);
+  getPublicUrl(path3, options) {
+    const _path = this._getFinalPath(path3);
     const _queryString = [];
     const downloadQueryParam = (options === null || options === void 0 ? void 0 : options.download) ? `download=${options.download === true ? "" : options.download}` : "";
     if (downloadQueryParam !== "") _queryString.push(downloadQueryParam);
@@ -41738,10 +41738,10 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async list(path2, options, parameters) {
+  async list(path3, options, parameters) {
     var _this13 = this;
     return _this13.handleOperation(async () => {
-      const body = _objectSpread22(_objectSpread22(_objectSpread22({}, DEFAULT_SEARCH_OPTIONS), options), {}, { prefix: path2 || "" });
+      const body = _objectSpread22(_objectSpread22(_objectSpread22({}, DEFAULT_SEARCH_OPTIONS), options), {}, { prefix: path3 || "" });
       return await post(_this13.fetch, `${_this13.url}/object/list/${_this13.bucketId}`, body, { headers: _this13.headers }, parameters);
     });
   }
@@ -41805,11 +41805,11 @@ var StorageFileApi = class extends BaseApiClient {
     if (typeof Buffer !== "undefined") return Buffer.from(data).toString("base64");
     return btoa(data);
   }
-  _getFinalPath(path2) {
-    return `${this.bucketId}/${path2.replace(/^\/+/, "")}`;
+  _getFinalPath(path3) {
+    return `${this.bucketId}/${path3.replace(/^\/+/, "")}`;
   }
-  _removeEmptyFolders(path2) {
-    return path2.replace(/^\/|\/$/g, "").replace(/\/+/g, "/");
+  _removeEmptyFolders(path3) {
+    return path3.replace(/^\/|\/$/g, "").replace(/\/+/g, "/");
   }
   transformOptsToQueryString(transform2) {
     const params = [];
@@ -43733,14 +43733,14 @@ function loadDeploymentConfig(opts = {}) {
   const env = opts.env ?? process.env;
   const exists = opts.existsSync ?? existsSync;
   const readFile = opts.readFileSync ?? ((p) => readFileSync(p, "utf8"));
-  const path2 = resolveDeploymentConfigPath({ configPath: opts.configPath, env });
-  if (!exists(path2)) return null;
+  const path3 = resolveDeploymentConfigPath({ configPath: opts.configPath, env });
+  if (!exists(path3)) return null;
   let raw;
   try {
-    raw = readFile(path2);
+    raw = readFile(path3);
   } catch (err) {
     throw new Error(
-      `could not read deployment config at ${path2}: ${err instanceof Error ? err.message : String(err)}`,
+      `could not read deployment config at ${path3}: ${err instanceof Error ? err.message : String(err)}`,
       { cause: err }
     );
   }
@@ -43749,13 +43749,13 @@ function loadDeploymentConfig(opts = {}) {
     parsed = JSON.parse(raw);
   } catch (err) {
     throw new Error(
-      `deployment config at ${path2} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      `deployment config at ${path3} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
       { cause: err }
     );
   }
   const result = DeploymentConfigSchema.safeParse(parsed);
   if (!result.success) {
-    throw new Error(`deployment config at ${path2} failed validation: ${result.error.message}`, {
+    throw new Error(`deployment config at ${path3} failed validation: ${result.error.message}`, {
       cause: result.error
     });
   }
@@ -45231,6 +45231,20 @@ function getOperatorNote(runConfig) {
 function getAutoApproveGates(runConfig) {
   return new Set(runConfig.auto_approve_gates ?? []);
 }
+var DEFAULT_AGENT_ADAPTER = "claude-code";
+function getAgentAdapter(runConfig) {
+  const agent = runConfig.agent;
+  if (agent === void 0 || agent === null) return { ok: true, adapter: DEFAULT_AGENT_ADAPTER, explicit: false };
+  if (typeof agent !== "object" || Array.isArray(agent)) {
+    return { ok: false, error: `run_config.agent must be an object like { "adapter": "<id>" }; got ${JSON.stringify(agent)}` };
+  }
+  const adapter = agent.adapter;
+  if (adapter === void 0) return { ok: true, adapter: DEFAULT_AGENT_ADAPTER, explicit: false };
+  if (typeof adapter !== "string" || adapter.trim() === "") {
+    return { ok: false, error: `run_config.agent.adapter must be a non-empty adapter id string; got ${JSON.stringify(adapter)}` };
+  }
+  return { ok: true, adapter, explicit: true };
+}
 function envValue(env, key) {
   const v = env[key];
   return v == null || v === "" ? void 0 : v;
@@ -45246,9 +45260,9 @@ function getLeg(env = process.env) {
 }
 function getRunConfig(env = process.env, deps = {}) {
   const readFile = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
-  const path2 = envValue(env, "HARMONY_RUN_CONFIG_PATH");
-  if (path2) {
-    return RunConfigSchema.parse(JSON.parse(readFile(path2)));
+  const path3 = envValue(env, "HARMONY_RUN_CONFIG_PATH");
+  if (path3) {
+    return RunConfigSchema.parse(JSON.parse(readFile(path3)));
   }
   const inline = envValue(env, "HARMONY_RUN_CONFIG_JSON");
   if (inline) {
@@ -45270,54 +45284,90 @@ async function resolveRunConfigFromConduction(client, conductionId) {
   }
 }
 var PINNED_DEFAULT_MODEL_BY_PROFILE = {
-  prod: "claude-sonnet-5-5",
-  staging: "claude-sonnet-5-5"
+  "claude-code": {
+    prod: "claude-sonnet-5-5",
+    staging: "claude-sonnet-5-5"
+  },
+  // B-1147: no hand-pinned Codex model — the live catalog's pinned_default_profiles row is the
+  // source; with none, the leg falls back to HARMONY_CODEX_MODEL, then the Codex CLI's own default.
+  codex: {
+    prod: null,
+    staging: null
+  }
 };
+function entryAgent(entry) {
+  return entry.agent || DEFAULT_AGENT_ADAPTER;
+}
+function entryModelId(entry) {
+  return entry.model_id || entry.alias;
+}
+function catalogEntriesForAgent(entries, agent = DEFAULT_AGENT_ADAPTER) {
+  return entries.filter((entry) => entryAgent(entry) === agent);
+}
+function isMissingCatalogColumnError(error2) {
+  if (!error2 || typeof error2 !== "object") return false;
+  const e = error2;
+  if (e.code === "42703" || e.code === "PGRST204") return true;
+  const msg = typeof e.message === "string" ? e.message : "";
+  return /column .* does not exist/i.test(msg) || /could not find the .* column/i.test(msg);
+}
 var MODEL_CATALOG_FALLBACK = [
   {
     alias: "claude-sonnet-5-5",
     label: "Claude Sonnet 5.5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-sonnet-5-5"
   },
   {
     alias: "claude-sonnet-5",
     label: "Claude Sonnet 5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-sonnet-5"
   },
   {
     alias: "claude-opus-5-5",
     label: "Claude Opus 5.5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-opus-5-5"
   },
   {
     alias: "claude-opus-5",
     label: "Claude Opus 5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-opus-5"
   },
   {
     alias: "claude-haiku-5-5",
     label: "Claude Haiku 5.5",
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-haiku-5-5"
   },
   {
     alias: "claude-fable-5-1",
     label: "Claude Fable 5.1",
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-fable-5-1"
   }
 ];
-for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
+for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE[DEFAULT_AGENT_ADAPTER])) {
   if (!MODEL_CATALOG_FALLBACK.some((entry) => entry.alias === pinned)) {
     throw new Error(
       `B-881 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_CATALOG_FALLBACK`
@@ -45325,6 +45375,47 @@ for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
   }
 }
 var DEFAULT_MODEL_CONTEXT_BUDGET_BYTES = 60 * 1024 * 1024;
+async function fetchModelCatalog(client) {
+  if (!client) return null;
+  try {
+    let { data, error: error2 } = await client.from("model_catalog").select(
+      "alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities, pinned_default_profiles"
+    ).eq("active", true);
+    if (error2 && isMissingCatalogColumnError(error2)) {
+      ({ data, error: error2 } = await client.from("model_catalog").select("alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities").eq("active", true));
+    }
+    if (error2 && isMissingCatalogColumnError(error2)) {
+      ({ data, error: error2 } = await client.from("model_catalog").select("alias, label, context_budget_bytes, active, verified_at").eq("active", true));
+    }
+    if (error2) {
+      console.error(
+        `harmony model_catalog: WARNING \u2014 the live catalog was unreachable (${error2.message ?? String(error2)}); degrading to the embedded MODEL_CATALOG_FALLBACK list. This is the EXPECTED shape while harmony-web's model_catalog migration has not yet landed on this environment's Supabase project (B-383 prod-before-promote) \u2014 never treat this as a bug on its own.`
+      );
+      return null;
+    }
+    if (!data) return null;
+    return data.map((row) => ({
+      ...row,
+      agent: entryAgent(row),
+      model_id: entryModelId(row)
+    }));
+  } catch (err) {
+    console.error(
+      `harmony model_catalog: WARNING \u2014 reading the live catalog threw (${err?.message ?? String(err)}); degrading to the embedded MODEL_CATALOG_FALLBACK list.`
+    );
+    return null;
+  }
+}
+async function resolveModelCatalog(client) {
+  const live = await fetchModelCatalog(client);
+  if (live && live.length > 0) return { entries: live, source: "live" };
+  if (live && live.length === 0) {
+    console.error(
+      "harmony model_catalog: WARNING \u2014 the live catalog is reachable but has zero active rows; degrading to the embedded MODEL_CATALOG_FALLBACK list."
+    );
+  }
+  return { entries: MODEL_CATALOG_FALLBACK, source: "fallback" };
+}
 
 // src/tools/environment.ts
 var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
@@ -45765,16 +45856,16 @@ function labelToRiskClass(label) {
       return null;
   }
 }
-function basenameOf(path2) {
-  const idx = path2.lastIndexOf("/");
-  return idx === -1 ? path2 : path2.slice(idx + 1);
+function basenameOf(path3) {
+  const idx = path3.lastIndexOf("/");
+  return idx === -1 ? path3 : path3.slice(idx + 1);
 }
 function tokenizeBasename(basename2) {
   const spaced = basename2.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
   return spaced.split(/\s+/).filter((t) => t.length > 0);
 }
-function authBasenameHit(path2) {
-  const tokens = tokenizeBasename(basenameOf(path2));
+function authBasenameHit(path3) {
+  const tokens = tokenizeBasename(basenameOf(path3));
   return tokens.some((t) => AUTH_WORD_REGEX.test(t) || OAUTH_WORD_REGEX.test(t));
 }
 function pathHitsClass(paths, cls) {
@@ -45910,8 +46001,8 @@ var GENERATED_VENDORED_EXCLUDE = [
   /\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|gz|tgz|tar|woff2?|ttf|eot|mp4|mov|bin)$/i
   // binary/attachment paths
 ];
-function isExcludedPath(path2) {
-  return GENERATED_VENDORED_EXCLUDE.some((re) => re.test(path2));
+function isExcludedPath(path3) {
+  return GENERATED_VENDORED_EXCLUDE.some((re) => re.test(path3));
 }
 function extractCandidateValues(text) {
   if (!text) return [];
@@ -45959,8 +46050,8 @@ function parseDiff(diffContent) {
     const line = lines[i];
     const header = /^diff --git a\/(\S+) b\/(\S+)/.exec(line);
     if (header) {
-      const path2 = header[2] ?? header[1];
-      currentExcluded = isExcludedPath(path2);
+      const path3 = header[2] ?? header[1];
+      currentExcluded = isExcludedPath(path3);
       continue;
     }
     if (currentExcluded) continue;
@@ -51663,7 +51754,636 @@ function fillRunConfigDefaults(callerRunConfig, defaults) {
     merged.auto_approve_gates = [...defaults.auto_approve_gates];
     changed = true;
   }
+  if (!("agent" in merged) && defaults.agent && typeof defaults.agent === "object" && typeof defaults.agent.adapter === "string" && defaults.agent.adapter.trim() !== "") {
+    merged.agent = { adapter: defaults.agent.adapter };
+    changed = true;
+  }
   return changed ? merged : callerRunConfig;
+}
+
+// src/agents/contract.ts
+var SEAMS = [
+  "launch",
+  //        1. install / launch: which binary, how its presence is probed
+  "auth",
+  //          2. accepted credentials, their env vars, the derived cost regime
+  "headless",
+  //      3. headless invocation argv + exit semantics
+  "session",
+  //       4. session storage + resume
+  "instructions",
+  //  5. instruction-file rendering
+  "skills",
+  //        6. skill delivery
+  "mcp",
+  //           7. MCP rendering from one canonical connection definition
+  "env",
+  //           8. worker environment allowlist
+  "capabilities",
+  //  9. capability map
+  "telemetry"
+  //    10. telemetry: runtime, model, credential, cost regime (read by B-1078)
+];
+var SEAM_NUMBER = Object.fromEntries(
+  SEAMS.map((s, i) => [s, i + 1])
+);
+var PLUGIN_ROOT_PLACEHOLDER = "{pluginRoot}";
+var HARMONY_MCP_CONNECTION = {
+  name: "harmony",
+  command: "node",
+  args: [`${PLUGIN_ROOT_PLACEHOLDER}/dist/index.js`]
+};
+
+// src/agents/credentials.ts
+var CREDENTIAL_MODES = [
+  "subscription-token",
+  "api-key",
+  "login-cache",
+  "workload-identity",
+  "enterprise-access-token"
+];
+var COST_REGIME_BY_CREDENTIAL = {
+  "login-cache": "plan-included",
+  "enterprise-access-token": "plan-included",
+  "subscription-token": "plan-included",
+  "api-key": "metered",
+  "workload-identity": "metered"
+};
+function isCredentialMode(value) {
+  return typeof value === "string" && CREDENTIAL_MODES.includes(value);
+}
+function deriveCostRegime(credential) {
+  if (!isCredentialMode(credential)) {
+    throw new Error(`Unknown credential mode '${String(credential)}' \u2014 expected one of: ${CREDENTIAL_MODES.join(", ")}`);
+  }
+  return COST_REGIME_BY_CREDENTIAL[credential];
+}
+
+// src/tools/claude-result-parse.ts
+var MODEL_PRICING = {
+  "opus-5-5": {
+    input_per_mtok: 4,
+    output_per_mtok: 20,
+    cache_write_1h_per_mtok: 8,
+    cache_write_5m_per_mtok: 5,
+    cache_read_per_mtok: 0.2
+  },
+  /** Opus 5 and the 4.x line ($5/$25). */
+  opus: {
+    input_per_mtok: 5,
+    output_per_mtok: 25,
+    cache_write_1h_per_mtok: 10,
+    cache_write_5m_per_mtok: 6.25,
+    cache_read_per_mtok: 0.5
+  },
+  /** Sonnet 5 and Sonnet 5.5 share one price. */
+  "sonnet-5": {
+    input_per_mtok: 2,
+    output_per_mtok: 10,
+    cache_write_1h_per_mtok: 4,
+    cache_write_5m_per_mtok: 2.5,
+    cache_read_per_mtok: 0.2
+  },
+  "fable-5-1": {
+    input_per_mtok: 10,
+    output_per_mtok: 50,
+    cache_write_1h_per_mtok: 20,
+    cache_write_5m_per_mtok: 12.5,
+    cache_read_per_mtok: 0.25
+  },
+  "fable-5": {
+    input_per_mtok: 10,
+    output_per_mtok: 50,
+    cache_write_1h_per_mtok: 20,
+    cache_write_5m_per_mtok: 12.5,
+    cache_read_per_mtok: 1
+  }
+};
+var PRICING_KEYS_BY_SPECIFICITY = Object.keys(MODEL_PRICING).sort((x, y) => y.length - x.length);
+function resolvePricing(model) {
+  if (!model) return null;
+  const alias = model.toLowerCase();
+  const key = PRICING_KEYS_BY_SPECIFICITY.find((k) => alias.includes(k));
+  return key ? MODEL_PRICING[key] : null;
+}
+var MTOK = 1e6;
+function deriveCostUsd(parsed, pricing) {
+  if (!pricing) return null;
+  const measured = [
+    parsed.input_tokens,
+    parsed.output_tokens,
+    parsed.cache_read_input_tokens,
+    parsed.cache_creation_input_tokens,
+    parsed.cache_creation_1h_input_tokens,
+    parsed.cache_creation_5m_input_tokens
+  ].some((v) => typeof v === "number");
+  if (!measured) return null;
+  const hasBreakdown = typeof parsed.cache_creation_1h_input_tokens === "number" || typeof parsed.cache_creation_5m_input_tokens === "number";
+  const write1h = hasBreakdown ? parsed.cache_creation_1h_input_tokens ?? 0 : 0;
+  const write5m = hasBreakdown ? parsed.cache_creation_5m_input_tokens ?? 0 : parsed.cache_creation_input_tokens ?? 0;
+  const usd = ((parsed.input_tokens ?? 0) * pricing.input_per_mtok + (parsed.output_tokens ?? 0) * pricing.output_per_mtok + (parsed.cache_read_input_tokens ?? 0) * pricing.cache_read_per_mtok + write1h * pricing.cache_write_1h_per_mtok + write5m * pricing.cache_write_5m_per_mtok) / MTOK;
+  return usd;
+}
+function resolveCost(parsed, model) {
+  if (typeof parsed.cli_cost_usd === "number" && parsed.cli_cost_usd > 0) {
+    return { total_cost_usd: parsed.cli_cost_usd, cost_source: "cli" };
+  }
+  const derived = deriveCostUsd(parsed, resolvePricing(model));
+  if (derived !== null) return { total_cost_usd: derived, cost_source: "derived" };
+  return { total_cost_usd: null, cost_source: "unknown" };
+}
+var asNumber = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
+var asString = (v) => typeof v === "string" ? v : null;
+function parseEnvelope(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  try {
+    const whole = JSON.parse(trimmed);
+    if (whole && typeof whole === "object" && !Array.isArray(whole)) {
+      return whole;
+    }
+  } catch {
+  }
+  const lines = trimmed.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+function parseClaudeResultJson(text) {
+  const envelope = parseEnvelope(text);
+  if (!envelope) return null;
+  if (!("result" in envelope) && !("usage" in envelope)) return null;
+  const usage = envelope.usage ?? {};
+  const cacheCreation = usage.cache_creation ?? {};
+  return {
+    // The trap: `is_error`, never `subtype` — an errored run still reports subtype 'success'.
+    is_error: envelope.is_error === true,
+    result: asString(envelope.result),
+    session_id: asString(envelope.session_id),
+    num_turns: asNumber(envelope.num_turns),
+    duration_ms: asNumber(envelope.duration_ms),
+    duration_api_ms: asNumber(envelope.duration_api_ms),
+    service_tier: asString(envelope.service_tier) ?? asString(usage.service_tier),
+    input_tokens: asNumber(usage.input_tokens),
+    output_tokens: asNumber(usage.output_tokens),
+    cache_read_input_tokens: asNumber(usage.cache_read_input_tokens),
+    cache_creation_input_tokens: asNumber(usage.cache_creation_input_tokens),
+    cache_creation_1h_input_tokens: asNumber(cacheCreation.ephemeral_1h_input_tokens),
+    cache_creation_5m_input_tokens: asNumber(cacheCreation.ephemeral_5m_input_tokens),
+    thinking_tokens: asNumber(usage.output_tokens_details?.thinking_tokens),
+    cli_cost_usd: asNumber(envelope.total_cost_usd)
+  };
+}
+
+// src/agents/claude-code.ts
+var CLAUDE_OUTPUT_FORMAT_FLAGS = ["--output-format", "json"];
+var CLAUDE_MODEL_FLAG = "--model";
+var CLAUDE_RESUME_FLAG = "--resume";
+var CLAUDE_PLUGIN_DIR_FLAG = "--plugin-dir";
+var CLAUDE_PROMPT_FLAG = "-p";
+var OAUTH_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
+var API_KEY_ENV = "ANTHROPIC_API_KEY";
+function present(env, name) {
+  const v = env[name];
+  return typeof v === "string" && v !== "";
+}
+function resolveClaudeCredential(env) {
+  const oauth = present(env, OAUTH_ENV);
+  const apiKey = present(env, API_KEY_ENV);
+  if (oauth && apiKey) {
+    return { ok: false, error: `${API_KEY_ENV} is set beside ${OAUTH_ENV} \u2014 two credentials at once is a config error (B-934: no silent fallback between regimes). Unset one.` };
+  }
+  if (oauth) return { ok: true, credential: "subscription-token" };
+  if (apiKey) return { ok: true, credential: "api-key" };
+  return { ok: false, error: `headless mode needs auth: set ${OAUTH_ENV} (subscription-token; mint via 'claude setup-token') or ${API_KEY_ENV} (api-key, metered).` };
+}
+function buildClaudeArgv(input) {
+  const argv = [CLAUDE_PLUGIN_DIR_FLAG, input.pluginDir, CLAUDE_PROMPT_FLAG, input.prompt];
+  if (input.resumeSessionId) argv.push(CLAUDE_RESUME_FLAG, input.resumeSessionId);
+  const extra = [...input.extraFlags ?? []];
+  argv.push(...extra);
+  if (!extra.includes(CLAUDE_OUTPUT_FORMAT_FLAGS[0])) argv.push(...CLAUDE_OUTPUT_FORMAT_FLAGS);
+  if (input.model) argv.push(CLAUDE_MODEL_FLAG, input.model);
+  return argv;
+}
+var SESSION_ROOT = "$HOME/.claude/projects";
+var SESSION_EXT = ".jsonl";
+function renderClaudeMcp(connection) {
+  const args = connection.args.map((a) => a.split(PLUGIN_ROOT_PLACEHOLDER).join("${CLAUDE_PLUGIN_ROOT}"));
+  const doc = { [connection.name]: { command: connection.command, args } };
+  return { fileName: ".mcp.json", content: JSON.stringify(doc, null, 2) + "\n" };
+}
+var SAMPLE_RESULT = JSON.stringify({
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  result: "done",
+  session_id: "00000000-0000-4000-8000-000000000000",
+  num_turns: 3,
+  duration_ms: 1200,
+  total_cost_usd: 0.42,
+  usage: { input_tokens: 10, output_tokens: 20 }
+});
+var claudeCodeAdapter = {
+  id: "claude-code",
+  family: "claude-code",
+  displayName: "Claude Code",
+  // 1. launch — provision.sh: `command -v claude` (fails the leg when the image has no claude).
+  launch: { binary: "claude", probeArgv: ["command", "-v", "claude"] },
+  // 2. auth — provision.sh's headless auth block.
+  auth: {
+    acceptedCredentials: ["subscription-token", "api-key"],
+    credentialEnv: { "subscription-token": OAUTH_ENV, "api-key": API_KEY_ENV },
+    primaryCredential: "subscription-token",
+    resolveCredential: resolveClaudeCredential
+  },
+  // 3. headless invocation + exit semantics — every `_b772_run claude ...` line in provision.sh; the
+  //    leg exits with claude's own status, and `is_error` (never `subtype`) marks an errored run.
+  headless: {
+    buildArgv: buildClaudeArgv,
+    exit: { successCode: 0, nonZeroIsFailure: true, structuredErrorField: "is_error" }
+  },
+  // 4. session storage + resume — `"$HOME/.claude/projects"/*/"$RESUME_SESSION_ID.jsonl"`.
+  session: {
+    root: SESSION_ROOT,
+    extension: SESSION_EXT,
+    resumeFlag: CLAUDE_RESUME_FLAG,
+    sessionGlob: (id) => `${SESSION_ROOT}/*/${id}${SESSION_EXT}`,
+    sessionIdFromPath: (path3) => {
+      const m = /\/\.claude\/projects\/[^/]+\/([^/]+)\.jsonl$/.exec(path3);
+      return m ? m[1] : null;
+    }
+  },
+  // 5. instruction rendering — Claude Code reads the project's CLAUDE.md.
+  instructions: {
+    fileName: "CLAUDE.md",
+    render: (body) => ({ fileName: "CLAUDE.md", content: body.endsWith("\n") ? body : body + "\n" })
+  },
+  // 6. skill delivery — `--plugin-dir "$PLUGIN_DIR"` loads skills/; provision.sh copies the build
+  //    subagent definition into ~/.claude/agents (config levers do not reach Task-tool subagents).
+  skills: {
+    mechanism: CLAUDE_PLUGIN_DIR_FLAG,
+    skillsRoot: "skills",
+    agentFiles: [{ source: "container/agents/harmony-build.md", target: "$HOME/.claude/agents/harmony-build.md" }]
+  },
+  // 7. MCP rendering — renders the canonical connection as the plugin's .mcp.json.
+  mcp: { render: renderClaudeMcp },
+  // 8. worker env allowlist — container/cloud-worker-launch.sh write_exec_env_file(): the per-leg
+  //    literal env set (`--env-vars-file` REPLACES the job's literal env, so this is exhaustive).
+  //    Credentials ride `--set-secrets` bindings, never this list.
+  env: {
+    allowlist: [
+      "CONDUCTION_ID",
+      "TICKET",
+      "GIT_TOKEN",
+      "HARMONY_TRANSCRIPT_MOUNT_ROOT",
+      "HARMONY_PLUGIN_POSTURE",
+      "HARMONY_REPOS_JSON",
+      "HARMONY_RUN_CONFIG_JSON",
+      "HARMONY_MODEL",
+      "GIT_TOKEN_EXPIRES_AT",
+      "HARMONY_LEG",
+      "HARMONY_CONDUCTION_ID"
+    ],
+    standingSecrets: ["HARMONY_API_TOKEN", OAUTH_ENV]
+  },
+  // 9. capability map.
+  capabilities: {
+    subagents: true,
+    hooks: true,
+    skills: true,
+    mcp: true,
+    resume: true,
+    modelSwitch: true,
+    structuredOutput: true
+  },
+  // 10. telemetry — the `--output-format json` result envelope (src/tools/claude-result-parse.ts).
+  telemetry: {
+    parse: (stdout, ctx) => {
+      const parsed = parseClaudeResultJson(stdout);
+      if (!parsed) return null;
+      return {
+        runtime: "claude-code",
+        model: ctx.model,
+        credential: ctx.credential,
+        costRegime: deriveCostRegime(ctx.credential),
+        costUsd: resolveCost(parsed, ctx.model).total_cost_usd,
+        sessionId: parsed.session_id,
+        isError: parsed.is_error
+      };
+    },
+    sampleOutput: SAMPLE_RESULT
+  }
+};
+
+// src/agents/codex.ts
+import { posix as path2 } from "node:path";
+var CODEX_AUTH_FILE_ENV = "HARMONY_CODEX_AUTH_FILE";
+var CODEX_REFUSED_CREDENTIAL_ENV = ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"];
+var CODEX_DEFAULT_PLUGIN_ROOT = "/workspace/workspace/plugin";
+var CODEX_EXEC_SUBCOMMAND = "exec";
+var CODEX_RESUME_SUBCOMMAND = "resume";
+var CODEX_JSON_FLAG = "--json";
+var CODEX_CD_FLAG = "--cd";
+var CODEX_ADD_DIR_FLAG = "--add-dir";
+var CODEX_MODEL_FLAG = "-m";
+var CODEX_BYPASS_FLAG = "--dangerously-bypass-approvals-and-sandbox";
+var CODEX_SKILLS_LINK = ".agents/skills";
+var CODEX_PROJECT_DOC_MAX_BYTES = 262144;
+var CODEX_MCP_STARTUP_TIMEOUT_SEC = 60;
+var CODEX_MCP_TOOL_TIMEOUT_SEC = 600;
+var CODEX_MCP_ENV_VARS = [
+  "HARMONY_API_TOKEN",
+  "HARMONY_SUPABASE_URL",
+  "HARMONY_SUPABASE_ANON_KEY",
+  "HARMONY_LEG",
+  "HARMONY_CONDUCTION_ID",
+  "HARMONY_MODEL",
+  "HARMONY_PLUGIN_POSTURE",
+  "HARMONY_RUN_CONFIG_JSON",
+  "HARMONY_RUN_CONFIG_PATH",
+  "HARMONY_WEB_ROOT",
+  "HARMONY_DEPLOYMENT_CONFIG",
+  "HARMONY_CONFIG_DIR"
+];
+function present2(env, name) {
+  const v = env[name];
+  return typeof v === "string" && v !== "";
+}
+var LOGIN_HOWTO = `On the daemon host run 'CODEX_HOME=~/.harmony/codex-automation codex login --device-auth' once, then mount that auth.json into the worker (container/README.md "Codex credential runbook").`;
+function resolveCodexCredential(env) {
+  const refused = CODEX_REFUSED_CREDENTIAL_ENV.filter((n) => present2(env, n));
+  if (refused.length > 0) {
+    return {
+      ok: false,
+      error: `${refused.join(" and ")} ${refused.length > 1 ? "are" : "is"} set \u2014 the Codex adapter runs on the plan-included login cache (${CODEX_AUTH_FILE_ENV}) and refuses a metered or token credential beside it (B-934: no silent fallback between regimes). Unset ${refused.join(" and ")}.`
+    };
+  }
+  if (present2(env, CODEX_AUTH_FILE_ENV)) return { ok: true, credential: "login-cache" };
+  return {
+    ok: false,
+    error: `headless Codex needs auth: set ${CODEX_AUTH_FILE_ENV} to the path of the mounted login-cache file (login-cache, plan-included). ${LOGIN_HOWTO}`
+  };
+}
+function codexPrompt(prompt) {
+  const m = /^\/([A-Za-z0-9_-]+:[A-Za-z0-9_-]+)(?=\s|$)/.exec(prompt);
+  return m ? `$${m[1]}${prompt.slice(m[0].length)}` : prompt;
+}
+function buildCodexArgv(input) {
+  const extra = [...input.extraFlags ?? []];
+  const resume = input.resumeSessionId;
+  const argv = [CODEX_EXEC_SUBCOMMAND];
+  if (resume) {
+    argv.push(CODEX_RESUME_SUBCOMMAND, resume, CODEX_JSON_FLAG, CODEX_BYPASS_FLAG);
+  } else {
+    argv.push(CODEX_JSON_FLAG);
+    if (!extra.includes(CODEX_CD_FLAG) && !extra.includes("-C")) argv.push(CODEX_CD_FLAG, path2.dirname(input.pluginDir));
+    argv.push(CODEX_ADD_DIR_FLAG, input.pluginDir, CODEX_BYPASS_FLAG);
+  }
+  if (input.model) argv.push(CODEX_MODEL_FLAG, input.model);
+  argv.push(...extra);
+  argv.push(codexPrompt(input.prompt));
+  return argv;
+}
+var SESSION_ROOT2 = "$HOME/.codex/sessions";
+var SESSION_EXT2 = ".jsonl";
+var ROLLOUT_PATH = /\/\.codex\/sessions\/(?:[^/]+\/){3}rollout-(?:\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}|\*)-(.+)\.jsonl$/;
+function tomlString(s) {
+  return JSON.stringify(s);
+}
+function tomlStringArray(a) {
+  return `[${a.map(tomlString).join(", ")}]`;
+}
+function renderCodexConfig(connection, opts = {}) {
+  const root = opts.pluginRoot ?? CODEX_DEFAULT_PLUGIN_ROOT;
+  const args = connection.args.map((a) => a.split(PLUGIN_ROOT_PLACEHOLDER).join(root));
+  const lines = [
+    "# Generated by `harmony agent render` (B-1076) from the canonical MCP connection. Do not edit.",
+    "# approval_policy never: an unattended worker must never wait on an approval UI.",
+    'approval_policy = "never"',
+    "# The aggregated AGENTS.md is larger than Codex's 32 KiB default, which TRUNCATES silently.",
+    `project_doc_max_bytes = ${CODEX_PROJECT_DOC_MAX_BYTES}`,
+    "",
+    `[mcp_servers.${connection.name}]`,
+    `command = ${tomlString(connection.command)}`,
+    `args = ${tomlStringArray(args)}`,
+    "# required: a worker without Harmony tools must fail BEFORE doing repository work.",
+    "required = true",
+    `startup_timeout_sec = ${CODEX_MCP_STARTUP_TIMEOUT_SEC}`,
+    `tool_timeout_sec = ${CODEX_MCP_TOOL_TIMEOUT_SEC}`,
+    'default_tools_approval_mode = "auto"',
+    `env_vars = ${tomlStringArray(CODEX_MCP_ENV_VARS)}`,
+    ""
+  ];
+  return { fileName: "config.toml", content: lines.join("\n") };
+}
+var CODEX_WORKER_OVERLAY = [
+  "## Codex worker overlay (B-1076)",
+  "",
+  "You are running as a Codex worker inside a disposable single-ticket container. The sections above are the",
+  "repository guidance written for Claude Code; read them with these substitutions:",
+  "",
+  "- Skills are invoked as `$harmony-plugin:<skill>` (for example `$harmony-plugin:harmony-conduct`), not as",
+  "  `/harmony-plugin:<skill>`. Harmony tools are the `harmony` MCP server's tools.",
+  "- There are no subagents and no `harmony-build` agent: do the build in this thread.",
+  "- There is no in-worker model switch: skip any step that asks you to compare or switch models.",
+  "- There are no hooks: do not rely on a session-start or stop hook having run.",
+  ""
+].join("\n");
+function events(stdout) {
+  const out = [];
+  for (const line of stdout.split("\n")) {
+    const t = line.trim();
+    if (!t.startsWith("{")) continue;
+    try {
+      const v = JSON.parse(t);
+      if (v && typeof v === "object" && typeof v.type === "string") out.push(v);
+    } catch {
+    }
+  }
+  return out;
+}
+function parseCodexThreadId(stdout) {
+  const e = events(stdout).find((x) => x.type === "thread.started" && typeof x.thread_id === "string" && x.thread_id !== "");
+  return e ? e.thread_id : null;
+}
+function parseCodexUsage(stdout) {
+  const done = events(stdout).filter((x) => x.type === "turn.completed" && x.usage && typeof x.usage === "object");
+  const u = done.length ? done[done.length - 1].usage : null;
+  if (!u) return null;
+  const n = (k) => typeof u[k] === "number" && Number.isFinite(u[k]) ? u[k] : 0;
+  return {
+    inputTokens: n("input_tokens"),
+    cachedInputTokens: n("cached_input_tokens"),
+    cacheWriteInputTokens: n("cache_write_input_tokens"),
+    outputTokens: n("output_tokens"),
+    reasoningOutputTokens: n("reasoning_output_tokens")
+  };
+}
+function codexTelemetryUsage(stdout) {
+  const u = parseCodexUsage(stdout);
+  if (!u) return null;
+  return { inputTokens: u.inputTokens, cacheReadInputTokens: u.cachedInputTokens, outputTokens: u.outputTokens };
+}
+var SAMPLE_OUTPUT = [
+  JSON.stringify({ type: "thread.started", thread_id: "00000000-0000-4000-8000-000000000000" }),
+  JSON.stringify({ type: "turn.started" }),
+  JSON.stringify({ type: "item.completed", item: { id: "item_0", type: "agent_message", text: "done" } }),
+  JSON.stringify({
+    type: "turn.completed",
+    usage: { input_tokens: 10, cached_input_tokens: 2, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 4 }
+  })
+].join("\n");
+var codexAdapter = {
+  id: "codex",
+  family: "codex",
+  displayName: "Codex",
+  // 1. launch — `codex --version` (the image's smoke gate runs the same probe).
+  launch: { binary: "codex", probeArgv: ["codex", "--version"] },
+  // 2. auth — the login-cache file, addressed by a non-secret path variable. Plan-included (B-934).
+  auth: {
+    acceptedCredentials: ["login-cache"],
+    credentialEnv: { "login-cache": CODEX_AUTH_FILE_ENV },
+    primaryCredential: "login-cache",
+    resolveCredential: resolveCodexCredential
+  },
+  // 3. headless — `codex exec --json --cd <root> … <prompt>`; exit 0 = the leg completed, any other
+  //    exit fails it (verified: a failed turn exits 1 with a turn.failed event). The exit code is
+  //    authoritative, so there is no structured error field to consult.
+  headless: {
+    buildArgv: buildCodexArgv,
+    exit: { successCode: 0, nonZeroIsFailure: true, structuredErrorField: null }
+  },
+  // 4. session — per-conduction CODEX_HOME/sessions (mounted per conduction by the launch profile);
+  //    `codex exec resume <id>`; the id comes from the thread.started event, the rollout glob is the
+  //    version-pinned fallback.
+  session: {
+    root: SESSION_ROOT2,
+    extension: SESSION_EXT2,
+    resumeFlag: CODEX_RESUME_SUBCOMMAND,
+    sessionGlob: (id) => `${SESSION_ROOT2}/*/*/*/rollout-*-${id}${SESSION_EXT2}`,
+    sessionIdFromPath: (p) => {
+      const m = ROLLOUT_PATH.exec(p);
+      return m ? m[1] : null;
+    }
+  },
+  // 5. instructions — ONE generated AGENTS.md (workspace + plugin + web CLAUDE.md + a short overlay).
+  instructions: {
+    fileName: "AGENTS.md",
+    render: (body) => ({ fileName: "AGENTS.md", content: body.endsWith("\n") ? body : body + "\n" })
+  },
+  // 6. skills — `.agents/skills` symlinked to the plugin's skills/. No agent files: no subagents.
+  skills: {
+    mechanism: `${CODEX_SKILLS_LINK} symlink`,
+    skillsRoot: "skills",
+    agentFiles: []
+  },
+  // 7. mcp — config.toml rendered from the canonical connection, required = true.
+  mcp: { render: (connection) => renderCodexConfig(connection) },
+  // 8. worker env allowlist — the same per-leg set the launch scripts forward for every adapter
+  //    (container/cloud-worker-launch.sh write_exec_env_file()). The login-cache PATH variable is the
+  //    credential env, outside this list: each launcher adds it only for a Codex run (B-1076 — on cloud
+  //    in the per-execution env, since --env-vars-file replaces the job's literal env), and the file
+  //    itself never rides env.
+  env: {
+    allowlist: [
+      "CONDUCTION_ID",
+      "TICKET",
+      "GIT_TOKEN",
+      "HARMONY_TRANSCRIPT_MOUNT_ROOT",
+      "HARMONY_PLUGIN_POSTURE",
+      "HARMONY_REPOS_JSON",
+      "HARMONY_RUN_CONFIG_JSON",
+      "HARMONY_MODEL",
+      "GIT_TOKEN_EXPIRES_AT",
+      "HARMONY_LEG",
+      "HARMONY_CONDUCTION_ID"
+    ],
+    standingSecrets: ["HARMONY_API_TOKEN", CODEX_AUTH_FILE_ENV]
+  },
+  // 9. capabilities — Codex has subagents and hooks, but this adapter does not use them (build in the
+  //    root thread, daemon one-shot workers need no hook), and `exec resume` cannot be relied on for an
+  //    in-worker model switch (a switch cold-starts a new thread), so the loop is not offered.
+  capabilities: {
+    subagents: false,
+    hooks: false,
+    skills: true,
+    mcp: true,
+    resume: true,
+    modelSwitch: false,
+    structuredOutput: true
+  },
+  // 10. telemetry — the `--json` JSONL stream: thread id from thread.started, the terminal turn event.
+  //     Plan-included login cache ⇒ the cost regime is derived (never chosen) and costUsd is null.
+  telemetry: {
+    parse: (stdout, ctx) => {
+      const evs = events(stdout);
+      const terminal = [...evs].reverse().find((e) => e.type === "turn.completed" || e.type === "turn.failed");
+      if (!terminal) return null;
+      return {
+        runtime: "codex",
+        model: ctx.model,
+        credential: ctx.credential,
+        costRegime: deriveCostRegime(ctx.credential),
+        costUsd: null,
+        sessionId: parseCodexThreadId(stdout),
+        isError: terminal.type === "turn.failed",
+        usage: codexTelemetryUsage(stdout)
+      };
+    },
+    sampleOutput: SAMPLE_OUTPUT
+  }
+};
+
+// src/agents/registry.ts
+var ADAPTERS = /* @__PURE__ */ new Map([
+  [claudeCodeAdapter.id, claudeCodeAdapter],
+  [codexAdapter.id, codexAdapter]
+  // B-1076
+]);
+var DEFAULT_ADAPTER_ID = claudeCodeAdapter.id;
+function listAdapterIds() {
+  return [...ADAPTERS.keys()];
+}
+function hasAdapter(id) {
+  return ADAPTERS.has(id);
+}
+
+// src/config/runtime-validation.ts
+async function assertRunConfigRuntime(client, runConfig) {
+  if (!runConfig) return;
+  const selection = getAgentAdapter(runConfig);
+  if (!selection.ok) throw new Error(selection.error);
+  const adapter = selection.adapter;
+  if (!hasAdapter(adapter)) {
+    throw new Error(
+      `Unknown agent runtime '${adapter}' \u2014 available runtimes: ${listAdapterIds().join(", ")}`
+    );
+  }
+  const requested = [];
+  if (runConfig.model?.default) requested.push(runConfig.model.default);
+  for (const value of Object.values(runConfig.model?.per_gate ?? {})) {
+    if (typeof value === "string" && value) requested.push(value);
+  }
+  if (requested.length === 0) return;
+  const { entries } = await resolveModelCatalog(client);
+  const available = catalogEntriesForAgent(entries, adapter).map((entry) => entryModelId(entry));
+  const bad = [...new Set(requested.filter((model) => !available.includes(model)))];
+  if (bad.length > 0) {
+    throw new Error(
+      `Model${bad.length > 1 ? "s" : ""} ${bad.map((m) => `'${m}'`).join(", ")} not available on runtime '${adapter}' \u2014 available models for '${adapter}': ${available.length > 0 ? available.join(", ") : "(none in the catalog)"}`
+    );
+  }
 }
 
 // src/tools/create-conduction.ts
@@ -51673,6 +52393,7 @@ async function createConduction2(client, projectId, userId, args) {
   const runConfig = args.run_config !== void 0 ? RunConfigSchema.parse(args.run_config) : void 0;
   const defaults = await getProjectConductionDefaults(client, projectId);
   const filledRunConfig = fillRunConfigDefaults(runConfig, defaults);
+  await assertRunConfigRuntime(client, filledRunConfig);
   const taskId = await resolveTaskId(client, projectId, args.task_id);
   try {
     await reviveParkedTicketIfNeeded(client, projectId, userId, taskId, {
@@ -52696,48 +53417,6 @@ var LEG_COST_COLS_WITH_RUNTIME = `${LEG_COST_COLS}, ${RUNTIME_COLS.join(", ")}`;
 
 // src/tools/leg-output-record.ts
 var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
-
-// src/tools/claude-result-parse.ts
-var MODEL_PRICING = {
-  "opus-5-5": {
-    input_per_mtok: 4,
-    output_per_mtok: 20,
-    cache_write_1h_per_mtok: 8,
-    cache_write_5m_per_mtok: 5,
-    cache_read_per_mtok: 0.2
-  },
-  /** Opus 5 and the 4.x line ($5/$25). */
-  opus: {
-    input_per_mtok: 5,
-    output_per_mtok: 25,
-    cache_write_1h_per_mtok: 10,
-    cache_write_5m_per_mtok: 6.25,
-    cache_read_per_mtok: 0.5
-  },
-  /** Sonnet 5 and Sonnet 5.5 share one price. */
-  "sonnet-5": {
-    input_per_mtok: 2,
-    output_per_mtok: 10,
-    cache_write_1h_per_mtok: 4,
-    cache_write_5m_per_mtok: 2.5,
-    cache_read_per_mtok: 0.2
-  },
-  "fable-5-1": {
-    input_per_mtok: 10,
-    output_per_mtok: 50,
-    cache_write_1h_per_mtok: 20,
-    cache_write_5m_per_mtok: 12.5,
-    cache_read_per_mtok: 0.25
-  },
-  "fable-5": {
-    input_per_mtok: 10,
-    output_per_mtok: 50,
-    cache_write_1h_per_mtok: 20,
-    cache_write_5m_per_mtok: 12.5,
-    cache_read_per_mtok: 1
-  }
-};
-var PRICING_KEYS_BY_SPECIFICITY = Object.keys(MODEL_PRICING).sort((x, y) => y.length - x.length);
 
 // src/tools/index.ts
 function registerTools(disabledFeatures) {

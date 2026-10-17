@@ -36390,9 +36390,31 @@ async function resolveRunConfigFromConduction(client, conductionId) {
   }
 }
 var PINNED_DEFAULT_MODEL_BY_PROFILE = {
-  prod: "claude-sonnet-5-5",
-  staging: "claude-sonnet-5-5"
+  "claude-code": {
+    prod: "claude-sonnet-5-5",
+    staging: "claude-sonnet-5-5"
+  },
+  // B-1147: no hand-pinned Codex model — the live catalog's pinned_default_profiles row is the
+  // source; with none, the leg falls back to HARMONY_CODEX_MODEL, then the Codex CLI's own default.
+  codex: {
+    prod: null,
+    staging: null
+  }
 };
+function getPinnedDefaultModel(adapter, profile, catalog) {
+  if (catalog) {
+    const pinnedRow = catalog.find(
+      (entry) => entryAgent(entry) === adapter && entry.active !== false && Array.isArray(entry.pinned_default_profiles) && entry.pinned_default_profiles.includes(profile)
+    );
+    if (pinnedRow) return entryModelId(pinnedRow);
+  }
+  const byProfile = PINNED_DEFAULT_MODEL_BY_PROFILE[adapter];
+  if (adapter === DEFAULT_AGENT_ADAPTER) {
+    const claude = PINNED_DEFAULT_MODEL_BY_PROFILE[DEFAULT_AGENT_ADAPTER];
+    return claude[profile] ?? claude.prod;
+  }
+  return byProfile?.[profile] ?? null;
+}
 var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
 var KNOWN_REFS_FOR_MODEL = {
   eioxsunvhakmelhanmnn: "prod",
@@ -36407,12 +36429,34 @@ function resolveDeploymentProfile(env2) {
   }
   return KNOWN_REFS_FOR_MODEL[ref] ?? "prod";
 }
-function getModelForGate(runConfig, gate, env2 = process.env) {
+function getModelForGate(runConfig, gate, env2 = process.env, catalog) {
   const perGate = gate ? runConfig.model?.per_gate?.[gate] : void 0;
   if (perGate) return perGate;
   if (runConfig.model?.default) return runConfig.model.default;
+  const selection = getAgentAdapter(runConfig);
+  const adapter = selection.ok ? selection.adapter : DEFAULT_AGENT_ADAPTER;
   const profile = resolveDeploymentProfile(env2);
-  return PINNED_DEFAULT_MODEL_BY_PROFILE[profile] ?? PINNED_DEFAULT_MODEL_BY_PROFILE.prod;
+  if (adapter === DEFAULT_AGENT_ADAPTER && !catalog) {
+    const claude = PINNED_DEFAULT_MODEL_BY_PROFILE[DEFAULT_AGENT_ADAPTER];
+    return claude[profile] ?? claude.prod;
+  }
+  return getPinnedDefaultModel(adapter, profile, catalog) ?? "";
+}
+function entryAgent(entry) {
+  return entry.agent || DEFAULT_AGENT_ADAPTER;
+}
+function entryModelId(entry) {
+  return entry.model_id || entry.alias;
+}
+function catalogEntriesForAgent(entries, agent = DEFAULT_AGENT_ADAPTER) {
+  return entries.filter((entry) => entryAgent(entry) === agent);
+}
+function isMissingCatalogColumnError(error) {
+  if (!error || typeof error !== "object") return false;
+  const e = error;
+  if (e.code === "42703" || e.code === "PGRST204") return true;
+  const msg = typeof e.message === "string" ? e.message : "";
+  return /column .* does not exist/i.test(msg) || /could not find the .* column/i.test(msg);
 }
 var MODEL_CATALOG_FALLBACK = [
   {
@@ -36420,45 +36464,57 @@ var MODEL_CATALOG_FALLBACK = [
     label: "Claude Sonnet 5.5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-sonnet-5-5"
   },
   {
     alias: "claude-sonnet-5",
     label: "Claude Sonnet 5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-sonnet-5"
   },
   {
     alias: "claude-opus-5-5",
     label: "Claude Opus 5.5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-opus-5-5"
   },
   {
     alias: "claude-opus-5",
     label: "Claude Opus 5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-opus-5"
   },
   {
     alias: "claude-haiku-5-5",
     label: "Claude Haiku 5.5",
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-haiku-5-5"
   },
   {
     alias: "claude-fable-5-1",
     label: "Claude Fable 5.1",
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-fable-5-1"
   }
 ];
-for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
+for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE[DEFAULT_AGENT_ADAPTER])) {
   if (!MODEL_CATALOG_FALLBACK.some((entry) => entry.alias === pinned)) {
     throw new Error(
       `B-881 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_CATALOG_FALLBACK`
@@ -36469,7 +36525,15 @@ var DEFAULT_MODEL_CONTEXT_BUDGET_BYTES = 60 * 1024 * 1024;
 async function fetchModelCatalog(client) {
   if (!client) return null;
   try {
-    const { data, error } = await client.from("model_catalog").select("alias, label, context_budget_bytes, active, verified_at").eq("active", true);
+    let { data, error } = await client.from("model_catalog").select(
+      "alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities, pinned_default_profiles"
+    ).eq("active", true);
+    if (error && isMissingCatalogColumnError(error)) {
+      ({ data, error } = await client.from("model_catalog").select("alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities").eq("active", true));
+    }
+    if (error && isMissingCatalogColumnError(error)) {
+      ({ data, error } = await client.from("model_catalog").select("alias, label, context_budget_bytes, active, verified_at").eq("active", true));
+    }
     if (error) {
       console.error(
         `harmony model_catalog: WARNING \u2014 the live catalog was unreachable (${error.message ?? String(error)}); degrading to the embedded MODEL_CATALOG_FALLBACK list. This is the EXPECTED shape while harmony-web's model_catalog migration has not yet landed on this environment's Supabase project (B-383 prod-before-promote) \u2014 never treat this as a bug on its own.`
@@ -36477,7 +36541,11 @@ async function fetchModelCatalog(client) {
       return null;
     }
     if (!data) return null;
-    return data;
+    return data.map((row) => ({
+      ...row,
+      agent: entryAgent(row),
+      model_id: entryModelId(row)
+    }));
   } catch (err) {
     console.error(
       `harmony model_catalog: WARNING \u2014 reading the live catalog threw (${err?.message ?? String(err)}); degrading to the embedded MODEL_CATALOG_FALLBACK list.`
@@ -36495,9 +36563,9 @@ async function resolveModelCatalog(client) {
   }
   return { entries: MODEL_CATALOG_FALLBACK, source: "fallback" };
 }
-async function isAllowedModelAlias(alias, client) {
+async function isAllowedModelAlias(alias, client, agent = DEFAULT_AGENT_ADAPTER) {
   const { entries } = await resolveModelCatalog(client);
-  return entries.some((entry) => entry.alias === alias);
+  return catalogEntriesForAgent(entries, agent).some((entry) => entryModelId(entry) === alias);
 }
 async function getModelContextBudgetBytes(alias, client) {
   const { entries } = await resolveModelCatalog(client);
@@ -42070,204 +42138,11 @@ function fillRunConfigDefaults(callerRunConfig, defaults) {
     merged.auto_approve_gates = [...defaults.auto_approve_gates];
     changed = true;
   }
+  if (!("agent" in merged) && defaults.agent && typeof defaults.agent === "object" && typeof defaults.agent.adapter === "string" && defaults.agent.adapter.trim() !== "") {
+    merged.agent = { adapter: defaults.agent.adapter };
+    changed = true;
+  }
   return changed ? merged : callerRunConfig;
-}
-
-// src/cli/commands/conduct.ts
-function registerConductCommand(program3) {
-  program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor daemon picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").option("--unpark", "Revive a Parked ticket and hand it to the conductor in this same call (B-964)", false).option("--resume-to <state>", "Target workflow_state override when reviving a Parked ticket (defaults to the ticket's own parked_from, else Proposed)").option("--model <alias>", "B-925: explicit model alias for this run (fills run_config.model.default)").option("--session-resume", "B-925: explicitly enable session-resume for this run").option("--no-session-resume", "B-925: explicitly disable session-resume for this run").option("--auto-approve-gates <gates>", "B-925: comma-separated forward gates to auto-approve for this run").option("--no-auto-approve-gates", "B-925: explicitly auto-approve no gates for this run").option("--fast-track", "B-1073: run this conduction in fast-track mode (sets run_config.fast_track)").action(async (ticket, opts) => {
-    await runCommand(
-      program3.opts(),
-      async (ctx) => {
-        const taskId = await resolveTaskId(ctx.client, ctx.projectId, ticket);
-        try {
-          await reviveParkedTicketIfNeeded(ctx.client, ctx.projectId, ctx.userId, taskId, {
-            unpark: opts.unpark,
-            resume_to: opts.resumeTo,
-            revived_by: `human via CLI (harmony conduct --unpark), acting user ${ctx.userId}`
-          });
-          await assertNotExcluded(ctx.client, taskId);
-          const runConfigInput = {};
-          if (opts.model !== void 0) {
-            runConfigInput.model = { default: opts.model };
-          }
-          if (opts.sessionResume !== void 0) {
-            runConfigInput.session_resume = { enabled: opts.sessionResume };
-          }
-          if (opts.autoApproveGates !== void 0) {
-            runConfigInput.auto_approve_gates = opts.autoApproveGates === false ? [] : opts.autoApproveGates.split(",").map((g) => g.trim()).filter(Boolean);
-          }
-          if (opts.fastTrack !== void 0) {
-            runConfigInput.fast_track = opts.fastTrack;
-          }
-          const callerRunConfig = Object.keys(runConfigInput).length > 0 ? RunConfigSchema.parse(runConfigInput) : void 0;
-          const defaults = await getProjectConductionDefaults(ctx.client, ctx.projectId);
-          const filledRunConfig = fillRunConfigDefaults(callerRunConfig, defaults);
-          return await createConduction(ctx.client, {
-            task_id: taskId,
-            mode: "controlled",
-            created_by: ctx.userId,
-            ...filledRunConfig !== void 0 ? { run_config: filledRunConfig } : {}
-          });
-        } catch (err) {
-          if (err instanceof TicketParkedError || err instanceof TicketStaleReviveRefusedError) {
-            throw new Error(err.message, { cause: err });
-          }
-          if (err instanceof ConductorExcludedError) {
-            throw new Error(
-              `${ticket} is taken away from the conductor \u2014 Return it first (the "Return to conductor" action) before handing it off`,
-              { cause: err }
-            );
-          }
-          if (err instanceof ActiveConductionExistsError) {
-            throw new Error(
-              `${ticket} is already being conducted \u2014 a ticket has at most one active conduction; park or complete the existing run first`,
-              { cause: err }
-            );
-          }
-          throw err;
-        }
-      },
-      (row) => `Conduction ${row.id} created for ${ticket} (${row.status}, mode: ${row.mode}).
-The conductor daemon will pick it up on its next pass.
-Note: the duplicate-guard can only detect an active conduction record \u2014 it can't see an in-progress terminal session, so make sure any in-session work on this ticket has stopped before handing it off.`
-    );
-  });
-}
-
-// src/cli/commands/config.ts
-function registerConfigCommands(program3) {
-  const config = program3.command("config").description("Read the per-deployment config (~/.harmony/deployment.json)");
-  config.command("get").description(
-    'Print the value at <json-path> (e.g. launcher.supabase.url) from the deployment config. Prints nothing and exits non-zero if the config is absent or the path is unset \u2014 shell callers should treat that as "not configured, fall back to your own default".'
-  ).argument("<json-path>", "Dot-path into the deployment config, e.g. launcher.supabase_refs.prod").option("--config <path>", "Explicit path to the deployment config (overrides HARMONY_DEPLOYMENT_CONFIG)").action((jsonPath, opts) => {
-    const resolvedPath = resolveDeploymentConfigPath({ configPath: opts.config });
-    let deploymentConfig;
-    try {
-      deploymentConfig = loadDeploymentConfig({ configPath: opts.config });
-    } catch (err) {
-      console.error(`harmony config get: ${err.message}`);
-      process.exit(1);
-      return;
-    }
-    if (deploymentConfig === null) {
-      console.error(`harmony config get: no deployment config found at ${resolvedPath}`);
-      process.exit(1);
-      return;
-    }
-    const value = resolveConfigPath(deploymentConfig, jsonPath);
-    if (value === void 0) {
-      console.error(`harmony config get: '${jsonPath}' is not set in ${resolvedPath}`);
-      process.exit(1);
-      return;
-    }
-    if (typeof value === "string") {
-      console.log(value);
-    } else {
-      console.log(JSON.stringify(value));
-    }
-  });
-}
-
-// src/cli/commands/model.ts
-async function resolveGateRunConfig() {
-  const conductionId = getConductionId();
-  if (conductionId) {
-    try {
-      const { client } = await getAuthenticatedContext();
-      const fromRow = await resolveRunConfigFromConduction(client, conductionId);
-      if (fromRow) return fromRow;
-      console.error(
-        `harmony model resolve-gate: WARNING \u2014 conduction ${conductionId}'s run_config was unreadable from the board; falling back to this leg's launch env`
-      );
-    } catch (err) {
-      console.error(
-        `harmony model resolve-gate: WARNING \u2014 could not reach the board to re-read run_config (${err?.message ?? String(err)}); falling back to this leg's launch env`
-      );
-    }
-  }
-  try {
-    return getRunConfig();
-  } catch (err) {
-    console.error(
-      `harmony model resolve-gate: WARNING \u2014 failed to read run_config (${err?.message ?? String(err)}); falling back to no run_config`
-    );
-    return {};
-  }
-}
-async function getCatalogClient() {
-  try {
-    const { client } = await getAuthenticatedContext();
-    return client;
-  } catch {
-    return null;
-  }
-}
-function registerModelCommands(program3) {
-  const model = program3.command("model").description(
-    "B-881 live-model-catalog node accessor \u2014 the ONE place bash (container/provision.sh, container/entrypoint.sh) reads the model catalog / context-budget data / handoff-file contract src/config/run-config.ts owns. Never hand-duplicate this data in bash."
-  );
-  model.command("check-alias").description(
-    'Print "true" and exit 0 if <alias> is in the live model catalog (falling back to the embedded degrade-only list when the catalog is unreachable); print "false" and exit 1 otherwise.'
-  ).argument("<alias>").action(async (alias) => {
-    const client = await getCatalogClient();
-    const ok = await isAllowedModelAlias(alias, client);
-    console.log(ok ? "true" : "false");
-    process.exit(ok ? 0 : 1);
-  });
-  model.command("context-budget").description(
-    "Print <alias>'s resumable-session-size budget in bytes, from the live catalog (falling back to the embedded degrade-only list, then a conservative default for an alias absent from either \u2014 always exits 0)."
-  ).argument("<alias>").action(async (alias) => {
-    const client = await getCatalogClient();
-    console.log(String(await getModelContextBudgetBytes(alias, client)));
-  });
-  model.command("list-aliases").description(
-    "Print every currently-active model-catalog alias, one per line \u2014 live when the catalog is reachable, else the embedded degrade-only list. Always exits 0. Consumed by skills/harmony-conduct/SKILL.md step 1d's park-on-refusal comment (B-881), so a human reviewing the park sees exactly which aliases were selectable at the time."
-  ).action(async () => {
-    const client = await getCatalogClient();
-    const { entries } = await resolveModelCatalog(client);
-    for (const entry of entries) console.log(entry.alias);
-  });
-  model.command("running-model").description(
-    "Print this process's own HARMONY_MODEL env var (the model the currently-running `claude` invocation was actually launched with, set by container/provision.sh's switch loop, re-exported fresh on every re-invocation), or an empty line when unset (this deployment profile does not render {model} at all, round-1's opt-out path). Always exits 0 -- an empty result is a legitimate answer, never an error."
-  ).action(() => {
-    console.log(process.env.HARMONY_MODEL ?? "");
-  });
-  model.command("resolve-gate").description(
-    "Print the model getModelForGate resolves for <workflow-state> \u2014 the accessor skills/harmony-conduct/SKILL.md step 1d uses to compute THIS gate's model. B-892: reads the LIVE conductions.run_config row (this worker's HARMONY_CONDUCTION_ID) so a mid-conduction operator edit lands at the gate boundary, falling back to this leg's frozen HARMONY_RUN_CONFIG_PATH/HARMONY_RUN_CONFIG_JSON launch env when the row is unreachable/unreadable or there is no conduction. Never throws: every failure degrades a tier (getModelForGate's own pinned-default tier still resolves something explicit) rather than crashing the agent's turn. NOTE this is the WANTED model \u2014 `running-model` (what this process actually launched with) is the other half of step 1d's comparison and is deliberately env-only."
-  ).argument("<workflow-state>").option("--activity <workflow-activity>", "The ticket's workflow_activity, if known").action(async (workflowState, opts) => {
-    const runConfig = await resolveGateRunConfig();
-    const gate = resolveGatePhase(workflowState, opts.activity ?? null);
-    console.log(getModelForGate(runConfig, gate));
-  });
-  model.command("request-switch").description(
-    "Write a model-switch handoff request for container/provision.sh's switch loop to pick up. Validates <alias> against the live model catalog FIRST \u2014 refuses (exit 1, no file written) on an alias that is not active in the catalog (nor in the embedded fallback list when the catalog itself is unreachable)."
-  ).argument("<alias>").action(async (alias) => {
-    const client = await getCatalogClient();
-    const ok = await isAllowedModelAlias(alias, client);
-    if (!ok) {
-      const { entries } = await resolveModelCatalog(client);
-      console.error(
-        `harmony model request-switch: '${alias}' is not in the live model catalog (${entries.map((entry) => entry.alias).join(", ")})`
-      );
-      process.exit(1);
-      return;
-    }
-    writeModelHandoffRequest(alias);
-  });
-  model.command("read-handoff").description(
-    "Print the pending handoff request's alias to stdout and exit 0, or print nothing and exit 1 when none is pending. Does NOT delete the file \u2014 pair with `clear-handoff` after consuming."
-  ).action(() => {
-    const req = readModelHandoffRequest();
-    if (!req) {
-      process.exit(1);
-      return;
-    }
-    console.log(req.requested_model);
-  });
-  model.command("clear-handoff").description("Delete the pending handoff request file, if any. Idempotent \u2014 always exits 0.").action(() => {
-    clearModelHandoffRequest();
-  });
 }
 
 // src/agents/contract.ts
@@ -42907,6 +42782,259 @@ function getAdapter(id) {
     throw new Error(`Unknown agent adapter '${id}' \u2014 registered: ${listAdapterIds().join(", ")}`);
   }
   return adapter;
+}
+
+// src/config/runtime-validation.ts
+async function assertRunConfigRuntime(client, runConfig) {
+  if (!runConfig) return;
+  const selection = getAgentAdapter(runConfig);
+  if (!selection.ok) throw new Error(selection.error);
+  const adapter = selection.adapter;
+  if (!hasAdapter(adapter)) {
+    throw new Error(
+      `Unknown agent runtime '${adapter}' \u2014 available runtimes: ${listAdapterIds().join(", ")}`
+    );
+  }
+  const requested = [];
+  if (runConfig.model?.default) requested.push(runConfig.model.default);
+  for (const value of Object.values(runConfig.model?.per_gate ?? {})) {
+    if (typeof value === "string" && value) requested.push(value);
+  }
+  if (requested.length === 0) return;
+  const { entries } = await resolveModelCatalog(client);
+  const available = catalogEntriesForAgent(entries, adapter).map((entry) => entryModelId(entry));
+  const bad = [...new Set(requested.filter((model) => !available.includes(model)))];
+  if (bad.length > 0) {
+    throw new Error(
+      `Model${bad.length > 1 ? "s" : ""} ${bad.map((m) => `'${m}'`).join(", ")} not available on runtime '${adapter}' \u2014 available models for '${adapter}': ${available.length > 0 ? available.join(", ") : "(none in the catalog)"}`
+    );
+  }
+}
+
+// src/cli/commands/conduct.ts
+function registerConductCommand(program3) {
+  program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor daemon picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").option("--unpark", "Revive a Parked ticket and hand it to the conductor in this same call (B-964)", false).option("--resume-to <state>", "Target workflow_state override when reviving a Parked ticket (defaults to the ticket's own parked_from, else Proposed)").option("--model <alias>", "B-925: explicit model alias for this run (fills run_config.model.default)").option("--session-resume", "B-925: explicitly enable session-resume for this run").option("--no-session-resume", "B-925: explicitly disable session-resume for this run").option("--auto-approve-gates <gates>", "B-925: comma-separated forward gates to auto-approve for this run").option("--no-auto-approve-gates", "B-925: explicitly auto-approve no gates for this run").option("--fast-track", "B-1073: run this conduction in fast-track mode (sets run_config.fast_track)").option("--agent <id>", "B-1147: agent runtime for this run (sets run_config.agent.adapter), e.g. claude-code, codex").action(async (ticket, opts) => {
+    if (opts.agent !== void 0 && !hasAdapter(opts.agent)) {
+      console.error(
+        `Error: Unknown agent runtime '${opts.agent}' \u2014 available runtimes: ${listAdapterIds().join(", ")}`
+      );
+      process.exit(1);
+      return;
+    }
+    await runCommand(
+      program3.opts(),
+      async (ctx) => {
+        const taskId = await resolveTaskId(ctx.client, ctx.projectId, ticket);
+        try {
+          await reviveParkedTicketIfNeeded(ctx.client, ctx.projectId, ctx.userId, taskId, {
+            unpark: opts.unpark,
+            resume_to: opts.resumeTo,
+            revived_by: `human via CLI (harmony conduct --unpark), acting user ${ctx.userId}`
+          });
+          await assertNotExcluded(ctx.client, taskId);
+          const runConfigInput = {};
+          if (opts.model !== void 0) {
+            runConfigInput.model = { default: opts.model };
+          }
+          if (opts.sessionResume !== void 0) {
+            runConfigInput.session_resume = { enabled: opts.sessionResume };
+          }
+          if (opts.autoApproveGates !== void 0) {
+            runConfigInput.auto_approve_gates = opts.autoApproveGates === false ? [] : opts.autoApproveGates.split(",").map((g) => g.trim()).filter(Boolean);
+          }
+          if (opts.fastTrack !== void 0) {
+            runConfigInput.fast_track = opts.fastTrack;
+          }
+          if (opts.agent !== void 0) {
+            runConfigInput.agent = { adapter: opts.agent };
+          }
+          const callerRunConfig = Object.keys(runConfigInput).length > 0 ? RunConfigSchema.parse(runConfigInput) : void 0;
+          const defaults = await getProjectConductionDefaults(ctx.client, ctx.projectId);
+          const filledRunConfig = fillRunConfigDefaults(callerRunConfig, defaults);
+          await assertRunConfigRuntime(ctx.client, filledRunConfig);
+          return await createConduction(ctx.client, {
+            task_id: taskId,
+            mode: "controlled",
+            created_by: ctx.userId,
+            ...filledRunConfig !== void 0 ? { run_config: filledRunConfig } : {}
+          });
+        } catch (err) {
+          if (err instanceof TicketParkedError || err instanceof TicketStaleReviveRefusedError) {
+            throw new Error(err.message, { cause: err });
+          }
+          if (err instanceof ConductorExcludedError) {
+            throw new Error(
+              `${ticket} is taken away from the conductor \u2014 Return it first (the "Return to conductor" action) before handing it off`,
+              { cause: err }
+            );
+          }
+          if (err instanceof ActiveConductionExistsError) {
+            throw new Error(
+              `${ticket} is already being conducted \u2014 a ticket has at most one active conduction; park or complete the existing run first`,
+              { cause: err }
+            );
+          }
+          throw err;
+        }
+      },
+      (row) => `Conduction ${row.id} created for ${ticket} (${row.status}, mode: ${row.mode}).
+The conductor daemon will pick it up on its next pass.
+Note: the duplicate-guard can only detect an active conduction record \u2014 it can't see an in-progress terminal session, so make sure any in-session work on this ticket has stopped before handing it off.`
+    );
+  });
+}
+
+// src/cli/commands/config.ts
+function registerConfigCommands(program3) {
+  const config = program3.command("config").description("Read the per-deployment config (~/.harmony/deployment.json)");
+  config.command("get").description(
+    'Print the value at <json-path> (e.g. launcher.supabase.url) from the deployment config. Prints nothing and exits non-zero if the config is absent or the path is unset \u2014 shell callers should treat that as "not configured, fall back to your own default".'
+  ).argument("<json-path>", "Dot-path into the deployment config, e.g. launcher.supabase_refs.prod").option("--config <path>", "Explicit path to the deployment config (overrides HARMONY_DEPLOYMENT_CONFIG)").action((jsonPath, opts) => {
+    const resolvedPath = resolveDeploymentConfigPath({ configPath: opts.config });
+    let deploymentConfig;
+    try {
+      deploymentConfig = loadDeploymentConfig({ configPath: opts.config });
+    } catch (err) {
+      console.error(`harmony config get: ${err.message}`);
+      process.exit(1);
+      return;
+    }
+    if (deploymentConfig === null) {
+      console.error(`harmony config get: no deployment config found at ${resolvedPath}`);
+      process.exit(1);
+      return;
+    }
+    const value = resolveConfigPath(deploymentConfig, jsonPath);
+    if (value === void 0) {
+      console.error(`harmony config get: '${jsonPath}' is not set in ${resolvedPath}`);
+      process.exit(1);
+      return;
+    }
+    if (typeof value === "string") {
+      console.log(value);
+    } else {
+      console.log(JSON.stringify(value));
+    }
+  });
+}
+
+// src/cli/commands/model.ts
+async function resolveGateRunConfig() {
+  const conductionId = getConductionId();
+  if (conductionId) {
+    try {
+      const { client } = await getAuthenticatedContext();
+      const fromRow = await resolveRunConfigFromConduction(client, conductionId);
+      if (fromRow) return fromRow;
+      console.error(
+        `harmony model resolve-gate: WARNING \u2014 conduction ${conductionId}'s run_config was unreadable from the board; falling back to this leg's launch env`
+      );
+    } catch (err) {
+      console.error(
+        `harmony model resolve-gate: WARNING \u2014 could not reach the board to re-read run_config (${err?.message ?? String(err)}); falling back to this leg's launch env`
+      );
+    }
+  }
+  try {
+    return getRunConfig();
+  } catch (err) {
+    console.error(
+      `harmony model resolve-gate: WARNING \u2014 failed to read run_config (${err?.message ?? String(err)}); falling back to no run_config`
+    );
+    return {};
+  }
+}
+async function getCatalogClient() {
+  try {
+    const { client } = await getAuthenticatedContext();
+    return client;
+  } catch {
+    return null;
+  }
+}
+function registerModelCommands(program3) {
+  const model = program3.command("model").description(
+    "B-881 live-model-catalog node accessor \u2014 the ONE place bash (container/provision.sh, container/entrypoint.sh) reads the model catalog / context-budget data / handoff-file contract src/config/run-config.ts owns. Never hand-duplicate this data in bash."
+  );
+  model.command("check-alias").description(
+    'Print "true" and exit 0 if <alias> is in the live model catalog (falling back to the embedded degrade-only list when the catalog is unreachable); print "false" and exit 1 otherwise.'
+  ).argument("<alias>").option("--agent <id>", "Agent runtime whose catalog rows to match (B-1147)", DEFAULT_AGENT_ADAPTER).action(async (alias, opts) => {
+    const client = await getCatalogClient();
+    const ok = await isAllowedModelAlias(alias, client, opts.agent ?? DEFAULT_AGENT_ADAPTER);
+    console.log(ok ? "true" : "false");
+    process.exit(ok ? 0 : 1);
+  });
+  model.command("context-budget").description(
+    "Print <alias>'s resumable-session-size budget in bytes, from the live catalog (falling back to the embedded degrade-only list, then a conservative default for an alias absent from either \u2014 always exits 0)."
+  ).argument("<alias>").action(async (alias) => {
+    const client = await getCatalogClient();
+    console.log(String(await getModelContextBudgetBytes(alias, client)));
+  });
+  model.command("list-aliases").description(
+    "Print every currently-active model-catalog alias, one per line \u2014 live when the catalog is reachable, else the embedded degrade-only list. Always exits 0. Consumed by skills/harmony-conduct/SKILL.md step 1d's park-on-refusal comment (B-881), so a human reviewing the park sees exactly which aliases were selectable at the time."
+  ).option("--agent <id>", "Agent runtime whose model ids to list (B-1147)", DEFAULT_AGENT_ADAPTER).action(async (opts) => {
+    const client = await getCatalogClient();
+    const { entries } = await resolveModelCatalog(client);
+    for (const entry of catalogEntriesForAgent(entries, opts.agent ?? DEFAULT_AGENT_ADAPTER)) {
+      console.log(entryModelId(entry));
+    }
+  });
+  model.command("running-model").description(
+    "Print this process's own HARMONY_MODEL env var (the model the currently-running `claude` invocation was actually launched with, set by container/provision.sh's switch loop, re-exported fresh on every re-invocation), or an empty line when unset (this deployment profile does not render {model} at all, round-1's opt-out path). Always exits 0 -- an empty result is a legitimate answer, never an error."
+  ).action(() => {
+    console.log(process.env.HARMONY_MODEL ?? "");
+  });
+  model.command("resolve-gate").description(
+    "Print the model getModelForGate resolves for <workflow-state> \u2014 the accessor skills/harmony-conduct/SKILL.md step 1d uses to compute THIS gate's model. B-892: reads the LIVE conductions.run_config row (this worker's HARMONY_CONDUCTION_ID) so a mid-conduction operator edit lands at the gate boundary, falling back to this leg's frozen HARMONY_RUN_CONFIG_PATH/HARMONY_RUN_CONFIG_JSON launch env when the row is unreachable/unreadable or there is no conduction. Never throws: every failure degrades a tier (getModelForGate's own pinned-default tier still resolves something explicit) rather than crashing the agent's turn. NOTE this is the WANTED model \u2014 `running-model` (what this process actually launched with) is the other half of step 1d's comparison and is deliberately env-only."
+  ).argument("<workflow-state>").option("--activity <workflow-activity>", "The ticket's workflow_activity, if known").option(
+    "--agent <id>",
+    "Agent runtime to resolve for (B-1147); defaults to the run_config's own agent.adapter, else claude-code"
+  ).action(async (workflowState, opts) => {
+    let runConfig = await resolveGateRunConfig();
+    if (opts.agent) runConfig = { ...runConfig, agent: { adapter: opts.agent } };
+    const gate = resolveGatePhase(workflowState, opts.activity ?? null);
+    const selection = getAgentAdapter(runConfig);
+    const adapter = selection.ok ? selection.adapter : DEFAULT_AGENT_ADAPTER;
+    if (adapter === DEFAULT_AGENT_ADAPTER) {
+      console.log(getModelForGate(runConfig, gate));
+      return;
+    }
+    const client = await getCatalogClient();
+    const { entries } = await resolveModelCatalog(client);
+    console.log(getModelForGate(runConfig, gate, process.env, entries));
+  });
+  model.command("request-switch").description(
+    "Write a model-switch handoff request for container/provision.sh's switch loop to pick up. Validates <alias> against the live model catalog FIRST \u2014 refuses (exit 1, no file written) on an alias that is not active in the catalog (nor in the embedded fallback list when the catalog itself is unreachable)."
+  ).argument("<alias>").option("--agent <id>", "Agent runtime the alias must belong to (B-1147)", DEFAULT_AGENT_ADAPTER).action(async (alias, opts) => {
+    const agent = opts.agent ?? DEFAULT_AGENT_ADAPTER;
+    const client = await getCatalogClient();
+    const ok = await isAllowedModelAlias(alias, client, agent);
+    if (!ok) {
+      const { entries } = await resolveModelCatalog(client);
+      console.error(
+        `harmony model request-switch: '${alias}' is not in the live model catalog for runtime '${agent}' (${catalogEntriesForAgent(
+          entries,
+          agent
+        ).map((entry) => entryModelId(entry)).join(", ")})`
+      );
+      process.exit(1);
+      return;
+    }
+    writeModelHandoffRequest(alias);
+  });
+  model.command("read-handoff").description(
+    "Print the pending handoff request's alias to stdout and exit 0, or print nothing and exit 1 when none is pending. Does NOT delete the file \u2014 pair with `clear-handoff` after consuming."
+  ).action(() => {
+    const req = readModelHandoffRequest();
+    if (!req) {
+      process.exit(1);
+      return;
+    }
+    console.log(req.requested_model);
+  });
+  model.command("clear-handoff").description("Delete the pending handoff request file, if any. Idempotent \u2014 always exits 0.").action(() => {
+    clearModelHandoffRequest();
+  });
 }
 
 // src/agents/launch-routing.ts

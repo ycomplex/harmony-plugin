@@ -30516,9 +30516,31 @@ async function resolveRunConfigFromConduction(client, conductionId) {
   }
 }
 var PINNED_DEFAULT_MODEL_BY_PROFILE = {
-  prod: "claude-sonnet-5-5",
-  staging: "claude-sonnet-5-5"
+  "claude-code": {
+    prod: "claude-sonnet-5-5",
+    staging: "claude-sonnet-5-5"
+  },
+  // B-1147: no hand-pinned Codex model — the live catalog's pinned_default_profiles row is the
+  // source; with none, the leg falls back to HARMONY_CODEX_MODEL, then the Codex CLI's own default.
+  codex: {
+    prod: null,
+    staging: null
+  }
 };
+function getPinnedDefaultModel(adapter, profile, catalog) {
+  if (catalog) {
+    const pinnedRow = catalog.find(
+      (entry) => entryAgent(entry) === adapter && entry.active !== false && Array.isArray(entry.pinned_default_profiles) && entry.pinned_default_profiles.includes(profile)
+    );
+    if (pinnedRow) return entryModelId(pinnedRow);
+  }
+  const byProfile = PINNED_DEFAULT_MODEL_BY_PROFILE[adapter];
+  if (adapter === DEFAULT_AGENT_ADAPTER) {
+    const claude = PINNED_DEFAULT_MODEL_BY_PROFILE[DEFAULT_AGENT_ADAPTER];
+    return claude[profile] ?? claude.prod;
+  }
+  return byProfile?.[profile] ?? null;
+}
 var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
 var KNOWN_REFS_FOR_MODEL = {
   eioxsunvhakmelhanmnn: "prod",
@@ -30533,12 +30555,24 @@ function resolveDeploymentProfile(env) {
   }
   return KNOWN_REFS_FOR_MODEL[ref] ?? "prod";
 }
-function getModelForGate(runConfig, gate, env = process.env) {
+function getModelForGate(runConfig, gate, env = process.env, catalog) {
   const perGate = gate ? runConfig.model?.per_gate?.[gate] : void 0;
   if (perGate) return perGate;
   if (runConfig.model?.default) return runConfig.model.default;
+  const selection = getAgentAdapter(runConfig);
+  const adapter = selection.ok ? selection.adapter : DEFAULT_AGENT_ADAPTER;
   const profile = resolveDeploymentProfile(env);
-  return PINNED_DEFAULT_MODEL_BY_PROFILE[profile] ?? PINNED_DEFAULT_MODEL_BY_PROFILE.prod;
+  if (adapter === DEFAULT_AGENT_ADAPTER && !catalog) {
+    const claude = PINNED_DEFAULT_MODEL_BY_PROFILE[DEFAULT_AGENT_ADAPTER];
+    return claude[profile] ?? claude.prod;
+  }
+  return getPinnedDefaultModel(adapter, profile, catalog) ?? "";
+}
+function entryAgent(entry) {
+  return entry.agent || DEFAULT_AGENT_ADAPTER;
+}
+function entryModelId(entry) {
+  return entry.model_id || entry.alias;
 }
 var MODEL_CATALOG_FALLBACK = [
   {
@@ -30546,45 +30580,57 @@ var MODEL_CATALOG_FALLBACK = [
     label: "Claude Sonnet 5.5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-sonnet-5-5"
   },
   {
     alias: "claude-sonnet-5",
     label: "Claude Sonnet 5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-sonnet-5"
   },
   {
     alias: "claude-opus-5-5",
     label: "Claude Opus 5.5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-opus-5-5"
   },
   {
     alias: "claude-opus-5",
     label: "Claude Opus 5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-opus-5"
   },
   {
     alias: "claude-haiku-5-5",
     label: "Claude Haiku 5.5",
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-haiku-5-5"
   },
   {
     alias: "claude-fable-5-1",
     label: "Claude Fable 5.1",
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-fable-5-1"
   }
 ];
-for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
+for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE[DEFAULT_AGENT_ADAPTER])) {
   if (!MODEL_CATALOG_FALLBACK.some((entry) => entry.alias === pinned)) {
     throw new Error(
       `B-881 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_CATALOG_FALLBACK`

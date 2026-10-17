@@ -332,3 +332,31 @@ describe('createConduction (create_conduction MCP tool handler) — B-925 projec
     expect('run_config' in call).toBe(false);
   });
 });
+
+// B-1147: createConduction refuses a runtime/model mismatch and an unknown adapter.
+describe('createConduction runtime guard (B-1147)', () => {
+  it('refuses a Claude model on a codex run, before any insert', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(
+      createConduction(client, 'proj-1', 'user-1', {
+        task_id: 'B-1',
+        run_config: { agent: { adapter: 'codex' }, model: { default: 'claude-opus-5' } },
+      }),
+    ).rejects.toThrow(/not available on runtime 'codex'/);
+    expect(mocks.insertConduction).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unknown adapter, listing available runtimes', async () => {
+    await expect(
+      createConduction(client, 'proj-1', 'user-1', { task_id: 'B-1', run_config: { agent: { adapter: 'gemini' } } }),
+    ).rejects.toThrow(/available runtimes: claude-code, codex/);
+    expect(mocks.insertConduction).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unknown adapter arriving from the project conduction defaults', async () => {
+    mocks.getProjectConductionDefaults.mockResolvedValue({ agent: { adapter: 'gemini' } });
+    await expect(createConduction(client, 'proj-1', 'user-1', { task_id: 'B-1' })).rejects.toThrow(
+      /Unknown agent runtime 'gemini'/,
+    );
+  });
+});

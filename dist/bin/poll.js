@@ -30005,6 +30005,7 @@ function getOperatorNote(runConfig) {
 function getAutoApproveGates(runConfig) {
   return new Set(runConfig.auto_approve_gates ?? []);
 }
+var DEFAULT_AGENT_ADAPTER = "claude-code";
 function envValue(env, key) {
   const v = env[key];
   return v == null || v === "" ? void 0 : v;
@@ -30038,8 +30039,16 @@ async function resolveRunConfigFromConduction(client, conductionId) {
   }
 }
 var PINNED_DEFAULT_MODEL_BY_PROFILE = {
-  prod: "claude-sonnet-5-5",
-  staging: "claude-sonnet-5-5"
+  "claude-code": {
+    prod: "claude-sonnet-5-5",
+    staging: "claude-sonnet-5-5"
+  },
+  // B-1147: no hand-pinned Codex model — the live catalog's pinned_default_profiles row is the
+  // source; with none, the leg falls back to HARMONY_CODEX_MODEL, then the Codex CLI's own default.
+  codex: {
+    prod: null,
+    staging: null
+  }
 };
 var MODEL_CATALOG_FALLBACK = [
   {
@@ -30047,45 +30056,57 @@ var MODEL_CATALOG_FALLBACK = [
     label: "Claude Sonnet 5.5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-sonnet-5-5"
   },
   {
     alias: "claude-sonnet-5",
     label: "Claude Sonnet 5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-sonnet-5"
   },
   {
     alias: "claude-opus-5-5",
     label: "Claude Opus 5.5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-opus-5-5"
   },
   {
     alias: "claude-opus-5",
     label: "Claude Opus 5",
     context_budget_bytes: 150 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-opus-5"
   },
   {
     alias: "claude-haiku-5-5",
     label: "Claude Haiku 5.5",
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-haiku-5-5"
   },
   {
     alias: "claude-fable-5-1",
     label: "Claude Fable 5.1",
     context_budget_bytes: 60 * 1024 * 1024,
     active: true,
-    verified_at: null
+    verified_at: null,
+    agent: "claude-code",
+    model_id: "claude-fable-5-1"
   }
 ];
-for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
+for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE[DEFAULT_AGENT_ADAPTER])) {
   if (!MODEL_CATALOG_FALLBACK.some((entry) => entry.alias === pinned)) {
     throw new Error(
       `B-881 invariant violated: PINNED_DEFAULT_MODEL_BY_PROFILE value '${pinned}' is missing from MODEL_CATALOG_FALLBACK`
