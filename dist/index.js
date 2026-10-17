@@ -51794,6 +51794,33 @@ var HARMONY_MCP_CONNECTION = {
   args: [`${PLUGIN_ROOT_PLACEHOLDER}/dist/index.js`]
 };
 
+// src/agents/capabilities.ts
+var CAPABILITY_CLASSES = ["harmony-mcp", "read", "web", "edit", "write", "shell"];
+var SHELL_PREFIX = "shell:";
+var FORBID_PREFIX = "forbid:";
+var HARMONY_MCP_FORBID_NS = "harmony-mcp:";
+var PREFIX_TOKEN = /^[a-z][a-z0-9._-]*$/;
+var TOOL_TOKEN = /^[A-Za-z][A-Za-z0-9_]*$/;
+function classProblems(token) {
+  if (CAPABILITY_CLASSES.includes(token)) return [];
+  if (token.startsWith(SHELL_PREFIX)) {
+    return PREFIX_TOKEN.test(token.slice(SHELL_PREFIX.length)) ? [] : [`'${token}': shell prefix must be a lower-case command name`];
+  }
+  if (token.startsWith(FORBID_PREFIX)) {
+    const tool = token.slice(FORBID_PREFIX.length);
+    const name = tool.startsWith(HARMONY_MCP_FORBID_NS) ? tool.slice(HARMONY_MCP_FORBID_NS.length) : tool;
+    return TOOL_TOKEN.test(name) ? [] : [`'${token}': forbid needs a tool name`];
+  }
+  return [`'${token}' is not a capability class`];
+}
+function forbiddenClasses(classes) {
+  return classes.filter((c) => c.startsWith(FORBID_PREFIX));
+}
+function forbiddenTool(cls) {
+  const tool = cls.slice(FORBID_PREFIX.length);
+  return tool.startsWith(HARMONY_MCP_FORBID_NS) ? { harmonyMcp: true, name: tool.slice(HARMONY_MCP_FORBID_NS.length) } : { harmonyMcp: false, name: tool };
+}
+
 // src/agents/credentials.ts
 var CREDENTIAL_MODES = [
   "subscription-token",
@@ -51983,6 +52010,34 @@ function renderClaudeMcp(connection) {
   const doc = { [connection.name]: { command: connection.command, args } };
   return { fileName: ".mcp.json", content: JSON.stringify(doc, null, 2) + "\n" };
 }
+var CLAUDE_CLASS_TOOLS = {
+  "harmony-mcp": ["mcp__harmony__*"],
+  read: ["Read", "Grep", "Glob"],
+  web: ["WebSearch", "WebFetch"],
+  edit: ["Edit"],
+  write: ["Write"],
+  shell: ["Bash"]
+};
+function claudeSkillTools(classes) {
+  const allowed = [];
+  const disallowed = [];
+  for (const c of classes) {
+    const problems = classProblems(c);
+    if (problems.length) throw new Error(problems.join("; "));
+    if (c.startsWith(SHELL_PREFIX)) allowed.push(`Bash(${c.slice(SHELL_PREFIX.length)} *)`);
+    else if (c.startsWith(FORBID_PREFIX)) {
+      const t = forbiddenTool(c);
+      disallowed.push(t.harmonyMcp ? `mcp__harmony__${t.name}` : t.name);
+    } else allowed.push(...CLAUDE_CLASS_TOOLS[c]);
+  }
+  return { allowed: allowed.join(" "), disallowed: disallowed.length ? disallowed.join(" ") : null };
+}
+function projectClaudeSkill(_skill, classes) {
+  const { allowed, disallowed } = claudeSkillTools(classes);
+  const frontmatter = { "allowed-tools": allowed };
+  if (disallowed !== null) frontmatter["disallowed-tools"] = disallowed;
+  return { frontmatter, envelope: null, unenforcedForbids: [], proseRules: [] };
+}
 var SAMPLE_RESULT = JSON.stringify({
   type: "result",
   subtype: "success",
@@ -52067,6 +52122,8 @@ var claudeCodeAdapter = {
     modelSwitch: true,
     structuredOutput: true
   },
+  // 9b. per-skill capabilities (B-1150) — classes → the generated allowed-tools / disallowed-tools lines.
+  skillCapabilities: { project: projectClaudeSkill },
   // 10. telemetry — the `--output-format json` result envelope (src/tools/claude-result-parse.ts).
   telemetry: {
     parse: (stdout, ctx) => {
@@ -52098,6 +52155,7 @@ var CODEX_CD_FLAG = "--cd";
 var CODEX_ADD_DIR_FLAG = "--add-dir";
 var CODEX_MODEL_FLAG = "-m";
 var CODEX_BYPASS_FLAG = "--dangerously-bypass-approvals-and-sandbox";
+var CODEX_HOOK_TRUST_FLAG = "--dangerously-bypass-hook-trust";
 var CODEX_SKILLS_LINK = ".agents/skills";
 var CODEX_PROJECT_DOC_MAX_BYTES = 262144;
 var CODEX_MCP_STARTUP_TIMEOUT_SEC = 60;
@@ -52144,11 +52202,11 @@ function buildCodexArgv(input) {
   const resume = input.resumeSessionId;
   const argv = [CODEX_EXEC_SUBCOMMAND];
   if (resume) {
-    argv.push(CODEX_RESUME_SUBCOMMAND, resume, CODEX_JSON_FLAG, CODEX_BYPASS_FLAG);
+    argv.push(CODEX_RESUME_SUBCOMMAND, resume, CODEX_JSON_FLAG, CODEX_BYPASS_FLAG, CODEX_HOOK_TRUST_FLAG);
   } else {
     argv.push(CODEX_JSON_FLAG);
     if (!extra.includes(CODEX_CD_FLAG) && !extra.includes("-C")) argv.push(CODEX_CD_FLAG, path2.dirname(input.pluginDir));
-    argv.push(CODEX_ADD_DIR_FLAG, input.pluginDir, CODEX_BYPASS_FLAG);
+    argv.push(CODEX_ADD_DIR_FLAG, input.pluginDir, CODEX_BYPASS_FLAG, CODEX_HOOK_TRUST_FLAG);
   }
   if (input.model) argv.push(CODEX_MODEL_FLAG, input.model);
   argv.push(...extra);
@@ -52197,9 +52255,25 @@ var CODEX_WORKER_OVERLAY = [
   "  `/harmony-plugin:<skill>`. Harmony tools are the `harmony` MCP server's tools.",
   "- There are no subagents and no `harmony-build` agent: do the build in this thread.",
   "- There is no in-worker model switch: skip any step that asks you to compare or switch models.",
-  "- There are no hooks: do not rely on a session-start or stop hook having run.",
+  "- Harmony's hooks run (B-1150): a session-start hook records your conduct-session id, and the stop and",
+  "  pre-tool-use gates can block a turn-end or a `gh pr create` / `gh pr merge` with a reason. When one",
+  "  blocks, fix what it names (usually this ticket's board row) in the same turn, then end the turn again.",
   ""
 ].join("\n");
+var CODEX_SKILL_ENVELOPE = `sandbox bypassed + approval never (${CODEX_BYPASS_FLAG}); no per-skill tool narrowing`;
+function codexForbidRule(skill, cls) {
+  const t = forbiddenTool(cls);
+  const tool = t.harmonyMcp ? `the \`harmony\` MCP tool \`${t.name}\`` : `the \`${t.name}\` tool`;
+  return `While running \`$harmony-plugin:${skill}\`, do not call ${tool}.`;
+}
+function projectCodexSkill(skill, classes) {
+  for (const c of classes) {
+    const problems = classProblems(c);
+    if (problems.length) throw new Error(problems.join("; "));
+  }
+  const forbids = forbiddenClasses(classes);
+  return { frontmatter: {}, envelope: CODEX_SKILL_ENVELOPE, unenforcedForbids: forbids, proseRules: forbids.map((f) => codexForbidRule(skill, f)) };
+}
 function events(stdout) {
   const out = [];
   for (const line of stdout.split("\n")) {
@@ -52311,18 +52385,21 @@ var codexAdapter = {
     ],
     standingSecrets: ["HARMONY_API_TOKEN", CODEX_AUTH_FILE_ENV]
   },
-  // 9. capabilities — Codex has subagents and hooks, but this adapter does not use them (build in the
-  //    root thread, daemon one-shot workers need no hook), and `exec resume` cannot be relied on for an
-  //    in-worker model switch (a switch cold-starts a new thread), so the loop is not offered.
+  // 9. capabilities — Codex has subagents, but this adapter builds in the root thread (B-1076). Hooks ARE
+  //    used since B-1150: the same Stop / PreToolUse / SessionStart hooks, written to $CODEX_HOME/hooks.json
+  //    and trusted by --dangerously-bypass-hook-trust. `exec resume` cannot be relied on for an in-worker
+  //    model switch (a switch cold-starts a new thread), so the loop is not offered.
   capabilities: {
     subagents: false,
-    hooks: false,
+    hooks: true,
     skills: true,
     mcp: true,
     resume: true,
     modelSwitch: false,
     structuredOutput: true
   },
+  // 9b. per-skill capabilities (B-1150) — one envelope; `forbid:` classes become AGENTS.md prose rules.
+  skillCapabilities: { project: projectCodexSkill },
   // 10. telemetry — the `--json` JSONL stream: thread id from thread.started, the terminal turn event.
   //     Plan-included login cache ⇒ the cost regime is derived (never chosen) and costUsd is null.
   telemetry: {

@@ -10,6 +10,7 @@ import {
   CODEX_AUTH_FILE_ENV,
   CODEX_MCP_ENV_VARS,
   CODEX_PROJECT_DOC_MAX_BYTES,
+  CODEX_WORKER_OVERLAY,
   codexAdapter as A,
   codexPrompt,
   parseCodexThreadId,
@@ -76,16 +77,16 @@ describe('2. auth — login-cache file, never an API key', () => {
 
 describe('3. headless', () => {
   const build = A.headless.buildArgv;
-  it('cold start: exec --json --cd <root> … bypass, prompt last', () => {
+  it('cold start: exec --json --cd <root> … bypass, hook trust (B-1150), prompt last', () => {
     expect(build({ pluginDir: '/workspace/workspace/plugin', prompt: 'go' })).toEqual([
       'exec', '--json', '--cd', '/workspace/workspace', '--add-dir', '/workspace/workspace/plugin',
-      '--dangerously-bypass-approvals-and-sandbox', 'go',
+      '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust', 'go',
     ]);
   });
   it('model is -m, extra flags are passed through in order, prompt stays last', () => {
     expect(build({ pluginDir: '/w/plugin', prompt: 'go', model: 'gpt-x', extraFlags: ['--skip-git-repo-check'] })).toEqual([
       'exec', '--json', '--cd', '/w', '--add-dir', '/w/plugin', '--dangerously-bypass-approvals-and-sandbox',
-      '-m', 'gpt-x', '--skip-git-repo-check', 'go',
+      '--dangerously-bypass-hook-trust', '-m', 'gpt-x', '--skip-git-repo-check', 'go',
     ]);
   });
   it('an upstream --cd wins over the derived root', () => {
@@ -95,7 +96,7 @@ describe('3. headless', () => {
   });
   it('resume: `exec resume <id>` with only the flags resume accepts (no --cd / --add-dir)', () => {
     const argv = build({ pluginDir: '/w/plugin', prompt: 'next', resumeSessionId: 'abc', model: 'm' });
-    expect(argv).toEqual(['exec', 'resume', 'abc', '--json', '--dangerously-bypass-approvals-and-sandbox', '-m', 'm', 'next']);
+    expect(argv).toEqual(['exec', 'resume', 'abc', '--json', '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust', '-m', 'm', 'next']);
     expect(argv).not.toContain('--cd');
     expect(argv).not.toContain('--add-dir');
   });
@@ -141,6 +142,11 @@ describe('5. instructions — one generated AGENTS.md', () => {
     { label: 'web/CLAUDE.md', content: 'WEB-BODY\n\n' },
   ];
   const md = renderCodexAgentsMd(sources);
+  it('B-1150: the overlay says the hooks run and no longer says there are none', () => {
+    expect(CODEX_WORKER_OVERLAY).not.toMatch(/There are no hooks/);
+    expect(CODEX_WORKER_OVERLAY).toMatch(/hooks run/);
+    expect(CODEX_WORKER_OVERLAY).toMatch(/same turn/);
+  });
   it('concatenates the sources in the given order under explicit headers, then the overlay', () => {
     const at = (s: string) => md.indexOf(s);
     expect(at('WS-BODY')).toBeGreaterThan(-1);
@@ -206,10 +212,10 @@ describe('8/9. env + capabilities', () => {
     expect(A.env.standingSecrets).toContain(CODEX_AUTH_FILE_ENV);
     expect(A.env.allowlist).not.toContain('OPENAI_API_KEY');
   });
-  it('declares no subagents, no hooks, no model switch; skills, mcp, resume and structured output', () => {
+  it('declares no subagents and no model switch; hooks (B-1150), skills, mcp, resume and structured output', () => {
     expect(A.capabilities).toEqual({
       subagents: false,
-      hooks: false,
+      hooks: true,
       skills: true,
       mcp: true,
       resume: true,
@@ -244,6 +250,19 @@ describe('10. telemetry', () => {
     expect(A.telemetry.parse(fixture, ctx)?.usage).toEqual({ inputTokens: 5400, cacheReadInputTokens: 4100, outputTokens: 610 });
     const failedOnly = '{"type":"thread.started","thread_id":"t"}\n{"type":"turn.failed","error":{"message":"boom"}}';
     expect(A.telemetry.parse(failedOnly, ctx)?.usage).toBeNull();
+  });
+  it('B-1150: the `error` items --dangerously-bypass-hook-trust adds do NOT make a completed turn an error (isError keys on turn.failed only)', () => {
+    const withHookTrustNoise = [
+      '{"type":"thread.started","thread_id":"t"}',
+      // the two items codex 0.163.0 emitted under the flag in the B-1150 mock-provider run, verbatim
+      '{"type":"item.completed","item":{"id":"item_0","type":"error","message":"`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation."}}',
+      '{"type":"item.completed","item":{"id":"item_1","type":"error","message":"`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation."}}',
+      '{"type":"turn.started"}',
+      '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}',
+    ].join('\n');
+    expect(A.telemetry.parse(withHookTrustNoise, ctx)).toMatchObject({ isError: false, sessionId: 't' });
+    // and the same noise with a turn.failed IS an error (positive control)
+    expect(A.telemetry.parse(withHookTrustNoise.replace('"turn.completed"', '"turn.failed"'), ctx)).toMatchObject({ isError: true });
   });
   it('a failed turn is an error', () => {
     const failed = '{"type":"thread.started","thread_id":"t"}\n{"type":"turn.failed","error":{"message":"boom"}}';

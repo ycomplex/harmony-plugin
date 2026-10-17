@@ -16,8 +16,9 @@
 // fallback (B-934).
 
 import { posix as path } from 'node:path';
-import type { AgentAdapter, CredentialResolution, HeadlessInput, McpConnection, TelemetryUsage } from './contract.js';
+import type { AgentAdapter, CredentialResolution, HeadlessInput, McpConnection, SkillCapabilityProjection, TelemetryUsage } from './contract.js';
 import { PLUGIN_ROOT_PLACEHOLDER } from './contract.js';
+import { classProblems, forbiddenClasses, forbiddenTool, type CapabilityClass } from './capabilities.js';
 import { deriveCostRegime } from './credentials.js';
 
 // --- constants the scripts and tests share ------------------------------------------------------------
@@ -44,6 +45,10 @@ export const CODEX_ADD_DIR_FLAG = '--add-dir';
 export const CODEX_MODEL_FLAG = '-m';
 /** The explicit bypass: the disposable single-ticket container IS the sandbox (B-694). */
 export const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
+/** B-1150: without it Codex 0.163 does not run $CODEX_HOME/hooks.json at all (verified). Accepted by both
+ *  `exec` and `exec resume`. The hooks it trusts are the ones codex-provision.ts wrote from the canonical
+ *  definition (src/agents/hooks.ts) into a worker-owned CODEX_HOME. */
+export const CODEX_HOOK_TRUST_FLAG = '--dangerously-bypass-hook-trust';
 
 /** The skills directory Codex discovers (`.agents/skills` between the cwd and the repo root). */
 export const CODEX_SKILLS_LINK = '.agents/skills';
@@ -124,13 +129,13 @@ function buildCodexArgv(input: HeadlessInput): string[] {
   if (resume) {
     // `codex exec resume <id>` accepts neither --cd nor --add-dir (0.163.0 --help): the working root
     // is the process cwd, which provision.sh sets (cd "$WORKDIR") for every launch.
-    argv.push(CODEX_RESUME_SUBCOMMAND, resume, CODEX_JSON_FLAG, CODEX_BYPASS_FLAG);
+    argv.push(CODEX_RESUME_SUBCOMMAND, resume, CODEX_JSON_FLAG, CODEX_BYPASS_FLAG, CODEX_HOOK_TRUST_FLAG);
   } else {
     argv.push(CODEX_JSON_FLAG);
     // The workspace root is the plugin checkout's parent (…/workspace/plugin → …/workspace), where the
     // generated AGENTS.md lives. An upstream --cd/-C wins.
     if (!extra.includes(CODEX_CD_FLAG) && !extra.includes('-C')) argv.push(CODEX_CD_FLAG, path.dirname(input.pluginDir));
-    argv.push(CODEX_ADD_DIR_FLAG, input.pluginDir, CODEX_BYPASS_FLAG);
+    argv.push(CODEX_ADD_DIR_FLAG, input.pluginDir, CODEX_BYPASS_FLAG, CODEX_HOOK_TRUST_FLAG);
   }
   if (input.model) argv.push(CODEX_MODEL_FLAG, input.model);
   argv.push(...extra);
@@ -198,9 +203,47 @@ export const CODEX_WORKER_OVERLAY = [
   '  `/harmony-plugin:<skill>`. Harmony tools are the `harmony` MCP server\'s tools.',
   '- There are no subagents and no `harmony-build` agent: do the build in this thread.',
   '- There is no in-worker model switch: skip any step that asks you to compare or switch models.',
-  '- There are no hooks: do not rely on a session-start or stop hook having run.',
+  '- Harmony\'s hooks run (B-1150): a session-start hook records your conduct-session id, and the stop and',
+  '  pre-tool-use gates can block a turn-end or a `gh pr create` / `gh pr merge` with a reason. When one',
+  '  blocks, fix what it names (usually this ticket\'s board row) in the same turn, then end the turn again.',
   '',
 ].join('\n');
+
+// --- 9b. per-skill capabilities (B-1150) -----------------------------------------------------------------
+
+/** Every Codex leg runs in ONE envelope, whatever the skill: the container is the sandbox. */
+export const CODEX_SKILL_ENVELOPE = `sandbox bypassed + approval never (${CODEX_BYPASS_FLAG}); no per-skill tool narrowing`;
+
+function codexForbidRule(skill: string, cls: `forbid:${string}`): string {
+  const t = forbiddenTool(cls);
+  const tool = t.harmonyMcp ? `the \`harmony\` MCP tool \`${t.name}\`` : `the \`${t.name}\` tool`;
+  return `While running \`$harmony-plugin:${skill}\`, do not call ${tool}.`;
+}
+
+function projectCodexSkill(skill: string, classes: readonly CapabilityClass[]): SkillCapabilityProjection {
+  for (const c of classes) {
+    const problems = classProblems(c);
+    if (problems.length) throw new Error(problems.join('; '));
+  }
+  // Codex reads no per-skill tool list, so no `forbid:` class is enforced: each one becomes a prose rule.
+  const forbids = forbiddenClasses(classes);
+  return { frontmatter: {}, envelope: CODEX_SKILL_ENVELOPE, unenforcedForbids: forbids, proseRules: forbids.map((f) => codexForbidRule(skill, f)) };
+}
+
+/** The overlay section listing every skill's unenforced `forbid:` rules, or '' when there are none. */
+export function renderCodexSkillRules(skills: ReadonlyArray<{ name: string; classes: readonly CapabilityClass[] }>): string {
+  const rules = skills.flatMap((s) => projectCodexSkill(s.name, s.classes).proseRules);
+  if (rules.length === 0) return '';
+  return [
+    '### Skill tool rules Codex does not enforce (B-1150)',
+    '',
+    'Each skill declares runtime-neutral capability classes. Claude Code enforces the `forbid:` ones as',
+    '`disallowed-tools`; Codex has no per-skill tool list, so they are rules you keep yourself:',
+    '',
+    ...rules.map((r) => `- ${r}`),
+    '',
+  ].join('\n');
+}
 
 export interface InstructionSource {
   /** Shown in the source header, e.g. `workspace/CLAUDE.md`. */
@@ -397,18 +440,22 @@ export const codexAdapter: AgentAdapter = {
     standingSecrets: ['HARMONY_API_TOKEN', CODEX_AUTH_FILE_ENV],
   },
 
-  // 9. capabilities — Codex has subagents and hooks, but this adapter does not use them (build in the
-  //    root thread, daemon one-shot workers need no hook), and `exec resume` cannot be relied on for an
-  //    in-worker model switch (a switch cold-starts a new thread), so the loop is not offered.
+  // 9. capabilities — Codex has subagents, but this adapter builds in the root thread (B-1076). Hooks ARE
+  //    used since B-1150: the same Stop / PreToolUse / SessionStart hooks, written to $CODEX_HOME/hooks.json
+  //    and trusted by --dangerously-bypass-hook-trust. `exec resume` cannot be relied on for an in-worker
+  //    model switch (a switch cold-starts a new thread), so the loop is not offered.
   capabilities: {
     subagents: false,
-    hooks: false,
+    hooks: true,
     skills: true,
     mcp: true,
     resume: true,
     modelSwitch: false,
     structuredOutput: true,
   },
+
+  // 9b. per-skill capabilities (B-1150) — one envelope; `forbid:` classes become AGENTS.md prose rules.
+  skillCapabilities: { project: projectCodexSkill },
 
   // 10. telemetry — the `--json` JSONL stream: thread id from thread.started, the terminal turn event.
   //     Plan-included login cache ⇒ the cost regime is derived (never chosen) and costUsd is null.
@@ -417,6 +464,8 @@ export const codexAdapter: AgentAdapter = {
       const evs = events(stdout);
       const terminal = [...evs].reverse().find((e) => e.type === 'turn.completed' || e.type === 'turn.failed');
       if (!terminal) return null;
+      // isError keys on `turn.failed` ONLY: --dangerously-bypass-hook-trust adds two `error` items to
+      // every stream (B-1150), which must not mark a completed turn as errored.
       return {
         runtime: 'codex',
         model: ctx.model,

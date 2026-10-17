@@ -1,6 +1,7 @@
 ---
 name: harmony-revise-scope
 description: Draft a "revise scope / back up" reconciliation for a ticket whose downstream gate revealed the upstream spec was scoped too narrowly — back the run up to an earlier discovery gate (clarify/decompose/design) or the build gate (a release-gate merge conflict) and re-run it against the real scope. Triggers on "harmony revise-scope B-123", "back up B-123 to re-clarify", "the scope grew — re-decompose B-123", a `revise-scope`/"back up" verb at a conductor gate pause, or being delegated by harmony-conduct when iterate feedback reveals the upstream scope grew. Drafts a concrete reconciliation brief (target gate + broadened scope + supersede-list vs keep-list) for the human to accept or reject.
+capabilities: harmony-mcp read web
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 ---
 

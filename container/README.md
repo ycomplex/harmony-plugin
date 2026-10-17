@@ -995,6 +995,15 @@ local-Docker and cloud profiles list no `agents`, so the daemon parks a Codex ru
 (`agent-ineligible`) before any worker starts. The daemon also refuses to boot a profile whose `agents`
 list names an adapter that is not registered.
 
+**The turn-end floor (B-1150).** A Codex leg runs the same Stop and PreToolUse gates as a Claude leg:
+`harmony agent render` writes `$CODEX_HOME/hooks.json` from the canonical hook definition
+(`src/agents/hooks.ts`, absolute plugin root), and the adapter's argv carries
+`--dangerously-bypass-hook-trust` on cold start and resume (without it Codex runs no hooks). A blocked
+turn-end makes the leg fix its board row in the same turn; the daemon's `isCleanRowShape` classifier
+(`src/daemon/classify.ts`) parks any exit that still slips through. Each skill's `forbid:` capability
+classes, which Codex cannot enforce per skill, are listed as rules in the generated `AGENTS.md`. Details:
+`docs/agent-adapter-contract.md` → "The Codex turn-end floor" and "Skill capability classes".
+
 **One image.** The deployment's single `worker_image` is built from the `agent-codex` target and carries
 both CLIs. Build it for a hand-run host with
 `docker build -f container/Dockerfile --target agent-codex -t harmony-build-env container`.

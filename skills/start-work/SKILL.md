@@ -1,6 +1,7 @@
 ---
 name: start-work
 description: Use when the user wants to start working on a task, feature, or bug fix. Triggers on phrases like "work on", "start", "pick up", "implement", "fix", or any mention of a Harmony task ID (e.g., B-123). Also use when the user says "let's do X" or describes work they want to begin. In manual-mode projects this is the entry point for new development work — it behaves exactly as before. In opinionated-mode projects, /harmony-conduct is the entry point that drives the whole lifecycle; this skill implements the planning + building gates the conductor delegates to, and can be invoked directly to run just those gates.
+capabilities: harmony-mcp read write edit shell forbid:harmony-mcp:record_decision forbid:harmony-mcp:supersede_decision forbid:harmony-mcp:update_knowledge_entry
 allowed-tools: mcp__harmony__* Read Grep Glob Write Edit Bash
 disallowed-tools: mcp__harmony__record_decision mcp__harmony__supersede_decision mcp__harmony__update_knowledge_entry
 ---

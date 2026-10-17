@@ -1,6 +1,7 @@
 ---
 name: harmony-clarify
 description: Clarify a ticket's intent into a specification (Proposed → Clarified) — elicitation-first (B-462): infer from the ticket + Accepted knowledge, interrogate only the load-bearing residual through a question exchange BEFORE drafting, then draft. Triggers on "clarify B-123", "what does this ticket mean", "harmony clarify", or picking up a Proposed-state ticket. Queries domain knowledge first, opens an elicitation exchange when intent is opaque, drafts a clarification, and files it as a brief for accept/edit/defer.
+capabilities: harmony-mcp read web
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 ---
 

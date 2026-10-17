@@ -42187,6 +42187,51 @@ var CAPABILITIES = [
   "structuredOutput"
 ];
 
+// src/agents/capabilities.ts
+var CAPABILITY_CLASSES = ["harmony-mcp", "read", "web", "edit", "write", "shell"];
+var SHELL_PREFIX = "shell:";
+var FORBID_PREFIX = "forbid:";
+var HARMONY_MCP_FORBID_NS = "harmony-mcp:";
+var PREFIX_TOKEN = /^[a-z][a-z0-9._-]*$/;
+var TOOL_TOKEN = /^[A-Za-z][A-Za-z0-9_]*$/;
+function classProblems(token) {
+  if (CAPABILITY_CLASSES.includes(token)) return [];
+  if (token.startsWith(SHELL_PREFIX)) {
+    return PREFIX_TOKEN.test(token.slice(SHELL_PREFIX.length)) ? [] : [`'${token}': shell prefix must be a lower-case command name`];
+  }
+  if (token.startsWith(FORBID_PREFIX)) {
+    const tool = token.slice(FORBID_PREFIX.length);
+    const name = tool.startsWith(HARMONY_MCP_FORBID_NS) ? tool.slice(HARMONY_MCP_FORBID_NS.length) : tool;
+    return TOOL_TOKEN.test(name) ? [] : [`'${token}': forbid needs a tool name`];
+  }
+  return [`'${token}' is not a capability class`];
+}
+function parseCapabilities(value) {
+  if (value === void 0 || value.trim() === "") return { ok: false, problems: ["no capabilities declared"] };
+  const tokens = value.trim().split(/\s+/);
+  const problems = tokens.flatMap(classProblems);
+  const seen = /* @__PURE__ */ new Set();
+  for (const t of tokens) {
+    if (seen.has(t)) problems.push(`'${t}' is declared twice`);
+    seen.add(t);
+  }
+  if (!tokens.includes("harmony-mcp")) problems.push("'harmony-mcp' is required (a skill reads the board through it)");
+  return problems.length ? { ok: false, problems } : { ok: true, classes: tokens };
+}
+function forbiddenClasses(classes) {
+  return classes.filter((c) => c.startsWith(FORBID_PREFIX));
+}
+function forbiddenTool(cls) {
+  const tool = cls.slice(FORBID_PREFIX.length);
+  return tool.startsWith(HARMONY_MCP_FORBID_NS) ? { harmonyMcp: true, name: tool.slice(HARMONY_MCP_FORBID_NS.length) } : { harmonyMcp: false, name: tool };
+}
+function capabilitiesFromSkillMd(raw) {
+  const m = /^---\n([\s\S]*?)\n---\n/.exec(raw);
+  if (!m) return void 0;
+  const line = m[1].split("\n").find((l) => /^capabilities:/.test(l));
+  return line === void 0 ? void 0 : line.slice("capabilities:".length).trim();
+}
+
 // src/agents/credentials.ts
 var CREDENTIAL_MODES = [
   "subscription-token",
@@ -42376,6 +42421,34 @@ function renderClaudeMcp(connection) {
   const doc = { [connection.name]: { command: connection.command, args } };
   return { fileName: ".mcp.json", content: JSON.stringify(doc, null, 2) + "\n" };
 }
+var CLAUDE_CLASS_TOOLS = {
+  "harmony-mcp": ["mcp__harmony__*"],
+  read: ["Read", "Grep", "Glob"],
+  web: ["WebSearch", "WebFetch"],
+  edit: ["Edit"],
+  write: ["Write"],
+  shell: ["Bash"]
+};
+function claudeSkillTools(classes) {
+  const allowed = [];
+  const disallowed = [];
+  for (const c of classes) {
+    const problems = classProblems(c);
+    if (problems.length) throw new Error(problems.join("; "));
+    if (c.startsWith(SHELL_PREFIX)) allowed.push(`Bash(${c.slice(SHELL_PREFIX.length)} *)`);
+    else if (c.startsWith(FORBID_PREFIX)) {
+      const t = forbiddenTool(c);
+      disallowed.push(t.harmonyMcp ? `mcp__harmony__${t.name}` : t.name);
+    } else allowed.push(...CLAUDE_CLASS_TOOLS[c]);
+  }
+  return { allowed: allowed.join(" "), disallowed: disallowed.length ? disallowed.join(" ") : null };
+}
+function projectClaudeSkill(_skill, classes) {
+  const { allowed, disallowed } = claudeSkillTools(classes);
+  const frontmatter = { "allowed-tools": allowed };
+  if (disallowed !== null) frontmatter["disallowed-tools"] = disallowed;
+  return { frontmatter, envelope: null, unenforcedForbids: [], proseRules: [] };
+}
 var SAMPLE_RESULT = JSON.stringify({
   type: "result",
   subtype: "success",
@@ -42460,6 +42533,8 @@ var claudeCodeAdapter = {
     modelSwitch: true,
     structuredOutput: true
   },
+  // 9b. per-skill capabilities (B-1150) — classes → the generated allowed-tools / disallowed-tools lines.
+  skillCapabilities: { project: projectClaudeSkill },
   // 10. telemetry — the `--output-format json` result envelope (src/tools/claude-result-parse.ts).
   telemetry: {
     parse: (stdout, ctx) => {
@@ -42492,6 +42567,7 @@ var CODEX_CD_FLAG = "--cd";
 var CODEX_ADD_DIR_FLAG = "--add-dir";
 var CODEX_MODEL_FLAG = "-m";
 var CODEX_BYPASS_FLAG = "--dangerously-bypass-approvals-and-sandbox";
+var CODEX_HOOK_TRUST_FLAG = "--dangerously-bypass-hook-trust";
 var CODEX_SKILLS_LINK = ".agents/skills";
 var CODEX_PROJECT_DOC_MAX_BYTES = 262144;
 var CODEX_MCP_STARTUP_TIMEOUT_SEC = 60;
@@ -42538,11 +42614,11 @@ function buildCodexArgv(input) {
   const resume = input.resumeSessionId;
   const argv = [CODEX_EXEC_SUBCOMMAND];
   if (resume) {
-    argv.push(CODEX_RESUME_SUBCOMMAND, resume, CODEX_JSON_FLAG, CODEX_BYPASS_FLAG);
+    argv.push(CODEX_RESUME_SUBCOMMAND, resume, CODEX_JSON_FLAG, CODEX_BYPASS_FLAG, CODEX_HOOK_TRUST_FLAG);
   } else {
     argv.push(CODEX_JSON_FLAG);
     if (!extra.includes(CODEX_CD_FLAG) && !extra.includes("-C")) argv.push(CODEX_CD_FLAG, path2.dirname(input.pluginDir));
-    argv.push(CODEX_ADD_DIR_FLAG, input.pluginDir, CODEX_BYPASS_FLAG);
+    argv.push(CODEX_ADD_DIR_FLAG, input.pluginDir, CODEX_BYPASS_FLAG, CODEX_HOOK_TRUST_FLAG);
   }
   if (input.model) argv.push(CODEX_MODEL_FLAG, input.model);
   argv.push(...extra);
@@ -42591,9 +42667,38 @@ var CODEX_WORKER_OVERLAY = [
   "  `/harmony-plugin:<skill>`. Harmony tools are the `harmony` MCP server's tools.",
   "- There are no subagents and no `harmony-build` agent: do the build in this thread.",
   "- There is no in-worker model switch: skip any step that asks you to compare or switch models.",
-  "- There are no hooks: do not rely on a session-start or stop hook having run.",
+  "- Harmony's hooks run (B-1150): a session-start hook records your conduct-session id, and the stop and",
+  "  pre-tool-use gates can block a turn-end or a `gh pr create` / `gh pr merge` with a reason. When one",
+  "  blocks, fix what it names (usually this ticket's board row) in the same turn, then end the turn again.",
   ""
 ].join("\n");
+var CODEX_SKILL_ENVELOPE = `sandbox bypassed + approval never (${CODEX_BYPASS_FLAG}); no per-skill tool narrowing`;
+function codexForbidRule(skill, cls) {
+  const t = forbiddenTool(cls);
+  const tool = t.harmonyMcp ? `the \`harmony\` MCP tool \`${t.name}\`` : `the \`${t.name}\` tool`;
+  return `While running \`$harmony-plugin:${skill}\`, do not call ${tool}.`;
+}
+function projectCodexSkill(skill, classes) {
+  for (const c of classes) {
+    const problems = classProblems(c);
+    if (problems.length) throw new Error(problems.join("; "));
+  }
+  const forbids = forbiddenClasses(classes);
+  return { frontmatter: {}, envelope: CODEX_SKILL_ENVELOPE, unenforcedForbids: forbids, proseRules: forbids.map((f) => codexForbidRule(skill, f)) };
+}
+function renderCodexSkillRules(skills) {
+  const rules = skills.flatMap((s) => projectCodexSkill(s.name, s.classes).proseRules);
+  if (rules.length === 0) return "";
+  return [
+    "### Skill tool rules Codex does not enforce (B-1150)",
+    "",
+    "Each skill declares runtime-neutral capability classes. Claude Code enforces the `forbid:` ones as",
+    "`disallowed-tools`; Codex has no per-skill tool list, so they are rules you keep yourself:",
+    "",
+    ...rules.map((r) => `- ${r}`),
+    ""
+  ].join("\n");
+}
 var GENERATED_AGENTS_HEADER = "# Harmony worker instructions (generated)";
 var SOURCE_MARKER = (label) => `<!-- harmony-agents-md source: ${label} -->`;
 function renderCodexAgentsMd(sources, overlay = CODEX_WORKER_OVERLAY) {
@@ -42729,18 +42834,21 @@ var codexAdapter = {
     ],
     standingSecrets: ["HARMONY_API_TOKEN", CODEX_AUTH_FILE_ENV]
   },
-  // 9. capabilities — Codex has subagents and hooks, but this adapter does not use them (build in the
-  //    root thread, daemon one-shot workers need no hook), and `exec resume` cannot be relied on for an
-  //    in-worker model switch (a switch cold-starts a new thread), so the loop is not offered.
+  // 9. capabilities — Codex has subagents, but this adapter builds in the root thread (B-1076). Hooks ARE
+  //    used since B-1150: the same Stop / PreToolUse / SessionStart hooks, written to $CODEX_HOME/hooks.json
+  //    and trusted by --dangerously-bypass-hook-trust. `exec resume` cannot be relied on for an in-worker
+  //    model switch (a switch cold-starts a new thread), so the loop is not offered.
   capabilities: {
     subagents: false,
-    hooks: false,
+    hooks: true,
     skills: true,
     mcp: true,
     resume: true,
     modelSwitch: false,
     structuredOutput: true
   },
+  // 9b. per-skill capabilities (B-1150) — one envelope; `forbid:` classes become AGENTS.md prose rules.
+  skillCapabilities: { project: projectCodexSkill },
   // 10. telemetry — the `--json` JSONL stream: thread id from thread.started, the terminal turn event.
   //     Plan-included login cache ⇒ the cost regime is derived (never chosen) and costUsd is null.
   telemetry: {
@@ -43069,6 +43177,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync as readFileSync3,
+  readdirSync,
   readlinkSync,
   statSync,
   symlinkSync,
@@ -43077,6 +43186,75 @@ import {
   appendFileSync
 } from "node:fs";
 import { join as join3, resolve } from "node:path";
+
+// src/agents/hooks.ts
+var HARMONY_HOOKS = {
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": `if [ ! -f "{pluginRoot}/dist/index.js" ]; then cd "{pluginRoot}" && npm install --silent && npm run build >&2; fi; echo '{}'`,
+            "timeout": 180
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": `d="\${HARMONY_HOME:-$HOME/.harmony}/conduct-sessions"; mkdir -p "$d" 2>/dev/null; i=$(cat 2>/dev/null | tr -d '\\n' | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p'); if [ -n "$i" ]; then printf '%s' "$i" > "$d/current-session"; fi; find "$d" -type f -mtime +7 -delete 2>/dev/null; printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Harmony conduct-session id: %s. A session that drives a Harmony ticket writes its conduct breadcrumb at %s/%s.json (see the harmony-conduct skill)."}}' "$i" "$d" "$i"`,
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": 'sh "{pluginRoot}/hooks/stop-gate.sh"',
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": 'sh "{pluginRoot}/hooks/pretooluse-gate.sh"',
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+};
+function resolveRoot(def, root) {
+  const hooks = {};
+  for (const [event, groups] of Object.entries(def.hooks)) {
+    hooks[event] = groups.map((g) => ({
+      ...g,
+      hooks: g.hooks.map((h) => ({ ...h, command: h.command.split(PLUGIN_ROOT_PLACEHOLDER).join(root) }))
+    }));
+  }
+  return { hooks };
+}
+function renderCodexHooks(pluginRoot, def = HARMONY_HOOKS) {
+  if (!pluginRoot.startsWith("/") || /["$`\\]/.test(pluginRoot)) {
+    throw new Error(`plugin root '${pluginRoot}' must be an absolute path with no quote, $, backtick or backslash`);
+  }
+  return { fileName: "hooks.json", content: JSON.stringify(resolveRoot(def, pluginRoot), null, 2) + "\n" };
+}
+
+// src/agents/codex-provision.ts
 function isFile(p) {
   try {
     return statSync(p).isFile();
@@ -43104,6 +43282,27 @@ function collectInstructionSources(input) {
     out.push({ label: c.label, content: readFileSync3(c.path, "utf8") });
   }
   return out;
+}
+function collectSkillCapabilities(pluginDir) {
+  const root = join3(resolve(pluginDir), "skills");
+  if (!existsSync2(root)) return [];
+  const out = [];
+  for (const name of readdirSync(root).sort()) {
+    const file = join3(root, name, "SKILL.md");
+    if (!isFile(file)) continue;
+    const value = capabilitiesFromSkillMd(readFileSync3(file, "utf8"));
+    if (value === void 0) continue;
+    const parsed = parseCapabilities(value);
+    if (!parsed.ok) throw new Error(`skills/${name}/SKILL.md capabilities: ${parsed.problems.join("; ")}`);
+    out.push({ name, classes: parsed.classes });
+  }
+  return out;
+}
+function codexOverlayFor(pluginDir) {
+  const rules = renderCodexSkillRules(collectSkillCapabilities(pluginDir));
+  return rules ? `${CODEX_WORKER_OVERLAY.replace(/\s+$/, "")}
+
+${rules}` : CODEX_WORKER_OVERLAY;
 }
 function excludeFromGit(workspaceDir, entries) {
   const gitDir = join3(workspaceDir, ".git");
@@ -43151,7 +43350,7 @@ function provisionCodex(input) {
   const codexHome = resolve(input.codexHome);
   const sources = collectInstructionSources(input);
   if (sources.length === 0) throw new Error(`no CLAUDE.md found under ${workspaceDir} / ${input.pluginDir} \u2014 nothing to build AGENTS.md from`);
-  const agentsMd = renderCodexAgentsMd(sources);
+  const agentsMd = renderCodexAgentsMd(sources, codexOverlayFor(input.pluginDir));
   const problems = verifyCodexAgentsMd(agentsMd, sources);
   if (problems.length) throw new Error(`AGENTS.md preflight failed: ${problems.join("; ")}`);
   const agentsMdPath = join3(workspaceDir, "AGENTS.md");
@@ -43162,12 +43361,16 @@ function provisionCodex(input) {
   const config = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve(input.pluginDir) });
   const configPath = join3(codexHome, config.fileName);
   writeFileSync(configPath, config.content, { mode: 420 });
+  const hooks = renderCodexHooks(resolve(input.pluginDir));
+  const hooksPath = join3(codexHome, hooks.fileName);
+  writeFileSync(hooksPath, hooks.content, { mode: 420 });
   writeFileSync(agentsMdPath, agentsMd);
   const skillsLink = linkSkills(workspaceDir, input.pluginDir);
   excludeFromGit(workspaceDir, ["AGENTS.md", ".agents/"]);
   const authInstalledAt = installAuth(input.authFile, codexHome);
   return {
     configPath,
+    hooksPath,
     agentsMdPath,
     agentsMdBytes: Buffer.byteLength(agentsMd, "utf8"),
     sources: sources.map((s) => s.label),

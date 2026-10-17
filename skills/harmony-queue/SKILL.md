@@ -1,6 +1,7 @@
 ---
 name: harmony-queue
 description: Show what's awaiting ME — the opinionated-mode pull queue. Triggers on "my queue", "what's awaiting me", "what should I look at", "harmony queue", "what needs my input". Read-only conductor view that lists every ticket where the ball is in the human's court, with its one-line decision and brief reason.
+capabilities: harmony-mcp read
 allowed-tools: mcp__harmony__* Read Grep Glob
 ---
 
