@@ -363,32 +363,32 @@ describe('getModelForGate (B-772 three-level fallback)', () => {
 
   it('level 3: an empty run_config falls through to the pinned per-deployment-profile default (prod)', () => {
     expect(getModelForGate(EMPTY_RUN_CONFIG, 'build', PROD_ENV)).toBe(
-      PINNED_DEFAULT_MODEL_BY_PROFILE.prod,
+      PINNED_DEFAULT_MODEL_BY_PROFILE['claude-code'].prod!,
     );
   });
 
   it('level 3: resolves the STAGING pin when HARMONY_SUPABASE_URL points at the staging project', () => {
     expect(getModelForGate(EMPTY_RUN_CONFIG, 'build', STAGING_ENV)).toBe(
-      PINNED_DEFAULT_MODEL_BY_PROFILE.staging,
+      PINNED_DEFAULT_MODEL_BY_PROFILE['claude-code'].staging!,
     );
   });
 
   it('level 3: an empty run_config with a null gate still falls through to the pinned default', () => {
     expect(getModelForGate(EMPTY_RUN_CONFIG, null, PROD_ENV)).toBe(
-      PINNED_DEFAULT_MODEL_BY_PROFILE.prod,
+      PINNED_DEFAULT_MODEL_BY_PROFILE['claude-code'].prod!,
     );
   });
 
   it('level 3: an unrecognized/custom Supabase URL falls back to the prod pin, never undefined', () => {
     expect(
       getModelForGate(EMPTY_RUN_CONFIG, 'build', { HARMONY_SUPABASE_URL: 'https://example.com' }),
-    ).toBe(PINNED_DEFAULT_MODEL_BY_PROFILE.prod);
+    ).toBe(PINNED_DEFAULT_MODEL_BY_PROFILE['claude-code'].prod!);
   });
 
   it('level 3: a malformed Supabase URL degrades to the prod pin rather than throwing', () => {
     expect(
       getModelForGate(EMPTY_RUN_CONFIG, 'build', { HARMONY_SUPABASE_URL: 'not a url' }),
-    ).toBe(PINNED_DEFAULT_MODEL_BY_PROFILE.prod);
+    ).toBe(PINNED_DEFAULT_MODEL_BY_PROFILE['claude-code'].prod!);
   });
 
   it('defaults env to process.env when no third argument is given (never throws)', () => {
@@ -460,10 +460,10 @@ describe('getAutoApproveGates', () => {
 
 describe('PINNED_DEFAULT_MODEL_BY_PROFILE', () => {
   it('carries an explicit, non-empty pin for both known deployment profiles', () => {
-    expect(PINNED_DEFAULT_MODEL_BY_PROFILE.prod).toEqual(expect.any(String));
-    expect(PINNED_DEFAULT_MODEL_BY_PROFILE.prod.length).toBeGreaterThan(0);
-    expect(PINNED_DEFAULT_MODEL_BY_PROFILE.staging).toEqual(expect.any(String));
-    expect(PINNED_DEFAULT_MODEL_BY_PROFILE.staging.length).toBeGreaterThan(0);
+    expect(PINNED_DEFAULT_MODEL_BY_PROFILE['claude-code'].prod!).toEqual(expect.any(String));
+    expect(PINNED_DEFAULT_MODEL_BY_PROFILE['claude-code'].prod!.length).toBeGreaterThan(0);
+    expect(PINNED_DEFAULT_MODEL_BY_PROFILE['claude-code'].staging!).toEqual(expect.any(String));
+    expect(PINNED_DEFAULT_MODEL_BY_PROFILE['claude-code'].staging!.length).toBeGreaterThan(0);
   });
 });
 
@@ -476,7 +476,7 @@ describe('PINNED_DEFAULT_MODEL_BY_PROFILE', () => {
 
 describe('B-881: isAllowedModelAlias (no client — degrade-only fallback)', () => {
   it('accepts every value PINNED_DEFAULT_MODEL_BY_PROFILE can produce (the pinned tier must always be a valid switch target, even with no client)', async () => {
-    for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE)) {
+    for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE['claude-code']) as string[]) {
       await expect(isAllowedModelAlias(pinned)).resolves.toBe(true);
     }
   });
@@ -561,10 +561,12 @@ describe('B-881 fetchModelCatalog / resolveModelCatalog — live reachability, i
 
   it('returns the live rows when the catalog is reachable and non-empty, and resolveModelCatalog reports source "live"', async () => {
     const client = fakeCatalogClient({ data: [liveCatalogRow()], error: null });
-    await expect(fetchModelCatalog(client)).resolves.toEqual([liveCatalogRow()]);
+    // B-1147: a pre-runtime-columns row is labelled claude-code with model_id = alias.
+    const labelled = { ...liveCatalogRow(), agent: 'claude-code', model_id: liveCatalogRow().alias };
+    await expect(fetchModelCatalog(client)).resolves.toEqual([labelled]);
     const { entries, source } = await resolveModelCatalog(client);
     expect(source).toBe('live');
-    expect(entries).toEqual([liveCatalogRow()]);
+    expect(entries).toEqual([labelled]);
     expect(errSpy).not.toHaveBeenCalled();
   });
 

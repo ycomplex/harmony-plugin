@@ -23,6 +23,8 @@ export interface ConductionDefaults {
   model?: string;
   session_resume?: { enabled: boolean };
   auto_approve_gates?: string[];
+  /** B-1147: the project's default agent runtime — `{ adapter: '<registry id>' }`. */
+  agent?: { adapter?: string };
 }
 
 /** "This DB does not have the `projects.conduction_defaults` column (yet)". Same idiom as
@@ -111,6 +113,19 @@ export function fillRunConfigDefaults(
     // name here is passed through unchanged rather than rejected — the same forward-compat
     // posture RunConfigSchema.passthrough() already takes for other axes.
     merged.auto_approve_gates = [...defaults.auto_approve_gates] as AutoApproveGate[];
+    changed = true;
+  }
+
+  // B-1147: same fill-only-missing semantics for the agent runtime. Only a well-formed
+  // `{ adapter: '<non-empty string>' }` default is copied; anything else is ignored.
+  if (
+    !('agent' in merged) &&
+    defaults.agent &&
+    typeof defaults.agent === 'object' &&
+    typeof defaults.agent.adapter === 'string' &&
+    defaults.agent.adapter.trim() !== ''
+  ) {
+    merged.agent = { adapter: defaults.agent.adapter };
     changed = true;
   }
 
