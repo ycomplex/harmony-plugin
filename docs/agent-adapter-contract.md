@@ -68,7 +68,7 @@ the env allowlist and MCP), it still compares the adapter against the scripts.
 | 7 | **mcp** rendering | `render(connection)` from the ONE canonical `HARMONY_MCP_CONNECTION` | The plugin's `.mcp.json`, with `{pluginRoot}` rendered as `${CLAUDE_PLUGIN_ROOT}` |
 | 8 | **env** allowlist | The per-leg env vars forwarded into the worker, and the standing secrets bound separately | `cloud-worker-launch.sh` `write_exec_env_file()`'s eleven vars; secrets `HARMONY_API_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` |
 | 9 | **capabilities** | A boolean for each of `subagents`, `hooks`, `skills`, `mcp`, `resume`, `modelSwitch`, `structuredOutput`. `mcp` is required. Plus `skillCapabilities.project(skill, classes)`: the per-skill capability classes on this runtime (B-1150, below) | All true; classes → the generated `allowed-tools` / `disallowed-tools` |
-| 10 | **telemetry** | `parse(stdout, {model, credential})` → `{runtime, model, credential, costRegime, costUsd, sessionId, isError}` or null; a sample output | The `--output-format json` result envelope, via `src/tools/claude-result-parse.ts` |
+| 10 | **telemetry** | `parse(stdout, {model, credential})` → `{runtime, model, credential, costRegime, costUsd, sessionId, isError}` plus the optional `usage`, `numTurns` and `refusal` (B-1149, below), or null; a sample output | The `--output-format json` result envelope, via `src/tools/claude-result-parse.ts`; `refusal` from an `is_error` envelope's `result` text |
 
 Seams 7 and 8 are the ticket's "MCP rendering from one canonical connection definition + the worker
 env allowlist", split in two so that there are ten seams.
@@ -89,7 +89,7 @@ spike that is still **BLOCKED** on a live plan login, is in `docs/codex-phase0-f
 | 7 | **mcp** | `config.toml` rendered from `HARMONY_MCP_CONNECTION` with `required = true`, `startup_timeout_sec = 60`, `tool_timeout_sec = 600`, `default_tools_approval_mode = "auto"` and an explicit `env_vars` list; `approval_policy = "never"` |
 | 8 | **env** | The same eleven per-leg vars as Claude (the launch scripts serve both); standing: `HARMONY_API_TOKEN` and the path variable |
 | 9 | **capabilities** | `subagents` false; `modelSwitch` true since B-1148 (a switch resumes the thread with `-m`); `hooks` true since B-1150 (the same Stop / PreToolUse / SessionStart hooks); `skills`, `mcp`, `resume`, `structuredOutput` true. Skill classes: one envelope, `forbid:` declared unenforced |
-| 10 | **telemetry** | The `--json` JSONL stream: `thread.started` → session id, a terminal `turn.completed` / `turn.failed` → `isError` (keyed on `turn.failed` only: the hook-trust flag's `error` items are not errors); regime derived (`plan-included`), `costUsd` null. `parseCodexUsage` reads the last `turn.completed` usage (cumulative on a resumed thread) |
+| 10 | **telemetry** | The `--json` JSONL stream: `thread.started` → session id, a terminal `turn.completed` / `turn.failed` → `isError` (keyed on `turn.failed` only: the hook-trust flag's `error` items are not errors); regime derived (`plan-included`), `costUsd` null. `parseCodexUsage` reads the last `turn.completed` usage (cumulative on a resumed thread — `harmony leg-cost record` subtracts the thread's earlier rows, B-1149). `numTurns` = model-initiated items; `refusal` from the run-level `error` / `turn.failed` events |
 
 `contract.ts` was **not** changed. Because `HeadlessInput` carries no working directory, the root is derived
 from the plugin checkout's parent, and the plugin dir is passed as `--add-dir` so it appears in argv.
@@ -107,6 +107,61 @@ a log of it. `provision.sh` still has no Codex command in it: the launch is `har
 (`src/daemon/config.ts`, both profile routes; the message names the registered adapters), and refuses at
 **fire time** a non-default adapter on a launch template without `{run_config_json}` or not in the list.
 The example Docker-host profile now lists `["claude-code", "codex"]`; the other two examples stay Claude-only.
+
+## Refusals: quota and rate limits (B-1149)
+
+`TelemetryRecord.refusal` is an **optional** verdict: `{ kind: 'quota' | 'rate-limit', resets_at: ISO | null }`
+— the runtime refused the turn because a plan quota (`quota`) or a rate limit (`rate-limit`) is exhausted.
+The match patterns live **in the adapter** (`src/agents/codex.ts` `parseCodexRefusal`,
+`src/agents/claude-code.ts` `parseClaudeRefusal`, shared helpers in `src/agents/refusal.ts`); an adapter that
+never sets the field gets today's behaviour (a non-zero exit is a dirty exit).
+
+| Runtime | quota | rate-limit | reset time |
+|---|---|---|---|
+| Codex | a top-level `error` or `turn.failed` naming a usage limit / `usage_limit_reached` / `insufficient_quota` | `429` / "rate limit" / "Too Many Requests" | `resets_in_seconds` / `resets_at` / `retry-after`, "try again in …", "try again at <date>" |
+| Claude Code | an `is_error` envelope whose `result` names a usage / 5-hour / weekly limit (incl. the legacy `…usage limit reached\|<epoch>`) | `429` / `rate_limit_error` | the epoch after the pipe, "try again in …", "… at <date>" |
+
+Codex's `item.completed` items of type `error` (two on every run, from the hook-trust flag) are **never** read
+for a refusal. A bare clock time ("resets 3pm") is not placed on a calendar: `resets_at` is null and the
+daemon's default applies.
+
+**How it reaches the daemon.** `harmony leg-cost record` writes the verdict as `refusal_kind` /
+`refusal_resets_at` on the invocation's `conduction_leg_costs` row (dropped on a retry while harmony-web's
+migration is not live). At settle the scheduler reads the leg's LAST row (written since its fire time) and
+passes it to `classify.ts`, which still never parses worker output: after the awaiting-human / terminal /
+stale / timeout / operator-reap branches and **before** dirty-exit it classifies `quota` or `rate-limit`.
+The scheduler then:
+
+- **rate-limit** — its own budget of 2 retries (30 s, then 120 s), then it becomes a quota pause;
+- **quota** — the conduction **pauses**: it stays active, the ticket's state and awaiting flag are
+  untouched, `quota_pauses` increments and `paused_until` = the reported reset, else leg end + 60 min, with
+  a ticket comment "Paused — quota on <runtime>, resumes <time>". While any active conduction of a runtime
+  is paused, **no leg launches on that runtime** (the other runtime keeps launching). When `paused_until`
+  passes, the next leg is the re-check. Any leg with board progress resets `quota_pauses` to 0; the 3rd
+  consecutive pause parks the conduction (`last_worker_exit_class` `quota-repeated`) with a comment.
+- `conductions.paused_until` / `quota_pauses` are written tolerantly: absent columns fall back to an
+  in-memory hold in the daemon (lost on restart); present, the hold survives a restart.
+
+**Test hook.** `HARMONY_TEST_FORCE_REFUSAL=quota|rate-limit` in the worker's environment makes both
+adapters' refusal parse return that refusal (`resets_at` null) whatever the capture says, so staging can
+drive the daemon path end to end. The three launchers (`container/cloud-worker-launch.sh`,
+`docker-worker-launch.sh`, `docker-host-worker-launch.sh`) forward it from the launcher's environment when
+it is exactly `quota` or `rate-limit` (anything else, or unset, forwards nothing). Test runs only; never on production.
+
+**Codex cost, duration, turns (B-1149).** A Codex row records its OWN usage (a resumed thread's cumulative
+figure minus the thread's earlier rows, clamped at 0; rows written before B-1149 stay as they were), an
+equivalent cost `(input − cached) × input + cached × cached + output × output` from the dated
+`CODEX_PRICING` table beside `MODEL_PRICING` (`cost_source` `derived`; an unpriced model stays `unknown`),
+`cache_creation_input_tokens` null (rendered n/a), `num_turns` = the stream's model-initiated items
+(`agent_message`, `command_execution`, `mcp_tool_call`, `file_change`, `web_search`), and `duration_ms` =
+the wall-clock time `provision.sh` measures around the invocation (`--duration-ms`; Claude's own envelope
+figure still wins for Claude).
+
+**Hook preflight (B-1149).** `provisionCodex` checks every script `$CODEX_HOME/hooks.json` would run is a
+readable file before writing anything; a missing one fails `harmony agent render` (named reason, a ticket
+comment when `TICKET` and a login are available, exit 1) before codex launches. Each script command is
+rendered guarded — `if [ -f X ]; then sh X; else exit 0; fi` (not `[ -f X ] && sh X || exit 0`, which would
+turn a gate's blocking exit 2 into 0).
 
 ## Skill capability classes (B-1150)
 

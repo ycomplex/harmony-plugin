@@ -671,12 +671,26 @@ case "$MODE" in
     }
     trap '_b772_forward_signal TERM' TERM
     trap '_b772_forward_signal INT' INT
+    # B-1149: the wall-clock duration of each invocation, measured HERE around the agent process and
+    # handed to `leg-cost record --duration-ms`. Claude's envelope carries its own duration_ms (which
+    # still wins); Codex's stream carries none, so this is its duration.
+    B1149_LAST_DURATION_MS=""
+    _b1149_now_ms() {
+      date +%s%3N 2>/dev/null || echo ""
+    }
     _b772_run() {
+      local started_ms ended_ms
+      started_ms="$(_b1149_now_ms)"
       "$@" &
       MODEL_SWITCH_CHILD_PID=$!
       wait "$MODEL_SWITCH_CHILD_PID"
       local status=$?
       MODEL_SWITCH_CHILD_PID=""
+      ended_ms="$(_b1149_now_ms)"
+      B1149_LAST_DURATION_MS=""
+      if [[ "$started_ms" =~ ^[0-9]+$ ]] && [[ "$ended_ms" =~ ^[0-9]+$ ]]; then
+        B1149_LAST_DURATION_MS=$((ended_ms - started_ms))
+      fi
       return $status
     }
 
@@ -731,13 +745,16 @@ case "$MODE" in
     # to belong to and therefore nothing to record. $1 = the capture file.
     _b916_record_invocation() {
       if [ -n "${HARMONY_CONDUCTION_ID:-}" ]; then
-        local model_args=()
+        local model_args=() duration_args=()
         if [ -n "$CURRENT_MODEL" ]; then
           model_args=(--model "$CURRENT_MODEL")
         fi
+        if [ -n "${B1149_LAST_DURATION_MS:-}" ]; then
+          duration_args=(--duration-ms "$B1149_LAST_DURATION_MS")
+        fi
         node "$PLUGIN_DIR/dist/bin/harmony.js" leg-cost record \
           --file "$1" --gate "$LEG_GATE" --leg-key "$LEG_KEY" \
-          --invocation-index "$INVOCATION_INDEX" "${model_args[@]}" >/dev/null 2>&1 || true
+          --invocation-index "$INVOCATION_INDEX" "${model_args[@]}" "${duration_args[@]}" >/dev/null 2>&1 || true
       fi
       INVOCATION_INDEX=$((INVOCATION_INDEX + 1))
       rm -f "$1"

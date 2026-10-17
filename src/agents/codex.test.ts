@@ -243,6 +243,9 @@ describe('10. telemetry', () => {
       isError: false,
       // B-1076: the LAST turn.completed usage, in conduction_leg_costs' vocabulary
       usage: { inputTokens: 5, cacheReadInputTokens: 2, outputTokens: 7 },
+      // B-1149: no refusal; turn count = model-initiated items
+      refusal: null,
+      numTurns: expect.any(Number),
     });
   });
   it('B-1076: usage is the LAST turn.completed of several (fixture capture), null when no terminal turn carried one', () => {

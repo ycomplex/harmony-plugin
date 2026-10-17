@@ -648,6 +648,79 @@ export async function updateConductionIfHeld(
 }
 
 // ---------------------------------------------------------------------------
+// B-1149: the quota-pause columns — conductions.paused_until / conductions.quota_pauses.
+// ---------------------------------------------------------------------------
+//
+// Added by a harmony-web migration that promotes on its OWN schedule, so they are deliberately NOT in
+// CONDUCTION_COLS / CONDUCTION_PATCHABLE_FIELDS (a select or patch naming them would break every
+// conduction read/write until then — the B-846 precedent). Read and written ONLY through the two
+// accessors below, each of which reports "the columns are absent" as a value rather than throwing, so
+// the daemon falls back to its in-memory hold.
+
+export const QUOTA_COLS = ['paused_until', 'quota_pauses'] as const;
+
+/** True when an error says one of the B-1149 conduction columns is unknown/missing. Must NAME one of
+ *  them (or be a bare undefined-column code) so an unrelated failure is never mistaken for absence. */
+export function isMissingQuotaColumn(err: { code?: string; message?: string; details?: string } | null | undefined): boolean {
+  if (!err) return false;
+  const text = `${err.message ?? ''} ${err.details ?? ''}`.toLowerCase();
+  const names = QUOTA_COLS.some((c) => text.includes(c));
+  if (err.code === '42703' || err.code === 'PGRST204') return names || text.trim() === '';
+  return names && /(does not exist|could not find|schema cache|unknown)/.test(text);
+}
+
+export interface QuotaState {
+  paused_until: string | null;
+  quota_pauses: number;
+}
+
+/** The quota state of the given conductions, by id — or `null` when the columns do not exist yet
+ *  (pre-migration). Any OTHER failure throws (the caller treats it as "nothing known this pass"). */
+export async function readConductionQuotaState(
+  client: SupabaseClient,
+  ids: readonly string[],
+): Promise<Map<string, QuotaState> | null> {
+  const out = new Map<string, QuotaState>();
+  if (ids.length === 0) return out;
+  const { data, error } = await client.from('conductions').select('id, paused_until, quota_pauses').in('id', [...ids]);
+  if (error) {
+    if (isMissingQuotaColumn(error)) return null;
+    throw error;
+  }
+  for (const r of (data as unknown as Array<{ id: string; paused_until?: string | null; quota_pauses?: number | null }>) ?? []) {
+    out.set(r.id, { paused_until: r.paused_until ?? null, quota_pauses: typeof r.quota_pauses === 'number' ? r.quota_pauses : 0 });
+  }
+  return out;
+}
+
+/** Lease-guarded write of the quota columns. 'ok' = written; 'lease-lost' = the row is no longer
+ *  held by `expectedLeaseHolder`; 'missing-columns' = the B-1149 migration is not live (the caller
+ *  keeps the hold in memory). Any other failure throws. */
+export async function writeConductionQuotaState(
+  client: SupabaseClient,
+  id: string,
+  expectedLeaseHolder: string,
+  patch: Partial<QuotaState>,
+): Promise<'ok' | 'lease-lost' | 'missing-columns'> {
+  const body: Record<string, unknown> = {};
+  if ('paused_until' in patch) body.paused_until = patch.paused_until ?? null;
+  if ('quota_pauses' in patch) body.quota_pauses = patch.quota_pauses ?? 0;
+  if (Object.keys(body).length === 0) return 'ok';
+  const { data, error } = await client
+    .from('conductions')
+    .update(body)
+    .eq('id', id)
+    .eq('lease_holder', expectedLeaseHolder)
+    .select('id')
+    .maybeSingle();
+  if (error) {
+    if (isMissingQuotaColumn(error)) return 'missing-columns';
+    throw error;
+  }
+  return data ? 'ok' : 'lease-lost';
+}
+
+// ---------------------------------------------------------------------------
 // reviveParkedTicketIfNeeded — the B-964 unpark primitive
 // ---------------------------------------------------------------------------
 //

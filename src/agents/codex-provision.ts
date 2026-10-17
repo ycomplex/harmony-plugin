@@ -17,6 +17,8 @@
 // and excludes the two generated workspace paths from git status via .git/info/exclude.
 
 import {
+  accessSync,
+  constants as fsConstants,
   chmodSync,
   copyFileSync,
   existsSync,
@@ -34,7 +36,7 @@ import {
 import { join, resolve } from 'node:path';
 import { HARMONY_MCP_CONNECTION } from './contract.js';
 import { capabilitiesFromSkillMd, parseCapabilities, type CapabilityClass } from './capabilities.js';
-import { renderCodexHooks } from './hooks.js';
+import { hookScriptPaths, renderCodexHooks } from './hooks.js';
 import {
   CODEX_AUTH_FILE_NAME,
   CODEX_SKILLS_LINK,
@@ -171,6 +173,36 @@ function installAuth(authFile: string, codexHome: string): string {
   return dest;
 }
 
+/** B-1149: a hook script the Codex hooks.json would run is missing or unreadable. Named so the
+ *  render CLI can post the ticket comment and exit with this reason before codex launches. */
+export class MissingHookScriptError extends Error {
+  readonly code = 'missing-hook-script';
+  readonly paths: string[];
+  constructor(paths: string[]) {
+    super(
+      `hook script${paths.length > 1 ? 's' : ''} missing or unreadable: ${paths.join(', ')} — the Codex hooks.json ` +
+        'would run them on every turn; refusing to launch codex (B-1149 hook preflight)',
+    );
+    this.paths = paths;
+  }
+}
+
+/** B-1149: every script the Codex hooks run must be a readable file. Throws MissingHookScriptError. */
+export function preflightHookScripts(pluginRoot: string): string[] {
+  const paths = hookScriptPaths(pluginRoot);
+  const missing = paths.filter((p) => {
+    if (!isFile(p)) return true;
+    try {
+      accessSync(p, fsConstants.R_OK);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  if (missing.length) throw new MissingHookScriptError(missing);
+  return paths;
+}
+
 /** Render everything a Codex leg needs onto disk. Throws on any problem (the caller refuses to start). */
 export function provisionCodex(input: CodexProvisionInput): CodexProvisionResult {
   const workspaceDir = resolve(input.workspaceDir);
@@ -186,6 +218,9 @@ export function provisionCodex(input: CodexProvisionInput): CodexProvisionResult
   if (existsSync(agentsMdPath) && !readFileSync(agentsMdPath, 'utf8').startsWith(GENERATED_AGENTS_HEADER)) {
     throw new Error(`${agentsMdPath} exists and is not a generated file — refusing to overwrite a repository's own AGENTS.md`);
   }
+
+  // B-1149: verify every hook script BEFORE anything is written for this leg.
+  preflightHookScripts(resolve(input.pluginDir));
 
   mkdirSync(codexHome, { recursive: true });
   const config = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve(input.pluginDir) });

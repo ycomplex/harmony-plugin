@@ -42322,6 +42322,27 @@ function deriveCostUsd(parsed, pricing) {
   const usd = ((parsed.input_tokens ?? 0) * pricing.input_per_mtok + (parsed.output_tokens ?? 0) * pricing.output_per_mtok + (parsed.cache_read_input_tokens ?? 0) * pricing.cache_read_per_mtok + write1h * pricing.cache_write_1h_per_mtok + write5m * pricing.cache_write_5m_per_mtok) / MTOK;
   return usd;
 }
+var CODEX_PRICING = {
+  "gpt-6.1-sol": { input_per_mtok: 2, cached_input_per_mtok: 0.1, output_per_mtok: 10 },
+  "gpt-5": { input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10 },
+  "gpt-5.1": { input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10 },
+  "gpt-5.3-codex": { input_per_mtok: 1.75, cached_input_per_mtok: 0.175, output_per_mtok: 14 }
+};
+function resolveCodexPricing(model) {
+  if (!model) return null;
+  const id = model.trim().toLowerCase().replace(/^codex:/, "");
+  return Object.prototype.hasOwnProperty.call(CODEX_PRICING, id) ? CODEX_PRICING[id] : null;
+}
+function deriveCodexCostUsd(usage, model) {
+  const pricing = resolveCodexPricing(model);
+  if (!pricing || !usage) return null;
+  const measured = [usage.inputTokens, usage.cacheReadInputTokens, usage.outputTokens].some((v) => typeof v === "number");
+  if (!measured) return null;
+  const input = Math.max(0, usage.inputTokens ?? 0);
+  const cached = Math.min(input, Math.max(0, usage.cacheReadInputTokens ?? 0));
+  const output = Math.max(0, usage.outputTokens ?? 0);
+  return ((input - cached) * pricing.input_per_mtok + cached * pricing.cached_input_per_mtok + output * pricing.output_per_mtok) / MTOK;
+}
 function resolveCost(parsed, model) {
   if (typeof parsed.cli_cost_usd === "number" && parsed.cli_cost_usd > 0) {
     return { total_cost_usd: parsed.cli_cost_usd, cost_source: "cli" };
@@ -42383,7 +42404,93 @@ function parseClaudeResultJson(text) {
   };
 }
 
+// src/agents/refusal.ts
+function isRefusalKind(v) {
+  return v === "quota" || v === "rate-limit";
+}
+var FORCE_REFUSAL_ENV = "HARMONY_TEST_FORCE_REFUSAL";
+function forcedRefusal(env2 = process.env) {
+  const v = env2[FORCE_REFUSAL_ENV];
+  return isRefusalKind(v) ? { kind: v, resets_at: null } : null;
+}
+function resetsInSeconds(seconds, now) {
+  const n = typeof seconds === "string" ? Number(seconds) : seconds;
+  if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) return null;
+  return new Date(now.getTime() + n * 1e3).toISOString();
+}
+function absoluteResetTime(v) {
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) {
+    return new Date(v < 1e12 ? v * 1e3 : v).toISOString();
+  }
+  if (typeof v === "string" && v.trim() !== "") {
+    const t = v.trim();
+    if (/^\d+$/.test(t)) return absoluteResetTime(Number(t));
+    if (!/\d{4}-\d{2}-\d{2}|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}/i.test(t)) return null;
+    const ms = Date.parse(t);
+    return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+  }
+  return null;
+}
+var UNIT_SECONDS = {
+  s: 1,
+  sec: 1,
+  secs: 1,
+  second: 1,
+  seconds: 1,
+  m: 60,
+  min: 60,
+  mins: 60,
+  minute: 60,
+  minutes: 60,
+  h: 3600,
+  hr: 3600,
+  hrs: 3600,
+  hour: 3600,
+  hours: 3600,
+  d: 86400,
+  day: 86400,
+  days: 86400
+};
+function relativeResetSeconds(text) {
+  const m = /(?:try again|retry|resets?|available again)\s+(?:in|after)\s+((?:\d+(?:\.\d+)?\s*[a-z]+[\s,]*(?:and\s+)?)+)/i.exec(text);
+  if (!m) return null;
+  let total = 0;
+  let any = false;
+  for (const part of m[1].matchAll(/(\d+(?:\.\d+)?)\s*([a-z]+)/gi)) {
+    const unit = UNIT_SECONDS[part[2].toLowerCase()];
+    if (unit === void 0) continue;
+    total += Number(part[1]) * unit;
+    any = true;
+  }
+  return any && total > 0 ? total : null;
+}
+function absoluteResetFromText(text) {
+  const m = /(?:try again|resets?|available again)\s+(?:at|on)\s+([^.;\n)]+)/i.exec(text);
+  return m ? absoluteResetTime(m[1]) : null;
+}
+function resetFromText(text, now) {
+  const rel = relativeResetSeconds(text);
+  if (rel !== null) return resetsInSeconds(rel, now);
+  return absoluteResetFromText(text);
+}
+
 // src/agents/claude-code.ts
+var CLAUDE_QUOTA_RE = /usage limit|(?:5-hour|five-hour|weekly|session|daily|opus|sonnet)(?: usage)? limit|hit your (?:usage )?limit|out of (?:extra )?usage|quota/i;
+var CLAUDE_RATE_LIMIT_RE = /\b429\b|rate[ _-]?limit|too many requests/i;
+var CLAUDE_LIMIT_REACHED_RE = /limit reached/i;
+function parseClaudeRefusal(stdout, now = /* @__PURE__ */ new Date(), env2 = process.env) {
+  const forced = forcedRefusal(env2);
+  if (forced) return forced;
+  const parsed = parseClaudeResultJson(stdout);
+  if (!parsed || !parsed.is_error) return null;
+  const text = parsed.result ?? "";
+  if (text === "") return null;
+  const kind = CLAUDE_QUOTA_RE.test(text) ? "quota" : CLAUDE_RATE_LIMIT_RE.test(text) ? "rate-limit" : CLAUDE_LIMIT_REACHED_RE.test(text) ? "quota" : null;
+  if (!kind) return null;
+  const pipe = /\|\s*(\d{9,13})\s*$/.exec(text);
+  const resets_at = (pipe ? absoluteResetTime(Number(pipe[1])) : null) ?? resetFromText(text, now);
+  return { kind, resets_at };
+}
 var CLAUDE_OUTPUT_FORMAT_FLAGS = ["--output-format", "json"];
 var CLAUDE_MODEL_FLAG = "--model";
 var CLAUDE_RESUME_FLAG = "--resume";
@@ -42519,7 +42626,9 @@ var claudeCodeAdapter = {
       "HARMONY_MODEL",
       "GIT_TOKEN_EXPIRES_AT",
       "HARMONY_LEG",
-      "HARMONY_CONDUCTION_ID"
+      "HARMONY_CONDUCTION_ID",
+      // B-1149: optional test hook (quota | rate-limit only), inert when unset.
+      "HARMONY_TEST_FORCE_REFUSAL"
     ],
     standingSecrets: ["HARMONY_API_TOKEN", OAUTH_ENV]
   },
@@ -42547,7 +42656,8 @@ var claudeCodeAdapter = {
         costRegime: deriveCostRegime(ctx.credential),
         costUsd: resolveCost(parsed, ctx.model).total_cost_usd,
         sessionId: parsed.session_id,
-        isError: parsed.is_error
+        isError: parsed.is_error,
+        refusal: parseClaudeRefusal(stdout)
       };
     },
     sampleOutput: SAMPLE_RESULT
@@ -42785,6 +42895,51 @@ function codexTelemetryUsage(stdout) {
   if (!u) return null;
   return { inputTokens: u.inputTokens, cacheReadInputTokens: u.cachedInputTokens, outputTokens: u.outputTokens };
 }
+var CODEX_QUOTA_RE = /usage[ _-]?limit|usage_limit_reached|insufficient_quota|hit your (?:usage )?limit|quota (?:exceeded|exhausted)|exceeded your (?:current )?quota|plan limit/i;
+var CODEX_RATE_LIMIT_RE = /\b429\b|rate[ _-]?limit|too many requests/i;
+function errorText(e) {
+  const parts = [];
+  const push = (v) => {
+    if (typeof v === "string") parts.push(v);
+    else if (v && typeof v === "object") parts.push(JSON.stringify(v));
+  };
+  push(e.message);
+  push(e.error);
+  return parts.join(" ");
+}
+function structuredReset(e, text, now) {
+  const err = e.error && typeof e.error === "object" ? e.error : {};
+  const fromField = resetsInSeconds(err.resets_in_seconds, now) ?? absoluteResetTime(err.resets_at) ?? resetsInSeconds(err.retry_after, now);
+  if (fromField) return fromField;
+  const inSec = /"?resets_in_seconds"?\s*[:=]\s*(\d+)/i.exec(text);
+  if (inSec) return resetsInSeconds(Number(inSec[1]), now);
+  const at = /"?resets_at"?\s*[:=]\s*"?([0-9T:.\-+Z]+)"?/i.exec(text);
+  if (at) {
+    const t = absoluteResetTime(/^\d+$/.test(at[1]) ? Number(at[1]) : at[1]);
+    if (t) return t;
+  }
+  const retryAfter = /retry[- _]after\s*[:=]?\s*(\d+)\s*(?:s\b|sec|seconds)?/i.exec(text);
+  if (retryAfter) return resetsInSeconds(Number(retryAfter[1]), now);
+  return resetFromText(text, now);
+}
+function parseCodexRefusal(stdout, now = /* @__PURE__ */ new Date(), env2 = process.env) {
+  const forced = forcedRefusal(env2);
+  if (forced) return forced;
+  const failures = events(stdout).filter((e) => e.type === "error" || e.type === "turn.failed");
+  for (const e of failures.reverse()) {
+    const text = errorText(e);
+    if (text === "") continue;
+    const kind = CODEX_QUOTA_RE.test(text) ? "quota" : CODEX_RATE_LIMIT_RE.test(text) ? "rate-limit" : null;
+    if (kind) return { kind, resets_at: structuredReset(e, text, now) };
+  }
+  return null;
+}
+var CODEX_TURN_ITEM_TYPES = ["agent_message", "command_execution", "mcp_tool_call", "file_change", "web_search"];
+function countCodexTurns(stdout) {
+  const evs = events(stdout);
+  if (evs.length === 0) return null;
+  return evs.filter((e) => e.type === "item.completed" && typeof e.item?.type === "string" && CODEX_TURN_ITEM_TYPES.includes(e.item.type)).length;
+}
 var SAMPLE_OUTPUT = [
   JSON.stringify({ type: "thread.started", thread_id: "00000000-0000-4000-8000-000000000000" }),
   JSON.stringify({ type: "turn.started" }),
@@ -42857,7 +43012,9 @@ var codexAdapter = {
       "HARMONY_MODEL",
       "GIT_TOKEN_EXPIRES_AT",
       "HARMONY_LEG",
-      "HARMONY_CONDUCTION_ID"
+      "HARMONY_CONDUCTION_ID",
+      // B-1149: optional test hook (quota | rate-limit only), inert when unset.
+      "HARMONY_TEST_FORCE_REFUSAL"
     ],
     standingSecrets: ["HARMONY_API_TOKEN", CODEX_AUTH_FILE_ENV]
   },
@@ -42883,7 +43040,8 @@ var codexAdapter = {
     parse: (stdout, ctx) => {
       const evs = events(stdout);
       const terminal = [...evs].reverse().find((e) => e.type === "turn.completed" || e.type === "turn.failed");
-      if (!terminal) return null;
+      const refusal = parseCodexRefusal(stdout);
+      if (!terminal && !refusal) return null;
       return {
         runtime: "codex",
         model: ctx.model,
@@ -42891,8 +43049,10 @@ var codexAdapter = {
         costRegime: deriveCostRegime(ctx.credential),
         costUsd: null,
         sessionId: parseCodexThreadId(stdout),
-        isError: terminal.type === "turn.failed",
-        usage: codexTelemetryUsage(stdout)
+        isError: terminal ? terminal.type === "turn.failed" : true,
+        usage: codexTelemetryUsage(stdout),
+        refusal,
+        numTurns: countCodexTurns(stdout)
       };
     },
     sampleOutput: SAMPLE_OUTPUT
@@ -43215,6 +43375,8 @@ import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as rea
 
 // src/agents/codex-provision.ts
 import {
+  accessSync,
+  constants as fsConstants,
   chmodSync,
   copyFileSync,
   existsSync as existsSync2,
@@ -43291,11 +43453,33 @@ function resolveRoot(def, root) {
   }
   return { hooks };
 }
+var SCRIPT_COMMAND_RE = /^sh "([^"]+\.sh)"$/;
+function hookScriptPaths(pluginRoot, def = HARMONY_HOOKS) {
+  const out = [];
+  for (const groups of Object.values(resolveRoot(def, pluginRoot).hooks)) {
+    for (const g of groups) {
+      for (const h of g.hooks) {
+        const m = SCRIPT_COMMAND_RE.exec(h.command);
+        if (m && !out.includes(m[1])) out.push(m[1]);
+      }
+    }
+  }
+  return out;
+}
+function guardScriptCommand(command) {
+  const m = SCRIPT_COMMAND_RE.exec(command);
+  if (!m) return command;
+  return `if [ -f "${m[1]}" ]; then sh "${m[1]}"; else exit 0; fi`;
+}
 function renderCodexHooks(pluginRoot, def = HARMONY_HOOKS) {
   if (!pluginRoot.startsWith("/") || /["$`\\]/.test(pluginRoot)) {
     throw new Error(`plugin root '${pluginRoot}' must be an absolute path with no quote, $, backtick or backslash`);
   }
-  return { fileName: "hooks.json", content: JSON.stringify(resolveRoot(def, pluginRoot), null, 2) + "\n" };
+  const resolved = resolveRoot(def, pluginRoot);
+  for (const groups of Object.values(resolved.hooks)) {
+    for (const g of groups) g.hooks = g.hooks.map((h) => ({ ...h, command: guardScriptCommand(h.command) }));
+  }
+  return { fileName: "hooks.json", content: JSON.stringify(resolved, null, 2) + "\n" };
 }
 
 // src/agents/codex-provision.ts
@@ -43389,6 +43573,30 @@ function installAuth(authFile, codexHome) {
   chmodSync(dest, 384);
   return dest;
 }
+var MissingHookScriptError = class extends Error {
+  code = "missing-hook-script";
+  paths;
+  constructor(paths) {
+    super(
+      `hook script${paths.length > 1 ? "s" : ""} missing or unreadable: ${paths.join(", ")} \u2014 the Codex hooks.json would run them on every turn; refusing to launch codex (B-1149 hook preflight)`
+    );
+    this.paths = paths;
+  }
+};
+function preflightHookScripts(pluginRoot) {
+  const paths = hookScriptPaths(pluginRoot);
+  const missing = paths.filter((p) => {
+    if (!isFile(p)) return true;
+    try {
+      accessSync(p, fsConstants.R_OK);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  if (missing.length) throw new MissingHookScriptError(missing);
+  return paths;
+}
 function provisionCodex(input) {
   const workspaceDir = resolve(input.workspaceDir);
   const codexHome = resolve(input.codexHome);
@@ -43401,6 +43609,7 @@ function provisionCodex(input) {
   if (existsSync2(agentsMdPath) && !readFileSync3(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
     throw new Error(`${agentsMdPath} exists and is not a generated file \u2014 refusing to overwrite a repository's own AGENTS.md`);
   }
+  preflightHookScripts(resolve(input.pluginDir));
   mkdirSync(codexHome, { recursive: true });
   const config = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve(input.pluginDir) });
   const configPath = join3(codexHome, config.fileName);
@@ -43434,6 +43643,24 @@ function launchRunConfig() {
       `harmony agent: WARNING \u2014 failed to parse this leg's run_config (${err instanceof Error ? err.message : String(err)}); resolving the agent adapter as if run_config were {} (claude-code)`
     );
     return {};
+  }
+}
+async function postMissingHookComment(err) {
+  const ticket = process.env.TICKET;
+  if (!ticket) {
+    console.error("harmony agent render: WARNING \u2014 no TICKET in env; the missing-hook-script comment was not posted");
+    return;
+  }
+  try {
+    const ctx = await getAuthenticatedContext();
+    await addComment(ctx.client, ctx.projectId, ctx.userId, {
+      task_id: ticket,
+      content: `Codex leg did not start \u2014 ${err.message}. Restore the script(s) in the plugin checkout (or re-provision the worker) and the next leg will launch.`
+    });
+  } catch (e) {
+    console.error(
+      `harmony agent render: WARNING \u2014 could not post the missing-hook-script comment (${e instanceof Error ? e.message : String(e)})`
+    );
   }
 }
 function refuse(message) {
@@ -43477,7 +43704,7 @@ function registerAgentCommands(program3) {
   });
   agent.command("render").description(
     `B-1076: render the adapter's on-disk runtime config for this leg (container/provision.sh calls it before launch). For Codex: the worker CODEX_HOME/config.toml (harmony MCP, required = true), one generated AGENTS.md at the workspace root, the .agents/skills link, and the copy-in of the mounted login cache. Nothing to render for claude-code (it loads the plugin by flag). Never prints the credential file or its content; exit 1 with "Refusing to start: \u2026" on any problem.`
-  ).requiredOption("--plugin-dir <dir>", "The plugin checkout").requiredOption("--workspace <dir>", "The workspace clone the agent is rooted at").option("--codex-home <dir>", "The worker CODEX_HOME (default: $CODEX_HOME or ~/.codex)").option("--extra-repo <path...>", "Additional repo paths whose CLAUDE.md is appended after the plugin's").action((opts) => {
+  ).requiredOption("--plugin-dir <dir>", "The plugin checkout").requiredOption("--workspace <dir>", "The workspace clone the agent is rooted at").option("--codex-home <dir>", "The worker CODEX_HOME (default: $CODEX_HOME or ~/.codex)").option("--extra-repo <path...>", "Additional repo paths whose CLAUDE.md is appended after the plugin's").action(async (opts) => {
     const adapter = adapterOrRefuse();
     if (adapter.id !== "codex") {
       console.error(`harmony agent render: ${adapter.displayName} needs no rendered runtime config.`);
@@ -43497,6 +43724,7 @@ function registerAgentCommands(program3) {
         `harmony agent render: codex config ${r.configPath}; AGENTS.md ${r.agentsMdPath} (${r.agentsMdBytes} bytes from ${r.sources.join(", ")}); skills ${r.skillsLink}; login cache installed at ${r.authInstalledAt}`
       );
     } catch (err) {
+      if (err instanceof MissingHookScriptError) await postMissingHookComment(err);
       refuse(`Codex provisioning failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
@@ -43577,10 +43805,17 @@ var LEG_COST_COLS = "id, conduction_id, task_id, leg_key, gate, model, invocatio
 var RUNTIME_COLS = ["runtime", "credential_kind", "cost_regime"];
 var LEG_COST_COLS_WITH_RUNTIME = `${LEG_COST_COLS}, ${RUNTIME_COLS.join(", ")}`;
 function isRuntimeColumnError(err) {
+  return isNamedColumnError(err, RUNTIME_COLS);
+}
+var REFUSAL_COLS = ["refusal_kind", "refusal_resets_at"];
+function isRefusalColumnError(err) {
+  return isNamedColumnError(err, REFUSAL_COLS);
+}
+function isNamedColumnError(err, cols) {
   if (!err) return false;
   const e = err;
   const text = [e.message, e.details, e.hint].filter(Boolean).join(" ").toLowerCase();
-  if (!RUNTIME_COLS.some((c) => text.includes(c))) return false;
+  if (!cols.some((c) => text.includes(c))) return false;
   return e.code === "42703" || e.code === "PGRST204" || e.code === "PGRST200" || /column|schema cache|does not exist|not found|unknown/.test(text);
 }
 function warn(message) {
@@ -43650,12 +43885,24 @@ async function recordLegCost(client, args) {
       credential_kind: args.credential_kind ?? null,
       cost_regime: args.cost_regime ?? null
     };
-    let { error } = await client.from("conduction_leg_costs").insert({ ...row, ...runtimeFields });
-    if (error && isRuntimeColumnError(error)) {
-      warn(
-        `the leg-cost row was rejected for the B-1078 runtime columns (${errText(error)}); retrying without runtime/credential_kind/cost_regime \u2014 expected until the web migration is promoted.`
-      );
-      ({ error } = await client.from("conduction_leg_costs").insert(row));
+    let refusalFields = args.refusal_kind ? { refusal_kind: args.refusal_kind, refusal_resets_at: args.refusal_resets_at ?? null } : {};
+    let withRuntime = true;
+    let { error } = await client.from("conduction_leg_costs").insert({ ...row, ...runtimeFields, ...refusalFields });
+    for (let attempt = 0; attempt < 2 && error; attempt += 1) {
+      if (Object.keys(refusalFields).length > 0 && isRefusalColumnError(error)) {
+        warn(
+          `the leg-cost row was rejected for the B-1149 refusal columns (${errText(error)}); retrying without refusal_kind/refusal_resets_at \u2014 expected until the web migration is promoted.`
+        );
+        refusalFields = {};
+      } else if (withRuntime && isRuntimeColumnError(error)) {
+        warn(
+          `the leg-cost row was rejected for the B-1078 runtime columns (${errText(error)}); retrying without runtime/credential_kind/cost_regime \u2014 expected until the web migration is promoted.`
+        );
+        withRuntime = false;
+      } else {
+        break;
+      }
+      ({ error } = await client.from("conduction_leg_costs").insert({ ...row, ...withRuntime ? runtimeFields : {}, ...refusalFields }));
     }
     if (error) {
       warn(
@@ -43668,6 +43915,30 @@ async function recordLegCost(client, args) {
     warn(`writing the leg-cost row threw (${errText(err)}) \u2014 the leg itself is unaffected`);
     return false;
   }
+}
+async function sumPriorSessionUsage(client, args) {
+  if (!client || !args.conduction_id || !args.session_id) return null;
+  try {
+    const { data, error } = await client.from("conduction_leg_costs").select("input_tokens, cache_read_input_tokens, output_tokens").eq("conduction_id", args.conduction_id).eq("session_id", args.session_id);
+    if (error) {
+      warn(`could not read earlier rows for session ${args.session_id} (${errText(error)}); recording the cumulative figure`);
+      return null;
+    }
+    const rows = data ?? [];
+    const sum = (k) => rows.reduce((a, r) => a + (typeof r[k] === "number" ? r[k] : 0), 0);
+    return { input_tokens: sum("input_tokens"), cache_read_input_tokens: sum("cache_read_input_tokens"), output_tokens: sum("output_tokens") };
+  } catch (err) {
+    warn(`reading earlier rows for session ${args.session_id} threw (${errText(err)})`);
+    return null;
+  }
+}
+function ownUsageDelta(cumulative, prior) {
+  const d = (v, p) => v === null ? null : Math.max(0, v - (prior ? p : 0));
+  return {
+    inputTokens: d(cumulative.inputTokens, prior?.input_tokens ?? 0),
+    cacheReadInputTokens: d(cumulative.cacheReadInputTokens, prior?.cache_read_input_tokens ?? 0),
+    outputTokens: d(cumulative.outputTokens, prior?.output_tokens ?? 0)
+  };
 }
 
 // src/cli/commands/leg-cost.ts
@@ -43761,7 +44032,7 @@ function registerLegCostCommands(program3) {
   });
   legCost.command("record").description(
     "Record ONE claude invocation's cost from its captured `--output-format json` stdout. Parses the result envelope (keyed on `is_error`, NOT `subtype` \u2014 an errored run still reports subtype 'success'), resolves the cost (the CLI's own total_cost_usd, else the derived price-table figure, else 'unknown'), and inserts one conduction_leg_costs row. Always exits 0 and NEVER throws: a missing conduction id, an unparseable capture, an unreachable board or a not-yet-migrated table all degrade to \"nothing recorded\" with one stderr WARNING. The leg is never affected."
-  ).requiredOption("--file <path>", "The file this invocation's stdout was captured to").requiredOption("--gate <gate>", "The gate that was running when the invocation STARTED (see `resolve-gate`)").requiredOption("--leg-key <key>", "The worker-generated key grouping this leg's invocations").option("--model <alias>", "The model alias this invocation actually launched with").option("--invocation-index <n>", "This invocation's 0-based position within the leg").option("--conduction-id <id>", "The conduction to record against; defaults to this worker's HARMONY_CONDUCTION_ID").option("--runtime <id>", "B-1078: override the derived runtime (adapter id)").option("--credential-kind <kind>", "B-1078: override the derived credential kind (a CredentialMode)").option("--cost-regime <regime>", "B-1078: must agree with the credential-derived regime, else ignored with a warning").action(
+  ).requiredOption("--file <path>", "The file this invocation's stdout was captured to").requiredOption("--gate <gate>", "The gate that was running when the invocation STARTED (see `resolve-gate`)").requiredOption("--leg-key <key>", "The worker-generated key grouping this leg's invocations").option("--model <alias>", "The model alias this invocation actually launched with").option("--invocation-index <n>", "This invocation's 0-based position within the leg").option("--conduction-id <id>", "The conduction to record against; defaults to this worker's HARMONY_CONDUCTION_ID").option("--runtime <id>", "B-1078: override the derived runtime (adapter id)").option("--credential-kind <kind>", "B-1078: override the derived credential kind (a CredentialMode)").option("--cost-regime <regime>", "B-1078: must agree with the credential-derived regime, else ignored with a warning").option("--duration-ms <n>", "B-1149: wall-clock duration of the invocation, measured by the worker (used when the capture carries none \u2014 Codex)").action(
     async (opts) => {
       const conductionId = opts.conductionId ?? getConductionId();
       if (!conductionId) {
@@ -43783,12 +44054,24 @@ function registerLegCostCommands(program3) {
         costRegime: opts.costRegime
       });
       const adapterRec = resolveAdapterTelemetry(captured, model, facts);
-      const usage = adapterRec?.usage ?? null;
       const parsed = adapterRec ? null : parseClaudeResultJson(captured);
-      const cost = parsed ? resolveCost(parsed, model) : { total_cost_usd: null, cost_source: "unknown" };
       const index = Number(opts.invocationIndex);
       const client = await getClient();
       const context = await resolveLegCostContext(client, conductionId);
+      let usage = adapterRec?.usage ?? null;
+      if (usage && adapterRec?.sessionId) {
+        const prior = await sumPriorSessionUsage(client, { conduction_id: conductionId, session_id: adapterRec.sessionId });
+        usage = ownUsageDelta(usage, prior);
+      }
+      let cost;
+      if (parsed) cost = resolveCost(parsed, model);
+      else {
+        const codexCost = adapterRec ? deriveCodexCostUsd(usage, model) : null;
+        cost = codexCost !== null ? { total_cost_usd: codexCost, cost_source: "derived" } : { total_cost_usd: null, cost_source: "unknown" };
+      }
+      const refusal = adapterRec ? adapterRec.refusal ?? null : parseClaudeRefusal(captured);
+      const workerDuration = Number(opts.durationMs);
+      const durationMs = opts.durationMs !== void 0 && Number.isFinite(workerDuration) && workerDuration >= 0 ? Math.round(workerDuration) : null;
       await recordLegCost(client, {
         conduction_id: conductionId,
         leg_key: opts.legKey,
@@ -43805,15 +44088,17 @@ function registerLegCostCommands(program3) {
         thinking_tokens: parsed?.thinking_tokens ?? null,
         total_cost_usd: cost.total_cost_usd,
         cost_source: cost.cost_source,
-        num_turns: parsed?.num_turns ?? null,
-        duration_ms: parsed?.duration_ms ?? null,
+        num_turns: parsed?.num_turns ?? adapterRec?.numTurns ?? null,
+        duration_ms: parsed?.duration_ms ?? durationMs,
         duration_api_ms: parsed?.duration_api_ms ?? null,
         session_id: parsed?.session_id ?? adapterRec?.sessionId ?? null,
         is_error: parsed?.is_error ?? adapterRec?.isError ?? false,
         service_tier: parsed?.service_tier ?? null,
         runtime: facts.runtime,
         credential_kind: facts.credential_kind,
-        cost_regime: facts.cost_regime
+        cost_regime: facts.cost_regime,
+        refusal_kind: refusal?.kind ?? null,
+        refusal_resets_at: refusal?.resets_at ?? null
       });
     }
   );

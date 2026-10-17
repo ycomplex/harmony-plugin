@@ -175,6 +175,13 @@ if [ "$CODEX_RUN" = "1" ]; then
   CODEX_CHOWN="/r/codex-sessions /r/codex-auth.json"
 fi
 
+# 4c. B-1149: forced-refusal test hook — optional, inert when unset; only the exact values quota|rate-limit
+#     are forwarded (so the value is safe to splice into the remote command).
+FORCE_REFUSAL_ENV=""
+case "${HARMONY_TEST_FORCE_REFUSAL:-}" in
+  quota|rate-limit) FORCE_REFUSAL_ENV="-e HARMONY_TEST_FORCE_REFUSAL=$HARMONY_TEST_FORCE_REFUSAL" ;;
+esac
+
 # 5. Cross-conduction resume discovery (B-718), ON THE HOST — that is where every sibling
 #    conduction's transcripts live — inside the worker image (the host needs no node of its own),
 #    as root (transcripts are worker-owned, run.env is the SSH user's). The script is piped over
@@ -199,7 +206,7 @@ dh_ssh_setup /dev/null "docker run --rm --user 0 --entrypoint chown -v \"$REMOTE
 #    The prompt is one argument containing spaces — quoted for the remote shell (dh_quote).
 PROMPT_Q="$(dh_quote "/harmony-plugin:harmony-conduct $TICKET --one-shot")"
 set +e
-dh_ssh "docker run --privileged --name $CONTAINER -v $ENGINE_VOLUME:/var/lib/docker -v \"$REMOTE_RUN/projects\":/home/worker/.claude/projects -v \"$REMOTE_RUN/logs\":/home/worker/.claude/logs $RUN_CONFIG_MOUNT $CODEX_MOUNTS --env-file \"$REMOTE_RUN/run.env\" $IMAGE_Q headless $PROMPT_Q" </dev/null
+dh_ssh "docker run --privileged --name $CONTAINER -v $ENGINE_VOLUME:/var/lib/docker -v \"$REMOTE_RUN/projects\":/home/worker/.claude/projects -v \"$REMOTE_RUN/logs\":/home/worker/.claude/logs $RUN_CONFIG_MOUNT $CODEX_MOUNTS $FORCE_REFUSAL_ENV --env-file \"$REMOTE_RUN/run.env\" $IMAGE_Q headless $PROMPT_Q" </dev/null
 WORKER_EXIT=$?
 set -e
 

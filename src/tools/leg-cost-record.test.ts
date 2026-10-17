@@ -6,7 +6,7 @@
 // killing the run it was meant to describe.
 
 import { describe, it, expect, vi } from 'vitest';
-import { recordLegCost, listLegCosts, resolveLegCostContext } from './leg-cost-record.js';
+import { recordLegCost, listLegCosts, resolveLegCostContext, ownUsageDelta, sumPriorSessionUsage } from './leg-cost-record.js';
 
 /** A chainable supabase mock, same shape as conduction-record.test.ts's makeClient: terminal
  *  methods pop a queued response in call order. `insert` is terminal here (recordLegCost awaits the
@@ -274,5 +274,48 @@ describe('B-1078 runtime columns', () => {
     expect(selects[0]).toContain('cost_regime');
     expect(selects[1]).not.toContain('cost_regime');
     warn.mockRestore();
+  });
+});
+
+describe('B-1149 refusal columns + resumed-thread delta', () => {
+  const REFUSAL_ABSENT = { code: 'PGRST204', message: "Could not find the 'refusal_kind' column of 'conduction_leg_costs' in the schema cache" };
+
+  it('writes refusal_kind / refusal_resets_at when a refusal is present', async () => {
+    const client = makeClient([{ error: null }]);
+    expect(await recordLegCost(client, { ...baseArgs, refusal_kind: 'quota', refusal_resets_at: '2026-10-17T20:00:00.000Z' })).toBe(true);
+    const inserted = client.calls.filter((c: { method: string }) => c.method === 'insert');
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].args[0]).toMatchObject({ refusal_kind: 'quota', refusal_resets_at: '2026-10-17T20:00:00.000Z' });
+  });
+
+  it('omits the refusal columns entirely when there is no refusal (an ordinary row is unchanged)', async () => {
+    const client = makeClient([{ error: null }]);
+    await recordLegCost(client, baseArgs);
+    const row = client.calls.find((c: { method: string }) => c.method === 'insert').args[0];
+    expect('refusal_kind' in row).toBe(false);
+    expect('refusal_resets_at' in row).toBe(false);
+  });
+
+  it('TOLERANT: the columns not existing yet ⇒ retried once without them, and the row lands', async () => {
+    const client = makeClient([{ error: REFUSAL_ABSENT }, { error: null }]);
+    expect(await recordLegCost(client, { ...baseArgs, refusal_kind: 'rate-limit', refusal_resets_at: null })).toBe(true);
+    const inserts = client.calls.filter((c: { method: string }) => c.method === 'insert');
+    expect(inserts).toHaveLength(2);
+    expect('refusal_kind' in inserts[1].args[0]).toBe(false);
+    expect(inserts[1].args[0]).toMatchObject({ runtime: null }); // the runtime group is still sent
+  });
+
+  it('ownUsageDelta subtracts the earlier rows of the same thread, clamped at 0', () => {
+    expect(ownUsageDelta({ inputTokens: 5400, cacheReadInputTokens: 4100, outputTokens: 610 }, { input_tokens: 1200, cache_read_input_tokens: 300, output_tokens: 90 })).toEqual({ inputTokens: 4200, cacheReadInputTokens: 3800, outputTokens: 520 });
+    expect(ownUsageDelta({ inputTokens: 100, cacheReadInputTokens: null, outputTokens: 5 }, { input_tokens: 500, cache_read_input_tokens: 0, output_tokens: 9 })).toEqual({ inputTokens: 0, cacheReadInputTokens: null, outputTokens: 0 });
+    expect(ownUsageDelta({ inputTokens: 10, cacheReadInputTokens: 2, outputTokens: 3 }, null)).toEqual({ inputTokens: 10, cacheReadInputTokens: 2, outputTokens: 3 });
+  });
+
+  it('sumPriorSessionUsage sums the thread\'s earlier rows; null on a read error', async () => {
+    const ok = makeClient([{ data: [{ input_tokens: 100, cache_read_input_tokens: 10, output_tokens: 5 }, { input_tokens: 50, cache_read_input_tokens: null, output_tokens: 1 }], error: null }]);
+    expect(await sumPriorSessionUsage(ok, { conduction_id: 'cond-1', session_id: 'th-1' })).toEqual({ input_tokens: 150, cache_read_input_tokens: 10, output_tokens: 6 });
+    expect(ok.calls.filter((c: { method: string }) => c.method === 'eq').map((c: { args: unknown[] }) => c.args)).toEqual([['conduction_id', 'cond-1'], ['session_id', 'th-1']]);
+    const bad = makeClient([{ data: null, error: TABLE_ABSENT }]);
+    expect(await sumPriorSessionUsage(bad, { conduction_id: 'cond-1', session_id: 'th-1' })).toBeNull();
   });
 });

@@ -32,12 +32,18 @@ describe('the Codex rendering', () => {
     const text = JSON.stringify(codex);
     expect(text).not.toContain('CLAUDE_PLUGIN_ROOT');
     expect(text).not.toContain('{pluginRoot}');
-    expect(codex.hooks.Stop[0].hooks[0].command).toBe('sh "/workspace/workspace/plugin/hooks/stop-gate.sh"');
-    expect(codex.hooks.PreToolUse[0].hooks[0].command).toBe('sh "/workspace/workspace/plugin/hooks/pretooluse-gate.sh"');
+    // B-1149: each script command is rendered guarded (a vanished script is skipped, exit 0).
+    expect(codex.hooks.Stop[0].hooks[0].command).toBe(
+      'if [ -f "/workspace/workspace/plugin/hooks/stop-gate.sh" ]; then sh "/workspace/workspace/plugin/hooks/stop-gate.sh"; else exit 0; fi',
+    );
+    expect(codex.hooks.PreToolUse[0].hooks[0].command).toBe(
+      'if [ -f "/workspace/workspace/plugin/hooks/pretooluse-gate.sh" ]; then sh "/workspace/workspace/plugin/hooks/pretooluse-gate.sh"; else exit 0; fi',
+    );
   });
 
-  it('is the same hooks as hooks.json, modulo the root', () => {
-    expect(JSON.parse(JSON.stringify(codex).split('/workspace/workspace/plugin').join('${CLAUDE_PLUGIN_ROOT}'))).toEqual(JSON.parse(HOOKS_JSON));
+  it('is the same hooks as hooks.json, modulo the root and the B-1149 script guard', () => {
+    const unguarded = JSON.stringify(codex).replace(/if \[ -f \\"([^"\\]+)\\" \]; then (sh \\"\1\\"); else exit 0; fi/g, '$2');
+    expect(JSON.parse(unguarded.split('/workspace/workspace/plugin').join('${CLAUDE_PLUGIN_ROOT}'))).toEqual(JSON.parse(HOOKS_JSON));
   });
 
   it('refuses a relative or shell-unsafe root', () => {

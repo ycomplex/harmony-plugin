@@ -30422,6 +30422,39 @@ async function updateConductionIfHeld(client, id, expectedLeaseHolder, patch) {
   if (error) throw error;
   return data ?? null;
 }
+var QUOTA_COLS = ["paused_until", "quota_pauses"];
+function isMissingQuotaColumn(err) {
+  if (!err) return false;
+  const text = `${err.message ?? ""} ${err.details ?? ""}`.toLowerCase();
+  const names = QUOTA_COLS.some((c) => text.includes(c));
+  if (err.code === "42703" || err.code === "PGRST204") return names || text.trim() === "";
+  return names && /(does not exist|could not find|schema cache|unknown)/.test(text);
+}
+async function readConductionQuotaState(client, ids) {
+  const out = /* @__PURE__ */ new Map();
+  if (ids.length === 0) return out;
+  const { data, error } = await client.from("conductions").select("id, paused_until, quota_pauses").in("id", [...ids]);
+  if (error) {
+    if (isMissingQuotaColumn(error)) return null;
+    throw error;
+  }
+  for (const r of data ?? []) {
+    out.set(r.id, { paused_until: r.paused_until ?? null, quota_pauses: typeof r.quota_pauses === "number" ? r.quota_pauses : 0 });
+  }
+  return out;
+}
+async function writeConductionQuotaState(client, id, expectedLeaseHolder, patch) {
+  const body = {};
+  if ("paused_until" in patch) body.paused_until = patch.paused_until ?? null;
+  if ("quota_pauses" in patch) body.quota_pauses = patch.quota_pauses ?? 0;
+  if (Object.keys(body).length === 0) return "ok";
+  const { data, error } = await client.from("conductions").update(body).eq("id", id).eq("lease_holder", expectedLeaseHolder).select("id").maybeSingle();
+  if (error) {
+    if (isMissingQuotaColumn(error)) return "missing-columns";
+    throw error;
+  }
+  return data ? "ok" : "lease-lost";
+}
 
 // src/config/run-config.ts
 var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
@@ -34051,6 +34084,23 @@ async function listSubtasks(client, projectId, args) {
   return all;
 }
 
+// src/tools/leg-cost-record.ts
+var LEG_COST_COLS = "id, conduction_id, task_id, leg_key, gate, model, invocation_index, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_creation_1h_input_tokens, cache_creation_5m_input_tokens, thinking_tokens, total_cost_usd, cost_source, num_turns, duration_ms, duration_api_ms, session_id, is_error, service_tier, created_at";
+var RUNTIME_COLS = ["runtime", "credential_kind", "cost_regime"];
+var LEG_COST_COLS_WITH_RUNTIME = `${LEG_COST_COLS}, ${RUNTIME_COLS.join(", ")}`;
+async function readLastLegRefusal(client, args) {
+  if (!client || !args.conduction_id) return null;
+  try {
+    const { data, error } = await client.from("conduction_leg_costs").select("refusal_kind, refusal_resets_at, created_at").eq("conduction_id", args.conduction_id).gte("created_at", args.since).order("created_at", { ascending: false }).limit(1);
+    if (error || !Array.isArray(data) || data.length === 0) return null;
+    const row = data[0];
+    if (row.refusal_kind !== "quota" && row.refusal_kind !== "rate-limit") return null;
+    return { kind: row.refusal_kind, resets_at: typeof row.refusal_resets_at === "string" ? row.refusal_resets_at : null };
+  } catch {
+    return null;
+  }
+}
+
 // src/tools/leg-output-record.ts
 var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
 function warn(message) {
@@ -35364,7 +35414,93 @@ function parseClaudeResultJson(text) {
   };
 }
 
+// src/agents/refusal.ts
+function isRefusalKind(v) {
+  return v === "quota" || v === "rate-limit";
+}
+var FORCE_REFUSAL_ENV = "HARMONY_TEST_FORCE_REFUSAL";
+function forcedRefusal(env = process.env) {
+  const v = env[FORCE_REFUSAL_ENV];
+  return isRefusalKind(v) ? { kind: v, resets_at: null } : null;
+}
+function resetsInSeconds(seconds, now) {
+  const n = typeof seconds === "string" ? Number(seconds) : seconds;
+  if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) return null;
+  return new Date(now.getTime() + n * 1e3).toISOString();
+}
+function absoluteResetTime(v) {
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) {
+    return new Date(v < 1e12 ? v * 1e3 : v).toISOString();
+  }
+  if (typeof v === "string" && v.trim() !== "") {
+    const t = v.trim();
+    if (/^\d+$/.test(t)) return absoluteResetTime(Number(t));
+    if (!/\d{4}-\d{2}-\d{2}|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}/i.test(t)) return null;
+    const ms = Date.parse(t);
+    return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+  }
+  return null;
+}
+var UNIT_SECONDS = {
+  s: 1,
+  sec: 1,
+  secs: 1,
+  second: 1,
+  seconds: 1,
+  m: 60,
+  min: 60,
+  mins: 60,
+  minute: 60,
+  minutes: 60,
+  h: 3600,
+  hr: 3600,
+  hrs: 3600,
+  hour: 3600,
+  hours: 3600,
+  d: 86400,
+  day: 86400,
+  days: 86400
+};
+function relativeResetSeconds(text) {
+  const m = /(?:try again|retry|resets?|available again)\s+(?:in|after)\s+((?:\d+(?:\.\d+)?\s*[a-z]+[\s,]*(?:and\s+)?)+)/i.exec(text);
+  if (!m) return null;
+  let total = 0;
+  let any = false;
+  for (const part of m[1].matchAll(/(\d+(?:\.\d+)?)\s*([a-z]+)/gi)) {
+    const unit = UNIT_SECONDS[part[2].toLowerCase()];
+    if (unit === void 0) continue;
+    total += Number(part[1]) * unit;
+    any = true;
+  }
+  return any && total > 0 ? total : null;
+}
+function absoluteResetFromText(text) {
+  const m = /(?:try again|resets?|available again)\s+(?:at|on)\s+([^.;\n)]+)/i.exec(text);
+  return m ? absoluteResetTime(m[1]) : null;
+}
+function resetFromText(text, now) {
+  const rel = relativeResetSeconds(text);
+  if (rel !== null) return resetsInSeconds(rel, now);
+  return absoluteResetFromText(text);
+}
+
 // src/agents/claude-code.ts
+var CLAUDE_QUOTA_RE = /usage limit|(?:5-hour|five-hour|weekly|session|daily|opus|sonnet)(?: usage)? limit|hit your (?:usage )?limit|out of (?:extra )?usage|quota/i;
+var CLAUDE_RATE_LIMIT_RE = /\b429\b|rate[ _-]?limit|too many requests/i;
+var CLAUDE_LIMIT_REACHED_RE = /limit reached/i;
+function parseClaudeRefusal(stdout, now = /* @__PURE__ */ new Date(), env = process.env) {
+  const forced = forcedRefusal(env);
+  if (forced) return forced;
+  const parsed = parseClaudeResultJson(stdout);
+  if (!parsed || !parsed.is_error) return null;
+  const text = parsed.result ?? "";
+  if (text === "") return null;
+  const kind = CLAUDE_QUOTA_RE.test(text) ? "quota" : CLAUDE_RATE_LIMIT_RE.test(text) ? "rate-limit" : CLAUDE_LIMIT_REACHED_RE.test(text) ? "quota" : null;
+  if (!kind) return null;
+  const pipe = /\|\s*(\d{9,13})\s*$/.exec(text);
+  const resets_at = (pipe ? absoluteResetTime(Number(pipe[1])) : null) ?? resetFromText(text, now);
+  return { kind, resets_at };
+}
 var CLAUDE_OUTPUT_FORMAT_FLAGS = ["--output-format", "json"];
 var CLAUDE_MODEL_FLAG = "--model";
 var CLAUDE_RESUME_FLAG = "--resume";
@@ -35500,7 +35636,9 @@ var claudeCodeAdapter = {
       "HARMONY_MODEL",
       "GIT_TOKEN_EXPIRES_AT",
       "HARMONY_LEG",
-      "HARMONY_CONDUCTION_ID"
+      "HARMONY_CONDUCTION_ID",
+      // B-1149: optional test hook (quota | rate-limit only), inert when unset.
+      "HARMONY_TEST_FORCE_REFUSAL"
     ],
     standingSecrets: ["HARMONY_API_TOKEN", OAUTH_ENV]
   },
@@ -35528,7 +35666,8 @@ var claudeCodeAdapter = {
         costRegime: deriveCostRegime(ctx.credential),
         costUsd: resolveCost(parsed, ctx.model).total_cost_usd,
         sessionId: parsed.session_id,
-        isError: parsed.is_error
+        isError: parsed.is_error,
+        refusal: parseClaudeRefusal(stdout)
       };
     },
     sampleOutput: SAMPLE_RESULT
@@ -35703,6 +35842,51 @@ function codexTelemetryUsage(stdout) {
   if (!u) return null;
   return { inputTokens: u.inputTokens, cacheReadInputTokens: u.cachedInputTokens, outputTokens: u.outputTokens };
 }
+var CODEX_QUOTA_RE = /usage[ _-]?limit|usage_limit_reached|insufficient_quota|hit your (?:usage )?limit|quota (?:exceeded|exhausted)|exceeded your (?:current )?quota|plan limit/i;
+var CODEX_RATE_LIMIT_RE = /\b429\b|rate[ _-]?limit|too many requests/i;
+function errorText(e) {
+  const parts = [];
+  const push = (v) => {
+    if (typeof v === "string") parts.push(v);
+    else if (v && typeof v === "object") parts.push(JSON.stringify(v));
+  };
+  push(e.message);
+  push(e.error);
+  return parts.join(" ");
+}
+function structuredReset(e, text, now) {
+  const err = e.error && typeof e.error === "object" ? e.error : {};
+  const fromField = resetsInSeconds(err.resets_in_seconds, now) ?? absoluteResetTime(err.resets_at) ?? resetsInSeconds(err.retry_after, now);
+  if (fromField) return fromField;
+  const inSec = /"?resets_in_seconds"?\s*[:=]\s*(\d+)/i.exec(text);
+  if (inSec) return resetsInSeconds(Number(inSec[1]), now);
+  const at = /"?resets_at"?\s*[:=]\s*"?([0-9T:.\-+Z]+)"?/i.exec(text);
+  if (at) {
+    const t = absoluteResetTime(/^\d+$/.test(at[1]) ? Number(at[1]) : at[1]);
+    if (t) return t;
+  }
+  const retryAfter = /retry[- _]after\s*[:=]?\s*(\d+)\s*(?:s\b|sec|seconds)?/i.exec(text);
+  if (retryAfter) return resetsInSeconds(Number(retryAfter[1]), now);
+  return resetFromText(text, now);
+}
+function parseCodexRefusal(stdout, now = /* @__PURE__ */ new Date(), env = process.env) {
+  const forced = forcedRefusal(env);
+  if (forced) return forced;
+  const failures = events(stdout).filter((e) => e.type === "error" || e.type === "turn.failed");
+  for (const e of failures.reverse()) {
+    const text = errorText(e);
+    if (text === "") continue;
+    const kind = CODEX_QUOTA_RE.test(text) ? "quota" : CODEX_RATE_LIMIT_RE.test(text) ? "rate-limit" : null;
+    if (kind) return { kind, resets_at: structuredReset(e, text, now) };
+  }
+  return null;
+}
+var CODEX_TURN_ITEM_TYPES = ["agent_message", "command_execution", "mcp_tool_call", "file_change", "web_search"];
+function countCodexTurns(stdout) {
+  const evs = events(stdout);
+  if (evs.length === 0) return null;
+  return evs.filter((e) => e.type === "item.completed" && typeof e.item?.type === "string" && CODEX_TURN_ITEM_TYPES.includes(e.item.type)).length;
+}
 var SAMPLE_OUTPUT = [
   JSON.stringify({ type: "thread.started", thread_id: "00000000-0000-4000-8000-000000000000" }),
   JSON.stringify({ type: "turn.started" }),
@@ -35775,7 +35959,9 @@ var codexAdapter = {
       "HARMONY_MODEL",
       "GIT_TOKEN_EXPIRES_AT",
       "HARMONY_LEG",
-      "HARMONY_CONDUCTION_ID"
+      "HARMONY_CONDUCTION_ID",
+      // B-1149: optional test hook (quota | rate-limit only), inert when unset.
+      "HARMONY_TEST_FORCE_REFUSAL"
     ],
     standingSecrets: ["HARMONY_API_TOKEN", CODEX_AUTH_FILE_ENV]
   },
@@ -35801,7 +35987,8 @@ var codexAdapter = {
     parse: (stdout, ctx) => {
       const evs = events(stdout);
       const terminal = [...evs].reverse().find((e) => e.type === "turn.completed" || e.type === "turn.failed");
-      if (!terminal) return null;
+      const refusal = parseCodexRefusal(stdout);
+      if (!terminal && !refusal) return null;
       return {
         runtime: "codex",
         model: ctx.model,
@@ -35809,8 +35996,10 @@ var codexAdapter = {
         costRegime: deriveCostRegime(ctx.credential),
         costUsd: null,
         sessionId: parseCodexThreadId(stdout),
-        isError: terminal.type === "turn.failed",
-        usage: codexTelemetryUsage(stdout)
+        isError: terminal ? terminal.type === "turn.failed" : true,
+        usage: codexTelemetryUsage(stdout),
+        refusal,
+        numTurns: countCodexTurns(stdout)
       };
     },
     sampleOutput: SAMPLE_OUTPUT
@@ -36155,6 +36344,9 @@ function classifyWorkerExit(args) {
   if (row.stale === true) return { action: "park", reason: "stale" };
   if (args.timedOut) return { action: "park", reason: "worker-timeout" };
   if (args.operatorReaped) return { action: "park", reason: "operator-reap" };
+  if (args.refusal && (args.refusal.kind === "quota" || args.refusal.kind === "rate-limit")) {
+    return { action: "park", reason: args.refusal.kind };
+  }
   if (exitCode !== 0) return { action: "park", reason: "dirty-exit" };
   if (!progressed) {
     return args.repoProgressed ? { action: "park", reason: "repo-active-board-silent" } : { action: "park", reason: "no-progress" };
@@ -36319,6 +36511,9 @@ async function tryFileFastTrackPostMergeRecording(deps, taskId) {
 // src/daemon/scheduler.ts
 var TAKEOVER_ENDPOINT = "conductions.takeoverConduction";
 var STEAL_ENDPOINT = "conductions.stealConduction";
+var RATE_LIMIT_BACKOFFS_MS = [3e4, 12e4];
+var QUOTA_DEFAULT_PAUSE_MS = 60 * 60 * 1e3;
+var QUOTA_PAUSE_CAP = 3;
 var WORKER_OUTPUT_TAIL_BYTES = 64 * 1024;
 var iso = (ms) => new Date(ms).toISOString();
 var exclusionMemory = /* @__PURE__ */ new WeakMap();
@@ -36446,7 +36641,48 @@ async function safeProbeRef(deps, ref) {
   }
 }
 function createSchedulerRuntime() {
-  return { ready: /* @__PURE__ */ new Map(), running: /* @__PURE__ */ new Map(), fatal: null };
+  return {
+    ready: /* @__PURE__ */ new Map(),
+    running: /* @__PURE__ */ new Map(),
+    fatal: null,
+    quotaHolds: /* @__PURE__ */ new Map(),
+    quotaState: /* @__PURE__ */ new Map(),
+    rateLimitRetries: /* @__PURE__ */ new Map(),
+    heldLogged: /* @__PURE__ */ new Set()
+  };
+}
+function quotaMaps(runtime) {
+  runtime.quotaHolds ??= /* @__PURE__ */ new Map();
+  runtime.quotaState ??= /* @__PURE__ */ new Map();
+  runtime.rateLimitRetries ??= /* @__PURE__ */ new Map();
+  runtime.heldLogged ??= /* @__PURE__ */ new Set();
+  return { holds: runtime.quotaHolds, db: runtime.quotaState, rateLimit: runtime.rateLimitRetries, logged: runtime.heldLogged };
+}
+function runtimeOfConduction(row) {
+  const sel = getAgentAdapter(row.run_config ?? {});
+  return sel.ok ? sel.adapter : "claude-code";
+}
+function holdUntil(runtime, id) {
+  const { holds, db } = quotaMaps(runtime);
+  const persisted = db.get(id)?.paused_until ?? null;
+  const p = persisted ? Date.parse(persisted) : NaN;
+  const m = holds.get(id)?.until ?? 0;
+  const best = Math.max(Number.isFinite(p) ? p : 0, m);
+  return best > 0 ? best : null;
+}
+function quotaPausesOf(runtime, id) {
+  const { holds, db } = quotaMaps(runtime);
+  const mem = holds.get(id);
+  if (mem) return mem.pauses;
+  return db.get(id)?.quota_pauses ?? 0;
+}
+function heldRuntimes(runtime, rows, now) {
+  const held = /* @__PURE__ */ new Set();
+  for (const row of rows) {
+    const until = holdUntil(runtime, row.id);
+    if (until !== null && until > now) held.add(runtimeOfConduction(row));
+  }
+  return held;
 }
 var PRIORITY_RANK = { low: 0, medium: 1, high: 2 };
 var MAX_PRIORITY_RANK = PRIORITY_RANK.high;
@@ -36465,6 +36701,20 @@ async function runSchedulerPass(deps, state, keeper, runtime) {
   keeper.retain(activeIds);
   for (const id of [...runtime.ready.keys()]) if (!activeIds.has(id)) runtime.ready.delete(id);
   for (const id of [...runtime.running.keys()]) if (!activeIds.has(id)) runtime.running.delete(id);
+  {
+    const q = quotaMaps(runtime);
+    for (const id of [...q.holds.keys()]) if (!activeIds.has(id)) q.holds.delete(id);
+    for (const id of [...q.rateLimit.keys()]) if (!activeIds.has(id)) q.rateLimit.delete(id);
+    for (const id of [...q.logged]) if (!activeIds.has(id)) q.logged.delete(id);
+    if (deps.readQuotaState) {
+      try {
+        const read = await deps.readQuotaState([...activeIds]);
+        runtime.quotaState = read ?? /* @__PURE__ */ new Map();
+      } catch (err) {
+        deps.log(`quota state read failed \u2014 keeping the previous read (${formatDaemonError(err)})`);
+      }
+    }
+  }
   let authShapedFailures = 0;
   const stealCandidates = [];
   const waitingCandidates = [];
@@ -36488,7 +36738,7 @@ async function runSchedulerPass(deps, state, keeper, runtime) {
   }
   const byId = new Map(rows.map((r) => [r.id, r]));
   authShapedFailures += await fireReadyCandidates(deps, state, keeper, runtime, byId);
-  authShapedFailures += await fireStealCandidates(deps, state, keeper, runtime, stealCandidates);
+  authShapedFailures += await fireStealCandidates(deps, state, keeper, runtime, stealCandidates, byId);
   announceWaiting(deps, state, waitingCandidates);
   return { attempted: rows.length, authShapedFailures };
 }
@@ -36548,6 +36798,25 @@ async function handleHeldConduction(deps, state, keeper, excluded, runtime, row)
   if (!await writeIfHeld(deps, state, keeper, row, { last_heartbeat_at: iso(deps.now()) })) return;
   keeper.ensure(row.id);
   if (runtime.ready.has(row.id)) return;
+  const until = holdUntil(runtime, row.id);
+  if (until !== null) {
+    if (until > deps.now()) return;
+    const q = quotaMaps(runtime);
+    const mem = q.holds.get(row.id);
+    q.holds.set(row.id, { runtime: mem?.runtime ?? runtimeOfConduction(row), until: 0, pauses: quotaPausesOf(runtime, row.id) });
+    const persisted = q.db.get(row.id);
+    if (persisted) persisted.paused_until = null;
+    if (deps.writeQuotaState) {
+      try {
+        await deps.writeQuotaState(row.id, { paused_until: null });
+      } catch (err) {
+        deps.log(`conduction ${row.id}: clearing paused_until failed (${formatDaemonError(err)}) \u2014 the in-memory state moves on`);
+      }
+    }
+    deps.log(`conduction ${row.id}: quota pause over \u2014 queuing the re-check leg`);
+    runtime.ready.set(row.id, { since: deps.now(), priority: row.task_priority ?? null, retryCount: row.retry_count });
+    return;
+  }
   const current = await deps.getTaskMeta(row.task_id);
   if (current.workflow_state === "Deployed" && current.awaiting_human_reason === "verification-ack-pending" && current.awaiting_human_ref?.kind === "umbrella-auto-verify") {
     deps.log(
@@ -36703,7 +36972,9 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
         // settlement (recording an empty capture would be a claim about a launch this daemon never
         // watched).
         launchOutputTail: null,
-        launchOutputBytes: 0
+        launchOutputBytes: 0,
+        // B-1149: the leg's own fire time, when the row still carries it — bounds the refusal read.
+        firedAt: row.leg_started_at && Number.isFinite(Date.parse(row.leg_started_at)) ? Date.parse(row.leg_started_at) : void 0
       });
       return false;
     }
@@ -36739,6 +37010,14 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
   const settleRef = resolveWorkRef(after);
   const settleHeadSha = settleRef ? await safeProbeRef(deps, settleRef) : null;
   const repoProgressed = tracked.preFireHeadSha !== null && settleHeadSha !== null && tracked.preFireHeadSha !== settleHeadSha;
+  let refusal = null;
+  if (deps.getLastLegRefusal && tracked.firedAt !== void 0) {
+    try {
+      refusal = await deps.getLastLegRefusal(row.id, iso(tracked.firedAt));
+    } catch {
+      refusal = null;
+    }
+  }
   const classifyArgs = {
     row: after,
     nonArchivedChildCount,
@@ -36746,13 +37025,22 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
     progressed,
     timedOut: tracked.timedOut,
     operatorReaped: tracked.operatorReaped,
-    repoProgressed
+    repoProgressed,
+    refusal
   };
   const outcome = classifyWorkerExit(classifyArgs);
   const cls = exitClass(outcome, classifyArgs);
   deps.log(
     `${label(row, after, deps.projectKey)}: worker exit code=${tracked.exitCode ?? "null"} \u2192 ${outcome.action} (${cls})`
   );
+  if (progressed && cls !== "quota" && cls !== "rate-limit" && quotaPausesOf(runtime, row.id) > 0) {
+    await resetQuotaPauses(deps, runtime, row);
+  }
+  if (cls !== "rate-limit") quotaMaps(runtime).rateLimit.delete(row.id);
+  if (outcome.action === "park" && (cls === "rate-limit" || cls === "quota")) {
+    await settleRefusal(deps, state, keeper, runtime, row, after, tracked, cls, refusal, progressed);
+    return;
+  }
   if (outcome.action === "wait") {
     if (!await writeLastLegEndedAt(deps, state, keeper, row, {
       last_worker_exit_class: "clean-pause",
@@ -36790,6 +37078,91 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
   await writeLastLegEndedAt(deps, state, keeper, row);
   await flushLaunchOutput(deps, row, tracked);
 }
+async function resetQuotaPauses(deps, runtime, row) {
+  const q = quotaMaps(runtime);
+  const mem = q.holds.get(row.id);
+  if (mem) mem.pauses = 0;
+  const persisted = q.db.get(row.id);
+  if (persisted) persisted.quota_pauses = 0;
+  if (!deps.writeQuotaState) return;
+  try {
+    await deps.writeQuotaState(row.id, { quota_pauses: 0 });
+  } catch (err) {
+    deps.log(`conduction ${row.id}: resetting quota_pauses failed (${formatDaemonError(err)})`);
+  }
+}
+async function commentOnTicket(deps, row, content) {
+  if (!deps.addTicketComment) return;
+  try {
+    await deps.addTicketComment(row.task_id, content);
+  } catch (err) {
+    deps.log(`conduction ${row.id}: quota comment failed (${formatDaemonError(err)})`);
+  }
+}
+async function settleRefusal(deps, state, keeper, runtime, row, after, tracked, cls, refusal, progressed) {
+  const q = quotaMaps(runtime);
+  const rt = runtimeOfConduction(row);
+  if (cls === "rate-limit") {
+    const used = q.rateLimit.get(row.id) ?? 0;
+    if (used < RATE_LIMIT_BACKOFFS_MS.length) {
+      const backoffMs = RATE_LIMIT_BACKOFFS_MS[used];
+      q.rateLimit.set(row.id, used + 1);
+      if (!await writeLastLegEndedAt(deps, state, keeper, row, { last_worker_exit_class: "rate-limit", last_worker_exit_code: tracked.exitCode })) return;
+      deps.log(
+        `${label(row, after, deps.projectKey)}: rate limit on ${rt} \u2014 retrying (${used + 1}/${RATE_LIMIT_BACKOFFS_MS.length}) after reap + ${backoffMs}ms backoff`
+      );
+      await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage)));
+      runtime.ready.set(row.id, { since: deps.now(), priority: row.task_priority ?? null, notBefore: deps.now() + backoffMs, retryCount: tracked.retryCount });
+      return;
+    }
+    q.rateLimit.delete(row.id);
+    deps.log(`${label(row, after, deps.projectKey)}: rate limit on ${rt} persisted past ${RATE_LIMIT_BACKOFFS_MS.length} retries \u2014 pausing as quota`);
+  }
+  const pauses = (progressed ? 0 : quotaPausesOf(runtime, row.id)) + 1;
+  const now = deps.now();
+  if (pauses >= QUOTA_PAUSE_CAP) {
+    deps.log(`${label(row, after, deps.projectKey)}: ${pauses} consecutive quota pauses on ${rt} \u2014 parking (quota-repeated)`);
+    q.holds.delete(row.id);
+    state.delete(row.id);
+    keeper.stop(row.id);
+    if (!await writeIfHeld(deps, state, keeper, row, { status: "parked", last_worker_exit_code: tracked.exitCode, last_worker_exit_class: "quota-repeated" })) return;
+    await writeLastLegEndedAt(deps, state, keeper, row);
+    if (deps.writeQuotaState) {
+      try {
+        await deps.writeQuotaState(row.id, { paused_until: null, quota_pauses: pauses });
+      } catch (err) {
+        deps.log(`conduction ${row.id}: quota state write failed (${formatDaemonError(err)})`);
+      }
+    }
+    await commentOnTicket(
+      deps,
+      row,
+      `Parked \u2014 quota on ${rt} refused ${pauses} consecutive legs with no progress between them. The plan quota looks exhausted for longer than the pauses covered; resume the conduction once it has reset.`
+    );
+    await flushLaunchOutput(deps, row, tracked);
+    return;
+  }
+  const reported = refusal?.resets_at ? Date.parse(refusal.resets_at) : NaN;
+  const untilMs = Number.isFinite(reported) && reported > now ? reported : now + QUOTA_DEFAULT_PAUSE_MS;
+  q.holds.set(row.id, { runtime: rt, until: untilMs, pauses });
+  q.logged.delete(row.id);
+  if (!await writeLastLegEndedAt(deps, state, keeper, row, { last_worker_exit_class: "quota", last_worker_exit_code: tracked.exitCode })) return;
+  if (deps.writeQuotaState) {
+    try {
+      const r = await deps.writeQuotaState(row.id, { paused_until: iso(untilMs), quota_pauses: pauses });
+      if (r === "missing-columns") {
+        deps.log(`conduction ${row.id}: paused_until/quota_pauses columns absent (pre-migration) \u2014 holding in memory only`);
+      }
+    } catch (err) {
+      deps.log(`conduction ${row.id}: quota state write failed (${formatDaemonError(err)}) \u2014 holding in memory only`);
+    }
+  }
+  deps.log(
+    `${label(row, after, deps.projectKey)}: quota refusal on ${rt} \u2014 paused until ${iso(untilMs)} (pause ${pauses}/${QUOTA_PAUSE_CAP}); the ${rt} runtime is held`
+  );
+  await commentOnTicket(deps, row, `Paused \u2014 quota on ${rt}, resumes ${iso(untilMs)}`);
+  state.set(row.id, captureBaseline(after));
+}
 async function flushLaunchOutput(deps, row, tracked) {
   if (tracked.launchOutputTail === null) return;
   try {
@@ -36812,6 +37185,19 @@ async function flushLaunchOutput(deps, row, tracked) {
     );
   }
 }
+function skipHeld(deps, runtime, row, held) {
+  const rt = runtimeOfConduction(row);
+  const logged = quotaMaps(runtime).logged;
+  if (!held.has(rt)) {
+    logged.delete(row.id);
+    return false;
+  }
+  if (!logged.has(row.id)) {
+    deps.log(`conduction ${row.id}: ${rt} runtime is held (quota pause) \u2014 not launching`);
+    logged.add(row.id);
+  }
+  return true;
+}
 async function fireReadyCandidates(deps, state, keeper, runtime, byId) {
   let authShapedFailures = 0;
   const now = deps.now();
@@ -36823,10 +37209,12 @@ async function fireReadyCandidates(deps, state, keeper, runtime, byId) {
     if (rankDiff !== 0) return rankDiff;
     return a.since - b.since;
   });
+  const held = heldRuntimes(runtime, byId.values(), now);
   for (const [id, entry] of eligible) {
     if (runtime.running.size >= deps.config.maxConcurrentWorkers) break;
     const row = byId.get(id);
     if (!row) continue;
+    if (skipHeld(deps, runtime, row, held)) continue;
     try {
       await fireLaunch(deps, state, keeper, runtime, row, null, entry.retryCount);
     } catch (err) {
@@ -36838,10 +37226,12 @@ async function fireReadyCandidates(deps, state, keeper, runtime, byId) {
   }
   return authShapedFailures;
 }
-async function fireStealCandidates(deps, state, keeper, runtime, candidates) {
+async function fireStealCandidates(deps, state, keeper, runtime, candidates, byId) {
   let authShapedFailures = 0;
+  const held = heldRuntimes(runtime, byId ? byId.values() : candidates.map((c) => c.row), deps.now());
   for (const { row, current } of candidates) {
     if (runtime.running.size >= deps.config.maxConcurrentWorkers) break;
+    if (skipHeld(deps, runtime, row, held)) continue;
     try {
       const stolen = await withWriteRetry(
         deps,
@@ -36989,7 +37379,8 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
     // B-720: filled in when this launch's runCommand resolves (see the .then below) — null until
     // then, which is also the terminal value for a launch that never settles here.
     launchOutputTail: null,
-    launchOutputBytes: 0
+    launchOutputBytes: 0,
+    firedAt: deps.now()
   };
   runtime.running.set(row.id, tracked);
   if (Object.keys(row.run_config ?? {}).length > 0 && !deps.config.profile.launch.includes("{run_config_json}")) {
@@ -37589,7 +37980,12 @@ ${err instanceof Error ? err.message : String(err)}
     // user id (mirrors drainRecordedWalkRequests's own userId attribution just above).
     addTicketComment: async (taskId, content) => {
       await addComment(client, projectId, auth.getUserId(), { task_id: taskId, content });
-    }
+    },
+    // B-1149: quota/rate-limit refusals — the leg-cost row's typed verdict, and the tolerant
+    // paused_until / quota_pauses accessors (null / 'missing-columns' before the web migration).
+    getLastLegRefusal: (conductionId, sinceIso) => readLastLegRefusal(client, { conduction_id: conductionId, since: sinceIso }),
+    readQuotaState: (ids) => readConductionQuotaState(client, ids),
+    writeQuotaState: (id, patch) => writeConductionQuotaState(client, id, leaseHolder, patch)
   };
   const keeper = createHeartbeatKeeper({
     now: Date.now,

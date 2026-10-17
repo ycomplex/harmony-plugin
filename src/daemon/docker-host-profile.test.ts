@@ -495,6 +495,25 @@ describe.skipIf(!BASH_AVAILABLE)('docker-host-worker-launch.sh (EXECUTED against
     expect(call).not.toContain('--rm');
   });
 
+  it('B-1149: HARMONY_TEST_FORCE_REFUSAL is forwarded as -e only for quota | rate-limit; unset, empty or garbage forwards nothing', () => {
+    const argvFor = (env: Record<string, string>) => {
+      const world = makeWorld();
+      expect(launch(world, env).status).toBe(0);
+      return dockerCalls(world).find((a) => a.includes('--privileged'))!.map((a) => a.split(world.remoteRunDir).join('<RUN>'));
+    };
+    const baseline = argvFor({});
+    expect(baseline.join('\n')).not.toContain('HARMONY_TEST_FORCE_REFUSAL');
+    expect(argvFor({ HARMONY_TEST_FORCE_REFUSAL: '' })).toEqual(baseline);
+    expect(argvFor({ HARMONY_TEST_FORCE_REFUSAL: 'bogus; rm -rf /' })).toEqual(baseline);
+    expect(argvFor({ HARMONY_TEST_FORCE_REFUSAL: 'Quota' })).toEqual(baseline);
+    for (const v of ['quota', 'rate-limit']) {
+      const argv = argvFor({ HARMONY_TEST_FORCE_REFUSAL: v });
+      const i = argv.indexOf('-e');
+      expect(argv.slice(i, i + 2)).toEqual(['-e', `HARMONY_TEST_FORCE_REFUSAL=${v}`]);
+      expect(argv.filter((a) => a !== '-e' && a !== `HARMONY_TEST_FORCE_REFUSAL=${v}`)).toEqual(baseline);
+    }
+  });
+
   it('uses the deployment\'s worker_image as-is, and falls back to the schema default name with no config', () => {
     const custom = makeWorld();
     expect(launch(custom, { STUB_CFG_IMAGE: 'registry.example/acme/build-env:1.2' }).status).toBe(0);

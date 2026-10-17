@@ -51972,7 +51972,93 @@ function parseClaudeResultJson(text) {
   };
 }
 
+// src/agents/refusal.ts
+function isRefusalKind(v) {
+  return v === "quota" || v === "rate-limit";
+}
+var FORCE_REFUSAL_ENV = "HARMONY_TEST_FORCE_REFUSAL";
+function forcedRefusal(env = process.env) {
+  const v = env[FORCE_REFUSAL_ENV];
+  return isRefusalKind(v) ? { kind: v, resets_at: null } : null;
+}
+function resetsInSeconds(seconds, now) {
+  const n = typeof seconds === "string" ? Number(seconds) : seconds;
+  if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) return null;
+  return new Date(now.getTime() + n * 1e3).toISOString();
+}
+function absoluteResetTime(v) {
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) {
+    return new Date(v < 1e12 ? v * 1e3 : v).toISOString();
+  }
+  if (typeof v === "string" && v.trim() !== "") {
+    const t = v.trim();
+    if (/^\d+$/.test(t)) return absoluteResetTime(Number(t));
+    if (!/\d{4}-\d{2}-\d{2}|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}/i.test(t)) return null;
+    const ms = Date.parse(t);
+    return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+  }
+  return null;
+}
+var UNIT_SECONDS = {
+  s: 1,
+  sec: 1,
+  secs: 1,
+  second: 1,
+  seconds: 1,
+  m: 60,
+  min: 60,
+  mins: 60,
+  minute: 60,
+  minutes: 60,
+  h: 3600,
+  hr: 3600,
+  hrs: 3600,
+  hour: 3600,
+  hours: 3600,
+  d: 86400,
+  day: 86400,
+  days: 86400
+};
+function relativeResetSeconds(text) {
+  const m = /(?:try again|retry|resets?|available again)\s+(?:in|after)\s+((?:\d+(?:\.\d+)?\s*[a-z]+[\s,]*(?:and\s+)?)+)/i.exec(text);
+  if (!m) return null;
+  let total = 0;
+  let any = false;
+  for (const part of m[1].matchAll(/(\d+(?:\.\d+)?)\s*([a-z]+)/gi)) {
+    const unit = UNIT_SECONDS[part[2].toLowerCase()];
+    if (unit === void 0) continue;
+    total += Number(part[1]) * unit;
+    any = true;
+  }
+  return any && total > 0 ? total : null;
+}
+function absoluteResetFromText(text) {
+  const m = /(?:try again|resets?|available again)\s+(?:at|on)\s+([^.;\n)]+)/i.exec(text);
+  return m ? absoluteResetTime(m[1]) : null;
+}
+function resetFromText(text, now) {
+  const rel = relativeResetSeconds(text);
+  if (rel !== null) return resetsInSeconds(rel, now);
+  return absoluteResetFromText(text);
+}
+
 // src/agents/claude-code.ts
+var CLAUDE_QUOTA_RE = /usage limit|(?:5-hour|five-hour|weekly|session|daily|opus|sonnet)(?: usage)? limit|hit your (?:usage )?limit|out of (?:extra )?usage|quota/i;
+var CLAUDE_RATE_LIMIT_RE = /\b429\b|rate[ _-]?limit|too many requests/i;
+var CLAUDE_LIMIT_REACHED_RE = /limit reached/i;
+function parseClaudeRefusal(stdout, now = /* @__PURE__ */ new Date(), env = process.env) {
+  const forced = forcedRefusal(env);
+  if (forced) return forced;
+  const parsed = parseClaudeResultJson(stdout);
+  if (!parsed || !parsed.is_error) return null;
+  const text = parsed.result ?? "";
+  if (text === "") return null;
+  const kind = CLAUDE_QUOTA_RE.test(text) ? "quota" : CLAUDE_RATE_LIMIT_RE.test(text) ? "rate-limit" : CLAUDE_LIMIT_REACHED_RE.test(text) ? "quota" : null;
+  if (!kind) return null;
+  const pipe2 = /\|\s*(\d{9,13})\s*$/.exec(text);
+  const resets_at = (pipe2 ? absoluteResetTime(Number(pipe2[1])) : null) ?? resetFromText(text, now);
+  return { kind, resets_at };
+}
 var CLAUDE_OUTPUT_FORMAT_FLAGS = ["--output-format", "json"];
 var CLAUDE_MODEL_FLAG = "--model";
 var CLAUDE_RESUME_FLAG = "--resume";
@@ -52108,7 +52194,9 @@ var claudeCodeAdapter = {
       "HARMONY_MODEL",
       "GIT_TOKEN_EXPIRES_AT",
       "HARMONY_LEG",
-      "HARMONY_CONDUCTION_ID"
+      "HARMONY_CONDUCTION_ID",
+      // B-1149: optional test hook (quota | rate-limit only), inert when unset.
+      "HARMONY_TEST_FORCE_REFUSAL"
     ],
     standingSecrets: ["HARMONY_API_TOKEN", OAUTH_ENV]
   },
@@ -52136,7 +52224,8 @@ var claudeCodeAdapter = {
         costRegime: deriveCostRegime(ctx.credential),
         costUsd: resolveCost(parsed, ctx.model).total_cost_usd,
         sessionId: parsed.session_id,
-        isError: parsed.is_error
+        isError: parsed.is_error,
+        refusal: parseClaudeRefusal(stdout)
       };
     },
     sampleOutput: SAMPLE_RESULT
@@ -52311,6 +52400,51 @@ function codexTelemetryUsage(stdout) {
   if (!u) return null;
   return { inputTokens: u.inputTokens, cacheReadInputTokens: u.cachedInputTokens, outputTokens: u.outputTokens };
 }
+var CODEX_QUOTA_RE = /usage[ _-]?limit|usage_limit_reached|insufficient_quota|hit your (?:usage )?limit|quota (?:exceeded|exhausted)|exceeded your (?:current )?quota|plan limit/i;
+var CODEX_RATE_LIMIT_RE = /\b429\b|rate[ _-]?limit|too many requests/i;
+function errorText(e) {
+  const parts = [];
+  const push = (v) => {
+    if (typeof v === "string") parts.push(v);
+    else if (v && typeof v === "object") parts.push(JSON.stringify(v));
+  };
+  push(e.message);
+  push(e.error);
+  return parts.join(" ");
+}
+function structuredReset(e, text, now) {
+  const err = e.error && typeof e.error === "object" ? e.error : {};
+  const fromField = resetsInSeconds(err.resets_in_seconds, now) ?? absoluteResetTime(err.resets_at) ?? resetsInSeconds(err.retry_after, now);
+  if (fromField) return fromField;
+  const inSec = /"?resets_in_seconds"?\s*[:=]\s*(\d+)/i.exec(text);
+  if (inSec) return resetsInSeconds(Number(inSec[1]), now);
+  const at = /"?resets_at"?\s*[:=]\s*"?([0-9T:.\-+Z]+)"?/i.exec(text);
+  if (at) {
+    const t = absoluteResetTime(/^\d+$/.test(at[1]) ? Number(at[1]) : at[1]);
+    if (t) return t;
+  }
+  const retryAfter = /retry[- _]after\s*[:=]?\s*(\d+)\s*(?:s\b|sec|seconds)?/i.exec(text);
+  if (retryAfter) return resetsInSeconds(Number(retryAfter[1]), now);
+  return resetFromText(text, now);
+}
+function parseCodexRefusal(stdout, now = /* @__PURE__ */ new Date(), env = process.env) {
+  const forced = forcedRefusal(env);
+  if (forced) return forced;
+  const failures = events(stdout).filter((e) => e.type === "error" || e.type === "turn.failed");
+  for (const e of failures.reverse()) {
+    const text = errorText(e);
+    if (text === "") continue;
+    const kind = CODEX_QUOTA_RE.test(text) ? "quota" : CODEX_RATE_LIMIT_RE.test(text) ? "rate-limit" : null;
+    if (kind) return { kind, resets_at: structuredReset(e, text, now) };
+  }
+  return null;
+}
+var CODEX_TURN_ITEM_TYPES = ["agent_message", "command_execution", "mcp_tool_call", "file_change", "web_search"];
+function countCodexTurns(stdout) {
+  const evs = events(stdout);
+  if (evs.length === 0) return null;
+  return evs.filter((e) => e.type === "item.completed" && typeof e.item?.type === "string" && CODEX_TURN_ITEM_TYPES.includes(e.item.type)).length;
+}
 var SAMPLE_OUTPUT = [
   JSON.stringify({ type: "thread.started", thread_id: "00000000-0000-4000-8000-000000000000" }),
   JSON.stringify({ type: "turn.started" }),
@@ -52383,7 +52517,9 @@ var codexAdapter = {
       "HARMONY_MODEL",
       "GIT_TOKEN_EXPIRES_AT",
       "HARMONY_LEG",
-      "HARMONY_CONDUCTION_ID"
+      "HARMONY_CONDUCTION_ID",
+      // B-1149: optional test hook (quota | rate-limit only), inert when unset.
+      "HARMONY_TEST_FORCE_REFUSAL"
     ],
     standingSecrets: ["HARMONY_API_TOKEN", CODEX_AUTH_FILE_ENV]
   },
@@ -52409,7 +52545,8 @@ var codexAdapter = {
     parse: (stdout, ctx) => {
       const evs = events(stdout);
       const terminal = [...evs].reverse().find((e) => e.type === "turn.completed" || e.type === "turn.failed");
-      if (!terminal) return null;
+      const refusal = parseCodexRefusal(stdout);
+      if (!terminal && !refusal) return null;
       return {
         runtime: "codex",
         model: ctx.model,
@@ -52417,8 +52554,10 @@ var codexAdapter = {
         costRegime: deriveCostRegime(ctx.credential),
         costUsd: null,
         sessionId: parseCodexThreadId(stdout),
-        isError: terminal.type === "turn.failed",
-        usage: codexTelemetryUsage(stdout)
+        isError: terminal ? terminal.type === "turn.failed" : true,
+        usage: codexTelemetryUsage(stdout),
+        refusal,
+        numTurns: countCodexTurns(stdout)
       };
     },
     sampleOutput: SAMPLE_OUTPUT
