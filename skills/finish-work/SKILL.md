@@ -1,6 +1,7 @@
 ---
 name: finish-work
 description: Use when the user wants to finish, complete, wrap up, land, or merge their current work. Triggers on phrases like "finish", "done", "wrap up", "land this", "merge", "ship it", or "we're done". In manual-mode projects this is the exit point for development work — it handles the full merge-and-cleanup sequence, exactly as before. In opinionated-mode projects, /harmony-conduct is the entry point that drives the whole lifecycle; this skill implements the release (merge + deploy) and verify gates the conductor delegates to, and your explicit invocation ("finish work" / "land it" / "merge it") is how the release gate is crossed.
+capabilities: harmony-mcp read shell shell:gh forbid:harmony-mcp:supersede_decision
 allowed-tools: mcp__harmony__* Read Grep Glob Bash Bash(gh *)
 disallowed-tools: mcp__harmony__supersede_decision
 <!-- record_decision + update_knowledge_entry are permitted (B-836): O2's convention-entry writer needs both; supersede_decision stays disallowed because a convention-entry amend is always an in-place update_knowledge_entry, never a supersede, mirroring record_decision's own tool description (prefer update_knowledge_entry + a dated banner for in-part repairs). -->

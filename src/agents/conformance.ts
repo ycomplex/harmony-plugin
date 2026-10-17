@@ -13,6 +13,7 @@ import {
   type AgentAdapter,
   type SeamId,
 } from './contract.js';
+import { forbiddenClasses, forbiddenTool, type CapabilityClass } from './capabilities.js';
 import { CREDENTIAL_VOCABULARY, deriveCostRegime, isCredentialMode } from './credentials.js';
 
 export interface SeamResult {
@@ -132,6 +133,30 @@ const CHECKS: Record<SeamId, Check> = {
       if (typeof a.capabilities?.[c] !== 'boolean') p.push(`capability '${c}' is not declared`);
     }
     if (a.capabilities?.mcp !== true) p.push('mcp is required (the harmony MCP server is how a leg reads the board)');
+    // B-1150: the per-skill half. Every forbid: class is either enforced (it shows up in the rendered
+    // frontmatter) or declared unenforced with a prose rule — never silently dropped.
+    const sample: CapabilityClass[] = ['harmony-mcp', 'read', 'web', 'edit', 'write', 'shell', 'shell:gh', 'forbid:harmony-mcp:record_decision', 'forbid:NotebookEdit'];
+    const proj = a.skillCapabilities?.project('conformance-skill', sample);
+    if (!proj) {
+      p.push('no skillCapabilities projection');
+      return;
+    }
+    const rendered = Object.values(proj.frontmatter).join(' ');
+    for (const f of forbiddenClasses(sample)) {
+      const t = forbiddenTool(f);
+      const enforced = rendered.includes(t.name);
+      const declared = proj.unenforcedForbids.includes(f);
+      if (!enforced && !declared) p.push(`'${f}' is neither enforced nor declared unenforced`);
+    }
+    if (proj.proseRules.length !== proj.unenforcedForbids.length) p.push('each unenforced forbid needs exactly one prose rule');
+    if (Object.keys(proj.frontmatter).length === 0 && proj.envelope === null) p.push('no frontmatter and no envelope: the skill is bounded by nothing declared');
+    let threw = false;
+    try {
+      a.skillCapabilities.project('conformance-skill', ['harmony-mcp', 'bogus' as CapabilityClass]);
+    } catch {
+      threw = true;
+    }
+    if (!threw) p.push('an unknown capability class was accepted');
   },
 
   telemetry(a, p) {

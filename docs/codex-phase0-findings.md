@@ -165,9 +165,35 @@ about a spike that was not executed.
 | Network behaviour per sandbox envelope | **BLOCKED**; v1 uses the bypass envelope, so no sandbox network policy applies |
 | Skill-description budget, implicit-invocation restriction | **BLOCKED** (live model) |
 | Subagent (`multi_agent_v1` is present in the tool list) as an alternative build strategy | not spiked; root-thread build chosen |
-| Hooks (`SessionStart`/`Stop`) | out of scope for daemon parity (`hooks: false`) |
+| Hooks (`SessionStart`/`Stop`/`PreToolUse`) | **RAN (mock), B-1150**: wired. `$CODEX_HOME/hooks.json` runs Claude-shaped hooks only with `--dangerously-bypass-hook-trust` (now on both argvs); the real gate scripts fire. See "Hooks — RAN (mock), B-1150" below |
 | Cloud Run profile (Phase 4) | wired (B-1076 send-back), not run live — see "Local-docker and cloud profiles" below |
 | Provider-qualified model catalog (Phase 3) | not built. Interim: a Codex leg ignores the daemon's `HARMONY_MODEL` (a Claude alias) and takes `HARMONY_CODEX_MODEL` from the base env, or the CLI default |
+
+### Hooks — RAN (mock), B-1150
+
+Superseding the Phase-0 "out of scope" row. Run against codex-cli 0.163.0 at the mock provider, with
+`$CODEX_HOME/hooks.json` rendered from the canonical hooks onto a temporary plugin root holding the REAL
+`hooks/stop-gate.sh`, `hooks/pretooluse-gate.sh` and their built `dist/bin/*.js`; only the board read
+(`dist/bin/harmony.js tasks clean-check`) was a stub returning an unclean row.
+
+- **SessionStart** fired with the thread id as `session_id` (the conduct-session hook wrote it).
+- **PreToolUse** fired on a scripted `exec_command` with `tool_name: "Bash"`, `tool_input.command`, `cwd`,
+  `session_id`, `transcript_path`. The real gate allowed that fixture call (exit 0), and it gave the same
+  verdict when run directly outside Codex on the captured payload; a Codex-side deny was not reproduced.
+- **Stop** with a breadcrumb for the session (`codex exec resume`): the real gate blocked the turn-end. The
+  turn made three model requests instead of one, the `[harmony stop-gate]` reason reached the model, the
+  gate wrote its per-session block counter, and the gate's own block cap then let the turn end (exit 0, a
+  `turn.completed`).
+- **A hook command that cannot run wedges the run.** With the Stop hook pointing at a missing script
+  (`sh <root>/hooks/missing.sh`, exit 127), `codex exec` did not finish, and outlived a SIGKILL of the codex
+  process (the test's pipes never closed). Cause not established. The worker always has the scripts (the
+  plugin clone), and the mock e2e in `src/agents/codex-drift.test.ts` ships the real ones for this reason.
+- `--dangerously-bypass-hook-trust` adds two `item.completed` items of type `error` ("Enabled hooks may run
+  without review for this invocation") to every stream. They are not failures; telemetry ignores them.
+
+The skills' `allowed-tools` / `disallowed-tools` keys are still not read by Codex. Since B-1150 they are a
+generated Claude projection of the authored `capabilities:` key; Codex's mapping of those classes (one
+envelope, `forbid:` classes as AGENTS.md rules) is in `docs/agent-adapter-contract.md`.
 
 ### Local-docker and cloud profiles — WIRED / BLOCKED
 

@@ -67,7 +67,7 @@ the env allowlist and MCP), it still compares the adapter against the scripts.
 | 6 | **skills** delivery | How skills reach the runtime, the skills root, any agent files copied into place | `--plugin-dir`; `skills/`; `container/agents/harmony-build.md` → `$HOME/.claude/agents/harmony-build.md` |
 | 7 | **mcp** rendering | `render(connection)` from the ONE canonical `HARMONY_MCP_CONNECTION` | The plugin's `.mcp.json`, with `{pluginRoot}` rendered as `${CLAUDE_PLUGIN_ROOT}` |
 | 8 | **env** allowlist | The per-leg env vars forwarded into the worker, and the standing secrets bound separately | `cloud-worker-launch.sh` `write_exec_env_file()`'s eleven vars; secrets `HARMONY_API_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` |
-| 9 | **capabilities** | A boolean for each of `subagents`, `hooks`, `skills`, `mcp`, `resume`, `modelSwitch`, `structuredOutput`. `mcp` is required | All true |
+| 9 | **capabilities** | A boolean for each of `subagents`, `hooks`, `skills`, `mcp`, `resume`, `modelSwitch`, `structuredOutput`. `mcp` is required. Plus `skillCapabilities.project(skill, classes)`: the per-skill capability classes on this runtime (B-1150, below) | All true; classes → the generated `allowed-tools` / `disallowed-tools` |
 | 10 | **telemetry** | `parse(stdout, {model, credential})` → `{runtime, model, credential, costRegime, costUsd, sessionId, isError}` or null; a sample output | The `--output-format json` result envelope, via `src/tools/claude-result-parse.ts` |
 
 Seams 7 and 8 are the ticket's "MCP rendering from one canonical connection definition + the worker
@@ -82,14 +82,14 @@ spike that is still **BLOCKED** on a live plan login, is in `docs/codex-phase0-f
 |---|---|---|
 | 1 | **launch** | `codex`; probe `codex --version` (the image smoke gate runs the same) |
 | 2 | **auth** | `login-cache` only (plan-included), carried by the **non-secret path variable** `HARMONY_CODEX_AUTH_FILE`; `resolveCredential` is env-only and never opens the file. `OPENAI_API_KEY`, `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN` set beside it, or alone, is **refused** (no metered fallback, B-934) |
-| 3 | **headless** | `exec --json --cd <plugin parent> --add-dir <plugin> --dangerously-bypass-approvals-and-sandbox [-m <model>] <flags> <prompt>`. Resume is `exec resume <id> --json --dangerously-bypass-approvals-and-sandbox [-m …] <prompt>` (resume accepts neither `--cd` nor `--add-dir`; the cwd carries the root). Exit 0 = the leg completed, non-zero fails it. A leading `/harmony-plugin:<skill>` in the prompt becomes `$harmony-plugin:<skill>` |
+| 3 | **headless** | `exec --json --cd <plugin parent> --add-dir <plugin> --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust [-m <model>] <flags> <prompt>`. Resume is `exec resume <id> --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust [-m …] <prompt>` (resume accepts neither `--cd` nor `--add-dir`; the cwd carries the root). Exit 0 = the leg completed, non-zero fails it. A leading `/harmony-plugin:<skill>` in the prompt becomes `$harmony-plugin:<skill>` |
 | 4 | **session** | `$HOME/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<thread-id>.jsonl`, mounted per conduction; resume is the `resume` subcommand. The thread id comes from the `thread.started` event, the rollout glob is the version-pinned fallback |
-| 5 | **instructions** | ONE generated `AGENTS.md` at the workspace root: workspace + plugin + web `CLAUDE.md`, each under a source header, then a short Codex overlay; `project_doc_max_bytes` raised to 262,144 |
+| 5 | **instructions** | ONE generated `AGENTS.md` at the workspace root: workspace + plugin + web `CLAUDE.md`, each under a source header, then a short Codex overlay (with each skill's unenforced `forbid:` rules, B-1150); `project_doc_max_bytes` raised to 262,144. `$CODEX_HOME/hooks.json` is rendered from the canonical hooks (B-1150) |
 | 6 | **skills** | `<workspace>/.agents/skills` symlinked to the plugin's `skills/`; no agent files |
 | 7 | **mcp** | `config.toml` rendered from `HARMONY_MCP_CONNECTION` with `required = true`, `startup_timeout_sec = 60`, `tool_timeout_sec = 600`, `default_tools_approval_mode = "auto"` and an explicit `env_vars` list; `approval_policy = "never"` |
 | 8 | **env** | The same eleven per-leg vars as Claude (the launch scripts serve both); standing: `HARMONY_API_TOKEN` and the path variable |
-| 9 | **capabilities** | `subagents` false, `hooks` false, `modelSwitch` false; `skills`, `mcp`, `resume`, `structuredOutput` true |
-| 10 | **telemetry** | The `--json` JSONL stream: `thread.started` → session id, a terminal `turn.completed` / `turn.failed` → `isError`; regime derived (`plan-included`), `costUsd` null. `parseCodexUsage` reads the last `turn.completed` usage (cumulative on a resumed thread) |
+| 9 | **capabilities** | `subagents` false, `modelSwitch` false; `hooks` true since B-1150 (the same Stop / PreToolUse / SessionStart hooks); `skills`, `mcp`, `resume`, `structuredOutput` true. Skill classes: one envelope, `forbid:` declared unenforced |
+| 10 | **telemetry** | The `--json` JSONL stream: `thread.started` → session id, a terminal `turn.completed` / `turn.failed` → `isError` (keyed on `turn.failed` only: the hook-trust flag's `error` items are not errors); regime derived (`plan-included`), `costUsd` null. `parseCodexUsage` reads the last `turn.completed` usage (cumulative on a resumed thread) |
 
 `contract.ts` was **not** changed. Because `HeadlessInput` carries no working directory, the root is derived
 from the plugin checkout's parent, and the plugin dir is passed as `--add-dir` so it appears in argv.
@@ -107,6 +107,60 @@ a log of it. `provision.sh` still has no Codex command in it: the launch is `har
 (`src/daemon/config.ts`, both profile routes; the message names the registered adapters), and refuses at
 **fire time** a non-default adapter on a launch template without `{run_config_json}` or not in the list.
 The example Docker-host profile now lists `["claude-code", "codex"]`; the other two examples stay Claude-only.
+
+## Skill capability classes (B-1150)
+
+Each `skills/<name>/SKILL.md` carries an **authored** `capabilities:` frontmatter key: an ordered,
+space-separated list of runtime-neutral classes (`src/agents/capabilities.ts`). It is the source of truth
+for what a skill may do. The `allowed-tools` / `disallowed-tools` lines **stay** in the file, because Claude
+Code reads only the raw SKILL.md, but they are a **generated** Claude projection of it: do not hand-edit them.
+`src/agents/skill-capabilities.test.ts` fails when a line differs from what `capabilities:` renders, and
+pins every skill's set to its pre-B-1150 baseline, so a mapping change cannot silently widen or narrow a skill.
+
+| Class | Meaning | Claude Code (`allowed-tools` / `disallowed-tools`) | Codex |
+|---|---|---|---|
+| `harmony-mcp` | The Harmony MCP tools (required in every skill) | `mcp__harmony__*` | the session envelope |
+| `read` | Read and search files | `Read Grep Glob` | the session envelope |
+| `web` | Web search and fetch | `WebSearch WebFetch` | the session envelope |
+| `edit` | Edit existing files | `Edit` | the session envelope |
+| `write` | Create files | `Write` | the session envelope |
+| `shell` | Any shell command | `Bash` | the session envelope |
+| `shell:<prefix>` | Shell scoped to one command (`gh`, `git`, `node`, `open`, `mkdir`) | `Bash(<prefix> *)` | the session envelope |
+| `forbid:<tool>` | A tool the skill must not call: `forbid:harmony-mcp:<name>` or a bare tool name | `disallowed-tools`: `mcp__harmony__<name>` / `<tool>` | **not enforced**: a prose rule in `AGENTS.md` |
+
+Each class renders in the order the skill lists it. Only three skills use `forbid:` (start-work, finish-work,
+harmony-orchestrate); harmony-conduct declares none (B-1114 / B-1117).
+
+**Per-adapter mapping** is part of seam 9: `adapter.skillCapabilities.project(skill, classes)` returns the
+frontmatter the runtime reads, the session envelope when the runtime does not narrow per skill, and the
+`forbid:` classes it cannot enforce, each with a prose rule. Claude Code enforces every class through its
+own permission layer. Codex runs every skill in one envelope (bypass sandbox, approval never; the container
+is the sandbox), so it declares each `forbid:` class as unenforced, and `harmony agent render` lists them
+in the generated `AGENTS.md` overlay ("Skill tool rules Codex does not enforce"). The conformance suite
+fails an adapter that drops a `forbid:` class without enforcing or declaring it.
+
+## The Codex turn-end floor (B-1150)
+
+A Claude leg cannot end its turn with nothing on the board: the **Stop** hook (`hooks/stop-gate.sh`) blocks
+the turn-end, and the **PreToolUse** hook (`hooks/pretooluse-gate.sh`) denies `gh pr create` / `gh pr merge` /
+`resolve_brief` until the declared gate point has run. A Codex leg now gets the **same two gates**:
+
+- Codex 0.163 runs Claude-compatible hooks from `$CODEX_HOME/hooks.json`, with Claude-shaped payloads (a
+  shell call arrives as `tool_name: "Bash"` with `tool_input.command`) and the same exit contract (exit 2
+  blocks, the stderr reason reaches the model). It runs them **only** with `--dangerously-bypass-hook-trust`,
+  which the adapter puts on both the cold and the resume argv.
+- The hooks are ONE canonical definition (`src/agents/hooks.ts`). `hooks/hooks.json` is its Claude rendering
+  (`src/agents/hooks.test.ts` fails if they disagree); `harmony agent render` writes the Codex rendering to
+  `$CODEX_HOME/hooks.json`, with the absolute plugin root in place of `${CLAUDE_PLUGIN_ROOT}`, the same way
+  the MCP connection is rendered. Both gate scripts also fall back to `dirname $0` for the root.
+- The flag adds two `error` items to the `--json` stream on every run. Telemetry keys `isError` on
+  `turn.failed` only, so those items never mark a completed turn as errored (pinned in `codex.test.ts`).
+
+**The backstop.** The daemon's post-hoc classifier, `isCleanRowShape` (`src/daemon/classify.ts`), still
+checks every exit and parks one whose row is not in a sanctioned shape. **Why that is enough:** the hook
+makes the leg fix its row **in the same turn** (the block reason names the row state and the sanctioned
+shapes, and the model keeps working), and the classifier parks any exit that still slips through (a hook
+that failed open, a capped block, a crash). Neither layer depends on the runtime being Claude.
 
 ## Credentials and cost regime (B-934)
 

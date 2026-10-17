@@ -8,6 +8,7 @@
 // docs/agent-adapter-contract.md; the suite that checks an adapter is src/agents/conformance.ts.
 
 import type { CostRegime, CredentialMode, RuntimeFamily } from './credentials.js';
+import type { CapabilityClass } from './capabilities.js';
 
 /** The ten seams, numbered. The order is the contract's; never reorder. */
 export const SEAMS = [
@@ -162,6 +163,26 @@ export type Capability = (typeof CAPABILITIES)[number];
 
 export type CapabilitySeam = Readonly<Record<Capability, boolean>>;
 
+/** B-1150: how ONE skill's runtime-neutral capability classes (src/agents/capabilities.ts) land on this
+ *  runtime. Part of seam 9 — the per-skill half of the capability map. */
+export interface SkillCapabilityProjection {
+  /** Frontmatter lines the runtime reads from SKILL.md, key → value (Claude: `allowed-tools`, and
+   *  `disallowed-tools` when the skill forbids anything). Empty when the runtime reads none. */
+  frontmatter: Readonly<Record<string, string>>;
+  /** The session envelope that bounds the skill on this runtime, when it is not narrowed per skill
+   *  (Codex: one bypass sandbox + approval-never envelope for every skill). Null = narrowed per skill. */
+  envelope: string | null;
+  /** The `forbid:` classes this runtime CANNOT enforce, each declared as a prose rule instead. */
+  unenforcedForbids: readonly CapabilityClass[];
+  /** One prose rule per unenforced forbid (same order). */
+  proseRules: readonly string[];
+}
+
+export interface SkillCapabilitySeam {
+  /** Project one skill's classes. Pure; throws on an unknown class. */
+  project(skillName: string, classes: readonly CapabilityClass[]): SkillCapabilityProjection;
+}
+
 // --- 10. telemetry -------------------------------------------------------------------------------
 export interface TelemetryContext {
   model: string | null;
@@ -211,5 +232,7 @@ export interface AgentAdapter {
   mcp: McpSeam;
   env: EnvSeam;
   capabilities: CapabilitySeam;
+  /** B-1150: seam 9's per-skill half — capability classes → this runtime. */
+  skillCapabilities: SkillCapabilitySeam;
   telemetry: TelemetrySeam;
 }

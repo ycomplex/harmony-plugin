@@ -39,6 +39,32 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 const input = () => ({ pluginDir: plugin, workspaceDir: ws, codexHome: home, authFile: auth });
 
 describe('provisionCodex', () => {
+  it('B-1150: writes $CODEX_HOME/hooks.json from the canonical hooks with the absolute plugin root', () => {
+    const r = provisionCodex(input());
+    expect(r.hooksPath).toBe(join(home, 'hooks.json'));
+    const hooks = JSON.parse(readFileSync(r.hooksPath, 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    expect(hooks.hooks.Stop[0].hooks[0].command).toBe(`sh "${plugin}/hooks/stop-gate.sh"`);
+    expect(hooks.hooks.PreToolUse[0].hooks[0].command).toBe(`sh "${plugin}/hooks/pretooluse-gate.sh"`);
+    expect(JSON.stringify(hooks)).not.toContain('CLAUDE_PLUGIN_ROOT');
+  });
+
+  it("B-1150: lists each skill's unenforced forbid: classes as AGENTS.md prose rules; skips a skill with no capabilities key", () => {
+    writeFileSync(join(plugin, 'skills', 'demo', 'SKILL.md'), '---\nname: demo\ncapabilities: harmony-mcp read forbid:harmony-mcp:record_decision forbid:NotebookEdit\n---\nbody\n');
+    mkdirSync(join(plugin, 'skills', 'legacy'), { recursive: true });
+    writeFileSync(join(plugin, 'skills', 'legacy', 'SKILL.md'), '---\nname: legacy\nallowed-tools: mcp__harmony__* Read\n---\nbody\n');
+    provisionCodex(input());
+    const md = readFileSync(join(ws, 'AGENTS.md'), 'utf8');
+    expect(md).toContain('While running `$harmony-plugin:demo`, do not call the `harmony` MCP tool `record_decision`.');
+    expect(md).toContain('While running `$harmony-plugin:demo`, do not call the `NotebookEdit` tool.');
+    expect(md).not.toContain('harmony-plugin:legacy');
+    expect(md.indexOf('Codex worker overlay')).toBeLessThan(md.indexOf('do not call'));
+  });
+
+  it('B-1150: refuses to provision a skill whose capabilities key is invalid', () => {
+    writeFileSync(join(plugin, 'skills', 'demo', 'SKILL.md'), '---\nname: demo\ncapabilities: harmony-mcp bogus\n---\nbody\n');
+    expect(() => provisionCodex(input())).toThrow(/skills\/demo\/SKILL\.md capabilities: 'bogus' is not a capability class/);
+  });
+
   it('renders config.toml, ONE AGENTS.md of all three guidance files, the skills link, and copies the login cache in at 0600', () => {
     const r = provisionCodex(input());
     const config = readFileSync(join(home, 'config.toml'), 'utf8');
@@ -137,7 +163,7 @@ describe('harmony agent … against the Codex adapter (real CLI)', () => {
     expect(r.status).toBe(0);
     expect(decodeNulArgv(r.stdout.toString())).toEqual([
       'codex', 'exec', '--json', '--cd', '/workspace/workspace', '--add-dir', '/workspace/workspace/plugin',
-      '--dangerously-bypass-approvals-and-sandbox', '-m', 'm', '$harmony-plugin:harmony-conduct B-1 --one-shot',
+      '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust', '-m', 'm', '$harmony-plugin:harmony-conduct B-1 --one-shot',
     ]);
   });
 

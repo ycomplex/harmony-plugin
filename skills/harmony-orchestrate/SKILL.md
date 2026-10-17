@@ -1,6 +1,7 @@
 ---
 name: harmony-orchestrate
 description: The orchestrator seat — drive MANY conductions through their gates concurrently, sitting between the conductor daemon (which runs the legs) and the human (who holds the release/verify floor). `harmony-conduct` takes one ticket to its terminal state; this skill is its many-ticket sibling — it never runs a gate itself, it REVIEWS and RESOLVES what the legs produce, serializes the PR pipeline the builds feed, and keeps the human's queue clean. Triggers on "orchestrate", "harmony orchestrate", "shepherd these tickets", "watch B-123 and B-456 through to verified", "pick up B-789" (when a watch loop is already running this session). Requires the B-894 conduction tools (`create_conduction`, `list_conductions`), a running conductor daemon whose log is readable, `gh` access to the repos, and the full resolve verb set.
+capabilities: harmony-mcp read shell:gh shell:git shell:node forbid:NotebookEdit
 allowed-tools: mcp__harmony__* Read Grep Glob Bash(gh *) Bash(git *) Bash(node *)
 disallowed-tools: NotebookEdit
 ---

@@ -40,6 +40,7 @@ const BREAKS: Record<SeamId, (a: AgentAdapter) => AgentAdapter> = {
     const { hooks: _dropped, ...rest } = a.capabilities;
     return { ...a, capabilities: rest as AgentAdapter['capabilities'] };
   },
+
   telemetry: (a) => ({
     ...a,
     // the adapter "chooses" a regime instead of deriving it
@@ -54,6 +55,16 @@ describe('runConformance(broken fake adapter)', () => {
     expect(broken.pass).toBe(false);
     expect(broken.problems.length).toBeGreaterThan(0);
     expect(results.filter((r) => r.seam !== seam && !r.pass)).toEqual([]);
+  });
+
+  it('B-1150: a skill projection that silently drops a forbid: class fails the capabilities seam only', () => {
+    const dropping: AgentAdapter = {
+      ...claudeCodeAdapter,
+      skillCapabilities: { project: (n, c) => claudeCodeAdapter.skillCapabilities.project(n, c.filter((x) => !x.startsWith('forbid:'))) },
+    };
+    const results = runConformance(dropping);
+    expect(results.find((r) => r.seam === 'capabilities')!.problems).toContain("'forbid:NotebookEdit' is neither enforced nor declared unenforced");
+    expect(results.filter((r) => r.seam !== 'capabilities' && !r.pass)).toEqual([]);
   });
 
   it('reports a throwing seam as a failure, not a crash', () => {

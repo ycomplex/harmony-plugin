@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import {
   CODEX_ADD_DIR_FLAG,
   CODEX_BYPASS_FLAG,
+  CODEX_HOOK_TRUST_FLAG,
   CODEX_CD_FLAG,
   CODEX_JSON_FLAG,
   CODEX_AUTH_FILE_ENV,
@@ -100,7 +101,7 @@ function smokeProblems(s: string): string[] {
   if (!s.includes('/etc/harmony-codex-version')) p.push('smoke.sh does not compare against the baked version');
   // the flags this adapter emits must be checked against the image's own `codex exec --help`
   if (!s.includes('codex exec --help')) p.push("smoke.sh does not check the adapter's flags against `codex exec --help`");
-  for (const flag of [CODEX_JSON_FLAG, CODEX_CD_FLAG, CODEX_ADD_DIR_FLAG, CODEX_BYPASS_FLAG]) {
+  for (const flag of [CODEX_JSON_FLAG, CODEX_CD_FLAG, CODEX_ADD_DIR_FLAG, CODEX_BYPASS_FLAG, CODEX_HOOK_TRUST_FLAG]) {
     if (!s.includes(flag)) p.push(`smoke.sh does not check ${flag}`);
   }
   return p;
@@ -302,7 +303,7 @@ describe.skipIf(!HAVE_CODEX)(`the installed Codex CLI (${VERSION ?? 'not install
 
   it('`codex exec --help` lists every flag the cold-start argv emits', () => {
     const text = help(['exec', '--help']);
-    for (const flag of [CODEX_JSON_FLAG, CODEX_CD_FLAG, CODEX_ADD_DIR_FLAG, CODEX_BYPASS_FLAG, CODEX_MODEL_FLAG, '--strict-config']) {
+    for (const flag of [CODEX_JSON_FLAG, CODEX_CD_FLAG, CODEX_ADD_DIR_FLAG, CODEX_BYPASS_FLAG, CODEX_HOOK_TRUST_FLAG, CODEX_MODEL_FLAG, '--strict-config']) {
       expect(text, flag).toContain(flag);
     }
     expect(text).toMatch(/^\s+resume\s/m);
@@ -310,7 +311,7 @@ describe.skipIf(!HAVE_CODEX)(`the installed Codex CLI (${VERSION ?? 'not install
 
   it('`codex exec resume --help` accepts every flag the resume argv emits', () => {
     const text = help(['exec', 'resume', '--help']);
-    for (const flag of [CODEX_JSON_FLAG, CODEX_BYPASS_FLAG, CODEX_MODEL_FLAG]) expect(text, flag).toContain(flag);
+    for (const flag of [CODEX_JSON_FLAG, CODEX_BYPASS_FLAG, CODEX_HOOK_TRUST_FLAG, CODEX_MODEL_FLAG]) expect(text, flag).toContain(flag);
   });
 
   it('the rendered config.toml is accepted by --strict-config; a bogus key is rejected (positive control)', async () => {
@@ -348,8 +349,15 @@ describe.skipIf(!HAVE_CODEX)(`the installed Codex CLI (${VERSION ?? 'not install
       writeFileSync(join(plugin, '.claude-plugin', 'plugin.json'), '{"name":"harmony-plugin","version":"0.0.0-dev"}');
       writeFileSync(join(plugin, 'skills', 'harmony-conduct', 'SKILL.md'), '---\nname: harmony-conduct\ndescription: e2e conductor\nallowed-tools: mcp__harmony__* Read\n---\n\nE2E-SKILL-BODY-MARKER\n');
       writeStubMcp(join(plugin, 'dist', 'index.js'), envDump);
+      // B-1150: provisionCodex writes $CODEX_HOME/hooks.json and the argv trusts it, so the REAL gate scripts
+      // run in this e2e (no breadcrumb ⇒ both take their fast path). They must exist: a Stop hook command
+      // that cannot run (exit 127) was observed to wedge codex 0.163.0 — see docs/codex-phase0-findings.md.
+      mkdirSync(join(plugin, 'hooks'), { recursive: true });
+      for (const f of ['stop-gate.sh', 'pretooluse-gate.sh']) writeFileSync(join(plugin, 'hooks', f), read(`hooks/${f}`));
       writeFileSync(auth, '{"fake":"not a real login cache"}');
       provisionCodex({ pluginDir: plugin, workspaceDir: ws, codexHome, authFile: auth });
+
+      expect(readFileSync(join(codexHome, 'hooks.json'), 'utf8')).toContain(`${plugin}/hooks/stop-gate.sh`);
 
       // The mock provider rides beside the adapter's own rendered config (root keys must precede tables).
       const rendered = readFileSync(join(codexHome, 'config.toml'), 'utf8');

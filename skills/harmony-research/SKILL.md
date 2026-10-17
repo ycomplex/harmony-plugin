@@ -1,6 +1,7 @@
 ---
 name: harmony-research
 description: Fill a load-bearing knowledge gap via the v1 human-relayed research hand-off. Triggers on "research X", "harmony research", "I don't know enough about Y", or when a gate skill hits a load-bearing gap. Emits concrete research prompts for the human to run in their tool of choice — handed over as a filed elicitation round in a ticket-driving session — then ingests the returned result as Asserted knowledge (never auto-Accepted).
+capabilities: harmony-mcp read web
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 ---
 

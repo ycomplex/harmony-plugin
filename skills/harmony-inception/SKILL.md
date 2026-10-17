@@ -1,6 +1,7 @@
 ---
 name: harmony-inception
 description: Run a project's Day-1 genesis — the inception flow that seeds a brand-new product's knowledge base and work graph from a raw idea. Triggers on "inception", "harmony inception", "start a new project", "seed a new project from scratch", "Day 1", "we're starting something brand new". Configures Harmony for the project (S0), captures the founding proposition through the clarify gate (S1), then STAMPS the fixed genesis scaffold — foundational-spine decision tickets + bootstrap umbrellas + dependency edges — and seeds the founding persona + feature entity nodes. It makes ZERO technical decisions; those happen later by conducting the seeded decision tickets.
+capabilities: harmony-mcp read write edit
 allowed-tools: mcp__harmony__* Read Grep Glob Write Edit
 ---
 
