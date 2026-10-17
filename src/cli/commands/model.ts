@@ -30,6 +30,8 @@ import {
   entryModelId,
   getAgentAdapter,
   getModelForGate,
+  getPinnedDefaultModel,
+  resolveDeploymentProfile,
   isAllowedModelAlias,
   readModelHandoffRequest,
   resolveModelCatalog,
@@ -125,9 +127,31 @@ export function registerModelCommands(program: Command): void {
         'from either — always exits 0).',
     )
     .argument('<alias>')
-    .action(async (alias: string) => {
+    .option('--agent <id>', "Agent runtime whose catalog row to weigh against (B-1148); omitted = the pre-B-1148 alias match")
+    .action(async (alias: string, opts: { agent?: string }) => {
       const client = await getCatalogClient();
-      console.log(String(await getModelContextBudgetBytes(alias, client)));
+      console.log(String(await getModelContextBudgetBytes(alias, client, opts.agent)));
+    });
+
+  model
+    .command('pinned-default')
+    .description(
+      "B-1148: print the live catalog's pinned default model for --agent on THIS deployment's " +
+        'profile (derived from HARMONY_SUPABASE_URL), falling back to the embedded per-adapter pin; ' +
+        'an empty line when nothing is pinned. Always exits 0 — container/provision.sh uses it when a ' +
+        'non-Claude leg got no usable HARMONY_MODEL.',
+    )
+    .option('--agent <id>', 'Agent runtime whose pinned row to read', DEFAULT_AGENT_ADAPTER)
+    .action(async (opts: { agent?: string }) => {
+      const agent = opts.agent ?? DEFAULT_AGENT_ADAPTER;
+      try {
+        const client = await getCatalogClient();
+        const { entries } = await resolveModelCatalog(client);
+        console.log(getPinnedDefaultModel(agent, resolveDeploymentProfile(process.env), entries) ?? '');
+      } catch (err: any) {
+        console.error(`harmony model pinned-default: WARNING — ${err?.message ?? String(err)}; printing nothing`);
+        console.log('');
+      }
     });
 
   model

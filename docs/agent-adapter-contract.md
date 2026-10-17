@@ -88,7 +88,7 @@ spike that is still **BLOCKED** on a live plan login, is in `docs/codex-phase0-f
 | 6 | **skills** | `<workspace>/.agents/skills` symlinked to the plugin's `skills/`; no agent files |
 | 7 | **mcp** | `config.toml` rendered from `HARMONY_MCP_CONNECTION` with `required = true`, `startup_timeout_sec = 60`, `tool_timeout_sec = 600`, `default_tools_approval_mode = "auto"` and an explicit `env_vars` list; `approval_policy = "never"` |
 | 8 | **env** | The same eleven per-leg vars as Claude (the launch scripts serve both); standing: `HARMONY_API_TOKEN` and the path variable |
-| 9 | **capabilities** | `subagents` false, `modelSwitch` false; `hooks` true since B-1150 (the same Stop / PreToolUse / SessionStart hooks); `skills`, `mcp`, `resume`, `structuredOutput` true. Skill classes: one envelope, `forbid:` declared unenforced |
+| 9 | **capabilities** | `subagents` false; `modelSwitch` true since B-1148 (a switch resumes the thread with `-m`); `hooks` true since B-1150 (the same Stop / PreToolUse / SessionStart hooks); `skills`, `mcp`, `resume`, `structuredOutput` true. Skill classes: one envelope, `forbid:` declared unenforced |
 | 10 | **telemetry** | The `--json` JSONL stream: `thread.started` → session id, a terminal `turn.completed` / `turn.failed` → `isError` (keyed on `turn.failed` only: the hook-trust flag's `error` items are not errors); regime derived (`plan-included`), `costUsd` null. `parseCodexUsage` reads the last `turn.completed` usage (cumulative on a resumed thread) |
 
 `contract.ts` was **not** changed. Because `HeadlessInput` carries no working directory, the root is derived
