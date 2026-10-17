@@ -1,7 +1,8 @@
 ---
 name: harmony-fasttrack
 description: Fast-track a small, eligible ticket through fix -> PR -> record from any interactive Claude Code session, without an orchestrator. Triggers on "fast-track B-123", "harmony fasttrack B-123", or picking up a small ticket that clearly needs no orchestration. Four phases: Check (the same 5-item eligibility floor harmony record --check uses), Plan-lite (an inline <=3-step plan the human confirms in-session), Build (worktree -> fix -> scope-guard -> PR-open, stop), Record (a second invocation after a human merge, taking an --attest-walk sentence and calling the same runRecordedWalk core harmony record uses).
-allowed-tools: mcp__harmony__* Read Edit Write Bash Glob Grep
+capabilities: harmony-mcp read edit write shell
+allowed-tools: mcp__harmony__* Read Grep Glob Edit Write Bash
 ---
 
 # Harmony Fast-Track

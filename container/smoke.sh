@@ -110,7 +110,7 @@ if docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'command -v claude >/dev/nul
   # mock-provider end-to-end whenever a codex binary is on the test machine's PATH.
   exec_help="$(docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'codex exec --help' 2>&1)" \
     || fail "'codex exec --help' does not run; got: $exec_help"
-  for flag in --json --cd --add-dir --dangerously-bypass-approvals-and-sandbox --strict-config; do
+  for flag in --json --cd --add-dir --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --strict-config; do
     case "$exec_help" in
       *"$flag"*) ;;
       *) fail "'codex exec --help' no longer lists $flag (src/agents/codex.ts emits it)" ;;

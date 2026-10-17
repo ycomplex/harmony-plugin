@@ -1,6 +1,7 @@
 ---
 name: harmony-stale-patch
 description: Draft a reconciliation patch for a ticket gone Stale because a knowledge decision it depends on was superseded (state-machine §6.4). Triggers on "patch the stale ticket", "harmony stale-patch B-123", "reconcile B-123 against the superseding decision", or being delegated a Stale item by harmony-next. Reads the superseded decision + its successor, drafts a concrete proposed patch (knowledge reconciliation and/or a state re-work), and files it as a stale-patch-review brief for the human to accept or reject.
+capabilities: harmony-mcp read web
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 ---
 

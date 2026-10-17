@@ -4,8 +4,9 @@
 // anything. src/agents/claude-code-drift.test.ts pins that provision.sh keeps no hand-assembled copy
 // of the command, and that the seams still implemented by the scripts (session, skills, env) match.
 
-import type { AgentAdapter, CredentialResolution, HeadlessInput, McpConnection } from './contract.js';
+import type { AgentAdapter, CredentialResolution, HeadlessInput, McpConnection, SkillCapabilityProjection } from './contract.js';
 import { PLUGIN_ROOT_PLACEHOLDER } from './contract.js';
+import { classProblems, forbiddenTool, FORBID_PREFIX, SHELL_PREFIX, type CapabilityClass } from './capabilities.js';
 import { deriveCostRegime } from './credentials.js';
 import { parseClaudeResultJson, resolveCost } from '../tools/claude-result-parse.js';
 
@@ -61,6 +62,41 @@ function renderClaudeMcp(connection: McpConnection): { fileName: string; content
   const args = connection.args.map((a) => a.split(PLUGIN_ROOT_PLACEHOLDER).join('${CLAUDE_PLUGIN_ROOT}'));
   const doc = { [connection.name]: { command: connection.command, args } };
   return { fileName: '.mcp.json', content: JSON.stringify(doc, null, 2) + '\n' };
+}
+
+// B-1150: capability classes → Claude Code tool names. Each class renders its tokens in this order; the
+// skill's class order is the line's order. skill-capabilities.test.ts pins every skill's rendered line.
+const CLAUDE_CLASS_TOOLS: Readonly<Record<string, readonly string[]>> = {
+  'harmony-mcp': ['mcp__harmony__*'],
+  read: ['Read', 'Grep', 'Glob'],
+  web: ['WebSearch', 'WebFetch'],
+  edit: ['Edit'],
+  write: ['Write'],
+  shell: ['Bash'],
+};
+
+/** Render a skill's `allowed-tools` / `disallowed-tools` lines from its capability classes. */
+export function claudeSkillTools(classes: readonly CapabilityClass[]): { allowed: string; disallowed: string | null } {
+  const allowed: string[] = [];
+  const disallowed: string[] = [];
+  for (const c of classes) {
+    const problems = classProblems(c);
+    if (problems.length) throw new Error(problems.join('; '));
+    if (c.startsWith(SHELL_PREFIX)) allowed.push(`Bash(${c.slice(SHELL_PREFIX.length)} *)`);
+    else if (c.startsWith(FORBID_PREFIX)) {
+      const t = forbiddenTool(c as `forbid:${string}`);
+      disallowed.push(t.harmonyMcp ? `mcp__harmony__${t.name}` : t.name);
+    } else allowed.push(...CLAUDE_CLASS_TOOLS[c]);
+  }
+  return { allowed: allowed.join(' '), disallowed: disallowed.length ? disallowed.join(' ') : null };
+}
+
+function projectClaudeSkill(_skill: string, classes: readonly CapabilityClass[]): SkillCapabilityProjection {
+  const { allowed, disallowed } = claudeSkillTools(classes);
+  const frontmatter: Record<string, string> = { 'allowed-tools': allowed };
+  if (disallowed !== null) frontmatter['disallowed-tools'] = disallowed;
+  // Every class is enforced by Claude Code's own permission layer: nothing left to declare in prose.
+  return { frontmatter, envelope: null, unenforcedForbids: [], proseRules: [] };
 }
 
 const SAMPLE_RESULT = JSON.stringify({
@@ -157,6 +193,9 @@ export const claudeCodeAdapter: AgentAdapter = {
     modelSwitch: true,
     structuredOutput: true,
   },
+
+  // 9b. per-skill capabilities (B-1150) — classes → the generated allowed-tools / disallowed-tools lines.
+  skillCapabilities: { project: projectClaudeSkill },
 
   // 10. telemetry — the `--output-format json` result envelope (src/tools/claude-result-parse.ts).
   telemetry: {

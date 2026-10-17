@@ -1,6 +1,7 @@
 ---
 name: harmony-next
 description: Pick up the highest-priority thing awaiting me and start the right activity. Triggers on "what's next", "harmony next", "pick up the next thing", "do the next item". Reads the queue, takes the top item, renders its brief, and either resolves it (accept/defer/expand/related) or hands off to the activity skill that owns it.
+capabilities: harmony-mcp read
 allowed-tools: mcp__harmony__* Read Grep Glob
 ---
 

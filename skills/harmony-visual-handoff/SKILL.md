@@ -1,6 +1,7 @@
 ---
 name: harmony-visual-handoff
 description: Run a UX/UI design decision through a generated, manipulable surface + an iterate loop (B-328). Triggers on "visual hand-off", "generate a mockup for this decision", "show me the UX options", and is delegated to by harmony-design-decide's --track ux-ui. Routes glanceable decisions to a parametric preview and flows to a walk-through + storyboard; reserves a design tool (Figma) for the irreducibly-generative visual residue. Files the framed decision back as a knowledge entry.
+capabilities: harmony-mcp read web write shell:open shell:mkdir
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch Write Bash(open *) Bash(mkdir *)
 ---
 
