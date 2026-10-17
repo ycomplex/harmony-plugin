@@ -131,6 +131,26 @@ describe.skipIf(!CAPABLE)('cloud-worker-launch.sh — a Claude run is byte-ident
   });
 });
 
+describe.skipIf(!CAPABLE)('cloud-worker-launch.sh — B-1149 HARMONY_TEST_FORCE_REFUSAL pass-through (EXECUTED)', () => {
+  it('unset / empty / garbage: absent and byte-identical; quota and rate-limit: forwarded into the env file', () => {
+    const base = makeWorld();
+    expect(launch(base, SCRIPT, 'e30=').status).toBe(0);
+    expect(envFile(base)).not.toContain('HARMONY_TEST_FORCE_REFUSAL');
+    for (const v of ['', 'garbage', 'QUOTA']) {
+      const w = makeWorld();
+      expect(launch(w, SCRIPT, 'e30=', { HARMONY_TEST_FORCE_REFUSAL: v }).status).toBe(0);
+      expect(envFile(w)).toBe(envFile(base));
+      expect(gcloudCalls(w)).toEqual(gcloudCalls(base));
+    }
+    for (const v of ['quota', 'rate-limit']) {
+      const w = makeWorld();
+      expect(launch(w, SCRIPT, 'e30=', { HARMONY_TEST_FORCE_REFUSAL: v }).status).toBe(0);
+      expect(envFile(w)).toContain(`HARMONY_TEST_FORCE_REFUSAL: "${v}"`);
+      expect(envFile(w).replace(`HARMONY_TEST_FORCE_REFUSAL: "${v}"\n`, '')).toBe(envFile(base));
+    }
+  });
+});
+
 describe.skipIf(!CAPABLE)('cloud-worker-launch.sh — the Codex adapter (B-1076, EXECUTED)', () => {
   it('secret mounted: describe first, then the Claude-run calls unchanged, and the env file carries HARMONY_CODEX_AUTH_FILE', () => {
     const claude = makeWorld();

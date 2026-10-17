@@ -216,20 +216,19 @@ export interface CodexPricing {
   output_per_mtok: number;
 }
 
-/** Rates as of 2026-10-17, verify against openai.com/api/pricing. Keyed by the EXACT model id (an
- *  optional `codex:` catalog prefix is stripped, case-insensitive) — never a substring match, so an
- *  unlisted model (a newer family whose rates were not checked) stays UNPRICED (cost 'unknown') rather
- *  than borrowing a sibling's rate. The pinned catalog Codex model is not necessarily listed here; add
- *  its row once its published rate is checked. */
+/** Rates read from OpenAI's published pricing page, https://developers.openai.com/api/docs/pricing,
+ *  fetched 2026-10-17. Tier used: Standard, context <= 272K tokens; USD per 1M tokens. NOT modelled: the
+ *  > 272K-context Standard rates (gpt-6.1-sol: $4.00 / $0.20 / $15.00) and the Fast / Batch / Flex tiers,
+ *  so a derived cost is the Standard-tier (<= 272K) EQUIVALENT estimate. One row per model, so the
+ *  <= 272K rates are used. A model the page did not list has NO row (never a from-memory rate): it stays
+ *  UNPRICED (cost 'unknown'). Keyed by the EXACT model id (an optional `codex:` catalog prefix is
+ *  stripped, case-insensitive) — never a substring match, so an unlisted sibling is not priced at
+ *  another model's rate. */
 export const CODEX_PRICING: Readonly<Record<string, CodexPricing>> = {
+  'gpt-6.1-sol': { input_per_mtok: 2.0, cached_input_per_mtok: 0.1, output_per_mtok: 10 },
   'gpt-5': { input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10 },
-  'gpt-5-codex': { input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10 },
   'gpt-5.1': { input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10 },
-  'gpt-5.1-codex': { input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10 },
-  'gpt-5.1-codex-max': { input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10 },
-  'gpt-5-mini': { input_per_mtok: 0.25, cached_input_per_mtok: 0.025, output_per_mtok: 2 },
-  'gpt-5-codex-mini': { input_per_mtok: 0.25, cached_input_per_mtok: 0.025, output_per_mtok: 2 },
-  'gpt-5.1-codex-mini': { input_per_mtok: 0.25, cached_input_per_mtok: 0.025, output_per_mtok: 2 },
+  'gpt-5.3-codex': { input_per_mtok: 1.75, cached_input_per_mtok: 0.175, output_per_mtok: 14 },
 };
 
 /** The Codex price row for a model id, or null when it is unpriced. Never throws. */

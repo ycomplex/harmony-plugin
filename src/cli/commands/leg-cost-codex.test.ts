@@ -62,7 +62,7 @@ describe('resolveAdapterTelemetry (codex fixture)', () => {
   it('reads the LAST turn.completed usage — input / cached / output — plus the thread id', () => {
     const facts = resolveRuntimeFacts(captured, null, {}, CODEX_ENV, { agent: { adapter: 'codex' } } as never);
     expect(facts).toEqual({ runtime: 'codex', credential_kind: 'login-cache', cost_regime: 'plan-included' });
-    const rec = resolveAdapterTelemetry(captured, 'gpt-5-codex', facts);
+    const rec = resolveAdapterTelemetry(captured, 'gpt-5.1', facts);
     expect(rec).toMatchObject({
       runtime: 'codex',
       credential: 'login-cache',
@@ -84,7 +84,7 @@ describe('resolveAdapterTelemetry (codex fixture)', () => {
 describe('harmony leg-cost record — a Codex capture', () => {
   it('writes ONE row with the codex usage, runtime and regime; B-1149: a derived equivalent cost, cache-write null', async () => {
     setEnv({ ...CODEX_ENV, HARMONY_RUN_CONFIG_JSON: CODEX_RC, HARMONY_RUN_CONFIG_PATH: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined, OPENAI_API_KEY: undefined, CODEX_API_KEY: undefined, CODEX_ACCESS_TOKEN: undefined });
-    await record(['--file', FIXTURE, '--gate', 'build', '--leg-key', 'leg-1', '--invocation-index', '0', '--conduction-id', 'cond-1', '--model', 'gpt-5-codex']);
+    await record(['--file', FIXTURE, '--gate', 'build', '--leg-key', 'leg-1', '--invocation-index', '0', '--conduction-id', 'cond-1', '--model', 'gpt-5.1']);
     expect(recordLegCost).toHaveBeenCalledTimes(1);
     const row = (recordLegCost.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
     expect(row).toMatchObject({
@@ -92,7 +92,7 @@ describe('harmony leg-cost record — a Codex capture', () => {
       leg_key: 'leg-1',
       task_id: 'task-1',
       gate: 'build',
-      model: 'gpt-5-codex',
+      model: 'gpt-5.1',
       invocation_index: 0,
       input_tokens: 5400,
       cache_read_input_tokens: 4100,
@@ -123,15 +123,33 @@ describe('harmony leg-cost record — a Codex capture', () => {
       cache_read_input_tokens: 3800,
       output_tokens: 0,
       duration_ms: 4321,
-      // an unpriced model stays not captured
-      total_cost_usd: null,
-      cost_source: 'unknown',
+      // B-1149: gpt-6.1-sol is priced — (4200 − 3800) × 2.00 + 3800 × 0.10 + 0 × 10.00, per million tokens
+      total_cost_usd: expect.closeTo(0.00118, 10),
+      cost_source: 'derived',
     });
+  });
+
+  it('B-1149: gpt-6.1-sol prices the two-turn fixture to the exact published-rate cost (non-null, derived)', async () => {
+    setEnv({ ...CODEX_ENV, HARMONY_RUN_CONFIG_JSON: CODEX_RC, HARMONY_RUN_CONFIG_PATH: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined, OPENAI_API_KEY: undefined, CODEX_API_KEY: undefined, CODEX_ACCESS_TOKEN: undefined, HARMONY_TEST_FORCE_REFUSAL: undefined });
+    await record(['--file', FIXTURE, '--gate', 'build', '--leg-key', 'leg-5', '--conduction-id', 'cond-5', '--model', 'gpt-6.1-sol']);
+    const row = (recordLegCost.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    // (5400 − 4100) × 2.00 + 4100 × 0.10 + 610 × 10.00 = 2600 + 410 + 6100 = 9110 per million = 0.00911
+    expect(row.total_cost_usd).toBeCloseTo(0.00911, 10);
+    expect(row.total_cost_usd).not.toBeNull();
+    expect(row.cost_source).toBe('derived');
+  });
+
+  it('B-1149: an unpriced model (a removed -mini id) stays not captured', async () => {
+    setEnv({ ...CODEX_ENV, HARMONY_RUN_CONFIG_JSON: CODEX_RC, HARMONY_RUN_CONFIG_PATH: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined, OPENAI_API_KEY: undefined, CODEX_API_KEY: undefined, CODEX_ACCESS_TOKEN: undefined, HARMONY_TEST_FORCE_REFUSAL: undefined });
+    await record(['--file', FIXTURE, '--gate', 'build', '--leg-key', 'leg-6', '--conduction-id', 'cond-6', '--model', 'gpt-5-codex-mini']);
+    const row = (recordLegCost.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    expect(row.total_cost_usd).toBeNull();
+    expect(row.cost_source).toBe('unknown');
   });
 
   it('B-1149: HARMONY_TEST_FORCE_REFUSAL makes the row carry the forced refusal verdict', async () => {
     setEnv({ ...CODEX_ENV, HARMONY_RUN_CONFIG_JSON: CODEX_RC, HARMONY_RUN_CONFIG_PATH: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined, OPENAI_API_KEY: undefined, CODEX_API_KEY: undefined, CODEX_ACCESS_TOKEN: undefined, HARMONY_TEST_FORCE_REFUSAL: 'quota' });
-    await record(['--file', FIXTURE, '--gate', 'build', '--leg-key', 'leg-4', '--conduction-id', 'cond-4', '--model', 'gpt-5-codex']);
+    await record(['--file', FIXTURE, '--gate', 'build', '--leg-key', 'leg-4', '--conduction-id', 'cond-4', '--model', 'gpt-5.1']);
     const row = (recordLegCost.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
     expect(row).toMatchObject({ refusal_kind: 'quota', refusal_resets_at: null });
   });

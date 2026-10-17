@@ -144,8 +144,9 @@ The scheduler then:
 
 **Test hook.** `HARMONY_TEST_FORCE_REFUSAL=quota|rate-limit` in the worker's environment makes both
 adapters' refusal parse return that refusal (`resets_at` null) whatever the capture says, so staging can
-drive the daemon path end to end. It is not in the per-leg env allowlist: set it in the launch profile's
-container env (e.g. a `-e` on the Docker-host template) for the test run only. Never on production.
+drive the daemon path end to end. The three launchers (`container/cloud-worker-launch.sh`,
+`docker-worker-launch.sh`, `docker-host-worker-launch.sh`) forward it from the launcher's environment when
+it is exactly `quota` or `rate-limit` (anything else, or unset, forwards nothing). Test runs only; never on production.
 
 **Codex cost, duration, turns (B-1149).** A Codex row records its OWN usage (a resumed thread's cumulative
 figure minus the thread's earlier rows, clamped at 0; rows written before B-1149 stay as they were), an

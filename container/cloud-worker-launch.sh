@@ -302,6 +302,15 @@ GIT_TOKEN_EXPIRES_AT="$(grep -m1 '^GIT_TOKEN_EXPIRES_AT=' "$ENV_FILE" | cut -d= 
 # just means write_exec_env_file() below skips forwarding it, the same fail-soft shape.
 HARMONY_LEG="$(grep -m1 '^HARMONY_LEG=' "$ENV_FILE" | cut -d= -f2- || true)"
 
+# B-1149: forced-refusal test hook — an optional, inert-when-unset pass-through of the LAUNCHER's own
+# HARMONY_TEST_FORCE_REFUSAL (the mint script never writes it). Only the exact values `quota` and
+# `rate-limit` are accepted; anything else (including empty) is dropped, so write_exec_env_file() below
+# emits nothing and the launch is byte-identical. See docs/agent-adapter-contract.md.
+case "${HARMONY_TEST_FORCE_REFUSAL:-}" in
+  quota|rate-limit) FORCE_REFUSAL="$HARMONY_TEST_FORCE_REFUSAL" ;;
+  *) FORCE_REFUSAL="" ;;
+esac
+
 # 2. Compose the per-execution env-vars FILE. A small, isolated function on purpose — see the
 #    CONFIRMED note inside it (round 3: the flag/format question this note originally raised is now
 #    resolved by a live check, see below).
@@ -392,6 +401,10 @@ write_exec_env_file() {
       # value.
       if [ -n "${HARMONY_LEG:-}" ]; then
         printf 'HARMONY_LEG: "%s"\n' "$HARMONY_LEG"
+      fi
+      # B-1149: forced-refusal test hook — only when validated above (quota | rate-limit).
+      if [ -n "${FORCE_REFUSAL:-}" ]; then
+        printf 'HARMONY_TEST_FORCE_REFUSAL: "%s"\n' "$FORCE_REFUSAL"
       fi
       # B-846: HARMONY_CONDUCTION_ID — the plain (not HARMONY_-prefixed) conduction id every
       # run-config-aware worker reads via src/config/run-config.ts's getConductionId(). An

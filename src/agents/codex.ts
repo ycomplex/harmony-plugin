@@ -563,6 +563,8 @@ export const codexAdapter: AgentAdapter = {
       'GIT_TOKEN_EXPIRES_AT',
       'HARMONY_LEG',
       'HARMONY_CONDUCTION_ID',
+      // B-1149: optional test hook (quota | rate-limit only), inert when unset.
+      'HARMONY_TEST_FORCE_REFUSAL',
     ],
     standingSecrets: ['HARMONY_API_TOKEN', CODEX_AUTH_FILE_ENV],
   },

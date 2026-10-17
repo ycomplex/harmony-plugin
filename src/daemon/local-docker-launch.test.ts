@@ -125,6 +125,26 @@ describe.skipIf(!BASH)('docker-worker-launch.sh — Claude parity with the pre-B
   });
 });
 
+describe.skipIf(!BASH)('docker-worker-launch.sh — B-1149 HARMONY_TEST_FORCE_REFUSAL pass-through (EXECUTED)', () => {
+  const dockerArgv = (env: Record<string, string>) => {
+    const w = makeWorld();
+    expect(runTemplate(w, profile.launch, CLAUDE_VARS, env).status).toBe(0);
+    return calls(w, 'docker.log')[0].map((a) => a.split(w.home).join('<HOME>'));
+  };
+  it('unset / empty / garbage: absent and byte-identical; quota and rate-limit: forwarded as -e', () => {
+    const baseline = dockerArgv({});
+    expect(baseline.join('\n')).not.toContain('HARMONY_TEST_FORCE_REFUSAL');
+    expect(dockerArgv({ HARMONY_TEST_FORCE_REFUSAL: '' })).toEqual(baseline);
+    expect(dockerArgv({ HARMONY_TEST_FORCE_REFUSAL: 'garbage' })).toEqual(baseline);
+    for (const v of ['quota', 'rate-limit']) {
+      const argv = dockerArgv({ HARMONY_TEST_FORCE_REFUSAL: v });
+      const i = argv.indexOf('-e');
+      expect(argv.slice(i, i + 2)).toEqual(['-e', `HARMONY_TEST_FORCE_REFUSAL=${v}`]);
+      expect(argv.filter((a, j) => j < i || j > i + 1)).toEqual(baseline);
+    }
+  });
+});
+
 describe.skipIf(!BASH)('docker-worker-launch.sh — the Codex adapter (B-1076, EXECUTED)', () => {
   const CODEX_VARS = { run_config_json: CODEX_RC, model: '', worker_image: 'harmony-build-env' };
   function withAuth(w: World): string {
