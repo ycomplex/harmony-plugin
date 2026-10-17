@@ -195,6 +195,7 @@ describe('daemon-ending contract (B-1073 daemon-files-recording round): recorder
   };
 
   it('B-1106 (build_pr never recorded): the walk files the AC UNTICKED/no suffix and backfills build_pr', async () => {
+    listAcceptanceCriteria.mockResolvedValueOnce([]); // This specimen starts without criteria.
     execFile.mockImplementation((_c: string, _a: string[], _o: unknown, cb: (err: unknown, stdout: string) => void) => cb(null, JSON.stringify(ghPr)));
     const { client, currentWorkflowState } = makeStatefulClient('Captured', { unrelated: 'keep' });
     const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, specimenArgs());
