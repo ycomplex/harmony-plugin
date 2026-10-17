@@ -9,6 +9,7 @@
 
 import type { CostRegime, CredentialMode, RuntimeFamily } from './credentials.js';
 import type { CapabilityClass } from './capabilities.js';
+import type { Refusal } from './refusal.js';
 
 /** The ten seams, numbered. The order is the contract's; never reorder. */
 export const SEAMS = [
@@ -201,6 +202,14 @@ export interface TelemetryRecord {
    *  `harmony leg-cost record` parses itself). Absent/null = not reported; each field is null when the
    *  runtime does not report it. */
   usage?: TelemetryUsage | null;
+  /** B-1149: OPTIONAL refusal verdict — the runtime refused the turn because a plan quota
+   *  ('quota') or a rate limit ('rate-limit') is exhausted, with the reset time when the runtime
+   *  named one. Absent/null = no refusal recognised (an adapter that never sets it gets today's
+   *  dirty-exit behaviour). The match patterns live in the adapter, never in the daemon. */
+  refusal?: Refusal | null;
+  /** B-1149: OPTIONAL turn count for a runtime whose capture is not the Claude envelope (which
+   *  carries its own num_turns). Codex: the model-initiated items in the stream — see codex.ts. */
+  numTurns?: number | null;
 }
 
 /** B-1076: the token counts a non-Claude runtime reports, in conduction_leg_costs' column vocabulary. */

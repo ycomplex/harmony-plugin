@@ -98,10 +98,23 @@ const LEG_COST_COLS_WITH_RUNTIME = `${LEG_COST_COLS}, ${RUNTIME_COLS.join(', ')}
  *  42703 ("column ... does not exist"). Deliberately generous on wording, but it must NAME one of the
  *  three columns so an unrelated failure is never retried. */
 export function isRuntimeColumnError(err: unknown): boolean {
+  return isNamedColumnError(err, RUNTIME_COLS);
+}
+
+/** B-1149: the two refusal columns harmony-web's B-1149 migration adds to conduction_leg_costs —
+ *  tolerated exactly like the B-1078 runtime columns (the migration may not be live yet). */
+export const REFUSAL_COLS = ['refusal_kind', 'refusal_resets_at'] as const;
+
+export function isRefusalColumnError(err: unknown): boolean {
+  return isNamedColumnError(err, REFUSAL_COLS);
+}
+
+/** The shared "one of THESE columns is unknown/missing" predicate: it must NAME one of `cols`. */
+export function isNamedColumnError(err: unknown, cols: readonly string[]): boolean {
   if (!err) return false;
   const e = err as { code?: string; message?: string; details?: string; hint?: string };
   const text = [e.message, e.details, e.hint].filter(Boolean).join(' ').toLowerCase();
-  if (!RUNTIME_COLS.some((c) => text.includes(c))) return false;
+  if (!cols.some((c) => text.includes(c))) return false;
   return (
     e.code === '42703' ||
     e.code === 'PGRST204' ||
@@ -143,6 +156,10 @@ export interface RecordLegCostArgs {
   runtime?: string | null;
   credential_kind?: string | null;
   cost_regime?: string | null;
+  /** B-1149: the adapter's refusal verdict. Written ONLY when present, and dropped on a retry when
+   *  the B-1149 columns do not exist yet (pre-migration environment). */
+  refusal_kind?: 'quota' | 'rate-limit' | null;
+  refusal_resets_at?: string | null;
 }
 
 /** One WARNING line, stderr only — this module's single failure channel. Mirrors
@@ -267,15 +284,35 @@ export async function recordLegCost(
       credential_kind: args.credential_kind ?? null,
       cost_regime: args.cost_regime ?? null,
     };
-    let { error } = await client.from('conduction_leg_costs').insert({ ...row, ...runtimeFields });
-    if (error && isRuntimeColumnError(error)) {
-      // B-1078 tolerance: the web migration adding the three columns has not reached this
-      // environment yet. Retry ONCE without them so cost capture is exactly what it was before.
-      warn(
-        `the leg-cost row was rejected for the B-1078 runtime columns (${errText(error)}); retrying ` +
-          'without runtime/credential_kind/cost_regime — expected until the web migration is promoted.',
-      );
-      ({ error } = await client.from('conduction_leg_costs').insert(row));
+    // B-1149: the refusal columns ride only when there IS a refusal, so an ordinary row's insert is
+    // byte-for-byte what it was before.
+    let refusalFields: Record<string, unknown> =
+      args.refusal_kind ? { refusal_kind: args.refusal_kind, refusal_resets_at: args.refusal_resets_at ?? null } : {};
+    let withRuntime = true;
+    let { error } = await client.from('conduction_leg_costs').insert({ ...row, ...runtimeFields, ...refusalFields });
+    // At most one retry per optional column group (refusal, runtime) — never a loop on an unrelated error.
+    for (let attempt = 0; attempt < 2 && error; attempt += 1) {
+      if (Object.keys(refusalFields).length > 0 && isRefusalColumnError(error)) {
+        // B-1149 tolerance: harmony-web's refusal-column migration has not reached this environment.
+        warn(
+          `the leg-cost row was rejected for the B-1149 refusal columns (${errText(error)}); retrying ` +
+            'without refusal_kind/refusal_resets_at — expected until the web migration is promoted.',
+        );
+        refusalFields = {};
+      } else if (withRuntime && isRuntimeColumnError(error)) {
+        // B-1078 tolerance: the web migration adding the three columns has not reached this
+        // environment yet. Retry without them so cost capture is exactly what it was before.
+        warn(
+          `the leg-cost row was rejected for the B-1078 runtime columns (${errText(error)}); retrying ` +
+            'without runtime/credential_kind/cost_regime — expected until the web migration is promoted.',
+        );
+        withRuntime = false;
+      } else {
+        break;
+      }
+      ({ error } = await client
+        .from('conduction_leg_costs')
+        .insert({ ...row, ...(withRuntime ? runtimeFields : {}), ...refusalFields }));
     }
     if (error) {
       warn(
@@ -325,5 +362,75 @@ export async function listLegCosts(
   } catch (err: unknown) {
     warn(`reading leg costs for conduction ${args.conduction_id} threw (${errText(err)})`);
     return [];
+  }
+}
+
+/** B-1149: the summed token usage of EARLIER rows for one Codex thread (session_id) on this
+ *  conduction — what `harmony leg-cost record` subtracts from a resumed thread's CUMULATIVE usage to
+ *  get this invocation's own. Rows recorded before B-1149 hold cumulative figures themselves; they are
+ *  summed as they are (accepted for old data — the subtraction then clamps at 0). Never throws:
+ *  null on any read failure, which the caller treats as "nothing to subtract". */
+export async function sumPriorSessionUsage(
+  client: SupabaseClient | null | undefined,
+  args: { conduction_id: string; session_id: string },
+): Promise<{ input_tokens: number; cache_read_input_tokens: number; output_tokens: number } | null> {
+  if (!client || !args.conduction_id || !args.session_id) return null;
+  try {
+    const { data, error } = await client
+      .from('conduction_leg_costs')
+      .select('input_tokens, cache_read_input_tokens, output_tokens')
+      .eq('conduction_id', args.conduction_id)
+      .eq('session_id', args.session_id);
+    if (error) {
+      warn(`could not read earlier rows for session ${args.session_id} (${errText(error)}); recording the cumulative figure`);
+      return null;
+    }
+    const rows = (data as unknown as Array<Record<string, number | null>>) ?? [];
+    const sum = (k: string) => rows.reduce((a, r) => a + (typeof r[k] === 'number' ? (r[k] as number) : 0), 0);
+    return { input_tokens: sum('input_tokens'), cache_read_input_tokens: sum('cache_read_input_tokens'), output_tokens: sum('output_tokens') };
+  } catch (err: unknown) {
+    warn(`reading earlier rows for session ${args.session_id} threw (${errText(err)})`);
+    return null;
+  }
+}
+
+/** B-1149: this invocation's OWN usage from a resumed thread's cumulative figure: cumulative − prior,
+ *  each clamped at 0. A null cumulative field stays null. Pure. */
+export function ownUsageDelta(
+  cumulative: { inputTokens: number | null; cacheReadInputTokens: number | null; outputTokens: number | null },
+  prior: { input_tokens: number; cache_read_input_tokens: number; output_tokens: number } | null,
+): { inputTokens: number | null; cacheReadInputTokens: number | null; outputTokens: number | null } {
+  const d = (v: number | null, p: number) => (v === null ? null : Math.max(0, v - (prior ? p : 0)));
+  return {
+    inputTokens: d(cumulative.inputTokens, prior?.input_tokens ?? 0),
+    cacheReadInputTokens: d(cumulative.cacheReadInputTokens, prior?.cache_read_input_tokens ?? 0),
+    outputTokens: d(cumulative.outputTokens, prior?.output_tokens ?? 0),
+  };
+}
+
+/** B-1149: the refusal verdict of a leg's LAST leg-cost row, read by the daemon at settle (the ONE
+ *  place a scheduler decision reads a worker-written row: the verdict the worker's adapter derived, as
+ *  two typed columns — never the worker's output). `since` (ISO) bounds it to rows of THIS leg.
+ *  Never throws: null on any failure, including the B-1149 columns not existing yet — which degrades
+ *  the leg to today's classification. */
+export async function readLastLegRefusal(
+  client: SupabaseClient | null | undefined,
+  args: { conduction_id: string; since: string },
+): Promise<{ kind: 'quota' | 'rate-limit'; resets_at: string | null } | null> {
+  if (!client || !args.conduction_id) return null;
+  try {
+    const { data, error } = await client
+      .from('conduction_leg_costs')
+      .select('refusal_kind, refusal_resets_at, created_at')
+      .eq('conduction_id', args.conduction_id)
+      .gte('created_at', args.since)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (error || !Array.isArray(data) || data.length === 0) return null;
+    const row = data[0] as { refusal_kind?: unknown; refusal_resets_at?: unknown };
+    if (row.refusal_kind !== 'quota' && row.refusal_kind !== 'rate-limit') return null;
+    return { kind: row.refusal_kind, resets_at: typeof row.refusal_resets_at === 'string' ? row.refusal_resets_at : null };
+  } catch {
+    return null;
   }
 }

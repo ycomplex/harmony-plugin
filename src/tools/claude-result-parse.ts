@@ -203,6 +203,58 @@ export function deriveCostUsd(
   return usd;
 }
 
+// -----------------------------------------------------------------------------------------------
+// B-1149: the Codex price table, beside Claude's MODEL_PRICING.
+// -----------------------------------------------------------------------------------------------
+
+/** Published per-million-token rates for ONE OpenAI model. OpenAI reports `input_tokens` INCLUDING
+ *  the cached part, so the cost is (input − cached) × input + cached × cached_input + output × output
+ *  (reasoning tokens are already inside output_tokens). There is no cache-WRITE charge. */
+export interface CodexPricing {
+  input_per_mtok: number;
+  cached_input_per_mtok: number;
+  output_per_mtok: number;
+}
+
+/** Rates read from OpenAI's published pricing page, https://developers.openai.com/api/docs/pricing,
+ *  fetched 2026-10-17. Tier used: Standard, context <= 272K tokens; USD per 1M tokens. NOT modelled: the
+ *  > 272K-context Standard rates (gpt-6.1-sol: $4.00 / $0.20 / $15.00) and the Fast / Batch / Flex tiers,
+ *  so a derived cost is the Standard-tier (<= 272K) EQUIVALENT estimate. One row per model, so the
+ *  <= 272K rates are used. A model the page did not list has NO row (never a from-memory rate): it stays
+ *  UNPRICED (cost 'unknown'). Keyed by the EXACT model id (an optional `codex:` catalog prefix is
+ *  stripped, case-insensitive) — never a substring match, so an unlisted sibling is not priced at
+ *  another model's rate. */
+export const CODEX_PRICING: Readonly<Record<string, CodexPricing>> = {
+  'gpt-6.1-sol': { input_per_mtok: 2.0, cached_input_per_mtok: 0.1, output_per_mtok: 10 },
+  'gpt-5': { input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10 },
+  'gpt-5.1': { input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10 },
+  'gpt-5.3-codex': { input_per_mtok: 1.75, cached_input_per_mtok: 0.175, output_per_mtok: 14 },
+};
+
+/** The Codex price row for a model id, or null when it is unpriced. Never throws. */
+export function resolveCodexPricing(model: string | null | undefined): CodexPricing | null {
+  if (!model) return null;
+  const id = model.trim().toLowerCase().replace(/^codex:/, '');
+  return Object.prototype.hasOwnProperty.call(CODEX_PRICING, id) ? CODEX_PRICING[id] : null;
+}
+
+/** B-1149: one Codex invocation's equivalent cost from its OWN usage (already de-cumulated on a resumed
+ *  thread). Null when the model is unpriced or nothing was measured. The cached count is clamped to
+ *  the input count so a malformed figure can never price negative input. */
+export function deriveCodexCostUsd(
+  usage: { inputTokens: number | null; cacheReadInputTokens: number | null; outputTokens: number | null } | null,
+  model: string | null | undefined,
+): number | null {
+  const pricing = resolveCodexPricing(model);
+  if (!pricing || !usage) return null;
+  const measured = [usage.inputTokens, usage.cacheReadInputTokens, usage.outputTokens].some((v) => typeof v === 'number');
+  if (!measured) return null;
+  const input = Math.max(0, usage.inputTokens ?? 0);
+  const cached = Math.min(input, Math.max(0, usage.cacheReadInputTokens ?? 0));
+  const output = Math.max(0, usage.outputTokens ?? 0);
+  return ((input - cached) * pricing.input_per_mtok + cached * pricing.cached_input_per_mtok + output * pricing.output_per_mtok) / MTOK;
+}
+
 /** The ONE cost-resolution rule, so no caller re-decides it: PREFER the CLI's own
  *  `total_cost_usd` (`'cli'`); fall back to the derived figure when the CLI's is absent OR ZERO
  *  (a zero from the CLI means "not billed through this channel", not "this invocation was free");

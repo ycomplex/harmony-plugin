@@ -80,4 +80,9 @@ CODEX_ARGS=()
 if [ "$CODEX_RUN" = "1" ]; then
   CODEX_ARGS=(-v "$RUN_DIR/codex-sessions:/home/worker/.codex/sessions" -v "$CODEX_AUTH_SRC:$CODEX_AUTH_CONTAINER_PATH:ro" -e "HARMONY_CODEX_AUTH_FILE=$CODEX_AUTH_CONTAINER_PATH")
 fi
-exec docker run --rm --name "harmony-worker-$CONDUCTION_ID" -v "$RUN_DIR/projects:/home/worker/.claude/projects" -v "$RUN_DIR/logs:/home/worker/.claude/logs" -v "$RUN_CONFIG_FILE:/home/worker/.claude/run-config.json:ro" ${CODEX_ARGS[@]+"${CODEX_ARGS[@]}"} --env-file "$ENV_FILE" "$WORKER_IMAGE" headless "/harmony-plugin:harmony-conduct $TICKET --one-shot"
+# B-1149: forced-refusal test hook — optional, inert when unset; only the exact values quota|rate-limit pass.
+FORCE_REFUSAL_ARGS=()
+case "${HARMONY_TEST_FORCE_REFUSAL:-}" in
+  quota|rate-limit) FORCE_REFUSAL_ARGS=(-e "HARMONY_TEST_FORCE_REFUSAL=$HARMONY_TEST_FORCE_REFUSAL") ;;
+esac
+exec docker run --rm --name "harmony-worker-$CONDUCTION_ID" -v "$RUN_DIR/projects:/home/worker/.claude/projects" -v "$RUN_DIR/logs:/home/worker/.claude/logs" -v "$RUN_CONFIG_FILE:/home/worker/.claude/run-config.json:ro" ${CODEX_ARGS[@]+"${CODEX_ARGS[@]}"} ${FORCE_REFUSAL_ARGS[@]+"${FORCE_REFUSAL_ARGS[@]}"} --env-file "$ENV_FILE" "$WORKER_IMAGE" headless "/harmony-plugin:harmony-conduct $TICKET --one-shot"
