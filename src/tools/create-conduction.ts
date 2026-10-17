@@ -30,6 +30,7 @@ import {
 } from './conduction-record.js';
 import { RunConfigSchema, type RunConfig } from '../config/run-config.js';
 import { getProjectConductionDefaults, fillRunConfigDefaults } from '../config/conduction-defaults.js';
+import { assertRunConfigRuntime } from '../config/runtime-validation.js';
 
 export interface CreateConductionArgs {
   task_id: string;
@@ -81,6 +82,8 @@ export async function createConduction(
   // caller explicitly set. Tolerant of the column not existing yet (see getProjectConductionDefaults).
   const defaults = await getProjectConductionDefaults(client, projectId);
   const filledRunConfig = fillRunConfigDefaults(runConfig, defaults);
+  // B-1147: refuse an unknown runtime, or a model that runtime cannot run.
+  await assertRunConfigRuntime(client, filledRunConfig);
   const taskId = await resolveTaskId(client, projectId, args.task_id);
 
   try {
