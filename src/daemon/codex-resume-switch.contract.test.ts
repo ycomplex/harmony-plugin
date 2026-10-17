@@ -4,7 +4,7 @@
 // PATH that logs its argv, and a plugin shim that forwards `agent ...` to the REAL built CLI while
 // stubbing the catalog-reading `model ...` calls.
 import { describe, it, expect, beforeAll } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -290,5 +290,73 @@ describe.skipIf(!existsSync(REAL_CLI))('harmony agent thread-id / write-thread /
     writeFileSync(join(dir, 'none'), '');
     expect(cli(['agent', 'write-thread', '--dir', join(dir, 's'), '--stdout-file', join(dir, 'none')]).status).toBe(1);
     expect(readFileSync(join(dir, 's', '.harmony-codex-thread.json'), 'utf8')).toContain('keep');
+  });
+});
+
+describe.skipIf(!CAPABLE)('entrypoint.sh B-1148: the cloud Codex layout (codex-sessions link + sibling thread discovery)', () => {
+  const entry = readFileSync(join(REPO, 'container', 'entrypoint.sh'), 'utf8');
+  function block(): string {
+    const at = entry.indexOf('if [ -n "${HARMONY_TRANSCRIPT_MOUNT_ROOT:-}" ]; then');
+    const fnAt = entry.indexOf('b772_finish_cross_conduction_resume() {', at);
+    const fnEnd = entry.indexOf('\n}', fnAt);
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(fnEnd).toBeGreaterThan(fnAt);
+    return entry.slice(at, fnEnd + 2);
+  }
+  function run(runConfig: object, seed: (root: string) => void) {
+    const dir = mkdtempSync(join(tmpdir(), 'b1148-entry-'));
+    const home = join(dir, 'home');
+    const root = join(dir, 'mount');
+    mkdirSync(join(home, '.claude', 'projects'), { recursive: true });
+    mkdirSync(join(home, '.claude', 'logs'), { recursive: true });
+    mkdirSync(join(home, '.codex', 'sessions'), { recursive: true });
+    mkdirSync(root);
+    seed(root);
+    const script = join(dir, 'h.sh');
+    writeFileSync(
+      script,
+      ['#!/usr/bin/env bash', 'set -euo pipefail', block(), 'b772_finish_cross_conduction_resume "/fake/plugin"',
+        'echo "CLAUDE_HEADLESS_FLAGS=[${CLAUDE_HEADLESS_FLAGS:-}]"', 'echo "CODEX_THREAD=[${HARMONY_CODEX_RESUME_THREAD:-}]"', ''].join('\n'),
+      { mode: 0o700 },
+    );
+    const r = spawnSync('bash', [script], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH, HOME: home, HARMONY_TRANSCRIPT_MOUNT_ROOT: root, CONDUCTION_ID: 'cond-new', TICKET: 'B-9', HARMONY_RUN_CONFIG_JSON: Buffer.from(JSON.stringify(runConfig)).toString('base64') },
+    });
+    return { ...r, home, root };
+  }
+  const seedBoth = (agent = 'codex') => (root: string) => {
+    const sib = join(root, 'B-9', 'cond-old', 'codex-sessions');
+    mkdirSync(join(sib, '2026', '10', '17'), { recursive: true });
+    writeFileSync(join(sib, '.harmony-codex-thread.json'), JSON.stringify({ agent, thread_id: 'thr-old', model: null, time: 't' }));
+    writeFileSync(join(sib, '2026', '10', '17', 'rollout-2026-10-17T10-00-00-thr-old.jsonl'), '{}\n');
+    const slug = join(root, 'B-9', 'cond-old', 'projects', '-workspace-workspace');
+    mkdirSync(slug, { recursive: true });
+    writeFileSync(join(slug, 'claude-sess.jsonl'), '{}\n');
+  };
+
+  it('a Codex run links codex-sessions onto ~/.codex/sessions, copies the sibling thread + rollout, and exports HARMONY_CODEX_RESUME_THREAD (never a --resume flag)', () => {
+    const r = run({ agent: { adapter: 'codex' }, session_resume: { enabled: true } }, seedBoth());
+    expect(r.status, r.stderr).toBe(0);
+    const link = join(r.home, '.codex', 'sessions');
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(link)).toBe(join(r.root, 'B-9', 'cond-new', 'codex-sessions'));
+    expect(r.stdout).toContain('CODEX_THREAD=[thr-old]');
+    expect(r.stdout).toContain('CLAUDE_HEADLESS_FLAGS=[]');
+    expect(existsSync(join(r.root, 'B-9', 'cond-new', 'codex-sessions', '2026', '10', '17', 'rollout-2026-10-17T10-00-00-thr-old.jsonl'))).toBe(true);
+  });
+
+  it('a sibling thread file naming another agent is not adopted', () => {
+    const r = run({ agent: { adapter: 'codex' }, session_resume: { enabled: true } }, seedBoth('claude-code'));
+    expect(r.stdout).toContain('CODEX_THREAD=[]');
+    expect(r.stdout).toContain('CLAUDE_HEADLESS_FLAGS=[]');
+  });
+
+  it('a Claude run keeps the Claude discovery only: no Codex link, no Codex thread', () => {
+    const r = run({ session_resume: { enabled: true } }, seedBoth());
+    expect(r.status, r.stderr).toBe(0);
+    expect(lstatSync(join(r.home, '.codex', 'sessions')).isSymbolicLink()).toBe(false);
+    expect(r.stdout).toContain('CLAUDE_HEADLESS_FLAGS=[ --resume claude-sess]');
+    expect(r.stdout).toContain('CODEX_THREAD=[]');
   });
 });
