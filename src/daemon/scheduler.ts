@@ -540,7 +540,10 @@ function runConfigJsonFor(row: ConductionRecord): string {
  *  this file's `ticket` substitution already tolerates, see resolveVisualId's own comment) —
  *  resolveLegGate reads that as "no gate" (null workflow_state), which getModelForGate reads as "no
  *  per-gate override can apply", falling through to level 2/3 exactly as intended; this NEVER
- *  throws and always returns a non-empty string (getModelForGate's own guarantee). */
+ *  throws. B-1147: getModelForGate reads the run's adapter from run_config.agent — a Claude run
+ *  always resolves a non-empty alias; a non-Claude run with no run-level model resolves '' (the
+ *  mint script then writes no HARMONY_MODEL line, and provision.sh falls back to
+ *  HARMONY_CODEX_MODEL, else the runtime's own default). */
 function modelFor(row: ConductionRecord, task: DaemonTask | null): string {
   const runConfig = (row.run_config ?? {}) as RunConfig;
   const gate = resolveLegGate(runConfig, task ?? {});

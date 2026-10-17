@@ -46,6 +46,8 @@ import {
 } from '../../tools/conduction-record.js';
 import { RunConfigSchema, type RunConfig } from '../../config/run-config.js';
 import { getProjectConductionDefaults, fillRunConfigDefaults } from '../../config/conduction-defaults.js';
+import { assertRunConfigRuntime } from '../../config/runtime-validation.js';
+import { hasAdapter, listAdapterIds } from '../../agents/registry.js';
 import { runCommand } from '../run-command.js';
 
 export function registerConductCommand(program: Command): void {
@@ -61,6 +63,7 @@ export function registerConductCommand(program: Command): void {
     .option('--auto-approve-gates <gates>', 'B-925: comma-separated forward gates to auto-approve for this run')
     .option('--no-auto-approve-gates', 'B-925: explicitly auto-approve no gates for this run')
     .option('--fast-track', 'B-1073: run this conduction in fast-track mode (sets run_config.fast_track)')
+    .option('--agent <id>', 'B-1147: agent runtime for this run (sets run_config.agent.adapter), e.g. claude-code, codex')
     .action(async (
       ticket: string,
       opts: {
@@ -70,8 +73,17 @@ export function registerConductCommand(program: Command): void {
         sessionResume?: boolean;
         autoApproveGates?: string | false;
         fastTrack?: boolean;
+        agent?: string;
       },
     ) => {
+      // B-1147: an unknown runtime id is refused before any network call.
+      if (opts.agent !== undefined && !hasAdapter(opts.agent)) {
+        console.error(
+          `Error: Unknown agent runtime '${opts.agent}' — available runtimes: ${listAdapterIds().join(', ')}`,
+        );
+        process.exit(1);
+        return;
+      }
       await runCommand(
         program.opts(),
         async (ctx) => {
@@ -113,12 +125,19 @@ export function registerConductCommand(program: Command): void {
             if (opts.fastTrack !== undefined) {
               runConfigInput.fast_track = opts.fastTrack;
             }
+            // B-1147: --agent sets the run's runtime; omitted means no `agent` key (the project
+            // default, else claude-code).
+            if (opts.agent !== undefined) {
+              runConfigInput.agent = { adapter: opts.agent };
+            }
             const callerRunConfig: RunConfig | undefined =
               Object.keys(runConfigInput).length > 0
                 ? RunConfigSchema.parse(runConfigInput)
                 : undefined;
             const defaults = await getProjectConductionDefaults(ctx.client, ctx.projectId);
             const filledRunConfig = fillRunConfigDefaults(callerRunConfig, defaults);
+            // B-1147: refuse an unknown runtime, or a model that runtime cannot run.
+            await assertRunConfigRuntime(ctx.client, filledRunConfig);
 
             return await createConduction(ctx.client, {
               task_id: taskId,

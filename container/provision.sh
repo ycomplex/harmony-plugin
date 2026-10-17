@@ -533,11 +533,19 @@ case "$MODE" in
     # doesn't render {model}), CURRENT_MODEL stays empty and every invocation below runs
     # byte-for-byte unchanged — no --model flag at all, never an empty one.
     CURRENT_MODEL="${HARMONY_MODEL:-}"
-    # B-1076: HARMONY_MODEL is the daemon's resolution over the CLAUDE model catalog; another runtime
-    # cannot run a Claude alias. Until the catalog is provider-qualified, a non-Claude leg takes its
-    # model from HARMONY_CODEX_MODEL (the deployment's base env), or the runtime's own default.
+    # B-1076: another runtime cannot run a Claude alias. B-1147: the catalog is now runtime-scoped,
+    # so a non-Claude leg keeps HARMONY_MODEL ONLY when the catalog confirms it belongs to this
+    # runtime (`harmony model check-alias --agent <id>`) — which also keeps an OLDER daemon's
+    # Claude-catalog resolution (or a plugin build without --agent, which exits non-zero) from ever
+    # reaching Codex. Otherwise HARMONY_CODEX_MODEL (the deployment's base env), else no -m at all
+    # (the runtime's own default).
     if [ "${AGENT_ID:-claude-code}" != "claude-code" ]; then
-      CURRENT_MODEL="${HARMONY_CODEX_MODEL:-}"
+      if [ -n "${HARMONY_MODEL:-}" ] \
+        && node "$PLUGIN_DIR/dist/bin/harmony.js" model check-alias --agent "${AGENT_ID}" "$HARMONY_MODEL" >/dev/null 2>&1; then
+        CURRENT_MODEL="$HARMONY_MODEL"
+      else
+        CURRENT_MODEL="${HARMONY_CODEX_MODEL:-}"
+      fi
     fi
 
     # --- B-772 round 2: bounded in-worker model-switch loop --------------------------------------

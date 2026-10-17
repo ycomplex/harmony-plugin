@@ -325,3 +325,38 @@ describe('harmony conduct <ticket> --fast-track (B-1073)', () => {
     });
   });
 });
+
+// B-1147 — `--agent <id>` sets run_config.agent.adapter; unknown ids and runtime/model mismatches
+// are refused before any conduction is created.
+describe('harmony conduct <ticket> --agent (B-1147)', () => {
+  it('--agent codex sets run_config.agent.adapter', async () => {
+    await run(['conduct', 'B-696', '--agent', 'codex']);
+    const call = mocks.createConduction.mock.calls[0][1] as { run_config?: unknown };
+    expect(call.run_config).toEqual({ agent: { adapter: 'codex' } });
+  });
+
+  it('refuses an unknown runtime id, listing the registered runtimes, and creates nothing', async () => {
+    await expect(run(['conduct', 'B-696', '--agent', 'gemini'])).rejects.toBeInstanceOf(ExitSentinel);
+    expect(mocks.createConduction).not.toHaveBeenCalled();
+    const printed = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(printed).toMatch(/Unknown agent runtime 'gemini'/);
+    expect(printed).toMatch(/claude-code/);
+    expect(printed).toMatch(/codex/);
+  });
+
+  it('refuses a Claude model on a codex run (runtime/model mismatch), naming the runtime', async () => {
+    await expect(
+      run(['conduct', 'B-696', '--agent', 'codex', '--model', 'claude-opus-5']),
+    ).rejects.toBeInstanceOf(ExitSentinel);
+    expect(mocks.createConduction).not.toHaveBeenCalled();
+    const printed = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(printed).toMatch(/runtime 'codex'/);
+  });
+
+  it('fills the agent from the project conduction defaults when --agent is not passed', async () => {
+    mocks.getProjectConductionDefaults.mockResolvedValue({ agent: { adapter: 'codex' } });
+    await run(['conduct', 'B-696']);
+    const call = mocks.createConduction.mock.calls[0][1] as { run_config?: unknown };
+    expect(call.run_config).toEqual({ agent: { adapter: 'codex' } });
+  });
+});
