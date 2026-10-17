@@ -34,7 +34,7 @@ about a spike that was not executed.
 | Auth method | The plan-included **login cache**: `auth.json` from `CODEX_HOME=~/.harmony/codex-automation codex login --device-auth`, addressed by a path variable, never an API key | policy (B-934); login itself BLOCKED |
 | Build strategy | Root thread, no subagent (`capabilities.subagents = false`; start-work reads it) | design; subagent behaviour not spiked |
 | Exit contract | `codex exec --json --cd <root> --add-dir <plugin> --dangerously-bypass-approvals-and-sandbox …`; exit 0 = complete, non-zero = failed | RAN (mock) |
-| Resume | `codex exec resume <thread-id> --json … <prompt>`; adapter supports it, **launcher discovery for Codex is not wired** — Codex legs cold-start | RAN (mock) for the argv; discovery not built |
+| Resume | `codex exec resume <thread-id> --json … <prompt>`; since B-1148 provision.sh records each thread in `.harmony-codex-thread.json` and resumes it (Maintain session), and the switch loop resumes with `-m <new>` | RAN (mock) for the argv and the shell-level loop; cross-container remount not run live |
 | Credential delivery | **Copy-in** at startup (read-only mount at `/home/worker/.codex-auth-src/auth.json`, copied to `~/.codex/auth.json`, mode 600) | rotation unproven — see Auth |
 
 ## Findings by spike
@@ -123,11 +123,20 @@ about a spike that was not executed.
 - `codex exec resume <id> --json --dangerously-bypass-approvals-and-sandbox -m other-model "next"` against the
   same `CODEX_HOME` continued the thread (history carried the first prompt) and **`-m` is legal and
   effective on resume** (the CLI warns that the session was recorded with another model). A model change
-  therefore *could* resume; the adapter still declares `modelSwitch: false` because no in-worker switch loop
-  exists for Codex.
-- **BLOCKED**: resume from a *remounted* `CODEX_HOME` on a different container (the test reused one
-  directory); same-conduction discovery for Codex in `provision.sh` and the cross-conduction case are not
-  built, so Codex legs cold-start. Needs a live run across two containers.
+  therefore resumes in place.
+- **B-1148 wiring.** After every Codex invocation `provision.sh` writes `.harmony-codex-thread.json`
+  (`{agent: "codex", thread_id, model, time}`, id from the `thread.started` event via
+  `harmony agent write-thread`) into the conduction's sessions folder. With Maintain session on, the next
+  leg resumes that id (else `HARMONY_CODEX_RESUME_THREAD` from a re-conducted ticket's sibling, else the
+  newest `sessions/*/*/*/rollout-*-<id>.jsonl` — the version-pinned glob). A failed resume falls back to a
+  cold start (B-718 shape). The B-772 size guard weighs the rollout against
+  `harmony model context-budget --agent codex <model>`. The adapter declares `modelSwitch: true`: a
+  switch resumes the current thread with `-m <new>` ("switched in place") and falls back to a new thread
+  ("started a new thread"). Cross-conduction: `resume-discovery.mjs` (docker profiles) and `entrypoint.sh`
+  (cloud) copy the sibling's thread file and rollout and pass the id as `HARMONY_CODEX_RESUME_THREAD`,
+  never in `CLAUDE_HEADLESS_FLAGS`.
+- **Still not run live**: resume from a *remounted* `CODEX_HOME` on a different container (the tests reuse
+  one directory, or stub the CLI).
 
 ### Shell tool and environment — RAN (mock)
 

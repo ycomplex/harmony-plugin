@@ -36420,7 +36420,7 @@ var KNOWN_REFS_FOR_MODEL = {
   eioxsunvhakmelhanmnn: "prod",
   meqkdgncdzromunylyxf: "staging"
 };
-function resolveDeploymentProfile(env2) {
+function resolveDeploymentProfile(env2 = process.env) {
   const url = env2.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
   let ref = "";
   try {
@@ -36567,9 +36567,9 @@ async function isAllowedModelAlias(alias, client, agent = DEFAULT_AGENT_ADAPTER)
   const { entries } = await resolveModelCatalog(client);
   return catalogEntriesForAgent(entries, agent).some((entry) => entryModelId(entry) === alias);
 }
-async function getModelContextBudgetBytes(alias, client) {
+async function getModelContextBudgetBytes(alias, client, agent) {
   const { entries } = await resolveModelCatalog(client);
-  const found = entries.find((entry) => entry.alias === alias);
+  const found = agent ? catalogEntriesForAgent(entries, agent).find((entry) => entryModelId(entry) === alias) : entries.find((entry) => entry.alias === alias);
   return found?.context_budget_bytes ?? DEFAULT_MODEL_CONTEXT_BUDGET_BYTES;
 }
 var DEFAULT_MODEL_HANDOFF_FILENAME = "model-handoff-request.json";
@@ -37433,7 +37433,7 @@ function firstToken(command) {
 function looksLikeScriptPath(token) {
   return token.includes("/");
 }
-function validateSteps(file, extensionPoint, steps, projectRoot, existsSync3) {
+function validateSteps(file, extensionPoint, steps, projectRoot, existsSync4) {
   if (!steps) return void 0;
   for (const step of steps) {
     if (isAgentTaskStep(step)) {
@@ -37446,7 +37446,7 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync3) {
     const token = firstToken(step.run);
     if (looksLikeScriptPath(token)) {
       const resolved = nodeResolve(projectRoot, token);
-      if (!existsSync3(resolved)) {
+      if (!existsSync4(resolved)) {
         return {
           file,
           reason: "missing-script",
@@ -37458,11 +37458,11 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync3) {
   return void 0;
 }
 function loadProjectManifest(projectRoot, deps = {}) {
-  const existsSync3 = deps.existsSync ?? nodeExistsSync2;
-  const readFileSync8 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
+  const existsSync4 = deps.existsSync ?? nodeExistsSync2;
+  const readFileSync9 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin2(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
-  if (!existsSync3(file)) return { kind: "absent" };
-  const raw = readFileSync8(file);
+  if (!existsSync4(file)) return { kind: "absent" };
+  const raw = readFileSync9(file);
   let parsed;
   try {
     parsed = (0, import_yaml.parse)(raw);
@@ -37557,17 +37557,17 @@ function loadProjectManifest(projectRoot, deps = {}) {
     };
   }
   const stepErrors = {};
-  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync3);
+  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync4);
   if (buildErr) stepErrors["build.before_pr"] = buildErr;
   const releaseErr = validateSteps(
     file,
     "release.before_merge",
     manifest.release?.before_merge,
     projectRoot,
-    existsSync3
+    existsSync4
   );
   if (releaseErr) stepErrors["release.before_merge"] = releaseErr;
-  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync3);
+  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync4);
   if (verifyErr) stepErrors["verify.before_ack"] = verifyErr;
   return { kind: "ok", file, manifest, stepErrors };
 }
@@ -42666,7 +42666,9 @@ var CODEX_WORKER_OVERLAY = [
   "- Skills are invoked as `$harmony-plugin:<skill>` (for example `$harmony-plugin:harmony-conduct`), not as",
   "  `/harmony-plugin:<skill>`. Harmony tools are the `harmony` MCP server's tools.",
   "- There are no subagents and no `harmony-build` agent: do the build in this thread.",
-  "- There is no in-worker model switch: skip any step that asks you to compare or switch models.",
+  "- The in-worker model switch works here (B-1148): when a gate wants another model, request it with",
+  "  `harmony model request-switch --agent codex <model>` and end your turn; the worker resumes this thread on",
+  "  the new model (or starts a new thread if it cannot) and says which in the leg output.",
   "- Harmony's hooks run (B-1150): a session-start hook records your conduct-session id, and the stop and",
   "  pre-tool-use gates can block a turn-end or a `gh pr create` / `gh pr merge` with a reason. When one",
   "  blocks, fix what it names (usually this ticket's board row) in the same turn, then end the turn again.",
@@ -42739,6 +42741,31 @@ function events(stdout) {
 function parseCodexThreadId(stdout) {
   const e = events(stdout).find((x) => x.type === "thread.started" && typeof x.thread_id === "string" && x.thread_id !== "");
   return e ? e.thread_id : null;
+}
+var CODEX_THREAD_FILE_NAME = ".harmony-codex-thread.json";
+var THREAD_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+function isPlausibleCodexThreadId(id) {
+  return THREAD_ID_RE.test(id);
+}
+function buildCodexThreadRecord(threadId, model, now = /* @__PURE__ */ new Date()) {
+  return { agent: "codex", thread_id: threadId, model: model ? model : null, time: now.toISOString() };
+}
+function parseCodexThreadRecord(text) {
+  let v;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!v || typeof v !== "object") return null;
+  const r = v;
+  if (r.agent !== "codex" || typeof r.thread_id !== "string" || !isPlausibleCodexThreadId(r.thread_id)) return null;
+  return {
+    agent: "codex",
+    thread_id: r.thread_id,
+    model: typeof r.model === "string" && r.model !== "" ? r.model : null,
+    time: typeof r.time === "string" ? r.time : ""
+  };
 }
 function parseCodexUsage(stdout) {
   const done = events(stdout).filter((x) => x.type === "turn.completed" && x.usage && typeof x.usage === "object");
@@ -42836,15 +42863,16 @@ var codexAdapter = {
   },
   // 9. capabilities — Codex has subagents, but this adapter builds in the root thread (B-1076). Hooks ARE
   //    used since B-1150: the same Stop / PreToolUse / SessionStart hooks, written to $CODEX_HOME/hooks.json
-  //    and trusted by --dangerously-bypass-hook-trust. `exec resume` cannot be relied on for an in-worker
-  //    model switch (a switch cold-starts a new thread), so the loop is not offered.
+  //    and trusted by --dangerously-bypass-hook-trust. B-1148: the in-worker model switch IS offered —
+  //    provision.sh resumes the current thread with `-m <new>` (in place) and falls back to a new thread
+  //    when that resume fails, logging which one happened.
   capabilities: {
     subagents: false,
     hooks: true,
     skills: true,
     mcp: true,
     resume: true,
-    modelSwitch: false,
+    modelSwitch: true,
     structuredOutput: true
   },
   // 9b. per-skill capabilities (B-1150) — one envelope; `forbid:` classes become AGENTS.md prose rules.
@@ -43074,9 +43102,22 @@ function registerModelCommands(program3) {
   });
   model.command("context-budget").description(
     "Print <alias>'s resumable-session-size budget in bytes, from the live catalog (falling back to the embedded degrade-only list, then a conservative default for an alias absent from either \u2014 always exits 0)."
-  ).argument("<alias>").action(async (alias) => {
+  ).argument("<alias>").option("--agent <id>", "Agent runtime whose catalog row to weigh against (B-1148); omitted = the pre-B-1148 alias match").action(async (alias, opts) => {
     const client = await getCatalogClient();
-    console.log(String(await getModelContextBudgetBytes(alias, client)));
+    console.log(String(await getModelContextBudgetBytes(alias, client, opts.agent)));
+  });
+  model.command("pinned-default").description(
+    "B-1148: print the live catalog's pinned default model for --agent on THIS deployment's profile (derived from HARMONY_SUPABASE_URL), falling back to the embedded per-adapter pin; an empty line when nothing is pinned. Always exits 0 \u2014 container/provision.sh uses it when a non-Claude leg got no usable HARMONY_MODEL."
+  ).option("--agent <id>", "Agent runtime whose pinned row to read", DEFAULT_AGENT_ADAPTER).action(async (opts) => {
+    const agent = opts.agent ?? DEFAULT_AGENT_ADAPTER;
+    try {
+      const client = await getCatalogClient();
+      const { entries } = await resolveModelCatalog(client);
+      console.log(getPinnedDefaultModel(agent, resolveDeploymentProfile(process.env), entries) ?? "");
+    } catch (err) {
+      console.error(`harmony model pinned-default: WARNING \u2014 ${err?.message ?? String(err)}; printing nothing`);
+      console.log("");
+    }
   });
   model.command("list-aliases").description(
     "Print every currently-active model-catalog alias, one per line \u2014 live when the catalog is reachable, else the embedded degrade-only list. Always exits 0. Consumed by skills/harmony-conduct/SKILL.md step 1d's park-on-refusal comment (B-881), so a human reviewing the park sees exactly which aliases were selectable at the time."
@@ -43168,6 +43209,9 @@ function encodeNulArgv(argv) {
   }
   return argv.map((a) => `${a}\0`).join("");
 }
+
+// src/cli/commands/agent.ts
+import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync4, renameSync, writeFileSync as writeFileSync2 } from "node:fs";
 
 // src/agents/codex-provision.ts
 import {
@@ -43469,10 +43513,64 @@ function registerAgentCommands(program3) {
     });
     process.stdout.write(encodeNulArgv(argv));
   });
+  agent.command("thread-id").description(
+    "Print the Codex thread id parsed from a codex `--json` stdout capture (its thread.started event) and exit 0; print nothing and exit 1 when the capture has none or is unreadable."
+  ).argument("<stdout-file>").action((file) => {
+    let text = "";
+    try {
+      text = readFileSync4(file, "utf8");
+    } catch {
+      process.exit(1);
+    }
+    const id = parseCodexThreadId(text);
+    if (!id) process.exit(1);
+    process.stdout.write(`${id}
+`);
+  });
+  agent.command("write-thread").description(
+    `Parse the thread id from a codex stdout capture and write ${CODEX_THREAD_FILE_NAME} ({agent:"codex", thread_id, model, time}) into --dir; prints the id. Exit 1, leaving any existing file untouched, when the capture carries no thread id.`
+  ).requiredOption("--dir <dir>", "The conduction's Codex sessions folder").requiredOption("--stdout-file <file>", "The codex invocation's stdout capture").option("--model <model>", "The model the invocation ran on").action((opts) => {
+    let text = "";
+    try {
+      text = readFileSync4(opts.stdoutFile, "utf8");
+    } catch {
+      process.exit(1);
+    }
+    const id = parseCodexThreadId(text);
+    if (!id) process.exit(1);
+    try {
+      mkdirSync2(opts.dir, { recursive: true });
+      const target = join4(opts.dir, CODEX_THREAD_FILE_NAME);
+      const tmp = `${target}.tmp-${process.pid}`;
+      writeFileSync2(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
+`);
+      renameSync(tmp, target);
+    } catch (err) {
+      console.error(`harmony agent write-thread: WARNING \u2014 ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    process.stdout.write(`${id}
+`);
+  });
+  agent.command("read-thread").description(
+    `Print the thread id from a ${CODEX_THREAD_FILE_NAME} file and exit 0 \u2014 ONLY when the file names agent "codex" and a well-formed id; otherwise print nothing and exit 1.`
+  ).argument("<thread-file>").action((file) => {
+    if (!existsSync3(file)) process.exit(1);
+    let text = "";
+    try {
+      text = readFileSync4(file, "utf8");
+    } catch {
+      process.exit(1);
+    }
+    const rec = parseCodexThreadRecord(text);
+    if (!rec) process.exit(1);
+    process.stdout.write(`${rec.thread_id}
+`);
+  });
 }
 
 // src/cli/commands/leg-cost.ts
-import { readFileSync as readFileSync4 } from "node:fs";
+import { readFileSync as readFileSync5 } from "node:fs";
 
 // src/tools/leg-cost-record.ts
 var LEG_COST_COLS = "id, conduction_id, task_id, leg_key, gate, model, invocation_index, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_creation_1h_input_tokens, cache_creation_5m_input_tokens, thinking_tokens, total_cost_usd, cost_source, num_turns, duration_ms, duration_api_ms, session_id, is_error, service_tier, created_at";
@@ -43671,7 +43769,7 @@ function registerLegCostCommands(program3) {
       }
       let captured;
       try {
-        captured = readFileSync4(opts.file, "utf8");
+        captured = readFileSync5(opts.file, "utf8");
       } catch (err) {
         console.error(
           `harmony leg-cost record: WARNING \u2014 could not read the capture file ${opts.file} (${err?.message ?? String(err)}); nothing recorded`
@@ -43722,7 +43820,7 @@ function registerLegCostCommands(program3) {
 }
 
 // src/cli/commands/leg-output.ts
-import { readFileSync as readFileSync5 } from "node:fs";
+import { readFileSync as readFileSync6 } from "node:fs";
 
 // src/tools/leg-output-record.ts
 var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
@@ -43808,7 +43906,7 @@ async function getClient2() {
 var SOURCES = ["worker", "launcher"];
 function readCapture(path3) {
   try {
-    return readFileSync5(path3, "utf8");
+    return readFileSync6(path3, "utf8");
   } catch (err) {
     console.error(
       `harmony leg-output record: WARNING \u2014 could not read the capture file ${path3} (${err?.message ?? String(err)}); it contributes nothing to this row`
@@ -43863,7 +43961,7 @@ function registerLegOutputCommands(program3) {
 
 // src/cli/commands/gates.ts
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync6, renameSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync7, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname as dirname2 } from "node:path";
 
 // src/config/notify-sync.ts
@@ -44154,11 +44252,11 @@ function registerGatesCommands(program3) {
 }
 function writeGateEvidenceMarker(projectRoot, marker) {
   const filePath = gateEvidenceMarkerPath(projectRoot, marker.extension_point);
-  mkdirSync2(dirname2(filePath), { recursive: true });
+  mkdirSync3(dirname2(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  writeFileSync2(tmpPath, `${JSON.stringify(marker, null, 2)}
+  writeFileSync3(tmpPath, `${JSON.stringify(marker, null, 2)}
 `, "utf8");
-  renameSync(tmpPath, filePath);
+  renameSync2(tmpPath, filePath);
 }
 function productionNotifySyncIO() {
   return {
@@ -44177,22 +44275,22 @@ function productionNotifySyncIO() {
     },
     readCache: (path3) => {
       try {
-        return readFileSync6(path3, "utf8");
+        return readFileSync7(path3, "utf8");
       } catch {
         return null;
       }
     },
     writeCache: (path3, contents) => {
-      mkdirSync2(dirname2(path3), { recursive: true });
+      mkdirSync3(dirname2(path3), { recursive: true });
       const tmpPath = `${path3}.tmp-${process.pid}-${Date.now()}`;
-      writeFileSync2(tmpPath, contents, "utf8");
-      renameSync(tmpPath, path3);
+      writeFileSync3(tmpPath, contents, "utf8");
+      renameSync2(tmpPath, path3);
     }
   };
 }
 
 // src/cli/commands/notify.ts
-import { readFileSync as readFileSync7 } from "node:fs";
+import { readFileSync as readFileSync8 } from "node:fs";
 function errorMessage(err) {
   const message = err?.message;
   return message && message.trim() ? message.trim() : String(err);
@@ -44283,7 +44381,7 @@ function productionDeps() {
 }
 function readSecretFromStdin() {
   try {
-    return readFileSync7(0, "utf8");
+    return readFileSync8(0, "utf8");
   } catch {
     return "";
   }

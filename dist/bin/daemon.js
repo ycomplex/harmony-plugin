@@ -30546,7 +30546,7 @@ var KNOWN_REFS_FOR_MODEL = {
   eioxsunvhakmelhanmnn: "prod",
   meqkdgncdzromunylyxf: "staging"
 };
-function resolveDeploymentProfile(env) {
+function resolveDeploymentProfile(env = process.env) {
   const url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
   let ref = "";
   try {
@@ -35646,7 +35646,9 @@ var CODEX_WORKER_OVERLAY = [
   "- Skills are invoked as `$harmony-plugin:<skill>` (for example `$harmony-plugin:harmony-conduct`), not as",
   "  `/harmony-plugin:<skill>`. Harmony tools are the `harmony` MCP server's tools.",
   "- There are no subagents and no `harmony-build` agent: do the build in this thread.",
-  "- There is no in-worker model switch: skip any step that asks you to compare or switch models.",
+  "- The in-worker model switch works here (B-1148): when a gate wants another model, request it with",
+  "  `harmony model request-switch --agent codex <model>` and end your turn; the worker resumes this thread on",
+  "  the new model (or starts a new thread if it cannot) and says which in the leg output.",
   "- Harmony's hooks run (B-1150): a session-start hook records your conduct-session id, and the stop and",
   "  pre-tool-use gates can block a turn-end or a `gh pr create` / `gh pr merge` with a reason. When one",
   "  blocks, fix what it names (usually this ticket's board row) in the same turn, then end the turn again.",
@@ -35779,15 +35781,16 @@ var codexAdapter = {
   },
   // 9. capabilities — Codex has subagents, but this adapter builds in the root thread (B-1076). Hooks ARE
   //    used since B-1150: the same Stop / PreToolUse / SessionStart hooks, written to $CODEX_HOME/hooks.json
-  //    and trusted by --dangerously-bypass-hook-trust. `exec resume` cannot be relied on for an in-worker
-  //    model switch (a switch cold-starts a new thread), so the loop is not offered.
+  //    and trusted by --dangerously-bypass-hook-trust. B-1148: the in-worker model switch IS offered —
+  //    provision.sh resumes the current thread with `-m <new>` (in place) and falls back to a new thread
+  //    when that resume fails, logging which one happened.
   capabilities: {
     subagents: false,
     hooks: true,
     skills: true,
     mcp: true,
     resume: true,
-    modelSwitch: false,
+    modelSwitch: true,
     structuredOutput: true
   },
   // 9b. per-skill capabilities (B-1150) — one envelope; `forbid:` classes become AGENTS.md prose rules.

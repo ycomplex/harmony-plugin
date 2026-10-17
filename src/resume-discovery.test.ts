@@ -361,3 +361,52 @@ describe('end-to-end: main() appends the resume flag line to a real env-file', (
     await expect(main(['--conductions-root', '/tmp'])).rejects.toThrow(/Usage: resume-discovery\.mjs/);
   });
 });
+
+describe('B-1148: the Codex layout (thread file + rollout, HARMONY_CODEX_RESUME_THREAD)', () => {
+  async function setup(opts: { siblingAgent?: string; claudeSibling?: boolean; adapter?: string } = {}) {
+    const root = scratchDir();
+    const runConfigFile = join(root, 'run-config.json');
+    writeFileSync(runConfigFile, JSON.stringify({ agent: { adapter: opts.adapter ?? 'codex' }, session_resume: { enabled: true } }));
+    const sib = join(root, 'B-9', 'cond-old', 'codex-sessions');
+    mkdirSync(join(sib, '2026', '10', '17'), { recursive: true });
+    writeFileSync(join(sib, '.harmony-codex-thread.json'), JSON.stringify({ agent: opts.siblingAgent ?? 'codex', thread_id: 'thr-old', model: 'gpt-x', time: 't' }));
+    writeFileSync(join(sib, '2026', '10', '17', 'rollout-2026-10-17T10-00-00-thr-old.jsonl'), '{}\n');
+    if (opts.claudeSibling) {
+      const slug = join(root, 'B-9', 'cond-old', 'projects', '-workspace-workspace');
+      mkdirSync(slug, { recursive: true });
+      writeFileSync(join(slug, 'claude-sess.jsonl'), '{}\n');
+    }
+    const envFile = join(root, 'run.env');
+    writeFileSync(envFile, 'GIT_TOKEN=dummy\n');
+    const { main } = await import('../scripts/resume-discovery.mjs');
+    await main(['--conductions-root', root, '--ticket', 'B-9', '--conduction-id', 'cond-new', '--run-config-file', runConfigFile, '--env-file', envFile]);
+    return { root, env: readFileSync(envFile, 'utf8'), current: join(root, 'B-9', 'cond-new', 'codex-sessions') };
+  }
+
+  it('a Codex run copies the sibling thread file and rollout, and passes the id as HARMONY_CODEX_RESUME_THREAD — never in CLAUDE_HEADLESS_FLAGS', async () => {
+    const { env, current } = await setup({ claudeSibling: true });
+    expect(env).toContain('HARMONY_CODEX_RESUME_THREAD=thr-old');
+    expect(env).not.toContain('CLAUDE_HEADLESS_FLAGS');
+    expect(env).not.toContain('claude-sess');
+    expect(JSON.parse(readFileSync(join(current, '.harmony-codex-thread.json'), 'utf8')).thread_id).toBe('thr-old');
+    expect(readFileSync(join(current, '2026', '10', '17', 'rollout-2026-10-17T10-00-00-thr-old.jsonl'), 'utf8')).toBe('{}\n');
+  });
+
+  it('a thread file that does not name agent "codex" is never adopted', async () => {
+    const { env } = await setup({ siblingAgent: 'claude-code' });
+    expect(env).not.toContain('HARMONY_CODEX_RESUME_THREAD');
+  });
+
+  it('a Claude run never picks up a Codex thread (only its own projects layout)', async () => {
+    const { env } = await setup({ adapter: 'claude-code', claudeSibling: true });
+    expect(env).toContain('CLAUDE_HEADLESS_FLAGS=--resume claude-sess');
+    expect(env).not.toContain('thr-old');
+    expect(env).not.toContain('HARMONY_CODEX_RESUME_THREAD');
+  });
+
+  it('composeCodexResumeLine refuses a malformed id', async () => {
+    const { composeCodexResumeLine } = await import('../scripts/resume-discovery.mjs');
+    expect(composeCodexResumeLine('--model x')).toBe('');
+    expect(composeCodexResumeLine('abc-1')).toBe('HARMONY_CODEX_RESUME_THREAD=abc-1\n');
+  });
+});

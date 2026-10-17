@@ -202,7 +202,9 @@ export const CODEX_WORKER_OVERLAY = [
   '- Skills are invoked as `$harmony-plugin:<skill>` (for example `$harmony-plugin:harmony-conduct`), not as',
   '  `/harmony-plugin:<skill>`. Harmony tools are the `harmony` MCP server\'s tools.',
   '- There are no subagents and no `harmony-build` agent: do the build in this thread.',
-  '- There is no in-worker model switch: skip any step that asks you to compare or switch models.',
+  '- The in-worker model switch works here (B-1148): when a gate wants another model, request it with',
+  '  `harmony model request-switch --agent codex <model>` and end your turn; the worker resumes this thread on',
+  '  the new model (or starts a new thread if it cannot) and says which in the leg output.',
   '- Harmony\'s hooks run (B-1150): a session-start hook records your conduct-session id, and the stop and',
   '  pre-tool-use gates can block a turn-end or a `gh pr create` / `gh pr merge` with a reason. When one',
   '  blocks, fix what it names (usually this ticket\'s board row) in the same turn, then end the turn again.',
@@ -314,6 +316,49 @@ function events(stdout: string): CodexEvent[] {
 export function parseCodexThreadId(stdout: string): string | null {
   const e = events(stdout).find((x) => x.type === 'thread.started' && typeof x.thread_id === 'string' && x.thread_id !== '');
   return e ? (e.thread_id as string) : null;
+}
+
+/** B-1148: the per-conduction thread file provision.sh writes after every Codex invocation, in the
+ *  conduction's Codex sessions folder ($HOME/.codex/sessions). It names its agent so a Claude
+ *  discovery never adopts it and a Codex discovery never adopts a Claude session. */
+export const CODEX_THREAD_FILE_NAME = '.harmony-codex-thread.json';
+
+export interface CodexThreadRecord {
+  agent: 'codex';
+  thread_id: string;
+  model: string | null;
+  time: string;
+}
+
+/** A thread id is passed to `codex exec resume <id>` as one argv element; keep it to the characters
+ *  Codex ids actually use so a corrupted file can never smuggle a flag in. */
+const THREAD_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+export function isPlausibleCodexThreadId(id: string): boolean {
+  return THREAD_ID_RE.test(id);
+}
+
+export function buildCodexThreadRecord(threadId: string, model: string | null | undefined, now: Date = new Date()): CodexThreadRecord {
+  return { agent: 'codex', thread_id: threadId, model: model ? model : null, time: now.toISOString() };
+}
+
+/** Parse a thread file's text; null unless it is a well-formed record whose agent is "codex". */
+export function parseCodexThreadRecord(text: string): CodexThreadRecord | null {
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!v || typeof v !== 'object') return null;
+  const r = v as Record<string, unknown>;
+  if (r.agent !== 'codex' || typeof r.thread_id !== 'string' || !isPlausibleCodexThreadId(r.thread_id)) return null;
+  return {
+    agent: 'codex',
+    thread_id: r.thread_id,
+    model: typeof r.model === 'string' && r.model !== '' ? r.model : null,
+    time: typeof r.time === 'string' ? r.time : '',
+  };
 }
 
 export interface CodexUsage {
@@ -442,15 +487,16 @@ export const codexAdapter: AgentAdapter = {
 
   // 9. capabilities — Codex has subagents, but this adapter builds in the root thread (B-1076). Hooks ARE
   //    used since B-1150: the same Stop / PreToolUse / SessionStart hooks, written to $CODEX_HOME/hooks.json
-  //    and trusted by --dangerously-bypass-hook-trust. `exec resume` cannot be relied on for an in-worker
-  //    model switch (a switch cold-starts a new thread), so the loop is not offered.
+  //    and trusted by --dangerously-bypass-hook-trust. B-1148: the in-worker model switch IS offered —
+  //    provision.sh resumes the current thread with `-m <new>` (in place) and falls back to a new thread
+  //    when that resume fails, logging which one happened.
   capabilities: {
     subagents: false,
     hooks: true,
     skills: true,
     mcp: true,
     resume: true,
-    modelSwitch: false,
+    modelSwitch: true,
     structuredOutput: true,
   },
 

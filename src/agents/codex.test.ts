@@ -219,7 +219,7 @@ describe('8/9. env + capabilities', () => {
       skills: true,
       mcp: true,
       resume: true,
-      modelSwitch: false,
+      modelSwitch: true,
       structuredOutput: true,
     });
   });

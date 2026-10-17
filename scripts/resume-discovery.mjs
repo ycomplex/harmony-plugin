@@ -167,6 +167,115 @@ export function composeResumeFlagsLine(sessionId) {
   return sessionId ? `CLAUDE_HEADLESS_FLAGS=--resume ${sessionId}\n` : '';
 }
 
+// --- B-1148: the Codex layout ---------------------------------------------------------------------
+// A Codex conduction keeps its threads in `<conduction>/codex-sessions` (mounted at
+// ~/.codex/sessions): rollout files under YYYY/MM/DD/ plus the `.harmony-codex-thread.json` file
+// container/provision.sh writes after every Codex invocation. Mirrors src/agents/codex.ts's
+// CODEX_THREAD_FILE_NAME / parseCodexThreadRecord — duplicated for the same no-build reason as above.
+
+export const CODEX_THREAD_FILE_NAME = '.harmony-codex-thread.json';
+const CODEX_THREAD_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+/** run_config.agent.adapter from the run-config file ('claude-code' when absent/unreadable). */
+export function agentAdapterFromFile(runConfigFilePath, { existsImpl = existsSync, readImpl = (p) => readFileSync(p, 'utf8') } = {}) {
+  if (!runConfigFilePath || !existsImpl(runConfigFilePath)) return 'claude-code';
+  try {
+    const a = JSON.parse(readImpl(runConfigFilePath))?.agent?.adapter;
+    return typeof a === 'string' && a !== '' ? a : 'claude-code';
+  } catch {
+    return 'claude-code';
+  }
+}
+
+/** The thread id of a thread file — ONLY when it names agent "codex" and a well-formed id. */
+export function readCodexThreadId(threadFilePath, { existsImpl = existsSync, readImpl = (p) => readFileSync(p, 'utf8') } = {}) {
+  try {
+    if (!existsImpl(threadFilePath)) return null;
+    const r = JSON.parse(readImpl(threadFilePath));
+    if (r?.agent !== 'codex' || typeof r.thread_id !== 'string' || !CODEX_THREAD_ID_RE.test(r.thread_id)) return null;
+    return r.thread_id;
+  } catch {
+    return null;
+  }
+}
+
+function findRollout(dir, threadId, depth = 0) {
+  if (depth > 4) return null;
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const e of entries) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) {
+      const hit = findRollout(p, threadId, depth + 1);
+      if (hit) return hit;
+    } else if (e.name.startsWith('rollout-') && e.name.endsWith(`-${threadId}.jsonl`)) {
+      return p;
+    }
+  }
+  return null;
+}
+
+/** The newest-by-mtime sibling conduction's Codex thread: `{ threadId, threadFile, rolloutFile, sessionsDir }`
+ *  or null. Only thread files naming agent "codex" count — a Claude session is never a candidate. */
+export function findNewestSiblingCodexThread(conductionsRoot, ticket, excludeConductionId) {
+  const ticketDir = join(conductionsRoot, ticket);
+  let dirs;
+  try {
+    dirs = readdirSync(ticketDir);
+  } catch {
+    return null;
+  }
+  let newest = null;
+  for (const d of dirs) {
+    if (d === excludeConductionId) continue;
+    const sessionsDir = join(ticketDir, d, 'codex-sessions');
+    const threadFile = join(sessionsDir, CODEX_THREAD_FILE_NAME);
+    const threadId = readCodexThreadId(threadFile);
+    if (!threadId) continue;
+    let mtimeMs;
+    try {
+      mtimeMs = statSync(threadFile).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (!newest || mtimeMs > newest.mtimeMs) newest = { threadId, threadFile, sessionsDir, mtimeMs };
+  }
+  if (!newest) return null;
+  return {
+    threadId: newest.threadId,
+    threadFile: newest.threadFile,
+    sessionsDir: newest.sessionsDir,
+    rolloutFile: findRollout(newest.sessionsDir, newest.threadId),
+  };
+}
+
+/** Copy the sibling's thread file (and its rollout, at the same relative path) into the current
+ *  conduction's codex-sessions. Never throws; false on any failure. */
+export function copySiblingCodexThread(currentSessionsDir, sibling) {
+  try {
+    mkdirSync(currentSessionsDir, { recursive: true });
+    if (sibling.rolloutFile) {
+      const rel = sibling.rolloutFile.slice(sibling.sessionsDir.length + 1);
+      const dest = join(currentSessionsDir, rel);
+      mkdirSync(dirname(dest), { recursive: true });
+      copyFileSync(sibling.rolloutFile, dest);
+    }
+    copyFileSync(sibling.threadFile, join(currentSessionsDir, CODEX_THREAD_FILE_NAME));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The env-file line for a Codex thread — its OWN variable, never CLAUDE_HEADLESS_FLAGS. */
+export function composeCodexResumeLine(threadId) {
+  return threadId && CODEX_THREAD_ID_RE.test(threadId) ? `HARMONY_CODEX_RESUME_THREAD=${threadId}\n` : '';
+}
+
 function parseArgs(argv) {
   const args = {
     conductionsRoot: undefined,
@@ -201,6 +310,23 @@ export async function main(argv = process.argv.slice(2)) {
   // nothing, inject nothing" rather than blocking `docker run`.
   try {
     if (!isSessionResumeEnabledFromFile(runConfigFile)) return;
+
+    // B-1148: a Codex run discovers ONLY the Codex layout (and a Claude run only the Claude one).
+    if (agentAdapterFromFile(runConfigFile) === 'codex') {
+      const currentSessionsDir = join(conductionsRoot, ticket, conductionId, 'codex-sessions');
+      if (readCodexThreadId(join(currentSessionsDir, CODEX_THREAD_FILE_NAME))) return; // same-conduction
+      const sibling = findNewestSiblingCodexThread(conductionsRoot, ticket, conductionId);
+      if (!sibling) return;
+      if (!copySiblingCodexThread(currentSessionsDir, sibling)) {
+        process.stderr.write(
+          `resume-discovery: B-1148 failed to copy sibling Codex thread ${sibling.threadId} into ${currentSessionsDir} — cold-starting instead\n`,
+        );
+        return;
+      }
+      const codexLine = composeCodexResumeLine(sibling.threadId);
+      if (codexLine) appendFileSync(envFile, codexLine);
+      return;
+    }
 
     const currentProjectsDir = join(conductionsRoot, ticket, conductionId, 'projects');
     if (currentConductionHasSession(currentProjectsDir)) {

@@ -378,16 +378,81 @@ case "$MODE" in
       fi
     fi
 
-    # B-1076: the discovery below globs CLAUDE's transcript layout. A leg on another adapter never
-    # resumes from it (a Claude session id must never reach another runtime); Codex legs cold-start
-    # until Codex resume discovery is wired (docs/codex-phase0-findings.md, "Resume").
-    if [ "${AGENT_ID:-claude-code}" != "claude-code" ]; then
+    # B-1076: the Claude discovery below globs CLAUDE's transcript layout and only ever runs for a
+    # claude-code leg (a Claude session id must never reach another runtime). B-1148: a Codex leg
+    # has its OWN discovery (the thread file / rollout layout under $HOME/.codex/sessions, below);
+    # any other runtime still never resumes.
+    if [ "${AGENT_ID:-claude-code}" != "claude-code" ] && [ "${AGENT_ID:-claude-code}" != "codex" ]; then
       SESSION_RESUME_ENABLED="false"
+    fi
+
+    # --- B-1148: a Codex leg's model, resolved BEFORE the resume guard so the guard can weigh the
+    # rollout against it. B-1076: another runtime cannot run a Claude alias. B-1147: the catalog is
+    # runtime-scoped, so a Codex leg keeps HARMONY_MODEL ONLY when the catalog confirms it belongs to
+    # this runtime (`harmony model check-alias --agent <id>`) — which also keeps an OLDER daemon's
+    # Claude-catalog resolution (or a plugin build without --agent, which exits non-zero) from ever
+    # reaching Codex. B-1148: otherwise the live catalog's PINNED Codex model for this deployment's
+    # profile (`harmony model pinned-default --agent <id>`), then HARMONY_CODEX_MODEL (the
+    # deployment's base env), else no -m at all (the runtime's own default). Claude's ordering is
+    # unchanged: its CURRENT_MODEL is still taken from HARMONY_MODEL below the guard.
+    CODEX_CURRENT_MODEL=""
+    if [ "${AGENT_ID:-claude-code}" != "claude-code" ]; then
+      if [ -n "${HARMONY_MODEL:-}" ] \
+        && node "$PLUGIN_DIR/dist/bin/harmony.js" model check-alias --agent "${AGENT_ID}" "$HARMONY_MODEL" >/dev/null 2>&1; then
+        CODEX_CURRENT_MODEL="$HARMONY_MODEL"
+      else
+        CODEX_CURRENT_MODEL="$(node "$PLUGIN_DIR/dist/bin/harmony.js" model pinned-default --agent "${AGENT_ID}" 2>/dev/null || true)"
+        if [ -n "$CODEX_CURRENT_MODEL" ]; then
+          echo "B-1148: no usable run/gate model for this ${AGENT_ID} leg — launching on the catalog's pinned model '$CODEX_CURRENT_MODEL'." >&2
+        fi
+      fi
     fi
 
     RESUME_SESSION_ID=""
     RESUME_SESSION_FILE=""
-    if [ "$SESSION_RESUME_ENABLED" = "true" ]; then
+    # B-1148: the Codex sessions folder (the conduction's codex-sessions mount) and its thread file.
+    CODEX_SESSIONS_DIR="$HOME/.codex/sessions"
+    CODEX_THREAD_FILE="$CODEX_SESSIONS_DIR/.harmony-codex-thread.json"
+    CODEX_CURRENT_THREAD=""
+    if [ "$SESSION_RESUME_ENABLED" = "true" ] && [ "${AGENT_ID:-claude-code}" = "codex" ]; then
+      # B-1148: Codex discovery. 1) the thread file the previous leg wrote (it names its agent —
+      # `agent read-thread` accepts only agent "codex"); 2) HARMONY_CODEX_RESUME_THREAD (a re-conducted
+      # ticket's sibling thread, injected by resume-discovery.mjs / entrypoint.sh — never through
+      # CLAUDE_HEADLESS_FLAGS); 3) the newest rollout file (version-pinned layout,
+      # docs/codex-phase0-findings.md "Resume"). Best-effort: nothing found ⇒ cold start.
+      RESUME_SESSION_ID="$(node "$PLUGIN_DIR/dist/bin/harmony.js" agent read-thread "$CODEX_THREAD_FILE" 2>/dev/null || true)"
+      if [ -z "$RESUME_SESSION_ID" ] && [ -n "${HARMONY_CODEX_RESUME_THREAD:-}" ]; then
+        case "$HARMONY_CODEX_RESUME_THREAD" in
+          *[!A-Za-z0-9_-]* | -*) echo "B-1148: ignoring malformed HARMONY_CODEX_RESUME_THREAD." >&2 ;;
+          *) RESUME_SESSION_ID="$HARMONY_CODEX_RESUME_THREAD" ;;
+        esac
+      fi
+      NEWEST_MTIME=0
+      for f in "$CODEX_SESSIONS_DIR"/*/*/*/rollout-*.jsonl; do
+        [ -f "$f" ] || continue
+        if [ -n "$RESUME_SESSION_ID" ]; then
+          case "$f" in
+            *"-$RESUME_SESSION_ID.jsonl") RESUME_SESSION_FILE="$f"; break ;;
+          esac
+          continue
+        fi
+        mtime="$(stat -c '%Y' "$f" 2>/dev/null || echo 0)"
+        if [ "$mtime" -gt "$NEWEST_MTIME" ]; then
+          NEWEST_MTIME="$mtime"
+          RESUME_SESSION_FILE="$f"
+        fi
+      done
+      if [ -z "$RESUME_SESSION_ID" ] && [ -n "$RESUME_SESSION_FILE" ]; then
+        # rollout-<YYYY-MM-DDTHH-MM-SS>-<thread-id>.jsonl: strip the prefix and the 19-char timestamp.
+        B1148_BASE="$(basename "$RESUME_SESSION_FILE" .jsonl)"
+        B1148_BASE="${B1148_BASE#rollout-}"
+        RESUME_SESSION_ID="${B1148_BASE:20}"
+        case "$RESUME_SESSION_ID" in
+          '' | *[!A-Za-z0-9_-]* | -*) RESUME_SESSION_ID=""; RESUME_SESSION_FILE="" ;;
+        esac
+      fi
+    fi
+    if [ "$SESSION_RESUME_ENABLED" = "true" ] && [ "${AGENT_ID:-claude-code}" = "claude-code" ]; then
       NEWEST_MTIME=0
       for f in "$HOME/.claude/projects"/*/*.jsonl; do
         [ -f "$f" ] || continue
@@ -439,7 +504,9 @@ case "$MODE" in
       CLAUDE_HEADLESS_FLAGS="${B895_REMAINING[*]}"
     fi
 
-    if [ -z "$RESUME_SESSION_ID" ] && [ -n "$EXTERNAL_RESUME_ID" ]; then
+    # B-1148: only a Claude leg adopts an id from the flags — a Codex leg's cross-conduction thread
+    # arrives as HARMONY_CODEX_RESUME_THREAD, never as a flag (stripped above either way).
+    if [ -z "$RESUME_SESSION_ID" ] && [ -n "$EXTERNAL_RESUME_ID" ] && [ "${AGENT_ID:-claude-code}" = "claude-code" ]; then
       RESUME_SESSION_ID="$EXTERNAL_RESUME_ID"
       # Locate the on-disk session file for this id so the B-772 context-budget guard right below
       # can weigh it exactly like a same-conduction discovery — Fix 2 (entrypoint.sh) copies the
@@ -463,11 +530,22 @@ case "$MODE" in
     # that turns out to be unusable for any OTHER reason. Only runs when there IS a resumable session
     # AND a model was actually resolved for this leg (HARMONY_MODEL set) — no model info, nothing to
     # compare a budget against.
-    if [ -n "$RESUME_SESSION_ID" ] && [ -n "${HARMONY_MODEL:-}" ] && [ -f "$RESUME_SESSION_FILE" ]; then
+    if [ "${AGENT_ID:-claude-code}" != "codex" ] && [ -n "$RESUME_SESSION_ID" ] && [ -n "${HARMONY_MODEL:-}" ] && [ -f "$RESUME_SESSION_FILE" ]; then
       SESSION_SIZE_BYTES="$(stat -c '%s' "$RESUME_SESSION_FILE" 2>/dev/null || echo 0)"
       CONTEXT_BUDGET_BYTES="$(node "$PLUGIN_DIR/dist/bin/harmony.js" model context-budget "$HARMONY_MODEL" 2>/dev/null || true)"
       if [ -n "$CONTEXT_BUDGET_BYTES" ] && [ "$SESSION_SIZE_BYTES" -gt "$CONTEXT_BUDGET_BYTES" ] 2>/dev/null; then
         echo "B-772: resumable session $RESUME_SESSION_ID is ${SESSION_SIZE_BYTES} bytes, over model '$HARMONY_MODEL''s ${CONTEXT_BUDGET_BYTES}-byte resume budget — cold-starting instead of resuming (session-resume guard)." >&2
+        RESUME_SESSION_ID=""
+        RESUME_SESSION_FILE=""
+      fi
+    fi
+    # B-1148: the same guard for a Codex leg — the rollout file's size against the Codex catalog
+    # row's budget for the model this leg will run on (`context-budget --agent codex`).
+    if [ "${AGENT_ID:-claude-code}" = "codex" ] && [ -n "$RESUME_SESSION_ID" ] && [ -n "$CODEX_CURRENT_MODEL" ] && [ -f "$RESUME_SESSION_FILE" ]; then
+      SESSION_SIZE_BYTES="$(stat -c '%s' "$RESUME_SESSION_FILE" 2>/dev/null || echo 0)"
+      CONTEXT_BUDGET_BYTES="$(node "$PLUGIN_DIR/dist/bin/harmony.js" model context-budget --agent codex "$CODEX_CURRENT_MODEL" 2>/dev/null || true)"
+      if [ -n "$CONTEXT_BUDGET_BYTES" ] && [ "$SESSION_SIZE_BYTES" -gt "$CONTEXT_BUDGET_BYTES" ] 2>/dev/null; then
+        echo "B-772: resumable session $RESUME_SESSION_ID is ${SESSION_SIZE_BYTES} bytes, over model '$CODEX_CURRENT_MODEL''s ${CONTEXT_BUDGET_BYTES}-byte resume budget — cold-starting instead of resuming (session-resume guard)." >&2
         RESUME_SESSION_ID=""
         RESUME_SESSION_FILE=""
       fi
@@ -533,20 +611,30 @@ case "$MODE" in
     # doesn't render {model}), CURRENT_MODEL stays empty and every invocation below runs
     # byte-for-byte unchanged — no --model flag at all, never an empty one.
     CURRENT_MODEL="${HARMONY_MODEL:-}"
-    # B-1076: another runtime cannot run a Claude alias. B-1147: the catalog is now runtime-scoped,
-    # so a non-Claude leg keeps HARMONY_MODEL ONLY when the catalog confirms it belongs to this
-    # runtime (`harmony model check-alias --agent <id>`) — which also keeps an OLDER daemon's
-    # Claude-catalog resolution (or a plugin build without --agent, which exits non-zero) from ever
-    # reaching Codex. Otherwise HARMONY_CODEX_MODEL (the deployment's base env), else no -m at all
-    # (the runtime's own default).
+    # B-1076 / B-1147 / B-1148: a non-Claude leg runs on the model resolved ABOVE the resume guard
+    # (catalog-confirmed HARMONY_MODEL, else the catalog's pinned model), else HARMONY_CODEX_MODEL
+    # (the deployment's base env), else no -m at all (the runtime's own default).
     if [ "${AGENT_ID:-claude-code}" != "claude-code" ]; then
-      if [ -n "${HARMONY_MODEL:-}" ] \
-        && node "$PLUGIN_DIR/dist/bin/harmony.js" model check-alias --agent "${AGENT_ID}" "$HARMONY_MODEL" >/dev/null 2>&1; then
-        CURRENT_MODEL="$HARMONY_MODEL"
+      if [ -n "$CODEX_CURRENT_MODEL" ]; then
+        CURRENT_MODEL="$CODEX_CURRENT_MODEL"
       else
         CURRENT_MODEL="${HARMONY_CODEX_MODEL:-}"
       fi
     fi
+
+    # B-1148: after every Codex invocation, record its thread id ({agent:"codex", thread_id, model,
+    # time}) in the conduction's sessions folder, so the next leg (and an in-place model switch) can
+    # resume it. Best-effort: a capture with no thread.started leaves the previous file untouched.
+    # $1 = the invocation's stdout capture. Claude legs: a no-op.
+    _b1148_record_thread() {
+      [ "${AGENT_ID:-claude-code}" = "codex" ] || return 0
+      local id
+      id="$(node "$PLUGIN_DIR/dist/bin/harmony.js" agent write-thread --dir "$CODEX_SESSIONS_DIR" \
+        --stdout-file "$1" --model "$CURRENT_MODEL" 2>/dev/null || true)"
+      if [ -n "$id" ]; then
+        CODEX_CURRENT_THREAD="$id"
+      fi
+    }
 
     # --- B-772 round 2: bounded in-worker model-switch loop --------------------------------------
     # The WORKER (skills/harmony-conduct/SKILL.md step 1d), not this daemon-fired guess, is what
@@ -708,7 +796,9 @@ case "$MODE" in
       # gate between them (the resume attempt failed to ATTACH — it never ran a turn).
       _b916_stamp_gate
 
-      if [ "$ITERATION" -eq 1 ] && [ -n "$RESUME_SESSION_ID" ]; then
+      # B-1148: a Codex model switch (iteration 2+) resumes the current thread with the new -m, so the
+      # resume branch below also runs then — RESUME_SESSION_ID is set only by the switch handoff.
+      if [ -n "$RESUME_SESSION_ID" ] && { [ "$ITERATION" -eq 1 ] || [ "${AGENT_ID:-claude-code}" = "codex" ]; }; then
         # B-718 AC5: --resume is BEST-EFFORT. A resumed invocation that fails to even ATTACH
         # (corrupt/truncated session file, a session id the CLI rejects, a stale id left over from
         # an old conduction, the CLI binary itself being unavailable, a permission error reading the
@@ -741,7 +831,13 @@ case "$MODE" in
         # this leg will produce, and dropping it before the record would have thrown it away.
         _b720_record_output "$RESUME_STDOUT_FILE" "$RESUME_STDERR_FILE"
         rm -f "$RESUME_STDERR_FILE"
+        _b1148_record_thread "$RESUME_STDOUT_FILE"
         _b916_record_invocation "$RESUME_STDOUT_FILE"
+        if [ "$RESUME_EXIT" -ne 0 ] && [ "$ITERATION" -gt 1 ]; then
+          echo "B-1148: model switch to '$CURRENT_MODEL' — started a new thread (resuming thread $RESUME_SESSION_ID on the new model failed, exit $RESUME_EXIT)." >&2
+        elif [ "$ITERATION" -gt 1 ]; then
+          echo "B-1148: model switch to '$CURRENT_MODEL' — switched in place (resumed thread $RESUME_SESSION_ID)." >&2
+        fi
         if [ "$RESUME_EXIT" -ne 0 ]; then
           echo "B-718: --resume $RESUME_SESSION_ID failed to attach (exit $RESUME_EXIT; see stderr above) — falling back to a COLD start. Resume was attempted and degraded gracefully; this is expected to be rare — investigate the persisted transcript mount if it recurs." >&2
           _agent_argv ""
@@ -752,6 +848,7 @@ case "$MODE" in
           set -e
           _b916_echo_result "$FALLBACK_STDOUT_FILE"
           _b720_record_output "$FALLBACK_STDOUT_FILE"
+          _b1148_record_thread "$FALLBACK_STDOUT_FILE"
           _b916_record_invocation "$FALLBACK_STDOUT_FILE"
           LEG_EXIT=$INVOCATION_EXIT
           # B-916: before this ticket a nonzero exit here ended the script on the spot, via `set -e`.
@@ -784,6 +881,7 @@ case "$MODE" in
         set -e
         _b916_echo_result "$COLD_STDOUT_FILE"
         _b720_record_output "$COLD_STDOUT_FILE"
+        _b1148_record_thread "$COLD_STDOUT_FILE"
         _b916_record_invocation "$COLD_STDOUT_FILE"
         LEG_EXIT=$INVOCATION_EXIT
         # B-916: same preserved-`set -e` exit as the resume-fallback branch above — see its comment
@@ -796,7 +894,13 @@ case "$MODE" in
       if [ -z "$REQUESTED_MODEL" ]; then
         break
       fi
-      if ! node "$PLUGIN_DIR/dist/bin/harmony.js" model check-alias "$REQUESTED_MODEL" >/dev/null 2>&1; then
+      # B-1148: a Codex leg validates against the Codex catalog rows; Claude's call is unchanged.
+      if [ "${AGENT_ID:-claude-code}" = "codex" ]; then
+        B1148_CHECK_AGENT=(--agent codex)
+      else
+        B1148_CHECK_AGENT=()
+      fi
+      if ! node "$PLUGIN_DIR/dist/bin/harmony.js" model check-alias "${B1148_CHECK_AGENT[@]}" "$REQUESTED_MODEL" >/dev/null 2>&1; then
         echo "B-772: handoff requested model '$REQUESTED_MODEL', which is NOT in the canonical allowlist — rejecting and NOT looping further (last completed turn's exit code stands)." >&2
         node "$PLUGIN_DIR/dist/bin/harmony.js" model clear-handoff >/dev/null 2>&1 || true
         break
@@ -805,6 +909,16 @@ case "$MODE" in
       echo "B-772: model-switch handoff — re-invoking claude with --model $REQUESTED_MODEL (iteration $((ITERATION + 1)) of $MAX_MODEL_SWITCH_ITERATIONS)." >&2
       CURRENT_MODEL="$REQUESTED_MODEL"
       ITERATION=$((ITERATION + 1))
+      # B-1148: a Codex switch resumes the current thread on the new model (in place); with no thread
+      # to resume it starts a new one. Claude: every switch iteration stays a cold start.
+      RESUME_SESSION_ID=""
+      if [ "${AGENT_ID:-claude-code}" = "codex" ]; then
+        if [ -n "$CODEX_CURRENT_THREAD" ]; then
+          RESUME_SESSION_ID="$CODEX_CURRENT_THREAD"
+        else
+          echo "B-1148: model switch to '$CURRENT_MODEL' — started a new thread (no current thread id to resume)." >&2
+        fi
+      fi
     done
 
     exit "$LEG_EXIT"

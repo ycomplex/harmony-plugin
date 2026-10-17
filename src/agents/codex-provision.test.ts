@@ -182,10 +182,10 @@ describe('harmony agent … against the Codex adapter (real CLI)', () => {
     expect(cli(['agent', 'check-credentials'], codexEnv()).status).toBe(1);
   });
 
-  it('capability: Codex declares no subagents and no model switch; Claude declares both', () => {
+  it('capability: Codex declares no subagents but a model switch (B-1148); Claude declares both', () => {
     const q = (name: string, env: Record<string, string>) => cli(['agent', 'capability', name], env).stdout.toString().trim();
     expect(q('subagents', codexEnv())).toBe('false');
-    expect(q('modelSwitch', codexEnv())).toBe('false');
+    expect(q('modelSwitch', codexEnv())).toBe('true');
     expect(q('mcp', codexEnv())).toBe('true');
     expect(q('subagents', {})).toBe('true');
     expect(q('modelSwitch', {})).toBe('true');

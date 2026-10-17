@@ -388,7 +388,7 @@ const KNOWN_REFS_FOR_MODEL: Record<string, string> = {
  *  Supabase env at all) — never `undefined`: PINNED_DEFAULT_MODEL_BY_PROFILE's own "always
  *  something explicit" guarantee only holds if the LOOKUP KEY itself is never allowed to be
  *  unresolved either. */
-function resolveDeploymentProfile(env: NodeJS.ProcessEnv): string {
+export function resolveDeploymentProfile(env: NodeJS.ProcessEnv = process.env): string {
   const url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
   let ref = '';
   try {
@@ -730,9 +730,15 @@ export async function isAllowedModelAlias(
 export async function getModelContextBudgetBytes(
   alias: string,
   client?: SupabaseClient | null,
+  agent?: string,
 ): Promise<number> {
   const { entries } = await resolveModelCatalog(client);
-  const found = entries.find((entry) => entry.alias === alias);
+  // B-1148: with an agent, match that runtime's rows on their runtime-native model id (a Codex
+  // rollout is weighed against the Codex row's budget, never a Claude row). Without one the
+  // pre-B-1148 alias match is unchanged.
+  const found = agent
+    ? catalogEntriesForAgent(entries, agent).find((entry) => entryModelId(entry) === alias)
+    : entries.find((entry) => entry.alias === alias);
   return found?.context_budget_bytes ?? DEFAULT_MODEL_CONTEXT_BUDGET_BYTES;
 }
 
