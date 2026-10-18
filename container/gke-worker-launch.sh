@@ -66,7 +66,8 @@ CONFIG_WORKER_IMAGE="$(harmony_config worker_image)"
 : "${HARMONY_GKE_POLL_S:=5}"
 TRANSCRIPT_MOUNT_ROOT="/mnt/harmony-transcripts"
 
-IMAGE_NAME="${CONFIG_WORKER_IMAGE:-$HARMONY_GKE_DEFAULT_IMAGE}"
+# HARMONY_GKE_IMAGE wins: the host's worker_image names the Cloud Run image, which lacks the engine layer.
+IMAGE_NAME="${HARMONY_GKE_IMAGE:-${CONFIG_WORKER_IMAGE:-$HARMONY_GKE_DEFAULT_IMAGE}}"
 case "$IMAGE_NAME" in
   */*) WORKER_IMAGE_REF="$IMAGE_NAME" ;;
   *)   WORKER_IMAGE_REF="$HARMONY_GKE_REGISTRY/$IMAGE_NAME" ;;
