@@ -17,7 +17,24 @@
 # launch profile"). On any other launch profile this layer is inert: the start
 # script fails, provision.sh warns, and the leg continues without a runtime.
 
+# B-1162 additions (on top of the B-708 engine layer):
+#   * Chromium's SYSTEM libraries are baked in (what `playwright install --with-deps
+#     chromium` would apt-install), so a leg that runs the project's browser tests
+#     only downloads the browser binary, never needs root or apt at run time. The
+#     browser itself is deliberately NOT in the image.
+#   * PLAYWRIGHT_BROWSERS_PATH defaults to /home/worker/.cache/ms-playwright, a
+#     worker-owned directory. That path is what the pool Job should mount the
+#     ticket disk subPath `playwright` at (with pod fsGroup 1001, the worker's
+#     gid) so the downloaded browser survives across legs of a ticket (B-1161
+#     implements the mount). With no mount it is an ordinary image directory and
+#     each leg simply downloads the browser again.
+#   * This image is published by the SAME Cloud Build run as the base
+#     (container/cloudbuild.yaml build-docker .. push-docker-latest), after the
+#     base has been pushed.
+
 ARG BASE=harmony-build-env
+# The harmony.claude_code_version and harmony.source_commit_time labels are
+# inherited from the BASE through this FROM; this layer does not redefine them.
 FROM ${BASE}
 
 USER root
@@ -56,5 +73,17 @@ RUN echo 'worker ALL=(root) NOPASSWD: /usr/local/bin/harmony-start-dockerd' \
       > /etc/sudoers.d/harmony-dockerd \
     && chmod 0440 /etc/sudoers.d/harmony-dockerd \
     && visudo -cf /etc/sudoers.d/harmony-dockerd
+
+# B-1162: Chromium system libraries, as root, via Playwright's own dependency
+# list (node/npm come from the base). Apt lists and the npx cache are cleared in
+# the SAME layer so neither the lists nor the playwright package stay behind.
+RUN npx -y playwright install-deps chromium \
+    && rm -rf /var/lib/apt/lists/* /root/.npm/_npx
+
+# B-1162: worker-owned browser cache (the pool Job's `playwright` subPath mount
+# point). /home/worker/.cache itself is created worker-owned too.
+RUN mkdir -p /home/worker/.cache/ms-playwright \
+    && chown worker:worker /home/worker/.cache /home/worker/.cache/ms-playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/worker/.cache/ms-playwright
 
 USER worker
