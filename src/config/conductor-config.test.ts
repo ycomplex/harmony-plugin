@@ -111,6 +111,30 @@ describe('loadConductorConfigSync: input discovery', () => {
   });
 });
 
+describe('evaluateConductorConfig: per-layer values (round B, additive)', () => {
+  it('exposes each contributing layer so the doctor can report cross-layer conflicts', () => {
+    const files = {
+      [P.snap]: snapshot(gkeProject),
+      [P.host]: { ...host, gke: { namespace: 'ns-host' } },
+    };
+    const ev = evaluateConductorConfig({
+      env: { HARMONY_HOME: H, HARMONY_CONDUCTOR_GKE_NAMESPACE: 'ns-env', HARMONY_GKE_CPU: '2' },
+      ...fs(files),
+      warn: () => {},
+    })!;
+    expect((ev.layers.project as { gke: { namespace: string } }).gke.namespace).toBe('ns-project');
+    expect((ev.layers.host as { gke: { namespace: string } }).gke.namespace).toBe('ns-host');
+    expect(ev.layers.env).toEqual({ gke: { namespace: 'ns-env' } });
+    expect(ev.layers.legacy).toEqual({ gke: { cpu: '2' } });
+  });
+
+  it('a layer that did not contribute is undefined / empty', () => {
+    const ev = evaluateConductorConfig({ env: { HARMONY_HOME: H }, ...fs({ [P.host]: host }), warn: () => {} })!;
+    expect(ev.layers.project).toBeUndefined();
+    expect(ev.layers.env).toEqual({});
+  });
+});
+
 describe('precedence: legacy < project < host < env', () => {
   it('layers each win over the one below, with a conflict on gke.namespace and concurrency', () => {
     const files = {

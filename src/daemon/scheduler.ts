@@ -138,7 +138,14 @@ import { exchangeWentInactive } from '../conductor/ball-axis.js';
 import { renderTemplate, type DaemonConfig } from './config.js';
 import { resolveLegGate, isFastTrackBuildLeg, evaluateFastTrackAdmission } from './leg-gate.js';
 import { evaluateAgentEligibility, formatAgentIneligibleComment } from './agent-eligibility.js';
-import { getAgentAdapter, getModelForGate, isFastTrackEnabled, type RunConfig } from '../config/run-config.js';
+import {
+  DEFAULT_AGENT_ADAPTER,
+  getAgentAdapter,
+  getModelForGate,
+  isFastTrackEnabled,
+  type RunConfig,
+} from '../config/run-config.js';
+import type { ModelPolicy } from './conductor-config-runtime.js';
 import type { QuotaState } from '../tools/conduction-record.js';
 import { formatInadmissibleFastTrackVerdict } from '../tools/record-eligibility.js';
 // B-929: the ONE place the worker-image default is written (src/config/deployment-config.ts's
@@ -329,6 +336,10 @@ export interface SchedulerDeps extends WriteRetryDeps {
    *  default WORKER_IMAGE_DEFAULT — so an existing deployment that never sets it renders exactly the
    *  literal its template carried before this ticket. */
   workerImage?: string;
+  /** B-1170: the conductor config's current `model_policy` (hot-reloaded, so a getter, read per launch).
+   *  OPTIONAL — absent (or returning undefined) means NO change at all: the rendered run_config and
+   *  model are byte-identical to what they were before this field existed. See applyModelPolicy. */
+  getModelPolicy?: () => ModelPolicy | undefined;
   /** B-1073 bugfix (this ticket) — the deployment's configured repo set, resolved to `owner/repo`
    *  strings (e.g. from `deploymentConfig.repos[].url`). DELIBERATELY NOT fed to fireLaunch's
    *  fast-track admission check any more — a deployment's declared repo list is where code CAN
@@ -565,17 +576,44 @@ function runConfigJsonFor(row: ConductionRecord): string {
  *  always resolves a non-empty alias; a non-Claude run with no run-level model resolves '' (the
  *  mint script then writes no HARMONY_MODEL line, and provision.sh falls back to
  *  HARMONY_CODEX_MODEL, else the runtime's own default). */
-function modelFor(row: ConductionRecord, task: DaemonTask | null): string {
-  const runConfig = (row.run_config ?? {}) as RunConfig;
+function modelFor(row: ConductionRecord, task: DaemonTask | null, runConfig: RunConfig = (row.run_config ?? {}) as RunConfig): string {
   const gate = resolveLegGate(runConfig, task ?? {});
   return getModelForGate(runConfig, gate);
 }
 
-function templateVars(
+/** B-1170: fold the conductor config's `model_policy` into a conduction's run_config by filling ABSENT
+ *  keys only. THE WORKER RE-RESOLVES its gate model from its OWN run_config env (the `model resolve-gate`
+ *  CLI) and compares it with the HARMONY_MODEL the daemon rendered; if the daemon picked a model from a
+ *  source the worker cannot see, the worker would loop on model-switch requests. So the policy is never
+ *  applied as a side channel: the filled model block goes into BOTH the rendered {run_config_json} (what
+ *  the worker resolves from) and the {model} the daemon chose, via this one function.
+ *
+ *  Rules: a conduction's own `model.default` or `model.per_gate[<this gate>]` means the conduction
+ *  already decided this leg -> returned UNTOUCHED. Otherwise the policy's `default` is filled in and its
+ *  `per_gate` entries are merged UNDER the conduction's own per_gate entries (the conduction wins per
+ *  key). A non-Claude run (run_config.agent.adapter other than claude-code) is left untouched: the
+ *  policy names Claude aliases and a Codex leg must not be handed one. No policy -> the SAME object back. */
+export function applyModelPolicy(runConfig: RunConfig, gate: ReturnType<typeof resolveLegGate>, policy: ModelPolicy | undefined): RunConfig {
+  if (!policy || (policy.default === undefined && !policy.per_gate)) return runConfig;
+  const own = runConfig.model;
+  if (own?.default || (gate && own?.per_gate?.[gate])) return runConfig;
+  const selection = getAgentAdapter(runConfig);
+  if (selection.ok && selection.adapter !== DEFAULT_AGENT_ADAPTER) return runConfig;
+  const perGate = { ...(policy.per_gate ?? {}), ...(own?.per_gate ?? {}) };
+  const model: NonNullable<RunConfig['model']> = {
+    ...(own ?? {}),
+    ...(policy.default !== undefined ? { default: policy.default } : {}),
+    ...(Object.keys(perGate).length ? { per_gate: perGate } : {}),
+  };
+  return { ...runConfig, model };
+}
+
+export function templateVars(
   row: ConductionRecord,
   task: DaemonTask | null,
   projectKey: string,
   workerImage?: string,
+  modelPolicy?: ModelPolicy,
 ): {
   conduction_id: string;
   ticket: string;
@@ -583,6 +621,11 @@ function templateVars(
   model: string;
   worker_image: string;
 } {
+  // B-1170: ONE effective run_config feeds both {run_config_json} and {model} (see applyModelPolicy).
+  // With no policy `effective` IS row.run_config, so the output is byte-identical to before.
+  const rawRunConfig = (row.run_config ?? {}) as RunConfig;
+  const effective = applyModelPolicy(rawRunConfig, resolveLegGate(rawRunConfig, task ?? {}), modelPolicy);
+  const effectiveRow = effective === rawRunConfig ? row : { ...row, run_config: effective as ConductionRecord['run_config'] };
   // B-827: {ticket} now carries the ticket's VISUAL id (project key + task_number), never the row
   // UUID — everything downstream (the worker prompt, host-side RUN_DIR paths, and, since B-788, the
   // persisted cloud transcript path) must name the ticket the same way B-723's log lines already
@@ -594,10 +637,10 @@ function templateVars(
     ticket: resolveVisualId(task, projectKey, row.task_id),
     // B-718: always computed (harmless when the active template's reap/probe strings don't
     // reference {run_config_json} — renderTemplate only substitutes placeholders actually present).
-    run_config_json: runConfigJsonFor(row),
+    run_config_json: runConfigJsonFor(effectiveRow),
     // B-772: same "always computed, harmless when unreferenced" convention as run_config_json
     // above — only the launch template is expected to actually reference {model}.
-    model: modelFor(row, task),
+    model: modelFor(row, task, effective),
     // B-929: which container image this deployment's workers run (deployment config's top-level
     // `worker_image`, resolved once at daemon boot in src/bin/daemon.ts and carried on
     // SchedulerDeps). Optional there and defaulted HERE to the schema's own default, because most
@@ -1031,7 +1074,7 @@ async function handleHeldConduction(
       // B-717 restart reconciliation: this daemon did not fire this launch itself, so there is no
       // local runCommand(launch) promise to settle — re-probe the SAME tracking surface each pass.
       const probed = await deps.runCommand(
-        renderTemplate(deps.config.profile.probe as string, templateVars(row, tracked.current, deps.projectKey, deps.workerImage)),
+        renderTemplate(deps.config.profile.probe as string, templateVars(row, tracked.current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.())),
       );
       if (probed.exitCode !== 0) {
         tracked.settled = true;
@@ -1361,7 +1404,7 @@ async function handleWonTakeover(
       // best-effort — see above.
     }
     const probed = await deps.runCommand(
-      renderTemplate(deps.config.profile.probe, templateVars(row, probeTask, deps.projectKey, deps.workerImage)),
+      renderTemplate(deps.config.profile.probe, templateVars(row, probeTask, deps.projectKey, deps.workerImage, deps.getModelPolicy?.())),
     );
     if (probed.exitCode === 0) {
       let current: DaemonTask;
@@ -1433,7 +1476,7 @@ async function handleWonTakeover(
       // best-effort — see above.
     }
     await deps.runCommand(
-      renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey, deps.workerImage)),
+      renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey, deps.workerImage, deps.getModelPolicy?.())),
       { quiet: true, quietRender: renderQuietReapOutcome },
     );
   }
@@ -1575,7 +1618,7 @@ async function settleTrackedLaunch(
       `${label(row, after, deps.projectKey)}: dirty exit — retrying ` +
         `(attempt ${retryCount}/${deps.config.retryCap}) after reap + ${backoffMs}ms backoff`,
     );
-    await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage)));
+    await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage, deps.getModelPolicy?.())));
     // B-717: no synchronous deps.sleep here — a blocked pass is exactly what fire-and-track
     // removes. Queue the retry as a ready candidate gated by `notBefore` so every OTHER row keeps
     // getting served while this one backs off.
@@ -1662,7 +1705,7 @@ async function settleRefusal(
         `${label(row, after, deps.projectKey)}: rate limit on ${rt} — retrying ` +
           `(${used + 1}/${RATE_LIMIT_BACKOFFS_MS.length}) after reap + ${backoffMs}ms backoff`,
       );
-      await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage)));
+      await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage, deps.getModelPolicy?.())));
       runtime.ready.set(row.id, { since: deps.now(), priority: row.task_priority ?? null, notBefore: deps.now() + backoffMs, retryCount: tracked.retryCount });
       return;
     }
@@ -1948,7 +1991,7 @@ function beginReapEscalation(
     for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
       // NEVER await the reap: a wedged container runtime can hang the reap command itself, and
       // the call we make to unblock ourselves must not be able to block us.
-      void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, current, deps.projectKey, deps.workerImage)));
+      void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.())));
       await new Promise<void>((resolveGrace) => {
         deps.startTimeout(REAP_GRACE_MS, resolveGrace);
       });
@@ -2163,7 +2206,7 @@ async function fireLaunch(
   // launch-profile template change anywhere (no {leg} placeholder).
   const launch = deps
     .runCommand(
-      renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey, deps.workerImage)),
+      renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.())),
       { env: { ...process.env, HARMONY_LEG: String(leg) } },
     )
     .then((result) => {

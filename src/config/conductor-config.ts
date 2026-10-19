@@ -928,6 +928,16 @@ export interface ConductorEvaluation {
   sources: string[];
   warnings: string[];
   issues: ConductorConfigIssue[];
+  /** Round B (additive): the individual layers that went into `merged`, so the doctor can report a key
+   *  set to DIFFERENT values in two layers. `project` is the validated project file (or snapshot);
+   *  `legacy` is the already-mapped legacy layer (deployment.json + legacy env knobs, mixed). A layer
+   *  that did not contribute is `undefined` (or `{}` for env/legacy). */
+  layers: {
+    project: Record<string, unknown> | undefined;
+    host: Record<string, unknown> | undefined;
+    env: Record<string, unknown>;
+    legacy: Record<string, unknown>;
+  };
 }
 
 export interface ConductorLoadResult extends ConductorEvaluation {
@@ -1068,7 +1078,14 @@ export function evaluateConductorConfig(opts: ConductorLoadOptions = {}): Conduc
     emitted.add(w);
     warnFn(w);
   }
-  return { merged, deploymentConfig, sources, warnings: [...new Set(uniqueWarnings)], issues };
+  return {
+    merged,
+    deploymentConfig,
+    sources,
+    warnings: [...new Set(uniqueWarnings)],
+    issues,
+    layers: { project: projectLayer, host: hostLayer, env: envL.layer, legacy: legacy.layer },
+  };
 }
 
 /** The runtime entry: null when no new-file input exists (callers fall back to today's behaviour);
