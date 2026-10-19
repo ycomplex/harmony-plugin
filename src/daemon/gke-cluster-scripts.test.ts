@@ -53,7 +53,10 @@ function makeWorld(): World {
   for (const d of [world.bin, world.state, world.logs]) mkdirSync(d, { recursive: true });
   const stub = (name: string, lines: string[]) =>
     writeFileSync(join(world.bin, name), ['#!/usr/bin/env bash', ...lines, ''].join('\n'), { mode: 0o755 });
-  const record = (name: string) => `{ printf '%s\\n' "$@"; echo "--END--"; } >> "$STUB_LOGS/${name}.log"`;
+  // ONE printf = ONE append: the script runs `kubectl create secret ... | kubectl apply -f -`, two stubs
+  // alive at once, and a record written in two appends (argv, then the end marker) can interleave with the
+  // other process's and scramble both. A single write per record keeps every record whole.
+  const record = (name: string) => `printf '%s\\n' "$@" '--END--' >> "$STUB_LOGS/${name}.log"`;
 
   stub('gcloud', [
     record('gcloud'),
@@ -79,6 +82,10 @@ function makeWorld(): World {
   ]);
 
   stub('kubectl', [
+    // `kubectl apply -f -` is the READ end of a pipe whose write end is `kubectl create secret ...`: drain
+    // stdin FIRST, so this process records only after its upstream has exited (and recorded). That makes the
+    // two records strictly ordered instead of racing to append to the same log.
+    'case " $* " in *" apply "*) cat > /dev/null ;; esac',
     record('kubectl'),
     'echo "${KUBECONFIG:-}" >> "$STUB_LOGS/kubeconfig.log"',
     'if [ -n "${KUBECONFIG:-}" ] && [ -f "$KUBECONFIG" ]; then echo yes >> "$STUB_LOGS/kubeconfig-existed.log"; fi',
@@ -86,7 +93,7 @@ function makeWorld(): World {
     '  *" get namespace "*) [ -f "$STUB_STATE/ns" ] || exit 1; exit 0 ;;',
     '  *" create namespace "*) touch "$STUB_STATE/ns"; exit 0 ;;',
     '  *" create secret generic "*) echo "kind: Secret"; exit 0 ;;',
-    '  *" apply "*) cat > /dev/null; exit 0 ;;',
+    '  *" apply "*) exit 0 ;;',
     '  *" get pvc "*) printf \'%s\\n\' "${STUB_PVCS:-}"; exit 0 ;;',
     '  *" get pods "*) printf \'%s\\n\' "${STUB_MOUNTED:-}"; exit 0 ;;',
     '  *" delete pvc "*) exit 0 ;;',
