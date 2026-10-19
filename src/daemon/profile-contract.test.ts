@@ -20,7 +20,7 @@ import {
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 // B-929: the drift guard now renders the template with the REAL renderer and the REAL schema
 // default, rather than only pattern-matching the raw text.
 import { renderTemplate } from './config.js';
@@ -765,6 +765,231 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
       expect(combined).toContain('INVOKED model=<unset>');
       expect(combined).not.toContain('--model');
       expect(combined.split('INVOKED').length - 1).toBe(1);
+    });
+  });
+
+  // B-1167: a stop (TERM) during a resumed or switched run must start NO further agent invocation.
+  // `claude -p` exits 143 on SIGTERM, which the B-718 resume branch used to read as "failed to
+  // attach" and answer with a COLD fallback agent launched during shutdown. These tests spawn the
+  // harness ASYNC (execFileSync blocks), wait for the stub agent's "started" marker, then SIGTERM
+  // the harness bash and read back how many agents were ever started.
+  describe('B-1167: a stopped leg starts no further agent invocation (EXECUTED)', () => {
+    /** Stub `claude`: logs each start to $B1167_INV. A --resume invocation (and, with
+     *  $B1167_FIRST_SLOW=1, the FIRST invocation of any kind) writes the started marker and then
+     *  sleeps (backgrounded + `wait` so a TERM trap can run); every other invocation exits 0
+     *  at once so an unfixed script's extra agent never hangs the test. */
+    function stubClaude(opts: { termExit: number; writeHandoff?: boolean }): string {
+      const dir = mkdtempSync(join(tmpdir(), 'b1167-fake-claude-'));
+      const harmonyJs = join(REAL_PLUGIN_DIR, 'dist', 'bin', 'harmony.js');
+      const slowCondition = opts.writeHandoff
+        ? '[ "$(wc -l < "$B1167_INV")" -eq 1 ]'
+        : 'printf \'%s\\n\' "$@" | grep -q -- --resume';
+      writeFileSync(
+        join(dir, 'claude'),
+        [
+          '#!/usr/bin/env bash',
+          'echo "$*" >> "$B1167_INV"',
+          `if ${slowCondition}; then`,
+          opts.writeHandoff
+            ? `  node "${harmonyJs}" model request-switch claude-opus-5 >&2 || true`
+            : '  :',
+          '  SP=""',
+          `  trap 'kill "$SP" 2>/dev/null; exit ${opts.termExit}' TERM`,
+          '  ( for _ in $(seq 100); do sleep 0.2; done ) &',
+          '  SP=$!',
+          '  touch "$B1167_STARTED"',
+          '  wait "$SP"',
+          'fi',
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      return dir;
+    }
+
+    async function runThenTerm(
+      env: NodeJS.ProcessEnv,
+      claudeDir: string,
+      pluginDir: string,
+      withSession: boolean,
+    ): Promise<{ code: number | null; stderr: string; invocations: string[] }> {
+      const dir = mkdtempSync(join(tmpdir(), 'b1167-run-'));
+      const homeDir = join(dir, 'home');
+      mkdirSync(homeDir, { recursive: true });
+      if (withSession) writeSession(homeDir, 'sess-b1167');
+      const inv = join(dir, 'invocations');
+      const started = join(dir, 'started');
+      writeFileSync(inv, '');
+      const scriptFile = join(dir, 'harness.sh');
+      writeFileSync(
+        scriptFile,
+        ['#!/usr/bin/env bash', 'set -euo pipefail', `PLUGIN_DIR="${pluginDir}"`, 'PROMPT="do it"', extractResumeBlock(), ''].join('\n'),
+        { mode: 0o700 },
+      );
+      const child = spawn('bash', [scriptFile], {
+        env: {
+          ...env,
+          HOME: homeDir,
+          PATH: `${claudeDir}:${process.env.PATH}`,
+          B1167_INV: inv,
+          B1167_STARTED: started,
+        },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr.on('data', (d) => (stderr += d.toString()));
+      const exited = new Promise<number | null>((resolve) => child.on('close', (code) => resolve(code)));
+      for (let i = 0; i < 150 && !existsSync(started); i++) await new Promise((r) => setTimeout(r, 100));
+      expect(existsSync(started)).toBe(true);
+      child.kill('SIGTERM');
+      const code = await exited;
+      // Let any (buggy) extra agent finish writing its invocation line before counting.
+      await new Promise((r) => setTimeout(r, 300));
+      const invocations = readFileSync(inv, 'utf8').split('\n').filter(Boolean);
+      return { code, stderr, invocations };
+    }
+
+    it('(a) TERM during the resume attempt: ONE invocation, exit 143, no "failed to attach" and no cold fallback', async () => {
+      const r = await runThenTerm(enabledRunConfigEnv(), stubClaude({ termExit: 143 }), AGENT_ONLY_PLUGIN_DIR, true);
+      expect(r.invocations).toHaveLength(1);
+      expect(r.invocations[0]).toContain('--resume');
+      expect(r.code).toBe(143);
+      expect(r.stderr).not.toContain('failed to attach');
+      expect(r.stderr).not.toContain('falling back to a COLD start');
+      expect(r.stderr).toContain('B-1167: stop received');
+    }, 30_000);
+
+    it('(b) the flag is primary: an agent that exits 1 on TERM still yields ONE invocation and exit 143', async () => {
+      const r = await runThenTerm(enabledRunConfigEnv(), stubClaude({ termExit: 1 }), AGENT_ONLY_PLUGIN_DIR, true);
+      expect(r.invocations).toHaveLength(1);
+      expect(r.code).toBe(143);
+      expect(r.stderr).not.toContain('failed to attach');
+      expect(r.stderr).not.toContain('falling back to a COLD start');
+    }, 30_000);
+
+    it('(c) no model-switch iteration after a stop: a pending valid handoff is not acted on (exit 143)', async () => {
+      // First (cold) invocation files a valid switch request, then is TERMed.
+      const r = await runThenTerm(
+        { HARMONY_MODEL: 'claude-sonnet-5' },
+        stubClaude({ termExit: 0, writeHandoff: true }),
+        REAL_PLUGIN_DIR,
+        false,
+      );
+      expect(r.invocations).toHaveLength(1);
+      // bash's `wait` returns 143 the instant the trapped TERM fires (before the agent is reaped), so
+      // the cold branch's pre-existing nonzero-exit line ends the leg with 143: the stop code, and
+      // nothing further started. (Guards 2 and 3 are pinned by (e) and (f) below, where the signal
+      // lands between invocations and `wait` is not interrupted.)
+      expect(r.code).toBe(143);
+      expect(r.stderr).not.toContain('model-switch handoff');
+    }, 30_000);
+
+    /** Guards 2 and 3 only run for a signal that lands while the script is NOT blocked in `wait` (which
+     *  otherwise returns the interrupted 143 and ends the leg through the pre-existing nonzero-exit line).
+     *  A fake harmony.js delivers the TERM at a precise point BETWEEN invocations: while the script is in
+     *  a foreground `node` call, bash defers the trap until that call returns. `$B1167_TERM_ON` names the
+     *  harmony subcommand (first two argv words) on which the fake TERMs the harness. */
+    function runWithTermBetweenInvocations(termOn: string): { status: number | null; stderr: string; invocations: string[] } {
+      const dir = mkdtempSync(join(tmpdir(), 'b1167-between-'));
+      const homeDir = join(dir, 'home');
+      mkdirSync(homeDir, { recursive: true });
+      const pluginDir = join(dir, 'plugin');
+      mkdirSync(join(pluginDir, 'dist', 'bin'), { recursive: true });
+      writeFileSync(
+        join(pluginDir, 'dist', 'bin', 'harmony.js'),
+        [
+          // `agent ...` (the launch command) is forwarded to the REAL built CLI, as AGENT_ONLY_PLUGIN_DIR does.
+          "if (process.argv[2] === 'agent') {",
+          "  const r = require('node:child_process').spawnSync(process.execPath, [" +
+            JSON.stringify(join(REAL_PLUGIN_DIR, 'dist', 'bin', 'harmony.js')) +
+            ", ...process.argv.slice(2)], { stdio: 'inherit' });",
+          '  process.exit(r.status ?? 1);',
+          '}',
+          "const words = process.argv.slice(2, 4).join(' ');",
+          "if (words === process.env.B1167_TERM_ON) process.kill(Number(process.env.B1167_HARNESS_PID), 'SIGTERM');",
+          "if (words === 'model read-handoff') process.stdout.write('claude-opus-5\\n');",
+          '',
+        ].join('\n'),
+      );
+      const claudeDir = mkdtempSync(join(tmpdir(), 'b1167-fake-claude-'));
+      const inv = join(dir, 'invocations');
+      writeFileSync(inv, '');
+      writeFileSync(join(claudeDir, 'claude'), '#!/usr/bin/env bash\necho "$*" >> "$B1167_INV"\nexit 0\n', { mode: 0o755 });
+      const scriptFile = join(dir, 'harness.sh');
+      writeFileSync(
+        scriptFile,
+        [
+          '#!/usr/bin/env bash',
+          'set -euo pipefail',
+          'export B1167_HARNESS_PID=$$',
+          `PLUGIN_DIR="${pluginDir}"`,
+          'PROMPT="do it"',
+          extractResumeBlock(),
+          '',
+        ].join('\n'),
+        { mode: 0o700 },
+      );
+      const r = spawnSync('bash', [scriptFile], {
+        env: {
+          HOME: homeDir,
+          PATH: `${claudeDir}:${process.env.PATH}`,
+          HARMONY_MODEL: 'claude-sonnet-5',
+          HARMONY_CONDUCTION_ID: 'conduction-b1167',
+          B1167_INV: inv,
+          B1167_TERM_ON: termOn,
+        },
+        encoding: 'utf8',
+      });
+      return { status: r.status, stderr: r.stderr, invocations: readFileSync(inv, 'utf8').split('\n').filter(Boolean) };
+    }
+
+    it('(e) guard 2: a TERM landing after an agent exited 0 (while its cost is recorded) starts no model-switch iteration', () => {
+      const r = runWithTermBetweenInvocations('leg-cost record');
+      expect(r.invocations).toHaveLength(1);
+      // The agent finished cleanly, so the leg keeps its 0; it just starts nothing further.
+      expect(r.status).toBe(0);
+      expect(r.stderr).toContain('B-1167: stop received — starting no further agent invocation (exit 0).');
+      expect(r.stderr).not.toContain('model-switch handoff');
+    }, 30_000);
+
+    it('(f) guard 3: a TERM landing after a valid switch request was validated starts no further iteration (exit 143)', () => {
+      const r = runWithTermBetweenInvocations('model check-alias');
+      expect(r.invocations).toHaveLength(1);
+      expect(r.status).toBe(143);
+      expect(r.stderr).toContain('B-1167: stop received — starting no further agent invocation (exit 143).');
+    }, 30_000);
+
+    it('(d) positive control: a resume attempt that exits 1 with NO signal still falls back to a cold start', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'b1167-ctl-'));
+      const homeDir = join(dir, 'home');
+      mkdirSync(homeDir, { recursive: true });
+      writeSession(homeDir, 'sess-b1167');
+      const inv = join(dir, 'invocations');
+      const claudeDir = mkdtempSync(join(tmpdir(), 'b1167-fake-claude-'));
+      writeFileSync(
+        join(claudeDir, 'claude'),
+        [
+          '#!/usr/bin/env bash',
+          'echo "$*" >> "$B1167_INV"',
+          'if printf \'%s\\n\' "$@" | grep -q -- --resume; then exit 1; fi',
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      const scriptFile = join(dir, 'harness.sh');
+      writeFileSync(
+        scriptFile,
+        ['#!/usr/bin/env bash', 'set -euo pipefail', 'exec 2>&1', `PLUGIN_DIR="${AGENT_ONLY_PLUGIN_DIR}"`, 'PROMPT="do it"', extractResumeBlock(), ''].join('\n'),
+        { mode: 0o700 },
+      );
+      const combined = execFileSync('bash', [scriptFile], {
+        env: { ...enabledRunConfigEnv(), HOME: homeDir, PATH: `${claudeDir}:${process.env.PATH}`, B1167_INV: inv },
+      }).toString();
+      expect(readFileSync(inv, 'utf8').split('\n').filter(Boolean)).toHaveLength(2);
+      expect(combined).toContain('failed to attach (exit 1; see stderr above) — falling back to a COLD start.');
+      expect(combined).not.toContain('B-1167');
     });
   });
 
