@@ -22,9 +22,17 @@
 # the Claude Code and the Codex CLIs, so the single deployment worker_image serves either adapter.
 # resolve-codex-version applies the same unpinned-latest policy to @openai/codex, and smoke.sh
 # requires `codex --version` to run before anything is published.
+#
+# B-1162: the Docker-capable worker image (container/docker-engine/Dockerfile, FROM the base just
+# built) is published by this SAME run as <_DOCKER_IMAGE>:latest and :<plugin-version>, in four
+# TRAILING steps: build-docker, smoke-docker, push-docker-version, push-docker-latest. They come
+# after EVERY base push (push-version is the last base step) by design: the base image's content,
+# tags and steps are untouched, and a failure in the Docker steps turns the build red only AFTER the
+# base image has published. Ordering gives that; allowFailure is deliberately not used.
 
 substitutions:
   _IMAGE: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-build-env
+  _DOCKER_IMAGE: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-build-env-docker
 
 steps:
   - id: resolve-claude-version
@@ -151,6 +159,58 @@ steps:
       - |
         set -euo pipefail
         docker push "${_IMAGE}:$(cat /workspace/plugin_version.txt)"
+
+  # B-1162: the Docker-capable image, built ON the base just published. BASE is the VERSION tag, not
+  # :latest — guard-latest `docker pull`s the registry's :latest over the local one, so the local
+  # :latest may no longer be this build's image by now; the version tag still is.
+  - id: build-docker
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        docker build \
+          -f container/docker-engine/Dockerfile \
+          --build-arg BASE=${_IMAGE}:$(cat /workspace/plugin_version.txt) \
+          -t '${_DOCKER_IMAGE}:candidate' container/docker-engine
+
+  # B-1162: the engine-image smoke. This step runs on the docker builder, so `docker run --privileged`
+  # goes to the build's own docker daemon.
+  - id: smoke-docker
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args: ['container/docker-engine/smoke.sh', '${_DOCKER_IMAGE}:candidate']
+
+  - id: push-docker-version
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        docker tag '${_DOCKER_IMAGE}:candidate' "${_DOCKER_IMAGE}:$(cat /workspace/plugin_version.txt)"
+        docker push "${_DOCKER_IMAGE}:$(cat /workspace/plugin_version.txt)"
+
+  # B-1162: follows guard-latest's decision for the base, so the two :latest tags move together.
+  - id: push-docker-latest
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        if [ "$(cat /workspace/push_latest_decision.txt)" = proceed ]; then
+          docker tag '${_DOCKER_IMAGE}:candidate' '${_DOCKER_IMAGE}:latest'
+          docker push '${_DOCKER_IMAGE}:latest'
+        else
+          echo "push-docker-latest: skipped by guard-latest"
+        fi
+
+# B-1162: the default 10 minute build timeout is too short for the extra image build, Chromium
+# libraries, the privileged smoke and the browser download. A late timeout would also mark the build
+# failed after the base image had already published.
+timeout: 2400s
 
 options:
   logging: CLOUD_LOGGING_ONLY
