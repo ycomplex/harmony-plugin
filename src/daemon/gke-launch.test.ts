@@ -135,6 +135,11 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the four steps (EXECUTED aga
     expect(job.spec.activeDeadlineSeconds).toBe(5400);
     expect(job.spec.template.spec.volumes[0].persistentVolumeClaim.claimName).toBe('ticket-b-1161');
     expect(worker.envFrom[0]).toEqual({ secretRef: { name: 'harmony-worker-secrets' } });
+    // transcripts: the bucket (defaults) through the CSI volume, run as the default service account (B-1169)
+    expect(job.spec.template.spec.serviceAccountName).toBe('harmony-leg');
+    const tv = job.spec.template.spec.volumes.find((v: { name: string }) => v.name === 'transcripts');
+    expect(tv.csi.volumeAttributes.bucketName).toBe('harmony-conductor-transcripts');
+    expect(worker.volumeMounts).toContainEqual({ name: 'transcripts', mountPath: '/mnt/harmony-transcripts' });
     // owner reference carries the uid read from the Job
     const patch = calls(w)[iPatch];
     expect(patch.join(' ')).toContain('uid-123');
@@ -208,6 +213,26 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — refusals (before anything is
     expect(r.stderr).toContain('harmony-legs/harmony-worker-secrets');
     expect(verbs(w).some((c) => /apply|create/.test(c))).toBe(false);
     expect(minted(w)).toBe(false);
+  });
+
+  it('REFUSES when the Kubernetes service account is missing — names it, creates nothing, mints nothing', () => {
+    const w = makeWorld({ STUB_MISSING_SERVICEACCOUNTS: 'harmony-leg' });
+    const r = launch(w);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('harmony-legs/harmony-leg');
+    expect(verbs(w).some((c) => /apply|create/.test(c))).toBe(false);
+    expect(minted(w)).toBe(false);
+    expect(read(w, 'job.json')).toBe('');
+  });
+
+  it('forwards HARMONY_GKE_TRANSCRIPT_BUCKET and HARMONY_GKE_SERVICE_ACCOUNT to the renderer, and checks that service account', () => {
+    const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
+    const r = launch(w, { HARMONY_GKE_TRANSCRIPT_BUCKET: 'other-bucket', HARMONY_GKE_SERVICE_ACCOUNT: 'other-ksa' });
+    expect(r.status).toBe(0);
+    expect(verbs(w)).toContain('-n harmony-legs get serviceaccount other-ksa');
+    const spec = JSON.parse(read(w, 'job.json')).spec.template.spec;
+    expect(spec.serviceAccountName).toBe('other-ksa');
+    expect(spec.volumes.find((v: { name: string }) => v.name === 'transcripts').csi.volumeAttributes.bucketName).toBe('other-bucket');
   });
 
   it('REFUSES a Codex run when the Codex secret is missing — no Job, nothing minted', () => {

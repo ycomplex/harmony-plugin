@@ -20,6 +20,10 @@ case "$all" in
     name="${args[2]}"
     case ",${STUB_MISSING_SECRETS:-}," in *",$name,"*) exit 1 ;; esac
     exit 0 ;;
+  "get serviceaccount "*)
+    name="${args[2]}"
+    case ",${STUB_MISSING_SERVICEACCOUNTS:-}," in *",$name,"*) exit 1 ;; esac
+    exit 0 ;;
   "apply -f -") cat > "$STUB_LOGS/pvc.json" ;;
   "create secret generic "*)
     for a in "$@"; do case "$a" in --from-env-file=*)
