@@ -55,7 +55,7 @@ function makeWorld(profiles: Record<string, unknown> = { gke: exampleProfile, cl
     'exit 0',
   ]);
   // The "daemon": records its argv, publishes its pid, then just stays alive briefly.
-  stub('nohup', [record('nohup'), 'echo $$ > "$STUB_STATE/newpid"', 'exec sleep 20']);
+  stub('nohup', [record('nohup'), 'env > "$STUB_STATE/nohup-env"', 'echo $$ > "$STUB_STATE/newpid"', 'exec sleep 20']);
   stub('kubectl', [
     record('kubectl'),
     'case " $* " in',
@@ -97,6 +97,12 @@ function run(w: World, args: string[], env: Record<string, string> = {}) {
       STUB_STATE: w.state,
       HARMONY_API_TOKEN: 'tok',
       HARMONY_PLUGIN_DIR: '/plugin',
+      HARMONY_APP_ID: '123',
+      HARMONY_APP_INSTALLATION_ID: '456',
+      HARMONY_APP_PRIVATE_KEY_PATH: '/keys/app.pem',
+      HARMONY_CLOUD_RUN_JOB: 'harmony-worker',
+      HARMONY_CLOUD_RUN_REGION: 'us-central1',
+      CLOUDSDK_CORE_ACCOUNT: 'daemon@example.iam',
       HARMONY_SWITCH_BOARD_CMD: join(w.bin, 'board-stub'),
       HARMONY_SWITCH_TIMEOUT_S: '3',
       HARMONY_SWITCH_POLL_S: '0.2',
@@ -107,7 +113,7 @@ function run(w: World, args: string[], env: Record<string, string> = {}) {
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 const go = (w: World, to: 'gke' | 'cloud', extra: string[] = [], env: Record<string, string> = {}) =>
-  run(w, ['--to', to, '--config', w.config, '--log', w.daemonLog, ...extra], env);
+  run(w, ['--to', to, '--config', w.config, '--log', w.daemonLog, ...(extra.includes('--env-file') ? [] : ['--env-file', 'none']), ...extra], env);
 
 function calls(w: World, name: string): string[][] {
   const p = join(w.logs, `${name}.log`);
@@ -251,11 +257,74 @@ describe.skipIf(!CAPABLE)('container/gke/switch-daemon-profile.sh (EXECUTED agai
       fails(r, w);
       expect(r.stderr).toContain('HARMONY_API_TOKEN');
     });
+    it('required keys missing: fails listing NAMES only, never a value', () => {
+      const w = makeWorld();
+      const envFile = join(w.dir, 'daemon.env');
+      writeFileSync(envFile, 'HARMONY_API_TOKEN=super-secret-token-value\n');
+      const r = go(w, 'gke', ['--env-file', envFile], {
+        HARMONY_APP_ID: '', HARMONY_CLOUD_RUN_JOB: '', CLOUDSDK_CORE_ACCOUNT: '', HARMONY_APP_PRIVATE_KEY_PATH: '',
+      });
+      fails(r, w);
+      for (const k of ['HARMONY_APP_ID', 'HARMONY_CLOUD_RUN_JOB', 'CLOUDSDK_CORE_ACCOUNT', 'HARMONY_APP_PRIVATE_KEY_PATH']) {
+        expect(r.stderr).toContain(k);
+      }
+      expect(r.stderr).not.toContain('HARMONY_CLOUD_RUN_REGION'); // present, not listed
+      expect(r.stdout + r.stderr).not.toContain('super-secret-token-value');
+    });
     it('no daemon running', () => {
       const w = makeWorld();
       const r = go(w, 'gke', [], { STUB_NO_DAEMON: '1' });
       fails(r, w);
       expect(r.stderr).toContain('no running daemon');
+    });
+  });
+
+  describe('--env-file', () => {
+    const envFileWorld = (body: string) => {
+      const w = makeWorld();
+      const envFile = join(w.dir, 'daemon.env');
+      writeFileSync(envFile, body);
+      return { w, envFile };
+    };
+
+    it('a missing env file is refused (default path included), naming the path; none is accepted', () => {
+      const w = makeWorld();
+      const missing = join(w.dir, 'absent.env');
+      const r = go(w, 'gke', ['--env-file', missing]);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain(missing);
+      untouched(w);
+      // default ~/.harmony/daemon.env does not exist under the test HOME
+      const d = run(w, ['--to', 'gke', '--config', w.config, '--log', w.daemonLog, '--dry-run']);
+      expect(d.status).toBe(1);
+      expect(d.stderr).toContain('daemon.env');
+      expect(go(w, 'gke', ['--env-file', 'none', '--dry-run']).status).toBe(0);
+    });
+
+    it('the Cloud Run job and region come from the env file: the guard queries them and dry-run prints them', () => {
+      const { w, envFile } = envFileWorld('HARMONY_CLOUD_RUN_JOB=job-from-file\nHARMONY_CLOUD_RUN_REGION=europe-west9\n');
+      const r = go(w, 'gke', ['--env-file', envFile, '--dry-run'], { HARMONY_CLOUD_RUN_JOB: 'job-from-shell' });
+      expect(r.status).toBe(0);
+      const list = calls(w, 'gcloud').find((c) => c.includes('executions'));
+      expect(list).toContain('--job=job-from-file');
+      expect(list).toContain('--region=europe-west9');
+      expect(r.stdout).toContain('job-from-file');
+      expect(r.stdout).toContain('europe-west9');
+      expect(r.stdout + r.stderr).not.toContain('job-from-shell');
+      untouched(w);
+    });
+
+    it('the file values reach the restarted daemon environment, and no value is printed', () => {
+      const { w, envFile } = envFileWorld(
+        "HARMONY_API_TOKEN=tok-from-file-s3cret\nCUSTOM_FROM_FILE='a b'\nHARMONY_APP_ID=999\n",
+      );
+      const r = go(w, 'gke', ['--env-file', envFile]);
+      expect(r.status).toBe(0);
+      const env = readFileSync(join(w.state, 'nohup-env'), 'utf8').split('\n');
+      expect(env).toContain('CUSTOM_FROM_FILE=a b');
+      expect(env).toContain('HARMONY_API_TOKEN=tok-from-file-s3cret');
+      expect(env).toContain('HARMONY_APP_ID=999');
+      expect(r.stdout + r.stderr).not.toContain('tok-from-file-s3cret');
     });
   });
 

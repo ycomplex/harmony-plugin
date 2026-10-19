@@ -3,16 +3,22 @@
 # in ONE command, and confirm the new daemon adopted every run the old one held.
 #
 #   bash container/gke/switch-daemon-profile.sh --to gke|cloud [--config <path>] [--log <path>]
-#                                               [--dry-run] [--force]
+#                                               [--env-file <path>|none] [--dry-run] [--force]
 #
 # The FALLBACK for a switch is the same command pointed back: `--to cloud` undoes `--to gke`.
 #
 # What it does, in order:
-#   1. Preflight (read-only). The target profile exists in the deployment config. For gke: kubectl reaches
-#      the cluster, the base Secret exists, and the profile's launch line carries HARMONY_GKE_IMAGE=. For
-#      cloud: the Cloud Run job exists. Also: HARMONY_API_TOKEN and HARMONY_PLUGIN_DIR are set (the new
-#      daemon is started from this shell's environment), exactly one daemon is running, and the board is
-#      readable.
+#   0. Load the daemon's environment file (--env-file, default ~/.harmony/daemon.env; `--env-file none` skips
+#      it) with `set -a`, BEFORE anything else, so the in-flight guard, the preflight and the restarted daemon
+#      all see the SAME values (the Cloud Run job name, region, account, the GitHub App settings...). The file
+#      is sourced in this shell and its values are never printed. A missing file is refused, not skipped.
+#   1. Preflight (read-only). The target profile exists in the deployment config. The required settings are
+#      present (names only are ever reported): HARMONY_API_TOKEN, HARMONY_PLUGIN_DIR, HARMONY_APP_ID,
+#      HARMONY_APP_INSTALLATION_ID, HARMONY_APP_PRIVATE_KEY_PATH (or HARMONY_APP_PRIVATE_KEY) for the mint, and
+#      HARMONY_CLOUD_RUN_JOB, HARMONY_CLOUD_RUN_REGION, CLOUDSDK_CORE_ACCOUNT for Cloud Run (always needed: one
+#      side of every switch is cloud, either the target or the backend the guard inspects). For gke: kubectl
+#      reaches the cluster, the base Secret exists, and the profile's launch line carries HARMONY_GKE_IMAGE=.
+#      For cloud: the Cloud Run job exists. Also: exactly one daemon is running and the board is readable.
 #   2. In-flight guard. Refuses (exit 3) while a leg is running on the OUTGOING backend (an active k8s Job in
 #      the legs namespace when leaving gke; a running Cloud Run execution when leaving cloud), and names each
 #      leg by TICKET and CONDUCTION ID so you can say exactly what is being waited for. Wait for them to end
@@ -39,13 +45,15 @@
 # HARMONY_SWITCH_STOP_TIMEOUT_S (60), HARMONY_SWITCH_FRESH_S (120, how recent a heartbeat must be),
 # HARMONY_SWITCH_BOARD_CMD (the board query: a command printing the JSON array of `harmony --json conductions
 # active`; default is that CLI call), HARMONY_GKE_NAMESPACE / HARMONY_GKE_CONTEXT / HARMONY_GKE_BASE_SECRET,
-# HARMONY_CLOUD_RUN_JOB / HARMONY_CLOUD_RUN_REGION / CLOUDSDK_CORE_PROJECT.
+# CLOUDSDK_CORE_PROJECT. The daemon's own settings (HARMONY_CLOUD_RUN_JOB / _REGION, CLOUDSDK_CORE_ACCOUNT, the
+# HARMONY_APP_* keys...) come from the env file, which overrides the invoking shell.
 set -euo pipefail
 
 HERE="$(dirname "${BASH_SOURCE[0]}")"
 TARGET=""
 CONFIG="${HOME:-}/.harmony/deployment.json"
 LOG="${HOME:-}/.harmony/daemon.log"
+ENV_FILE="${HOME:-}/.harmony/daemon.env"
 DRY_RUN=0
 FORCE=0
 
@@ -56,12 +64,17 @@ Usage: switch-daemon-profile.sh --to gke|cloud [options]
   --to gke|cloud     the launch profile the daemon should run under (required)
   --config <path>    deployment config holding profiles.<name>   [~/.harmony/deployment.json]
   --log <path>       where the restarted daemon's output goes    [~/.harmony/daemon.log]
+  --env-file <path>  the daemon's shell-sourceable KEY=VALUE settings, loaded before the preflight so the
+                     guard, the preflight and the restarted daemon agree. `none` skips it  [~/.harmony/daemon.env]
+                     A missing file is refused unless `none` is given. Values are never printed.
   --dry-run          preflight, list in-flight legs and held conductions, change nothing
   --force            switch even though legs are in flight on the outgoing backend. LAST RESORT ONLY: the
                      new daemon reaps adopted leases with its own profile's reap script, so a forced
                      switch can leave a leg running twice
   -h, --help         this text
-Needs HARMONY_API_TOKEN and HARMONY_PLUGIN_DIR in the environment. The fallback for a switch is the same
+Needs HARMONY_API_TOKEN, HARMONY_PLUGIN_DIR, HARMONY_APP_ID, HARMONY_APP_INSTALLATION_ID, a
+HARMONY_APP_PRIVATE_KEY_PATH (or HARMONY_APP_PRIVATE_KEY), HARMONY_CLOUD_RUN_JOB, HARMONY_CLOUD_RUN_REGION
+and CLOUDSDK_CORE_ACCOUNT, from the env file or the environment. The fallback for a switch is the same
 command with the other --to. Exit codes: 0 ok; 1 preflight/stop/start failed; 2 usage; 3 refused (legs in
 flight); 4 adoption not confirmed.
 USAGE
@@ -76,6 +89,7 @@ while [ $# -gt 0 ]; do
     --to) need_value "$@"; TARGET="$2"; shift 2 ;;
     --config) need_value "$@"; CONFIG="$2"; shift 2 ;;
     --log) need_value "$@"; LOG="$2"; shift 2 ;;
+    --env-file) need_value "$@"; ENV_FILE="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --force) FORCE=1; shift ;;
     -h | --help) usage; exit 0 ;;
@@ -88,6 +102,20 @@ case "$TARGET" in
   *) die_usage "--to must be gke or cloud, got '${TARGET:-}'" ;;
 esac
 
+# --- the daemon's environment file: loaded FIRST, auto-exported, never echoed. -------------------------
+if [ "$ENV_FILE" = "none" ]; then
+  ENV_NOTE="no env file (--env-file none): using the invoking shell's environment only"
+else
+  [ -f "$ENV_FILE" ] || die "env file not found: $ENV_FILE (the daemon's settings live there; pass --env-file <path>, or --env-file none to use only this shell's environment)"
+  # bash -n and the source both discard stderr: a parse error would otherwise quote a line of the file.
+  bash -n "$ENV_FILE" >/dev/null 2>&1 || die "env file is not valid shell syntax: $ENV_FILE"
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE" 2>/dev/null || { set +a; die "env file could not be loaded: $ENV_FILE"; }
+  set +a
+  ENV_NOTE="loaded env file $ENV_FILE (values not shown)"
+fi
+
 TIMEOUT_S="${HARMONY_SWITCH_TIMEOUT_S:-180}"
 POLL_S="${HARMONY_SWITCH_POLL_S:-5}"
 STOP_TIMEOUT_S="${HARMONY_SWITCH_STOP_TIMEOUT_S:-60}"
@@ -97,12 +125,11 @@ FRESH_S="${HARMONY_SWITCH_FRESH_S:-120}"
 . "$HERE/gke-common.sh"
 gke_init_kubectl
 : "${HARMONY_GKE_BASE_SECRET:=harmony-worker-secrets}"
-: "${HARMONY_CLOUD_RUN_REGION:=us-central1}"
-: "${HARMONY_CLOUD_RUN_JOB:=harmony-build-worker}"
 : "${CLOUDSDK_CORE_PROJECT:=harmony-conductor}"
 export CLOUDSDK_CORE_PROJECT
 
 step() { echo; echo "=== $* ==="; }
+echo "$ENV_NOTE"
 
 # --- the board query: replaceable (HARMONY_SWITCH_BOARD_CMD), stubbed in tests. -----------------------
 board_json() {
@@ -207,8 +234,20 @@ process.stdout.write(String(p.launch || ""));' "$CONFIG" "$TARGET")" || {
   die "profile '$TARGET' does not exist in $CONFIG (profiles section)"
 }
 echo "profile '$TARGET' found in $CONFIG"
-[ -n "${HARMONY_API_TOKEN:-}" ] || die "HARMONY_API_TOKEN is not set — the restarted daemon needs it"
-[ -n "${HARMONY_PLUGIN_DIR:-}" ] || die "HARMONY_PLUGIN_DIR is not set — the restarted daemon runs \$HARMONY_PLUGIN_DIR/dist/bin/daemon.js"
+# Required settings, by NAME only (never a value). Cloud Run's are needed on both directions: the target is
+# cloud, or cloud is the outgoing backend the in-flight guard inspects.
+MISSING=()
+for k in HARMONY_API_TOKEN HARMONY_PLUGIN_DIR HARMONY_APP_ID HARMONY_APP_INSTALLATION_ID \
+  HARMONY_CLOUD_RUN_JOB HARMONY_CLOUD_RUN_REGION CLOUDSDK_CORE_ACCOUNT; do
+  [ -n "${!k:-}" ] || MISSING+=("$k")
+done
+if [ -z "${HARMONY_APP_PRIVATE_KEY_PATH:-}" ] && [ -z "${HARMONY_APP_PRIVATE_KEY:-}" ]; then
+  MISSING+=("HARMONY_APP_PRIVATE_KEY_PATH (or HARMONY_APP_PRIVATE_KEY)")
+fi
+if [ "${#MISSING[@]}" -gt 0 ]; then
+  die "required settings missing (set them in the env file or the environment): $(printf '%s, ' "${MISSING[@]}" | sed 's/, $//')"
+fi
+echo "required settings present (names checked: HARMONY_API_TOKEN, HARMONY_PLUGIN_DIR, HARMONY_APP_*, HARMONY_CLOUD_RUN_JOB/_REGION, CLOUDSDK_CORE_ACCOUNT)"
 
 if [ "$TARGET" = "gke" ]; then
   "${KUBECTL[@]}" get namespace "$HARMONY_GKE_NAMESPACE" >/dev/null 2>&1 \
@@ -272,6 +311,7 @@ let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
 else
   echo "no leg is running on $OUTGOING"
 fi
+[ "$OUTGOING" = "cloud" ] && echo "(checked Cloud Run job $HARMONY_CLOUD_RUN_JOB, region $HARMONY_CLOUD_RUN_REGION, project $CLOUDSDK_CORE_PROJECT)"
 
 if [ -n "$LEGS" ] && [ "$FORCE" -eq 0 ]; then
   {
@@ -291,6 +331,7 @@ fi
 # --- dry run ends here -----------------------------------------------------------------------------
 if [ "$DRY_RUN" -eq 1 ]; then
   step "dry run: nothing changed"
+  echo "Cloud Run job checked for in-flight legs and preflight: $HARMONY_CLOUD_RUN_JOB (region $HARMONY_CLOUD_RUN_REGION)"
   echo "would: kill -TERM $OLD_PID, wait up to ${STOP_TIMEOUT_S}s for it to exit,"
   echo "       nohup node \$HARMONY_PLUGIN_DIR/dist/bin/daemon.js --config $CONFIG --profile $TARGET >> $LOG,"
   echo "       then confirm from the board within ${TIMEOUT_S}s that each held conduction is leased by the new daemon"
