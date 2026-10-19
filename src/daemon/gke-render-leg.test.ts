@@ -12,24 +12,61 @@ const baseEnv = (over: Record<string, string> = {}) => ({
   WHAT: 'job', PVC_NAME: 'ticket-b-1161', JOB_NAME: 'leg-abcd1234-1', LEG_SECRET: 'leg-abcd1234-1-env', TICKET: 'B-1161',
   CONDUCTION_ID: 'cid-1', IMAGE: 'reg/img:latest', CPU: '6', MEM: '20Gi', DISK: '100Gi', SC: 'standard-rwo', DEADLINE: '5400',
   JOB_TTL_S: '3600', BASE_SECRET: 'harmony-worker-secrets', CODEX_RUN: '0', CODEX_SECRET: 'harmony-codex-auth',
-  CODEX_DIR: '/home/worker/.codex-auth-src', TROOT: '/mnt/harmony-transcripts', ...over,
+  CODEX_DIR: '/home/worker/.codex-auth-src', TROOT: '/mnt/harmony-transcripts',
+  TRANSCRIPT_BUCKET: 'harmony-conductor-transcripts', SERVICE_ACCOUNT: 'harmony-leg', ...over,
 });
 const job = (over: Record<string, string> = {}): any => renderLeg(baseEnv(over));
 const podSpec = (over: Record<string, string> = {}): any => job(over).spec.template.spec;
 
 describe('LEG_DISK_MOUNTS', () => {
-  it('has exactly docker, transcripts and playwright', () => {
+  it('has exactly docker and playwright (transcripts live in the bucket, B-1169)', () => {
     expect(LEG_DISK_MOUNTS).toEqual([
       { name: 'docker', mountPath: '/var/lib/docker', workerOwned: false },
-      { name: 'transcripts', mountPath: '/mnt/harmony-transcripts', workerOwned: true },
       { name: 'playwright', mountPath: '/home/worker/.cache/ms-playwright', workerOwned: true },
     ]);
   });
 
   it('generates the worker volumeMounts: same PVC volume, subPath = entry name', () => {
     const mounts = podSpec().containers[0].volumeMounts;
-    expect(mounts).toEqual(LEG_DISK_MOUNTS.map((m: { name: string; mountPath: string }) => ({ name: 'ticket', mountPath: m.mountPath, subPath: m.name })));
+    const ticketMounts = mounts.filter((m: { name: string }) => m.name === 'ticket');
+    expect(ticketMounts).toEqual(LEG_DISK_MOUNTS.map((m: { name: string; mountPath: string }) => ({ name: 'ticket', mountPath: m.mountPath, subPath: m.name })));
+    expect(mounts.some((m: { subPath?: string }) => m.subPath === 'transcripts')).toBe(false);
     expect(podSpec().volumes[0]).toEqual({ name: 'ticket', persistentVolumeClaim: { claimName: 'ticket-b-1161' } });
+  });
+});
+
+describe('the transcript bucket mount (B-1169)', () => {
+  const tvol = (over: Record<string, string> = {}) => podSpec(over).volumes.find((v: { name: string }) => v.name === 'transcripts');
+
+  it('is a Cloud Storage FUSE CSI volume on the bucket with implicit-dirs and the worker uid/gid', () => {
+    const v = tvol();
+    expect(v.csi.driver).toBe('gcsfuse.csi.storage.gke.io');
+    expect(v.csi.volumeAttributes.bucketName).toBe('harmony-conductor-transcripts');
+    const opts = v.csi.volumeAttributes.mountOptions.split(',');
+    expect(opts).toEqual(expect.arrayContaining(['implicit-dirs', 'uid=1001', 'gid=1001']));
+  });
+
+  it('honours TRANSCRIPT_BUCKET and defaults when unset', () => {
+    expect(tvol({ TRANSCRIPT_BUCKET: 'other-bucket' }).csi.volumeAttributes.bucketName).toBe('other-bucket');
+    expect(tvol({ TRANSCRIPT_BUCKET: '' }).csi.volumeAttributes.bucketName).toBe('harmony-conductor-transcripts');
+  });
+
+  it('is mounted into the worker at TROOT, with no subPath', () => {
+    expect(podSpec().containers[0].volumeMounts).toContainEqual({ name: 'transcripts', mountPath: '/mnt/harmony-transcripts' });
+    expect(podSpec({ TROOT: '/mnt/elsewhere' }).containers[0].volumeMounts).toContainEqual({ name: 'transcripts', mountPath: '/mnt/elsewhere' });
+  });
+
+  it('annotates the pod for the gcsfuse sidecar', () => {
+    const a = job().spec.template.metadata.annotations;
+    expect(a['gke-gcsfuse/volumes']).toBe('true');
+    expect(a['gke-gcsfuse/cpu-request']).toBe('250m');
+    expect(a['gke-gcsfuse/memory-request']).toBe('256Mi');
+  });
+
+  it('runs as the service account, defaulting to harmony-leg', () => {
+    expect(podSpec().serviceAccountName).toBe('harmony-leg');
+    expect(podSpec({ SERVICE_ACCOUNT: 'custom-ksa' }).serviceAccountName).toBe('custom-ksa');
+    expect(podSpec({ SERVICE_ACCOUNT: '' }).serviceAccountName).toBe('harmony-leg');
   });
 });
 
@@ -48,8 +85,9 @@ describe('the rendered Job', () => {
     expect(init.securityContext).toEqual({ runAsUser: 0 });
     expect(init.volumeMounts).toEqual([{ name: 'ticket', mountPath: '/ticket' }]);
     const cmd = init.command.join(' ');
-    expect(cmd).toContain('mkdir -p /ticket/transcripts /ticket/playwright');
-    expect(cmd).toContain('chown 1001:1001 /ticket/transcripts /ticket/playwright');
+    expect(cmd).toContain('mkdir -p /ticket/playwright');
+    expect(cmd).toContain('chown 1001:1001 /ticket/playwright');
+    expect(cmd).not.toContain('transcripts');
     expect(cmd).not.toContain('docker');
     expect(cmd).not.toMatch(/\s-R\b|--recursive/);
   });
