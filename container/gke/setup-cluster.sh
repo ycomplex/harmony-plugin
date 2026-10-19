@@ -11,11 +11,25 @@
 #   2. checks the source Secret Manager secrets exist — BEFORE anything is created;
 #   3. prints the SSD_TOTAL_GB quota headroom (a warning, never a failure);
 #   4. creates the cluster and the leg node pool ONLY IF MISSING — an existing cluster or pool is
-#      never modified; a pool that differs from the expected settings is reported as `DRIFT:`;
+#      never modified (REVISED by B-1169: steps 10-12 below make exactly three enable-only updates,
+#      and nothing else); a pool that differs from the expected settings is reported as `DRIFT:`;
 #   5. creates the namespace and the daemon service account's roles/container.developer binding if
 #      missing;
 #   6. syncs two Kubernetes Secrets from Secret Manager: an ENV Secret (HARMONY_API_TOKEN and
-#      CLAUDE_CODE_OAUTH_TOKEN) and a FILE Secret (auth.json, the Codex credential).
+#      CLAUDE_CODE_OAUTH_TOKEN) and a FILE Secret (auth.json, the Codex credential);
+#   and, for the transcript bucket (B-1169 — legs keep session transcripts in
+#   gs://<--transcript-bucket> through the Cloud Storage FUSE CSI driver, not on the per-ticket PVC):
+#   2b. (inside step 2) checks the bucket exists — it is NEVER created here; a missing bucket stops the
+#       run before anything is changed;
+#  10. ensures the cluster's Workload Identity pool (<project>.svc.id.goog);
+#  11. enables the GcsFuseCsiDriver add-on;
+#  12. sets --workload-metadata=GKE_METADATA on the leg pool (recreates its nodes, so it REFUSES while a
+#      leg Job is active);
+#  13. creates the Google service account the legs act as;
+#  14. grants it roles/storage.objectUser on the BUCKET only (never project-level);
+#  15. lets the Kubernetes service account impersonate it (roles/iam.workloadIdentityUser);
+#  16. creates that Kubernetes service account and annotates it with the Google one.
+#  Every one of 10-16 reads first and changes only what differs, so a re-run is a no-op.
 #
 # Guarantees:
 #   * It works in a TEMPORARY kubeconfig (removed on exit); the operator's own kubeconfig is never read
@@ -51,6 +65,9 @@ Options (defaults in brackets):
   --sm-api-token <name>   Secret Manager source for HARMONY_API_TOKEN [HARMONY_API_TOKEN]
   --sm-claude-token <n>   Secret Manager source for CLAUDE_CODE_OAUTH_TOKEN [CLAUDE_CODE_OAUTH_TOKEN]
   --sm-codex <name>       Secret Manager name of the Codex credential file [harmony-codex-auth]
+  --leg-gsa-name <name>   Google service account the legs act as (Workload Identity) [harmony-gke-leg]
+  --leg-ksa <name>        Kubernetes service account the leg pods run as [harmony-leg]
+  --transcript-bucket <b> existing GCS bucket holding session transcripts; never created [harmony-conductor-transcripts]
   --no-codex              skip the Codex file Secret entirely
   --skip-quota-check      do not read the SSD_TOTAL_GB quota
   --dry-run               print every command instead of running it (no gcloud/kubectl needed)
@@ -77,6 +94,9 @@ CODEX_SECRET="harmony-codex-auth"
 SM_API_TOKEN="HARMONY_API_TOKEN"
 SM_CLAUDE_TOKEN="CLAUDE_CODE_OAUTH_TOKEN"
 SM_CODEX="harmony-codex-auth"
+LEG_GSA_NAME="harmony-gke-leg"
+LEG_KSA="harmony-leg"
+TRANSCRIPT_BUCKET="harmony-conductor-transcripts"
 NO_CODEX=0
 SKIP_QUOTA=0
 DRY_RUN=0
@@ -97,6 +117,9 @@ while [ $# -gt 0 ]; do
     --sm-api-token) need_value "$@"; SM_API_TOKEN="$2"; shift 2 ;;
     --sm-claude-token) need_value "$@"; SM_CLAUDE_TOKEN="$2"; shift 2 ;;
     --sm-codex) need_value "$@"; SM_CODEX="$2"; shift 2 ;;
+    --leg-gsa-name) need_value "$@"; LEG_GSA_NAME="$2"; shift 2 ;;
+    --leg-ksa) need_value "$@"; LEG_KSA="$2"; shift 2 ;;
+    --transcript-bucket) need_value "$@"; TRANSCRIPT_BUCKET="$2"; shift 2 ;;
     --no-codex) NO_CODEX=1; shift ;;
     --skip-quota-check) SKIP_QUOTA=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -119,6 +142,7 @@ case "$MAX_NODES" in
 esac
 
 REGION="${ZONE%-*}"
+LEG_GSA_EMAIL="${LEG_GSA_NAME}@${PROJECT}.iam.gserviceaccount.com"
 
 step() { echo; echo "=== $* ==="; }
 
@@ -180,6 +204,18 @@ if [ "${#missing[@]}" -gt 0 ]; then
   exit 1
 fi
 [ "$DRY_RUN" -eq 1 ] || echo "found: ${SOURCES[*]}"
+
+# B-1169: the transcript bucket must already exist. It is NEVER created here, and a missing one stops the
+# run before anything below mutates.
+if [ "$DRY_RUN" -eq 1 ]; then
+  run gcloud storage buckets describe "gs://$TRANSCRIPT_BUCKET" --project "$PROJECT" '--format=value(name)'
+elif ! gcloud storage buckets describe "gs://$TRANSCRIPT_BUCKET" --project "$PROJECT" '--format=value(name)' >/dev/null 2>&1; then
+  echo "setup-cluster: transcript bucket gs://$TRANSCRIPT_BUCKET not found (or not readable) in project $PROJECT." >&2
+  echo "setup-cluster: this script never creates it — create it or pass --transcript-bucket (nothing has been changed yet)." >&2
+  exit 1
+else
+  echo "found bucket: gs://$TRANSCRIPT_BUCKET"
+fi
 
 QUOTA_WARNED=0
 if [ "$SKIP_QUOTA" -eq 0 ]; then
@@ -301,12 +337,101 @@ else
   sync_secret "$CODEX_SECRET" auth.json
 fi
 
+# --- B-1169: transcripts in the bucket. Steps 10-12 are the ONLY changes to an existing cluster/pool, and
+# each is enable-only. Every step reads first and changes only what differs.
+step "10. Workload Identity pool on cluster $CLUSTER"
+have_pool="$(capture gcloud container clusters describe "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \
+  '--format=value(workloadIdentityConfig.workloadPool)' || true)"
+if [ "$have_pool" = "$PROJECT.svc.id.goog" ]; then
+  echo "workload pool: already $PROJECT.svc.id.goog"
+else
+  run gcloud container clusters update "$CLUSTER" --zone "$ZONE" --project "$PROJECT" "--workload-pool=$PROJECT.svc.id.goog"
+fi
+
+step "11. Cloud Storage FUSE CSI driver add-on on cluster $CLUSTER"
+have_fuse="$(capture gcloud container clusters describe "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \
+  '--format=value(addonsConfig.gcsFuseCsiDriverConfig.enabled)' || true)"
+case "$have_fuse" in
+  [Tt]rue) echo "GcsFuseCsiDriver: already enabled" ;;
+  *) run gcloud container clusters update "$CLUSTER" --zone "$ZONE" --project "$PROJECT" --update-addons GcsFuseCsiDriver=ENABLED ;;
+esac
+
+step "12. GKE_METADATA on node pool $POOL"
+have_mode="$(capture gcloud container node-pools describe "$POOL" --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \
+  '--format=value(config.workloadMetadataConfig.mode)' || true)"
+if [ "$have_mode" = "GKE_METADATA" ]; then
+  echo "node pool $POOL: workload metadata already GKE_METADATA"
+else
+  # Changing it RECREATES the pool's nodes, which would kill a running leg: refuse while any leg Job is
+  # active. kubectl has credentials from step 6. An unreadable answer is treated as "active" (fail closed).
+  if [ "$DRY_RUN" -eq 1 ]; then
+    capture kubectl -n "$NAMESPACE" get jobs -l app.kubernetes.io/part-of=harmony-legs -o 'jsonpath={.items[*].status.active}' || true
+  else
+    if ! active_raw="$(capture kubectl -n "$NAMESPACE" get jobs -l app.kubernetes.io/part-of=harmony-legs -o 'jsonpath={.items[*].status.active}')"; then
+      echo "setup-cluster: could not read the leg Jobs in $NAMESPACE — refusing to recreate the nodes of pool $POOL; nothing was changed by this step." >&2
+      exit 1
+    fi
+    if printf '%s' "$active_raw" | tr ' ' '\n' | awk '$1 + 0 > 0 { f = 1 } END { exit !f }'; then
+      echo "setup-cluster: a leg Job is active in $NAMESPACE — setting GKE_METADATA recreates the nodes of pool $POOL and would kill it." >&2
+      echo "setup-cluster: wait for the legs to finish, then run again; nothing was changed by this step." >&2
+      exit 1
+    fi
+  fi
+  run gcloud container node-pools update "$POOL" --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" --workload-metadata=GKE_METADATA
+fi
+
+step "13. Google service account $LEG_GSA_EMAIL"
+if probe gcloud iam service-accounts describe "$LEG_GSA_EMAIL" --project "$PROJECT"; then
+  echo "service account $LEG_GSA_EMAIL: exists"
+else
+  run gcloud iam service-accounts create "$LEG_GSA_NAME" --project "$PROJECT" --display-name "Harmony GKE leg (transcript bucket)"
+fi
+
+step "14. IAM: $LEG_GSA_EMAIL -> roles/storage.objectUser on gs://$TRANSCRIPT_BUCKET"
+held="$(capture gcloud storage buckets get-iam-policy "gs://$TRANSCRIPT_BUCKET" '--flatten=bindings[].members' \
+  "--filter=bindings.role:roles/storage.objectUser AND bindings.members:serviceAccount:$LEG_GSA_EMAIL" \
+  '--format=value(bindings.role)' || true)"
+if [ -n "$held" ]; then
+  echo "$LEG_GSA_EMAIL already holds roles/storage.objectUser on gs://$TRANSCRIPT_BUCKET"
+else
+  run gcloud storage buckets add-iam-policy-binding "gs://$TRANSCRIPT_BUCKET" \
+    "--member=serviceAccount:$LEG_GSA_EMAIL" --role=roles/storage.objectUser
+fi
+
+WI_MEMBER="serviceAccount:$PROJECT.svc.id.goog[$NAMESPACE/$LEG_KSA]"
+step "15. IAM: $NAMESPACE/$LEG_KSA may impersonate $LEG_GSA_EMAIL (Workload Identity)"
+held="$(capture gcloud iam service-accounts get-iam-policy "$LEG_GSA_EMAIL" --project "$PROJECT" '--flatten=bindings[].members' \
+  "--filter=bindings.role:roles/iam.workloadIdentityUser AND bindings.members:$WI_MEMBER" \
+  '--format=value(bindings.role)' || true)"
+if [ -n "$held" ]; then
+  echo "$WI_MEMBER already holds roles/iam.workloadIdentityUser"
+else
+  run gcloud iam service-accounts add-iam-policy-binding "$LEG_GSA_EMAIL" --project "$PROJECT" \
+    --role=roles/iam.workloadIdentityUser "--member=$WI_MEMBER"
+fi
+
+step "16. Kubernetes service account $NAMESPACE/$LEG_KSA"
+if probe kubectl -n "$NAMESPACE" get serviceaccount "$LEG_KSA"; then
+  echo "service account $LEG_KSA: exists"
+else
+  run kubectl -n "$NAMESPACE" create serviceaccount "$LEG_KSA"
+fi
+have_annot="$(capture kubectl -n "$NAMESPACE" get serviceaccount "$LEG_KSA" -o 'jsonpath={.metadata.annotations.iam\.gke\.io/gcp-service-account}' || true)"
+if [ "$have_annot" = "$LEG_GSA_EMAIL" ]; then
+  echo "service account $LEG_KSA: already annotated for $LEG_GSA_EMAIL"
+else
+  run kubectl -n "$NAMESPACE" annotate serviceaccount "$LEG_KSA" "iam.gke.io/gcp-service-account=$LEG_GSA_EMAIL" --overwrite
+fi
+
 step "Done. Values for the deployment config"
 echo "project:        $PROJECT"
 echo "zone:           $ZONE"
 echo "cluster:        $CLUSTER"
 echo "node pool:      $POOL"
 echo "namespace:      $NAMESPACE"
+echo "transcripts:    gs://$TRANSCRIPT_BUCKET (Cloud Storage FUSE CSI)"
+echo "leg GSA:        $LEG_GSA_EMAIL"
+echo "leg KSA:        $NAMESPACE/$LEG_KSA"
 echo "env Secret:     $ENV_SECRET (keys: HARMONY_API_TOKEN, CLAUDE_CODE_OAUTH_TOKEN)"
 if [ "$NO_CODEX" -eq 1 ]; then
   echo "file Secret:    none (--no-codex)"
@@ -320,4 +445,5 @@ if [ "$QUOTA_WARNED" -eq 1 ]; then
 fi
 echo "  - on the daemon host (with kubectl and gke-gcloud-auth-plugin installed), as the daemon service account:"
 echo "      CLOUDSDK_CORE_ACCOUNT=$DAEMON_SA gcloud container clusters get-credentials $CLUSTER --zone $ZONE --project $PROJECT"
+echo "  - if you changed the defaults, tell the launcher: HARMONY_GKE_TRANSCRIPT_BUCKET=$TRANSCRIPT_BUCKET HARMONY_GKE_SERVICE_ACCOUNT=$LEG_KSA"
 echo "  - schedule container/gke/sweep-ticket-disks.sh on the daemon host (cron / launchd)."

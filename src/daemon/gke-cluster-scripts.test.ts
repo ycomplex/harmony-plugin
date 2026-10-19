@@ -61,12 +61,31 @@ function makeWorld(): World {
   stub('gcloud', [
     record('gcloud'),
     'case " $* " in',
-    '  *" container clusters describe "*) [ -f "$STUB_STATE/cluster" ] || { echo "ERROR: not found" >&2; exit 1; }; exit 0 ;;',
+    '  *" container clusters describe "*)',
+    '    [ -f "$STUB_STATE/cluster" ] || { echo "ERROR: not found" >&2; exit 1; }',
+    '    case " $* " in',
+    '      *workloadIdentityConfig*) [ -f "$STUB_STATE/wi" ] && echo "proj-x.svc.id.goog" ;;',
+    '      *gcsFuseCsiDriverConfig*) [ -f "$STUB_STATE/fuse" ] && echo "True" ;;',
+    '    esac; exit 0 ;;',
     '  *" container clusters create "*) touch "$STUB_STATE/cluster"; exit 0 ;;',
+    '  *" container clusters update "*)',
+    '    case " $* " in',
+    '      *" --workload-pool="*) touch "$STUB_STATE/wi" ;;',
+    '      *" GcsFuseCsiDriver=ENABLED "*) touch "$STUB_STATE/fuse" ;;',
+    '    esac; exit 0 ;;',
+    '  *" container node-pools update "*) touch "$STUB_STATE/gkemd"; exit 0 ;;',
+    '  *" storage buckets describe "*) [ -z "${STUB_MISSING_BUCKET:-}" ] || { echo "NOT_FOUND" >&2; exit 1; }; echo bucket; exit 0 ;;',
+    '  *" storage buckets get-iam-policy "*) [ -f "$STUB_STATE/bucket-iam" ] && echo roles/storage.objectUser; exit 0 ;;',
+    '  *" storage buckets add-iam-policy-binding "*) touch "$STUB_STATE/bucket-iam"; exit 0 ;;',
+    '  *" iam service-accounts describe "*) [ -f "$STUB_STATE/gsa" ] || { echo "ERROR: not found" >&2; exit 1; }; exit 0 ;;',
+    '  *" iam service-accounts create "*) touch "$STUB_STATE/gsa"; exit 0 ;;',
+    '  *" iam service-accounts get-iam-policy "*) [ -f "$STUB_STATE/wiu" ] && echo roles/iam.workloadIdentityUser; exit 0 ;;',
+    '  *" iam service-accounts add-iam-policy-binding "*) touch "$STUB_STATE/wiu"; exit 0 ;;',
     '  *" container clusters get-credentials "*) exit 0 ;;',
     '  *" container node-pools describe "*)',
     '    [ -f "$STUB_STATE/pool" ] || { echo "ERROR: not found" >&2; exit 1; }',
     '    case " $* " in',
+    '      *workloadMetadataConfig*) [ -f "$STUB_STATE/gkemd" ] && echo "GKE_METADATA" ;;',
     '      *" --flatten=config.taints[] "*) [ -n "${STUB_POOL_NO_TAINT:-}" ] || printf \'harmony-leg\\ttrue\\tNO_SCHEDULE\\n\' ;;',
     '      *--format=*) printf \'%s\\t%s\\t%s\\t%s\\n\' "${STUB_POOL_MT:-e2-standard-8}" "${STUB_POOL_DT:-pd-standard}" "" "${STUB_POOL_MAX:-2}" ;;',
     '    esac; exit 0 ;;',
@@ -92,6 +111,13 @@ function makeWorld(): World {
     'case " $* " in',
     '  *" get namespace "*) [ -f "$STUB_STATE/ns" ] || exit 1; exit 0 ;;',
     '  *" create namespace "*) touch "$STUB_STATE/ns"; exit 0 ;;',
+    '  *" get jobs "*) printf \'%s\' "${STUB_JOBS_ACTIVE:-}"; exit 0 ;;',
+    '  *" get serviceaccount "*)',
+    '    [ -f "$STUB_STATE/ksa" ] || exit 1',
+    '    case " $* " in *jsonpath*) [ -f "$STUB_STATE/ksa-annotation" ] && cat "$STUB_STATE/ksa-annotation" ;; esac; exit 0 ;;',
+    '  *" create serviceaccount "*) touch "$STUB_STATE/ksa"; exit 0 ;;',
+    '  *" annotate serviceaccount "*)',
+    '    for a in "$@"; do case "$a" in iam.gke.io/gcp-service-account=*) printf \'%s\' "${a#*=}" > "$STUB_STATE/ksa-annotation" ;; esac; done; exit 0 ;;',
     '  *" create secret generic "*) echo "kind: Secret"; exit 0 ;;',
     '  *" apply "*) exit 0 ;;',
     '  *" get pvc "*) printf \'%s\\n\' "${STUB_PVCS:-}"; exit 0 ;;',
@@ -167,7 +193,7 @@ const fromFileKeys = (call: string[]) =>
 /** Calls that change anything: create / update / delete / IAM binding / Secret apply. */
 function mutating(world: World): string[][] {
   const g = calls(world, 'gcloud').filter((c) => c.some((a) => ['create', 'update', 'delete', 'add-iam-policy-binding'].includes(a)) && !has(c, 'secrets', 'describe'));
-  const k = calls(world, 'kubectl').filter((c) => c.some((a) => ['create', 'apply', 'delete'].includes(a)));
+  const k = calls(world, 'kubectl').filter((c) => c.some((a) => ['create', 'apply', 'delete', 'annotate'].includes(a)));
   return [...g, ...k];
 }
 
@@ -225,8 +251,10 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
     const g = calls(world, 'gcloud');
     expect(g.some((c) => has(c, 'create'))).toBe(false);
     expect(g.some((c) => has(c, 'add-iam-policy-binding'))).toBe(false);
+    expect(g.some((c) => has(c, 'update'))).toBe(false);
     const k = calls(world, 'kubectl');
     expect(k.some((c) => has(c, 'create', 'namespace'))).toBe(false);
+    expect(k.some((c) => has(c, 'create', 'serviceaccount') || has(c, 'annotate'))).toBe(false);
     // the only kubectl `create` left is the client-side dry-run that feeds `kubectl apply`
     for (const c of k.filter((x) => has(x, 'create'))) {
       expect(c).toContain('--dry-run=client');
@@ -252,6 +280,17 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
       'gcloud projects add-iam-policy-binding proj-x',
       'kubectl -n harmony-legs create secret generic harmony-worker-secrets',
       'kubectl -n harmony-legs create secret generic harmony-codex-auth',
+      'gcloud storage buckets describe gs://harmony-conductor-transcripts',
+      'gcloud container clusters update harmony-legs',
+      '--workload-pool=proj-x.svc.id.goog',
+      '--update-addons GcsFuseCsiDriver=ENABLED',
+      'gcloud container node-pools update legs',
+      '--workload-metadata=GKE_METADATA',
+      'gcloud iam service-accounts create harmony-gke-leg',
+      'gcloud storage buckets add-iam-policy-binding gs://harmony-conductor-transcripts',
+      'gcloud iam service-accounts add-iam-policy-binding harmony-gke-leg@proj-x.iam.gserviceaccount.com',
+      'kubectl -n harmony-legs create serviceaccount harmony-leg',
+      'kubectl -n harmony-legs annotate serviceaccount harmony-leg',
     ]) {
       expect(text).toContain(needle);
     }
@@ -315,6 +354,7 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
     const world = makeWorld();
     writeFileSync(join(world.state, 'cluster'), '');
     writeFileSync(join(world.state, 'pool'), '');
+    for (const f of ['wi', 'fuse', 'gkemd']) writeFileSync(join(world.state, f), ''); // B-1169 enable-only steps already satisfied
     const r = setup(world, [], { STUB_POOL_MT: 'n1-standard-4', STUB_POOL_DT: 'pd-ssd', STUB_POOL_MAX: '5', STUB_POOL_NO_TAINT: '1' });
     expect(r.status).toBe(0);
     const g = calls(world, 'gcloud');
@@ -395,6 +435,141 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
     expect(log(world, 'kubeconfig-existed').trim().split('\n').length).toBeGreaterThan(0);
     expect(existsSync(used[0])).toBe(false);
     expect(existsSync(own)).toBe(false);
+  });
+});
+
+describe.skipIf(!CAPABLE)('setup-cluster.sh steps 10-16 — transcripts in the bucket (B-1169)', () => {
+  const GSA = 'harmony-gke-leg@proj-x.iam.gserviceaccount.com';
+  const WI_MEMBER = 'serviceAccount:proj-x.svc.id.goog[harmony-legs/harmony-leg]';
+  const g = (world: World) => calls(world, 'gcloud');
+  const k = (world: World) => calls(world, 'kubectl');
+
+  it('a fresh run issues each enable / create / bind call once, with the expected arguments', () => {
+    const world = makeWorld();
+    const r = setup(world);
+    expect(r.status).toBe(0);
+
+    const updates = g(world).filter((c) => has(c, 'container', 'clusters', 'update'));
+    expect(updates).toHaveLength(2);
+    expect(updates.some((c) => c.includes('--workload-pool=proj-x.svc.id.goog'))).toBe(true);
+    const fuse = updates.find((c) => has(c, '--update-addons', 'GcsFuseCsiDriver=ENABLED'))!;
+    expect(fuse).toBeDefined();
+    expect(fuse[fuse.indexOf('update') + 1]).toBe('harmony-legs');
+
+    const pool = findCall(g(world), 'container', 'node-pools', 'update')!;
+    expect(pool[pool.indexOf('update') + 1]).toBe('legs');
+    expect(pool).toContain('--workload-metadata=GKE_METADATA');
+
+    const gsa = findCall(g(world), 'iam', 'service-accounts', 'create')!;
+    expect(gsa[gsa.indexOf('create') + 1]).toBe('harmony-gke-leg');
+
+    // bucket-level grant, never project-level
+    const bucket = findCall(g(world), 'storage', 'buckets', 'add-iam-policy-binding')!;
+    expect(bucket).toContain('gs://harmony-conductor-transcripts');
+    expect(bucket).toContain(`--member=serviceAccount:${GSA}`);
+    expect(bucket).toContain('--role=roles/storage.objectUser');
+    const projectLevel = g(world).filter((c) => has(c, 'projects', 'add-iam-policy-binding'));
+    expect(projectLevel).toHaveLength(1);
+    expect(projectLevel[0]).toContain('--role=roles/container.developer');
+    expect(g(world).some((c) => c.includes('roles/storage.objectUser') && has(c, 'projects'))).toBe(false);
+
+    const wi = findCall(g(world), 'iam', 'service-accounts', 'add-iam-policy-binding')!;
+    expect(wi).toContain(GSA);
+    expect(wi).toContain('--role=roles/iam.workloadIdentityUser');
+    expect(wi).toContain(`--member=${WI_MEMBER}`);
+
+    expect(findCall(k(world), 'create', 'serviceaccount', 'harmony-leg')).toBeDefined();
+    const annotate = findCall(k(world), 'annotate', 'serviceaccount', 'harmony-leg')!;
+    expect(annotate).toContain(`iam.gke.io/gcp-service-account=${GSA}`);
+    expect(annotate).toContain('--overwrite');
+
+    // the bucket is only ever described, never created
+    expect(g(world).some((c) => has(c, 'storage', 'buckets', 'create'))).toBe(false);
+    expect(r.stdout).toContain('gs://harmony-conductor-transcripts');
+    expect(r.stdout).toContain(GSA);
+  });
+
+  it('honours --leg-gsa-name, --leg-ksa and --transcript-bucket', () => {
+    const world = makeWorld();
+    const r = setup(world, ['--leg-gsa-name', 'my-gsa', '--leg-ksa', 'my-ksa', '--transcript-bucket', 'my-bucket']);
+    expect(r.status).toBe(0);
+    expect(findCall(g(world), 'storage', 'buckets', 'add-iam-policy-binding')).toContain('gs://my-bucket');
+    expect(findCall(g(world), 'iam', 'service-accounts', 'create')).toContain('my-gsa');
+    expect(findCall(g(world), 'iam', 'service-accounts', 'add-iam-policy-binding')!).toContain(
+      '--member=serviceAccount:proj-x.svc.id.goog[harmony-legs/my-ksa]',
+    );
+    expect(findCall(k(world), 'create', 'serviceaccount', 'my-ksa')).toBeDefined();
+  });
+
+  it('a rerun against the same state makes NO mutation among steps 10-16', () => {
+    const world = makeWorld();
+    expect(setup(world).status).toBe(0);
+    resetLogs(world);
+    const second = setup(world);
+    expect(second.status).toBe(0);
+    expect(g(world).some((c) => has(c, 'update'))).toBe(false);
+    expect(g(world).some((c) => has(c, 'iam', 'service-accounts', 'create'))).toBe(false);
+    expect(g(world).some((c) => has(c, 'add-iam-policy-binding'))).toBe(false);
+    expect(k(world).some((c) => has(c, 'create', 'serviceaccount') || has(c, 'annotate'))).toBe(false);
+    // and it did READ before deciding
+    expect(findCall(g(world), 'storage', 'buckets', 'get-iam-policy')).toBeDefined();
+    expect(findCall(k(world), 'get', 'serviceaccount', 'harmony-leg')).toBeDefined();
+  });
+
+  it('only changes what differs: an annotation pointing elsewhere is re-annotated, nothing else', () => {
+    const world = makeWorld();
+    expect(setup(world).status).toBe(0);
+    writeFileSync(join(world.state, 'ksa-annotation'), 'someone-else@proj-x.iam.gserviceaccount.com');
+    resetLogs(world);
+    expect(setup(world).status).toBe(0);
+    expect(mutating(world).filter((c) => !has(c, 'secret') && !has(c, 'apply'))).toHaveLength(1);
+    expect(k(world).filter((c) => has(c, 'annotate'))).toHaveLength(1);
+    expect(g(world).some((c) => has(c, 'update') || has(c, 'add-iam-policy-binding'))).toBe(false);
+  });
+
+  it('--dry-run runs no stub, and prints every step 10-16 command', () => {
+    const world = makeWorld();
+    resetLogs(world);
+    const r = setup(world, ['--dry-run']);
+    expect(r.status).toBe(0);
+    expect(log(world, 'gcloud')).toBe('');
+    expect(log(world, 'kubectl')).toBe('');
+    for (const n of ['10.', '11.', '12.', '13.', '14.', '15.', '16.']) expect(r.stdout).toContain(`=== ${n} `);
+  });
+
+  it('step 12 REFUSES while a leg Job is active: non-zero, clear message, no node-pool update; earlier steps already ran', () => {
+    const world = makeWorld();
+    const r = setup(world, [], { STUB_JOBS_ACTIVE: '1' });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('a leg Job is active');
+    expect(g(world).some((c) => has(c, 'node-pools', 'update'))).toBe(false);
+    // it asked kubectl for the leg Jobs by label, in the namespace
+    const jobs = findCall(k(world), 'get', 'jobs')!;
+    expect(jobs).toContain('app.kubernetes.io/part-of=harmony-legs');
+    expect(jobs.slice(0, 2)).toEqual(['-n', 'harmony-legs']);
+    // nothing after step 12 ran
+    expect(g(world).some((c) => has(c, 'iam', 'service-accounts', 'create'))).toBe(false);
+    expect(k(world).some((c) => has(c, 'create', 'serviceaccount'))).toBe(false);
+  });
+
+  it('step 12 does not look at Jobs at all when the pool is already on GKE_METADATA, and finished Jobs do not block', () => {
+    const world = makeWorld();
+    writeFileSync(join(world.state, 'gkemd'), '');
+    expect(setup(world, [], { STUB_JOBS_ACTIVE: '1' }).status).toBe(0);
+    expect(findCall(k(world), 'get', 'jobs')).toBeUndefined();
+    const idle = makeWorld();
+    expect(setup(idle, [], { STUB_JOBS_ACTIVE: '' }).status).toBe(0);
+    expect(g(idle).some((c) => has(c, 'node-pools', 'update'))).toBe(true);
+  });
+
+  it('a missing bucket fails BEFORE any mutating call and is never created', () => {
+    const world = makeWorld();
+    const r = setup(world, [], { STUB_MISSING_BUCKET: '1' });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('gs://harmony-conductor-transcripts');
+    expect(mutating(world)).toEqual([]);
+    expect(g(world).some((c) => has(c, 'buckets', 'create'))).toBe(false);
+    expect(existsSync(join(world.state, 'cluster'))).toBe(false);
   });
 });
 
