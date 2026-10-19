@@ -69,6 +69,7 @@ import { createGithubPrMergeStateReader } from '../daemon/github-pr-state.js';
 import { createHeartbeatKeeper } from '../daemon/heartbeat.js';
 import { formatDaemonError } from '../daemon/error-format.js';
 import { loadDaemonConfig, selectNamedProfile } from '../daemon/config.js';
+import { detectSupervisor, shutdownLine, shouldInspectWorkerImage } from '../daemon/supervisor.js';
 import { quietLogLine } from '../daemon/quiet-reap.js';
 import { runBootPreflight, type PreflightProfile } from '../daemon/preflight.js';
 import {
@@ -421,7 +422,10 @@ async function main(): Promise<void> {
   // fatal and never parsed (the agent-portability guardrail above): a profile with no local docker,
   // or an older image with no harmony.claude_code_version label, just logs an uninformative
   // [worker!] line via the EXISTING non-quiet runCommand pipe, and boot continues regardless.
-  await runCommand(
+  // B-1166: only when the active profile declares local docker (see shouldInspectWorkerImage).
+  if (!shouldInspectWorkerImage(config.profile)) {
+    log('worker image version check skipped (profile does not use local docker)');
+  } else await runCommand(
     `docker inspect ${deploymentConfig?.worker_image ?? WORKER_IMAGE_DEFAULT} --format 'worker image Claude Code version: {{ index .Config.Labels "harmony.claude_code_version" }}'`,
   );
 
@@ -617,7 +621,7 @@ async function main(): Promise<void> {
     // exit below (the fail-safe holds by construction — an unclean death never reaches this line
     // at all, so the marker just stays unset and the stale-window wait is unchanged).
     await markCleanShutdownBounded(client, leaseHolder, log, CLEAN_SHUTDOWN_TIMEOUT_MS);
-    log(`received ${signal} — exiting (launchd owns restart)`);
+    log(shutdownLine(signal, detectSupervisor(process.env)));
     process.exit(0);
   };
   process.on('SIGTERM', () => {
