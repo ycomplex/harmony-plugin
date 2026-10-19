@@ -664,7 +664,29 @@ case "$MODE" in
     # test confirming this against the real daemon — is out of scope for this build; this reasoning
     # is the documented substitute pending that manual verification on staging.)
     MODEL_SWITCH_CHILD_PID=""
+    # B-1167: a stop (TERM/INT) must end the leg, not look like an agent failure. `claude -p` exits 143 on
+    # SIGTERM, which the B-718 resume branch would read as "failed to attach" and answer with a COLD agent
+    # started during shutdown. The handler records the signal in this flag (primary signal; set even when
+    # no child is alive, so a signal between invocations counts); an agent exit of 129/130/143 is the
+    # backstop. Once set, no further agent invocation is started.
+    B1167_STOP_SIGNAL=""
+    _b1167_stop_requested() {
+      [ -n "$B1167_STOP_SIGNAL" ] && return 0
+      case "$1" in 129 | 130 | 143) return 0 ;; esac
+      return 1
+    }
+    # Prints the status a stopped leg ends with: the agent's own 129/130/143, else the signal's 143/130,
+    # else (agent already finished cleanly) 0.
+    _b1167_stop_exit_code() {
+      case "$1" in 129 | 130 | 143) echo "$1"; return 0 ;; esac
+      case "$B1167_STOP_SIGNAL" in
+        TERM) echo 143 ;;
+        INT) echo 130 ;;
+        *) echo 0 ;;
+      esac
+    }
     _b772_forward_signal() {
+      B1167_STOP_SIGNAL="$1"
       if [ -n "$MODEL_SWITCH_CHILD_PID" ] && kill -0 "$MODEL_SWITCH_CHILD_PID" 2>/dev/null; then
         kill -s "$1" "$MODEL_SWITCH_CHILD_PID" 2>/dev/null || true
       fi
@@ -797,6 +819,13 @@ case "$MODE" in
     LEG_EXIT=0
 
     while :; do
+      # B-1167: a stop that arrived before this iteration (before the first invocation, or between
+      # model-switch iterations) starts nothing.
+      if [ -n "$B1167_STOP_SIGNAL" ]; then
+        LEG_EXIT="$(_b1167_stop_exit_code 0)"
+        echo "B-1167: stop received — starting no further agent invocation (exit $LEG_EXIT)." >&2
+        break
+      fi
       if [ "$ITERATION" -gt "$MAX_MODEL_SWITCH_ITERATIONS" ]; then
         echo "B-772: model-switch loop hit its ${MAX_MODEL_SWITCH_ITERATIONS}-iteration bound — running no further re-invocations this leg (last completed turn's exit code stands)." >&2
         break
@@ -850,6 +879,12 @@ case "$MODE" in
         rm -f "$RESUME_STDERR_FILE"
         _b1148_record_thread "$RESUME_STDOUT_FILE"
         _b916_record_invocation "$RESUME_STDOUT_FILE"
+        # B-1167: a stopped resume attempt is not a failed attach — no cold fallback, no further iteration.
+        if _b1167_stop_requested "$RESUME_EXIT"; then
+          LEG_EXIT="$(_b1167_stop_exit_code "$RESUME_EXIT")"
+          echo "B-1167: stop received — starting no further agent invocation (exit $LEG_EXIT)." >&2
+          break
+        fi
         if [ "$RESUME_EXIT" -ne 0 ] && [ "$ITERATION" -gt 1 ]; then
           echo "B-1148: model switch to '$CURRENT_MODEL' — started a new thread (resuming thread $RESUME_SESSION_ID on the new model failed, exit $RESUME_EXIT)." >&2
         elif [ "$ITERATION" -gt 1 ]; then
@@ -904,6 +939,12 @@ case "$MODE" in
         # B-916: same preserved-`set -e` exit as the resume-fallback branch above — see its comment
         # (including why it names $INVOCATION_EXIT rather than $LEG_EXIT).
         [ "$INVOCATION_EXIT" -eq 0 ] || exit "$INVOCATION_EXIT"
+      fi
+
+      # B-1167: a stop during a cold invocation that exited 0 (nonzero exits left above) ends the leg here.
+      if [ -n "$B1167_STOP_SIGNAL" ]; then
+        echo "B-1167: stop received — starting no further agent invocation (exit $LEG_EXIT)." >&2
+        break
       fi
 
       # --- did that turn ask to switch models? -----------------------------------------------
