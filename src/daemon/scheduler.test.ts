@@ -1379,11 +1379,72 @@ describe('B-761: clean-shutdown adoption + the dead-lease wait announcement', ()
     expect(h.getConduction('cond-1').clean_shutdown_at).toBeNull();
 
     await h.pass(); // wake (first pickup) → fire
-    expect(h.commands).toEqual(['reap cond-1', 'launch cond-1 task-1']);
+    // B-1166: marker set + no leg in flight ⇒ nothing to reap, so the takeover skips the reap.
+    expect(h.commands).toEqual(['launch cond-1 task-1']);
     // B-761 reopen fix (legibility): the marker-driven adoption gets its OWN distinct log line —
     // no timestamp arithmetic required to tell it apart from a genuine staleness-window adoption.
     expect(h.logs.some((l) => l === 'conduction cond-1: adopted cleanly-released lease from this-host:1:dead0000')).toBe(true);
     expect(h.logs.some((l) => /took over stale lease/.test(l))).toBe(false);
+  });
+
+  it('B-1166: marker set + no leg ⇒ takeover skips BOTH the getTaskMeta read and the reap', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'this-host:1:dead0000',
+          last_heartbeat_at: iso(T0 - 1_000),
+          clean_shutdown_at: iso(T0 - 1_000),
+          leg_started_at: null,
+        }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+    });
+    await h.pass(); // takeover win only
+    expect(h.getConduction('cond-1').lease_holder).toBe(ME);
+    expect(h.reaps()).toEqual([]);
+    // The one remaining read is the pass's own wake read — the reap snapshot read is skipped
+    // (compare the stale-takeover test below, which sees one more).
+    expect(h.deps.getTaskMeta).toHaveBeenCalledTimes(1);
+    expect(h.logs.some((l) => l === 'conduction cond-1: adopted cleanly-released lease from this-host:1:dead0000')).toBe(true);
+  });
+
+  it('B-1166: marker set but leg_started_at non-null and probe finds nothing ⇒ the reap still runs', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'this-host:1:dead0000',
+          last_heartbeat_at: iso(T0 - 1_000),
+          clean_shutdown_at: iso(T0 - 1_000),
+          leg_started_at: iso(T0 - 30_000),
+        }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+      config: reconcilableConfig,
+      probeDefaultExitCode: 1, // nothing live
+    });
+    await h.pass();
+    expect(h.getConduction('cond-1').lease_holder).toBe(ME);
+    expect(h.reaps()).toEqual(['reap cond-1']);
+    expect(h.getConduction('cond-1').leg_started_at).toBeNull();
+  });
+
+  it('B-1166: marker unset (stale takeover) ⇒ the reap still runs', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({
+          lease_holder: 'this-host:1:dead0000',
+          last_heartbeat_at: iso(T0 - 1_000),
+          clean_shutdown_at: null,
+          leg_started_at: null,
+        }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+    });
+    h.setNow(T0 + config.staleMs + 1_000);
+    await h.pass();
+    expect(h.getConduction('cond-1').lease_holder).toBe(ME);
+    expect(h.reaps()).toEqual(['reap cond-1']);
+    expect(h.deps.getTaskMeta).toHaveBeenCalledTimes(2);
   });
 
   it('an unclean death (no clean_shutdown_at) still waits out the FULL staleness window, unchanged', async () => {
@@ -3211,7 +3272,7 @@ describe('B-723: the per-leg log lines name the TICKET, alongside the full condu
 
     expect(launchLine(h)).toContain(`B-756 "${TITLE}"`);
     expect(h.logs.find((l) => l.includes('worker exit code='))).toBe(
-      'B-756 "Renamed while the leg ran" (conduction cond-1): worker exit code=0 → wait (clean-pause)',
+      'B-756 "Renamed while the leg ran" (conduction cond-1): worker exit code=0 → conduction waiting (clean-pause)',
     );
   });
 

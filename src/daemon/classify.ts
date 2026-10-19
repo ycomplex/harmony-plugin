@@ -238,3 +238,16 @@ export function exitClass(outcome: ExitOutcome, args: ClassifyArgs): string {
   }
   return 'clean-pause';
 }
+
+/** B-1166: the settle log's outcome wording — a park is a conduction state, never an implication
+ *  that the ticket was parked (the old `→ park (dirty-exit)` read that way). */
+export function settleLogLine(outcome: ExitOutcome, cls: string, ticketState: string | null | undefined): string {
+  switch (outcome.action) {
+    case 'park':
+      return `conduction parked (${cls}), ticket stays ${ticketState ?? 'unknown'}`;
+    case 'complete':
+      return `conduction completed (${cls})`;
+    case 'wait':
+      return `conduction waiting (${cls})`;
+  }
+}
