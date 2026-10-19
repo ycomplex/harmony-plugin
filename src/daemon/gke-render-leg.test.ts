@@ -10,7 +10,7 @@ const SCRIPT = fileURLToPath(new URL('../../container/gke/gke-render-leg.mjs', i
 
 const baseEnv = (over: Record<string, string> = {}) => ({
   WHAT: 'job', PVC_NAME: 'ticket-b-1161', JOB_NAME: 'leg-abcd1234-1', LEG_SECRET: 'leg-abcd1234-1-env', TICKET: 'B-1161',
-  CONDUCTION_ID: 'cid-1', IMAGE: 'reg/img:latest', CPU: '6', MEM: '20Gi', DISK: '100Gi', SC: 'standard-rwo', DEADLINE: '5400',
+  CONDUCTION_ID: 'cid-1', IMAGE: 'reg/img:latest', CPU: '6', MEM: '20Gi', DISK: '20Gi', SC: 'standard-rwo', DEADLINE: '5400',
   JOB_TTL_S: '3600', BASE_SECRET: 'harmony-worker-secrets', CODEX_RUN: '0', CODEX_SECRET: 'harmony-codex-auth',
   CODEX_DIR: '/home/worker/.codex-auth-src', TROOT: '/mnt/harmony-transcripts',
   TRANSCRIPT_BUCKET: 'harmony-conductor-transcripts', SERVICE_ACCOUNT: 'harmony-leg', ...over,
@@ -24,6 +24,17 @@ describe('LEG_DISK_MOUNTS', () => {
       { name: 'docker', mountPath: '/var/lib/docker', workerOwned: false },
       { name: 'playwright', mountPath: '/home/worker/.cache/ms-playwright', workerOwned: true },
     ]);
+  });
+
+  it('B-1164 invariant: no entry holds a git checkout (the checkout is /workspace/workspace in the container filesystem), so the sweep never needs to inspect a disk', () => {
+    for (const m of LEG_DISK_MOUNTS as Array<{ name: string; mountPath: string }>) {
+      expect(m.mountPath).not.toMatch(/^\/workspace(\/|$)/);
+      expect(m.name).not.toMatch(/workspace|checkout|repo|git/i);
+    }
+    // and the Job mounts nothing at /workspace either
+    for (const vm of podSpec().containers[0].volumeMounts as Array<{ mountPath: string }>) {
+      expect(vm.mountPath.startsWith('/workspace')).toBe(false);
+    }
   });
 
   it('generates the worker volumeMounts: same PVC volume, subPath = entry name', () => {
@@ -131,7 +142,7 @@ describe('the rendered PVC and the CLI entry', () => {
     const pvc = renderLeg(baseEnv({ WHAT: 'pvc' }));
     expect(pvc.kind).toBe('PersistentVolumeClaim');
     expect(pvc.metadata.name).toBe('ticket-b-1161');
-    expect(pvc.spec).toEqual({ accessModes: ['ReadWriteOnce'], storageClassName: 'standard-rwo', resources: { requests: { storage: '100Gi' } } });
+    expect(pvc.spec).toEqual({ accessModes: ['ReadWriteOnce'], storageClassName: 'standard-rwo', resources: { requests: { storage: '20Gi' } } });
   });
 
   it('the CLI prints the same JSON when invoked directly', () => {

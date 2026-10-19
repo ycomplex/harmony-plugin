@@ -24,9 +24,10 @@
 #     browser itself is deliberately NOT in the image.
 #   * PLAYWRIGHT_BROWSERS_PATH defaults to /home/worker/.cache/ms-playwright, a
 #     worker-owned directory. That path is what the pool Job should mount the
-#     ticket disk subPath `playwright` at (with pod fsGroup 1001, the worker's
-#     gid) so the downloaded browser survives across legs of a ticket (B-1161
-#     implements the mount). With no mount it is an ordinary image directory and
+#     ticket disk subPath `playwright` at, so the downloaded browser survives
+#     across legs of a ticket (B-1161 implements the mount). An init container
+#     makes the directory and chowns it, non-recursively, to 1001:1001 (the
+#     worker); B-1161's accepted design rejected fsGroup. With no mount it is an ordinary image directory and
 #     each leg simply downloads the browser again.
 #   * This image is published by the SAME Cloud Build run as the base
 #     (container/cloudbuild.yaml build-docker .. push-docker-latest), after the

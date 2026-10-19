@@ -34,6 +34,7 @@ import { registerNotifyCommands } from './commands/notify.js';
 import { registerDoctorCommands } from './commands/doctor.js';
 import { registerRecordCommand } from './commands/record.js';
 import { registerFasttrackCommands } from './commands/fasttrack.js';
+import { registerConductionsCommands } from './commands/conductions.js';
 
 const program = new Command();
 
@@ -74,5 +75,6 @@ registerNotifyCommands(program);
 registerDoctorCommands(program);
 registerRecordCommand(program);
 registerFasttrackCommands(program);
+registerConductionsCommands(program);
 
 program.parse();

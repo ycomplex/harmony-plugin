@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- B-1164: launchd schedule for the GKE ticket-disk sweep (container/gke/sweep-ticket-disks.sh).
+
+     Runs every 6 hours (StartInterval 21600 seconds) on the daemon host. It deletes the per-ticket disk
+     of every Verified / Cancelled / archived ticket and of every ticket taken away from the conductor
+     more than 24 hours ago; it never deletes a disk a live pod mounts, and fails closed (exit 3) when a
+     ticket's state cannot be read.
+
+     Install: replace the three REPLACE-ME placeholders below, copy to ~/Library/LaunchAgents/, then:
+         launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.ycomplex.harmony-sweep.plist
+     Placeholders:
+       /REPLACE-ME/path/to/harmony-plugin   absolute path of the plugin checkout (appears in the script
+                                            path, WorkingDirectory and HARMONY_PLUGIN_DIR; the sweep reads
+                                            ticket state via $HARMONY_PLUGIN_DIR/dist/bin/harmony.js)
+       /Users/REPLACE-ME/Library/Logs       where the sweep's output goes (stdout and stderr, one file)
+       PATH                                 must contain kubectl, gke-gcloud-auth-plugin and node;
+                                            launchd does not read your shell PATH
+     The sweep uses the CURRENT kubeconfig context of the user it runs as. No credential lives here. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ycomplex.harmony-sweep</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>bash</string>
+        <string>container/gke/sweep-ticket-disks.sh</string>
+        <string>--namespace</string>
+        <string>harmony-legs</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/REPLACE-ME/path/to/harmony-plugin</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HARMONY_PLUGIN_DIR</key>
+        <string>/REPLACE-ME/path/to/harmony-plugin</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>21600</integer>
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/REPLACE-ME/Library/Logs/harmony-sweep.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/REPLACE-ME/Library/Logs/harmony-sweep.log</string>
+</dict>
+</plist>

@@ -223,8 +223,18 @@ if [ "$SKIP_QUOTA" -eq 0 ]; then
   # Boot disks here are pd-standard, so they do NOT consume SSD quota. The per-ticket disks (PVCs) may
   # (an SSD-backed storage class), and they are what this headroom check is about. Informational only:
   # it never fails the run.
-  if quota_line="$(capture gcloud compute regions describe "$REGION" --project "$PROJECT" \
-    '--flatten=quotas[]' '--filter=quotas.metric=SSD_TOTAL_GB' '--format=value(quotas.usage,quotas.limit)')" \
+  # `gcloud compute regions describe` takes no --filter / --flatten, so the whole region is read as JSON
+  # and the SSD_TOTAL_GB entry of its quotas list is picked here.
+  if quota_json="$(capture gcloud compute regions describe "$REGION" --project "$PROJECT" --format=json)" \
+    && quota_line="$(printf '%s' "$quota_json" | node -e '
+let s = "";
+process.stdin.on("data", (d) => (s += d));
+process.stdin.on("end", () => {
+  try {
+    const q = (JSON.parse(s).quotas || []).find((x) => x && x.metric === "SSD_TOTAL_GB");
+    if (q && Number.isFinite(Number(q.usage)) && Number.isFinite(Number(q.limit))) process.stdout.write(q.usage + "\t" + q.limit);
+  } catch {}
+});' 2>/dev/null)" \
     && [ -n "$quota_line" ]; then
     usage_gb="$(printf '%s' "$quota_line" | awk -F'\t' '{print $1}')"
     limit_gb="$(printf '%s' "$quota_line" | awk -F'\t' '{print $2}')"
