@@ -91,5 +91,11 @@ docker run --rm -v "$REPO_ROOT:/plugin:ro" --entrypoint /bin/bash "$BASE_IMAGE" 
   echo "ok: no output, nothing created"
 ' || fail "provision.sh's B-708 block is not inert without the start script"
 
+step "B-1162 5. the engine image smoke (user, engine, Playwright path, labels, Chromium)"
+# CI runs this on every plugin PR, so cost matters: the full Chromium launch
+# downloads the browser. If the added time is large, SMOKE_CHROMIUM=lib-check
+# (passed through the environment) swaps it for the cheap library check.
+"$HERE/smoke.sh" "$ENGINE_IMAGE" || fail "docker-engine/smoke.sh failed against $ENGINE_IMAGE"
+
 echo
 echo "=== engine contract: PASS ==="
