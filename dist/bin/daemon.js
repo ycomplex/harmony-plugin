@@ -36172,6 +36172,24 @@ function renderTemplate(tpl, vars) {
   });
 }
 
+// src/daemon/supervisor.ts
+var LAUNCHD_SERVICE_NAME = "com.ycomplex.harmony-daemon";
+function detectSupervisor(env) {
+  if (env.XPC_SERVICE_NAME === LAUNCHD_SERVICE_NAME) return "launchd";
+  if (typeof env.INVOCATION_ID === "string" && env.INVOCATION_ID.length > 0) return "systemd";
+  return null;
+}
+function shutdownLine(signal, supervisor) {
+  return supervisor === null ? `received ${signal} \u2014 exiting (unsupervised)` : `received ${signal} \u2014 exiting (${supervisor} owns restart)`;
+}
+function shouldInspectWorkerImage(profile) {
+  const rt = profile.required_tools;
+  if (rt !== void 0) {
+    return [rt.launch, rt.reap, rt.probe].some((tools) => Array.isArray(tools) && tools.includes("docker"));
+  }
+  return /\bdocker\b/.test(profile.launch ?? "");
+}
+
 // src/daemon/quiet-reap.ts
 function renderQuietReapOutcome(exitCode) {
   if (exitCode === 0) return "reaped a live worker";
@@ -36360,6 +36378,16 @@ function exitClass(outcome, args) {
     return state !== null && TICKET_TERMINAL_STATES.includes(state) ? "terminal" : "split-umbrella";
   }
   return "clean-pause";
+}
+function settleLogLine(outcome, cls, ticketState) {
+  switch (outcome.action) {
+    case "park":
+      return `conduction parked (${cls}), ticket stays ${ticketState ?? "unknown"}`;
+    case "complete":
+      return `conduction completed (${cls})`;
+    case "wait":
+      return `conduction waiting (${cls})`;
+  }
 }
 
 // src/daemon/leg-gate.ts
@@ -36982,15 +37010,17 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
       `${label(row, null, deps.projectKey)}: reconciliation probe found no live worker \u2014 reaping defensively and clearing the stale leg`
     );
   }
-  let reapTask = null;
-  try {
-    reapTask = await deps.getTaskMeta(row.task_id);
-  } catch {
+  if (!(row.clean_shutdown_at !== null && row.leg_started_at === null)) {
+    let reapTask = null;
+    try {
+      reapTask = await deps.getTaskMeta(row.task_id);
+    } catch {
+    }
+    await deps.runCommand(
+      renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey, deps.workerImage)),
+      { quiet: true, quietRender: renderQuietReapOutcome }
+    );
   }
-  await deps.runCommand(
-    renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey, deps.workerImage)),
-    { quiet: true, quietRender: renderQuietReapOutcome }
-  );
   if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: null })) return false;
   if (row.clean_shutdown_at !== null) {
     deps.log(`conduction ${row.id}: adopted cleanly-released lease from ${row.lease_holder}`);
@@ -37031,7 +37061,7 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
   const outcome = classifyWorkerExit(classifyArgs);
   const cls = exitClass(outcome, classifyArgs);
   deps.log(
-    `${label(row, after, deps.projectKey)}: worker exit code=${tracked.exitCode ?? "null"} \u2192 ${outcome.action} (${cls})`
+    `${label(row, after, deps.projectKey)}: worker exit code=${tracked.exitCode ?? "null"} \u2192 ` + settleLogLine(outcome, cls, after.workflow_state)
   );
   if (progressed && cls !== "quota" && cls !== "rate-limit" && quotaPausesOf(runtime, row.id) > 0) {
     await resetQuotaPauses(deps, runtime, row);
@@ -37859,7 +37889,9 @@ ${err instanceof Error ? err.message : String(err)}
     log(`boot preflight failed: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
-  await runCommand(
+  if (!shouldInspectWorkerImage(config.profile)) {
+    log("worker image version check skipped (profile does not use local docker)");
+  } else await runCommand(
     `docker inspect ${deploymentConfig?.worker_image ?? WORKER_IMAGE_DEFAULT} --format 'worker image Claude Code version: {{ index .Config.Labels "harmony.claude_code_version" }}'`
   );
   const auth = new HarmonyAuth(token);
@@ -38001,7 +38033,7 @@ ${err instanceof Error ? err.message : String(err)}
     keeper.stopAll();
     if (hints) await closeHintsBounded(hints, log, HINT_CLOSE_TIMEOUT_MS);
     await markCleanShutdownBounded(client, leaseHolder, log, CLEAN_SHUTDOWN_TIMEOUT_MS);
-    log(`received ${signal} \u2014 exiting (launchd owns restart)`);
+    log(shutdownLine(signal, detectSupervisor(process.env)));
     process.exit(0);
   };
   process.on("SIGTERM", () => {

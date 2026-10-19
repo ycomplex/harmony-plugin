@@ -132,7 +132,7 @@
 // executed proof this reasoning rests on.
 
 import { captureBaseline, detectWake, type WatchBaseline } from './watch.js';
-import { classifyWorkerExit, exitClass, TICKET_TERMINAL_STATES, type ClassifyArgs } from './classify.js';
+import { classifyWorkerExit, exitClass, settleLogLine, TICKET_TERMINAL_STATES, type ClassifyArgs } from './classify.js';
 import { renderQuietReapOutcome } from './quiet-reap.js';
 import { exchangeWentInactive } from '../conductor/ball-axis.js';
 import { renderTemplate, type DaemonConfig } from './config.js';
@@ -1421,18 +1421,22 @@ async function handleWonTakeover(
   // this is the ROUTINE case — the dead holder usually left NOTHING to reap, so quiet=true here
   // (and ONLY here — the dirty-exit retry reap and the deadline-escalation reap stay verbose,
   // since those ARE genuinely operationally interesting).
-  // B-827: best-effort pre-reap snapshot — same degrade rationale as the reconciliation probe
-  // fetch above (a metadata read failure must not block this reap).
-  let reapTask: DaemonTask | null = null;
-  try {
-    reapTask = await deps.getTaskMeta(row.task_id);
-  } catch {
-    // best-effort — see above.
+  // B-1166: a cleanly-released row (marker set) that carried no leg has nothing to reap — the
+  // predecessor shut down deliberately with no worker in flight. Any other case reaps as before.
+  if (!(row.clean_shutdown_at !== null && row.leg_started_at === null)) {
+    // B-827: best-effort pre-reap snapshot — same degrade rationale as the reconciliation probe
+    // fetch above (a metadata read failure must not block this reap).
+    let reapTask: DaemonTask | null = null;
+    try {
+      reapTask = await deps.getTaskMeta(row.task_id);
+    } catch {
+      // best-effort — see above.
+    }
+    await deps.runCommand(
+      renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey, deps.workerImage)),
+      { quiet: true, quietRender: renderQuietReapOutcome },
+    );
   }
-  await deps.runCommand(
-    renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey, deps.workerImage)),
-    { quiet: true, quietRender: renderQuietReapOutcome },
-  );
   // B-742/B-717 point 4 (corrected): this clear is reached ONLY for a row with NO tracked in-flight
   // worker on THIS daemon — `running` cannot already hold this id (we just won the takeover, and
   // `running` only ever holds rows this daemon currently holds the lease for), and reconciliation
@@ -1525,7 +1529,7 @@ async function settleTrackedLaunch(
   const cls = exitClass(outcome, classifyArgs);
   deps.log(
     `${label(row, after, deps.projectKey)}: worker exit code=${tracked.exitCode ?? 'null'} → ` +
-      `${outcome.action} (${cls})`,
+      settleLogLine(outcome, cls, after.workflow_state),
   );
 
   // B-1149: any leg that made BOARD progress resets the consecutive-quota-pause count.

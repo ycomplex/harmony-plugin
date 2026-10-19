@@ -4,6 +4,7 @@ import {
   classifyCleanRowShape,
   isCleanRowShape,
   exitClass,
+  settleLogLine,
   TICKET_TERMINAL_STATES,
   type ClassifyArgs,
 } from './classify.js';
@@ -544,5 +545,49 @@ describe('B-1149: a refusal on the leg-cost row classifies quota / rate-limit ah
   it('no refusal (absent or null) ⇒ an unrecognised failure stays dirty-exit', () => {
     expect(classifyWorkerExit(args({ exitCode: 1 }))).toEqual({ action: 'park', reason: 'dirty-exit' });
     expect(classifyWorkerExit(args({ exitCode: 1, refusal: null }))).toEqual({ action: 'park', reason: 'dirty-exit' });
+  });
+});
+
+describe('B-1166: settleLogLine wording', () => {
+  it('park ⇒ conduction parked (<cls>), ticket stays <state>', () => {
+    expect(settleLogLine({ action: 'park', reason: 'dirty-exit' }, 'dirty-exit', 'Built')).toBe(
+      'conduction parked (dirty-exit), ticket stays Built',
+    );
+  });
+  it('complete ⇒ conduction completed (<cls>)', () => {
+    expect(settleLogLine({ action: 'complete' }, 'terminal', 'Verified')).toBe('conduction completed (terminal)');
+  });
+  it('wait ⇒ conduction waiting (<cls>)', () => {
+    expect(settleLogLine({ action: 'wait' }, 'clean-pause', 'Built')).toBe('conduction waiting (clean-pause)');
+  });
+});
+
+describe('B-1166: the classifier sees only the exit code + ticket row, never k8s state', () => {
+  it('exit 0 on a clean row shape (awaiting_human_input) ⇒ wait / clean-pause', () => {
+    const a = args({ row: { workflow_state: 'Built', awaiting_human_input: true, stale: false }, exitCode: 0 });
+    const outcome = classifyWorkerExit(a);
+    expect(outcome).toEqual({ action: 'wait' });
+    expect(exitClass(outcome, a)).toBe('clean-pause');
+  });
+
+  it('exit 0 + progressed ⇒ wait, regardless of anything else', () => {
+    expect(classifyWorkerExit(args({ exitCode: 0, progressed: true }))).toEqual({ action: 'wait' });
+  });
+
+  // container/gke/gke-worker-launch.sh ignores transient k8s Pending reasons (it keeps waiting for
+  // the pod), so the classifier only ever sees the exit code + ticket row. ClassifyArgs has no k8s
+  // input at all: these tests pin that the outcome equals the no-reason case.
+  it('k8s Pending reason ProvisioningFailed cannot reach classifyWorkerExit — same outcome as the no-reason case', () => {
+    const base = args();
+    const withReason = { ...base, k8sPendingReason: 'ProvisioningFailed' } as ClassifyArgs;
+    expect(classifyWorkerExit(withReason)).toEqual(classifyWorkerExit(base));
+    expect(classifyWorkerExit(withReason)).toEqual({ action: 'wait' });
+  });
+
+  it('k8s Pending reason FailedAttachVolume cannot reach classifyWorkerExit — same outcome as the no-reason case', () => {
+    const base = args();
+    const withReason = { ...base, k8sPendingReason: 'FailedAttachVolume' } as ClassifyArgs;
+    expect(classifyWorkerExit(withReason)).toEqual(classifyWorkerExit(base));
+    expect(classifyWorkerExit(withReason)).toEqual({ action: 'wait' });
   });
 });
