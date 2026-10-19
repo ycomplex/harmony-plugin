@@ -1,0 +1,27 @@
+{
+  "launch": "bash \"$HARMONY_PLUGIN_DIR/container/gke/gke-worker-launch.sh\" {conduction_id} {ticket} '{run_config_json}' '{model}'",
+  "reap": "bash \"$HARMONY_PLUGIN_DIR/container/gke/gke-worker-reap.sh\" {conduction_id} {ticket}",
+  "probe": "bash \"$HARMONY_PLUGIN_DIR/container/gke/gke-worker-probe.sh\" {conduction_id} {ticket}",
+  "maxConcurrentWorkers": 2,
+  "agents": [
+    "claude-code",
+    "codex"
+  ],
+  "required_tools": {
+    "launch": [
+      "node",
+      "kubectl",
+      "gke-gcloud-auth-plugin"
+    ],
+    "reap": [
+      "kubectl",
+      "gke-gcloud-auth-plugin"
+    ],
+    "probe": [
+      "kubectl",
+      "gke-gcloud-auth-plugin"
+    ]
+  },
+  "requires_app_mint": true,
+  "schema_version": 1
+}
