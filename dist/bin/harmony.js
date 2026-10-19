@@ -36250,6 +36250,18 @@ async function getConduction(client, id) {
   if (error) throw new Error(error.message);
   return data ?? null;
 }
+async function listConductions(client, args) {
+  let query = client.from("conductions").select(`${CONDUCTION_COLS}, tasks(priority)`);
+  if (args.status) query = query.eq("status", args.status);
+  if (args.task_id) query = query.eq("task_id", args.task_id);
+  const { data, error } = await query.order("started_at", { ascending: args.order !== "desc" });
+  if (error) throw error;
+  const rows = data ?? [];
+  return rows.map((row) => {
+    const { tasks, ...rest } = row;
+    return { ...rest, task_priority: tasks?.priority ?? null };
+  });
+}
 var TicketParkedError = class extends Error {
   code = "ticket-parked";
   task_id;
@@ -45690,6 +45702,41 @@ function registerFasttrackCommands(program3) {
   });
 }
 
+// src/cli/commands/conductions.ts
+async function listActiveConductions(client, projectId) {
+  const rows = await listConductions(client, { status: "active" });
+  if (rows.length === 0) return [];
+  const projectKey = (await getProject(client, projectId)).key;
+  const { data, error } = await client.from("tasks").select("id, task_number").in("id", rows.map((r) => r.task_id));
+  if (error) throw error;
+  const numbers = new Map((data ?? []).map((t) => [t.id, t.task_number]));
+  return rows.map((r) => ({
+    id: r.id,
+    ticket: numbers.has(r.task_id) ? `${projectKey}-${numbers.get(r.task_id)}` : null,
+    status: r.status,
+    lease_holder: r.lease_holder,
+    last_heartbeat_at: r.last_heartbeat_at,
+    leg_started_at: r.leg_started_at,
+    clean_shutdown_at: r.clean_shutdown_at
+  }));
+}
+function registerConductionsCommands(program3) {
+  const conductions = program3.command("conductions").description("Read conduction (run) records");
+  conductions.command("active").description("List active conductions with their lease holder and heartbeat (use --json for scripting)").action(async () => {
+    await runCommand(
+      program3.opts(),
+      async (ctx) => listActiveConductions(ctx.client, ctx.projectId),
+      (rows) => formatTable(rows, [
+        { key: "ticket", header: "Ticket" },
+        { key: "id", header: "Conduction" },
+        { key: "lease_holder", header: "Lease holder" },
+        { key: "last_heartbeat_at", header: "Heartbeat" },
+        { key: "leg_started_at", header: "Leg started" }
+      ])
+    );
+  });
+}
+
 // src/cli/index.ts
 var require2 = createRequire(import.meta.url);
 var { version: version3 } = require2("../../package.json");
@@ -45726,4 +45773,5 @@ registerNotifyCommands(program2);
 registerDoctorCommands(program2);
 registerRecordCommand(program2);
 registerFasttrackCommands(program2);
+registerConductionsCommands(program2);
 program2.parse();

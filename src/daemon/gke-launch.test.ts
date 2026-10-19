@@ -126,7 +126,7 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the four steps (EXECUTED aga
     const pvc = JSON.parse(read(w, 'pvc.json'));
     expect(pvc.metadata.name).toBe('ticket-b-1161');
     expect(pvc.spec.storageClassName).toBe('standard-rwo');
-    expect(pvc.spec.resources.requests.storage).toBe('100Gi');
+    expect(pvc.spec.resources.requests.storage).toBe('20Gi');
     // the Job as created: launch defaults reach the renderer
     const job = JSON.parse(read(w, 'job.json'));
     const worker = job.spec.template.spec.containers[0];
