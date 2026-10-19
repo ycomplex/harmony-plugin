@@ -819,6 +819,12 @@ export function launchEnvFromMerged(merged: ConductorConfig): Record<string, str
   put('HARMONY_CLOUD_RUN_JOB', merged.cloud_run?.job);
   put('CLOUDSDK_CORE_PROJECT', merged.gcp?.project);
   put('CLOUDSDK_CORE_ACCOUNT', merged.gcloud?.account);
+  // The launch/reap/probe templates run `bash "$HARMONY_PLUGIN_DIR/container/..."` and the mint script reads
+  // the App identity from HARMONY_APP_*: the host file must reach them or a files-only host cannot launch.
+  put('HARMONY_PLUGIN_DIR', merged.plugin_dir);
+  put('HARMONY_APP_ID', merged.github_app?.app_id);
+  put('HARMONY_APP_INSTALLATION_ID', merged.github_app?.installation_id);
+  put('HARMONY_APP_PRIVATE_KEY_PATH', merged.github_app?.private_key_path);
   return out;
 }
 

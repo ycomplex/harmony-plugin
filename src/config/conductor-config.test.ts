@@ -434,6 +434,16 @@ describe('launchEnvFromMerged / applyLaunchEnv', () => {
     expect('HARMONY_GKE_IMAGE' in env).toBe(false);
   });
 
+  it('exports the host file\'s plugin_dir and App identity for the launch scripts', () => {
+    const env = launchEnvFromMerged(mergeLayers(gkeProject, host));
+    expect(env).toMatchObject({
+      HARMONY_PLUGIN_DIR: '/plug',
+      HARMONY_APP_ID: '1',
+      HARMONY_APP_INSTALLATION_ID: '2',
+      HARMONY_APP_PRIVATE_KEY_PATH: '/k.pem',
+    });
+  });
+
   it('explicit gke.context wins; HARMONY_GKE_IMAGE only when images.worker is explicit', () => {
     const env = launchEnvFromMerged(mergeLayers({ ...gkeProject, gke: { ...gkeProject.gke, context: 'my-ctx' }, images: { worker: 'img' } }));
     expect(env.HARMONY_GKE_CONTEXT).toBe('my-ctx');

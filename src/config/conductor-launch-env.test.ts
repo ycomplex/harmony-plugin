@@ -93,6 +93,16 @@ describe('launch env from the two files alone', () => {
     ]);
   });
 
+  it('the host file reaches the launch scripts: plugin dir and GitHub App identity', () => {
+    const env = launchEnvFor(gkeProject);
+    expect(childSees(env, ['HARMONY_PLUGIN_DIR', 'HARMONY_APP_ID', 'HARMONY_APP_INSTALLATION_ID', 'HARMONY_APP_PRIVATE_KEY_PATH'])).toEqual([
+      '/opt/harmony-plugin',
+      '1',
+      '2',
+      '/etc/app.pem',
+    ]);
+  });
+
   it('cloud: a child sees the Cloud Run region/job and the gcloud project/account', () => {
     const env = launchEnvFor(cloudProject);
     expect(childSees(env, ['HARMONY_CLOUD_RUN_REGION', 'HARMONY_CLOUD_RUN_JOB', 'CLOUDSDK_CORE_PROJECT', 'CLOUDSDK_CORE_ACCOUNT'])).toEqual([
