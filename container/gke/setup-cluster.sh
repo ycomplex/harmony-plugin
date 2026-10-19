@@ -388,9 +388,29 @@ else
 fi
 
 step "14. IAM: $LEG_GSA_EMAIL -> roles/storage.objectUser on gs://$TRANSCRIPT_BUCKET"
-held="$(capture gcloud storage buckets get-iam-policy "gs://$TRANSCRIPT_BUCKET" '--flatten=bindings[].members' \
-  "--filter=bindings.role:roles/storage.objectUser AND bindings.members:serviceAccount:$LEG_GSA_EMAIL" \
-  '--format=value(bindings.role)' || true)"
+# `gcloud storage buckets get-iam-policy` has no --flatten/--filter (unlike `projects get-iam-policy`), so
+# read the whole policy as JSON and pick the binding out in node. A failed or unparseable read is NOT
+# "not held": it stops the run, because guessing would re-bind on every rerun and hide a real error.
+held=""
+if policy_json="$(capture gcloud storage buckets get-iam-policy "gs://$TRANSCRIPT_BUCKET" --format=json)"; then
+  if ! held="$(printf '%s' "$policy_json" | node -e '
+let s = "";
+process.stdin.on("data", (d) => (s += d));
+process.stdin.on("end", () => {
+  let p;
+  try { p = JSON.parse(s); } catch { process.exit(2); }
+  if (!p || typeof p !== "object") process.exit(2);
+  const [role, member] = process.argv.slice(1);
+  const hit = (Array.isArray(p.bindings) ? p.bindings : []).some((b) => b && b.role === role && Array.isArray(b.members) && b.members.includes(member));
+  process.stdout.write(hit ? "yes" : "");
+});' roles/storage.objectUser "serviceAccount:$LEG_GSA_EMAIL")"; then
+    echo "setup-cluster: could not parse the IAM policy of gs://$TRANSCRIPT_BUCKET — changing nothing." >&2
+    exit 1
+  fi
+elif [ "$DRY_RUN" -eq 0 ]; then
+  echo "setup-cluster: could not read the IAM policy of gs://$TRANSCRIPT_BUCKET — changing nothing." >&2
+  exit 1
+fi
 if [ -n "$held" ]; then
   echo "$LEG_GSA_EMAIL already holds roles/storage.objectUser on gs://$TRANSCRIPT_BUCKET"
 else

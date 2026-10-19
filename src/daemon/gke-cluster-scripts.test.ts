@@ -75,7 +75,15 @@ function makeWorld(): World {
     '    esac; exit 0 ;;',
     '  *" container node-pools update "*) touch "$STUB_STATE/gkemd"; exit 0 ;;',
     '  *" storage buckets describe "*) [ -z "${STUB_MISSING_BUCKET:-}" ] || { echo "NOT_FOUND" >&2; exit 1; }; echo bucket; exit 0 ;;',
-    '  *" storage buckets get-iam-policy "*) [ -f "$STUB_STATE/bucket-iam" ] && echo roles/storage.objectUser; exit 0 ;;',
+    // Real gcloud rejects --flatten/--filter on this command (exit 2); the stub does too, so a script that
+    // uses them reads nothing and fails here exactly as it does live. STUB_BUCKET_POLICY_FAIL = unreadable.
+    '  *" storage buckets get-iam-policy "*)',
+    '    case " $* " in *" --filter"*|*" --flatten"*) echo "ERROR: (gcloud.storage.buckets.get-iam-policy) unrecognized arguments" >&2; exit 2 ;; esac',
+    '    [ -z "${STUB_BUCKET_POLICY_FAIL:-}" ] || { echo "ERROR: permission denied" >&2; exit 1; }',
+    '    if [ -f "$STUB_STATE/bucket-iam" ]; then',
+    '      printf \'{"bindings":[{"members":["serviceAccount:%s"],"role":"roles/storage.objectUser"}]}\' "${STUB_LEG_GSA:-harmony-gke-leg@proj-x.iam.gserviceaccount.com}"',
+    '    else printf \'{"bindings":[{"members":["user:someone@example.com"],"role":"roles/storage.admin"}]}\'; fi',
+    '    exit 0 ;;',
     '  *" storage buckets add-iam-policy-binding "*) touch "$STUB_STATE/bucket-iam"; exit 0 ;;',
     '  *" iam service-accounts describe "*) [ -f "$STUB_STATE/gsa" ] || { echo "ERROR: not found" >&2; exit 1; }; exit 0 ;;',
     '  *" iam service-accounts create "*) touch "$STUB_STATE/gsa"; exit 0 ;;',
@@ -514,6 +522,26 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh steps 10-16 — transcripts in the b
     // and it did READ before deciding
     expect(findCall(g(world), 'storage', 'buckets', 'get-iam-policy')).toBeDefined();
     expect(findCall(k(world), 'get', 'serviceaccount', 'harmony-leg')).toBeDefined();
+  });
+
+  it('step 14 reads the bucket policy as plain JSON (no --filter/--flatten, which real gcloud rejects) and does not rebind a held role', () => {
+    const world = makeWorld();
+    expect(setup(world).status).toBe(0);
+    for (const c of calls(world, 'gcloud').filter((x) => has(x, 'storage', 'buckets', 'get-iam-policy'))) {
+      expect(c.some((a) => a.startsWith('--filter') || a.startsWith('--flatten'))).toBe(false);
+      expect(c).toContain('--format=json');
+    }
+    resetLogs(world);
+    expect(setup(world).status).toBe(0);
+    expect(g(world).some((c) => has(c, 'storage', 'buckets', 'add-iam-policy-binding'))).toBe(false);
+  });
+
+  it('step 14 fails closed when the bucket policy cannot be read: exit 1, no bucket binding attempted', () => {
+    const world = makeWorld();
+    const r = setup(world, [], { STUB_BUCKET_POLICY_FAIL: '1' });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('could not read the IAM policy of gs://harmony-conductor-transcripts');
+    expect(g(world).some((c) => has(c, 'storage', 'buckets', 'add-iam-policy-binding'))).toBe(false);
   });
 
   it('only changes what differs: an annotation pointing elsewhere is re-annotated, nothing else', () => {
