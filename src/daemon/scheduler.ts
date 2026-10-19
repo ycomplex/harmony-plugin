@@ -1074,7 +1074,7 @@ async function handleHeldConduction(
       // B-717 restart reconciliation: this daemon did not fire this launch itself, so there is no
       // local runCommand(launch) promise to settle — re-probe the SAME tracking surface each pass.
       const probed = await deps.runCommand(
-        renderTemplate(deps.config.profile.probe as string, templateVars(row, tracked.current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.())),
+        renderTemplate(deps.config.profile.probe as string, templateVars(row, tracked.current, deps.projectKey, deps.workerImage)),
       );
       if (probed.exitCode !== 0) {
         tracked.settled = true;
@@ -1404,7 +1404,7 @@ async function handleWonTakeover(
       // best-effort — see above.
     }
     const probed = await deps.runCommand(
-      renderTemplate(deps.config.profile.probe, templateVars(row, probeTask, deps.projectKey, deps.workerImage, deps.getModelPolicy?.())),
+      renderTemplate(deps.config.profile.probe, templateVars(row, probeTask, deps.projectKey, deps.workerImage)),
     );
     if (probed.exitCode === 0) {
       let current: DaemonTask;
@@ -1476,7 +1476,7 @@ async function handleWonTakeover(
       // best-effort — see above.
     }
     await deps.runCommand(
-      renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey, deps.workerImage, deps.getModelPolicy?.())),
+      renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey, deps.workerImage)),
       { quiet: true, quietRender: renderQuietReapOutcome },
     );
   }
@@ -1618,7 +1618,7 @@ async function settleTrackedLaunch(
       `${label(row, after, deps.projectKey)}: dirty exit — retrying ` +
         `(attempt ${retryCount}/${deps.config.retryCap}) after reap + ${backoffMs}ms backoff`,
     );
-    await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage, deps.getModelPolicy?.())));
+    await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage)));
     // B-717: no synchronous deps.sleep here — a blocked pass is exactly what fire-and-track
     // removes. Queue the retry as a ready candidate gated by `notBefore` so every OTHER row keeps
     // getting served while this one backs off.
@@ -1705,7 +1705,7 @@ async function settleRefusal(
         `${label(row, after, deps.projectKey)}: rate limit on ${rt} — retrying ` +
           `(${used + 1}/${RATE_LIMIT_BACKOFFS_MS.length}) after reap + ${backoffMs}ms backoff`,
       );
-      await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage, deps.getModelPolicy?.())));
+      await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage)));
       runtime.ready.set(row.id, { since: deps.now(), priority: row.task_priority ?? null, notBefore: deps.now() + backoffMs, retryCount: tracked.retryCount });
       return;
     }
@@ -1991,7 +1991,7 @@ function beginReapEscalation(
     for (let attempt = 1; attempt <= REAP_ATTEMPT_LIMIT; attempt += 1) {
       // NEVER await the reap: a wedged container runtime can hang the reap command itself, and
       // the call we make to unblock ourselves must not be able to block us.
-      void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.())));
+      void deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, current, deps.projectKey, deps.workerImage)));
       await new Promise<void>((resolveGrace) => {
         deps.startTimeout(REAP_GRACE_MS, resolveGrace);
       });
