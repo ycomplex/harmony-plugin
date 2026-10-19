@@ -989,11 +989,13 @@ A leg runs on Codex instead of Claude Code when its run selects the adapter: `ru
 byte-for-byte what it was. The adapter, the seams and the evidence are in `docs/agent-adapter-contract.md`
 and `docs/codex-phase0-findings.md`.
 
-**Which profiles.** Only the **Docker-host** profile launches a Codex leg today
-(`container/daemon-profile.docker-host.example.json` lists `"agents": ["claude-code", "codex"]`). The
-local-Docker and cloud profiles list no `agents`, so the daemon parks a Codex run on them
-(`agent-ineligible`) before any worker starts. The daemon also refuses to boot a profile whose `agents`
-list names an adapter that is not registered.
+**Which profiles.** Every launch profile can run a Codex leg once its `agents` list names the adapter
+(`"agents": ["claude-code", "codex"]` — the B-1076 rebuild of 2026-10-16 wired local-Docker, Docker-host
+and cloud alike; `container/daemon-profile.docker-host.example.json` shows the shape). A profile whose
+`agents` list omits `codex` parks a Codex run (`agent-ineligible`) before any worker starts; the cloud
+profile additionally pre-flights the Codex credential mount on the Cloud Run job and refuses the run until
+it exists. The daemon also refuses to boot a profile whose `agents` list names an adapter that is not
+registered. Harmony's own deployment has run Codex legs on the cloud profile since 2026-10-16.
 
 **The turn-end floor (B-1150).** A Codex leg runs the same Stop and PreToolUse gates as a Claude leg:
 `harmony agent render` writes `$CODEX_HOME/hooks.json` from the canonical hook definition
