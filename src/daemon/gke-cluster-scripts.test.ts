@@ -98,7 +98,13 @@ function makeWorld(): World {
     '      *--format=*) printf \'%s\\t%s\\t%s\\t%s\\n\' "${STUB_POOL_MT:-e2-standard-8}" "${STUB_POOL_DT:-pd-standard}" "" "${STUB_POOL_MAX:-2}" ;;',
     '    esac; exit 0 ;;',
     '  *" container node-pools create "*) touch "$STUB_STATE/pool"; exit 0 ;;',
-    '  *" compute regions describe "*) printf \'%s\\t%s\\n\' "${STUB_QUOTA_USAGE:-100.0}" "${STUB_QUOTA_LIMIT:-500.0}"; exit 0 ;;',
+    // Real gcloud: `compute regions describe` takes NO --filter / --flatten (they belong to `list` commands)
+    // and fails with "unrecognized arguments". Mirror that, so a script that uses them cannot pass.
+    '  *" compute regions describe "*)',
+    '    case " $* " in',
+    '      *" --filter"* | *" --flatten"*) echo "ERROR: (gcloud.compute.regions.describe) unrecognized arguments: $*" >&2; exit 2 ;;',
+    '      *" --format=json "*) printf \'{"name":"us-central1","quotas":[{"metric":"CPUS","limit":24.0,"usage":3.0},{"metric":"SSD_TOTAL_GB","limit":%s,"usage":%s}]}\' "${STUB_QUOTA_LIMIT:-500.0}" "${STUB_QUOTA_USAGE:-100.0}"; exit 0 ;;',
+    '    esac; echo "ERROR: unsupported format in stub" >&2; exit 2 ;;',
     '  *" secrets describe "*) case " ${STUB_MISSING_SECRETS:-} " in *" $3 "*) echo "NOT_FOUND" >&2; exit 1 ;; esac; echo "$3"; exit 0 ;;',
     `  *" secrets versions access "*) printf '%s' '${SENTINEL}'; exit 0 ;;`,
     '  *" projects get-iam-policy "*) [ -f "$STUB_STATE/iam" ] && echo roles/container.developer; exit 0 ;;',
@@ -392,7 +398,12 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
   it('prints the quota line, and warns under 100 GB of headroom without failing', () => {
     const world = makeWorld();
     const ok = setup(world, [], { STUB_QUOTA_USAGE: '100.0', STUB_QUOTA_LIMIT: '500.0' });
-    expect(ok.stdout).toContain('SSD_TOTAL_GB: 100.0 of 500.0 GB used in us-central1');
+    expect(ok.stdout).toContain('SSD_TOTAL_GB: 100 of 500 GB used in us-central1');
+    expect(ok.stdout).not.toContain('could not be read');
+    // the region is read as JSON; --filter / --flatten (which real gcloud rejects here) are never sent
+    const regionCall = calls(world, 'gcloud').find((c) => has(c, 'regions', 'describe'))!;
+    expect(regionCall).toContain('--format=json');
+    expect(regionCall.some((a) => a.startsWith('--filter') || a.startsWith('--flatten'))).toBe(false);
     expect(ok.stdout).not.toContain('WARNING');
     const low = setup(makeWorld(), [], { STUB_QUOTA_USAGE: '10.0', STUB_QUOTA_LIMIT: '100.0' });
     expect(low.status).toBe(0);
@@ -681,6 +692,52 @@ describe.skipIf(!CAPABLE)('container/gke/sweep-ticket-disks.sh (EXECUTED against
     expect(r.status).toBe(0);
     expect(deletes(world)).toEqual(['ticket-b-1001']);
     expect(calls(world, 'harmony')).toEqual([]); // the PATH stub was not used
+  });
+
+  describe('B-1164 24-hour take-away rule (conductor_excluded_at)', () => {
+    const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString();
+    const excluded = (state: string, at: string | null) => JSON.stringify({ workflow_state: state, archived: false, conductor_excluded_at: at });
+
+    it('deletes a disk once 24h have passed since conductor_excluded_at, whatever the ticket state', () => {
+      const world = makeWorld();
+      const r = sweep(world, ['ticket-b-1010', 'ticket-b-1011'], [], {
+        STUB_TASK_B_1010: excluded('In Progress', hoursAgo(25)),
+        STUB_TASK_B_1011: excluded('Parked', hoursAgo(100)),
+      });
+      expect(r.status).toBe(0);
+      expect(deletes(world)).toEqual(['ticket-b-1010', 'ticket-b-1011']);
+      expect(r.stdout).toContain('delete ticket-b-1010 (B-1010): taken away from the conductor more than 24h ago');
+    });
+
+    it('keeps it before 24h and prints when it will be deleted', () => {
+      const world = makeWorld();
+      const at = new Date(Date.now() - 2 * 3600_000);
+      const r = sweep(world, ['ticket-b-1012'], [], { STUB_TASK_B_1012: excluded('In Progress', at.toISOString()) });
+      expect(r.status).toBe(0);
+      expect(deletes(world)).toEqual([]);
+      const due = new Date(at.getTime() + 24 * 3600_000);
+      const iso = due.toISOString().replace(/\.\d+Z$/, '');
+      expect(r.stdout).toContain('keep ticket-b-1012 (B-1012): taken away from the conductor, will be deleted at ' + iso);
+    });
+
+    it('a null conductor_excluded_at changes nothing; a garbage one fails closed (kept, exit 3)', () => {
+      const world = makeWorld();
+      const r = sweep(world, ['ticket-b-1013', 'ticket-b-1014'], [], {
+        STUB_TASK_B_1013: excluded('In Progress', null),
+        STUB_TASK_B_1014: excluded('In Progress', 'not-a-date'),
+      });
+      expect(r.status).toBe(3);
+      expect(deletes(world)).toEqual([]);
+      expect(r.stdout).toContain('keep ticket-b-1013 (B-1013): state In Progress');
+      expect(r.stderr).toContain('ticket-b-1014');
+    });
+
+    it('never deletes a mounted disk, even one excluded long ago', () => {
+      const world = makeWorld();
+      const r = sweep(world, ['ticket-b-1006'], [], { STUB_TASK_B_1006: excluded('In Progress', hoursAgo(500)) });
+      expect(deletes(world)).toEqual([]);
+      expect(r.stdout).toContain('mounted by a running pod');
+    });
   });
 
   it('rejects an unknown flag with usage on stderr (exit 2)', () => {

@@ -33,6 +33,14 @@ describe('container/gke/daemon-profile.gke.example.json', () => {
     });
   });
 
+  it('prefixes the launch line with the docker worker image, in the registry the launcher defaults to', () => {
+    const IMAGE = 'HARMONY_GKE_IMAGE=us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-build-env-docker:latest ';
+    expect(GKE.launch.startsWith(IMAGE + 'bash ')).toBe(true);
+    const launcher = readFileSync(fileURLToPath(new URL('../../container/gke/gke-worker-launch.sh', import.meta.url)), 'utf8');
+    expect(launcher).toContain(': "${HARMONY_GKE_REGISTRY:=us-central1-docker.pkg.dev/harmony-conductor/harmony-workers}"');
+    expect(launcher).toContain('HARMONY_GKE_TICKET_DISK:=20Gi');
+  });
+
   it('calls the scripts under $HARMONY_PLUGIN_DIR/container/gke/, never a spike dir', () => {
     for (const t of [GKE.launch, GKE.reap, GKE.probe]) {
       expect(t).toContain('$HARMONY_PLUGIN_DIR/container/gke/');
