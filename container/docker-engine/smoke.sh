@@ -27,10 +27,8 @@ fail() { echo "engine smoke: FAIL — $*" >&2; exit 1; }
 ok()   { echo "engine smoke: ok — $*"; }
 
 VOLUME="b1162-smoke-$$"
-TMPDIR_HOST=""
 cleanup() {
   docker volume rm -f "$VOLUME" >/dev/null 2>&1 || true
-  if [ -n "$TMPDIR_HOST" ]; then rm -rf "$TMPDIR_HOST"; fi
 }
 trap cleanup EXIT
 
@@ -85,13 +83,14 @@ if [ "${SMOKE_CHROMIUM:-}" = lib-check ]; then
     pkgs=""
     seen=0
     for tok in ${line#*--no-install-recommends}; do
+      tok="${tok%\"}"
       case "$tok" in
         [a-z0-9]*) ;;
         *) continue ;;
       esac
       case "$tok" in *[!a-z0-9.+-]*) continue ;; esac
       seen=$((seen + 1))
-      st="$(dpkg-query -W -f="\${Status}" "$tok" 2>/dev/null || true)"
+      st="$(dpkg-query -W -f "\${Status}" "$tok" 2>/dev/null || true)"
       case "$st" in
         "install ok installed") ;;
         *) pkgs="$pkgs $tok" ;;
@@ -103,9 +102,10 @@ if [ "${SMOKE_CHROMIUM:-}" = lib-check ]; then
   ' || fail "Chromium system libraries are not all installed (lib-check)"
   ok "Chromium libraries present (lib-check: dry-run package list all installed per dpkg)"
 else
-  TMPDIR_HOST="$(mktemp -d)"
-  chmod 755 "$TMPDIR_HOST"
-  cat > "$TMPDIR_HOST/launch.js" <<'JS'
+  # The launch script travels in an environment variable, never a bind mount: in Cloud Build this
+  # script runs inside a step container that talks to the HOST's docker daemon, so a host path
+  # created here would not exist where the daemon looks for it.
+  LAUNCH_JS="$(cat <<'JS'
 const { chromium } = require('playwright');
 (async () => {
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
@@ -118,15 +118,16 @@ const { chromium } = require('playwright');
   console.log('chromium launched headless and rendered a page');
 })().catch((e) => { console.error(String(e)); process.exit(1); });
 JS
-  chmod 644 "$TMPDIR_HOST/launch.js"
-  out="$(docker run --rm -v "$TMPDIR_HOST:/smoke:ro" --entrypoint /bin/bash "$IMAGE" -euo pipefail -c '
+)"
+  export LAUNCH_JS
+  out="$(docker run --rm -e LAUNCH_JS --entrypoint /bin/bash "$IMAGE" -euo pipefail -c '
     work="$(mktemp -d)"
     export PLAYWRIGHT_BROWSERS_PATH="$work/browsers"
     cd "$work"
     npm init -y >/dev/null
     npm i playwright >/dev/null
     npx -y playwright install chromium
-    cp /smoke/launch.js ./launch.js
+    printf "%s\n" "$LAUNCH_JS" > launch.js
     node ./launch.js
   ' 2>&1)" || fail "Chromium did not install and launch as the worker; output: $out"
   case "$out" in
