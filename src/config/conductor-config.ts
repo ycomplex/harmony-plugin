@@ -567,7 +567,7 @@ export function envLayer(env: NodeJS.ProcessEnv): { layer: Obj; vars: string[]; 
 }
 
 /** Legacy process-env knob -> new key (leaf path). */
-const LEGACY_ENV_KNOBS: { name: string; path: string[]; type: LeafType }[] = [
+export const LEGACY_ENV_KNOBS: { name: string; path: string[]; type: LeafType }[] = [
   ...(
     [
       ['NAMESPACE', 'namespace'],
