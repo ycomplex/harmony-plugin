@@ -11,8 +11,12 @@
 #     Secret the operator creates once ($HARMONY_GKE_BASE_SECRET). Per-run values (GIT_TOKEN and the
 #     rest of the exec-env set) go into a per-leg Secret created from a 0600 env-file
 #     (--from-env-file: never on argv) and owned by the Job, so deleting the Job deletes it.
-#   * Per-ticket PVC (ticket-<lower-cased ticket id>) carrying the engine data, transcripts and the
-#     Playwright cache across a ticket's legs (see gke-render-leg.mjs LEG_DISK_MOUNTS).
+#   * Per-ticket PVC (ticket-<lower-cased ticket id>) carrying the engine data and the Playwright
+#     cache across a ticket's legs (see gke-render-leg.mjs LEG_DISK_MOUNTS). Session transcripts are
+#     NOT on the PVC (B-1169): they live in gs://$HARMONY_GKE_TRANSCRIPT_BUCKET (the same
+#     <ticket>/<conduction>/{projects,logs} layout as Cloud Run), mounted through the Cloud Storage
+#     FUSE CSI driver and reached via the Kubernetes service account $HARMONY_GKE_SERVICE_ACCOUNT
+#     (Workload Identity); setup-cluster.sh steps 10-16 provision all of that.
 #   * Exit. Polls the Job: Complete with clean pod evidence -> 0; Failed, gone, or Complete with pod
 #     evidence of a disruption (or evidence that cannot be read) -> 1. backoffLimit 0: the daemon's
 #     ladder retries, never Kubernetes. Events are never read.
@@ -64,6 +68,8 @@ CONFIG_WORKER_IMAGE="$(harmony_config worker_image)"
 : "${HARMONY_GKE_DEADLINE_S:=5400}"          # the Cloud Run job's task timeout
 : "${HARMONY_GKE_POLL_S:=5}"
 : "${HARMONY_GKE_JOB_TTL_S:=3600}"
+: "${HARMONY_GKE_TRANSCRIPT_BUCKET:=harmony-conductor-transcripts}"
+: "${HARMONY_GKE_SERVICE_ACCOUNT:=harmony-leg}"
 TRANSCRIPT_MOUNT_ROOT="/mnt/harmony-transcripts"
 
 # Image precedence: HARMONY_GKE_IMAGE > the deployment config's worker_image > the built-in default.
@@ -85,6 +91,10 @@ gke_init_kubectl
 # Checked before anything is minted: refusing here costs nothing.
 if ! "${KUBECTL[@]}" get secret "$HARMONY_GKE_BASE_SECRET" >/dev/null 2>&1; then
   echo "gke-worker-launch: Refusing to start: base secret $HARMONY_GKE_NAMESPACE/$HARMONY_GKE_BASE_SECRET (HARMONY_API_TOKEN, CLAUDE_CODE_OAUTH_TOKEN) is missing or unreadable — no Job created" >&2
+  exit 1
+fi
+if ! "${KUBECTL[@]}" get serviceaccount "$HARMONY_GKE_SERVICE_ACCOUNT" >/dev/null 2>&1; then
+  echo "gke-worker-launch: Refusing to start: Kubernetes service account $HARMONY_GKE_NAMESPACE/$HARMONY_GKE_SERVICE_ACCOUNT (the Workload Identity identity that reaches the transcript bucket) is missing or unreadable — no Job created" >&2
   exit 1
 fi
 if [ "$CODEX_RUN" = "1" ] && ! "${KUBECTL[@]}" get secret "$HARMONY_GKE_CODEX_SECRET" >/dev/null 2>&1; then
@@ -140,6 +150,7 @@ render() {  # $1 = what: pvc | job
   JOB_TTL_S="$HARMONY_GKE_JOB_TTL_S" \
   BASE_SECRET="$HARMONY_GKE_BASE_SECRET" CODEX_RUN="$CODEX_RUN" CODEX_SECRET="$HARMONY_GKE_CODEX_SECRET" \
   CODEX_DIR="$CODEX_SECRET_MOUNT_DIR" TROOT="$TRANSCRIPT_MOUNT_ROOT" \
+  TRANSCRIPT_BUCKET="$HARMONY_GKE_TRANSCRIPT_BUCKET" SERVICE_ACCOUNT="$HARMONY_GKE_SERVICE_ACCOUNT" \
   node "$HERE/gke-render-leg.mjs"
 }
 

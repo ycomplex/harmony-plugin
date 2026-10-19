@@ -9,15 +9,18 @@ const INIT_MOUNT = '/ticket';
 // The ONE table of what lives on a ticket's disk. Each entry is a subPath of the ticket volume
 // (subPath = name) mounted into the worker container. workerOwned entries are prepared by the init
 // container (mkdir + non-recursive chown); docker stays root's (dockerd runs as root).
+// Session transcripts are NOT on the disk (B-1169): they live in a GCS bucket mounted through the
+// Cloud Storage FUSE CSI driver, same <ticket>/<conduction>/{projects,logs} layout as Cloud Run.
 export const LEG_DISK_MOUNTS = [
   { name: 'docker', mountPath: '/var/lib/docker', workerOwned: false },
-  { name: 'transcripts', mountPath: '/mnt/harmony-transcripts', workerOwned: true },
   { name: 'playwright', mountPath: '/home/worker/.cache/ms-playwright', workerOwned: true },
 ];
 
-function mountsFor(e) {
-  return LEG_DISK_MOUNTS.map((m) => (m.name === 'transcripts' && e.TROOT ? { ...m, mountPath: e.TROOT } : m));
-}
+const DEFAULT_TRANSCRIPT_BUCKET = 'harmony-conductor-transcripts';
+const DEFAULT_SERVICE_ACCOUNT = 'harmony-leg';
+const DEFAULT_TROOT = '/mnt/harmony-transcripts';
+// uid/gid 1001 = the worker user; implicit-dirs so resume sees folders Cloud Run legs wrote as bare prefixes.
+const GCSFUSE_MOUNT_OPTIONS = 'implicit-dirs,uid=1001,gid=1001,file-mode=664,dir-mode=775';
 
 export function renderLeg(e) {
   const labels = { 'harmony-ticket': e.TICKET.replace(/[^A-Za-z0-9._-]/g, '-'), 'app.kubernetes.io/part-of': 'harmony-legs' };
@@ -31,9 +34,20 @@ export function renderLeg(e) {
   }
 
   const legLabels = { ...labels, 'conduction-id': e.CONDUCTION_ID };
-  const table = mountsFor(e);
+  const table = LEG_DISK_MOUNTS;
+  const troot = e.TROOT || DEFAULT_TROOT;
   const mounts = table.map((m) => ({ name: 'ticket', mountPath: m.mountPath, subPath: m.name }));
-  const volumes = [{ name: 'ticket', persistentVolumeClaim: { claimName: e.PVC_NAME } }];
+  mounts.push({ name: 'transcripts', mountPath: troot });
+  const volumes = [
+    { name: 'ticket', persistentVolumeClaim: { claimName: e.PVC_NAME } },
+    {
+      name: 'transcripts',
+      csi: {
+        driver: 'gcsfuse.csi.storage.gke.io',
+        volumeAttributes: { bucketName: e.TRANSCRIPT_BUCKET || DEFAULT_TRANSCRIPT_BUCKET, mountOptions: GCSFUSE_MOUNT_OPTIONS },
+      },
+    },
+  ];
   if (e.CODEX_RUN === '1') {
     mounts.push({ name: 'codex-auth', mountPath: e.CODEX_DIR, readOnly: true });
     volumes.push({ name: 'codex-auth', secret: { secretName: e.CODEX_SECRET } });
@@ -52,8 +66,17 @@ export function renderLeg(e) {
       activeDeadlineSeconds: Number(e.DEADLINE),
       ttlSecondsAfterFinished: Number(e.JOB_TTL_S),
       template: {
-        metadata: { labels: legLabels },
+        metadata: {
+          labels: legLabels,
+          annotations: {
+            'gke-gcsfuse/volumes': 'true',
+            'gke-gcsfuse/cpu-request': '250m',
+            'gke-gcsfuse/memory-request': '256Mi',
+            'gke-gcsfuse/ephemeral-storage-request': '1Gi',
+          },
+        },
         spec: {
+          serviceAccountName: e.SERVICE_ACCOUNT || DEFAULT_SERVICE_ACCOUNT,
           restartPolicy: 'Never',
           nodeSelector: { 'harmony-leg': 'true' },
           tolerations: [{ key: 'harmony-leg', operator: 'Equal', value: 'true', effect: 'NoSchedule' }],
