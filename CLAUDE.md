@@ -1,6 +1,6 @@
 # Harmony Plugin for Claude Code
 
-> **Living · project · Tier 1** · verified against plugin 0.15.53 / web 6bd2449 on 2026-10-15 · **revise when:** versioning, the staging channel, a release rule or a plugin convention changes. Convention: harmony-workspace `docs/README.md` (B-1044).
+> **Living · project · Tier 1** · verified against plugin 0.15.64 / web cabbdf4 on 2026-10-19 · **revise when:** versioning, the staging channel, a release rule or a plugin convention changes. Convention: harmony-workspace `docs/README.md` (B-1044).
 
 This is the Harmony plugin for Claude Code — an MCP server, CLI, and workflow skills for Harmony project management.
 
@@ -40,6 +40,8 @@ harmony tasks create --title "New task" --priority high
 - **finish-work** — Manual mode: verify readiness, rebase, squash merge the PR, clean up the worktree/branches, and move the Harmony task to Done. Opinionated mode: implements the release (merge + deploy) + verify gates the conductor delegates to; crossed only on your explicit "finish work" / "land it" / "merge it"
 
 Both skills depend on the `superpowers` plugin for some functionality (brainstorming, writing-plans, git-worktrees).
+
+**Skill permissions are declared as capability classes, not Claude-only frontmatter (B-1150).** Every `skills/*/SKILL.md` carries a `capabilities:` line naming runtime-neutral classes (`src/agents/skill-capabilities.ts`); each adapter projects them into its own permission model. The `allowed-tools` / `disallowed-tools` lines beside it are the **generated Claude projection**, pinned byte-for-byte by `src/agents/skill-capabilities.test.ts` — never hand-edit them; change `capabilities:` and regenerate. A Codex leg gets the same classes rendered into `$CODEX_HOME/hooks.json` and `AGENTS.md` (`harmony agent render`).
 
 ## Ticket disposition
 
@@ -195,7 +197,7 @@ harmony-plugin/
 │   ├── auth.ts                  # Token exchange (shared)
 │   ├── supabase.ts              # Supabase client (shared)
 │   ├── tools/                   # Handlers — shared core for MCP + CLI
-│   ├── agents/                  # Agent-adapter contract + registry (docs/agent-adapter-contract.md)
+│   ├── agents/                  # Agent-adapter contract + registry (docs/agent-adapter-contract.md); Claude Code and Codex adapters (B-933) — a run picks one via run_config.agent.adapter, a profile's `agents` list says which it may launch
 │   ├── bin/harmony.ts           # CLI binary entry point
 │   └── cli/                     # CLI commands and formatting
 ├── package.json
