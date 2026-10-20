@@ -234,7 +234,7 @@ export function composeTokenExpiryLine(expiresAt) {
 
 /** B-1020: 'HARMONY_LEG=<n>\n', or '' when no leg was given — mirrors composeModelLine's own
  *  always-appended-when-present convention exactly. The value here arrives from either an explicit
- *  --leg flag or (the daemon-driven path) this process's own inherited HARMONY_LEG env var —
+ *  --leg flag or (the conductor-driven path) this process's own inherited HARMONY_LEG env var —
  *  src/daemon/scheduler.ts's fireLaunch sets it as a per-call `env` option on the runCommand that
  *  spawns this script, and Node's exec() inherits that env into everything it spawns, so this
  *  script never has to re-derive the leg number itself. */
@@ -248,7 +248,7 @@ export function composeLegLine(leg) {
  * always raw JSON (src/daemon/scheduler.ts's runConfigJsonFor JSON.stringify'd it and nothing
  * else touched the wire between there and here). B-743 moves that encoding UPSTREAM into
  * scheduler.ts itself (the fix for the single-quote-in-note throw this ticket removes), so the
- * daemon-driven path now hands this script ALREADY-base64 input — but a manual invocation, an
+ * conductor-driven path now hands this script ALREADY-base64 input — but a manual invocation, an
  * older test, or container/cloud-worker-launch.sh's own DEFAULT_RUN_CONFIG='{}' fallback can still
  * hand it raw JSON. Both compose functions below normalize through this ONE detector rather than
  * assuming either shape, so neither can double-encode (base64-of-base64) or write undecoded
@@ -286,7 +286,7 @@ export function normalizeRunConfigJson(input) {
  *  this line also has to survive container/cloud-worker-launch.sh's YAML embedding on the cloud
  *  path, where raw JSON's embedded double quotes would break naive printf-quoting. Used for the
  *  INLINE delivery form (cloud profile: no --run-config-path given). B-743: normalizes through
- *  normalizeRunConfigJson first, so an ALREADY-base64 input (the daemon-driven path, post
+ *  normalizeRunConfigJson first, so an ALREADY-base64 input (the conductor-driven path, post
  *  scheduler.ts's upstream encode) is decoded back to raw JSON and re-encoded ONCE — never
  *  double-encoded — while a still-raw input (older/manual callers) is encoded exactly as before. */
 export function composeRunConfigInlineLine(runConfigJson) {
@@ -418,7 +418,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // B-743: the file write normalizes through normalizeRunConfigJson first — the mounted-file
   // reader (src/config/run-config.ts's getRunConfig, path form) JSON.parses the file directly with
   // NO base64 step, so this file must always hold RAW JSON regardless of whether --run-config
-  // arrived raw (older/manual callers) or already-base64 (the daemon-driven path, post
+  // arrived raw (older/manual callers) or already-base64 (the conductor-driven path, post
   // scheduler.ts's upstream encode).
   if (runConfig && runConfigPath) {
     const runConfigFilePath = runConfigFilePathFor(out);
@@ -438,7 +438,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
   writeEnvFile(out, envFileContent);
 
-  // Print the PATH, never the token — this line lands in daemon logs.
+  // Print the PATH, never the token — this line lands in conductor logs.
   process.stdout.write(`${out}\n`);
 }
 

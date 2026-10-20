@@ -12,8 +12,8 @@ The `harmony` CLI provides the same functionality as the MCP server for direct t
 - **Config:** `~/.harmony/config.json` (multi-project auth tokens)
 - **Output modes:** Human-readable tables (default) or `--json` for scripting
 - **Help:** `harmony --help`, `harmony <command> --help`
-- **Conductor config (B-1170):** `harmony conductor config <migrate|doctor|sync>` — a project's conductor is configured by `.harmony/conductor.json` in its repo plus `~/.harmony/conductor-host.json`; reference in [`docs/conductor-config.md`](docs/conductor-config.md)
-- **Conductor logs (B-1174):** `harmony conductor logs --since <1h|30m|2d> [--source local|cloud] [--limit n]` reads the daemon's JSON-lines log (`~/.harmony/logs/conductor.log`) or Cloud Logging; setup and the `gcloud logging read` query are in [`docs/conductor-config.md`](docs/conductor-config.md#conductor-logs-b-1174)
+- **Conductor config (B-1170):** `harmony conductor config <migrate|doctor|sync>` — a project's conductor is configured by `.harmony/conductor.json` in its repo plus `~/.harmony/conductor-host.json`; reference in [`docs/conductor-config.md`](docs/conductor-config.md) **Conductor lifecycle (B-1171):** `harmony conductor <start|stop|restart|status>` — stop = no new launches (legs keep running, the next start adopts them), restart = stop + start + adopt, update = restart onto the channel's latest version; semantics, pre-flight and the nohup-to-launchd adoption sequence in [`docs/conductor-lifecycle.md`](docs/conductor-lifecycle.md)
+- **Conductor logs (B-1174):** `harmony conductor logs --since <1h|30m|2d> [--source local|cloud] [--limit n]` reads the conductor's JSON-lines log (`~/.harmony/logs/conductor.log`) or Cloud Logging; setup and the `gcloud logging read` query are in [`docs/conductor-config.md`](docs/conductor-config.md#conductor-logs-b-1174)
 
 ### Quick start
 
@@ -153,7 +153,7 @@ attestation — the gate is the same whoever drives the ticket.
 `scripts/check-generated-artifacts.sh` — the inverted gate described above. The staging generation
 job (push to `main`) is the thing that builds and commits the bundle.
 
-**B-992:** any adopter of `.harmony/project.yml` (B-991) that also wants the PreToolUse gate's enforcement (`hooks/pretooluse-gate.sh` — denies a positively-identified daemon worker from opening/merging a PR or accepting a verify brief until the declared gate point has run) must also gitignore `.harmony/.gate-evidence/` — the local, best-effort evidence markers `harmony gates run <extension-point>` writes there are never meant to be committed. This repo's own `.gitignore` is the reference example.
+**B-992:** any adopter of `.harmony/project.yml` (B-991) that also wants the PreToolUse gate's enforcement (`hooks/pretooluse-gate.sh` — denies a positively-identified conductor worker from opening/merging a PR or accepting a verify brief until the declared gate point has run) must also gitignore `.harmony/.gate-evidence/` — the local, best-effort evidence markers `harmony gates run <extension-point>` writes there are never meant to be committed. This repo's own `.gitignore` is the reference example.
 
 ## Staging channel (pre-prod functional verify)
 

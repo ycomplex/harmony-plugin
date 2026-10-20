@@ -31223,6 +31223,30 @@ async function writeConductionQuotaState(client, id, expectedLeaseHolder, patch)
   }
   return data ? "ok" : "lease-lost";
 }
+function isMissingLegBackendColumn(err) {
+  if (!err) return false;
+  const text = `${err.message ?? ""} ${err.details ?? ""}`.toLowerCase();
+  const names = text.includes("leg_backend");
+  if (err.code === "42703" || err.code === "PGRST204") return names || text.trim() === "";
+  return names && /(does not exist|could not find|schema cache|unknown)/.test(text);
+}
+async function readConductionLegBackend(client, id) {
+  const { data, error } = await client.from("conductions").select("leg_backend").eq("id", id).maybeSingle();
+  if (error) {
+    if (isMissingLegBackendColumn(error)) return { absent: true };
+    throw error;
+  }
+  const v = data?.leg_backend;
+  return { absent: false, backend: typeof v === "string" && v.length > 0 ? v : null };
+}
+async function writeConductionLegBackend(client, id, expectedLeaseHolder, backend) {
+  const { data, error } = await client.from("conductions").update({ leg_backend: backend }).eq("id", id).eq("lease_holder", expectedLeaseHolder).select("id").maybeSingle();
+  if (error) {
+    if (isMissingLegBackendColumn(error)) return "missing-column";
+    throw error;
+  }
+  return data ? "ok" : "lease-lost";
+}
 
 // src/config/run-config.ts
 var SessionResumeSchema = external_exports.object({ enabled: external_exports.boolean() }).optional();
@@ -36487,7 +36511,7 @@ function present2(env, name) {
   const v = env[name];
   return typeof v === "string" && v !== "";
 }
-var LOGIN_HOWTO = `On the daemon host run 'CODEX_HOME=~/.harmony/codex-automation codex login --device-auth' once, then mount that auth.json into the worker (container/README.md "Codex credential runbook").`;
+var LOGIN_HOWTO = `On the conductor host run 'CODEX_HOME=~/.harmony/codex-automation codex login --device-auth' once, then mount that auth.json into the worker (container/README.md "Codex credential runbook").`;
 function resolveCodexCredential(env) {
   const refused = CODEX_REFUSED_CREDENTIAL_ENV.filter((n) => present2(env, n));
   if (refused.length > 0) {
@@ -36900,7 +36924,7 @@ function loadDaemonConfig(env, readFile, opts = {}) {
     const unknown = validatedProfile.agents.filter((id) => !registered.includes(id));
     if (unknown.length > 0) {
       throw new Error(
-        `launch profile's "agents" names unregistered agent adapter(s): ${unknown.map((u) => `'${u}'`).join(", ")}. Registered adapters: ${registered.join(", ")}. Fix the profile's "agents" list; the daemon will not boot with it.`
+        `launch profile's "agents" names unregistered agent adapter(s): ${unknown.map((u) => `'${u}'`).join(", ")}. Registered adapters: ${registered.join(", ")}. Fix the profile's "agents" list; the conductor will not boot with it.`
       );
     }
   }
@@ -37588,6 +37612,22 @@ ${msg}`);
   };
 }
 
+// src/daemon/leg-backend.ts
+function deriveBackendTag(profileName, profile) {
+  const launch = profile.launch ?? "";
+  if (launch.includes("gke-worker-launch")) return "gke";
+  if (launch.includes("docker-host-worker-launch")) return "docker-host";
+  if (launch.includes("cloud-worker-launch")) return "cloud";
+  if (launch.includes("docker-worker-launch")) return "docker";
+  return profileName && profileName.length > 0 ? profileName : "unnamed";
+}
+function resolveBackendTemplates(profiles, tag) {
+  for (const [name, p] of Object.entries(profiles ?? {})) {
+    if (deriveBackendTag(name, p) === tag) return { reap: p.reap, probe: p.probe };
+  }
+  return null;
+}
+
 // src/daemon/quiet-reap.ts
 function renderQuietReapOutcome(exitCode) {
   if (exitCode === 0) return "reaped a live worker";
@@ -37842,7 +37882,7 @@ function evaluateAgentEligibility(input) {
   return { eligible: true, adapter: id };
 }
 function formatAgentIneligibleComment(result) {
-  return `harmony daemon refused to launch this leg \u2014 agent adapter not eligible on this launch profile.
+  return `harmony conductor refused to launch this leg \u2014 agent adapter not eligible on this launch profile.
 
 ${result.reason}
 
@@ -38143,6 +38183,7 @@ async function runSchedulerPass(deps, state, keeper, runtime) {
   keeper.retain(activeIds);
   for (const id of [...runtime.ready.keys()]) if (!activeIds.has(id)) runtime.ready.delete(id);
   for (const id of [...runtime.running.keys()]) if (!activeIds.has(id)) runtime.running.delete(id);
+  for (const id of [...runtime.adoptRefused ?? []]) if (!activeIds.has(id)) runtime.adoptRefused?.delete(id);
   {
     const q = quotaMaps(runtime);
     for (const id of [...q.holds.keys()]) if (!activeIds.has(id)) q.holds.delete(id);
@@ -38166,7 +38207,7 @@ async function runSchedulerPass(deps, state, keeper, runtime) {
       if (tracked && row.lease_holder !== deps.leaseHolder) {
         runtime.running.delete(row.id);
         deps.log(
-          `conduction ${row.id}: lease lost to another daemon while a launch was tracked \u2014 abandoning (no clobber)`
+          `conduction ${row.id}: lease lost to another conductor while a launch was tracked \u2014 abandoning (no clobber)`
         );
       }
       await handleConduction(deps, state, keeper, excluded, runtime, row, stealCandidates, waitingCandidates);
@@ -38190,7 +38231,7 @@ function terminalDeclinePatch(workflowState) {
 async function writeIfHeld(deps, state, keeper, row, patch) {
   const updated = await deps.updateConductionIfHeld(row.id, deps.leaseHolder, patch);
   if (updated !== null) return true;
-  deps.log(`conduction ${row.id}: lease lost to another daemon \u2014 abandoning this run`);
+  deps.log(`conduction ${row.id}: lease lost to another conductor \u2014 abandoning this run`);
   keeper.stop(row.id);
   state.delete(row.id);
   return false;
@@ -38209,6 +38250,7 @@ async function handleConduction(deps, state, keeper, excluded, runtime, row, ste
     await handleForeignConduction(deps, state, keeper, excluded, runtime, row, stealCandidates, waitingCandidates);
     return;
   }
+  if (runtime.adoptRefused?.has(row.id)) return;
   await handleHeldConduction(deps, state, keeper, excluded, runtime, row);
 }
 async function handleHeldConduction(deps, state, keeper, excluded, runtime, row) {
@@ -38321,7 +38363,7 @@ async function handleHeldConduction(deps, state, keeper, excluded, runtime, row)
       state.set(row.id, captureBaseline(current));
       return;
     }
-    deps.log(`${label(row, current, deps.projectKey)}: fast-track recording not taken by the daemon (${outcome.reason}) \u2014 queuing the ordinary leg`);
+    deps.log(`${label(row, current, deps.projectKey)}: fast-track recording not taken by the conductor (${outcome.reason}) \u2014 queuing the ordinary leg`);
   }
   deps.log(`${label(row, current, deps.projectKey)}: wake (${wake}) \u2014 queued`);
   runtime.ready.set(row.id, {
@@ -38365,20 +38407,65 @@ async function handleForeignConduction(deps, state, keeper, excluded, runtime, r
   if (row.leg_started_at !== null) return;
   stealCandidates.push({ row, current });
 }
+async function resolveAdoptionTemplates(deps, runtime, row) {
+  const own = { reap: deps.config.profile.reap, probe: deps.config.profile.probe };
+  const lb = deps.legBackend;
+  if (!lb || runtime.legBackendAbsent) return own;
+  let recorded;
+  try {
+    recorded = await lb.read(row.id);
+  } catch (err) {
+    deps.log(
+      `conduction ${row.id}: could not read the recorded leg backend (${formatDaemonError(err)}) \u2014 adopting with this conductor's own ${lb.tag} templates`
+    );
+    return own;
+  }
+  if (recorded.absent) {
+    runtime.legBackendAbsent = true;
+    deps.log("leg_backend column absent (pre-promote) \u2014 adoption uses this conductor's own templates");
+    return own;
+  }
+  if (recorded.backend === null || recorded.backend === lb.tag) return own;
+  const templates = lb.resolveTemplates(recorded.backend);
+  if (templates === null) {
+    deps.log(
+      `conduction ${row.id}: \u26A0 NOT adopting \u2014 its leg was launched by the '${recorded.backend}' backend and this conductor (backend '${lb.tag}') has no '${recorded.backend}' profile to reap or probe it with; leaving the lease for a conductor that runs that backend`
+    );
+    return null;
+  }
+  deps.log(
+    `conduction ${row.id}: adopting a leg launched by the '${recorded.backend}' backend \u2014 reap/probe use that backend's templates, not this conductor's '${lb.tag}' ones`
+  );
+  return templates;
+}
 async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
   state.delete(row.id);
+  runtime.adoptRefused?.delete(row.id);
   if (row.lease_holder === null) {
     deps.log(`conduction ${row.id}: first claim of a never-held conduction`);
     return true;
   }
-  if (won.leg_started_at !== null && deps.config.profile.probe) {
+  const reapWillRun = !(row.clean_shutdown_at !== null && row.leg_started_at === null);
+  let adoptTemplates = {
+    reap: deps.config.profile.reap,
+    probe: deps.config.profile.probe
+  };
+  if (won.leg_started_at !== null || reapWillRun) {
+    const resolved = await resolveAdoptionTemplates(deps, runtime, row);
+    if (resolved === null) {
+      (runtime.adoptRefused ??= /* @__PURE__ */ new Set()).add(row.id);
+      return false;
+    }
+    adoptTemplates = resolved;
+  }
+  if (won.leg_started_at !== null && adoptTemplates.probe) {
     let probeTask = null;
     try {
       probeTask = await deps.getTaskMeta(row.task_id);
     } catch {
     }
     const probed = await deps.runCommand(
-      renderTemplate(deps.config.profile.probe, templateVars(row, probeTask, deps.projectKey, deps.workerImage))
+      renderTemplate(adoptTemplates.probe, templateVars(row, probeTask, deps.projectKey, deps.workerImage))
     );
     if (probed.exitCode === 0) {
       let current;
@@ -38424,14 +38511,14 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
       `${label(row, null, deps.projectKey)}: reconciliation probe found no live worker \u2014 reaping defensively and clearing the stale leg`
     );
   }
-  if (!(row.clean_shutdown_at !== null && row.leg_started_at === null)) {
+  if (reapWillRun) {
     let reapTask = null;
     try {
       reapTask = await deps.getTaskMeta(row.task_id);
     } catch {
     }
     await deps.runCommand(
-      renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey, deps.workerImage)),
+      renderTemplate(adoptTemplates.reap, templateVars(row, reapTask, deps.projectKey, deps.workerImage)),
       { quiet: true, quietRender: renderQuietReapOutcome }
     );
   }
@@ -38849,6 +38936,20 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
   });
   tracked.cancelDeadline = cancelDeadline;
   void launch.finally(cancelDeadline);
+  await recordLegBackend(deps, runtime, row);
+}
+async function recordLegBackend(deps, runtime, row) {
+  const lb = deps.legBackend;
+  if (!lb || runtime.legBackendAbsent) return;
+  try {
+    const outcome = await lb.write(row.id, deps.leaseHolder, lb.tag);
+    if (outcome === "missing-column") {
+      runtime.legBackendAbsent = true;
+      deps.log("leg_backend column absent (pre-promote) \u2014 not recording the launching backend");
+    }
+  } catch (err) {
+    deps.log(`conduction ${row.id}: could not record the launching backend (${formatDaemonError(err)}) \u2014 continuing`);
+  }
 }
 async function runScheduler(deps, keeper) {
   const state = /* @__PURE__ */ new Map();
@@ -39360,7 +39461,7 @@ ${err instanceof Error ? err.message : String(err)}
   }) : null;
   const prMergeStateReader = createGithubPrMergeStateReader({ env: process.env });
   log(
-    prMergeStateReader ? "fast-track post-merge recording: daemon-filed (GitHub credential found for PR merge-state reads)" : "fast-track post-merge recording: NOT daemon-filed \u2014 no GitHub credential in the daemon env (set HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/HARMONY_APP_PRIVATE_KEY_PATH, or GH_TOKEN); fast-track accepts fall back to a worker leg"
+    prMergeStateReader ? "fast-track post-merge recording: conductor-filed (GitHub credential found for PR merge-state reads)" : "fast-track post-merge recording: NOT conductor-filed \u2014 no GitHub credential in the conductor env (set HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/HARMONY_APP_PRIVATE_KEY_PATH, or GH_TOKEN); fast-track accepts fall back to a worker leg"
   );
   const deps = {
     now: Date.now,
@@ -39444,7 +39545,15 @@ ${err instanceof Error ? err.message : String(err)}
     // paused_until / quota_pauses accessors (null / 'missing-columns' before the web migration).
     getLastLegRefusal: (conductionId, sinceIso) => readLastLegRefusal(client, { conduction_id: conductionId, since: sinceIso }),
     readQuotaState: (ids) => readConductionQuotaState(client, ids),
-    writeQuotaState: (id, patch) => writeConductionQuotaState(client, id, leaseHolder, patch)
+    writeQuotaState: (id, patch) => writeConductionQuotaState(client, id, leaseHolder, patch),
+    // B-1171: record the launching backend per lease and reap/probe an adopted leg with ITS backend's
+    // templates. Both accessors tolerate the column being absent (pre-promote prod).
+    legBackend: {
+      tag: deriveBackendTag(preflightProfileName, config.profile),
+      resolveTemplates: (tag) => resolveBackendTemplates(deploymentConfig?.profiles, tag),
+      read: (id) => readConductionLegBackend(client, id),
+      write: (id, holder, backend) => writeConductionLegBackend(client, id, holder, backend)
+    }
   };
   const keeper = createHeartbeatKeeper({
     now: Date.now,
@@ -39472,7 +39581,7 @@ ${err instanceof Error ? err.message : String(err)}
     void stop("SIGINT");
   });
   log(
-    `conductor daemon up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms, worker timeout ${config.workerTimeoutMs}ms, hints ${hints ? `requested (${config.hintDebounceMs}ms debounce)` : "off"}`
+    `conductor up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms, worker timeout ${config.workerTimeoutMs}ms, hints ${hints ? `requested (${config.hintDebounceMs}ms debounce)` : "off"}`
   );
   try {
     await runScheduler(deps, keeper);
@@ -39491,7 +39600,7 @@ ${err instanceof Error ? err.message : String(err)}
 }
 main().catch((err) => {
   process.stderr.write(
-    `daemon failed: ${formatDaemonError(err, { endpoint: "/functions/v1/auth-token" })}
+    `conductor failed: ${formatDaemonError(err, { endpoint: "/functions/v1/auth-token" })}
 `
   );
   process.exit(1);

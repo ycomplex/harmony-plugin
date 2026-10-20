@@ -42,6 +42,7 @@ import { readSnapshot, refreshProjectFile, type RefreshOutcome } from '../../con
 import { loadLegacyDeploymentConfig, resolveDeploymentConfigPath } from '../../config/deployment-config.js';
 import { createGithubTokenProvider } from '../../config/github-app-token.js';
 import { formatOutput } from '../formatter.js';
+import { registerConductorLifecycleCommands } from './conductor-lifecycle.js';
 
 export interface ConductorCliDeps {
   env: NodeJS.ProcessEnv;
@@ -296,7 +297,7 @@ export interface Conflict {
   note?: string;
 }
 
-export const LEGACY_ENV_NOTE = 'environment wins at launch (deprecated) — unset it or remove it from daemon.env';
+export const LEGACY_ENV_NOTE = 'environment wins at launch (deprecated) — unset it or remove it from conductor.env';
 
 export interface DoctorLayers {
   project?: Obj;
@@ -438,7 +439,7 @@ export function runDoctor(deps: ConductorCliDeps, opts: { config?: string } = {}
   lines.push('', `LEGACY IN USE (${legacyInUse.length})`);
   if (legacyInUse.length === 0) lines.push('  (none)');
   for (const w of legacyInUse) lines.push(`  ${w.replace(/^deprecated: /, '')}`);
-  lines.push('  (only THIS shell\'s environment is checked; to check the daemon\'s, run `set -a; . <daemon.env>; set +a` first)');
+  lines.push('  (only THIS shell\'s environment is checked; to check the conductor\'s, run `set -a; . <conductor.env>; set +a` first)');
   if (warnings.length) {
     lines.push('', `WARNINGS (${warnings.length})`);
     for (const w of warnings) lines.push(`  ${w}`);
@@ -480,6 +481,7 @@ function emit(program: Command, result: CliResult): void {
 
 export function registerConductorCommands(program: Command, makeDeps: () => ConductorCliDeps = defaultCliDeps): void {
   const conductor = program.command('conductor').description('Conductor operations');
+  registerConductorLifecycleCommands(program, conductor); // B-1171: start | stop | restart | status
   const config = conductor.command('config').description('The two-file conductor config (.harmony/conductor.json + ~/.harmony/conductor-host.json)');
 
   config

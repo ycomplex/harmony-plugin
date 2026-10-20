@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # B-708: one-time setup of the Docker host — the remote Linux machine the "docker-host" launch
-# profile runs workers on. Run it ON THE HOST, from a checkout of this repo, as the user the daemon's
+# profile runs workers on. Run it ON THE HOST, from a checkout of this repo, as the user the conductor's
 # machine will SSH in as (a sudo-capable user; do not run it as root):
 #
 #   bash container/docker-host/bootstrap.sh
@@ -20,7 +20,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOST_USER="$(id -un)"
 
 if [ "$(id -u)" -eq 0 ]; then
-  echo "bootstrap: run this as the SSH user the daemon's machine will log in as, not as root (it uses sudo where it needs to)." >&2
+  echo "bootstrap: run this as the SSH user the conductor's machine will log in as, not as root (it uses sudo where it needs to)." >&2
   exit 1
 fi
 
@@ -93,7 +93,7 @@ on THIS host build the two images the profile runs:
   docker build -f container/docker-engine/Dockerfile --build-arg BASE=harmony-build-env \
     -t harmony-build-env-docker container/docker-engine
 
-Then, on the DAEMON'S machine, set worker_image to harmony-build-env-docker and add the
+Then, on the CONDUCTOR'S machine, set worker_image to harmony-build-env-docker and add the
 docker-host profile to the deployment config — container/README.md, "Docker-host launch
 profile (B-708)".
 

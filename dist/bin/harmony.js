@@ -3453,11 +3453,11 @@ function __metadata(metadataKey, metadataValue) {
 }
 function __awaiter(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve3) {
-      resolve3(value);
+    return value instanceof P ? value : new P(function(resolve5) {
+      resolve5(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve3, reject) {
+  return new (P || (P = Promise))(function(resolve5, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -3473,7 +3473,7 @@ function __awaiter(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve3(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve5(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -3664,14 +3664,14 @@ function __asyncValues(o) {
   }, i);
   function verb(n) {
     i[n] = o[n] && function(v) {
-      return new Promise(function(resolve3, reject) {
-        v = o[n](v), settle(resolve3, reject, v.done, v.value);
+      return new Promise(function(resolve5, reject) {
+        v = o[n](v), settle(resolve5, reject, v.done, v.value);
       });
     };
   }
-  function settle(resolve3, reject, d, v) {
+  function settle(resolve5, reject, d, v) {
     Promise.resolve(v).then(function(v2) {
-      resolve3({ value: v2, done: d });
+      resolve5({ value: v2, done: d });
     }, reject);
   }
 }
@@ -7161,15 +7161,15 @@ var require_RealtimeChannel = __commonJS({
             }
           }
         } else {
-          return new Promise((resolve3) => {
+          return new Promise((resolve5) => {
             var _a2, _b2, _c;
             const push = this.channelAdapter.push(args.type, args, opts.timeout || this.timeout);
             if (args.type === "broadcast" && !((_c = (_b2 = (_a2 = this.params) === null || _a2 === void 0 ? void 0 : _a2.config) === null || _b2 === void 0 ? void 0 : _b2.broadcast) === null || _c === void 0 ? void 0 : _c.ack)) {
-              resolve3("ok");
+              resolve5("ok");
             }
-            push.receive("ok", () => resolve3("ok"));
-            push.receive("error", () => resolve3("error"));
-            push.receive("timeout", () => resolve3("timed out"));
+            push.receive("ok", () => resolve5("ok"));
+            push.receive("error", () => resolve5("error"));
+            push.receive("timeout", () => resolve5("timed out"));
           });
         }
       }
@@ -7194,8 +7194,8 @@ var require_RealtimeChannel = __commonJS({
        * @category Realtime
        */
       async unsubscribe(timeout = this.timeout) {
-        return new Promise((resolve3) => {
-          this.channelAdapter.unsubscribe(timeout).receive("ok", () => resolve3("ok")).receive("timeout", () => resolve3("timed out")).receive("error", () => resolve3("error"));
+        return new Promise((resolve5) => {
+          this.channelAdapter.unsubscribe(timeout).receive("ok", () => resolve5("ok")).receive("timeout", () => resolve5("timed out")).receive("error", () => resolve5("error"));
         });
       }
       /**
@@ -7276,8 +7276,8 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error, leave, join: join7 } = constants_1.CHANNEL_EVENTS;
-        const events2 = [close, error, leave, join7];
+        const { close, error, leave, join: join11 } = constants_1.CHANNEL_EVENTS;
+        const events2 = [close, error, leave, join11];
         return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
@@ -7389,11 +7389,11 @@ var require_socketAdapter = __commonJS({
         this.socket.connect();
       }
       disconnect(callback, code, reason, timeout = 1e4) {
-        return new Promise((resolve3) => {
-          setTimeout(() => resolve3("timeout"), timeout);
+        return new Promise((resolve5) => {
+          setTimeout(() => resolve5("timeout"), timeout);
           this.socket.disconnect(() => {
             callback();
-            resolve3("ok");
+            resolve5("ok");
           }, code, reason);
         });
       }
@@ -10171,10 +10171,10 @@ var require_webauthn = __commonJS({
         authenticatorAttachment: (_a = credentialWithAttachment.authenticatorAttachment) !== null && _a !== void 0 ? _a : void 0
       };
     }
-    function isValidDomain(hostname) {
+    function isValidDomain(hostname2) {
       return (
         // Consider localhost valid as well since it's okay wrt Secure Contexts
-        hostname === "localhost" || /^([a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}$/i.test(hostname)
+        hostname2 === "localhost" || /^([a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}$/i.test(hostname2)
       );
     }
     function browserSupportsWebAuthn() {
@@ -15187,7 +15187,7 @@ var require_identity = __commonJS({
         }
       return false;
     }
-    function isNode(node) {
+    function isNode2(node) {
       if (node && typeof node === "object")
         switch (node[NODE_TYPE]) {
           case ALIAS:
@@ -15211,7 +15211,7 @@ var require_identity = __commonJS({
     exports.isCollection = isCollection;
     exports.isDocument = isDocument;
     exports.isMap = isMap;
-    exports.isNode = isNode;
+    exports.isNode = isNode2;
     exports.isPair = isPair;
     exports.isScalar = isScalar;
     exports.isSeq = isSeq;
@@ -28531,7 +28531,7 @@ var _getRequestParams = (method, options, parameters, body) => {
   return _objectSpread22(_objectSpread22({}, params), parameters);
 };
 async function _handleRequest(fetcher, method, url, options, parameters, body, namespace) {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve5, reject) => {
     fetcher(url, _getRequestParams(method, options, parameters, body)).then((result) => {
       if (!result.ok) throw result;
       if (options === null || options === void 0 ? void 0 : options.noResolveJson) return result;
@@ -28541,7 +28541,7 @@ async function _handleRequest(fetcher, method, url, options, parameters, body, n
         if (!contentType || !contentType.includes("application/json")) return {};
       }
       return result.json();
-    }).then((data) => resolve3(data)).catch((error) => handleError(error, reject, options, namespace));
+    }).then((data) => resolve5(data)).catch((error) => handleError(error, reject, options, namespace));
   });
 }
 function createFetchApi(namespace = "storage") {
@@ -35914,6 +35914,38 @@ function projectToDeploymentConfig(merged, legacy = null, warnings = []) {
   }
   return out;
 }
+function launchEnvFromMerged(merged) {
+  const out = {};
+  const put2 = (k, v) => {
+    if (v !== void 0 && v !== "") out[k] = String(v);
+  };
+  const g = merged.gke;
+  put2("HARMONY_GKE_NAMESPACE", g?.namespace);
+  put2(
+    "HARMONY_GKE_CONTEXT",
+    g?.context ?? (merged.gcp?.project && g?.location && g?.cluster ? `gke_${merged.gcp.project}_${g.location}_${g.cluster}` : void 0)
+  );
+  put2("HARMONY_GKE_BASE_SECRET", g?.base_secret);
+  put2("HARMONY_GKE_CODEX_SECRET", g?.codex_secret);
+  put2("HARMONY_GKE_REGISTRY", g?.registry);
+  put2("HARMONY_GKE_CPU", g?.cpu);
+  put2("HARMONY_GKE_MEMORY", g?.memory);
+  put2("HARMONY_GKE_TICKET_DISK", g?.ticket_disk);
+  put2("HARMONY_GKE_STORAGE_CLASS", g?.storage_class);
+  put2("HARMONY_GKE_DEADLINE_S", g?.deadline_s);
+  put2("HARMONY_GKE_POLL_S", g?.poll_s);
+  put2("HARMONY_GKE_JOB_TTL_S", g?.job_ttl_s);
+  put2("HARMONY_GKE_IMAGE", merged.images?.worker);
+  put2("HARMONY_CLOUD_RUN_REGION", merged.gcp?.region);
+  put2("HARMONY_CLOUD_RUN_JOB", merged.cloud_run?.job);
+  put2("CLOUDSDK_CORE_PROJECT", merged.gcp?.project);
+  put2("CLOUDSDK_CORE_ACCOUNT", merged.gcloud?.account);
+  put2("HARMONY_PLUGIN_DIR", merged.plugin_dir);
+  put2("HARMONY_APP_ID", merged.github_app?.app_id);
+  put2("HARMONY_APP_INSTALLATION_ID", merged.github_app?.installation_id);
+  put2("HARMONY_APP_PRIVATE_KEY_PATH", merged.github_app?.private_key_path);
+  return out;
+}
 var RESTART_ONLY_KEYS = [
   "channel",
   "profile",
@@ -37928,8 +37960,8 @@ function basenameOf(path3) {
   const idx = path3.lastIndexOf("/");
   return idx === -1 ? path3 : path3.slice(idx + 1);
 }
-function tokenizeBasename(basename2) {
-  const spaced = basename2.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
+function tokenizeBasename(basename3) {
+  const spaced = basename3.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
   return spaced.split(/\s+/).filter((t) => t.length > 0);
 }
 function authBasenameHit(path3) {
@@ -38170,7 +38202,7 @@ function firstToken(command) {
 function looksLikeScriptPath(token) {
   return token.includes("/");
 }
-function validateSteps(file, extensionPoint, steps, projectRoot, existsSync4) {
+function validateSteps(file, extensionPoint, steps, projectRoot, existsSync5) {
   if (!steps) return void 0;
   for (const step of steps) {
     if (isAgentTaskStep(step)) {
@@ -38183,7 +38215,7 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync4) {
     const token = firstToken(step.run);
     if (looksLikeScriptPath(token)) {
       const resolved = nodeResolve(projectRoot, token);
-      if (!existsSync4(resolved)) {
+      if (!existsSync5(resolved)) {
         return {
           file,
           reason: "missing-script",
@@ -38195,11 +38227,11 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync4) {
   return void 0;
 }
 function loadProjectManifest(projectRoot, deps = {}) {
-  const existsSync4 = deps.existsSync ?? nodeExistsSync2;
-  const readFileSync11 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
+  const existsSync5 = deps.existsSync ?? nodeExistsSync2;
+  const readFileSync12 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin2(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
-  if (!existsSync4(file)) return { kind: "absent" };
-  const raw = readFileSync11(file);
+  if (!existsSync5(file)) return { kind: "absent" };
+  const raw = readFileSync12(file);
   let parsed;
   try {
     parsed = (0, import_yaml.parse)(raw);
@@ -38294,17 +38326,17 @@ function loadProjectManifest(projectRoot, deps = {}) {
     };
   }
   const stepErrors = {};
-  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync4);
+  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync5);
   if (buildErr) stepErrors["build.before_pr"] = buildErr;
   const releaseErr = validateSteps(
     file,
     "release.before_merge",
     manifest.release?.before_merge,
     projectRoot,
-    existsSync4
+    existsSync5
   );
   if (releaseErr) stepErrors["release.before_merge"] = releaseErr;
-  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync4);
+  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync5);
   if (verifyErr) stepErrors["verify.before_ack"] = verifyErr;
   return { kind: "ok", file, manifest, stepErrors };
 }
@@ -43441,7 +43473,7 @@ function present2(env2, name) {
   const v = env2[name];
   return typeof v === "string" && v !== "";
 }
-var LOGIN_HOWTO = `On the daemon host run 'CODEX_HOME=~/.harmony/codex-automation codex login --device-auth' once, then mount that auth.json into the worker (container/README.md "Codex credential runbook").`;
+var LOGIN_HOWTO = `On the conductor host run 'CODEX_HOME=~/.harmony/codex-automation codex login --device-auth' once, then mount that auth.json into the worker (container/README.md "Codex credential runbook").`;
 function resolveCodexCredential(env2) {
   const refused = CODEX_REFUSED_CREDENTIAL_ENV.filter((n) => present2(env2, n));
   if (refused.length > 0) {
@@ -43850,7 +43882,7 @@ async function assertRunConfigRuntime(client, runConfig) {
 
 // src/cli/commands/conduct.ts
 function registerConductCommand(program3) {
-  program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor daemon picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").option("--unpark", "Revive a Parked ticket and hand it to the conductor in this same call (B-964)", false).option("--resume-to <state>", "Target workflow_state override when reviving a Parked ticket (defaults to the ticket's own parked_from, else Proposed)").option("--model <alias>", "B-925: explicit model alias for this run (fills run_config.model.default)").option("--session-resume", "B-925: explicitly enable session-resume for this run").option("--no-session-resume", "B-925: explicitly disable session-resume for this run").option("--auto-approve-gates <gates>", "B-925: comma-separated forward gates to auto-approve for this run").option("--no-auto-approve-gates", "B-925: explicitly auto-approve no gates for this run").option("--fast-track", "B-1073: run this conduction in fast-track mode (sets run_config.fast_track)").option("--agent <id>", "B-1147: agent runtime for this run (sets run_config.agent.adapter), e.g. claude-code, codex").action(async (ticket, opts) => {
+  program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").option("--unpark", "Revive a Parked ticket and hand it to the conductor in this same call (B-964)", false).option("--resume-to <state>", "Target workflow_state override when reviving a Parked ticket (defaults to the ticket's own parked_from, else Proposed)").option("--model <alias>", "B-925: explicit model alias for this run (fills run_config.model.default)").option("--session-resume", "B-925: explicitly enable session-resume for this run").option("--no-session-resume", "B-925: explicitly disable session-resume for this run").option("--auto-approve-gates <gates>", "B-925: comma-separated forward gates to auto-approve for this run").option("--no-auto-approve-gates", "B-925: explicitly auto-approve no gates for this run").option("--fast-track", "B-1073: run this conduction in fast-track mode (sets run_config.fast_track)").option("--agent <id>", "B-1147: agent runtime for this run (sets run_config.agent.adapter), e.g. claude-code, codex").action(async (ticket, opts) => {
     if (opts.agent !== void 0 && !hasAdapter(opts.agent)) {
       console.error(
         `Error: Unknown agent runtime '${opts.agent}' \u2014 available runtimes: ${listAdapterIds().join(", ")}`
@@ -43915,7 +43947,7 @@ function registerConductCommand(program3) {
         }
       },
       (row) => `Conduction ${row.id} created for ${ticket} (${row.status}, mode: ${row.mode}).
-The conductor daemon will pick it up on its next pass.
+The conductor will pick it up on its next pass.
 Note: the duplicate-guard can only detect an active conduction record \u2014 it can't see an in-progress terminal session, so make sure any in-session work on this ticket has stopped before handing it off.`
     );
   });
@@ -43956,8 +43988,8 @@ function registerConfigCommands(program3) {
 }
 
 // src/cli/commands/conductor-config.ts
-import { chmodSync as chmodSync2, existsSync as fsExistsSync2, mkdirSync as mkdirSync2, readFileSync as fsReadFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname as dirname3, resolve } from "node:path";
+import { chmodSync as chmodSync3, existsSync as fsExistsSync2, mkdirSync as mkdirSync3, readFileSync as fsReadFileSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname as dirname5, resolve as resolve3 } from "node:path";
 
 // src/config/conductor-migrate.ts
 var SECRET_REASON = "secret value: stays in Secret Manager / the service environment";
@@ -44226,6 +44258,1044 @@ ${new ConductorConfigError(v.issues).message}`);
   }
 }
 
+// src/cli/commands/conductor-lifecycle.ts
+import { dirname as dirname4, join as join7 } from "node:path";
+
+// src/daemon/conductor-board.ts
+var holderPrefix = (host, pid) => `${host}:${pid}:`;
+function heldBy(rows, prefix) {
+  return rows.filter((r) => r.status === "active" && typeof r.lease_holder === "string" && r.lease_holder.startsWith(prefix));
+}
+function adoptionState(rows, id, prefix, freshMs, nowMs) {
+  const r = rows.find((x) => x.id === id);
+  if (!r || r.status !== "active") return { state: "gone" };
+  if (typeof r.lease_holder !== "string" || !r.lease_holder.startsWith(prefix)) {
+    return { state: "wait", why: `lease holder is ${r.lease_holder || "none"}` };
+  }
+  const hb = Date.parse(r.last_heartbeat_at || "");
+  if (!Number.isFinite(hb) || nowMs - hb > freshMs) {
+    return { state: "wait", why: `heartbeat ${r.last_heartbeat_at || "missing"} is not fresh` };
+  }
+  return { state: "ok" };
+}
+function classifyLeases(rows, host, runningPid, freshMs, nowMs) {
+  const out = [];
+  for (const r of rows) {
+    if (r.status !== "active") continue;
+    const holder = r.lease_holder;
+    let owner = "other-host";
+    if (typeof holder === "string" && holder.startsWith(`${host}:`)) {
+      owner = runningPid !== null && holder.startsWith(holderPrefix(host, runningPid)) ? "this-conductor" : "previous-process";
+    }
+    const hb = Date.parse(r.last_heartbeat_at || "");
+    out.push({
+      id: r.id,
+      ticket: r.ticket ?? "?",
+      holder: holder ?? null,
+      last_heartbeat_at: r.last_heartbeat_at,
+      owner,
+      fresh: Number.isFinite(hb) && nowMs - hb <= freshMs
+    });
+  }
+  return out;
+}
+
+// src/daemon/conductor-process.ts
+import { basename as basename2, isAbsolute, join as join4, resolve } from "node:path";
+function parsePsOutput(text) {
+  const out = [];
+  for (const line of text.split("\n")) {
+    const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(line);
+    if (m) out.push({ pid: Number(m[1]), args: m[2] });
+  }
+  return out;
+}
+function tokenizeArgs(args) {
+  const tokens = [];
+  let cur = "";
+  let quote = null;
+  let has2 = false;
+  for (let i = 0; i < args.length; i++) {
+    const c = args[i];
+    if (quote) {
+      if (c === quote) quote = null;
+      else cur += c;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+      has2 = true;
+    } else if (c === "\\" && i + 1 < args.length && args[i + 1] === " ") {
+      cur += " ";
+      i++;
+    } else if (/\s/.test(c)) {
+      if (has2 || cur) tokens.push(cur);
+      cur = "";
+      has2 = false;
+    } else {
+      cur += c;
+      has2 = true;
+    }
+  }
+  if (has2 || cur) tokens.push(cur);
+  return tokens;
+}
+var isNode = (exe) => /^(node|nodejs)(\d+(\.\d+)*)?$/.test(basename2(exe));
+function scriptOf(argv) {
+  if (argv.length < 2 || !isNode(argv[0])) return null;
+  const valued = /* @__PURE__ */ new Set(["-r", "--require", "--import", "--loader", "--experimental-loader", "-e", "--eval", "-p", "--print"]);
+  let i = 1;
+  while (i < argv.length && argv[i].startsWith("-")) {
+    i += valued.has(argv[i]) ? 2 : 1;
+  }
+  if (i >= argv.length) return null;
+  return { script: argv[i], rest: argv.slice(i + 1) };
+}
+function flagValue(rest, flag) {
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === flag) return rest[i + 1];
+    if (rest[i].startsWith(`${flag}=`)) return rest[i].slice(flag.length + 1);
+  }
+  return void 0;
+}
+function daemonCandidates(procs) {
+  const out = [];
+  for (const p of procs) {
+    if (p.args.includes("<defunct>")) continue;
+    const argv = tokenizeArgs(p.args);
+    const s = scriptOf(argv);
+    if (!s) continue;
+    if (!/(^|\/)dist\/bin\/daemon\.js$/.test(s.script)) continue;
+    out.push({ pid: p.pid, argv, script: s.script, config: flagValue(s.rest, "--config"), profile: flagValue(s.rest, "--profile") });
+  }
+  return out;
+}
+function matchConductors(procs, opts) {
+  const want = resolve(join4(opts.pluginDir, "dist", "bin", "daemon.js"));
+  const out = [];
+  for (const c of daemonCandidates(procs)) {
+    let script;
+    if (isAbsolute(c.script)) script = resolve(c.script);
+    else {
+      const cwd = opts.cwdByPid?.get(c.pid);
+      if (!cwd) continue;
+      script = resolve(cwd, c.script);
+    }
+    if (script !== want) continue;
+    if (opts.configPath && c.config !== void 0 && resolve(c.config) !== resolve(opts.configPath)) continue;
+    out.push({ ...c, script });
+  }
+  return out;
+}
+function needsCwd(procs) {
+  return daemonCandidates(procs).filter((c) => !isAbsolute(c.script)).map((c) => c.pid);
+}
+
+// src/daemon/supervisor-control.ts
+import { join as join5 } from "node:path";
+
+// src/daemon/supervisor.ts
+var LAUNCHD_SERVICE_NAME = "com.ycomplex.harmony-daemon";
+
+// src/daemon/supervisor-control.ts
+var LAUNCHD_LABEL = LAUNCHD_SERVICE_NAME;
+var SYSTEMD_UNIT = "harmony-conductor.service";
+var agentPlistPath = (home) => join5(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+var daemonPlistPath = () => `/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist`;
+var systemdUnitPath = (home) => join5(home, ".config", "systemd", "user", SYSTEMD_UNIT);
+var launchdTarget = (kind, uid) => kind === "launchd-agent" ? `gui/${uid}/${LAUNCHD_LABEL}` : `system/${LAUNCHD_LABEL}`;
+async function detectSupervisorState(deps) {
+  if (deps.platform === "darwin") {
+    for (const kind of ["launchd-agent", "launchd-daemon"]) {
+      const target = launchdTarget(kind, deps.uid);
+      const r = await deps.exec("launchctl", ["print", target]);
+      if (r.code === 0) return { kind, active: true, target };
+    }
+    return { kind: "none", active: false };
+  }
+  if (deps.platform === "linux") {
+    const r = await deps.exec("systemctl", ["--user", "is-active", SYSTEMD_UNIT]);
+    const word = r.stdout.trim();
+    if (r.code === 0 || word === "active" || word === "activating") return { kind: "systemd-user", active: true, target: SYSTEMD_UNIT };
+    if (deps.existsSync(systemdUnitPath(deps.home))) return { kind: "systemd-user", active: false, target: SYSTEMD_UNIT };
+  }
+  return { kind: "none", active: false };
+}
+function stopCommands(kind, uid) {
+  if (kind === "launchd-agent") return [{ file: "launchctl", args: ["bootout", launchdTarget(kind, uid)] }];
+  if (kind === "launchd-daemon") return [{ file: "sudo", args: ["launchctl", "bootout", launchdTarget(kind, uid)], interactive: true }];
+  if (kind === "systemd-user") return [{ file: "systemctl", args: ["--user", "stop", SYSTEMD_UNIT] }];
+  return [];
+}
+function restartCommands(kind, uid) {
+  if (kind === "launchd-agent") return [{ file: "launchctl", args: ["kickstart", "-k", launchdTarget(kind, uid)] }];
+  if (kind === "launchd-daemon") return [{ file: "sudo", args: ["launchctl", "kickstart", "-k", launchdTarget(kind, uid)], interactive: true }];
+  if (kind === "systemd-user") return [{ file: "systemctl", args: ["--user", "restart", SYSTEMD_UNIT] }];
+  return [];
+}
+function installCommands(kind, uid, paths) {
+  if (kind === "launchd-agent") return [{ file: "launchctl", args: ["bootstrap", `gui/${uid}`, paths.agentPlist] }];
+  if (kind === "launchd-daemon") {
+    const dest = daemonPlistPath();
+    return [
+      { file: "sudo", args: ["install", "-m", "644", "-o", "root", "-g", "wheel", paths.staged ?? paths.agentPlist, dest], interactive: true },
+      { file: "sudo", args: ["launchctl", "bootstrap", "system", dest], interactive: true }
+    ];
+  }
+  return [
+    { file: "systemctl", args: ["--user", "daemon-reload"] },
+    { file: "systemctl", args: ["--user", "enable", "--now", SYSTEMD_UNIT] }
+  ];
+}
+function fillTemplate(template, values) {
+  return template.replace(/\{\{([A-Z_]+)\}\}/g, (_m, key) => {
+    if (!(key in values)) throw new Error(`template placeholder {{${key}}} has no value`);
+    return values[key];
+  });
+}
+var xmlEscape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+var launcherPath = (pluginDir) => join5(pluginDir, "container", "conductor-launch.sh");
+function renderLaunchdPlist(template, o) {
+  const args = ["/bin/bash", launcherPath(o.pluginDir), ...o.launcherArgs];
+  return fillTemplate(template, {
+    LABEL: xmlEscape(o.label ?? LAUNCHD_LABEL),
+    PROGRAM_ARGUMENTS: args.map((a) => `        <string>${xmlEscape(a)}</string>`).join("\n"),
+    PLUGIN_DIR: xmlEscape(o.pluginDir),
+    // A LaunchDaemon runs as root unless told otherwise: UserName makes it start at boot AS that user, with that user's HOME.
+    USER_NAME_BLOCK: o.userName ? `
+    <key>UserName</key>
+    <string>${xmlEscape(o.userName)}</string>
+` : "",
+    HOME: xmlEscape(o.home),
+    PATH: xmlEscape(o.path),
+    LOG_PATH: xmlEscape(o.logPath)
+  });
+}
+function systemdQuote(value, execLine = false) {
+  let v = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%");
+  if (execLine) v = v.replace(/\$/g, "$$$$");
+  return `"${v}"`;
+}
+function renderSystemdUnit(template, o) {
+  const args = ["/bin/bash", launcherPath(o.pluginDir), ...o.launcherArgs];
+  return fillTemplate(template, {
+    PLUGIN_DIR: o.pluginDir.replace(/%/g, "%%"),
+    ENV_PATH: systemdQuote(`PATH=${o.path}`),
+    ENV_PLUGIN_DIR: systemdQuote(`HARMONY_PLUGIN_DIR=${o.pluginDir}`),
+    EXEC_START: args.map((a) => systemdQuote(a, true)).join(" "),
+    LOG_PATH: o.logPath.replace(/%/g, "%%")
+  });
+}
+
+// src/cli/commands/conductor-lifecycle-deps.ts
+import { spawn } from "node:child_process";
+import { chmodSync as chmodSync2, closeSync, existsSync as existsSync2, mkdirSync as mkdirSync2, openSync, readFileSync as readFileSync5, readlinkSync, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { homedir as homedir3, hostname, userInfo } from "node:os";
+import { dirname as dirname3, resolve as resolve2 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// src/cli/commands/conductions.ts
+async function listActiveConductions(client, projectId) {
+  const rows = await listConductions(client, { status: "active" });
+  if (rows.length === 0) return [];
+  const projectKey = (await getProject(client, projectId)).key;
+  const { data, error } = await client.from("tasks").select("id, task_number").in("id", rows.map((r) => r.task_id));
+  if (error) throw error;
+  const numbers = new Map((data ?? []).map((t) => [t.id, t.task_number]));
+  return rows.map((r) => ({
+    id: r.id,
+    ticket: numbers.has(r.task_id) ? `${projectKey}-${numbers.get(r.task_id)}` : null,
+    status: r.status,
+    lease_holder: r.lease_holder,
+    last_heartbeat_at: r.last_heartbeat_at,
+    leg_started_at: r.leg_started_at,
+    clean_shutdown_at: r.clean_shutdown_at
+  }));
+}
+function registerConductionsCommands(program3) {
+  const conductions = program3.command("conductions").description("Read conduction (run) records");
+  conductions.command("active").description("List active conductions with their lease holder and heartbeat (use --json for scripting)").action(async () => {
+    await runCommand(
+      program3.opts(),
+      async (ctx) => listActiveConductions(ctx.client, ctx.projectId),
+      (rows) => formatTable(rows, [
+        { key: "ticket", header: "Ticket" },
+        { key: "id", header: "Conduction" },
+        { key: "lease_holder", header: "Lease holder" },
+        { key: "last_heartbeat_at", header: "Heartbeat" },
+        { key: "leg_started_at", header: "Leg started" }
+      ])
+    );
+  });
+}
+
+// src/cli/commands/conductor-lifecycle-deps.ts
+function defaultLifecycleDeps() {
+  const exec = (file, args, opts = {}) => new Promise((resolvePromise) => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const done = (r) => {
+      if (!settled) {
+        settled = true;
+        resolvePromise(r);
+      }
+    };
+    try {
+      const child = spawn(file, args, {
+        stdio: opts.interactive ? "inherit" : ["ignore", "pipe", "pipe"],
+        env: { ...process.env, ...opts.env ?? {} },
+        cwd: opts.cwd
+      });
+      child.stdout?.on("data", (d) => stdout += d.toString());
+      child.stderr?.on("data", (d) => stderr += d.toString());
+      child.on("error", (err) => done({ code: err.code === "ENOENT" ? 127 : 1, stdout, stderr: stderr || err.message }));
+      child.on("close", (code) => done({ code: code ?? 1, stdout, stderr }));
+    } catch (err) {
+      done({ code: 127, stdout, stderr: err instanceof Error ? err.message : String(err) });
+    }
+  });
+  return {
+    env: process.env,
+    platform: process.platform,
+    uid: typeof process.getuid === "function" ? process.getuid() : 0,
+    username: (() => {
+      try {
+        return userInfo().username;
+      } catch {
+        return process.env.USER ?? "";
+      }
+    })(),
+    home: homedir3(),
+    cliPluginDir: resolve2(dirname3(fileURLToPath2(import.meta.url)), "..", ".."),
+    hostname: () => hostname(),
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    exec,
+    listProcesses: async () => {
+      const r = await exec("ps", ["-axo", "pid=,args="]);
+      return r.code === 0 ? parsePsOutput(r.stdout) : [];
+    },
+    cwdOf: async (pid) => {
+      try {
+        return readlinkSync(`/proc/${pid}/cwd`);
+      } catch {
+      }
+      const r = await exec("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"]);
+      const line = r.stdout.split("\n").find((l) => l.startsWith("n"));
+      return r.code === 0 && line ? line.slice(1) : null;
+    },
+    signal: (pid, signal) => {
+      try {
+        process.kill(pid, signal);
+        return true;
+      } catch (err) {
+        return err.code === "EPERM";
+      }
+    },
+    spawnDetached: (file, args, o) => {
+      mkdirSync2(dirname3(o.logPath), { recursive: true });
+      const fd = openSync(o.logPath, "a");
+      try {
+        const child = spawn(file, args, {
+          detached: true,
+          stdio: ["ignore", fd, fd],
+          env: { ...process.env, ...o.env },
+          cwd: o.cwd
+        });
+        child.unref();
+        if (child.pid === void 0) throw new Error(`could not start ${file}`);
+        return child.pid;
+      } finally {
+        closeSync(fd);
+      }
+    },
+    existsSync: existsSync2,
+    readFileSync: (p) => readFileSync5(p, "utf8"),
+    writeFileSync: (p, text, mode) => {
+      writeFileSync2(p, text, { mode });
+      chmodSync2(p, mode);
+    },
+    mkdirSync: (p) => {
+      mkdirSync2(p, { recursive: true });
+    },
+    rmSync: (p) => rmSync2(p, { force: true }),
+    readBoard: async (env2) => {
+      const token = env2.HARMONY_API_TOKEN;
+      if (!token) throw new Error("HARMONY_API_TOKEN is not set");
+      const auth = new HarmonyAuth(token);
+      const client = await createAuthenticatedClient(auth);
+      return listActiveConductions(client, auth.getProjectId());
+    }
+  };
+}
+
+// src/cli/commands/conductor-preflight.ts
+import { join as join6 } from "node:path";
+var SHELL_NOISE = /* @__PURE__ */ new Set(["_", "SHLVL", "PWD", "OLDPWD"]);
+async function sourceEnvFile(deps, file) {
+  const script = `set -a; . "$1" >/dev/null 2>&1 || exit 97; exec node -e 'process.stdout.write(JSON.stringify(process.env))'`;
+  const r = await deps.exec("bash", ["-c", script, "_", file]);
+  if (r.code !== 0) return { error: `env file could not be loaded: ${file}` };
+  try {
+    return { env: JSON.parse(r.stdout) };
+  } catch {
+    return { error: `env file could not be loaded: ${file}` };
+  }
+}
+async function loadSettings(deps, opts = {}) {
+  const paths = resolveConductorPaths(deps.env);
+  const envPath = join6(paths.home, "conductor.env");
+  const legacyPath = join6(paths.home, "daemon.env");
+  let envFile = null;
+  const fileEnv = {};
+  let envFileError;
+  const chosen = deps.existsSync(envPath) ? { path: envPath, legacy: false } : deps.existsSync(legacyPath) ? { path: legacyPath, legacy: true } : null;
+  if (chosen) {
+    const r = await sourceEnvFile(deps, chosen.path);
+    envFile = chosen;
+    if ("env" in r) {
+      for (const [k, v] of Object.entries(r.env)) if (deps.env[k] !== v && !SHELL_NOISE.has(k)) fileEnv[k] = v;
+    } else envFileError = r.error;
+  }
+  const evalEnv = { ...deps.env, ...fileEnv };
+  let merged = null;
+  const configIssues = [];
+  try {
+    const ev = evaluateConductorConfig({
+      env: evalEnv,
+      existsSync: deps.existsSync,
+      readFileSync: deps.readFileSync,
+      warn: () => {
+      },
+      loadLegacy: () => loadLegacyDeploymentConfig({ configPath: opts.config, env: evalEnv, existsSync: deps.existsSync, readFileSync: deps.readFileSync })
+    });
+    if (ev) {
+      merged = ev.merged;
+      for (const i of ev.issues) configIssues.push(`${i.file} \u203A ${i.key}: ${i.problem}`);
+    }
+  } catch (err) {
+    configIssues.push(err instanceof Error ? err.message : String(err));
+  }
+  const launchEnv = merged && configIssues.length === 0 ? launchEnvFromMerged(merged) : {};
+  const env2 = { ...launchEnv, ...deps.env, ...fileEnv };
+  return {
+    env: env2,
+    paths,
+    envFile,
+    envFileError,
+    merged,
+    configIssues,
+    pluginDir: env2.HARMONY_PLUGIN_DIR || deps.cliPluginDir,
+    channel: merged?.channel,
+    profile: opts.profile ?? merged?.profile,
+    deploymentConfig: opts.config
+  };
+}
+var has = (v) => v !== void 0 && v !== "";
+async function haveTool(deps, tool) {
+  return (await deps.exec("sh", ["-c", 'command -v "$1"', "_", tool])).code === 0;
+}
+async function runPreflight(deps, s, opts = {}) {
+  const checks = [];
+  const warnings = [];
+  const add = (name, ok, detail, fix) => checks.push({ name, ok, detail, fix });
+  if (s.envFileError) add("env-file", false, s.envFileError, `repair ${s.envFile?.path}`);
+  else if (s.envFile) add("env-file", true, `loaded ${s.envFile.path} (values not shown)${s.envFile.legacy ? " \u2014 legacy name, rename it to conductor.env" : ""}`);
+  else add("env-file", true, "no conductor.env: using this shell's environment only");
+  const doctor = runDoctor(
+    { env: s.env, existsSync: deps.existsSync, readFileSync: deps.readFileSync },
+    { config: s.deploymentConfig }
+  );
+  const issueLines = doctor.data.issues.map((i) => i.text);
+  add("config", doctor.exitCode === 0, doctor.exitCode === 0 ? "harmony conductor config doctor: ok" : `${issueLines.length} issue(s): ${issueLines.slice(0, 3).join(" | ")}`, "run `harmony conductor config doctor` and fix what it lists");
+  const tools = ["git", "node"];
+  if (s.profile === "gke") tools.push("kubectl");
+  else if (s.profile === "cloud") tools.push("gcloud");
+  else if (s.profile) tools.push("kubectl", "gcloud");
+  for (const t of tools) {
+    const ok = await haveTool(deps, t);
+    add(`tool:${t}`, ok, ok ? `${t} found on PATH` : `${t} is not on PATH`, `install ${t} or fix PATH`);
+  }
+  if (!s.profile) add("profile", true, "profile not determined (no config file names one and none was passed): only generic tools were checked");
+  const tokenOk = has(s.env.HARMONY_API_TOKEN);
+  add("cred:HARMONY_API_TOKEN", tokenOk, tokenOk ? "present" : "not set", "put HARMONY_API_TOKEN in ~/.harmony/conductor.env");
+  let board = null;
+  if (tokenOk) {
+    try {
+      board = await deps.readBoard(s.env);
+      add("cred:board", true, "the board is readable with HARMONY_API_TOKEN");
+    } catch (err) {
+      add("cred:board", false, `the board could not be read: ${err instanceof Error ? err.message : String(err)}`, "check HARMONY_API_TOKEN and the network");
+    }
+  } else add("cred:board", false, "not attempted: HARMONY_API_TOKEN is not set");
+  const keyPath = s.env.HARMONY_APP_PRIVATE_KEY_PATH;
+  if (has(s.env.HARMONY_APP_PRIVATE_KEY)) add("cred:github-app-key", true, "HARMONY_APP_PRIVATE_KEY present");
+  else if (has(keyPath)) {
+    const readable = (() => {
+      try {
+        deps.readFileSync(keyPath);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    add("cred:github-app-key", readable, readable ? "HARMONY_APP_PRIVATE_KEY_PATH points at a readable file" : "HARMONY_APP_PRIVATE_KEY_PATH names a file that is missing or unreadable", "fix github_app.private_key_path in conductor-host.json");
+  } else add("cred:github-app-key", false, "neither HARMONY_APP_PRIVATE_KEY_PATH nor HARMONY_APP_PRIVATE_KEY is set", "set github_app.private_key_path in conductor-host.json");
+  if (s.profile === "gke") {
+    const ns = s.env.HARMONY_GKE_NAMESPACE || "harmony-legs";
+    const secret = s.env.HARMONY_GKE_BASE_SECRET || "harmony-worker-secrets";
+    const args = ["-n", ns, ...has(s.env.HARMONY_GKE_CONTEXT) ? ["--context", s.env.HARMONY_GKE_CONTEXT] : [], "get", "secret", secret];
+    const r = await deps.exec("kubectl", args, { env: s.env });
+    add("reach:gke-base-secret", r.code === 0, r.code === 0 ? `base Secret ${ns}/${secret} exists` : `kubectl cannot read base Secret ${ns}/${secret}`, "check the kubeconfig context, or run container/gke/setup-cluster.sh");
+  } else if (s.profile === "cloud") {
+    const job = s.env.HARMONY_CLOUD_RUN_JOB;
+    const region = s.env.HARMONY_CLOUD_RUN_REGION;
+    const project = s.env.CLOUDSDK_CORE_PROJECT || "harmony-conductor";
+    if (!has(job) || !has(region)) {
+      add("reach:cloud-run-job", false, `${[!has(job) ? "HARMONY_CLOUD_RUN_JOB" : "", !has(region) ? "HARMONY_CLOUD_RUN_REGION" : ""].filter(Boolean).join(", ")} not set`, "set cloud_run.job and gcp.region in the config files");
+    } else {
+      const r = await deps.exec("gcloud", ["run", "jobs", "describe", job, `--region=${region}`, `--project=${project}`, "--format=value(name)"], { env: s.env });
+      add("reach:cloud-run-job", r.code === 0, r.code === 0 ? `Cloud Run job ${job} exists` : `Cloud Run job ${job} (region ${region}, project ${project}) does not exist or is unreadable`, "check gcloud auth and the job name");
+    }
+  }
+  if (opts.pull && s.channel) {
+    const r = await deps.exec("git", ["-C", s.pluginDir, "rev-parse", "--abbrev-ref", "HEAD"]);
+    const branch = r.stdout.trim();
+    const ok = r.code === 0 && branch === s.channel;
+    add("channel-branch", ok, ok ? `${s.pluginDir} is on ${s.channel}` : r.code === 0 ? `${s.pluginDir} is on branch '${branch}', the config names channel '${s.channel}'` : `${s.pluginDir} is not a git checkout`, `git -C ${s.pluginDir} checkout ${s.channel}`);
+  }
+  if (opts.supervise === "local") {
+    if (deps.platform === "darwin") {
+      const r = await deps.exec("defaults", ["read", "/Library/Preferences/com.apple.loginwindow", "autoLoginUser"]);
+      if (r.code !== 0) warnings.push("macOS automatic login is off: a LaunchAgent starts at LOGIN, so after a reboot the conductor will not run until someone logs in. Turn on automatic login, or use `harmony conductor start --at-boot`.");
+    } else if (deps.platform === "linux") {
+      const r = await deps.exec("loginctl", ["show-user", deps.username, "-p", "Linger"]);
+      if (/Linger=no/.test(r.stdout)) warnings.push(`lingering is off for ${deps.username}: a systemd user unit starts at login, so after a reboot the conductor will not run until you log in. Run \`sudo loginctl enable-linger ${deps.username}\`.`);
+    }
+  }
+  return { checks, warnings, board, ok: checks.every((c) => c.ok) };
+}
+function formatChecks(checks) {
+  return checks.map((c) => `  [${c.ok ? "ok  " : "FAIL"}] ${c.name}: ${c.detail}${!c.ok && c.fix ? `. Fix: ${c.fix}` : ""}`);
+}
+var failedNames = (checks) => checks.filter((c) => !c.ok).map((c) => c.name);
+
+// src/cli/commands/conductor-lifecycle.ts
+var EXIT = { ok: 0, failure: 1, usage: 2, inFlight: 3, notAdopted: 4 };
+var LAUNCHD_TEMPLATE = "container/launchd/com.ycomplex.harmony-conductor.plist.template";
+var SYSTEMD_TEMPLATE = "container/systemd/harmony-conductor.service.template";
+var Out = class {
+  constructor(onLine) {
+    this.onLine = onLine;
+  }
+  onLine;
+  lines = [];
+  errLines = [];
+  line(s = "") {
+    this.lines.push(s);
+    this.onLine?.(s);
+  }
+  err(s) {
+    this.errLines.push(s);
+  }
+  result(exitCode, data) {
+    return { exitCode, lines: this.lines, errLines: this.errLines, data: { ok: exitCode === 0, exit_code: exitCode, ...data } };
+  }
+};
+function timingFromEnv(env2) {
+  const n = (k, d) => {
+    const v = Number(env2[k]);
+    return Number.isFinite(v) && v > 0 ? v : d;
+  };
+  return {
+    timeoutMs: n("HARMONY_SWITCH_TIMEOUT_S", 180) * 1e3,
+    pollMs: n("HARMONY_SWITCH_POLL_S", 5) * 1e3,
+    stopTimeoutMs: n("HARMONY_SWITCH_STOP_TIMEOUT_S", 60) * 1e3,
+    freshMs: n("HARMONY_SWITCH_FRESH_S", 120) * 1e3
+  };
+}
+var logPathOf = (s) => join7(s.paths.home, "conductor.out.log");
+async function findConductors(deps, s) {
+  const procs = await deps.listProcesses();
+  const cwdByPid = /* @__PURE__ */ new Map();
+  for (const pid of needsCwd(procs)) {
+    const cwd = await deps.cwdOf(pid);
+    if (cwd) cwdByPid.set(pid, cwd);
+  }
+  return matchConductors(procs, { pluginDir: s.pluginDir, configPath: s.deploymentConfig, cwdByPid });
+}
+function pluginVersion(deps, pluginDir) {
+  try {
+    const v = JSON.parse(deps.readFileSync(join7(pluginDir, ".claude-plugin", "plugin.json"))).version;
+    return v || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+async function waitForExit(deps, pids, timeoutMs) {
+  const deadline = deps.now() + timeoutMs;
+  let alive = pids.filter((p) => deps.signal(p, 0));
+  while (alive.length > 0 && deps.now() < deadline) {
+    await deps.sleep(1e3);
+    alive = alive.filter((p) => deps.signal(p, 0));
+  }
+  return alive;
+}
+async function runSupervisorCommands(deps, cmds, out) {
+  for (const c of cmds) {
+    out.line(`  $ ${c.file} ${c.args.join(" ")}`);
+    const r = await deps.exec(c.file, c.args, { interactive: c.interactive });
+    if (r.code !== 0) {
+      out.err(`${c.file} ${c.args[0]} failed (exit ${r.code}): ${(r.stderr || r.stdout).trim().split("\n")[0] ?? ""}`);
+      return false;
+    }
+  }
+  return true;
+}
+var describeSupervisor = (sup) => sup.kind === "none" ? "none (unsupervised)" : `${sup.kind}${sup.target ? ` (${sup.target})` : ""}`;
+var legLine = (r) => `  - ${r.ticket ?? "?"}  conduction ${r.id}`;
+function launcherArgsFrom(o) {
+  return [...o.config ? ["--config", o.config] : [], ...o.profile ? ["--profile", o.profile] : []];
+}
+async function safeBoard(deps, s) {
+  if (!s.env.HARMONY_API_TOKEN) return { rows: null, error: "HARMONY_API_TOKEN is not set" };
+  try {
+    return { rows: await deps.readBoard(s.env) };
+  } catch (err) {
+    return { rows: null, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+async function runStatus(deps, opts = {}, onLine) {
+  const out = new Out(onLine);
+  const s = await loadSettings(deps, { config: opts.config });
+  const timing = timingFromEnv(s.env);
+  const host = deps.hostname();
+  const procs = await findConductors(deps, s);
+  const sup = await detectSupervisorState({ platform: deps.platform, uid: deps.uid, home: deps.home, exec: (f, a) => deps.exec(f, a), existsSync: deps.existsSync });
+  const board = await safeBoard(deps, s);
+  const nowMs = deps.now();
+  if (procs.length === 0) {
+    out.line("No conductor is running here. Status for a conductor elsewhere arrives with the registry.");
+    if (sup.kind !== "none" && sup.active) out.line(`A supervisor job is loaded (${describeSupervisor(sup)}) but no conductor process is running; it may be starting or crash-looping.`);
+    const orphans = board.rows ? classifyLeases(board.rows, host, null, timing.freshMs, nowMs).filter((l) => l.owner === "previous-process") : [];
+    if (orphans.length > 0) {
+      out.line("");
+      out.line(`Conductor stopped; ${orphans.length} leg(s) still running as their own jobs (the next \`harmony conductor start\` adopts them):`);
+      for (const l of orphans) out.line(`  - ${l.ticket}  conduction ${l.id}  (held by ${l.holder})`);
+    } else if (board.error) {
+      out.line(`(the board could not be read to list legs: ${board.error})`);
+    }
+    return out.result(EXIT.ok, {
+      state: "stopped",
+      host,
+      supervisor: sup.kind,
+      supervisor_target: sup.target ?? null,
+      legs_still_running: orphans.map((l) => ({ ticket: l.ticket, conduction: l.id, holder: l.holder })),
+      board_error: board.error ?? null
+    });
+  }
+  const primary = procs[0];
+  const version4 = pluginVersion(deps, s.pluginDir);
+  const profile = primary.profile ?? s.profile ?? "unknown (the config file names none)";
+  const leases = board.rows ? classifyLeases(board.rows, host, primary.pid, timing.freshMs, nowMs) : [];
+  const mine = leases.filter((l) => l.owner === "this-conductor");
+  const earlier = leases.filter((l) => l.owner === "previous-process");
+  const stale = mine.filter((l) => !l.fresh);
+  const beats = mine.map((l) => Date.parse(l.last_heartbeat_at ?? "")).filter((t) => Number.isFinite(t));
+  const lastBeat = beats.length ? new Date(Math.max(...beats)).toISOString() : null;
+  const ago = (iso) => {
+    const t = Date.parse(iso ?? "");
+    return Number.isFinite(t) ? `${Math.max(0, Math.round((nowMs - t) / 1e3))}s ago` : "never";
+  };
+  out.line(procs.length > 1 ? `Conductor: MORE THAN ONE conductor process for this project is running here (pids ${procs.map((p) => p.pid).join(", ")})` : "Conductor: running");
+  out.line(`  host:            ${host}`);
+  out.line(`  pid:             ${procs.map((p) => p.pid).join(", ")}`);
+  out.line(`  profile:         ${profile}`);
+  out.line(`  plugin version:  ${version4}${s.channel ? ` (channel ${s.channel})` : ""}`);
+  out.line(`  supervisor:      ${describeSupervisor(sup)}`);
+  out.line(`  last heartbeat:  ${lastBeat ? `${lastBeat} (${ago(lastBeat)})` : board.rows ? "none yet (this conductor holds no leases)" : "unknown (board unreadable)"}`);
+  out.line("");
+  if (board.rows === null) {
+    out.line(`Legs: unknown (the board could not be read: ${board.error})`);
+  } else {
+    out.line(`Legs running under this conductor: ${mine.length}`);
+    for (const l of mine) out.line(`  - ${l.ticket}  conduction ${l.id}  heartbeat ${ago(l.last_heartbeat_at)}${l.fresh ? "" : "  STALE"}`);
+    if (earlier.length > 0) {
+      out.line(`NOT YET ADOPTED: ${earlier.length} lease(s) on this host are held by an earlier process:`);
+      for (const l of earlier) out.line(`  - ${l.ticket}  conduction ${l.id}  held by ${l.holder}`);
+    }
+    if (mine.length > 0 && earlier.length === 0 && stale.length === 0) {
+      out.line(`Adoption: every lease on this host is held by pid ${primary.pid} with a fresh heartbeat.`);
+    } else if (mine.length === 0 && earlier.length === 0) {
+      out.line("Adoption: no leases are held on this host.");
+    }
+  }
+  return out.result(EXIT.ok, {
+    state: procs.length > 1 ? "multiple" : "running",
+    host,
+    pids: procs.map((p) => p.pid),
+    profile: primary.profile ?? s.profile ?? null,
+    plugin_version: version4,
+    channel: s.channel ?? null,
+    supervisor: sup.kind,
+    supervisor_target: sup.target ?? null,
+    last_heartbeat_at: lastBeat,
+    legs: mine.map((l) => ({ ticket: l.ticket, conduction: l.id, last_heartbeat_at: l.last_heartbeat_at, fresh: l.fresh })),
+    not_adopted: earlier.map((l) => ({ ticket: l.ticket, conduction: l.id, holder: l.holder })),
+    adoption_complete: board.rows !== null && earlier.length === 0 && stale.length === 0,
+    board_error: board.error ?? null
+  });
+}
+async function runStop(deps, opts = {}, onLine) {
+  const out = new Out(onLine);
+  const s = await loadSettings(deps, { config: opts.config });
+  const timing = timingFromEnv(s.env);
+  const procs = await findConductors(deps, s);
+  const sup = await detectSupervisorState({ platform: deps.platform, uid: deps.uid, home: deps.home, exec: (f, a) => deps.exec(f, a), existsSync: deps.existsSync });
+  if (procs.length === 0 && !sup.active) {
+    out.line("No conductor is running here. Nothing to stop.");
+    return out.result(EXIT.ok, { state: "stopped", stopped: false, supervisor: sup.kind });
+  }
+  const pids = procs.map((p) => p.pid);
+  out.line(`Stopping the conductor (${pids.length ? `pid ${pids.join(", ")}` : "no process"}; supervisor ${describeSupervisor(sup)}).`);
+  out.line("Running legs keep running as their own jobs; the next start adopts them.");
+  if (sup.kind === "none") {
+    for (const pid of pids) {
+      out.line(`  SIGTERM ${pid}`);
+      deps.signal(pid, "SIGTERM");
+    }
+  } else if (!await runSupervisorCommands(deps, stopCommands(sup.kind, deps.uid), out)) {
+    return out.result(EXIT.failure, { state: "unknown", error: out.errLines[0], supervisor: sup.kind });
+  }
+  const left = await waitForExit(deps, pids, timing.stopTimeoutMs);
+  if (left.length > 0) {
+    out.err(`conductor pid ${left.join(", ")} did not exit within ${timing.stopTimeoutMs / 1e3}s after the stop \u2014 it is still running`);
+    return out.result(EXIT.failure, { state: "running", still_running: left, supervisor: sup.kind });
+  }
+  out.line("Conductor stopped.");
+  const board = await safeBoard(deps, s);
+  const legs = board.rows ? classifyLeases(board.rows, deps.hostname(), null, timing.freshMs, deps.now()).filter((l) => l.owner === "previous-process") : [];
+  if (legs.length > 0) {
+    out.line(`${legs.length} leg(s) still running as their own jobs; the next \`harmony conductor start\` adopts them:`);
+    for (const l of legs) out.line(`  - ${l.ticket}  conduction ${l.id}`);
+  } else if (board.error) out.line(`(the board could not be read to list legs: ${board.error})`);
+  return out.result(EXIT.ok, {
+    state: "stopped",
+    stopped: true,
+    supervisor: sup.kind,
+    pids,
+    legs_still_running: legs.map((l) => ({ ticket: l.ticket, conduction: l.id }))
+  });
+}
+async function runStart(deps, opts = {}, onLine) {
+  const out = new Out(onLine);
+  const modes = [opts.local, opts.atBoot, opts.remote].filter(Boolean).length;
+  if (modes > 1) {
+    out.err("--local, --at-boot and --remote are mutually exclusive");
+    return out.result(EXIT.usage, { error: out.errLines[0] });
+  }
+  if (opts.remote) {
+    out.err("--remote is not available yet: remote conductors arrive with the registry. Nothing was started.");
+    return out.result(EXIT.usage, { error: out.errLines[0], started: false });
+  }
+  const mode = opts.atBoot ? "at-boot" : "local";
+  if (mode === "at-boot" && deps.platform !== "darwin") {
+    out.err("--at-boot is macOS only (a LaunchDaemon). On Linux use --local and enable lingering: sudo loginctl enable-linger $USER");
+    return out.result(EXIT.usage, { error: out.errLines[0], started: false });
+  }
+  if (deps.platform !== "darwin" && deps.platform !== "linux") {
+    out.err(`conductor start is supported on macOS and Linux, not ${deps.platform}`);
+    return out.result(EXIT.failure, { error: out.errLines[0], started: false });
+  }
+  const s = await loadSettings(deps, { profile: opts.profile, config: opts.config });
+  const host = deps.hostname();
+  const procs = await findConductors(deps, s);
+  const sup = await detectSupervisorState({ platform: deps.platform, uid: deps.uid, home: deps.home, exec: (f, a) => deps.exec(f, a), existsSync: deps.existsSync });
+  if (procs.length > 0) {
+    out.err(`a conductor for this project is already running on this machine (host ${host}, pid ${procs.map((p) => p.pid).join(", ")}, supervisor ${describeSupervisor(sup)}). Nothing was started. Use \`harmony conductor restart\` to restart it, or \`harmony conductor stop\` first.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], started: false, host, pids: procs.map((p) => p.pid) });
+  }
+  if (sup.active && sup.kind !== "none" && sup.kind !== "systemd-user") {
+    out.err(`a supervisor job is already loaded (${describeSupervisor(sup)}) but no conductor process is running. Nothing was started. Use \`harmony conductor restart\`, or \`harmony conductor stop\` to unload it first.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], started: false, supervisor: sup.kind });
+  }
+  out.line("Pre-flight");
+  const pre = await runPreflight(deps, s, { supervise: mode });
+  for (const l of formatChecks(pre.checks)) out.line(l);
+  for (const w of pre.warnings) out.line(`  WARNING: ${w}`);
+  if (!pre.ok) {
+    out.err(`pre-flight failed: ${failedNames(pre.checks).join(", ")}. Nothing was started.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], started: false, failed_checks: failedNames(pre.checks), checks: pre.checks, warnings: pre.warnings });
+  }
+  const args = launcherArgsFrom(opts);
+  const logPath = logPathOf(s);
+  const renderOpts = { pluginDir: s.pluginDir, launcherArgs: args, home: deps.home, path: deps.env.PATH || "/usr/local/bin:/usr/bin:/bin", logPath };
+  let kind;
+  let unitPath;
+  let cmds;
+  try {
+    deps.mkdirSync(dirname4(logPath));
+    if (deps.platform === "darwin") {
+      const template = deps.readFileSync(join7(s.pluginDir, LAUNCHD_TEMPLATE));
+      if (mode === "at-boot") {
+        kind = "launchd-daemon";
+        unitPath = daemonPlistPath();
+        const staged = join7(s.paths.home, "conductor-launchd.plist.staged");
+        deps.writeFileSync(staged, renderLaunchdPlist(template, { ...renderOpts, userName: deps.username }), 420);
+        cmds = installCommands(kind, deps.uid, { agentPlist: unitPath, staged });
+        out.line(`Installing a LaunchDaemon (${unitPath}) that starts at boot as ${deps.username}; sudo will ask for your password once.`);
+      } else {
+        kind = "launchd-agent";
+        unitPath = agentPlistPath(deps.home);
+        deps.mkdirSync(dirname4(unitPath));
+        deps.writeFileSync(unitPath, renderLaunchdPlist(template, renderOpts), 420);
+        cmds = installCommands(kind, deps.uid, { agentPlist: unitPath });
+        out.line(`Installed the LaunchAgent ${unitPath}.`);
+      }
+    } else {
+      const template = deps.readFileSync(join7(s.pluginDir, SYSTEMD_TEMPLATE));
+      kind = "systemd-user";
+      unitPath = systemdUnitPath(deps.home);
+      deps.mkdirSync(dirname4(unitPath));
+      deps.writeFileSync(unitPath, renderSystemdUnit(template, renderOpts), 420);
+      cmds = installCommands(kind, deps.uid, { agentPlist: unitPath });
+      out.line(`Installed the systemd user unit ${unitPath}.`);
+    }
+  } catch (err) {
+    out.err(`could not write the supervisor job: ${err instanceof Error ? err.message : String(err)}. Nothing was started.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], started: false });
+  }
+  if (!await runSupervisorCommands(deps, cmds, out)) {
+    return out.result(EXIT.failure, { error: out.errLines[0], started: false, supervisor: kind });
+  }
+  if (mode === "at-boot") deps.rmSync(join7(s.paths.home, "conductor-launchd.plist.staged"));
+  const deadline = deps.now() + 3e4;
+  let started = [];
+  while (deps.now() < deadline) {
+    started = await findConductors(deps, s);
+    if (started.length > 0) break;
+    await deps.sleep(1e3);
+  }
+  if (started.length === 0) {
+    out.err(`the supervisor job was loaded but no conductor process appeared within 30s \u2014 see ${logPath}`);
+    return out.result(EXIT.failure, { error: out.errLines[0], started: false, supervisor: kind, log: logPath });
+  }
+  out.line("");
+  out.line(`Conductor started: host ${host}, pid ${started[0].pid}, supervisor ${kind}, plugin ${pluginVersion(deps, s.pluginDir)}, log ${logPath}.`);
+  out.line("It survives a reboot. Run `harmony conductor status` to confirm it holds its leases with a fresh heartbeat.");
+  return out.result(EXIT.ok, { started: true, host, pid: started[0].pid, supervisor: kind, unit: unitPath, log: logPath });
+}
+async function legsInFlight(deps, s, backend, board) {
+  if (backend === "gke") {
+    const ns = s.env.HARMONY_GKE_NAMESPACE || "harmony-legs";
+    const args = ["-n", ns, ...s.env.HARMONY_GKE_CONTEXT ? ["--context", s.env.HARMONY_GKE_CONTEXT] : [], "get", "jobs", "-o", "json"];
+    const r2 = await deps.exec("kubectl", args, { env: s.env });
+    if (r2.code === 127) return { ok: false, legs: [], toolMissing: true, reason: "kubectl is not installed" };
+    if (r2.code !== 0) return { ok: false, legs: [], reason: `could not list Jobs in ${ns}` };
+    try {
+      const items = JSON.parse(r2.stdout).items ?? [];
+      const legs = items.filter((it) => !(it.status?.conditions ?? []).filter((c) => c.status !== "False").some((c) => c.type === "Complete" || c.type === "Failed")).map((it) => ({ ticket: it.metadata?.labels?.["harmony-ticket"] ?? "?", id: it.metadata?.labels?.["conduction-id"] ?? "?" }));
+      return { ok: true, legs };
+    } catch {
+      return { ok: false, legs: [], reason: `the Jobs listing in ${ns} was not valid JSON` };
+    }
+  }
+  const job = s.env.HARMONY_CLOUD_RUN_JOB;
+  const region = s.env.HARMONY_CLOUD_RUN_REGION;
+  if (!job || !region) return { ok: false, legs: [], toolMissing: true, reason: "HARMONY_CLOUD_RUN_JOB / HARMONY_CLOUD_RUN_REGION are not set" };
+  const project = s.env.CLOUDSDK_CORE_PROJECT || "harmony-conductor";
+  const r = await deps.exec("gcloud", ["run", "jobs", "executions", "list", `--job=${job}`, `--region=${region}`, `--project=${project}`, "--format=json"], { env: s.env });
+  if (r.code === 127) return { ok: false, legs: [], toolMissing: true, reason: "gcloud is not installed" };
+  if (r.code !== 0) return { ok: false, legs: [], reason: `could not list Cloud Run executions of ${job}` };
+  try {
+    const list = JSON.parse(r.stdout);
+    if (!Array.isArray(list)) throw new Error("not an array");
+    const legs = list.filter((e) => !e.status?.completionTime).map((e) => {
+      const id = e.metadata?.labels?.["conduction-id"] ?? e.metadata?.name ?? "?";
+      return { ticket: board.find((b) => b.id === id)?.ticket ?? "?", id };
+    });
+    return { ok: true, legs };
+  } catch {
+    return { ok: false, legs: [], reason: "the Cloud Run executions listing was not valid JSON" };
+  }
+}
+async function runRestart(deps, opts = {}, onLine) {
+  const out = new Out(onLine);
+  const s = await loadSettings(deps, { profile: opts.profile, config: opts.config });
+  const timing = timingFromEnv(s.env);
+  const host = deps.hostname();
+  const procs = await findConductors(deps, s);
+  const sup = await detectSupervisorState({ platform: deps.platform, uid: deps.uid, home: deps.home, exec: (f, a) => deps.exec(f, a), existsSync: deps.existsSync });
+  const supervised = sup.kind !== "none";
+  if (procs.length === 0 && !supervised) {
+    out.err("no conductor is running here \u2014 nothing to restart. Start one with `harmony conductor start --local`.");
+    return out.result(EXIT.failure, { error: out.errLines[0] });
+  }
+  if (procs.length > 1) {
+    out.err(`more than one conductor for this project is running (pids ${procs.map((p) => p.pid).join(", ")}) \u2014 stop the extras first`);
+    return out.result(EXIT.failure, { error: out.errLines[0] });
+  }
+  if (supervised && opts.profile && opts.profile !== s.merged?.profile) {
+    out.err(`a supervised conductor takes its profile from the config files, so --profile ${opts.profile} cannot be passed on restart. Change \`profile\` in .harmony/conductor.json (or the host file), then run \`harmony conductor restart\`.`);
+    return out.result(EXIT.usage, { error: out.errLines[0] });
+  }
+  const old = procs[0];
+  const target = s.profile;
+  out.line("1. Pre-flight");
+  const pre = await runPreflight(deps, s, { pull: true });
+  for (const l of formatChecks(pre.checks)) out.line(l);
+  if (!pre.ok || pre.board === null) {
+    out.err(`pre-flight failed: ${failedNames(pre.checks).join(", ") || "cred:board"}. The running conductor and its leases were left untouched.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], failed_checks: failedNames(pre.checks), checks: pre.checks, signalled: false });
+  }
+  const board = pre.board;
+  const held = old ? heldBy(board, holderPrefix(host, old.pid)) : heldBy(board, `${host}:`);
+  out.line(old ? `Running conductor: pid ${old.pid}${old.profile ? `, profile ${old.profile}` : ""}.` : "No conductor process is running; the supervisor job will be restarted.");
+  if (held.length > 0) {
+    out.line("Conductions held:");
+    for (const h of held) out.line(legLine(h));
+  } else out.line("The conductor holds no active conductions.");
+  if (!opts.force && (target === "gke" || target === "cloud") && !(old?.profile && old.profile === target)) {
+    const outgoing = target === "gke" ? "cloud" : "gke";
+    out.line(`2. In-flight legs on the other backend (${outgoing})`);
+    const f = await legsInFlight(deps, s, outgoing, board);
+    if (!f.ok && f.toolMissing && !(old?.profile && old.profile !== target)) {
+      out.line(`  skipped: ${f.reason} (the ${outgoing} backend is not used from this machine)`);
+    } else if (!f.ok) {
+      out.err(`cannot tell whether a leg is in flight on ${outgoing}: ${f.reason}. Nothing was changed.`);
+      return out.result(EXIT.failure, { error: out.errLines[0], signalled: false });
+    } else if (f.legs.length > 0) {
+      out.err(`REFUSING to restart onto profile '${target}': a leg is still running on ${outgoing}:`);
+      for (const l of f.legs) out.err(`  - ${l.ticket}  conduction ${l.id}`);
+      out.err("Wait for these to finish, then run again. --force overrides this check, but it is a LAST RESORT: the new conductor reaps adopted leases with its OWN profile's reap script, which cannot see a leg on the other backend, so a forced restart can leave a leg running twice.");
+      return out.result(EXIT.inFlight, { error: "legs in flight on another backend", in_flight: f.legs, signalled: false });
+    } else out.line(`  no leg is running on ${outgoing}`);
+  } else if (opts.force) out.line("WARNING: --force given \u2014 the in-flight guard was skipped (last resort; a leg may run twice).");
+  const versionBefore = pluginVersion(deps, s.pluginDir);
+  const cmds = supervised ? restartCommands(sup.kind, deps.uid) : [];
+  const launchArgs = launcherArgsFrom({ config: opts.config ?? old?.config, profile: opts.profile ?? old?.profile });
+  if (opts.dryRun) {
+    out.line("");
+    out.line("Dry run: nothing changed. A real run would:");
+    out.line(s.channel ? `  - pull channel '${s.channel}' (git -C ${s.pluginDir} pull --ff-only origin ${s.channel}); plugin is ${versionBefore} now` : "  - skip the pull (no channel is configured)");
+    if (supervised) for (const c of cmds) out.line(`  - ${c.file} ${c.args.join(" ")}`);
+    else out.line(`  - SIGTERM pid ${old?.pid}, wait up to ${timing.stopTimeoutMs / 1e3}s, then nohup bash ${launcherPath(s.pluginDir)} ${launchArgs.join(" ")}`.trimEnd());
+    out.line(`  - confirm from the board within ${timing.timeoutMs / 1e3}s that every held conduction is leased by the new conductor with a heartbeat under ${timing.freshMs / 1e3}s old`);
+    return out.result(EXIT.ok, { dry_run: true, held: held.map((h) => ({ ticket: h.ticket, conduction: h.id })), plugin_version: versionBefore, signalled: false });
+  }
+  out.line("3. Update the plugin checkout");
+  let versionAfter = versionBefore;
+  if (s.channel) {
+    const pull = await deps.exec("git", ["-C", s.pluginDir, "pull", "--ff-only", "origin", s.channel]);
+    if (pull.code !== 0) {
+      out.err(`git pull --ff-only origin ${s.channel} failed in ${s.pluginDir}: ${(pull.stderr || pull.stdout).trim().split("\n")[0]}. The running conductor was left untouched.`);
+      return out.result(EXIT.failure, { error: out.errLines[0], signalled: false, plugin_version_before: versionBefore });
+    }
+    versionAfter = pluginVersion(deps, s.pluginDir);
+    if (!deps.existsSync(join7(s.pluginDir, "dist", "bin", "daemon.js"))) {
+      out.err(`after the pull ${join7(s.pluginDir, "dist", "bin", "daemon.js")} does not exist \u2014 the channel branch carries no built bundle. The running conductor was left untouched.`);
+      return out.result(EXIT.failure, { error: out.errLines[0], signalled: false, plugin_version_before: versionBefore });
+    }
+    out.line(versionAfter === versionBefore ? `  plugin ${versionBefore} (already the channel's latest)` : `  plugin ${versionBefore} -> ${versionAfter}`);
+  } else out.line(`  no channel is configured: restarting the version already on disk (plugin ${versionBefore})`);
+  out.line("4. Restart");
+  const oldPids = procs.map((p) => p.pid);
+  let startedPid = null;
+  if (supervised) {
+    if (!await runSupervisorCommands(deps, cmds, out)) {
+      return out.result(EXIT.failure, { error: out.errLines[0], signalled: true, plugin_version_before: versionBefore, plugin_version_after: versionAfter });
+    }
+  } else {
+    for (const pid of oldPids) {
+      out.line(`  SIGTERM ${pid}`);
+      if (!deps.signal(pid, "SIGTERM")) {
+        out.err(`could not signal conductor pid ${pid}`);
+        return out.result(EXIT.failure, { error: out.errLines[0], signalled: false });
+      }
+    }
+    const left = await waitForExit(deps, oldPids, timing.stopTimeoutMs);
+    if (left.length > 0) {
+      out.err(`conductor pid ${left.join(", ")} did not exit within ${timing.stopTimeoutMs / 1e3}s after SIGTERM \u2014 it was NOT restarted; it is still running`);
+      return out.result(EXIT.failure, { error: out.errLines[0], signalled: true });
+    }
+    out.line("  old conductor exited");
+    startedPid = deps.spawnDetached("nohup", ["bash", launcherPath(s.pluginDir), ...launchArgs], { logPath: logPathOf(s), env: { HARMONY_PLUGIN_DIR: s.pluginDir }, cwd: s.pluginDir });
+    out.line(`  started conductor pid ${startedPid} (log ${logPathOf(s)})`);
+  }
+  let newPid = startedPid;
+  const findDeadline = deps.now() + timing.timeoutMs;
+  while (newPid === null) {
+    const now = (await findConductors(deps, s)).filter((p) => !oldPids.includes(p.pid));
+    if (now.length > 0) newPid = now[0].pid;
+    else if (deps.now() >= findDeadline) break;
+    else await deps.sleep(Math.min(timing.pollMs, 1e3));
+  }
+  if (newPid === null) {
+    out.err(`no new conductor process appeared within ${timing.timeoutMs / 1e3}s \u2014 see ${logPathOf(s)}`);
+    return out.result(EXIT.notAdopted, { error: out.errLines[0], plugin_version_before: versionBefore, plugin_version_after: versionAfter });
+  }
+  out.line(`  new conductor pid ${newPid}`);
+  out.line(`5. Confirm adoption (board, up to ${timing.timeoutMs / 1e3}s)`);
+  const newPrefix = holderPrefix(host, newPid);
+  const deadline = deps.now() + timing.timeoutMs;
+  let pending = held.map((h) => h.id);
+  const labelOf = (id) => held.find((h) => h.id === id)?.ticket ?? "?";
+  const adopted = [];
+  for (; ; ) {
+    if (!deps.signal(newPid, 0)) {
+      out.err(`the new conductor (pid ${newPid}) is no longer running \u2014 see ${logPathOf(s)}`);
+      return out.result(EXIT.notAdopted, { error: out.errLines[0], new_pid: newPid });
+    }
+    const reasons = [];
+    if (pending.length > 0) {
+      const rows = await deps.readBoard(s.env).catch(() => null);
+      const stillPending = [];
+      for (const id of pending) {
+        const st = rows ? adoptionState(rows, id, newPrefix, timing.freshMs, deps.now()) : { state: "wait", why: "board unreadable" };
+        if (st.state === "ok") {
+          adopted.push(id);
+          out.line(`  adopted: ${labelOf(id)}  conduction ${id}`);
+        } else if (st.state === "gone") out.line(`  settled meanwhile (no longer active): ${labelOf(id)}  conduction ${id}`);
+        else {
+          stillPending.push(id);
+          reasons.push(`  - ${labelOf(id)}  conduction ${id}: ${st.why}`);
+        }
+      }
+      pending = stillPending;
+    }
+    if (pending.length === 0) break;
+    if (deps.now() >= deadline) {
+      out.err(`adoption NOT confirmed within ${timing.timeoutMs / 1e3}s for:`);
+      for (const r of reasons) out.err(r);
+      out.err(`New conductor pid ${newPid}, log ${logPathOf(s)}.`);
+      return out.result(EXIT.notAdopted, { error: "adoption not confirmed", new_pid: newPid, pending, plugin_version_before: versionBefore, plugin_version_after: versionAfter });
+    }
+    await deps.sleep(timing.pollMs);
+  }
+  out.line("");
+  out.line(`Restarted: conductor pid ${newPid}; plugin ${versionBefore === versionAfter ? versionAfter : `${versionBefore} -> ${versionAfter}`}; ${held.length === 0 ? "it held no conductions" : "all held conductions confirmed on the board"}.`);
+  return out.result(EXIT.ok, { restarted: true, old_pids: oldPids, new_pid: newPid, plugin_version_before: versionBefore, plugin_version_after: versionAfter, adopted, supervisor: sup.kind });
+}
+async function emitLive(program3, run) {
+  const json = Boolean(program3.opts().json);
+  let result;
+  try {
+    result = await run(json ? void 0 : (l) => console.log(l));
+  } catch (err) {
+    result = { exitCode: 1, lines: [], errLines: [err instanceof Error ? err.message : String(err)], data: { ok: false, error: err instanceof Error ? err.message : String(err) } };
+  }
+  if (json) console.log(formatOutput(result.data, { json: true }));
+  else for (const l of result.errLines) console.error(`harmony conductor: ${l}`);
+  if (result.exitCode !== 0) process.exit(result.exitCode);
+}
+function registerConductorLifecycleCommands(program3, conductor, makeDeps = defaultLifecycleDeps) {
+  conductor.command("start").description("Start this project's conductor on this machine and keep it running (refuses if one already runs here)").option("--local", "Install and load a supervisor job that survives reboot (LaunchAgent on macOS, systemd user unit on Linux) [default]", false).option("--at-boot", "macOS only: install a LaunchDaemon (needs sudo once) that starts at boot as this user", false).option("--remote", "Start on another machine (not available yet)", false).option("--profile <name>", "Launch profile to pass to the conductor (default: the config files')").option("--config <path>", "Explicit deployment.json path to pass to the conductor").action(
+    (o) => emitLive(program3, (on) => runStart(makeDeps(), o, on))
+  );
+  conductor.command("stop").description("Stop new launches. Running legs keep running as their own jobs; the next start adopts them").option("--config <path>", "Explicit deployment.json path the conductor was started with").action((o) => emitLive(program3, (on) => runStop(makeDeps(), o, on)));
+  conductor.command("restart").description("Update and restart: pull the configured channel (fast-forward only), stop, start, and confirm adoption from the board").option("--profile <name>", "Launch profile to restart under (unsupervised conductors only; a supervised one follows the config files)").option("--config <path>", "Explicit deployment.json path").option("--dry-run", "Run pre-flight and the in-flight guard, print the plan, change nothing", false).option("--force", "Skip the in-flight guard. LAST RESORT: a leg may end up running twice", false).action((o) => emitLive(program3, (on) => runRestart(makeDeps(), o, on)));
+  conductor.command("status").description("Where the conductor runs, its profile, plugin version, last heartbeat, running legs and supervisor").option("--config <path>", "Explicit deployment.json path the conductor was started with").action((o) => emitLive(program3, (on) => runStatus(makeDeps(), o, on)));
+}
+
 // src/cli/commands/conductor-config.ts
 function defaultCliDeps() {
   return {
@@ -44338,8 +45408,8 @@ function runMigrate(deps, opts) {
     return fail(err instanceof Error ? err.message : String(err));
   }
   const paths = resolveConductorPaths(deps.env);
-  const outHost = opts.outHost ? resolve(opts.outHost) : paths.hostFile;
-  const outProject = opts.outProject ? resolve(opts.outProject) : void 0;
+  const outHost = opts.outHost ? resolve3(opts.outHost) : paths.hostFile;
+  const outProject = opts.outProject ? resolve3(opts.outProject) : void 0;
   const projectText = pretty(migration.projectFile);
   const hostText = pretty(migration.hostFile);
   const written = [];
@@ -44350,7 +45420,7 @@ function runMigrate(deps, opts) {
     const targets = [outProject, outHost];
     if (outProject === outHost) return fail("--out-project and --out-host name the same file");
     for (const t of targets) {
-      if (t === resolve(legacyPath)) {
+      if (t === resolve3(legacyPath)) {
         return fail(`refusing to write ${t}: it is the legacy deployment config, which migrate never modifies`);
       }
     }
@@ -44358,12 +45428,12 @@ function runMigrate(deps, opts) {
     if (existing.length && !opts.force) {
       return fail(`refusing to overwrite ${existing.join(", ")} (pass --force to replace it; nothing was written)`);
     }
-    mkdirSync2(dirname3(outProject), { recursive: true });
-    writeFileSync2(outProject, projectText, { mode: 420 });
+    mkdirSync3(dirname5(outProject), { recursive: true });
+    writeFileSync3(outProject, projectText, { mode: 420 });
     written.push(outProject);
-    mkdirSync2(dirname3(outHost), { recursive: true });
-    writeFileSync2(outHost, hostText, { mode: 384 });
-    chmodSync2(outHost, 384);
+    mkdirSync3(dirname5(outHost), { recursive: true });
+    writeFileSync3(outHost, hostText, { mode: 384 });
+    chmodSync3(outHost, 384);
     written.push(outHost);
   }
   const lines = [];
@@ -44412,7 +45482,7 @@ function flattenLayer(o, prefix = "") {
   }
   return out;
 }
-var LEGACY_ENV_NOTE = "environment wins at launch (deprecated) \u2014 unset it or remove it from daemon.env";
+var LEGACY_ENV_NOTE = "environment wins at launch (deprecated) \u2014 unset it or remove it from conductor.env";
 var same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 var show = (v) => typeof v === "string" ? v : JSON.stringify(v);
 function findConflicts(l) {
@@ -44528,7 +45598,7 @@ function runDoctor(deps, opts = {}) {
   lines.push("", `LEGACY IN USE (${legacyInUse.length})`);
   if (legacyInUse.length === 0) lines.push("  (none)");
   for (const w of legacyInUse) lines.push(`  ${w.replace(/^deprecated: /, "")}`);
-  lines.push("  (only THIS shell's environment is checked; to check the daemon's, run `set -a; . <daemon.env>; set +a` first)");
+  lines.push("  (only THIS shell's environment is checked; to check the conductor's, run `set -a; . <conductor.env>; set +a` first)");
   if (warnings.length) {
     lines.push("", `WARNINGS (${warnings.length})`);
     for (const w of warnings) lines.push(`  ${w}`);
@@ -44563,6 +45633,7 @@ function emit(program3, result) {
 }
 function registerConductorCommands(program3, makeDeps = defaultCliDeps) {
   const conductor = program3.command("conductor").description("Conductor operations");
+  registerConductorLifecycleCommands(program3, conductor);
   const config = conductor.command("config").description("The two-file conductor config (.harmony/conductor.json + ~/.harmony/conductor-host.json)");
   config.command("sync").description("Fetch .harmony/conductor.json from config_repo main into the last-good snapshot now (needs the harmony-daemon App installation to include config_repo)").action(async () => emit(program3, await runSync(makeDeps())));
   config.command("migrate").description("Propose the project + host files from the current deployment.json and env knobs. Dry run unless --write; never modifies the old files").option("--profile <name>", "Which deployment.json profile to migrate (cloud|gke)").option("--config <path>", "Explicit deployment.json path (overrides HARMONY_DEPLOYMENT_CONFIG)").option("--write", "Write the new files (requires --out-project)", false).option("--out-project <path>", "Where to write the project file (no default)").option("--out-host <path>", "Where to write the host file (default: the resolved host-file path)").option("--force", "Overwrite an existing output file", false).action(
@@ -44576,8 +45647,8 @@ import { existsSync as fsExistsSync3, readFileSync as fsReadFileSync3 } from "no
 import { execFile } from "node:child_process";
 
 // src/daemon/conductor-logger.ts
-import { homedir as homedir3 } from "node:os";
-import { dirname as dirname4, join as join4 } from "node:path";
+import { homedir as homedir4 } from "node:os";
+import { dirname as dirname6, join as join8 } from "node:path";
 
 // src/daemon/log-shipper.ts
 var PERMISSION_RETRY_MS = 5 * 6e4;
@@ -44587,7 +45658,7 @@ var TOKEN_TTL_MS = 50 * 6e4;
 var ROTATE_BYTES = 10 * 1024 * 1024;
 var ROTATE_KEEP = 5;
 function resolveConductorLogPath(env2) {
-  return env2.HARMONY_CONDUCTOR_LOG || join4(env2.HARMONY_HOME || join4(homedir3(), ".harmony"), "logs", "conductor.log");
+  return env2.HARMONY_CONDUCTOR_LOG || join8(env2.HARMONY_HOME || join8(homedir4(), ".harmony"), "logs", "conductor.log");
 }
 
 // src/cli/commands/conductor-logs.ts
@@ -44599,10 +45670,10 @@ function defaultLogsDeps() {
     now: Date.now,
     existsSync: fsExistsSync3,
     readFileSync: (p) => fsReadFileSync3(p, "utf8"),
-    runGcloud: (args) => new Promise((resolve3) => {
+    runGcloud: (args) => new Promise((resolve5) => {
       execFile("gcloud", args, { maxBuffer: 64 * 1024 * 1024, timeout: 6e4 }, (err, stdout, stderr) => {
         const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
-        resolve3({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? err?.message ?? "") });
+        resolve5({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? err?.message ?? "") });
       });
     }),
     configuredProject: () => {
@@ -44690,7 +45761,7 @@ async function runConductorLogs(deps, opts) {
 }
 function registerConductorLogsCommand(program3, makeDeps = defaultLogsDeps) {
   const conductor = program3.commands.find((c) => c.name() === "conductor") ?? program3.command("conductor").description("Conductor operations");
-  conductor.command("logs").description("Read the conductor daemon log (local JSON-lines file, else Cloud Logging via gcloud)").requiredOption("--since <duration>", "How far back: 30m, 1h, 2d").option("--source <source>", "local | cloud (default: local when the file exists)").option("--limit <n>", `Maximum lines (default ${DEFAULT_LIMIT2})`).option("--project <id>", "GCP project for --source cloud (default: gcp.project from the conductor config)").action(async (o) => {
+  conductor.command("logs").description("Read the conductor log (local JSON-lines file, else Cloud Logging via gcloud)").requiredOption("--since <duration>", "How far back: 30m, 1h, 2d").option("--source <source>", "local | cloud (default: local when the file exists)").option("--limit <n>", `Maximum lines (default ${DEFAULT_LIMIT2})`).option("--project <id>", "GCP project for --source cloud (default: gcp.project from the conductor config)").action(async (o) => {
     if (o.source !== void 0 && o.source !== "local" && o.source !== "cloud") {
       console.error("--source must be local or cloud");
       process.exitCode = 2;
@@ -44865,27 +45936,27 @@ function encodeNulArgv(argv) {
 }
 
 // src/cli/commands/agent.ts
-import { existsSync as existsSync3, mkdirSync as mkdirSync4, readFileSync as readFileSync6, renameSync as renameSync2, writeFileSync as writeFileSync4 } from "node:fs";
+import { existsSync as existsSync4, mkdirSync as mkdirSync5, readFileSync as readFileSync7, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "node:fs";
 
 // src/agents/codex-provision.ts
 import {
   accessSync,
   constants as fsConstants,
-  chmodSync as chmodSync3,
+  chmodSync as chmodSync4,
   copyFileSync,
-  existsSync as existsSync2,
+  existsSync as existsSync3,
   lstatSync,
-  mkdirSync as mkdirSync3,
-  readFileSync as readFileSync5,
+  mkdirSync as mkdirSync4,
+  readFileSync as readFileSync6,
   readdirSync,
-  readlinkSync,
+  readlinkSync as readlinkSync2,
   statSync,
   symlinkSync,
   unlinkSync,
-  writeFileSync as writeFileSync3,
+  writeFileSync as writeFileSync4,
   appendFileSync
 } from "node:fs";
-import { join as join5, resolve as resolve2 } from "node:path";
+import { join as join9, resolve as resolve4 } from "node:path";
 
 // src/agents/hooks.ts
 var HARMONY_HOOKS = {
@@ -44985,34 +46056,34 @@ function isFile(p) {
   }
 }
 function collectInstructionSources(input) {
-  const ws = resolve2(input.workspaceDir);
-  const plugin = resolve2(input.pluginDir);
+  const ws = resolve4(input.workspaceDir);
+  const plugin = resolve4(input.pluginDir);
   const candidates = [
-    { label: "workspace/CLAUDE.md", path: join5(ws, "CLAUDE.md") },
-    { label: "plugin/CLAUDE.md", path: join5(plugin, "CLAUDE.md") },
-    { label: "web/CLAUDE.md", path: join5(ws, "web", "CLAUDE.md") }
+    { label: "workspace/CLAUDE.md", path: join9(ws, "CLAUDE.md") },
+    { label: "plugin/CLAUDE.md", path: join9(plugin, "CLAUDE.md") },
+    { label: "web/CLAUDE.md", path: join9(ws, "web", "CLAUDE.md") }
   ];
   for (const p of input.extraRepoPaths ?? []) {
-    const abs = resolve2(p);
-    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join5(abs, "CLAUDE.md") });
+    const abs = resolve4(p);
+    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join9(abs, "CLAUDE.md") });
   }
   const seen = /* @__PURE__ */ new Set();
   const out = [];
   for (const c of candidates) {
     if (seen.has(c.path) || !isFile(c.path)) continue;
     seen.add(c.path);
-    out.push({ label: c.label, content: readFileSync5(c.path, "utf8") });
+    out.push({ label: c.label, content: readFileSync6(c.path, "utf8") });
   }
   return out;
 }
 function collectSkillCapabilities(pluginDir) {
-  const root = join5(resolve2(pluginDir), "skills");
-  if (!existsSync2(root)) return [];
+  const root = join9(resolve4(pluginDir), "skills");
+  if (!existsSync3(root)) return [];
   const out = [];
   for (const name of readdirSync(root).sort()) {
-    const file = join5(root, name, "SKILL.md");
+    const file = join9(root, name, "SKILL.md");
     if (!isFile(file)) continue;
-    const value = capabilitiesFromSkillMd(readFileSync5(file, "utf8"));
+    const value = capabilitiesFromSkillMd(readFileSync6(file, "utf8"));
     if (value === void 0) continue;
     const parsed = parseCapabilities(value);
     if (!parsed.ok) throw new Error(`skills/${name}/SKILL.md capabilities: ${parsed.problems.join("; ")}`);
@@ -45027,21 +46098,21 @@ function codexOverlayFor(pluginDir) {
 ${rules}` : CODEX_WORKER_OVERLAY;
 }
 function excludeFromGit(workspaceDir, entries) {
-  const gitDir = join5(workspaceDir, ".git");
-  if (!existsSync2(gitDir)) return;
-  const infoDir = join5(gitDir, "info");
-  mkdirSync3(infoDir, { recursive: true });
-  const excludePath = join5(infoDir, "exclude");
-  const current = existsSync2(excludePath) ? readFileSync5(excludePath, "utf8") : "";
+  const gitDir = join9(workspaceDir, ".git");
+  if (!existsSync3(gitDir)) return;
+  const infoDir = join9(gitDir, "info");
+  mkdirSync4(infoDir, { recursive: true });
+  const excludePath = join9(infoDir, "exclude");
+  const current = existsSync3(excludePath) ? readFileSync6(excludePath, "utf8") : "";
   const have = new Set(current.split("\n"));
   const missing = entries.filter((e) => !have.has(e));
   if (missing.length) appendFileSync(excludePath, (current === "" || current.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
 }
 function linkSkills(workspaceDir, pluginDir) {
-  const link = join5(workspaceDir, CODEX_SKILLS_LINK);
-  const target = join5(resolve2(pluginDir), "skills");
-  if (!existsSync2(target)) throw new Error(`skills directory not found at ${target}`);
-  mkdirSync3(join5(workspaceDir, ".agents"), { recursive: true });
+  const link = join9(workspaceDir, CODEX_SKILLS_LINK);
+  const target = join9(resolve4(pluginDir), "skills");
+  if (!existsSync3(target)) throw new Error(`skills directory not found at ${target}`);
+  mkdirSync4(join9(workspaceDir, ".agents"), { recursive: true });
   let st;
   try {
     st = lstatSync(link);
@@ -45050,7 +46121,7 @@ function linkSkills(workspaceDir, pluginDir) {
   }
   if (st) {
     if (!st.isSymbolicLink()) throw new Error(`${link} exists and is not a symlink \u2014 refusing to replace a real skills directory`);
-    if (readlinkSync(link) === target) return link;
+    if (readlinkSync2(link) === target) return link;
     unlinkSync(link);
   }
   symlinkSync(target, link, "dir");
@@ -45060,11 +46131,11 @@ function installAuth(authFile, codexHome) {
   if (!isFile(authFile)) {
     throw new Error(`the Codex login-cache file is missing at ${authFile} (HARMONY_CODEX_AUTH_FILE) \u2014 mount it, see container/README.md "Codex credential runbook"`);
   }
-  const dest = join5(codexHome, CODEX_AUTH_FILE_NAME);
-  if (resolve2(authFile) !== resolve2(dest)) {
+  const dest = join9(codexHome, CODEX_AUTH_FILE_NAME);
+  if (resolve4(authFile) !== resolve4(dest)) {
     copyFileSync(authFile, dest);
   }
-  chmodSync3(dest, 384);
+  chmodSync4(dest, 384);
   return dest;
 }
 var MissingHookScriptError = class extends Error {
@@ -45092,26 +46163,26 @@ function preflightHookScripts(pluginRoot) {
   return paths;
 }
 function provisionCodex(input) {
-  const workspaceDir = resolve2(input.workspaceDir);
-  const codexHome = resolve2(input.codexHome);
+  const workspaceDir = resolve4(input.workspaceDir);
+  const codexHome = resolve4(input.codexHome);
   const sources = collectInstructionSources(input);
   if (sources.length === 0) throw new Error(`no CLAUDE.md found under ${workspaceDir} / ${input.pluginDir} \u2014 nothing to build AGENTS.md from`);
   const agentsMd = renderCodexAgentsMd(sources, codexOverlayFor(input.pluginDir));
   const problems = verifyCodexAgentsMd(agentsMd, sources);
   if (problems.length) throw new Error(`AGENTS.md preflight failed: ${problems.join("; ")}`);
-  const agentsMdPath = join5(workspaceDir, "AGENTS.md");
-  if (existsSync2(agentsMdPath) && !readFileSync5(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
+  const agentsMdPath = join9(workspaceDir, "AGENTS.md");
+  if (existsSync3(agentsMdPath) && !readFileSync6(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
     throw new Error(`${agentsMdPath} exists and is not a generated file \u2014 refusing to overwrite a repository's own AGENTS.md`);
   }
-  preflightHookScripts(resolve2(input.pluginDir));
-  mkdirSync3(codexHome, { recursive: true });
-  const config = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve2(input.pluginDir) });
-  const configPath = join5(codexHome, config.fileName);
-  writeFileSync3(configPath, config.content, { mode: 420 });
-  const hooks = renderCodexHooks(resolve2(input.pluginDir));
-  const hooksPath = join5(codexHome, hooks.fileName);
-  writeFileSync3(hooksPath, hooks.content, { mode: 420 });
-  writeFileSync3(agentsMdPath, agentsMd);
+  preflightHookScripts(resolve4(input.pluginDir));
+  mkdirSync4(codexHome, { recursive: true });
+  const config = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve4(input.pluginDir) });
+  const configPath = join9(codexHome, config.fileName);
+  writeFileSync4(configPath, config.content, { mode: 420 });
+  const hooks = renderCodexHooks(resolve4(input.pluginDir));
+  const hooksPath = join9(codexHome, hooks.fileName);
+  writeFileSync4(hooksPath, hooks.content, { mode: 420 });
+  writeFileSync4(agentsMdPath, agentsMd);
   const skillsLink = linkSkills(workspaceDir, input.pluginDir);
   excludeFromGit(workspaceDir, ["AGENTS.md", ".agents/"]);
   const authInstalledAt = installAuth(input.authFile, codexHome);
@@ -45127,8 +46198,8 @@ function provisionCodex(input) {
 }
 
 // src/cli/commands/agent.ts
-import { homedir as homedir4 } from "node:os";
-import { join as join6 } from "node:path";
+import { homedir as homedir5 } from "node:os";
+import { join as join10 } from "node:path";
 function launchRunConfig() {
   try {
     return getRunConfig();
@@ -45210,7 +46281,7 @@ function registerAgentCommands(program3) {
       const r = provisionCodex({
         pluginDir: opts.pluginDir,
         workspaceDir: opts.workspace,
-        codexHome: opts.codexHome || process.env.CODEX_HOME || join6(homedir4(), ".codex"),
+        codexHome: opts.codexHome || process.env.CODEX_HOME || join10(homedir5(), ".codex"),
         authFile,
         extraRepoPaths: opts.extraRepo
       });
@@ -45240,7 +46311,7 @@ function registerAgentCommands(program3) {
   ).argument("<stdout-file>").action((file) => {
     let text = "";
     try {
-      text = readFileSync6(file, "utf8");
+      text = readFileSync7(file, "utf8");
     } catch {
       process.exit(1);
     }
@@ -45254,17 +46325,17 @@ function registerAgentCommands(program3) {
   ).requiredOption("--dir <dir>", "The conduction's Codex sessions folder").requiredOption("--stdout-file <file>", "The codex invocation's stdout capture").option("--model <model>", "The model the invocation ran on").action((opts) => {
     let text = "";
     try {
-      text = readFileSync6(opts.stdoutFile, "utf8");
+      text = readFileSync7(opts.stdoutFile, "utf8");
     } catch {
       process.exit(1);
     }
     const id = parseCodexThreadId(text);
     if (!id) process.exit(1);
     try {
-      mkdirSync4(opts.dir, { recursive: true });
-      const target = join6(opts.dir, CODEX_THREAD_FILE_NAME);
+      mkdirSync5(opts.dir, { recursive: true });
+      const target = join10(opts.dir, CODEX_THREAD_FILE_NAME);
       const tmp = `${target}.tmp-${process.pid}`;
-      writeFileSync4(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
+      writeFileSync5(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
 `);
       renameSync2(tmp, target);
     } catch (err) {
@@ -45277,10 +46348,10 @@ function registerAgentCommands(program3) {
   agent.command("read-thread").description(
     `Print the thread id from a ${CODEX_THREAD_FILE_NAME} file and exit 0 \u2014 ONLY when the file names agent "codex" and a well-formed id; otherwise print nothing and exit 1.`
   ).argument("<thread-file>").action((file) => {
-    if (!existsSync3(file)) process.exit(1);
+    if (!existsSync4(file)) process.exit(1);
     let text = "";
     try {
-      text = readFileSync6(file, "utf8");
+      text = readFileSync7(file, "utf8");
     } catch {
       process.exit(1);
     }
@@ -45292,7 +46363,7 @@ function registerAgentCommands(program3) {
 }
 
 // src/cli/commands/leg-cost.ts
-import { readFileSync as readFileSync7 } from "node:fs";
+import { readFileSync as readFileSync8 } from "node:fs";
 
 // src/tools/leg-cost-record.ts
 var LEG_COST_COLS = "id, conduction_id, task_id, leg_key, gate, model, invocation_index, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_creation_1h_input_tokens, cache_creation_5m_input_tokens, thinking_tokens, total_cost_usd, cost_source, num_turns, duration_ms, duration_api_ms, session_id, is_error, service_tier, created_at";
@@ -45510,7 +46581,7 @@ function resolveAdapterTelemetry(captured, model, facts) {
 }
 function registerLegCostCommands(program3) {
   const legCost = program3.command("leg-cost").description(
-    "B-916 per-invocation cost capture \u2014 the ONE place container/provision.sh records what each `claude` invocation of a leg cost, and resolves the gate to stamp on it. Capture for DISPLAY only: nothing the daemon decides ever reads these rows."
+    "B-916 per-invocation cost capture \u2014 the ONE place container/provision.sh records what each `claude` invocation of a leg cost, and resolves the gate to stamp on it. Capture for DISPLAY only: nothing the conductor decides ever reads these rows."
   );
   legCost.command("resolve-gate").description(
     "Print the gate this worker's conduction is currently running (clarify|decompose|design|plan|build|release|verify), or an EMPTY line when it cannot be resolved (no HARMONY_CONDUCTION_ID, no login, an unreadable row, a terminal/unrecognized workflow_state). Always exits 0 \u2014 an empty result is a legitimate answer, never an error. Call this BEFORE the invocation it describes: by the time an invocation returns, the gate whose work it just did has already advanced, so resolving at write time would mis-name which activity spent the money."
@@ -45534,7 +46605,7 @@ function registerLegCostCommands(program3) {
       }
       let captured;
       try {
-        captured = readFileSync7(opts.file, "utf8");
+        captured = readFileSync8(opts.file, "utf8");
       } catch (err) {
         console.error(
           `harmony leg-cost record: WARNING \u2014 could not read the capture file ${opts.file} (${err?.message ?? String(err)}); nothing recorded`
@@ -45599,7 +46670,7 @@ function registerLegCostCommands(program3) {
 }
 
 // src/cli/commands/leg-output.ts
-import { readFileSync as readFileSync8 } from "node:fs";
+import { readFileSync as readFileSync9 } from "node:fs";
 
 // src/tools/leg-output-record.ts
 var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
@@ -45685,7 +46756,7 @@ async function getClient2() {
 var SOURCES = ["worker", "launcher"];
 function readCapture(path3) {
   try {
-    return readFileSync8(path3, "utf8");
+    return readFileSync9(path3, "utf8");
   } catch (err) {
     console.error(
       `harmony leg-output record: WARNING \u2014 could not read the capture file ${path3} (${err?.message ?? String(err)}); it contributes nothing to this row`
@@ -45699,7 +46770,7 @@ function resolveWorkerStoredText(captured) {
 }
 function registerLegOutputCommands(program3) {
   const legOutput = program3.command("leg-output").description(
-    "B-720 worker-output capture \u2014 the ONE place container/provision.sh records what a leg's `claude` invocation actually wrote, from inside the container where it is genuinely the WORKER's output on every launch profile. Capture for DISPLAY only: nothing the daemon decides ever reads these rows."
+    "B-720 worker-output capture \u2014 the ONE place container/provision.sh records what a leg's `claude` invocation actually wrote, from inside the container where it is genuinely the WORKER's output on every launch profile. Capture for DISPLAY only: nothing the conductor decides ever reads these rows."
   );
   legOutput.command("record").description(
     'Record ONE invocation\'s captured output as a conduction_leg_output row. Reads the given capture file(s), stores the LAST 64 KB as the tail and the TOTAL byte count alongside it (so the board can say "showing the last N of M"), and stamps the producer as `--source` (default: worker). Always exits 0 and NEVER throws: a missing conduction id, an unreadable capture, an unreachable board or a not-yet-migrated table all degrade to "nothing recorded" with one STDERR warning. Diagnostics never touch stdout \u2014 stdout is the thing being captured. The leg is never affected.'
@@ -45740,8 +46811,8 @@ function registerLegOutputCommands(program3) {
 
 // src/cli/commands/gates.ts
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync9, renameSync as renameSync3, writeFileSync as writeFileSync5 } from "node:fs";
-import { dirname as dirname5 } from "node:path";
+import { mkdirSync as mkdirSync6, readFileSync as readFileSync10, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "node:fs";
+import { dirname as dirname7 } from "node:path";
 
 // src/config/notify-sync.ts
 import { createHash as createHash2 } from "node:crypto";
@@ -46031,9 +47102,9 @@ function registerGatesCommands(program3) {
 }
 function writeGateEvidenceMarker(projectRoot, marker) {
   const filePath = gateEvidenceMarkerPath(projectRoot, marker.extension_point);
-  mkdirSync5(dirname5(filePath), { recursive: true });
+  mkdirSync6(dirname7(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  writeFileSync5(tmpPath, `${JSON.stringify(marker, null, 2)}
+  writeFileSync6(tmpPath, `${JSON.stringify(marker, null, 2)}
 `, "utf8");
   renameSync3(tmpPath, filePath);
 }
@@ -46054,22 +47125,22 @@ function productionNotifySyncIO() {
     },
     readCache: (path3) => {
       try {
-        return readFileSync9(path3, "utf8");
+        return readFileSync10(path3, "utf8");
       } catch {
         return null;
       }
     },
     writeCache: (path3, contents) => {
-      mkdirSync5(dirname5(path3), { recursive: true });
+      mkdirSync6(dirname7(path3), { recursive: true });
       const tmpPath = `${path3}.tmp-${process.pid}-${Date.now()}`;
-      writeFileSync5(tmpPath, contents, "utf8");
+      writeFileSync6(tmpPath, contents, "utf8");
       renameSync3(tmpPath, path3);
     }
   };
 }
 
 // src/cli/commands/notify.ts
-import { readFileSync as readFileSync10 } from "node:fs";
+import { readFileSync as readFileSync11 } from "node:fs";
 function errorMessage(err) {
   const message = err?.message;
   return message && message.trim() ? message.trim() : String(err);
@@ -46160,7 +47231,7 @@ function productionDeps() {
 }
 function readSecretFromStdin() {
   try {
-    return readFileSync10(0, "utf8");
+    return readFileSync11(0, "utf8");
   } catch {
     return "";
   }
@@ -46485,10 +47556,10 @@ function evaluateEligibility(input) {
 var GITHUB_PR_URL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?/i;
 async function runGhCommand(args) {
   const { execFile: execFile2 } = await import("node:child_process");
-  return await new Promise((resolve3, reject) => {
+  return await new Promise((resolve5, reject) => {
     execFile2("gh", args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
-      else resolve3(stdout);
+      else resolve5(stdout);
     });
   });
 }
@@ -46580,10 +47651,10 @@ function buildAttestation(args, userId) {
 var GH_RELEASE_INFO_TIMEOUT_MS = 5e3;
 async function runGhForReleaseInfo(args) {
   const { execFile: execFile2 } = await import("node:child_process");
-  return await new Promise((resolve3, reject) => {
+  return await new Promise((resolve5, reject) => {
     execFile2("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
-      else resolve3(String(stdout));
+      else resolve5(String(stdout));
     });
   });
 }
@@ -47181,41 +48252,6 @@ function registerFasttrackCommands(program3) {
       `harmony fasttrack scope-check: ${evaluation.filesChanged} file(s), ${evaluation.linesChanged} line(s) changed against ${opts.base} (${evaluation.testFilesIgnored} test file(s) not counted) \u2014 budget ${budget.files} file(s)/${budget.lines} line(s) \u2014 ${evaluation.withinBudget ? "WITHIN BUDGET" : "OVER BUDGET"}`
     );
     process.exit(evaluation.withinBudget ? 0 : 1);
-  });
-}
-
-// src/cli/commands/conductions.ts
-async function listActiveConductions(client, projectId) {
-  const rows = await listConductions(client, { status: "active" });
-  if (rows.length === 0) return [];
-  const projectKey = (await getProject(client, projectId)).key;
-  const { data, error } = await client.from("tasks").select("id, task_number").in("id", rows.map((r) => r.task_id));
-  if (error) throw error;
-  const numbers = new Map((data ?? []).map((t) => [t.id, t.task_number]));
-  return rows.map((r) => ({
-    id: r.id,
-    ticket: numbers.has(r.task_id) ? `${projectKey}-${numbers.get(r.task_id)}` : null,
-    status: r.status,
-    lease_holder: r.lease_holder,
-    last_heartbeat_at: r.last_heartbeat_at,
-    leg_started_at: r.leg_started_at,
-    clean_shutdown_at: r.clean_shutdown_at
-  }));
-}
-function registerConductionsCommands(program3) {
-  const conductions = program3.command("conductions").description("Read conduction (run) records");
-  conductions.command("active").description("List active conductions with their lease holder and heartbeat (use --json for scripting)").action(async () => {
-    await runCommand(
-      program3.opts(),
-      async (ctx) => listActiveConductions(ctx.client, ctx.projectId),
-      (rows) => formatTable(rows, [
-        { key: "ticket", header: "Ticket" },
-        { key: "id", header: "Conduction" },
-        { key: "lease_holder", header: "Lease holder" },
-        { key: "last_heartbeat_at", header: "Heartbeat" },
-        { key: "leg_started_at", header: "Leg started" }
-      ])
-    );
   });
 }
 

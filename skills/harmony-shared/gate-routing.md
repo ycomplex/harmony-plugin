@@ -61,7 +61,7 @@ performs the work in the correct order.
 
 > **`design-decision-draft` was listed as pure until B-747, and that was the bug.** B-648 moved the
 > product track's acceptance-criteria writes into its accept but left this row saying *pure*, so a caller
-> that resolved inline — the conductor's browser-accept consume path did exactly that — advanced the
+> that resolved inline — the conduct loop's browser-accept consume path did exactly that — advanced the
 > sub-track and dropped the criteria. A row that says "pure" is a licence to resolve inline; keep this
 > column honest or the licence is wrong.
 
@@ -95,7 +95,7 @@ refuse an irreversible merge justified only by that absence).
 **One call site, two provenances.** §4b routes a delegated gate through the owning gate skill's *own* accept
 path — that is what preserves the side effects and the Accepted knowledge — so the same `resolve_brief` call
 serves both: it declares `human-in-session` when the human decided, and carries `agent-synthesized:<mode>`
-through when the conductor did. The conductor synthesizes the accept using the founder's token, so an
+through when the conduct loop did. The conduct loop synthesizes the accept using the founder's token, so an
 undeclared auto-advance would be recorded as a decision the founder personally made.
 
 ## The decision-only fast-forward (B-681)
@@ -163,7 +163,7 @@ caller reference it here rather than restating it.)
 **`reopenToGate(task_id, targetGate)` — the shared bounded one-hop-then-recheck procedure.** Every caller
 (harmony-revise-scope, finish-work, …) reopens a gate by following this same prose recipe with its own
 already-available `mcp__harmony__get_task` / `mcp__harmony__advance_workflow` calls — this is plumbing (an
-AGENT/SYSTEM `advance_workflow` call with no human decision attached, the same class as the conductor's
+AGENT/SYSTEM `advance_workflow` call with no human decision attached, the same class as the conduct loop's
 `Captured`→`proposing` auto-advance), not a new `src/` helper:
 
 1. **Read** `mcp__harmony__get_task({ task_id, view: 'meta' })` and take its `workflow_state`.

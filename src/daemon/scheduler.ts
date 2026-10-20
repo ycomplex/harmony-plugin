@@ -383,6 +383,22 @@ export interface SchedulerDeps extends WriteRetryDeps {
   readQuotaState?: (ids: string[]) => Promise<Map<string, QuotaState> | null>;
   /** B-1149 — OPTIONAL: the lease-guarded write of those columns; 'missing-columns' when absent. */
   writeQuotaState?: (id: string, patch: Partial<QuotaState>) => Promise<'ok' | 'lease-lost' | 'missing-columns'>;
+  /** B-1171 — OPTIONAL: record and honour the launching backend per lease (conductions.leg_backend).
+   *  Absent ⇒ today's behaviour exactly (every adoption reaps with this conductor's own profile). */
+  legBackend?: LegBackendDeps;
+}
+
+/** B-1171: the isolated leg_backend seam. The column is added by a web migration that reaches prod
+ *  after the plugin does, so BOTH accessors report a missing column as a value, never a throw, and the
+ *  scheduler caches that absence for the conductor's lifetime. */
+export interface LegBackendDeps {
+  /** This conductor's own backend tag (see ./leg-backend.ts's deriveBackendTag). */
+  tag: string;
+  /** The reap/probe templates of the profile owning a backend tag; null when this deployment config
+   *  has no such profile. */
+  resolveTemplates(tag: string): { reap: string; probe?: string | false } | null;
+  read(conductionId: string): Promise<{ absent: true } | { absent: false; backend: string | null }>;
+  write(conductionId: string, expectedLeaseHolder: string, backend: string): Promise<'ok' | 'lease-lost' | 'missing-column'>;
 }
 
 /** B-1149: a rate-limit refusal gets its OWN retry budget — 2 retries, 30s then 120s — and then
@@ -813,6 +829,11 @@ export interface SchedulerRuntime {
   rateLimitRetries?: Map<string, number>;
   /** B-1149: conductions whose "runtime held" skip was already logged (log once per hold). */
   heldLogged?: Set<string>;
+  /** B-1171: true once a leg_backend read or write reported the column missing — no further attempts. */
+  legBackendAbsent?: boolean;
+  /** B-1171: leases this conductor won but REFUSED to adopt (recorded backend unresolvable) — skipped
+   *  by the held-row path so a live leg on another backend is never fired alongside. */
+  adoptRefused?: Set<string>;
 }
 
 export function createSchedulerRuntime(): SchedulerRuntime {
@@ -913,6 +934,7 @@ export async function runSchedulerPass(
   keeper.retain(activeIds);
   for (const id of [...runtime.ready.keys()]) if (!activeIds.has(id)) runtime.ready.delete(id);
   for (const id of [...runtime.running.keys()]) if (!activeIds.has(id)) runtime.running.delete(id);
+  for (const id of [...(runtime.adoptRefused ?? [])]) if (!activeIds.has(id)) runtime.adoptRefused?.delete(id);
   {
     const q = quotaMaps(runtime);
     for (const id of [...q.holds.keys()]) if (!activeIds.has(id)) q.holds.delete(id);
@@ -949,7 +971,7 @@ export async function runSchedulerPass(
       if (tracked && row.lease_holder !== deps.leaseHolder) {
         runtime.running.delete(row.id);
         deps.log(
-          `conduction ${row.id}: lease lost to another daemon while a launch was tracked — ` +
+          `conduction ${row.id}: lease lost to another conductor while a launch was tracked — ` +
             `abandoning (no clobber)`,
         );
       }
@@ -1006,7 +1028,7 @@ async function writeIfHeld(
 ): Promise<boolean> {
   const updated = await deps.updateConductionIfHeld(row.id, deps.leaseHolder, patch);
   if (updated !== null) return true;
-  deps.log(`conduction ${row.id}: lease lost to another daemon — abandoning this run`);
+  deps.log(`conduction ${row.id}: lease lost to another conductor — abandoning this run`);
   keeper.stop(row.id);
   state.delete(row.id);
   return false;
@@ -1052,6 +1074,7 @@ async function handleConduction(
     await handleForeignConduction(deps, state, keeper, excluded, runtime, row, stealCandidates, waitingCandidates);
     return;
   }
+  if (runtime.adoptRefused?.has(row.id)) return; // B-1171: refused adoption — see handleWonTakeover.
   await handleHeldConduction(deps, state, keeper, excluded, runtime, row);
 }
 
@@ -1257,7 +1280,7 @@ async function handleHeldConduction(
       state.set(row.id, captureBaseline(current));
       return;
     }
-    deps.log(`${label(row, current, deps.projectKey)}: fast-track recording not taken by the daemon (${outcome.reason}) — queuing the ordinary leg`);
+    deps.log(`${label(row, current, deps.projectKey)}: fast-track recording not taken by the conductor (${outcome.reason}) — queuing the ordinary leg`);
   }
 
   // B-717 item 1: QUEUE rather than fire — the fire phase (fireReadyCandidates) decides WHEN,
@@ -1368,6 +1391,52 @@ async function handleForeignConduction(
   stealCandidates.push({ row, current });
 }
 
+/** B-1171: pick the reap/probe templates for a lease being adopted. Returns this conductor's own
+ *  (today's behaviour) unless a RECORDED launching backend differs from this conductor's, in which case
+ *  the recorded backend's profile templates are used. Returns null — adoption REFUSED, a warning logged
+ *  — when the recorded backend's profile cannot be resolved: reaping with the wrong backend's script is a
+ *  silent no-op that leaves the leg running, and re-firing beside it would double-launch.
+ *  The leg_backend column may be absent (pre-promote): that is cached for the conductor's lifetime. */
+async function resolveAdoptionTemplates(
+  deps: SchedulerDeps,
+  runtime: SchedulerRuntime,
+  row: ConductionRecord,
+): Promise<{ reap: string; probe?: string | false } | null> {
+  const own = { reap: deps.config.profile.reap, probe: deps.config.profile.probe };
+  const lb = deps.legBackend;
+  if (!lb || runtime.legBackendAbsent) return own;
+  let recorded: Awaited<ReturnType<LegBackendDeps['read']>>;
+  try {
+    recorded = await lb.read(row.id);
+  } catch (err) {
+    deps.log(
+      `conduction ${row.id}: could not read the recorded leg backend (${formatDaemonError(err)}) — ` +
+        `adopting with this conductor's own ${lb.tag} templates`,
+    );
+    return own;
+  }
+  if (recorded.absent) {
+    runtime.legBackendAbsent = true;
+    deps.log('leg_backend column absent (pre-promote) — adoption uses this conductor\'s own templates');
+    return own;
+  }
+  if (recorded.backend === null || recorded.backend === lb.tag) return own;
+  const templates = lb.resolveTemplates(recorded.backend);
+  if (templates === null) {
+    deps.log(
+      `conduction ${row.id}: ⚠ NOT adopting — its leg was launched by the '${recorded.backend}' backend and this ` +
+        `conductor (backend '${lb.tag}') has no '${recorded.backend}' profile to reap or probe it with; ` +
+        `leaving the lease for a conductor that runs that backend`,
+    );
+    return null;
+  }
+  deps.log(
+    `conduction ${row.id}: adopting a leg launched by the '${recorded.backend}' backend — reap/probe use ` +
+      `that backend's templates, not this conductor's '${lb.tag}' ones`,
+  );
+  return templates;
+}
+
 /** Returns true when the caller should fall through to `handleHeldConduction` THIS SAME pass
  *  (first-claim, or a completed reap-then-clear — today's pre-B-717 code always fell through
  *  after a takeover win); false when this function already fully handled the row itself
@@ -1381,6 +1450,7 @@ async function handleWonTakeover(
   won: ConductionRecord,
 ): Promise<boolean> {
   state.delete(row.id); // fresh read — the claim starts with no baseline.
+  runtime.adoptRefused?.delete(row.id);
   if (row.lease_holder === null) {
     // B-696 first-claim polish: a never-held conduction has no dead holder and no worker to
     // reap — running the reap template would target a container that never existed.
@@ -1388,12 +1458,31 @@ async function handleWonTakeover(
     return true;
   }
 
+  // B-1171: which reap/probe templates apply to the lease being adopted — the RECORDED launching
+  // backend's when it differs from this conductor's own, else this conductor's own (today's behaviour).
+  // Only consulted when a probe or a reap can actually run below.
+  const reapWillRun = !(row.clean_shutdown_at !== null && row.leg_started_at === null);
+  let adoptTemplates: { reap: string; probe?: string | false } = {
+    reap: deps.config.profile.reap,
+    probe: deps.config.profile.probe,
+  };
+  if (won.leg_started_at !== null || reapWillRun) {
+    const resolved = await resolveAdoptionTemplates(deps, runtime, row);
+    if (resolved === null) {
+      // Refused: leave the lease (no reap, no probe, no re-fire). It stops heartbeating, goes stale and
+      // a conductor running the recorded backend can adopt it.
+      (runtime.adoptRefused ??= new Set()).add(row.id);
+      return false;
+    }
+    adoptTemplates = resolved;
+  }
+
   // ── B-717 restart reconciliation ─────────────────────────────────────────────────────────────
   // A row with a non-null leg_started_at may still have a genuinely live worker: this daemon's OWN
   // prior process restarting, or a peer that died mid-leg. REAP-THEN-FIRE on that worker would
   // launch a SECOND one alongside it — RE-ATTACH, never re-fire. Runs ONCE, right here, on the
   // newly-won lease (never every pass).
-  if (won.leg_started_at !== null && deps.config.profile.probe) {
+  if (won.leg_started_at !== null && adoptTemplates.probe) {
     // B-827: best-effort pre-probe snapshot so the rendered probe command's {ticket} names the
     // ticket's visual id, not the row UUID — a metadata read failure must not block the probe
     // itself (templateVars falls back to the raw task_id when the task is unavailable).
@@ -1404,7 +1493,7 @@ async function handleWonTakeover(
       // best-effort — see above.
     }
     const probed = await deps.runCommand(
-      renderTemplate(deps.config.profile.probe, templateVars(row, probeTask, deps.projectKey, deps.workerImage)),
+      renderTemplate(adoptTemplates.probe, templateVars(row, probeTask, deps.projectKey, deps.workerImage)),
     );
     if (probed.exitCode === 0) {
       let current: DaemonTask;
@@ -1466,7 +1555,7 @@ async function handleWonTakeover(
   // since those ARE genuinely operationally interesting).
   // B-1166: a cleanly-released row (marker set) that carried no leg has nothing to reap — the
   // predecessor shut down deliberately with no worker in flight. Any other case reaps as before.
-  if (!(row.clean_shutdown_at !== null && row.leg_started_at === null)) {
+  if (reapWillRun) {
     // B-827: best-effort pre-reap snapshot — same degrade rationale as the reconciliation probe
     // fetch above (a metadata read failure must not block this reap).
     let reapTask: DaemonTask | null = null;
@@ -1476,7 +1565,7 @@ async function handleWonTakeover(
       // best-effort — see above.
     }
     await deps.runCommand(
-      renderTemplate(deps.config.profile.reap, templateVars(row, reapTask, deps.projectKey, deps.workerImage)),
+      renderTemplate(adoptTemplates.reap, templateVars(row, reapTask, deps.projectKey, deps.workerImage)),
       { quiet: true, quietRender: renderQuietReapOutcome },
     );
   }
@@ -2229,6 +2318,25 @@ async function fireLaunch(
   });
   tracked.cancelDeadline = cancelDeadline;
   void launch.finally(cancelDeadline);
+
+  // B-1171: record which backend launched this leg — ONE isolated, best-effort, lease-guarded write.
+  // Never part of any shared patch (the column may not exist yet) and never able to block the launch.
+  await recordLegBackend(deps, runtime, row);
+}
+
+async function recordLegBackend(deps: SchedulerDeps, runtime: SchedulerRuntime, row: ConductionRecord): Promise<void> {
+  const lb = deps.legBackend;
+  if (!lb || runtime.legBackendAbsent) return;
+  try {
+    const outcome = await lb.write(row.id, deps.leaseHolder, lb.tag);
+    if (outcome === 'missing-column') {
+      runtime.legBackendAbsent = true;
+      deps.log('leg_backend column absent (pre-promote) — not recording the launching backend');
+    }
+    // 'lease-lost' needs no action here: the next pass's lease check owns that.
+  } catch (err) {
+    deps.log(`conduction ${row.id}: could not record the launching backend (${formatDaemonError(err)}) — continuing`);
+  }
 }
 
 /** The forever loop: pass; sleep(pollMs). A pass-level failure (e.g. a transient list error) is

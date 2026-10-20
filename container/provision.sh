@@ -42,7 +42,7 @@ HARMONY_TARGET="${HARMONY_TARGET:-prod}"
 # HARMONY_API_TOKEN which is not validated yet either). The hardcoded case statement below is the
 # DOCUMENTED PER-DEPLOYMENT FACT fallback this AC accepts in place of a full migration — it MUST
 # keep working byte-for-byte with no ~/.harmony/deployment.json present (true for the live dogfood
-# daemon today), so this lookup is best-effort and never fails the script.
+# conductor today), so this lookup is best-effort and never fails the script.
 DEPLOYMENT_CONFIG_PATH="${HARMONY_DEPLOYMENT_CONFIG:-$HOME/.harmony/deployment.json}"
 CONFIG_SUPABASE_URL=""
 if [ -f "$DEPLOYMENT_CONFIG_PATH" ]; then
@@ -304,7 +304,7 @@ case "$MODE" in
     # B-825: never let the headless runtime's 600s background-task ceiling kill a
     # still-running delegated build (B-688's build died exactly this way — twice).
     # Build subagents are foreground by rule (start-work O3); this export is the
-    # safety net for anything that still slips into the background. The daemon's
+    # safety net for anything that still slips into the background. The conductor's
     # 90-minute worker deadline (B-739) remains the outer bound on the leg.
     export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0
 
@@ -389,7 +389,7 @@ case "$MODE" in
     # --- B-1148: a Codex leg's model, resolved BEFORE the resume guard so the guard can weigh the
     # rollout against it. B-1076: another runtime cannot run a Claude alias. B-1147: the catalog is
     # runtime-scoped, so a Codex leg keeps HARMONY_MODEL ONLY when the catalog confirms it belongs to
-    # this runtime (`harmony model check-alias --agent <id>`) — which also keeps an OLDER daemon's
+    # this runtime (`harmony model check-alias --agent <id>`) — which also keeps an OLDER conductor's
     # Claude-catalog resolution (or a plugin build without --agent, which exits non-zero) from ever
     # reaching Codex. B-1148: otherwise the live catalog's PINNED Codex model for this deployment's
     # profile (`harmony model pinned-default --agent <id>`), then HARMONY_CODEX_MODEL (the
@@ -604,10 +604,10 @@ case "$MODE" in
       fi
     }
 
-    # B-772: HARMONY_MODEL is the daemon's already-resolved per-gate/per-run/pinned-default model
+    # B-772: HARMONY_MODEL is the conductor's already-resolved per-gate/per-run/pinned-default model
     # choice (src/config/run-config.ts's getModelForGate, delivered via the minted run.env file —
     # see scripts/mint-installation-token.mjs's composeModelLine). Guarded exactly like the
-    # --resume wiring above: when unset/empty (an older daemon build, or a deployment profile that
+    # --resume wiring above: when unset/empty (an older conductor build, or a deployment profile that
     # doesn't render {model}), CURRENT_MODEL stays empty and every invocation below runs
     # byte-for-byte unchanged — no --model flag at all, never an empty one.
     CURRENT_MODEL="${HARMONY_MODEL:-}"
@@ -637,7 +637,7 @@ case "$MODE" in
     }
 
     # --- B-772 round 2: bounded in-worker model-switch loop --------------------------------------
-    # The WORKER (skills/harmony-conduct/SKILL.md step 1d), not this daemon-fired guess, is what
+    # The WORKER (skills/harmony-conduct/SKILL.md step 1d), not this conductor-fired guess, is what
     # actually enforces which model a gate runs on: at step 1 of every gate the running session
     # compares the gate it is about to work against $HARMONY_MODEL (re-exported below on every
     # iteration so it always reflects THIS turn's real launch model) and, on a mismatch, writes a
@@ -646,7 +646,7 @@ case "$MODE" in
     # <alias>` invocation in the SAME container — bounded at 7 iterations
     # (src/daemon/gate-phase.ts's GATES length: at most one switch per gate in one leg). A tripped
     # bound is logged, never silently swallowed; either way this script still exits with the LAST
-    # completed invocation's own exit code, so the daemon's exit classifier is unaffected.
+    # completed invocation's own exit code, so the conductor's exit classifier is unaffected.
     #
     # Signal forwarding across the exec -> plain-call conversion. Every `claude` invocation below now
     # runs as a plain (non-exec'd) call — `exec` would replace this shell's OWN process image with
@@ -654,14 +654,14 @@ case "$MODE" in
     # ticket; this script now needs to run code AFTER `claude` returns (the handoff check), so it can
     # no longer exec. A plain call makes THIS shell the direct signal recipient instead, and bash's
     # documented default is to defer running a trap handler until the current foreground command
-    # returns — which would delay an operator reap or the daemon's deadline-kill by up to `claude`'s
+    # returns — which would delay an operator reap or the conductor's deadline-kill by up to `claude`'s
     # own remaining runtime. Backgrounding each invocation (`"$@" &`) and `wait`-ing on its specific
     # PID avoids that: bash runs a pending trap as soon as it fires even while blocked in `wait PID`
     # (unlike a foreground non-`wait` command), so the trap below forwards the signal to `claude`
     # immediately, and `wait` then returns claude's own real exit status once it acts on the
-    # forwarded signal — the same promptness the previous `exec`-based script gave the daemon's reap
+    # forwarded signal — the same promptness the previous `exec`-based script gave the conductor's reap
     # path, preserved end-to-end. (Item 18 of this ticket's work list — a LIVE operator-reap smoke
-    # test confirming this against the real daemon — is out of scope for this build; this reasoning
+    # test confirming this against the real conductor — is out of scope for this build; this reasoning
     # is the documented substitute pending that manual verification on staging.)
     MODEL_SWITCH_CHILD_PID=""
     # B-1167: a stop (TERM/INT) must end the leg, not look like an agent failure. `claude -p` exits 143 on
@@ -718,7 +718,7 @@ case "$MODE" in
 
     # --- B-916: one leg_key per LEG, minted HERE. -----------------------------------------------
     # The worker is the only thing that knows where one leg's invocations begin and end, so it — not
-    # the DB, not the daemon — mints the key that groups them back together. Generated ONCE, before
+    # the DB, not the conductor — mints the key that groups them back together. Generated ONCE, before
     # the first invocation, and reused by every invocation of this leg. Nothing downstream parses
     # it; it is an opaque grouping key.
     LEG_KEY="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}"
@@ -731,7 +731,7 @@ case "$MODE" in
     # the capture files below, by `_b720_record_output`): because THIS SCRIPT'S STDOUT IS STILL READ.
     # `--output-format json` turns a whole invocation into one machine line; without the re-echo,
     # everything attached to this container's stdout — Cloud Logging on the cloud profile, the
-    # daemon's `[worker]` log lines on the docker profile, and anyone running the container by hand
+    # conductor's `[worker]` log lines on the docker profile, and anyone running the container by hand
     # — would see a JSON blob where the agent's prose used to be. Keeping stdout FAITHFUL is the
     # reason; feeding B-720's capture is no longer it. A capture that is NOT a result envelope (an
     # older CLI that ignored the flag, a wrapper/stub, a crash before the line was emitted, or
@@ -785,10 +785,10 @@ case "$MODE" in
     # B-720 (replacement capture): record what THIS invocation actually wrote, as the WORKER's own
     # output row (`source=worker`).
     #
-    # Why here and not in the daemon: the daemon captures the LAUNCH COMMAND's stdout, which is the
+    # Why here and not in the conductor: the conductor captures the LAUNCH COMMAND's stdout, which is the
     # worker's only on the docker profile. On the cloud profile — the one production runs — the
     # launch command is a Cloud Run control-plane client and this container's stdout goes to Cloud
-    # Logging, never through the daemon, so what the daemon captured there was launcher chatter
+    # Logging, never through the conductor, so what the conductor captured there was launcher chatter
     # wearing the name "worker output". Captured HERE it is the worker's output on every profile.
     #
     # Reuses the SAME LEG_KEY as `_b916_record_invocation`, so a leg's output rows and its cost rows
@@ -833,7 +833,7 @@ case "$MODE" in
 
       # Re-export on every iteration so a running session's own `harmony model running-model` /
       # `echo "$HARMONY_MODEL"` always reflects the model THIS turn actually launched with,
-      # including after a switch — never the daemon's original fire-time guess once a switch has
+      # including after a switch — never the conductor's original fire-time guess once a switch has
       # moved past it.
       export HARMONY_MODEL="$CURRENT_MODEL"
 

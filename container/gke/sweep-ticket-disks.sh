@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # B-1163: delete a ticket's per-ticket disk (a PersistentVolumeClaim named `ticket-<key>-<number>`,
 # e.g. ticket-b-1060 for B-1060) once the ticket is Verified, Cancelled or archived. Run it on the
-# daemon host on a schedule (cron / launchd). It uses the CURRENT kubeconfig and kubectl context — it
+# conductor host on a schedule (cron / launchd). It uses the CURRENT kubeconfig and kubectl context — it
 # creates none.
 #
 #   bash container/gke/sweep-ticket-disks.sh [--namespace <ns>] [--env-file <path>|none] [--dry-run]
 #
-#   --env-file <path>  the daemon's KEY=VALUE settings (HARMONY_API_TOKEN for the ticket-state reads), loaded
-#                      first. Default ~/.harmony/daemon.env, skipped when absent; `none` skips it. Under
+#   --env-file <path>  the conductor's KEY=VALUE settings (HARMONY_API_TOKEN for the ticket-state reads), loaded
+#                      first. Default ~/.harmony/conductor.env, else the legacy ~/.harmony/daemon.env, skipped when absent; `none` skips it. Under
 #                      launchd there is no login shell, so without it every state read fails and the sweep
 #                      keeps every disk (exit 3).
 #   --namespace <ns>   default $HARMONY_GKE_NAMESPACE, else harmony-legs
@@ -34,7 +34,8 @@ set -euo pipefail
 
 NAMESPACE="${HARMONY_GKE_NAMESPACE:-harmony-legs}"
 DRY_RUN=0
-ENV_FILE="${HOME:-}/.harmony/daemon.env"
+# B-1171: conductor.env is the file to create; daemon.env is the legacy fallback.
+if [ -f "${HOME:-}/.harmony/conductor.env" ]; then ENV_FILE="${HOME:-}/.harmony/conductor.env"; else ENV_FILE="${HOME:-}/.harmony/daemon.env"; fi
 ENV_FILE_EXPLICIT=0
 TAKE_AWAY_GRACE_S=86400
 
@@ -45,7 +46,7 @@ Usage: sweep-ticket-disks.sh [--namespace <ns>] [--env-file <path>|none] [--dry-
 Deletes the per-ticket disk (PVC ticket-<key>-<number>) of every Verified, Cancelled or archived ticket,
 and of every ticket taken away from the conductor (conductor_excluded_at) more than 24 hours ago.
   --namespace <ns>   [$HARMONY_GKE_NAMESPACE, else harmony-legs]
-  --env-file <path>  load the daemon's settings first; `none` skips  [~/.harmony/daemon.env, if present]
+  --env-file <path>  load the conductor's settings first; `none` skips  [~/.harmony/conductor.env, else the legacy daemon.env, if present]
   --dry-run          show the deletes instead of running them
   -h, --help         this text
 Exit codes: 0 ok; 1 could not list PVCs / pods; 2 bad usage; 3 some ticket's state could not be read (its disk was kept).

@@ -625,7 +625,7 @@ describe('harmony-conduct: the turn-end gate and its sanctioned alternatives (B-
     expect(body).toMatch(/Flat ban/i);
     // The three reasons it is unusable here.
     expect(body).toMatch(/board never sees it/i);
-    expect(body).toMatch(/daemon worker\s*\n?cannot render it/);
+    expect(body).toMatch(/conductor worker\s*\n?cannot render it/);
     expect(body).toMatch(/no rounds history/i);
     // Not a blanket ban on the tool — only inside ticket-driving sessions.
     expect(body).toMatch(/Outside ticket-driving sessions/);
@@ -639,7 +639,7 @@ describe('harmony-conduct: the turn-end gate and its sanctioned alternatives (B-
     expect(body).toMatch(/at most \*\*twice\*\*|at most twice/);
     expect(body).toMatch(/fails open|\*\*fails open\*\*/i);
     expect(body).toContain('HARMONY_STOP_GATE_OFF');
-    expect(body).toMatch(/absent from every\s*\n?daemon\/container profile/);
+    expect(body).toMatch(/absent from every\s*\n?conductor\/container profile/);
   });
 
   it('the four shapes that let a turn end are listed, and match the shared predicate', () => {
@@ -658,7 +658,7 @@ describe('harmony-conduct: the turn-end gate and its sanctioned alternatives (B-
     const body = skill.body;
     // Named: the revive is explicit/human-authorized, never the conductor's own inference.
     expect(body).toMatch(/unpark: true/);
-    expect(body).toMatch(/never by the conductor itself/i);
+    expect(body).toMatch(/never by the conduct loop itself/i);
     // The liveness check itself: build_pr, and the gh invocation (or its equivalent).
     expect(body).toMatch(/field_values\.build_pr/);
     expect(body).toMatch(/gh pr view/);

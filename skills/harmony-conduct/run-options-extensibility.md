@@ -10,7 +10,7 @@ touches so the next one doesn't have to rediscover the wiring from scratch.
 
 A Run Options control is a `run_config` key: set by the human in the web Conduct dialog, written
 into `conductions.run_config` (jsonb) at creation, delivered to the worker as an env var, and read
-back out by whichever code needs it — a daemon/shell script, or (new as of B-743) a skill running
+back out by whichever code needs it — a conductor/shell script, or (new as of B-743) a skill running
 inside the worker's `claude` session, via an MCP tool boundary.
 
 ## Files every new control touches
@@ -46,19 +46,19 @@ inside the worker's `claude` session, via an MCP tool boundary.
    its own template variable outside the run_config channel entirely.
 
 7. **`plugin/skills/harmony-conduct/SKILL.md`, step 1b + `plugin/src/tools/environment.ts`** —
-   **ONLY IF** the new control needs to be READ BY A SKILL** (as opposed to a daemon/shell script
+   **ONLY IF** the new control needs to be READ BY A SKILL** (as opposed to a conductor/shell script
    that already runs before `claude` starts, like `container/entrypoint.sh`'s `session_resume`
    read). `harmony-conduct`'s `allowed-tools` carries no `Bash` — a skill can only reach an env var
    through an MCP tool boundary. B-743 added `environment.conduction_id` /
    `environment.operator_note` to `get_project`'s response (`resolveEnvironment` in
    `environment.ts`) for exactly this reason; a new skill-consumed control key extends the SAME
    `EnvironmentInfo` shape (or, if it does not fit that shape's grain, a new dedicated MCP tool —
-   but prefer extending `EnvironmentInfo` first, since it is already the one call every conductor
+   but prefer extending `EnvironmentInfo` first, since it is already the one call every conduct loop
    run makes at step 1b before anything else).
 
 ## Named first consumers of this contract
 
-- **B-772** — which model runs a gate (a per-gate `run_config` key, likely daemon/launch-side only
+- **B-772** — which model runs a gate (a per-gate `run_config` key, likely conductor/launch-side only
   — touches #1, #2/#3 trivially, #4/#5, and possibly #6 if model selection needs to reach the
   launch template directly rather than riding inside `run_config`).
 - **B-773** — which gates auto-approve (a `run_config` key almost certainly consumed by

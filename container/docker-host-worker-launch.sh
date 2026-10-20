@@ -10,16 +10,16 @@
 # torn down when the worker container is removed. The host powers itself off when idle
 # (container/docker-host/idle.sh), so each launch first WAKES it.
 #
-# Like the cloud wrapper, this exists so the daemon's scheduler/classify code never changes and
-# never parses stdout: the daemon runs this to completion and reads its exit code (0 = the worker
+# Like the cloud wrapper, this exists so the conductor's scheduler/classify code never changes and
+# never parses stdout: the conductor runs this to completion and reads its exit code (0 = the worker
 # exited 0, 1 = anything else — the same collapse cloud-worker-launch.sh applies).
 #
-# THE CREDENTIAL BOUNDARY. The GitHub App private key never leaves the daemon's machine: the
+# THE CREDENTIAL BOUNDARY. The GitHub App private key never leaves the conductor's machine: the
 # per-run token is minted HERE, and only the two per-run files (run.env, run-config.json) are
 # shipped — through ssh's stdin, never on a command line — and the host's run.env is removed again
 # when this wrapper exits.
 #
-# Runs on the DAEMON'S MACHINE, so it stays bash-3.2 safe (see docker-host-common.sh).
+# Runs on the CONDUCTOR'S MACHINE, so it stays bash-3.2 safe (see docker-host-common.sh).
 #
 # Usage: docker-host-worker-launch.sh <conduction_id> <ticket> [run_config_json] [model]
 set -euo pipefail
@@ -47,7 +47,7 @@ dh_resolve_target docker-host-worker-launch
 CODEX_RUN=0
 CODEX_AUTH_SRC=""
 CODEX_AUTH_CONTAINER_PATH="/home/worker/.codex-auth-src/auth.json"   # provision.sh copies it into ~/.codex
-# run_config arrives as base64 JSON from the daemon (or raw JSON from a manual invocation): accept both.
+# run_config arrives as base64 JSON from the conductor (or raw JSON from a manual invocation): accept both.
 ADAPTER_PROBE="$(node -e 'let s=process.argv[1];try{JSON.parse(s)}catch{try{s=Buffer.from(s,"base64").toString("utf8")}catch{}}try{const a=JSON.parse(s).agent;process.stdout.write(a&&typeof a.adapter==="string"?a.adapter:"")}catch{}' "$RUN_CONFIG_JSON" 2>/dev/null || true)"
 if [ "$ADAPTER_PROBE" = "codex" ]; then CODEX_RUN=1; fi
 if [ "$CODEX_RUN" = "1" ]; then
@@ -214,7 +214,7 @@ set -e
 #    be running. Ask the host for the real exit code: `docker wait` blocks until the container
 #    stops and prints its code. Retried while the host stays unreachable, up to the budget; a wait
 #    that connects and blocks for the rest of a long leg is not "retrying" and is not bounded here
-#    (the daemon's own per-launch deadline bounds the whole wrapper).
+#    (the conductor's own per-launch deadline bounds the whole wrapper).
 if [ "$WORKER_EXIT" -eq 255 ]; then
   echo "docker-host-worker-launch: the SSH session to $DH_SSH_TARGET was lost — asking the host for $CONTAINER's exit code" >&2
   WAIT_SPENT_S=0

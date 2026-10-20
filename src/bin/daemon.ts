@@ -52,6 +52,8 @@ import {
   updateConductionIfHeld,
   markCleanShutdown,
   readConductionQuotaState,
+  readConductionLegBackend,
+  writeConductionLegBackend,
   writeConductionQuotaState,
 } from '../tools/conduction-record.js';
 // B-1149: the refusal verdict the worker's adapter recorded on the leg's last leg-cost row.
@@ -73,6 +75,8 @@ import { detectSupervisor, shutdownLine, shouldInspectWorkerImage } from '../dae
 import { createDaemonLogger } from '../daemon/conductor-logger.js';
 // B-1170: the two-file conductor config (project file from the config repo + host file) — all logic in the module.
 import { startConductorConfigRuntime, type ConductorConfigRuntime } from '../daemon/conductor-config-runtime.js';
+// B-1171: the launching-backend tag per lease (conductions.leg_backend), honoured at adoption.
+import { deriveBackendTag, resolveBackendTemplates } from '../daemon/leg-backend.js';
 import { quietLogLine } from '../daemon/quiet-reap.js';
 import { runBootPreflight, type PreflightProfile } from '../daemon/preflight.js';
 import {
@@ -516,8 +520,8 @@ async function main(): Promise<void> {
   const prMergeStateReader = createGithubPrMergeStateReader({ env: process.env });
   log(
     prMergeStateReader
-      ? 'fast-track post-merge recording: daemon-filed (GitHub credential found for PR merge-state reads)'
-      : 'fast-track post-merge recording: NOT daemon-filed — no GitHub credential in the daemon env ' +
+      ? 'fast-track post-merge recording: conductor-filed (GitHub credential found for PR merge-state reads)'
+      : 'fast-track post-merge recording: NOT conductor-filed — no GitHub credential in the conductor env ' +
           '(set HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/HARMONY_APP_PRIVATE_KEY_PATH, or GH_TOKEN); ' +
           'fast-track accepts fall back to a worker leg',
   );
@@ -609,6 +613,14 @@ async function main(): Promise<void> {
     getLastLegRefusal: (conductionId, sinceIso) => readLastLegRefusal(client, { conduction_id: conductionId, since: sinceIso }),
     readQuotaState: (ids) => readConductionQuotaState(client, ids),
     writeQuotaState: (id, patch) => writeConductionQuotaState(client, id, leaseHolder, patch),
+    // B-1171: record the launching backend per lease and reap/probe an adopted leg with ITS backend's
+    // templates. Both accessors tolerate the column being absent (pre-promote prod).
+    legBackend: {
+      tag: deriveBackendTag(preflightProfileName, config.profile),
+      resolveTemplates: (tag) => resolveBackendTemplates(deploymentConfig?.profiles, tag),
+      read: (id) => readConductionLegBackend(client, id),
+      write: (id, holder, backend) => writeConductionLegBackend(client, id, holder, backend),
+    },
   };
 
   const keeper = createHeartbeatKeeper({
@@ -650,7 +662,7 @@ async function main(): Promise<void> {
   });
 
   log(
-    `conductor daemon up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, ` +
+    `conductor up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, ` +
       `heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms, ` +
       `worker timeout ${config.workerTimeoutMs}ms, ` +
       // B-1011: "requested" — the channel is created lazily and its join has NOT been awaited at
@@ -681,7 +693,7 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   process.stderr.write(
-    `daemon failed: ${formatDaemonError(err, { endpoint: '/functions/v1/auth-token' })}\n`,
+    `conductor failed: ${formatDaemonError(err, { endpoint: '/functions/v1/auth-token' })}\n`,
   );
   process.exit(1);
 });

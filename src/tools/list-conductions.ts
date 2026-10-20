@@ -90,7 +90,7 @@ export async function listConductions(
 export const listConductionsTool = {
   name: 'list_conductions',
   description:
-    "B-894: list one ticket's conduction records — the durable per-run rows the conductor daemon " +
+    "B-894: list one ticket's conduction records — the durable per-run rows the conductor " +
     'drives — newest first. This is the ONLY way to obtain a `conduction_id`, so call it first ' +
     'whenever you need to pass one to `request_conduction_reap` (the early-reap request for a hung ' +
     "run). Use it to answer: is this ticket being conducted right now, and by which conduction? " +
@@ -99,7 +99,7 @@ export const listConductionsTool = {
     'do not request another)? How did the last leg exit (`last_worker_exit_class`) and how many ' +
     'retries has it taken (`retry_count`)? Returns a lean ten-field row per conduction (id, status, ' +
     'mode, started_at, last_heartbeat_at, reap_requested_at, last_worker_exit_class, updated_at, ' +
-    'worker_ref, retry_count) — daemon lease/CAS internals are deliberately not exposed. A ticket ' +
+    'worker_ref, retry_count) — conductor lease/CAS internals are deliberately not exposed. A ticket ' +
     'that has never been conducted returns an empty list, not an error.',
   inputSchema: {
     type: 'object' as const,

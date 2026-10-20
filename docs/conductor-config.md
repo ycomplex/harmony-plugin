@@ -3,12 +3,13 @@
 A project's conductor is configured by **one file in its repo** (`.harmony/conductor.json`) plus a small
 **host file** for what is true of one machine. This is the reference. The code is
 `src/config/conductor-config.ts` (schemas, merge, errors), `src/config/conductor-project-source.ts` (reading
-the file from GitHub), `src/daemon/conductor-config-runtime.ts` (the daemon's refresh timer) and
-`src/cli/commands/conductor-config.ts` (the three commands).
+the file from GitHub), `src/daemon/conductor-config-runtime.ts` (the conductor's refresh timer) and
+`src/cli/commands/conductor-config.ts` (the three commands). Running, stopping, restarting and updating the
+conductor itself (`harmony conductor start|stop|restart|status`) is [`docs/conductor-lifecycle.md`](conductor-lifecycle.md).
 
 ## Purpose
 
-Before this, a deployment was spread over `~/.harmony/deployment.json`, a profile JSON, a `daemon.env`
+Before this, a deployment was spread over `~/.harmony/deployment.json`, a profile JSON, a `conductor.env` (named `daemon.env` before B-1171; that name still loads as a fallback)
 exporting `HARMONY_GKE_*` / `HARMONY_CLOUD_RUN_*` / `CLOUDSDK_*` / `HARMONY_APP_*`, and per-script
 `HARMONY_PLUGIN_DIR`. Nothing said which one won, and a change needed a host edit plus a restart. Now:
 
@@ -33,7 +34,7 @@ a test keeps both valid against the schemas).
 
 `version` is required in both files and must be `1`. In the project file `channel` and `profile` are
 required. The host file may carry **any project key as an override** (it wins over the project file) plus the
-host-only keys. "Hot" means a running daemon applies it on the next refresh; "restart" means it is read once
+host-only keys. "Hot" means a running conductor applies it on the next refresh; "restart" means it is read once
 at boot (a change is logged as `restart needed`).
 
 | Key | Type | Default | Owner | Applied |
@@ -66,10 +67,10 @@ at boot (a change is logged as `restart needed`).
 | `gcloud.account` | string | unset | host | launch env |
 | `secrets` | map logical name -> Secret Manager secret **name** | none | host | n/a |
 
-"launch env" keys are written into the daemon's process environment as the variables the launch scripts
+"launch env" keys are written into the conductor's process environment as the variables the launch scripts
 read (`HARMONY_GKE_*`, `HARMONY_CLOUD_RUN_*`, `CLOUDSDK_CORE_PROJECT`, `CLOUDSDK_CORE_ACCOUNT`,
 `HARMONY_PLUGIN_DIR`, `HARMONY_APP_*`). A variable the operator already exports is never overwritten, and a
-refresh updates only the variables the daemon itself set. Strictly, `gcp.project`, `gcp.region`,
+refresh updates only the variables the conductor itself set. Strictly, `gcp.project`, `gcp.region`,
 `cloud_run.job`, `gke.namespace` and `gke.context` are logged as restart-needed when they change, because a
 running process should not move clusters under in-flight legs; the new value still reaches the *next*
 launch's environment.
@@ -91,14 +92,14 @@ legacy files  <  project file  <  host file  <  env
 - **legacy** is `deployment.json` and the old process-env knobs; every use emits one deprecation warning
   naming the old location and its replacement key (see [Deprecated](#deprecated)).
 - Objects merge key by key; arrays (`agents`) and scalars are replaced.
-- A *legacy env knob that the operator exports* (for example `HARMONY_GKE_NAMESPACE` in `daemon.env`) beats
+- A *legacy env knob that the operator exports* (for example `HARMONY_GKE_NAMESPACE` in `conductor.env`) beats
   the files **at launch**, because the launch scripts read the process environment and a variable that is
   already set is never overwritten. `doctor` reports this as a conflict.
 
 ## How the project file is read
 
 1. `config_repo` (and optionally `config_ref`, default `main`) come from the host file.
-2. The daemon reads `.harmony/conductor.json` from that repo through the **GitHub contents API** with its
+2. The conductor reads `.harmony/conductor.json` from that repo through the **GitHub contents API** with its
    existing **harmony-daemon App installation token** (the same credential it already uses for PR merge
    state). No clone, no new credential.
 3. It refreshes **every 5 minutes** (and once at boot), sending `If-None-Match` so an unchanged file costs a
@@ -106,7 +107,7 @@ legacy files  <  project file  <  host file  <  env
 4. A valid new file replaces the **last-good snapshot** `~/.harmony/conductor-snapshot.json` (written
    atomically, mode 0600). The conductor reads the snapshot, so it keeps working through a GitHub outage.
 5. An **invalid** file (bad JSON, unknown key, wrong type) never replaces the snapshot: the previous
-   snapshot stays in force and the daemon logs one warning with every problem. A bad commit, an outage or an
+   snapshot stays in force and the conductor logs one warning with every problem. A bad commit, an outage or an
    uninstalled App can never stop the conductor.
 6. **First boot rule.** With no snapshot and no reachable project file, the conductor runs on the legacy
    files (with a warning `no project file reachable yet; running on legacy files`). With no legacy files
@@ -120,7 +121,7 @@ add the repository to the harmony-daemon installation.
 
 ### Hot vs restart-needed
 
-Every 5 minutes, if the merged config changed, the daemon **applies** `concurrency.max_workers` (unless
+Every 5 minutes, if the merged config changed, the conductor **applies** `concurrency.max_workers` (unless
 `HARMONY_DAEMON_MAX_CONCURRENT_WORKERS` is set, which keeps winning), `model_policy`, `log_shipping` and the
 launch env, and **logs** `conductor config: restart needed — <keys>` for the restart-only keys
 (`channel`, `profile`, `gcp.project`, `gcp.region`, `gke.cluster`, `gke.location`, `gke.namespace`,
@@ -128,9 +129,9 @@ launch env, and **logs** `conductor config: restart needed — <keys>` for the r
 config and is logged once per distinct message.
 
 **Model policy.** A conduction's own `run_config.model` always wins. When it names no `default` and no
-`per_gate` entry for the leg's gate, the daemon fills the policy into the `run_config` it hands the worker
+`per_gate` entry for the leg's gate, the conductor fills the policy into the `run_config` it hands the worker
 (both the rendered `{run_config_json}` and the `{model}` it chose), so the worker's own resolution agrees
-with the daemon's and never loops on model-switch requests. Codex runs are left alone.
+with the conductor's and never loops on model-switch requests. Codex runs are left alone.
 
 ## Errors
 
@@ -177,12 +178,12 @@ legacy `deployment.json`, legacy env knobs in *this shell*), every issue, every 
 values in two layers (project vs host, host vs env, files vs legacy `deployment.json`, files vs a legacy env
 knob) with which one wins, and every legacy source still supplying a value with its replacement key. A
 conflict with a legacy env knob carries the note *environment wins at launch (deprecated) — unset it or
-remove it from daemon.env*. Exit **1** when there is any issue; conflicts and legacy use are warnings (exit
-0). To check what the daemon sees, load its environment first: `set -a; . <daemon.env>; set +a`.
+remove it from conductor.env*. Exit **1** when there is any issue; conflicts and legacy use are warnings (exit
+0). To check what the conductor sees, load its environment first: `set -a; . <conductor.env>; set +a`.
 
 ## Conductor logs (B-1174)
 
-The daemon writes **two outputs from one logger**:
+The conductor writes **two outputs from one logger**:
 
 - **stdout** keeps its text lines, `<ISO timestamp> <line>` (also appended to `HARMONY_DAEMON_LOG` when set).
   Only a remote conductor (`HARMONY_CONDUCTOR_REMOTE=1`, set by its pod spec; `KUBERNETES_SERVICE_HOST` is
@@ -240,7 +241,7 @@ gcloud logging read 'logName="projects/<PROJECT>/logs/harmony-conductor" AND tim
 5. `harmony conductor config sync`, then `harmony conductor config doctor`; fix every issue it prints.
 6. Restart the conductor (restart-only keys are read at boot).
 7. **Prove the new files suffice:** rename the old files away yourself (`deployment.json`, the exports in
-   `daemon.env`), restart, and run `doctor` again. No tooling ever does this step for you.
+   `conductor.env`), restart, and run `doctor` again. No tooling ever does this step for you.
 
 ## Deprecated
 
@@ -251,7 +252,7 @@ have migrated:
 |---|---|
 | `~/.harmony/deployment.json` (`profiles.*`, `worker_image`, `launcher.*`, `env.HARMONY_PLUGIN_POSTURE`) | `.harmony/conductor.json` (`profile`, `images.worker`, `channel`, ...) and the host file (`plugin_dir`, `github_app`) |
 | the standalone profile JSON (`HARMONY_DAEMON_PROFILE`, `container/daemon-profile.*.example.json`) | `profile: "cloud" \| "gke"` selects the built-in launch/reap/probe template (a custom template is ignored once `profile` is named) |
-| `daemon.env` exports of `HARMONY_GKE_*` | `gke.*`, `images.worker` (`HARMONY_GKE_IMAGE`) |
+| `conductor.env` exports of `HARMONY_GKE_*` | `gke.*`, `images.worker` (`HARMONY_GKE_IMAGE`) |
 | `HARMONY_CLOUD_RUN_REGION`, `HARMONY_CLOUD_RUN_JOB` | `gcp.region`, `cloud_run.job` |
 | `CLOUDSDK_CORE_PROJECT` | `gcp.project` |
 | `CLOUDSDK_CORE_ACCOUNT` | `gcloud.account` (host file) |
@@ -259,7 +260,7 @@ have migrated:
 | per-script `HARMONY_PLUGIN_DIR` | `plugin_dir` (host file) |
 | `HARMONY_PLUGIN_POSTURE` | `channel` |
 
-The daemon exports the launch-env values into its own process environment for the launch scripts; it does
+The conductor exports the launch-env values into its own process environment for the launch scripts; it does
 not read those back as legacy knobs.
 
 ## What stays an environment variable

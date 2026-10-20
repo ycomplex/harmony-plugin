@@ -1,0 +1,26 @@
+# B-1171: RENDERED by `harmony conductor start --local` into ~/.config/systemd/user/harmony-conductor.service
+# (src/daemon/supervisor-control.ts renderSystemdUnit). Do not copy it by hand.
+#
+# A systemd USER unit: it starts at login, and at boot only if lingering is on for the user
+# (`sudo loginctl enable-linger $USER`). The job runs container/conductor-launch.sh, the ONE place that
+# loads ~/.harmony/conductor.env, then execs `node <plugin>/dist/bin/daemon.js`. No credential lives here.
+[Unit]
+Description=Harmony conductor ({{PLUGIN_DIR}})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{PLUGIN_DIR}}
+Environment={{ENV_PATH}}
+Environment={{ENV_PLUGIN_DIR}}
+ExecStart={{EXEC_START}}
+Restart=always
+RestartSec=10
+# SIGTERM leaves running legs running (they are their own jobs) and stamps a clean shutdown.
+KillMode=process
+StandardOutput=append:{{LOG_PATH}}
+StandardError=append:{{LOG_PATH}}
+
+[Install]
+WantedBy=default.target

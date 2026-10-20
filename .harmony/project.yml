@@ -15,7 +15,7 @@
 # from the merged source on every push to `main`, so the served bundle cannot drift from source.
 #
 # notify (B-973, narrowed by B-1009): NOTHING IN THIS PLUGIN DISPATCHES TO `endpoint` — not this
-# plugin, not the conductor daemon, not any worker. `notify` is still deliberately not an extension
+# plugin, not the conductor, not any worker. `notify` is still deliberately not an extension
 # point and no code path resolves it to an action (proved by the "notify endpoint — declared data,
 # NEVER reached" test in src/config/project-manifest.test.ts), and the delivery substrate remains
 # outside this repo: B-980 (the outbox) and B-1009 (the Supabase-hosted dispatcher — an edge function

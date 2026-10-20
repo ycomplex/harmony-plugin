@@ -111,7 +111,7 @@ export async function createConduction(
       conduction,
       message:
         `Conduction ${conduction.id} created for ${args.task_id} (${conduction.status}, mode: ` +
-        `${conduction.mode}). The conductor daemon will pick it up on its next pass. Note: ${HANDOFF_CONTRACT_NOTE}`,
+        `${conduction.mode}). The conductor will pick it up on its next pass. Note: ${HANDOFF_CONTRACT_NOTE}`,
     };
   } catch (err) {
     if (err instanceof TicketParkedError || err instanceof TicketStaleReviveRefusedError) {
@@ -151,7 +151,7 @@ export async function createConduction(
 export const createConductionTool = {
   name: 'create_conduction',
   description:
-    'B-758: hand a ticket to the conductor daemon from ANY stage (Proposed through Deployed) — not just Proposed. Creates the durable conduction record (status \'active\', mode \'controlled\'); the conductor daemon notices it on its next pass and drives the run. Refuses cleanly (never a raw error) when the ticket is already being conducted (at most one active conduction per ticket) or when a human has explicitly taken this ticket away from the conductor (the web\'s "Take away from conductor" action) — in that case, Return it to the conductor first. Refuses cleanly, naming the cause, when the database\'s row-level security policy rejects the record (that policy requires the acting user\'s id on the insert). IMPORTANT: the duplicate-guard can only detect an active conduction record — it cannot see an in-progress terminal session, so confirm any in-session work on this ticket has stopped before handing it off. B-964: on a Parked ticket, this refuses UNLESS unpark: true is also passed (in which case it re-validates tasks.stale, resumes the ticket, records who revived it, and only THEN creates the conduction) — this is the ONLY way a Parked ticket ever resumes conducting, and it is never automatic: only call unpark: true from an explicit human instruction.',
+    'B-758: hand a ticket to the conductor from ANY stage (Proposed through Deployed) — not just Proposed. Creates the durable conduction record (status \'active\', mode \'controlled\'); the conductor notices it on its next pass and drives the run. Refuses cleanly (never a raw error) when the ticket is already being conducted (at most one active conduction per ticket) or when a human has explicitly taken this ticket away from the conductor (the web\'s "Take away from conductor" action) — in that case, Return it to the conductor first. Refuses cleanly, naming the cause, when the database\'s row-level security policy rejects the record (that policy requires the acting user\'s id on the insert). IMPORTANT: the duplicate-guard can only detect an active conduction record — it cannot see an in-progress terminal session, so confirm any in-session work on this ticket has stopped before handing it off. B-964: on a Parked ticket, this refuses UNLESS unpark: true is also passed (in which case it re-validates tasks.stale, resumes the ticket, records who revived it, and only THEN creates the conduction) — this is the ONLY way a Parked ticket ever resumes conducting, and it is never automatic: only call unpark: true from an explicit human instruction.',
   inputSchema: {
     type: 'object' as const,
     properties: {

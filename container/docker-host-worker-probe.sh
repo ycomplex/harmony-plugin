@@ -14,7 +14,7 @@ set -uo pipefail
 
 CONDUCTION_ID="${1:?usage: docker-host-worker-probe.sh <conduction_id> <ticket>}"
 TICKET="${2:?usage: docker-host-worker-probe.sh <conduction_id> <ticket>}"
-: "$TICKET" # unused beyond the daemon's own {ticket} template placeholder — kept for signature parity
+: "$TICKET" # unused beyond the conductor's own {ticket} template placeholder — kept for signature parity
 
 # shellcheck source=container/docker-host-common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/docker-host-common.sh"

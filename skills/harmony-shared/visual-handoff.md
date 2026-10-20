@@ -77,4 +77,4 @@ the one thing that survives a careful review and propagates a hallucination down
 
 ## References
 
-- B-328 spike retro · gate-ui-conductor §5–§6 · stocktake §9.1 · brief disciplines gate-ui-conductor §3.2.
+- B-328 spike retro · gate-ui-conduct loop §5–§6 · stocktake §9.1 · brief disciplines gate-ui-conduct loop §3.2.

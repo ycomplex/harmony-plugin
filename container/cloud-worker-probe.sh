@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # B-717: Cloud Run job-execution PROBE wrapper — the "cloud" launch profile's optional `probe`
 # template target, used ONLY for restart reconciliation (src/daemon/scheduler.ts): on a newly-won
-# takeover of a lease whose `leg_started_at` is non-null, the daemon runs this to ask "is a worker
-# for this conduction still genuinely running, on ANY daemon?" before ever reaping or re-firing.
+# takeover of a lease whose `leg_started_at` is non-null, the conductor runs this to ask "is a worker
+# for this conduction still genuinely running, on ANY conductor?" before ever reaping or re-firing.
 #
 # Exit 0  = a worker for this conduction is STILL RUNNING (found — an incomplete execution exists).
-# Exit !=0 = no worker found (settled/absent) — the daemon falls back to REAP-THEN-FIRE.
+# Exit !=0 = no worker found (settled/absent) — the conductor falls back to REAP-THEN-FIRE.
 #
 # Mirrors cloud-worker-reap.sh's own resolve logic (same filter shape) — deliberately read-only,
 # never mutates anything, and (like every other wrapper here) never parses worker stdout.
@@ -15,7 +15,7 @@ set -euo pipefail
 
 CONDUCTION_ID="${1:?usage: cloud-worker-probe.sh <conduction_id> <ticket>}"
 TICKET="${2:?usage: cloud-worker-probe.sh <conduction_id> <ticket>}"
-: "$TICKET" # unused beyond the daemon's own {ticket} template placeholder — kept for signature parity
+: "$TICKET" # unused beyond the conductor's own {ticket} template placeholder — kept for signature parity
 
 # B-800 AC4: profiles.cloud.gcloud_project in a per-deployment config, when present, is this
 # deployment's default GCP project — read via `harmony config get` (best-effort; a missing

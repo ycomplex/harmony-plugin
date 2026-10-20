@@ -264,7 +264,7 @@ doc unchanged when `decisionRef` is falsy, so no other change is needed there.
 
 Show the rendered `content`. On the human's command:
 
-> **Provenance (B-734):** `human-in-session` below is the human deciding *here* — a conductor-synthesized
+> **Provenance (B-734):** `human-in-session` below is the human deciding *here* — a conduct-loop-synthesized
 > accept carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
 > §Resolution provenance).
 

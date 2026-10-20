@@ -184,8 +184,8 @@ describe('harmony-orchestrate skill contract', () => {
       expect(flat).toMatch(/merge into the one existing watch loop'?s grep sets and single cursor/);
     });
 
-    it('states plainly that parallel watch loops on the same daemon log are forbidden', () => {
-      expect(flat).toMatch(/parallel watch loops on the same daemon log are forbidden/);
+    it('states plainly that parallel watch loops on the same conductor log are forbidden', () => {
+      expect(flat).toMatch(/parallel watch loops on the same conductor log are forbidden/);
     });
 
     it('the duplicate-conduction guard makes an overlapping create_conduction call refuse cleanly, so re-listing an already-shepherded ticket is harmless', () => {
@@ -208,8 +208,8 @@ describe('harmony-orchestrate skill contract', () => {
       expect(flat).toMatch(/mechanizes the one-orchestrator-seat-per-board rule/);
     });
 
-    it('records a successor note: a future daemon-enforced repo-lane lock supersedes this section (§4)', () => {
-      expect(flat).toMatch(/a future daemon-enforced repo-lane lock supersedes this section'?s prose/);
+    it('records a successor note: a future conductor-enforced repo-lane lock supersedes this section (§4)', () => {
+      expect(flat).toMatch(/a future conductor-enforced repo-lane lock supersedes this section'?s prose/);
     });
   });
 

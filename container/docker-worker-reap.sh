@@ -7,7 +7,7 @@
 # "Error response from daemon: No such container: ..." and exits 1) never surfaced. This wrapper
 # captures docker's own exit code explicitly (it CANNOT use `set -e` for that one call, since the
 # whole point is to inspect a nonzero exit rather than abort on it) and re-derives a three-way
-# exit-code contract the daemon's quiet-reap renderer (src/daemon/quiet-reap.ts) depends on:
+# exit-code contract the conductor's quiet-reap renderer (src/daemon/quiet-reap.ts) depends on:
 #   0 — docker's own exit was 0: a real container was found and removed (a live worker was reaped).
 #   3 — docker's own exit was nonzero AND its output names "No such container": the routine miss
 #       (nothing to reap — the dead holder already lost the container, or it never existed).
