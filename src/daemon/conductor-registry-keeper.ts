@@ -44,6 +44,16 @@ export interface RegistryKeeperDeps {
   onRequest?(req: PendingRequest): Promise<'handled' | 'retry'>;
   /** Bound for the release call at shutdown (default 2s). */
   releaseTimeoutMs?: number;
+  /** B-1173: this process just became the holder (boot, re-probe or takeover) and the result carries a request
+   *  the previous holder claimed. Fire-and-forget: a throw is logged, never propagated. */
+  onCarriedRequest?(info: CarriedRequest): void | Promise<void>;
+}
+
+/** A request the previous holder claimed and did not complete, handed to its successor on acquire/takeover. */
+export interface CarriedRequest {
+  request: { id: string; action: string; state: string };
+  previousHolderId: string | null;
+  previousPluginVersion: string | null;
 }
 
 export type BootDecision = { proceed: true } | { proceed: false; message: string };
@@ -98,7 +108,18 @@ export function createRegistryKeeper(deps: RegistryKeeperDeps): RegistryKeeper {
     outage = false;
     const prev = r.previousHolderId ? ` (previous holder ${r.previousHolderId}${r.previousHost ? ` on ${r.previousHost}` : ''}${r.reason ? `, ${r.reason}` : ''})` : '';
     log(`registry: ${r.kind === 'taken_over' ? 'took over' : 'acquired'} the conductor row${how}${prev}`);
-    if (r.request) log(`registry: request ${r.request.id} (${r.request.action}) is ${r.request.state}; the restarter completes it`);
+    if (r.request) {
+      log(`registry: request ${r.request.id} (${r.request.action}) is ${r.request.state}; ${deps.onCarriedRequest ? 'this conductor completes it' : 'the restarter completes it'}`);
+      if (deps.onCarriedRequest) {
+        const info: CarriedRequest = { request: r.request, previousHolderId: r.previousHolderId, previousPluginVersion: r.previousPluginVersion };
+        const failed = (err: unknown): void => log(`registry: handling carried-over request ${info.request.id} failed (${err instanceof Error ? err.message : String(err)})`);
+        try {
+          void Promise.resolve(deps.onCarriedRequest(info)).catch(failed);
+        } catch (err) {
+          failed(err);
+        }
+      }
+    }
   };
 
   /** One acquire attempt including the same-host dead-pid retry. */

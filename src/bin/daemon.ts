@@ -34,7 +34,7 @@
 // same-host successor adopt them immediately instead of waiting out the full stale window), log,
 // and exit 0.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { exec, spawn } from 'node:child_process';
 import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -79,6 +79,16 @@ import { createDaemonLogger } from '../daemon/conductor-logger.js';
 import { buildLogUrl, createRegistryClient, rpcFromClient } from '../daemon/conductor-registry.js';
 import { bootRegistry, createRegistryKeeper } from '../daemon/conductor-registry-keeper.js';
 import { createRequestHandler } from '../daemon/conductor-request.js';
+// B-1173: the remote conductor (a Deployment pod): standby boot, readiness file, carried-over request.
+import {
+  bootRemoteRegistry,
+  channelFromPosture,
+  createCarriedRequestCompleter,
+  createReadiness,
+  isRemoteConductor,
+  readyFilePath,
+  STANDBY_RETRY_MS,
+} from '../daemon/conductor-remote.js';
 import { LOG_NAME } from '../daemon/log-shipper.js';
 import { resolveEnvironment } from '../tools/environment.js';
 // B-1170: the two-file conductor config (project file from the config repo + host file) — all logic in the module.
@@ -512,6 +522,13 @@ async function main(): Promise<void> {
     forceRefresh: () => auth.forceRefresh(),
     sleep,
   });
+  const remoteMode = isRemoteConductor(process.env);
+  const readiness = createReadiness({
+    path: readyFilePath(process.env),
+    writeFile: (path, text) => writeFileSync(path, text),
+    removeFile: (path) => rmSync(path, { force: true }),
+    log,
+  });
   const registryPluginVersion = await resolveEnvironment(process.env, import.meta.url)
     .then((e) => e.plugin_version)
     .catch(() => null);
@@ -522,9 +539,9 @@ async function main(): Promise<void> {
     identity: {
       holderId: leaseHolder,
       host: hostname(),
-      location: 'local', // remote conductors arrive with B-1173
+      location: remoteMode ? 'remote' : 'local',
       profile: preflightProfileName,
-      channel: postureChannel === 'prod' ? 'prod' : postureChannel === 'ack:staging' || postureChannel === 'staging' ? 'staging' : null,
+      channel: channelFromPosture(postureChannel),
       pluginVersion: registryPluginVersion,
       logUrl: gcpProject && conductorRuntime?.getLogShipping() !== false ? buildLogUrl(gcpProject, LOG_NAME) : null,
     },
@@ -549,6 +566,11 @@ async function main(): Promise<void> {
       registryLost = true; // no NEW legs from this moment; running legs are left alone
       void shutdown('registry-lost');
     },
+    // B-1173: a remote conductor completes the request its predecessor pod claimed (the rollout it triggered is
+    // what brought this pod up). A local conductor never sets this: its restarter completes the request.
+    onCarriedRequest: remoteMode
+      ? createCarriedRequestCompleter({ client: registryClient, holderId: leaseHolder, pluginVersion: registryPluginVersion, log })
+      : undefined,
     onRequest: createRequestHandler({
       client: registryClient,
       holderId: leaseHolder,
@@ -572,7 +594,33 @@ async function main(): Promise<void> {
       log,
     }),
   });
-  if (
+  if (remoteMode) {
+    // B-1173: a refused boot is the NORMAL state of a surge pod during a rolling update — stand by, never exit.
+    // Pre-flight already passed (above), so the pod is ready whether it is conducting or standing by.
+    let standbyStopped = false;
+    const onStandbySignal = (signal: string) => (): void => {
+      standbyStopped = true;
+      readiness.clear();
+      log(`standby: ${signal} received; exiting`);
+      conductorLogger.stop();
+      process.exit(0);
+    };
+    const onTerm = onStandbySignal('SIGTERM');
+    const onInt = onStandbySignal('SIGINT');
+    process.on('SIGTERM', onTerm);
+    process.on('SIGINT', onInt);
+    const booted = await bootRemoteRegistry(registryKeeper, {
+      log,
+      sleep,
+      retryMs: Math.min(config.heartbeatMs, STANDBY_RETRY_MS),
+      isStopped: () => standbyStopped,
+      onStandby: () => readiness.markReady(),
+    });
+    process.off('SIGTERM', onTerm);
+    process.off('SIGINT', onInt);
+    if (booted === 'stopped') return;
+    readiness.markReady();
+  } else if (
     !(await bootRegistry(registryKeeper, {
       writeStderr: (text) => void process.stderr.write(text),
       log,
@@ -618,7 +666,7 @@ async function main(): Promise<void> {
     prMergeStateReader
       ? 'fast-track post-merge recording: conductor-filed (GitHub credential found for PR merge-state reads)'
       : 'fast-track post-merge recording: NOT conductor-filed — no GitHub credential in the conductor env ' +
-          '(set HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/HARMONY_APP_PRIVATE_KEY_PATH, or GH_TOKEN); ' +
+          '(set HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/HARMONY_APP_PRIVATE_KEY_PATH or HARMONY_APP_PRIVATE_KEY, or GH_TOKEN); ' +
           'fast-track accepts fall back to a worker leg',
   );
 
@@ -734,6 +782,7 @@ async function main(): Promise<void> {
 
   const stop = async (signal: string): Promise<void> => {
     conductorRuntime?.stop(); // B-1170: no config refresh after shutdown starts
+    if (remoteMode) readiness.clear(); // B-1173: the pod goes NotReady the moment it is told to stop
     // B-739: a lease must go quiet the MOMENT this process leaves, so it goes stale on schedule
     // and its run stays recoverable by another daemon's takeover.
     keeper.stopAll();
