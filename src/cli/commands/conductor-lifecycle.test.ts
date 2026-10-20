@@ -310,14 +310,13 @@ describe('start', () => {
     expect(callsOf(m.calls, 'launchctl').filter((c) => c.args[0] === 'bootstrap')).toEqual([]);
   });
 
-  it('--remote: non-zero, says remote conductors are not available yet, starts nothing', async () => {
-    const m = makeWorld();
+  it('--remote (B-1173): no registry client token -> refuses before touching the cluster', async () => {
+    const m = makeWorld({ noToken: true });
     const r = await runStart(m.deps, { remote: true });
-    expect(r.exitCode).not.toBe(0);
-    expect(r.errLines.join('\n')).toContain('not available yet');
-    expect(r.errLines.join('\n')).toContain('B-1173');
+    expect(r.exitCode).toBe(1);
+    expect(r.errLines.join('\n')).toContain('Nothing was started');
     expect(m.written).toEqual([]);
-    expect(m.calls).toEqual([]);
+    expect(callsOf(m.calls, 'kubectl')).toEqual([]);
   });
 
   it('--local on macOS: renders the LaunchAgent, bootstraps it into gui/$UID, reports the pid', async () => {
