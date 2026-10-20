@@ -128,6 +128,8 @@ the project needs.
 | **1. Base-layer toolchain manager** | the project pins a **Node version** or a **package manager** | nothing — the shared image already honours it |
 | **2. `worker_image` override** | the project needs something an **image** must carry (a system package, a browser, a compiler) | generate an image (`container/worker-image/`) and name it in the deployment config |
 
+**Playwright browsers (B-1184).** `provision.sh` also runs `container/install-playwright.sh` per cloned repo: if the repo declares Playwright, chromium (pinned to the repo's version, no `--with-deps`) is installed into `~/.cache/ms-playwright` once. On a GKE leg that path is the ticket disk's `playwright` subPath, so later legs on the ticket find it cached; a failed install warns and never fails the leg.
+
 ### Lever 1 — the toolchain manager in the base image
 
 `base` carries **fnm** (the one new base binary) alongside the **corepack** the
