@@ -1972,6 +1972,24 @@ describe('B-717 item 1: fire-and-track concurrency', () => {
     expect(h.running()).toHaveLength(2); // cap held throughout — never exceeded
   });
 
+  it('B-1172: while launchPaused() is true no NEW leg launches (the row stays ready); once it clears the leg fires', async () => {
+    let paused = true;
+    const h = makeHarness({
+      conductions: [conduction({ id: 'cond-1', task_id: 'task-1' })],
+      tasks: { 'task-1': pausedTask() },
+      blockLaunch: true,
+    });
+    (h.deps as { launchPaused?: () => boolean }).launchPaused = () => paused;
+    await h.pass(); // baseline
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass(); // wakes: ready, but paused
+    expect(h.ready()).toEqual(['cond-1']);
+    expect(h.launches()).toHaveLength(0);
+    paused = false;
+    await h.pass();
+    expect(h.launches()).toHaveLength(1);
+  });
+
   it('a pass never blocks: it returns immediately even while every slot is occupied by an unsettled launch (AC5 evidence)', async () => {
     const h = makeHarness({
       conductions: [conduction()],

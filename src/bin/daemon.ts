@@ -34,9 +34,11 @@
 // same-host successor adopt them immediately instead of waiting out the full stale window), log,
 // and exit 0.
 
-import { readFileSync } from 'node:fs';
-import { exec } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { exec, spawn } from 'node:child_process';
 import { hostname } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
 import { HarmonyAuth } from '../auth.js';
@@ -73,6 +75,12 @@ import { formatDaemonError } from '../daemon/error-format.js';
 import { loadDaemonConfig, selectNamedProfile } from '../daemon/config.js';
 import { detectSupervisor, shutdownLine, shouldInspectWorkerImage } from '../daemon/supervisor.js';
 import { createDaemonLogger } from '../daemon/conductor-logger.js';
+// B-1172: the conductor registry — one registered conductor per project, visible from anywhere.
+import { buildLogUrl, createRegistryClient, rpcFromClient } from '../daemon/conductor-registry.js';
+import { bootRegistry, createRegistryKeeper } from '../daemon/conductor-registry-keeper.js';
+import { createRequestHandler } from '../daemon/conductor-request.js';
+import { LOG_NAME } from '../daemon/log-shipper.js';
+import { resolveEnvironment } from '../tools/environment.js';
 // B-1170: the two-file conductor config (project file from the config repo + host file) — all logic in the module.
 import { startConductorConfigRuntime, type ConductorConfigRuntime } from '../daemon/conductor-config-runtime.js';
 // B-1171: the launching-backend tag per lease (conductions.leg_backend), honoured at adoption.
@@ -489,6 +497,94 @@ async function main(): Promise<void> {
     return () => clearTimeout(timer);
   };
 
+  // B-1172: the conductor registry. Acquired BEFORE the scheduler (and before the hint channel) so a second
+  // conductor for this project refuses to start instead of racing the first. See
+  // src/daemon/conductor-registry-keeper.ts for the safety rules: a FAILED call is never 'lost'; only a
+  // different holder with a fresh heartbeat is. A registry that is not deployed yet (plugin `staging` runs
+  // against prod until ./promote-prod.sh) is logged once and the conductor runs exactly as before.
+  let registryLost = false;
+  let restartClaimed = false;
+  let shutdown: (signal: string) => Promise<void> = async () => {};
+  const registryClient = createRegistryClient({
+    rpc: rpcFromClient(client as unknown as Parameters<typeof rpcFromClient>[0]),
+    projectId,
+    startTimeout,
+    forceRefresh: () => auth.forceRefresh(),
+    sleep,
+  });
+  const registryPluginVersion = await resolveEnvironment(process.env, import.meta.url)
+    .then((e) => e.plugin_version)
+    .catch(() => null);
+  const postureChannel = process.env.HARMONY_PLUGIN_POSTURE;
+  const gcpProject = conductorRuntime?.getGcpProject();
+  const registryKeeper = createRegistryKeeper({
+    client: registryClient,
+    identity: {
+      holderId: leaseHolder,
+      host: hostname(),
+      location: 'local', // remote conductors arrive with B-1173
+      profile: preflightProfileName,
+      channel: postureChannel === 'prod' ? 'prod' : postureChannel === 'ack:staging' || postureChannel === 'staging' ? 'staging' : null,
+      pluginVersion: registryPluginVersion,
+      logUrl: gcpProject && conductorRuntime?.getLogShipping() !== false ? buildLogUrl(gcpProject, LOG_NAME) : null,
+    },
+    now: Date.now,
+    startInterval: (ms, fn) => {
+      const timer = setInterval(fn, ms);
+      timer.unref?.();
+      return () => clearInterval(timer);
+    },
+    heartbeatMs: config.heartbeatMs,
+    isPidAlive: (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (err) {
+        return (err as NodeJS.ErrnoException).code === 'EPERM';
+      }
+    },
+    ownPid: process.pid,
+    log,
+    onLost: () => {
+      registryLost = true; // no NEW legs from this moment; running legs are left alone
+      void shutdown('registry-lost');
+    },
+    onRequest: createRequestHandler({
+      client: registryClient,
+      holderId: leaseHolder,
+      configPath: daemonArgv.config,
+      spawnRestarter: (args) => {
+        const harmonyBin = join(dirname(fileURLToPath(import.meta.url)), 'harmony.js');
+        if (!existsSync(harmonyBin)) throw new Error(`${harmonyBin} does not exist`);
+        const child = spawn(process.execPath, [harmonyBin, ...args], { detached: true, stdio: 'ignore', env: process.env });
+        child.on('error', () => {}); // a spawn error is reported through the missing pid below
+        child.unref();
+        if (child.pid === undefined) throw new Error(`could not start ${process.execPath}`);
+        return { onExit: (cb) => void child.on('exit', cb) };
+      },
+      pauseLaunching: () => {
+        restartClaimed = true;
+      },
+      resumeLaunching: () => {
+        restartClaimed = false;
+      },
+      startTimeout,
+      log,
+    }),
+  });
+  if (
+    !(await bootRegistry(registryKeeper, {
+      writeStderr: (text) => void process.stderr.write(text),
+      log,
+      exit: (code) => {
+        conductorLogger.stop();
+        process.exit(code);
+      },
+    }))
+  ) {
+    return; // unreachable in production (exit above); a refused boot never reaches the scheduler
+  }
+
   // B-1011: the hint channel, created LAZILY — after boot, and without ever awaiting the join, so
   // nothing about startup can block on a socket. With no workspace uuid (or a channel that never
   // subscribes) this is simply absent and runScheduler runs the identical poll loop it always has.
@@ -554,6 +650,8 @@ async function main(): Promise<void> {
     // B-1011: OPTIONAL. Present only when the workspace uuid resolved and a channel was created;
     // absent otherwise, which leaves the scheduler's sleep the literal line it has always been.
     hints: hints?.source,
+    // B-1172: no NEW legs once the registry row is held elsewhere or a restart/update request was claimed.
+    launchPaused: () => registryLost || restartClaimed,
     takeoverConduction: (args) => takeoverConduction(client, args),
     // B-717 item 3: the multi-daemon steal CAS.
     stealConduction: (args) => stealConduction(client, args),
@@ -639,6 +737,7 @@ async function main(): Promise<void> {
     // B-739: a lease must go quiet the MOMENT this process leaves, so it goes stale on schedule
     // and its run stays recoverable by another daemon's takeover.
     keeper.stopAll();
+    registryKeeper.stop(); // B-1172: stop heartbeating the registry row (the release comes after the leases are marked)
     // B-1011: drop the hint channel next — after the leases go quiet (a lease must go quiet the
     // moment this process leaves, and nothing about the socket may delay that) and BEFORE the
     // clean-shutdown marker write, so the daemon is not still taking wakes it can never act on
@@ -650,10 +749,14 @@ async function main(): Promise<void> {
     // exit below (the fail-safe holds by construction — an unclean death never reaches this line
     // at all, so the marker just stays unset and the stale-window wait is unchanged).
     await markCleanShutdownBounded(client, leaseHolder, log, CLEAN_SHUTDOWN_TIMEOUT_MS);
+    // B-1172: free the registry row (bounded; failure is logged and ignored, the row just goes stale).
+    await registryKeeper.release();
     log(shutdownLine(signal, detectSupervisor(process.env)));
     conductorLogger.stop(); // B-1174: stop the shipping timer; the local file already has every entry
     process.exit(0);
   };
+  shutdown = stop;
+  registryKeeper.start();
   process.on('SIGTERM', () => {
     void stop('SIGTERM');
   });
