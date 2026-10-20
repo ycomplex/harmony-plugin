@@ -166,6 +166,11 @@ function resolveLauncherVar(
 
 const TEMPLATE_KEYS = ['launch', 'reap', 'probe'] as const;
 
+/** B-1173: tools a REMOTE conductor pod (HARMONY_CONDUCTOR_REMOTE=1) does not need even when the profile
+ *  declares them. gke-gcloud-auth-plugin is kubectl's credential helper for a kubeconfig entry; in the pod there
+ *  is no kubeconfig, so kubectl authenticates with the pod's own service account token and never calls it. */
+const NOT_NEEDED_REMOTE = new Set(['gke-gcloud-auth-plugin']);
+
 /** Validate the daemon's whole deployment surface at boot. Throws on the first HARD miss (tool
  *  resolution or env contract) — src/bin/daemon.ts's main() catches and process.exit(1)s. Never
  *  throws for the soft capability audit; those lines go through `opts.log` and boot continues.
@@ -181,9 +186,11 @@ export async function runBootPreflight(
   void config;
 
   // 1. Tool resolution (hard) ---------------------------------------------------------------------
+  const remote = opts.env.HARMONY_CONDUCTOR_REMOTE === '1';
   for (const templateKey of TEMPLATE_KEYS) {
     const tools = profile.required_tools?.[templateKey] ?? [];
     for (const tool of tools) {
+      if (remote && NOT_NEEDED_REMOTE.has(tool)) continue;
       const result = await opts.runCommand(`command -v ${tool}`, { quiet: true });
       if (result.exitCode !== 0) {
         throw new Error(
