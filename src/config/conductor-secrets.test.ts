@@ -23,6 +23,7 @@ function gcloudStub(opts: { fail?: Set<string> } = {}) {
     let secret: string | undefined;
     let project: string | undefined;
     for (const f of flags) {
+      if (f.startsWith('--account=')) continue;
       if (f.startsWith('--secret=')) secret = f.slice('--secret='.length);
       else if (f.startsWith('--project=')) project = f.slice('--project='.length);
       else throw new Error(`stub: gcloud secrets versions access: unrecognized arguments: ${f}`);
@@ -45,6 +46,32 @@ const files = (h: unknown) => (p: string) => {
   return JSON.stringify(h);
 };
 const REMOTE = { HARMONY_CONDUCTOR_REMOTE: '1', HARMONY_CONDUCTOR_HOST_FILE: HOST };
+
+describe('resolveConductorSecrets: the host gcloud account (B-1183)', () => {
+  const account = 'harmony-daemon@proj-1.iam.gserviceaccount.com';
+  const run = async (env: Record<string, string>, h = host({ gcloud: { account } })) => {
+    const g = gcloudStub();
+    await resolveConductorSecrets({ env: { HARMONY_CONDUCTOR_HOST_FILE: HOST, ...env }, target: {}, exec: g.exec, readFile: files(h) });
+    return g.calls;
+  };
+
+  it('passes the host file gcloud.account to every secret read as --account', async () => {
+    const calls = await run({});
+    expect(calls).toHaveLength(2);
+    for (const c of calls) expect(c.args).toContain(`--account=${account}`);
+  });
+
+  it('an account already in the environment wins: no --account flag', async () => {
+    const calls = await run({ CLOUDSDK_CORE_ACCOUNT: 'other@x' });
+    for (const c of calls) expect(c.args.some((a) => a.startsWith('--account'))).toBe(false);
+  });
+
+  it('no gcloud.account in the host file: the call is unchanged', async () => {
+    const calls = await run({});
+    const none = await run({}, host());
+    expect(none[0].args).toEqual(calls[0].args.filter((a) => !a.startsWith('--account')));
+  });
+});
 
 describe('resolveConductorSecrets', () => {
   it('LOCAL mode: an unreadable or invalid host file is a silent no-op (unchanged behaviour, no call)', async () => {

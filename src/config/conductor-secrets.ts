@@ -15,6 +15,7 @@
 // ever in argv (only the secret NAME and the project), never logged, never written to a file, and an error names
 // the secret NAME only (gcloud's stderr is dropped: a failure message is not worth risking a value in it). A key
 // already present in the environment wins and costs no call (env-wins, like every other host-file default).
+// The host file's gcloud.account is passed as --account so the read uses the conductor's identity, not gcloud's active one.
 
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -97,6 +98,10 @@ export async function resolveConductorSecrets(deps: ResolveSecretsDeps): Promise
   }
   const secrets = parsed.data.secrets ?? {};
   const project = projectOf(parsed.data, deps.env);
+  // B-1183: this runs BEFORE the host file's gcloud.account is applied to the environment (applyLaunchEnv sets
+  // CLOUDSDK_CORE_ACCOUNT later), so without this the call would use gcloud's ACTIVE account. An account already
+  // in the environment still wins, like every other host-file default.
+  const account = deps.env.CLOUDSDK_CORE_ACCOUNT ? undefined : parsed.data.gcloud?.account;
 
   for (const { key, envVar } of SECRET_ENV_TARGETS) {
     const name = secrets[key];
@@ -112,7 +117,7 @@ export async function resolveConductorSecrets(deps: ResolveSecretsDeps): Promise
     if (!project) {
       throw new ConductorSecretsError(`cannot read secret "${name}": no GCP project (set gcp.project in the host file, or HARMONY_GCP_PROJECT)`);
     }
-    const r = await deps.exec('gcloud', ['secrets', 'versions', 'access', 'latest', `--secret=${name}`, `--project=${project}`]);
+    const r = await deps.exec('gcloud', ['secrets', 'versions', 'access', 'latest', `--secret=${name}`, `--project=${project}`, ...(account ? [`--account=${account}`] : [])]);
     if (r.code !== 0) {
       throw new ConductorSecretsError(`could not read secret "${name}" (for ${envVar}) from Secret Manager: gcloud exited ${r.code}${r.code === 127 ? ' (gcloud is not installed)' : ''}`);
     }
