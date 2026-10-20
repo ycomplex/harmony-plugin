@@ -73,6 +73,12 @@ export function renderLeg(e) {
             'gke-gcsfuse/cpu-request': '250m',
             'gke-gcsfuse/memory-request': '256Mi',
             'gke-gcsfuse/ephemeral-storage-request': '1Gi',
+            // A request alone makes GKE set the sidecar's limit EQUAL to it, and a limit on the sidecar
+            // gives the pod a total ephemeral limit: the kubelet evicted a B-1171 build leg at 1Gi
+            // (2026-10-20) once the worker's checkout + npm install outgrew it. "0" = no limit.
+            'gke-gcsfuse/cpu-limit': '0',
+            'gke-gcsfuse/memory-limit': '0',
+            'gke-gcsfuse/ephemeral-storage-limit': '0',
           },
         },
         spec: {
