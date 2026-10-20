@@ -13,7 +13,7 @@
 // be 'pass' or 'unattested' — it is NEVER auto-passed, and NEVER auto-failed either: it is a fact only a
 // human attestation can supply (see `evaluateVerifyWalkItem` below).
 
-import { detectRiskClasses, PATH_GLOB_TABLE, globToRegExp, type RiskClass } from './risk-class.js';
+import { detectRiskClasses, isMigrationRiskPath, type RiskClass } from './risk-class.js';
 import {
   evaluateScopeBudget,
   DEFAULT_SCOPE_BUDGET,
@@ -96,15 +96,12 @@ function evaluateMultiRepoItem(evidence: EligibilityEvidenceLink[]): Eligibility
 }
 
 // ---------------------------------------------------------------------------
-// (b) migration — fail if the evidence touches a migration path (PATH_GLOB_TABLE['data-migration'],
-// the SAME table the build-gate risk floor uses — no second glob semantics invented here).
+// (b) migration — use the SAME path predicate as the risk floor, including test exclusions.
 // ---------------------------------------------------------------------------
-
-const MIGRATION_GLOB_REGEXES = PATH_GLOB_TABLE['data-migration'].map(globToRegExp);
 
 function evaluateMigrationItem(evidence: EligibilityEvidenceLink[]): EligibilityItemResult {
   const allPaths = evidence.flatMap((e) => e.paths ?? []);
-  const migrationPaths = allPaths.filter((p) => MIGRATION_GLOB_REGEXES.some((re) => re.test(p)));
+  const migrationPaths = allPaths.filter(isMigrationRiskPath);
   const value = `migration paths: ${migrationPaths.length} (${migrationPaths.slice(0, 5).join(', ') || 'none'})`;
   if (migrationPaths.length > 0) {
     return {

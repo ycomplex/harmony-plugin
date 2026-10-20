@@ -1,3 +1,4 @@
+import { checkPrePrOpenEligibility } from './record-eligibility.js';
 import { describe, it, expect } from 'vitest';
 import {
   detectRiskClasses,
@@ -567,5 +568,48 @@ describe('risk-class detector (conductor floor)', () => {
         }),
       ).toContain<RiskClass>('auth');
     });
+  });
+});
+
+
+describe('B-1023 SQL test exclusions shared with eligibility', () => {
+  const testPaths = [
+    'tests/x.sql', 'nested/tests/x.sql', 'test/x.sql', 'nested/test/x.sql',
+    '__tests__/x.sql', 'nested/__tests__/x.sql', 'supabase/tests/x.test.sql',
+    'x.test.sql', 'nested/x.test.sql', 'x.spec.sql', 'nested/x.spec.sql',
+    'x_test.sql', 'nested/x_test.sql',
+  ];
+  const riskyPaths = [
+    'supabase/schemas/x.sql', 'schema.sql', 'db/functions.sql',
+    'supabase/migrations/x.sql', 'db/migration/x.test.sql',
+    'tests/migrations/x.spec.sql', 'migrations/tests/x_test.sql',
+    'nested/migrations/x.test.sql', 'migrations/runner.ts',
+  ];
+
+  it.each(testPaths)('excludes known SQL test %s from detector and eligibility', (path) => {
+    expect(detectRiskClasses({ changedPaths: [path] })).toEqual([]);
+    const result = checkPrePrOpenEligibility('Adjust report formatting.', [path]);
+    expect(result.verdict.items.find((item) => item.item === 'migration')?.verdict).toBe('pass');
+    expect(result.allowed).toBe(true);
+  });
+
+  it.each(riskyPaths)('preserves migration risk and actual-diff refusal for %s', (path) => {
+    expect(detectRiskClasses({ changedPaths: [path] })).toContain('data-migration');
+    const result = checkPrePrOpenEligibility('Adjust report formatting.', [path]);
+    expect(result.verdict.items.find((item) => item.item === 'migration')?.verdict).toBe('fail');
+    expect(result.allowed).toBe(false);
+  });
+
+  it('retains the warning and refusal when SQL tests accompany a migration', () => {
+    const paths = [...testPaths, 'supabase/migrations/change.sql'];
+    expect(detectRiskClasses({ changedPaths: paths })).toContain('data-migration');
+    const result = checkPrePrOpenEligibility('Adjust report formatting.', paths);
+    expect(result.verdict.items.find((item) => item.item === 'migration')?.verdict).toBe('fail');
+    expect(result.allowed).toBe(false);
+  });
+
+  it('does not remove other path risks or explicit migration labels from test changes', () => {
+    expect(detectRiskClasses({ changedPaths: ['auth/tests/x.sql'] })).toContain('auth');
+    expect(detectRiskClasses({ changedPaths: testPaths, labels: ['data-migration'] })).toContain('data-migration');
   });
 });
