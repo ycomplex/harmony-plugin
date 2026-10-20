@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,6 +72,28 @@ describe('container/conductor/Dockerfile', () => {
     const code = df.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
     expect(code).not.toMatch(/HARMONY_API_TOKEN|PRIVATE_KEY/);
     expect(df).toContain('COPY dist ./dist');
+  });
+
+  // 0.15.88 shipped without scripts/, so every leg launch from the pod died at the token mint before creating a
+  // Job. Every path a container/ shell script reaches through $HARMONY_PLUGIN_DIR must be inside a COPY'd dir.
+  it('copies every top-level directory the launch path reaches through $HARMONY_PLUGIN_DIR', () => {
+    // The shell scripts (container/**/*.sh), the example profiles (container/**/*.json) and the launch-line
+    // templates in source (src/**/*.ts, tests excluded) are everything that names a path under the plugin dir.
+    const walk = (dir: string, keep: (name: string) => boolean): string[] =>
+      readdirSync(repo(dir), { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory() ? walk(`${dir}/${e.name}`, keep) : keep(e.name) ? [`${dir}/${e.name}`] : [],
+      );
+    const files = [
+      ...walk('container', (n) => n.endsWith('.sh') || n.endsWith('.json')),
+      ...walk('src', (n) => n.endsWith('.ts') && !n.endsWith('.test.ts')),
+    ];
+    const reached = new Set<string>();
+    for (const f of files) {
+      for (const m of read(f).matchAll(/\$\{?HARMONY_PLUGIN_DIR\}?\/([A-Za-z0-9_.-]+)\//g)) reached.add(m[1]!);
+    }
+    expect([...reached]).toEqual(expect.arrayContaining(['container', 'dist', 'scripts']));
+    const copied = new Set([...df.matchAll(/^COPY (\S+) \.\/\S+$/gm)].map((m) => m[1]!));
+    for (const dir of reached) expect(copied, `$HARMONY_PLUGIN_DIR/${dir}/ is used on the launch path`).toContain(dir);
   });
 });
 
