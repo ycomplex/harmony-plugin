@@ -38,6 +38,7 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { z } from 'zod';
 import type { DeploymentConfig, LaunchProfileConfig } from './deployment-config.js';
+import { ReposSchema, RequiredToolsSchema } from './deployment-shared-schemas.js';
 import { WORKER_IMAGE_DEFAULT } from './worker-image-default.js';
 
 // ---------------------------------------------------------------------------------------------------
@@ -113,6 +114,26 @@ const ModelPolicySchema = z
   .object({ default: z.string().min(1).optional(), per_gate: z.record(z.string().min(1)).optional() })
   .strict();
 
+const TargetSchema = z.enum(['prod', 'staging', 'custom']);
+
+/** B-1183: adapter id -> the worker env var carrying that adapter's headless flags. Only claude-code is
+ *  wired today; the strict object below turns any other id into an "unknown key" error naming this list. */
+export const AGENT_FLAG_ENV = { 'claude-code': 'CLAUDE_HEADLESS_FLAGS' } as const;
+
+const AgentFlagsSchema = z.object({ 'claude-code': z.string().min(1).optional() }).strict();
+
+/** B-1183: per-profile overrides on top of the built-in template. Only the built-in names are keys: a
+ *  custom launch template has no home in the project file. */
+const ProfileOverrideSchema = z
+  .object({
+    max_workers: z.number().int().min(0).optional(),
+    agents: z.array(z.string().min(1)).min(1).optional(),
+    required_tools: RequiredToolsSchema.optional(),
+  })
+  .strict();
+
+const ProfilesSchema = z.object({ cloud: ProfileOverrideSchema.optional(), gke: ProfileOverrideSchema.optional() }).strict();
+
 /** Every key a project file may carry (besides `version`), all optional here — the project schema
  *  re-requires `channel` and `profile`; the host schema keeps them optional (it only OVERRIDES). */
 const projectShape = {
@@ -127,7 +148,19 @@ const projectShape = {
   /** Absent means "ship when gcp.project is named"; `false` switches shipping off. */
   log_shipping: z.boolean().optional(),
   agents: z.array(z.string().min(1)).min(1).optional(),
+  /** B-1183: which Supabase project the worker talks to (-> env.HARMONY_TARGET). */
+  target: TargetSchema.optional(),
+  /** B-1183: only with target "custom" (-> env.HARMONY_SUPABASE_URL). */
+  supabase_url: z.string().min(1).optional(),
+  /** B-1183: the B-814 repo set, moved here unchanged from deployment.json (-> HARMONY_REPOS_JSON). */
+  repos: ReposSchema.optional(),
+  /** B-1183: adapter id -> headless flag string (claude-code -> env.CLAUDE_HEADLESS_FLAGS). */
+  agent_flags: AgentFlagsSchema.optional(),
+  /** B-1183: per-profile max_workers / agents / required_tools for built-in profiles. */
+  profiles: ProfilesSchema.optional(),
 };
+
+const SUPABASE_URL_NEEDS_CUSTOM = 'supabase_url is only allowed with "target": "custom"';
 
 /** `.harmony/conductor.json` — strict. */
 export const ProjectFileSchema = z
@@ -137,7 +170,12 @@ export const ProjectFileSchema = z
     channel: ChannelSchema,
     profile: ProfileNameSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((p, ctx) => {
+    if (p.supabase_url !== undefined && p.target !== 'custom') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['supabase_url'], message: SUPABASE_URL_NEEDS_CUSTOM });
+    }
+  });
 export type ProjectFile = z.infer<typeof ProjectFileSchema>;
 
 /** A Secret Manager secret NAME — never a value. Values that look like credentials are refused so a
@@ -382,7 +420,9 @@ export function zodIssuesToConfigIssues(
 function customFix(message: string): string {
   return message.includes('secret VALUE')
     ? 'store the value in Secret Manager and put only the secret NAME here'
-    : 'correct the value to match the schema';
+    : message === SUPABASE_URL_NEEDS_CUSTOM
+      ? 'add "target": "custom" or remove supabase_url'
+      : 'correct the value to match the schema';
 }
 
 function lineColOf(text: string, pos: number): { line: number; col: number } {
@@ -725,6 +765,9 @@ export function validateMerged(merged: ConductorConfig, env: NodeJS.ProcessEnv =
   if (!merged.channel) {
     need(PROJECT_FILE_LABEL, 'channel', 'required key is missing', 'add "channel": "staging" (or "prod") to .harmony/conductor.json');
   }
+  if (merged.supabase_url !== undefined && merged.target !== 'custom') {
+    need(PROJECT_FILE_LABEL, 'supabase_url', SUPABASE_URL_NEEDS_CUSTOM, 'add "target": "custom" or remove supabase_url');
+  }
   if (!merged.profile) {
     need(PROJECT_FILE_LABEL, 'profile', 'required key is missing', 'add "profile": "cloud" (or "gke") to .harmony/conductor.json');
     return issues; // every other requirement depends on the profile
@@ -783,30 +826,53 @@ export function projectToDeploymentConfig(
     ...(legacy ?? {}),
     worker_image: merged.images?.worker ?? legacy?.worker_image ?? WORKER_IMAGE_DEFAULT,
   };
+  // B-1183: a profile entry for the ACTIVE profile and for every built-in profile the files list, so a host
+  // that switches profile (container/gke/switch-daemon-profile.sh) finds both templates in the merged config.
+  // The top-level concurrency / agents apply to the active profile only, and only when its own block is silent.
   const name = merged.profile;
-  if (name) {
-    const builtin = BUILTIN_PROFILES[name];
-    const existing = legacy?.profiles?.[name];
-    if (existing && !sameTemplate(existing, builtin)) {
-      warnings.push(`custom launch template in deployment.json profiles.${name} is ignored once conductor.json names profile ${name}`);
+  const listed = (Object.keys(merged.profiles ?? {}) as BuiltinProfileName[]).filter((n) => n in BUILTIN_PROFILES);
+  const names = [...new Set<BuiltinProfileName>([...(name ? [name] : []), ...listed])];
+  if (names.length > 0) {
+    const profiles = { ...(legacy?.profiles ?? {}) };
+    for (const n of names) {
+      const builtin = BUILTIN_PROFILES[n];
+      const existing = legacy?.profiles?.[n];
+      if (existing && !sameTemplate(existing, builtin)) {
+        warnings.push(`custom launch template in deployment.json profiles.${n} is ignored once conductor.json names profile ${n}`);
+      }
+      const block = merged.profiles?.[n];
+      const active = n === name;
+      const entry: LaunchProfileConfig = {
+        ...builtin,
+        maxConcurrentWorkers: block?.max_workers ?? (active ? merged.concurrency?.max_workers : undefined) ?? builtin.maxConcurrentWorkers,
+        agents: block?.agents ?? (active ? merged.agents : undefined) ?? builtin.agents,
+      };
+      if (block?.required_tools) entry.required_tools = { ...builtin.required_tools, ...block.required_tools };
+      if (n === 'cloud' && merged.gcp?.project) entry.gcloud_project = merged.gcp.project;
+      profiles[n] = entry;
     }
-    const entry: LaunchProfileConfig = {
-      ...builtin,
-      maxConcurrentWorkers: merged.concurrency?.max_workers ?? builtin.maxConcurrentWorkers,
-      agents: merged.agents ?? builtin.agents,
-    };
-    if (name === 'cloud' && merged.gcp?.project) entry.gcloud_project = merged.gcp.project;
-    out.profiles = { ...(legacy?.profiles ?? {}), [name]: entry };
+    out.profiles = profiles;
   }
+  if (merged.repos) out.repos = merged.repos;
   if (merged.plugin_dir || merged.github_app) {
     const launcher = { ...(legacy?.launcher ?? {}) };
     if (merged.plugin_dir) launcher.plugin_dir = merged.plugin_dir;
     if (merged.github_app) launcher.github_app = merged.github_app as NonNullable<typeof launcher.github_app>;
     out.launcher = launcher;
   }
-  if (merged.channel) {
-    out.env = { ...(legacy?.env ?? {}), HARMONY_PLUGIN_POSTURE: merged.channel === 'prod' ? 'prod' : 'ack:staging' };
-  }
+  // B-1183: the worker base env the files own; deployment.json's own env passes through underneath.
+  const env: NonNullable<DeploymentConfig['env']> = { ...(legacy?.env ?? {}) };
+  let envSet = false;
+  const putEnv = <K extends keyof typeof env>(k: K, v: (typeof env)[K] | undefined) => {
+    if (v === undefined) return;
+    env[k] = v;
+    envSet = true;
+  };
+  if (merged.channel) putEnv('HARMONY_PLUGIN_POSTURE', merged.channel === 'prod' ? 'prod' : 'ack:staging');
+  putEnv('HARMONY_TARGET', merged.target);
+  putEnv('HARMONY_SUPABASE_URL', merged.supabase_url);
+  putEnv(AGENT_FLAG_ENV['claude-code'], merged.agent_flags?.['claude-code']);
+  if (envSet) out.env = env;
   return out;
 }
 
@@ -875,7 +941,7 @@ export function applyLaunchEnv(
 /** Keys a running daemon cannot pick up without a restart. */
 export const RESTART_ONLY_KEYS = [
   'channel', 'profile', 'gcp.project', 'gcp.region', 'gke.cluster', 'gke.location', 'gke.namespace',
-  'gke.context', 'cloud_run.job', 'images.worker', 'images.codex',
+  'gke.context', 'cloud_run.job', 'images.worker', 'images.codex', 'profiles',
 ] as const;
 /** Keys a running daemon applies on refresh. */
 export const HOT_KEYS = ['concurrency.max_workers', 'model_policy', 'log_shipping'] as const;

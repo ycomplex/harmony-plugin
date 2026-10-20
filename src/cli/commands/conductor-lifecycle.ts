@@ -368,6 +368,12 @@ export async function runStart(deps: LifecycleDeps, opts: StartOptions = {}, onL
   }
 
   const s = await loadSettings(deps, { profile: opts.profile, config: opts.config });
+  // B-1183: no profile from --profile or the config files means the supervised daemon would start with none (and
+  // die, or pick the wrong launcher). Refuse BEFORE anything is written or loaded.
+  if (!s.profile) {
+    out.err('no launch profile: pass --profile cloud (or --profile gke), or set "profile" in .harmony/conductor.json. Nothing was started.');
+    return out.result(EXIT.failure, { error: out.errLines[0], started: false, config_issues: s.configIssues });
+  }
   const host = deps.hostname();
   const procs = await findConductors(deps, s);
   const sup = await detectSupervisorState({ platform: deps.platform, uid: deps.uid, home: deps.home, exec: (f, a) => deps.exec(f, a), existsSync: deps.existsSync });

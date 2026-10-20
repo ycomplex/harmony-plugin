@@ -30,6 +30,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { loadConductorConfigSync } from './conductor-config.js';
+import { RepoEntrySchema, ReposSchema, RequiredToolsSchema } from './deployment-shared-schemas.js';
 import { WORKER_IMAGE_DEFAULT } from './worker-image-default.js';
 
 // --- env: the worker base env (container/env.example) -----------------------------------------
@@ -59,20 +60,6 @@ const DeploymentEnvSchema = z
   .partial();
 
 // --- profiles: keyed launch profiles (mirrors src/daemon/config.ts's LaunchProfile) ------------
-
-// B-801: declarative, OPTIONAL map of binaries each template invokes — one array per template,
-// naming the tools src/daemon/preflight.ts's boot preflight resolves via `command -v` before ANY
-// conduction runs. Declarative, NOT shell-parsed: launch/reap/probe are arbitrary `&&`-chained shell
-// one-liners, so inferring "every invoked binary" from the string is undecidable in general — the
-// profile author already knows what their own template runs (the same "config not constants"
-// convention this daemon already applies to launch/reap/probe themselves, B-711).
-const RequiredToolsSchema = z
-  .object({
-    launch: z.array(z.string().min(1)).optional(),
-    reap: z.array(z.string().min(1)).optional(),
-    probe: z.array(z.string().min(1)).optional(),
-  })
-  .partial();
 
 // B-708: the "Docker host" launch profile's own settings — the ONE remote Linux Docker host its
 // wrapper scripts (container/docker-host-worker-{launch,reap,probe}.sh) wake and run the worker on.
@@ -113,7 +100,7 @@ const LaunchProfileSchema = z.object({
   /** B-708: see DockerHostSchema above — present only on a Docker-host profile; every other
    *  profile omits it and is unaffected. */
   docker_host: DockerHostSchema.optional(),
-  /** B-801: see RequiredToolsSchema above — src/daemon/preflight.ts's hard tool-resolution check. */
+  /** B-801: see RequiredToolsSchema in ./deployment-shared-schemas.ts — src/daemon/preflight.ts's hard tool-resolution check. */
   required_tools: RequiredToolsSchema.optional(),
   /** B-801: true when this profile mints a worker credential via mint-installation-token.mjs before
    *  launch (container/README.md "The credential envelopes") — gates src/daemon/preflight.ts's hard
@@ -132,46 +119,6 @@ const LaunchProfileSchema = z.object({
    *  src/daemon/config.ts's LaunchProfile field of the same name. */
   agents: z.array(z.string().min(1)).min(1).optional(),
 });
-
-// --- repos: the ordered repo set a deployment declares (B-814) -----------------------------------
-// Replaces the old fixed three-slot assumption (WEB_REPO/PLUGIN_REPO/WORKSPACE_REPO baked into
-// container/entrypoint.sh) with an arbitrary, ordered list — a team with one repo (no meta-repo
-// wrapper), or N repos, can express its own topology instead of being forced into the
-// web+plugin+workspace shape. Absent `repos` (feature-detect), every consumer falls back UNCHANGED
-// to today's three-slot env-var behavior — zero behavior change for every existing deployment.
-//
-// `meta_repo_role` marks the (at most one) entry that is the meta-repo/nesting parent — when
-// present, that entry is cloned first and every other entry whose `path` falls inside it is cloned
-// nested (preserving the CLAUDE.md-ancestry behavior: workspace first, children cloned inside).
-// When no entry declares this role, every entry clones as a sibling.
-//
-// `is_plugin` marks the (at most one) entry that carries the plugin — provisioning is plugin code,
-// so container/entrypoint.sh hands off to THAT entry's `container/provision.sh`. For that entry,
-// `ref` is NOT read from `repos[].ref`: HARMONY_PLUGIN_POSTURE always supplies/overrides its clone
-// ref (the existing posture knob, B-803) — `repos[].ref` governs only non-plugin entries, so it
-// never becomes a second, competing ref-selection knob for the plugin repo.
-const RepoEntrySchema = z.object({
-  /** Clone URL. */
-  url: z.string().min(1),
-  /** Clone ref. IGNORED for the is_plugin entry (see header comment) — HARMONY_PLUGIN_POSTURE wins
-   *  there. Optional for every other entry; falls back to the container's existing "main" default. */
-  ref: z.string().optional(),
-  /** In-container clone destination, e.g. "/workspace/workspace/plugin". */
-  path: z.string().min(1),
-  /** Marks this entry as the meta-repo/nesting parent. At most one entry may set this. */
-  meta_repo_role: z.boolean().optional(),
-  /** Marks this entry as the one carrying the plugin. At most one entry may set this. */
-  is_plugin: z.boolean().optional(),
-});
-
-const ReposSchema = z
-  .array(RepoEntrySchema)
-  .refine((repos) => repos.filter((r) => r.meta_repo_role).length <= 1, {
-    message: 'at most one repos[] entry may set meta_repo_role',
-  })
-  .refine((repos) => repos.filter((r) => r.is_plugin).length <= 1, {
-    message: 'at most one repos[] entry may set is_plugin',
-  });
 
 // --- worker_image: which image a worker runs (B-929 lever 2) -------------------------------------
 // The second of B-929's two levers. Lever 1 (container/activate-toolchain.sh) lets ONE image serve a
@@ -223,7 +170,7 @@ export const DeploymentConfigSchema = z.object({
   env: DeploymentEnvSchema.optional(),
   profiles: z.record(LaunchProfileSchema).optional(),
   launcher: LauncherSchema.optional(),
-  /** B-814: the ordered repo set — see the RepoEntrySchema/ReposSchema header comment above. */
+  /** B-814: the ordered repo set — see the RepoEntrySchema/ReposSchema header comment in ./deployment-shared-schemas.ts. */
   repos: ReposSchema.optional(),
   /** B-929 lever 2: which container image this deployment's workers run. THE one place the default
    *  is written — see the worker_image section comment above. */
