@@ -1,0 +1,57 @@
+# B-1173: what the conductor pod may do in the LEG namespace (harmony-legs) — namespaced Role + RoleBinding
+# only. The subject lives in ANOTHER namespace (harmony-conductor), which a RoleBinding allows. There is no
+# ClusterRole and no ClusterRoleBinding anywhere in this directory; a test pins that.
+#
+# The verbs are exactly what container/gke/*.sh and the sweep run:
+#   jobs      create (leg Job), get/list/watch (the launcher polls, probe lists by label), delete (reap)
+#   pvc       create/get/list/watch/delete (ticket disks; the sweep lists and deletes) + patch, because the
+#             launcher does `kubectl apply` of the ticket PVC and apply on an EXISTING claim is a PATCH
+#   secrets   create/delete the per-leg env Secret. patch too: the launcher patches ownerReferences onto it so the
+#             Job's deletion garbage-collects it. The per-leg name (leg-<id>-<epoch>-env) is dynamic, so these
+#             three verbs cannot be limited by resourceNames. That also reaches the two base Secrets by name in this
+#             namespace; the exposure is bounded to harmony-legs and noted for the release brief.
+#             get is limited to the two named base Secrets (the launcher only checks they exist).
+#   serviceaccounts  get, the leg's own account only (the launcher refuses to start without it)
+#   pods, pods/log   get/list (the launcher reads a failed leg's pod; the sweep skips mounted claims)
+# Not granted: storageclasses (cluster-scoped; the Deployment sets HARMONY_GKE_STORAGE_CLASS instead, so the
+# launcher never needs to look), nodes, anything cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: harmony-conductor-legs
+  namespace: harmony-legs
+rules:
+  - apiGroups: ['batch']
+    resources: ['jobs']
+    verbs: ['create', 'get', 'list', 'watch', 'delete']
+  - apiGroups: ['']
+    resources: ['persistentvolumeclaims']
+    verbs: ['create', 'get', 'list', 'watch', 'delete', 'patch']
+  - apiGroups: ['']
+    resources: ['secrets']
+    verbs: ['create', 'patch', 'delete']
+  - apiGroups: ['']
+    resources: ['secrets']
+    resourceNames: ['harmony-worker-secrets', 'harmony-codex-auth']
+    verbs: ['get']
+  - apiGroups: ['']
+    resources: ['serviceaccounts']
+    resourceNames: ['harmony-leg']
+    verbs: ['get']
+  - apiGroups: ['']
+    resources: ['pods', 'pods/log']
+    verbs: ['get', 'list']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: harmony-conductor-legs
+  namespace: harmony-legs
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: harmony-conductor-legs
+subjects:
+  - kind: ServiceAccount
+    name: harmony-conductor
+    namespace: harmony-conductor

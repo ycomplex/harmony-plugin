@@ -183,6 +183,16 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the four steps (EXECUTED aga
     expect(job.spec.template.spec.containers[0].resources.requests).toEqual({ cpu: '2', memory: '4Gi' });
   });
 
+  it('B-1173: in a remote conductor pod (HARMONY_CONDUCTOR_REMOTE=1) kubectl gets NO --context — there is no kubeconfig, only the pod service account', () => {
+    const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
+    const r = launch(w, { HARMONY_GKE_NAMESPACE: 'ns-x', HARMONY_GKE_CONTEXT: 'gke_p_l_c', HARMONY_CONDUCTOR_REMOTE: '1' });
+    expect(r.status).toBe(0);
+    for (const c of calls(w)) {
+      expect(c.slice(0, 2)).toEqual(['-n', 'ns-x']);
+      expect(c).not.toContain('--context');
+    }
+  });
+
   it('never puts a secret value on argv; the env file is 0600 when create secret runs and gone afterwards', () => {
     const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
     expect(launch(w).status).toBe(0);

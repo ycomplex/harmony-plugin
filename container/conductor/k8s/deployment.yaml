@@ -1,0 +1,112 @@
+# B-1173: the remote conductor — ONE pod running the same daemon (dist/bin/daemon.js) the Mac mini runs, holding
+# the registry lease while it conducts. Everything it needs comes from three places: the image (code), the ConfigMap
+# (names and identifiers), and Secret Manager at boot (HARMONY_API_TOKEN and the GitHub App key, via Workload
+# Identity). NO credential appears in this file, and none must be added to it.
+#
+# APPLY: the image tag below is a placeholder; the Deployment pins a VERSION tag, never a moving one (the channel
+# tags :staging / :prod exist for `harmony conductor update` to resolve, not for this file):
+#   sed "s/__CONDUCTOR_VERSION__/<plugin version>/" container/conductor/k8s/deployment.yaml | kubectl apply -f -
+# The version is the one the Cloud Build run published (`gcloud artifacts docker tags list <image>`). After that,
+# `harmony conductor update` rewrites the tag itself with `kubectl set image`.
+#
+# ROLLOUT: maxSurge 1 / maxUnavailable 0 means a SECOND pod starts while the first still conducts. The new pod finds
+# the registry lease held, logs once and STANDS BY (no launching, readiness already passing), then boots normally
+# the moment the old pod is told to stop and releases the lease. progressDeadlineSeconds bounds a rollout that
+# never completes; `harmony conductor restart|update` undoes it past the deadline.
+#
+# FOUNDER CHECK BEFORE FIRST APPLY (not verifiable from the build environment, which cannot read the live node):
+#   kubectl describe node <system-node>      # read "Allocated resources"; confirm the node has room for TWO
+#                                            # pods of 100m CPU / 256Mi memory during a rollout. If it does not,
+#                                            # the surge pod stays Pending and the rollout times out.
+# The default pool is e2-medium (1 node) per setup-cluster.sh; its allocatable CPU/memory is shared with the
+# kube-system pods, which is why this check is worth doing once.
+#
+# PLACEMENT: nodeSelector pins the pod to the cluster's default pool. The leg pool is tainted
+# harmony-leg=true:NoSchedule and labelled harmony-leg=true; this pod has NO toleration for that taint, so it can
+# never land there (and never keeps a leg node alive).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: harmony-conductor
+  namespace: harmony-conductor
+  labels:
+    app.kubernetes.io/name: harmony-conductor
+    app.kubernetes.io/part-of: harmony-conductor
+spec:
+  replicas: 1
+  progressDeadlineSeconds: 300
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: harmony-conductor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: harmony-conductor
+        app.kubernetes.io/part-of: harmony-conductor
+    spec:
+      serviceAccountName: harmony-conductor
+      terminationGracePeriodSeconds: 60
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: conductor
+          image: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-conductor:__CONDUCTOR_VERSION__
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HARMONY_CONDUCTOR_REMOTE
+              value: '1'
+            # The image path `harmony conductor update` lists tags of (no tag).
+            - name: HARMONY_CONDUCTOR_IMAGE
+              value: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-conductor
+            # The update channel: prod, or ack:staging. Registry rows and `update` read it.
+            - name: HARMONY_PLUGIN_POSTURE
+              value: ack:staging
+            - name: HARMONY_READY_FILE
+              value: /tmp/harmony-ready
+            # Writable (emptyDir): the project-file snapshot and logs. The ConfigMap is read-only at /etc/harmony.
+            - name: HARMONY_HOME
+              value: /var/harmony
+            - name: HARMONY_CONDUCTOR_HOST_FILE
+              value: /etc/harmony/conductor-host.json
+            # Ticket disks use the zone-pinned class. The pod's RBAC cannot read StorageClasses (cluster-scoped), so
+            # the launcher's "does harmony-ticket-disk exist?" probe would fail and silently fall back to
+            # standard-rwo; naming the class here removes the probe.
+            - name: HARMONY_GKE_STORAGE_CLASS
+              value: harmony-ticket-disk
+            - name: CLOUDSDK_CORE_ACCOUNT
+              value: harmony-conductor@harmony-conductor.iam.gserviceaccount.com
+            - name: CLOUDSDK_CORE_PROJECT
+              value: harmony-conductor
+          readinessProbe:
+            exec:
+              command: ['sh', '-c', 'test -f "$HARMONY_READY_FILE"']
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/harmony
+              readOnly: true
+            - name: state
+              mountPath: /var/harmony
+      volumes:
+        - name: config
+          configMap:
+            name: harmony-conductor-config
+        - name: state
+          emptyDir: {}
