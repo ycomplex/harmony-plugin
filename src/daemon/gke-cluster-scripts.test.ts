@@ -120,12 +120,16 @@ function makeWorld(): World {
     // `kubectl apply -f -` is the READ end of a pipe whose write end is `kubectl create secret ...`: drain
     // stdin FIRST, so this process records only after its upstream has exited (and recorded). That makes the
     // two records strictly ordered instead of racing to append to the same log.
-    'case " $* " in *" apply "*) cat > /dev/null ;; esac',
+    // A StorageClass apply (step 17) is kept for inspection; a Secret's stdin is never written anywhere.
+    'case " $* " in *" apply "*) in="$(cat)"; case "$in" in *"kind: StorageClass"*) printf \'%s\' "$in" > "$STUB_STATE/sc-applied"; touch "$STUB_STATE/sc" ;; esac ;; esac',
     record('kubectl'),
     'echo "${KUBECONFIG:-}" >> "$STUB_LOGS/kubeconfig.log"',
     'if [ -n "${KUBECONFIG:-}" ] && [ -f "$KUBECONFIG" ]; then echo yes >> "$STUB_LOGS/kubeconfig-existed.log"; fi',
     'case " $* " in',
     '  *" get namespace "*) [ -f "$STUB_STATE/ns" ] || exit 1; exit 0 ;;',
+    '  *" get storageclass "*)',
+    '    [ -f "$STUB_STATE/sc" ] || exit 1',
+    '    case " $* " in *jsonpath*) printf \'%s\' "${STUB_SC_LINE:-$(printf \'Immediate\\tpd-balanced\\tus-central1-a\')}" ;; esac; exit 0 ;;',
     '  *" create namespace "*) touch "$STUB_STATE/ns"; exit 0 ;;',
     '  *" get jobs "*) printf \'%s\' "${STUB_JOBS_ACTIVE:-}"; exit 0 ;;',
     '  *" get serviceaccount "*)',
@@ -253,7 +257,7 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
     expect(findCall(k, 'create', 'namespace', 'harmony-legs')).toBeDefined();
     expect(findCall(k, 'create', 'secret', 'generic', 'harmony-worker-secrets')).toBeDefined();
     expect(findCall(k, 'create', 'secret', 'generic', 'harmony-codex-auth')).toBeDefined();
-    expect(k.filter((c) => has(c, 'apply'))).toHaveLength(2);
+    expect(k.filter((c) => has(c, 'apply'))).toHaveLength(3); // the two Secrets + the step-17 StorageClass
     expect(r.stdout).toContain('cluster:        harmony-legs');
   });
 
@@ -613,6 +617,43 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh steps 10-16 — transcripts in the b
     expect(mutating(world)).toEqual([]);
     expect(g(world).some((c) => has(c, 'buckets', 'create'))).toBe(false);
     expect(existsSync(join(world.state, 'cluster'))).toBe(false);
+  });
+});
+
+describe.skipIf(!CAPABLE)('setup-cluster.sh step 17 — the ticket-disk StorageClass binds Immediately in the zone', () => {
+  it('creates harmony-ticket-disk: pd CSI, pd-balanced, Immediate, pinned to the zone, Delete, expandable', () => {
+    const world = makeWorld();
+    const r = setup(world);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('17. StorageClass harmony-ticket-disk');
+    const sc = readFileSync(join(world.state, 'sc-applied'), 'utf8');
+    expect(sc).toContain('name: harmony-ticket-disk');
+    expect(sc).toContain('provisioner: pd.csi.storage.gke.io');
+    expect(sc).toContain('type: pd-balanced');
+    expect(sc).toContain('volumeBindingMode: Immediate');
+    expect(sc).toContain('reclaimPolicy: Delete');
+    expect(sc).toContain('allowVolumeExpansion: true');
+    expect(sc).toMatch(/key: topology\.gke\.io\/zone\n\s+values: \[us-central1-a\]/);
+  });
+
+  it('an existing matching class is left alone; a drifted one is reported, never changed', () => {
+    const world = makeWorld();
+    writeFileSync(join(world.state, 'sc'), '');
+    const ok = setup(world);
+    expect(ok.stdout).toContain('storage class harmony-ticket-disk: exists and matches');
+    expect(existsSync(join(world.state, 'sc-applied'))).toBe(false);
+    const drifted = setup(world, [], { STUB_SC_LINE: 'WaitForFirstConsumer\tpd-ssd\t' });
+    expect(drifted.status).toBe(0);
+    expect(drifted.stdout).toContain('DRIFT: storage class harmony-ticket-disk');
+    expect(existsSync(join(world.state, 'sc-applied'))).toBe(false);
+  });
+
+  it('--dry-run applies nothing and says what it would create', () => {
+    const world = makeWorld();
+    const r = setup(world, ['--dry-run']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('would: kubectl apply StorageClass harmony-ticket-disk');
+    expect(existsSync(join(world.state, 'sc-applied'))).toBe(false);
   });
 });
 
