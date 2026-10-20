@@ -359,6 +359,12 @@ tail -f ~/Library/Logs/harmony-daemon.log              # logs
 launchctl bootout gui/$UID/com.ycomplex.harmony-daemon # stop + unload
 ```
 
+> **B-1171:** `harmony conductor start --local` (or `--at-boot`) renders and loads this supervision for you
+> from `container/launchd/com.ycomplex.harmony-conductor.plist.template` /
+> `container/systemd/harmony-conductor.service.template`, through `container/conductor-launch.sh` (the one
+> place `~/.harmony/conductor.env` is loaded). The hand-edited plist above remains valid. See
+> [`docs/conductor-lifecycle.md`](../docs/conductor-lifecycle.md).
+
 ### Run it directly (no launchd)
 
 launchd is one option, not the mechanism. All that matters is that **the daemon

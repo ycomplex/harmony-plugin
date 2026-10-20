@@ -42,6 +42,7 @@ import { readSnapshot, refreshProjectFile, type RefreshOutcome } from '../../con
 import { loadLegacyDeploymentConfig, resolveDeploymentConfigPath } from '../../config/deployment-config.js';
 import { createGithubTokenProvider } from '../../config/github-app-token.js';
 import { formatOutput } from '../formatter.js';
+import { registerConductorLifecycleCommands } from './conductor-lifecycle.js';
 
 export interface ConductorCliDeps {
   env: NodeJS.ProcessEnv;
@@ -480,6 +481,7 @@ function emit(program: Command, result: CliResult): void {
 
 export function registerConductorCommands(program: Command, makeDeps: () => ConductorCliDeps = defaultCliDeps): void {
   const conductor = program.command('conductor').description('Conductor operations');
+  registerConductorLifecycleCommands(program, conductor); // B-1171: start | stop | restart | status
   const config = conductor.command('config').description('The two-file conductor config (.harmony/conductor.json + ~/.harmony/conductor-host.json)');
 
   config

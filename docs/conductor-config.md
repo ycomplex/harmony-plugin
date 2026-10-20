@@ -4,7 +4,8 @@ A project's conductor is configured by **one file in its repo** (`.harmony/condu
 **host file** for what is true of one machine. This is the reference. The code is
 `src/config/conductor-config.ts` (schemas, merge, errors), `src/config/conductor-project-source.ts` (reading
 the file from GitHub), `src/daemon/conductor-config-runtime.ts` (the daemon's refresh timer) and
-`src/cli/commands/conductor-config.ts` (the three commands).
+`src/cli/commands/conductor-config.ts` (the three commands). Running, stopping, restarting and updating the
+conductor itself (`harmony conductor start|stop|restart|status`) is [`docs/conductor-lifecycle.md`](conductor-lifecycle.md).
 
 ## Purpose
 
