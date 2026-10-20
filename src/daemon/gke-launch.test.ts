@@ -123,20 +123,25 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the ticket-disk storage clas
 });
 
 describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the four steps (EXECUTED against a stub kubectl)', () => {
-  it('runs apply pvc, create secret, create job, patch secret in order, with the documented defaults', () => {
+  it('runs apply pvc, create job, then creates the leg secret already owned by the Job, with the documented defaults', () => {
     const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
     const r = launch(w);
     expect(r.status).toBe(0);
     const v = verbs(w);
     const idx = (prefix: string) => v.findIndex((c) => c.includes(prefix));
     const iApply = idx('apply -f -');
-    const iSecret = idx('create secret generic');
     const iJob = idx('create -f -');
-    const iPatch = idx('patch secret');
+    const iRender = idx('create secret generic');
     expect(iApply).toBeGreaterThan(-1);
-    expect(iApply).toBeLessThan(iSecret);
-    expect(iSecret).toBeLessThan(iJob);
-    expect(iJob).toBeLessThan(iPatch);
+    expect(iApply).toBeLessThan(iJob);
+    expect(iJob).toBeLessThan(iRender);
+    // B-1173: the remote conductor may create secrets but not read them, and `kubectl patch` reads first.
+    expect(v[iRender]).toContain('--dry-run=client');
+    expect(v.some((c) => c.includes('patch secret'))).toBe(false);
+    expect(v.filter((c) => c.includes('create -f -'))).toHaveLength(2);
+    const secret = JSON.parse(read(w, 'secret.json'));
+    expect(secret.kind).toBe('Secret');
+    expect(secret.metadata.ownerReferences).toEqual([{ apiVersion: 'batch/v1', kind: 'Job', name: expect.stringMatching(/^leg-/), uid: 'uid-123' }]);
     // defaults via argv: namespace, base secret pre-flight
     for (const c of calls(w)) expect(c.slice(0, 2)).toEqual(['-n', 'harmony-legs']);
     expect(calls(w)[0]).toEqual(['-n', 'harmony-legs', 'get', 'secret', 'harmony-worker-secrets']);
@@ -158,9 +163,7 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the four steps (EXECUTED aga
     const tv = job.spec.template.spec.volumes.find((v: { name: string }) => v.name === 'transcripts');
     expect(tv.csi.volumeAttributes.bucketName).toBe('harmony-conductor-transcripts');
     expect(worker.volumeMounts).toContainEqual({ name: 'transcripts', mountPath: '/mnt/harmony-transcripts' });
-    // owner reference carries the uid read from the Job
-    const patch = calls(w)[iPatch];
-    expect(patch.join(' ')).toContain('uid-123');
+    // owner reference carries the uid read from the Job (asserted on secret.json above)
   });
 
   it('the ticket disk name is ticket- + the lower-cased id with [^a-z0-9-] replaced by -', () => {
@@ -191,6 +194,15 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the four steps (EXECUTED aga
       expect(c.slice(0, 2)).toEqual(['-n', 'ns-x']);
       expect(c).not.toContain('--context');
     }
+  });
+
+  it('a leg secret that cannot be created deletes the Job it was for and fails the launch', () => {
+    const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
+    const r = launch(w, { STUB_SECRET_CREATE_FAILS: '1' });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('could not create the leg secret');
+    expect(verbs(w).some((c) => c.includes('delete job'))).toBe(true);
+    expect(existsSync(read(w, 'envfile-path').trim())).toBe(false);
   });
 
   it('never puts a secret value on argv; the env file is 0600 when create secret runs and gone afterwards', () => {

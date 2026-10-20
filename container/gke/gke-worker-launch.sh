@@ -168,13 +168,27 @@ render() {  # $1 = what: pvc | job
 }
 
 render pvc | "${KUBECTL[@]}" apply -f - >/dev/null
-"${KUBECTL[@]}" create secret generic "$LEG_SECRET" --from-env-file="$LEG_ENV_FILE" >/dev/null
-rm -f "$LEG_ENV_FILE"
+# The Job first, then its per-leg secret CREATED already owned by it (deleting the Job — reap, TTL — deletes the
+# secret). One create, no get/patch: the remote conductor's Role (container/conductor/k8s/rbac-legs.yaml) may create
+# secrets but read only the two named base ones, and `kubectl patch` reads first (B-1173, 2026-10-20). The leg pod
+# waits for the secret it names in envFrom, which appears seconds later. The manifest is rendered client-side, so
+# no value is ever on argv; it travels on a pipe.
 render job | "${KUBECTL[@]}" create -f - >/dev/null
-# Tie the per-leg secret's lifetime to the Job (deleting the Job — reap, TTL — deletes the secret).
 JOB_UID="$("${KUBECTL[@]}" get job "$JOB_NAME" -o jsonpath='{.metadata.uid}')"
-"${KUBECTL[@]}" patch secret "$LEG_SECRET" --type merge \
-  -p "{\"metadata\":{\"ownerReferences\":[{\"apiVersion\":\"batch/v1\",\"kind\":\"Job\",\"name\":\"$JOB_NAME\",\"uid\":\"$JOB_UID\"}]}}" >/dev/null
+if ! "${KUBECTL[@]}" create secret generic "$LEG_SECRET" --from-env-file="$LEG_ENV_FILE" --dry-run=client -o json \
+  | JOB_NAME="$JOB_NAME" JOB_UID="$JOB_UID" node -e '
+      let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => {
+        const o = JSON.parse(s);
+        o.metadata.ownerReferences = [{ apiVersion: "batch/v1", kind: "Job", name: process.env.JOB_NAME, uid: process.env.JOB_UID }];
+        process.stdout.write(JSON.stringify(o));
+      });' \
+  | "${KUBECTL[@]}" create -f - >/dev/null; then
+  rm -f "$LEG_ENV_FILE"
+  echo "gke-worker-launch: could not create the leg secret $LEG_SECRET; deleting job $JOB_NAME" >&2
+  "${KUBECTL[@]}" delete job "$JOB_NAME" --ignore-not-found >/dev/null 2>&1 || true
+  exit 1
+fi
+rm -f "$LEG_ENV_FILE"
 echo "gke-worker-launch: job $HARMONY_GKE_NAMESPACE/$JOB_NAME (pvc $PVC_NAME)" >&2
 
 # --- Wait for a terminal state. --------------------------------------------------------------------

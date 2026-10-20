@@ -29,8 +29,16 @@ case "$all" in
   "create secret generic "*)
     for a in "$@"; do case "$a" in --from-env-file=*)
       f="${a#--from-env-file=}"; stat -c %a "$f" > "$STUB_LOGS/envfile-mode"; cp "$f" "$STUB_LOGS/envfile-copy"; echo "$f" > "$STUB_LOGS/envfile-path" ;;
-    esac; done ;;
-  "create -f -") cat > "$STUB_LOGS/job.json" ;;
+    esac; done
+    # --dry-run=client -o json: print the manifest (a placeholder value; the real one stays in the env file)
+    case "$all" in *"--dry-run=client"*) printf '{"apiVersion":"v1","kind":"Secret","metadata":{"name":"%s"},"data":{"GIT_TOKEN":"eA=="}}' "${args[3]}" ;; esac ;;
+  "create -f -")
+    body="$(cat)"
+    case "$body" in
+      *'"kind":"Secret"'*) [ -n "${STUB_SECRET_CREATE_FAILS:-}" ] && { echo 'Error from server (Forbidden)' >&2; exit 1; }
+                           printf '%s' "$body" > "$STUB_LOGS/secret.json" ;;
+      *) printf '%s' "$body" > "$STUB_LOGS/job.json" ;;
+    esac ;;
   "get job "*"jsonpath"*) printf 'uid-123' ;;
   "get job "*"--ignore-not-found"*)
     if [ "$(cat "$STUB_LOGS/last-jobctr" 2>/dev/null)" = "GONE" ]; then :; else echo "job.batch/x"; fi ;;
@@ -52,7 +60,7 @@ case "$all" in
     esac ;;
   "get events"*) echo "launcher must never read events" >> "$STUB_LOGS/EVENTS-READ"; exit 0 ;;
   "get jobs "*) printf '%s' "${STUB_JOBS_JSON:-{\"items\":[]\}}" ;;
-  "patch secret "*) ;;
+  "patch secret "*) echo "launcher must not patch secrets (the remote conductor cannot read them)" >> "$STUB_LOGS/PATCH-SECRET"; exit 1 ;;
   "delete job "*) ;;
   *) echo "stub kubectl: unhandled: $all" >&2; exit 9 ;;
 esac
