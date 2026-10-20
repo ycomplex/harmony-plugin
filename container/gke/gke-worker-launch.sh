@@ -64,7 +64,7 @@ CONFIG_WORKER_IMAGE="$(harmony_config worker_image)"
 : "${HARMONY_GKE_CPU:=6}"
 : "${HARMONY_GKE_MEMORY:=20Gi}"
 : "${HARMONY_GKE_TICKET_DISK:=20Gi}"
-: "${HARMONY_GKE_STORAGE_CLASS:=standard-rwo}"
+# HARMONY_GKE_STORAGE_CLASS: unset => harmony-ticket-disk when the cluster has it, else standard-rwo (below).
 : "${HARMONY_GKE_DEADLINE_S:=5400}"          # the Cloud Run job's task timeout
 : "${HARMONY_GKE_POLL_S:=5}"
 : "${HARMONY_GKE_JOB_TTL_S:=3600}"
@@ -142,6 +142,19 @@ TICKET_SLUG="$(printf '%s' "$TICKET" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-
 PVC_NAME="ticket-$TICKET_SLUG"
 JOB_NAME="leg-${CONDUCTION_ID:0:8}-$(date +%s)"
 LEG_SECRET="$JOB_NAME-env"
+
+# --- Ticket-disk storage class. setup-cluster.sh step 17 creates harmony-ticket-disk: Immediate binding,
+# pinned to the leg pool's zone, so the disk is created WHILE the node scales up. standard-rwo waits for
+# the pod to land and then races the new node's disk driver ("no topology key found"; ~65 s on the
+# first GKE leg, 2026-10-20). A cluster set up before step 17 keeps working on standard-rwo.
+if [ -z "${HARMONY_GKE_STORAGE_CLASS:-}" ]; then
+  if "${KUBECTL[@]}" get storageclass harmony-ticket-disk >/dev/null 2>&1; then
+    HARMONY_GKE_STORAGE_CLASS=harmony-ticket-disk
+  else
+    HARMONY_GKE_STORAGE_CLASS=standard-rwo
+    echo "gke-worker-launch: storage class harmony-ticket-disk not found; using standard-rwo (run setup-cluster.sh to create it)" >&2
+  fi
+fi
 
 render() {  # $1 = what: pvc | job
   WHAT="$1" PVC_NAME="$PVC_NAME" JOB_NAME="$JOB_NAME" LEG_SECRET="$LEG_SECRET" TICKET="$TICKET" \

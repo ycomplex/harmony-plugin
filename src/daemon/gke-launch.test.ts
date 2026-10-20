@@ -104,6 +104,24 @@ const read = (w: World, f: string) => (existsSync(join(w.logs, f)) ? readFileSyn
 const podReads = (w: World) => read(w, 'pods-reads').split('\n').filter(Boolean).length;
 const minted = (w: World) => existsSync(join(w.home, '.harmony-conductions', TICKET, CID, 'run.env'));
 
+describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the ticket-disk storage class', () => {
+  it('falls back to standard-rwo, with a line saying so, on a cluster without harmony-ticket-disk', () => {
+    const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
+    const r = launch(w, { STUB_NO_TICKET_SC: '1' });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(read(w, 'pvc.json')).spec.storageClassName).toBe('standard-rwo');
+    expect(r.stderr).toContain('storage class harmony-ticket-disk not found; using standard-rwo');
+  });
+
+  it('an explicit HARMONY_GKE_STORAGE_CLASS is used as given, with no storage class read', () => {
+    const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
+    const r = launch(w, { HARMONY_GKE_STORAGE_CLASS: 'premium-rwo' });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(read(w, 'pvc.json')).spec.storageClassName).toBe('premium-rwo');
+    expect(verbs(w).some((c) => c.includes('get storageclass'))).toBe(false);
+  });
+});
+
 describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the four steps (EXECUTED against a stub kubectl)', () => {
   it('runs apply pvc, create secret, create job, patch secret in order, with the documented defaults', () => {
     const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
@@ -125,7 +143,7 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the four steps (EXECUTED aga
     // ticket disk
     const pvc = JSON.parse(read(w, 'pvc.json'));
     expect(pvc.metadata.name).toBe('ticket-b-1161');
-    expect(pvc.spec.storageClassName).toBe('standard-rwo');
+    expect(pvc.spec.storageClassName).toBe('harmony-ticket-disk'); // present on the cluster (stub default)
     expect(pvc.spec.resources.requests.storage).toBe('20Gi');
     // the Job as created: launch defaults reach the renderer
     const job = JSON.parse(read(w, 'job.json'));

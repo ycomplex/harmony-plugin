@@ -20,6 +20,7 @@ case "$all" in
     name="${args[2]}"
     case ",${STUB_MISSING_SECRETS:-}," in *",$name,"*) exit 1 ;; esac
     exit 0 ;;
+  "get storageclass "*) [ -n "${STUB_NO_TICKET_SC:-}" ] && exit 1; exit 0 ;;
   "get serviceaccount "*)
     name="${args[2]}"
     case ",${STUB_MISSING_SERVICEACCOUNTS:-}," in *",$name,"*) exit 1 ;; esac
