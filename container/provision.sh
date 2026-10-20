@@ -213,6 +213,17 @@ if [ -f "$HOME/.harmony-toolchain.sh" ]; then
   echo "provision.sh: B-929 toolchain active — node $(node --version)"
 fi
 
+# --- B-1184: Playwright browser cache (strictly conditional, non-fatal). -----
+# A repo that declares Playwright gets chromium installed into the Playwright cache once; on a GKE
+# leg that cache is the ticket disk's subPath, so later legs on the ticket find it. See
+# container/install-playwright.sh.
+while IFS= read -r B1184_REPO_PATH; do
+  [ -n "$B1184_REPO_PATH" ] || continue
+  [ -d "$B1184_REPO_PATH" ] || continue
+  "$PLUGIN_DIR/container/install-playwright.sh" "$B1184_REPO_PATH" \
+    || echo "provision.sh: WARNING — Playwright browser install failed for $B1184_REPO_PATH; continuing" >&2
+done < <(b929_repo_paths)
+
 # --- B-708: the leg's own container runtime (strictly conditional). ----------
 # An image built with the engine layer (container/docker-engine/Dockerfile)
 # carries a start script the worker may run as root through one sudoers rule.
