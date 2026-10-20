@@ -275,7 +275,7 @@ describe.skipIf(!CAPABLE)('container/gke/switch-daemon-profile.sh (EXECUTED agai
       const w = makeWorld();
       const r = go(w, 'gke', [], { STUB_NO_DAEMON: '1' });
       fails(r, w);
-      expect(r.stderr).toContain('no running daemon');
+      expect(r.stderr).toContain('no running conductor');
     });
   });
 
@@ -299,6 +299,28 @@ describe.skipIf(!CAPABLE)('container/gke/switch-daemon-profile.sh (EXECUTED agai
       expect(d.status).toBe(1);
       expect(d.stderr).toContain('daemon.env');
       expect(go(w, 'gke', ['--env-file', 'none', '--dry-run']).status).toBe(0);
+    });
+
+    it('B-1171: the default env file is ~/.harmony/conductor.env when it exists, else the legacy daemon.env', () => {
+      const w = makeWorld();
+      const dotHarmony = join(w.dir, 'home', '.harmony');
+      mkdirSync(dotHarmony, { recursive: true });
+      // only the legacy file: it is loaded (a CUSTOM var reaches the restarted daemon)
+      writeFileSync(join(dotHarmony, 'daemon.env'), 'CUSTOM_FROM_FILE=legacy\n');
+      const legacy = run(w, ['--to', 'gke', '--config', w.config, '--log', w.daemonLog]);
+      expect(legacy.status).toBe(0);
+      expect(legacy.stdout).toContain('daemon.env');
+      expect(readFileSync(join(w.state, 'nohup-env'), 'utf8').split('\n')).toContain('CUSTOM_FROM_FILE=legacy');
+      // both files: conductor.env wins
+      const w2 = makeWorld();
+      const dot2 = join(w2.dir, 'home', '.harmony');
+      mkdirSync(dot2, { recursive: true });
+      writeFileSync(join(dot2, 'daemon.env'), 'CUSTOM_FROM_FILE=legacy\n');
+      writeFileSync(join(dot2, 'conductor.env'), 'CUSTOM_FROM_FILE=new\n');
+      const both = run(w2, ['--to', 'gke', '--config', w2.config, '--log', w2.daemonLog]);
+      expect(both.status).toBe(0);
+      expect(both.stdout).toContain('conductor.env');
+      expect(readFileSync(join(w2.state, 'nohup-env'), 'utf8').split('\n')).toContain('CUSTOM_FROM_FILE=new');
     });
 
     it('the Cloud Run job and region come from the env file: the guard queries them and dry-run prints them', () => {

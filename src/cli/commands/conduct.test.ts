@@ -111,7 +111,7 @@ describe('harmony conduct <ticket>', () => {
 
     const output = logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(output).toContain('cond-9');
-    expect(output).toMatch(/daemon will pick it up/i);
+    expect(output).toMatch(/conductor will pick it up/i);
     // The B-758 operator-contract sentence — non-optional, must appear verbatim in substance.
     expect(output).toMatch(
       /the duplicate-guard can only detect an active conduction record.*in-progress\s+terminal session.*stopped before handing it off/is,

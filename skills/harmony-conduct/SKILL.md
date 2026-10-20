@@ -1,13 +1,13 @@
 ---
 name: harmony-conduct
-description: The opinionated-mode entry point: drive one ticket through the gate sequence end to end. Default = pause at every gate for the human's decision (controlled). Optional per-run delegation — `--pause-at <gate>` (auto-advance up to a gate), `--unattended` (auto-advance to the hard floor), or `--escalate` (auto-advance, but surface any gate genuinely worth a human opinion). A non-discretionary risk-class FLOOR (auth / data-migration / irreversible-destructive / shared-core) PAUSES a delegated gate for a human in `--escalate`; in `--unattended` and the auto-advanced prefix of `--pause-at` it does NOT pause mid-run — it is recorded and SURFACED on the release brief (the hard floor at release+verify already covers irreversibility). Triggers on "conduct B-123", "harmony conduct", "run B-123 through the flow", "drive this ticket to verified". The conductor orchestrates the plumbing BETWEEN gates; at a controlled gate it hands the decision to the human, and an auto-advanced gate still records the SAME Accepted decision a controlled run would. `--one-shot` (the daemon's worker flag, orthogonal to the mode selector) advances one leg and exits at the next human pause WITHOUT arming the watch — the daemon owns watching.
+description: The opinionated-mode entry point: drive one ticket through the gate sequence end to end. Default = pause at every gate for the human's decision (controlled). Optional per-run delegation — `--pause-at <gate>` (auto-advance up to a gate), `--unattended` (auto-advance to the hard floor), or `--escalate` (auto-advance, but surface any gate genuinely worth a human opinion). A non-discretionary risk-class FLOOR (auth / data-migration / irreversible-destructive / shared-core) PAUSES a delegated gate for a human in `--escalate`; in `--unattended` and the auto-advanced prefix of `--pause-at` it does NOT pause mid-run — it is recorded and SURFACED on the release brief (the hard floor at release+verify already covers irreversibility). Triggers on "conduct B-123", "harmony conduct", "run B-123 through the flow", "drive this ticket to verified". The conduct loop orchestrates the plumbing BETWEEN gates; at a controlled gate it hands the decision to the human, and an auto-advanced gate still records the SAME Accepted decision a controlled run would. `--one-shot` (the conductor's worker flag, orthogonal to the mode selector) advances one leg and exits at the next human pause WITHOUT arming the watch — the conductor owns watching.
 capabilities: harmony-mcp read shell:node
 allowed-tools: mcp__harmony__* Read Grep Glob Bash(node *)
 ---
 
-# Harmony Conduct (conductor — B-458 phase 2a controlled core + B-489 phase 2b autonomy selector + B-485 browser auto-pickup + B-493 phase 2c risk-class floor & --escalate + B-500 auto-watch by default + B-506 Decomposed split-umbrella branch + B-519 revise-scope / back-up + B-516 floor scoping: pause only in --escalate, release-brief signal otherwise + B-693 --one-shot worker exit)
+# Harmony Conduct (conduct loop — B-458 phase 2a controlled core + B-489 phase 2b autonomy selector + B-485 browser auto-pickup + B-493 phase 2c risk-class floor & --escalate + B-500 auto-watch by default + B-506 Decomposed split-umbrella branch + B-519 revise-scope / back-up + B-516 floor scoping: pause only in --escalate, release-brief signal otherwise + B-693 --one-shot worker exit)
 
-The conductor loop. Given a ticket and a "go", it drives the whole gate sequence
+The conduct loop. Given a ticket and a "go", it drives the whole gate sequence
 (clarify → decompose → design → plan → build → release → verify) by delegating to the existing gate
 skills **in lifecycle order**, automating the drudgery of hand-invoking `/harmony-plugin:harmony-next`
 at each step into one continuous loop.
@@ -17,11 +17,11 @@ awaiting item and stopping, it loops over the forward path. The **controlled** r
 flag) is **not** a new decision surface — every gate still drafts and `compose_brief`s exactly as today,
 and the human still answers through the existing brief surface (web UI Accept/Defer/feedback, or the gate
 skill's accept/edit/iterate/`discuss <remark>` — B-461). Phase 2b adds an **opt-in per-run delegation selector** that lets the human
-hand specific *early* gates to the conductor for the run; it does not change the controlled default and it
+hand specific *early* gates to the conduct loop for the run; it does not change the controlled default and it
 never crosses the hard floor (release + verify stay human). Phase 2c (B-493) adds two things on top: a
 **non-discretionary risk-class FLOOR** that flags *any* delegated gate whose subject touches a
 high-consequence class (auth / data-migration / irreversible-destructive / shared-core), and a 4th mode,
-**`--escalate`**, which auto-advances like `--unattended` but **surfaces any gate the conductor judges
+**`--escalate`**, which auto-advances like `--unattended` but **surfaces any gate the conduct loop judges
 genuinely worth a human opinion**. Phase B-516 **scopes the floor's pause**: the floor **PAUSES a delegated
 gate only in `--escalate`**; in `--unattended` and the auto-advanced prefix of `--pause-at` a non-empty
 `risk_classes` does **NOT** pause mid-run — it is **recorded and surfaced on the release brief** instead.
@@ -30,11 +30,11 @@ already covers irreversibility** — a mid-run floor pause would override the hu
 control choice for no safety gain. Neither weakens the controlled default or the hard floor.
 
 > **Why this skill declares NO `disallowed-tools` (B-1114, 2026-10-13).** It used to revoke `Write`,
-> `Edit` and `NotebookEdit` to say "the conductor never edits code". Claude Code now applies an invoked
+> `Edit` and `NotebookEdit` to say "the conduct loop never edits code". Claude Code now applies an invoked
 > skill's `disallowed-tools` to the REST of the headless session, subagents included, overriding
-> `--dangerously-skip-permissions` and the `harmony-build` agent's `permissionMode` — so every daemon
+> `--dangerously-skip-permissions` and the `harmony-build` agent's `permissionMode` — so every conductor
 > build leg, which enters through this skill before delegating to start-work / `harmony-build`, was
-> denied Edit in every context (B-1108 ×2, B-1105 on 2026-10-12/13). The conductor-never-edits rule is
+> denied Edit in every context (B-1108 ×2, B-1105 on 2026-10-12/13). The conduct-loop-never-edits rule is
 > prose below, enforced by delegation, never by a tool revocation on the worker's launch path. The
 > discovery skills keep their own revocations: they never precede a build in the same session.
 
@@ -44,8 +44,8 @@ control choice for no safety gain. Neither weakens the controlled default or the
    it surfaces every gate's brief and **PAUSES**. The system never decides on its own to delegate a gate.
    Delegation only happens when the **human passes an explicit flag** for *this run*. There is no "this
    looks minor, I'll just run it" — auto-advance is the human's conscious per-run choice, never the
-   conductor's inference.
-2. **It orchestrates only the *plumbing between* gates.** The conductor delegates to a gate skill, lets
+   conduct loop's inference.
+2. **It orchestrates only the *plumbing between* gates.** The conduct loop delegates to a gate skill, lets
    that skill draft + compose the brief. At a **controlled** gate it then **stops and hands the decision to
    the human** (the human's accept/defer/edit lives in the web UI or the gate skill — see §controlled
    pause). At a **delegated (auto-advanced)** gate it **synthesizes the human's "accept"** and routes it to
@@ -53,21 +53,21 @@ control choice for no safety gain. Neither weakens the controlled default or the
    "accept" — so the gate's decision is *recorded identically*; only the human pause is skipped.
 3. **The HARD FLOOR is always human, regardless of any flag or dial.** The workspace safety rails — the
    **release** gate (merge + deploy: one-way, irreversible) and the **verify** gate (Deployed→Verified) —
-   are NEVER auto-resolved by the conductor. Even `--unattended`/`--escalate` pause at release and at
+   are NEVER auto-resolved by the conduct loop. Even `--unattended`/`--escalate` pause at release and at
    verify. One-way / irreversible decisions always surface for a human.
 3a. **The RISK-CLASS FLOOR is non-discretionary and dial-independent — and B-516 scopes WHERE it pauses.**
-   Before auto-advancing ANY delegated gate, the conductor reads `risk_classes` from `get_task` (a
+   Before auto-advancing ANY delegated gate, the conduct loop reads `risk_classes` from `get_task` (a
    deterministic, conservative detector — auth / data-migration / irreversible-destructive / shared-core —
    over the ticket text + active brief, and over changed paths when known). What a non-empty `risk_classes`
    does depends on the mode:
-   - **In `--escalate`:** the conductor **surfaces the gate + PAUSES + ANNOUNCES which class tripped it** —
+   - **In `--escalate`:** the conduct loop **surfaces the gate + PAUSES + ANNOUNCES which class tripped it** —
      non-discretionarily, regardless of the dial level or any `--escalate` judgment that the gate is
      "routine". The floor sits **underneath** the `--escalate` judgment (it pauses a gate the judgment would
      call routine). This is the floor's original B-493 pause behaviour, and it is preserved unchanged for
      `--escalate`.
    - **In `--unattended` and the auto-advanced prefix of `--pause-at`:** a non-empty `risk_classes` does
      **NOT** pause the run mid-flight (**no exceptions — not even `irreversible-destructive`**). The
-     conductor **records** the classes and **surfaces them on the release brief** (§4's release-brief signal)
+     conduct loop **records** the classes and **surfaces them on the release brief** (§4's release-brief signal)
      so the human sees them at the hard floor. *Rationale (B-516):* nothing executes irreversibly before
      release; the **hard floor at release + verify already floors irreversibility for a human**, so a mid-run
      floor pause here adds no safety and overrides the human's explicit `--unattended` control choice. The
@@ -80,13 +80,13 @@ control choice for no safety gain. Neither weakens the controlled default or the
    signal in `--unattended`/`--pause-at`.
 4. **The workspace Agent-Trust dial is a restrict-only CEILING.** A per-run flag can only delegate what the
    dial permits. A `cautious` dial is a **kill-switch**: it forbids ALL delegation — the run goes fully
-   controlled and the conductor **announces** that the workspace dial overrode the flag (never a silent
+   controlled and the conduct loop **announces** that the workspace dial overrode the flag (never a silent
    no-op). `balanced` and `autonomous` both permit per-run forward delegation. The dial can only *restrict*
    the per-run flag, never *expand* it.
 
 ## State-driven and resumable — the loop's memory is the ticket row
 
-The conductor holds **no lifecycle state in the session**. The loop's entire memory is the ticket row
+The conduct loop holds **no lifecycle state in the session**. The loop's entire memory is the ticket row
 (`workflow_state`, `workflow_activity`, `awaiting_human_input`, `awaiting_human_reason`,
 `awaiting_human_ref`, the `stale` flag, and the active brief). Re-running `/harmony-plugin:harmony-conduct
 <ticket>` reconstitutes everything from `get_task` and resumes from the ticket's current state — whether the
@@ -96,10 +96,10 @@ the ticket row, so it is **idempotent and stateless between pauses**. No new sch
 
 **The per-run mode (controlled / `--pause-at <gate>` / `--unattended` / `--escalate`) is the ONE piece of
 run-scoped intent the ticket row does NOT carry** — it is supplied by the human's invocation each time. On a
-re-run without a flag the conductor is controlled again (the safe default); to resume an
+re-run without a flag the conduct loop is controlled again (the safe default); to resume an
 unattended/partial/escalate run the human re-passes the flag. (The risk-class floor needs no persistence
 either — it is recomputed from `risk_classes` on every re-read, so it survives a session boundary
-automatically.) The conductor never persists a delegation choice — there is nowhere it could,
+automatically.) The conduct loop never persists a delegation choice — there is nowhere it could,
 and persisting it would let the system delegate a future run the human didn't authorize.
 
 ## Flow
@@ -144,21 +144,21 @@ JSON
   release and at verify). A risk-class hit on a forward gate does **not** pause the run mid-flight (B-516);
   it is recorded and surfaced on the release brief so the human sees it at the hard floor.
 - **`--escalate`** → `mode = escalate` (B-493, phase 2c). Auto-advance like `--unattended` (every forward
-  gate up to the hard floor), **except** that before auto-advancing a forward gate the conductor forms a
+  gate up to the hard floor), **except** that before auto-advancing a forward gate the conduct loop forms a
   qualitative *"is this gate genuinely worth a human opinion?"* judgment over the gate's drafted brief
   (see *The escalate judgment* below). Worth it → surface + pause (the gate reverts to controlled for this
   run); not worth it → decide-and-record via the owning gate skill's accept path (the same write
   `--unattended` uses). The risk-class floor (§3a) sits **underneath** the judgment: a risk-class hit
   floors a gate even when the judgment says "routine".
 
-**Orthogonal to the mode selector — `--one-shot` (B-693, the daemon's worker flag).** Alongside the mode
+**Orthogonal to the mode selector — `--one-shot` (B-693, the conductor's worker flag).** Alongside the mode
 (any of the above, or no flag), the invocation may carry **`--one-shot`**: advance one leg — run to the
-next human-required pause — then **exit without arming the §4c watch** (the Conductor Daemon owns
+next human-required pause — then **exit without arming the §4c watch** (the Conductor owns
 watching; see the daemon spec §4.1 / B-696). It is **NOT a fifth mode**: it changes what happens **AT** a
 human pause (exit vs arm-and-wait), never **WHICH** gates pause — the run behaves gate-for-gate with
 **identical gate behaviour** to the same invocation without the flag, so "one leg" is mode-dependent by
 construction: one gate in controlled, up to the hard floor under `--unattended`. It is never implied — a
-daemon-fired worker passes it explicitly. The suppression itself lives at §4c's step-0 guard (the sole
+conductor-fired worker passes it explicitly. The suppression itself lives at §4c's step-0 guard (the sole
 poll.js spawn site); what the exit leaves behind is *The one-shot exit contract* (after §4c).
 
 Validation (do this BEFORE touching the ticket):
@@ -171,7 +171,7 @@ Validation (do this BEFORE touching the ticket):
 - An **unknown / misspelled** `<gate>` for `--pause-at` → **ERROR** and stop. *Never* treat an
   unrecognized gate as "delegate everything" or silently fall back to controlled — print the allowed gate
   list and stop. (Silently delegating on a typo is exactly the contract-1 violation this guards.)
-- Absence of any flag ⇒ controlled. This is the only default; the conductor never selects delegation on
+- Absence of any flag ⇒ controlled. This is the only default; the conduct loop never selects delegation on
   its own.
 - **`--one-shot` is exempt from the mutual-exclusivity rule** (it is not a mode — it composes with any
   mode or none), but it gets the same misspelling strictness: `--oneshot`, `--one-sht`, etc. → **ERROR**
@@ -186,7 +186,7 @@ again on every iteration of the loop below, never once per run** (B-892: the `en
 returns is resolved live from the run's `conductions.run_config` row, so an operator who edits this run's
 options mid-conduction reaches the leg at its next gate boundary; the mode/dial half is stable, so the
 effective-mode ANNOUNCEMENT below still happens once, at the run start). If `mode !== 'opinionated'`,
-stop — the conductor drives the opinionated-mode lifecycle (manual-mode projects use the normal board, not
+stop — the conduct loop drives the opinionated-mode lifecycle (manual-mode projects use the normal board, not
 clarify→decompose→design→…). `get_project` now also returns `agent_trust` (the owning workspace's dial,
 resolved): `agent_trust.level` ∈ `{cautious, balanced, autonomous}` (empty `{}` dial ⇒ `balanced`). **B-743:**
 `get_project` also returns an `environment` block carrying `conduction_id` and `operator_note` — this run's
@@ -266,7 +266,7 @@ change, or a shared-core module."*; in **`--unattended`/`--pause-at`** say *"A r
 won't stop the run — I'll surface it on the release brief so you review it at the hard floor."*
 
 When the run carries **`--one-shot`**, append the worker notice to the report: *"One-shot: I'll exit at
-the first human pause instead of watching — the daemon (or you) re-fires the next leg."*
+the first human pause instead of watching — the conductor (or you) re-fires the next leg."*
 
 ### 2. The loop
 
@@ -288,8 +288,8 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    below). This happens on **every** iteration so the checklist always reflects the just-read state.
 
 1b. **On the FIRST pickup of a run, consume any side effect a resolution left outstanding (B-747 — the
-   leg-start consume).** §4c's consume branches only exist *inside a live watch's poll-exit*. A daemon leg
-   exits at its pause, the human resolves in the browser with nothing watching, and the daemon fires a
+   leg-start consume).** §4c's consume branches only exist *inside a live watch's poll-exit*. A conductor leg
+   exits at its pause, the human resolves in the browser with nothing watching, and the conductor fires a
    NEW leg — which starts here, at step 1, and routes straight to the next forward gate. Nothing would
    ever run the outstanding side effect. That is the operative route by which a clarified ticket reaches
    build with no acceptance criteria, so this check is not belt-and-braces.
@@ -393,11 +393,11 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
 
 1d. **On EVERY iteration, after 1c's consume has settled the ticket's TRUE `workflow_state` — verify THIS
    turn is actually running the model the just-settled gate should run on (B-772 round 2: the in-worker
-   model-switch loop).** This is the fix for the original B-772's defect: the daemon resolves+launches a
+   model-switch loop).** This is the fix for the original B-772's defect: the conductor resolves+launches a
    leg's model from `workflow_state` **at fire time**, before the leg has consumed any pending 1c event —
    so a leg that consumes an event mid-pickup (e.g. Designed→Planned) would otherwise run the **new** gate
    on the **previous** gate's model. Placing this check HERE, after 1c (which itself loops back to step 1
-   on a consume), guarantees it always evaluates the POST-consume gate, never the daemon's pre-consume
+   on a consume), guarantees it always evaluates the POST-consume gate, never the conductor's pre-consume
    guess. Skipped entirely for `auto_approve_gates`-delegated legs no differently than any other leg — the
    check is per-GATE, not per-mode, so it runs identically whether this gate ends up controlled or
    auto-advanced by step 2/2a below.
@@ -415,21 +415,21 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    ```
 
    **`RUNNING_MODEL` empty ⇒ skip this entire step, proceed to step 2.** An empty result means this
-   deployment's launch profile never rendered `{model}` into the minted env at all (an older daemon build,
+   deployment's launch profile never rendered `{model}` into the minted env at all (an older conductor build,
    or a profile that hasn't adopted B-772) — there is no baseline to compare against, and nothing to
    switch away from. This is round 1's own opt-out path, preserved byte-for-byte: no `HARMONY_MODEL` ⇒ no
    model-awareness whatsoever, exactly as before this ticket existed.
 
    Otherwise, resolve what the just-settled gate SHOULD run on — the identical `resolveGatePhase` +
-   `getModelForGate` chain the daemon's fire-time guess uses (`src/config/run-config.ts`), but invoked
-   fresh, now, off the ticket row step 1 just re-read (not the daemon's stale pre-consume snapshot):
+   `getModelForGate` chain the conductor's fire-time guess uses (`src/config/run-config.ts`), but invoked
+   fresh, now, off the ticket row step 1 just re-read (not the conductor's stale pre-consume snapshot):
 
    ```
    WANTED_MODEL="$(node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" model resolve-gate "<workflow_state>" --activity "<workflow_activity>")"
    ```
 
    using the SAME `(workflow_state, workflow_activity)` step 1 just re-read this iteration (post-1c). This
-   call reads this worker's own `run_config` env exactly as the daemon does, so a per-gate override or a
+   call reads this worker's own `run_config` env exactly as the conductor does, so a per-gate override or a
    run-wide default in `run_config.model` is honored identically — it degrades to the pinned per-deployment
    default, never throws, on a malformed run_config (see the CLI command's own doc comment).
 
@@ -452,7 +452,7 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
        silently retried forever.
      - **Non-zero exit (REFUSED — `<WANTED_MODEL>` is not active in the live model catalog, B-881) → do
        NOT silently end the turn.** This used to just end the turn regardless of the command's exit code —
-       on a refusal that left the daemon spinning with no authored reason until B-792's no-progress timeout
+       on a refusal that left the conductor spinning with no authored reason until B-792's no-progress timeout
        eventually caught it (the silent-spin defect). Instead, PARK — mirroring `start-work`'s own
        build-failure park path (that SKILL.md's FAILURE PATH: comment the reason, THEN park, in that
        order):
@@ -511,14 +511,14 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
 4. **If `workflow_state === 'Captured'` → auto-advance `proposing` (plumbing, NOT a pause), then loop
    again.** A freshly-created ticket lands in `Captured` (the post-B-474 inbox state). `proposing`
    (Captured→Proposed) is a **brief-less AGENT/SYSTEM transition** with no human decision attached — and in the
-   conductor, *choosing to conduct this ticket IS the promote decision* (the human named it; they've
-   already decided it's worth pursuing). So the conductor advances it itself, with **no brief and no
+   conduct loop, *choosing to conduct this ticket IS the promote decision* (the human named it; they've
+   already decided it's worth pursuing). So the conduct loop advances it itself, with **no brief and no
    pause**: `mcp__harmony__advance_workflow({ task_id, activity: 'proposing' })` (Captured→Proposed). Then go
    back to step 1 (re-read) — the ticket is now `Proposed` and the next iteration runs the clarify gate.
    **Do NOT** try to file a `clarifying` brief from `Captured` — the transition table only allows
    `('Captured','proposing','Proposed')` then `('Proposed','clarifying','Clarified')`, so `compose_brief` with
    `pending_activity: 'clarifying'` would hard-error from `Captured`. (This is the one self-advance the
-   conductor makes regardless of mode; it advances no *human* decision — contrast `harmony-next`, which
+   conduct loop makes regardless of mode; it advances no *human* decision — contrast `harmony-next`, which
    **surfaces** proposing as a human triage decision because it pulls un-triaged queue items, see
    harmony-next's routing.)
 
@@ -603,7 +603,7 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    test's evaluation is the bug this rule closes. *(Side-effecting note: the gate skills' accept paths
    carry the side effects — `harmony-decompose` creates children on accept, `finish-work` does the
    merge/deploy on accept. In a controlled run those happen at the human's accept; in a delegated run the
-   conductor synthesizes the accept and the gate skill performs the same side effects — see §4b.)*
+   conduct loop synthesizes the accept and the gate skill performs the same side effects — see §4b.)*
 
 ### The delegation test — is THIS gate auto-advanced for this run?
 
@@ -636,7 +636,7 @@ it marks the gate **OVERRIDE-ELIGIBLE**, which changes how steps 3–5 apply to 
    strictly additive: it can grant an auto-advance a mode wouldn't otherwise, but it never removes one a
    mode already grants, and it never touches a gate it doesn't name.
 3. **Risk-class FLOOR (contract 3a — NON-DISCRETIONARY in `--escalate`, RELEASE-BRIEF SIGNAL otherwise — B-516).**
-   Read `risk_classes` from the `get_task` of step-1 (the conductor already re-read the ticket). If it is
+   Read `risk_classes` from the `get_task` of step-1 (the conduct loop already re-read the ticket). If it is
    **non-empty**:
    - **In `mode = escalate`:** the gate is **floored** — surface and pause (§4), regardless of the dial level
      and regardless of any `--escalate` judgment (step 4) that the gate is routine. ANNOUNCE which class(es)
@@ -721,7 +721,7 @@ under this judgment: a gate judged routine here is **still** surfaced if step 3 
 
 When the delegation test selects a gate to **auto-advance** (it survived the hard floor; in `--escalate` it
 was not risk-class-floored and was judged routine; in `--unattended`/`--pause-at` it auto-advances even with
-a non-empty `risk_classes`, whose classes are recorded for the release brief — B-516), the conductor
+a non-empty `risk_classes`, whose classes are recorded for the release brief — B-516), the conduct loop
 **synthesizes the human's "accept"** for that brief and routes it to the owning gate skill's accept path —
 the *same routing* the controlled flow uses when the human types "accept" in-session (§controlled pause's
 "If the human answers in this same session"). It is the SAME write in every delegating mode (`--pause-at`,
@@ -730,7 +730,7 @@ only adds a *pause* decision in front of this one. It does **not** invent a new 
 
 - **Pure gate** — plan (`plan-draft`): the accept is the gate skill's
   `resolve_brief({ command: 'accept', provenance: 'agent-synthesized:<mode>', … })`. Routing to the
-  owning gate skill's accept path (NOT a raw conductor `resolve_brief`) ensures the gate skill records its
+  owning gate skill's accept path (NOT a raw conduct loop `resolve_brief`) ensures the gate skill records its
   Accepted knowledge decision and runs its own completion logic.
 - **Side-effecting DESIGN** (`*-design-decision` per sub-track, B-747): design is **NOT** a pure gate. The
   product sub-track's accept **writes acceptance criteria** — it files the clarification's proposed
@@ -755,7 +755,7 @@ only adds a *pause* decision in front of this one. It does **not** invent a new 
 **The synthesized accept declares itself (B-734) — NON-OPTIONAL.** Every `resolve_brief` performed in a
 synthesized accept carries **`provenance: 'agent-synthesized:<mode>'`**, where `<mode>` is this run's
 effective mode — `unattended`, `escalate`, or `pause-at` (the flag name for `mode = partial`) — **or
-`override` (B-773)**, see the next paragraph for when. **Never `human-in-session`.** The conductor
+`override` (B-773)**, see the next paragraph for when. **Never `human-in-session`.** The conduct loop
 synthesizes the accept through the human's *own* accept path using the founder's token, so an undeclared
 auto-advance would be recorded as a decision the founder personally made — and a consumer reading that trail
 would attribute an agent's call to a human. Pass the provenance through whichever gate skill you route to;
@@ -806,7 +806,7 @@ reads these markers back at the hard floor — see that section for how they sur
 
 **Parity invariant (AC5):** an auto-advanced gate records the **SAME Accepted knowledge** a controlled run
 would. Auto-advance only skips the human *pause* — it does not skip the *decision record*. Because the
-conductor reuses the owning gate skill's accept path (the human's exact routing), the Accepted knowledge
+conduct loop reuses the owning gate skill's accept path (the human's exact routing), the Accepted knowledge
 entry, state transition, and side effects are identical to a human-accepted controlled run. If a gate skill
 would NOT record a decision on a plain human accept, neither does its auto-advance — the contract is
 "identical to a human accept, minus the pause", nothing more. Parity is over **what was decided**, never
@@ -854,7 +854,7 @@ adjacent axis to the item-disposition discipline above.
 
 Branch on `workflow_state` to pick the next gate. **The canonical gate→owning-skill routing — which skill
 owns each gate, whether accept is pure or side-effecting, and where the hard floor sits — lives in
-`skills/harmony-shared/gate-routing.md`. Consult it; do not restate it here.** The conductor reads that
+`skills/harmony-shared/gate-routing.md`. Consult it; do not restate it here.** The conduct loop reads that
 table keyed by `workflow_state` (walking forward one state at a time); `harmony-next` reads the same table
 keyed by `awaiting_human_reason` (resolving an existing brief). The forward path it walks: `Proposed` →
 `Clarified` → `Decomposed` → `Designed` → `Planned` → `Built` → `Deployed` → `Verified`.
@@ -865,7 +865,7 @@ ticket sits at `Captured`/`Proposed`, the leg that fires resolves its gate via
 `src/daemon/leg-gate.ts`'s `resolveLegGate` instead of this file's own `resolveGatePhase` reads —
 and `resolveLegGate` routes straight to the **build** gate, skipping decompose/design/plan's
 discovery legs for a ticket already understood well enough to fast-track. This changes ONLY which
-gate the daemon fires a leg FOR; it does not change the hard floor or the delegation test: release
+gate the conductor fires a leg FOR; it does not change the hard floor or the delegation test: release
 and verify are still always-human (§The contract this skill obeys), and the one gate a fast-track
 leg does run (build) still passes through the SAME per-gate delegation test (§The delegation test)
 as any other run — a fast-track run is not a second, looser conduct mode, only a shorter approach to
@@ -874,7 +874,7 @@ the same gates.
 **That one build leg routes to `skills/harmony-fasttrack/SKILL.md`'s Check → Plan-lite → Build
 sequence, run inline by this SAME session** — detected there via the same signal this file's leg
 already carries, `environment.conduction_id !== null && environment.fast_track === true`
-(`get_project`'s `environment` block). `harmony-fasttrack/SKILL.md`'s own daemon branch (its Plan-lite
+(`get_project`'s `environment` block). `harmony-fasttrack/SKILL.md`'s own conductor branch (its Plan-lite
 and Build phases) is what governs how that leg ENDS: landing clarify→build via the `record` tool's
 `to_gate: 'build'` argument, then composing the ordinary release brief directly, in the same leg —
 **never** the interactive "stop after PR-open" behavior, which applies only to a standalone,
@@ -882,18 +882,18 @@ human-invoked fast-track session with no conduction row around it. This is a poi
 restatement — see that file for the actual mechanics, the same discipline this paragraph already
 follows for `checkPrePrOpenEligibility` below.
 
-**The post-merge recording is filed by the DAEMON, with no worker leg (B-1073).** After the human
+**The post-merge recording is filed by the CONDUCTOR, with no worker leg (B-1073).** After the human
 accepts a fast-track conduction's release brief, `scheduler.ts`'s `handleHeldConduction` files the
 `recorded_walk_requests` row itself (`src/daemon/fasttrack-release-recording.ts`) — fail-closed on a
 positively evidenced accept and a MERGED PR — and the in-process drain lands deploy + the verify
 brief; no leg fires. Anything unconfirmable falls through to the ordinary leg (finish-work). Pointer:
 `harmony-fasttrack/SKILL.md` Build phase and `docs/recorded-walk-contract.md` §1.
 
-**Resume rule (one sentence, mechanics in `harmony-fasttrack`):** a re-launched daemon fast-track leg
+**Resume rule (one sentence, mechanics in `harmony-fasttrack`):** a re-launched conductor fast-track leg
 whose ticket already carries an OPEN `build_pr` does not rebuild or open a second PR — it re-checks
 that PR's real diff and goes straight to landing.
 
-Two further non-discretionary checks bracket that one build leg. BEFORE it ever fires, the daemon's
+Two further non-discretionary checks bracket that one build leg. BEFORE it ever fires, the conductor's
 own fire path (`scheduler.ts`'s `fireLaunch`) runs the five-item eligibility floor
 (`evaluateFastTrackAdmission`, `src/daemon/leg-gate.ts`) against the ticket's title and the
 deployment's declared repos; an inadmissible verdict parks the ticket (`advance_workflow 'parking'`
@@ -902,10 +902,10 @@ by `skills/start-work/SKILL.md`'s O3 (sub-step 2a) — calls **`checkPrePrOpenEl
 (`src/tools/record-eligibility.ts`) against the real diff; `allowed: false` there means no PR opens,
 same escalation-to-`harmony conduct` posture as every other eligibility refusal in this ticket.
 
-What is **conduct-specific** (NOT in the shared table — this is the conductor's *handling*, not the routing
+What is **conduct-specific** (NOT in the shared table — this is the conduct loop's *handling*, not the routing
 facts; this is the deliberate other half of B-490's "same routing, opposite handling"):
 
-| `workflow_state` | Conductor's handling |
+| `workflow_state` | Conduct loop's handling |
 |---|---|
 | Captured | auto-advance `proposing` (Captured→Proposed) as **plumbing, not a pause** — see loop step 4 (the OPPOSITE of `harmony-next`, which surfaces proposing as a triage decision) |
 | Decomposed **(split umbrella)** | **report-and-stop** — the children carry design/build; the B-471 roll-up completes the parent (loop step 5). NOT a forward gate |
@@ -915,7 +915,7 @@ facts; this is the deliberate other half of B-490's "same routing, opposite hand
 
 **Revived from Parked into a build-state ticket — verify the PR/branch is still live before trusting it
 (B-964).** A Parked ticket can now be revived by an explicit human-authorized `unpark: true` call to
-`create_conduction` (or `harmony conduct <ticket> --unpark`) — never by the conductor itself (AC5; nothing
+`create_conduction` (or `harmony conduct <ticket> --unpark`) — never by the conduct loop itself (AC5; nothing
 here infers a revive from a detected condition). When the loop picks up a ticket that was **just revived**
 this way and its re-read `workflow_state` lands at **`Built` or `Deployed`** (i.e. it carries a live
 `field_values.build_pr` from before the park), do **NOT** trust that PR/branch is still mergeable just
@@ -945,7 +945,7 @@ otherwise performs on every ordinary Built/Deployed pass (the release gate's own
 `decision-only` label, the walk above ENDS at the deliverable gate: the clarify accept (capture-only) or
 the last design sub-track's accept (decision ticket) carries an explicit completion line and — on the
 human's accept — the owning gate skill runs the trailing `advance_workflow('fast-forwarding')`
-(Clarified→Verified / Designed→Verified). The conductor never routes such a ticket to plan/build/release;
+(Clarified→Verified / Designed→Verified). The conduct loop never routes such a ticket to plan/build/release;
 the loop's next re-read finds it Verified (TERMINAL). That deliverable gate inherits the hard floor
 (delegation test step 2) — never auto-advanced. Until the deliverable gate, the marker changes nothing.
 The decided thing stays `realization='agreed'` (B-677 flips it when built); evidence is exempt
@@ -958,7 +958,7 @@ invocation and there is one active brief per task, so the design phase is severa
 file product-design → (pause or auto-advance) → accept → loop re-reads (still Decomposed, no other
 sub-track accepted yet) → file technical-design → … The ticket only advances Decomposed→Designed when the
 **last required** sub-track is accepted (the gate skill owns that completion check via
-`list_ticket_knowledge`). The conductor does not decide which sub-tracks are required — it re-invokes
+`list_ticket_knowledge`). The conduct loop does not decide which sub-tracks are required — it re-invokes
 `harmony-design-decide` and lets the gate skill propose/serialize them. **When the design phase is
 delegated** (auto-advanced), each serialized sub-track brief is auto-accepted in turn via §4b until the gate
 skill reports Designed; the per-sub-track serialization is unchanged, only the pause is skipped. If the
@@ -1087,7 +1087,7 @@ step 2's delegation test have run, the test decides:
 - a **delegated** gate → §4b (synthesize accept, continue looping).
 
 The controlled flow's forward motion is gated on the human resolving each brief; that is contract item 1.
-The delegated flow's forward motion is the conductor synthesizing the accept the human authorized via the
+The delegated flow's forward motion is the conduct loop synthesizing the accept the human authorized via the
 per-run flag (contract item 2) — never crossing the hard floor (contract item 3), pausing on a
 risk-class-floored gate **in `--escalate`** (contract item 3a; in `--unattended`/`--pause-at` the floor is a
 release-brief signal, not a pause — B-516), and in `--escalate` also pausing on any gate it judges worth a
@@ -1143,13 +1143,13 @@ say so explicitly —
 
 For a gate the **risk-class floor** tripped **in `--escalate`** (§3a), say so explicitly and **name the
 class(es)** that tripped it (from `risk_classes`) — in `--escalate` this is non-discretionary and
-dial-independent, so the human knows it was not the conductor's discretion —
+dial-independent, so the human knows it was not the conduct loop's discretion —
 
 > *"<ticket> is at the **design** gate. Running `--escalate`, its subject touches **auth** (risk-class floor),
 > so I'm surfacing it for you — in `--escalate`, risk-class hits always require a human regardless of dial or
 > judgment. Awaiting your decision: <doc.decide>. Accept / defer / give feedback."*
 
-(In `--unattended`/`--pause-at` the conductor does **not** pause here for a risk class — it auto-advances and
+(In `--unattended`/`--pause-at` the conduct loop does **not** pause here for a risk class — it auto-advances and
 records the class for the release-brief signal below.)
 
 For a gate the **`--escalate` judgment** flagged as worth your opinion, say which signal fired —
@@ -1171,22 +1171,22 @@ hard floor), `finish-work` composes the `release-decision-pending` brief and **c
 signal from the build's `changed_paths`** (`git diff --name-only origin/main...HEAD` over the PR, the high-precision
 source — see finish-work O1) and adds it as an **attention line** on the brief, e.g.: *"⚠ Risk floor: this
 change touches **auth + data-migration** — review accordingly."* Prefer the path-derived signal (precise)
-over the accumulated prose set the conductor saw mid-run (the prose set may include down-weighted
-false-positives; it is a fallback only if no diff is available). So even though the conductor did not pause
+over the accumulated prose set the conduct loop saw mid-run (the prose set may include down-weighted
+false-positives; it is a fallback only if no diff is available). So even though the conduct loop did not pause
 mid-run for the risk class, the human **still sees it at the release gate they always retained** — the floor's
 safety value is delivered at the hard floor, not by interrupting the auto-advanced prefix.
 
-**The conductor does not resolve a controlled brief on its own.** Accept/defer/edit/iterate/`discuss
+**The conduct loop does not resolve a controlled brief on its own.** Accept/defer/edit/iterate/`discuss
 <remark>` at a controlled gate is the human's decision, made through the existing surface (the web UI's
 Accept/Defer, or the owning gate skill's accept/edit/iterate/discuss path — `harmony-clarify`/
 `harmony-decompose`/`harmony-design-decide`/
 `start-work`/`finish-work` each own their resolve, including the side effects: children-creation,
-merge+deploy, prod-observation). At a controlled gate the conductor *never* synthesizes the resolution —
+merge+deploy, prod-observation). At a controlled gate the conduct loop *never* synthesizes the resolution —
 doing so would be the system making the human's decision, which is exactly what the controlled route exists
 to prevent. (The *delegated* path in §4b is different: there the human has explicitly authorized the
-accept for this run via the flag, and the conductor synthesizes exactly that accept — never a defer, never
+accept for this run via the flag, and the conduct loop synthesizes exactly that accept — never a defer, never
 an edit, only the accept the flag authorized, and never past the floor.) On **`discuss <remark>`** (B-461)
-the conductor delegates to the OWNING gate skill for the brief's `awaiting_human_reason` to open a
+the conduct loop delegates to the OWNING gate skill for the brief's `awaiting_human_reason` to open a
 discussion exchange on the active brief per `skills/harmony-shared/elicitation-engine.md` §The discuss
 trigger (the remark seeds round 1). While a discussion is open, **brief resolution is suspended** — do not
 route an accept/defer to the brief; offer **force-quit** or **cancel** instead. When the exchange concludes,
@@ -1208,17 +1208,17 @@ resolve the current gate. On that verb, **delegate to `/harmony-plugin:harmony-r
 `--to <gate>` if the human named a target). That skill drafts the reconciliation (target gate + broadened
 scope + supersede-list vs keep-list) and files a `revise-scope-review` brief; **the human accepts or rejects
 there** — only a human accept executes the back-up (it reverts state via a `revising-*` back-edge; the
-conductor never reverts state itself). After delegating, **resume the loop at step 1** (re-read): on accept
+conduct loop never reverts state itself). After delegating, **resume the loop at step 1** (re-read): on accept
 the ticket is now at the target discovery milestone and the loop drives it forward from there; on reject the
 run is untouched and still paused at this gate. **`--to build` is also a valid revise-scope target (B-762)**
 — a release-gate merge conflict reopening the build gate; the same delegation covers it transitively, no new
 mechanism needed here.
 
-**The human may answer in the BROWSER — and the conductor watches for it automatically (B-485 + B-500, §4c).**
+**The human may answer in the BROWSER — and the conduct loop watches for it automatically (B-485 + B-500, §4c).**
 After surfacing the brief, **do not ask** whether to watch and **do not require a re-run** — auto-watch is the
-**default** (B-500: *don't ask, don't make me re-run*). The conductor automatically enters the §4c watch loop
+**default** (B-500: *don't ask, don't make me re-run*). The conduct loop automatically enters the §4c watch loop
 and keeps watching the ticket row for the human's resolution (Accept / Reshape / Deny submitted from the
-TaskDetailPanel on any device), continuing the instant it lands. **This is not optional and not automatic: you MUST arm the watch as a concrete action (§4c) before yielding the turn — never end the turn assuming the runtime will re-invoke you. "Surfaced the brief and stopped" is a bug; the only clean end-of-turn at a pause is an in-session answer you just received, or the ~90-min window expiry (graceful degradation). (Exception, B-693: in `--one-shot` the clean end-of-turn IS the exit — §4c's step-0 guard ends the run at this pause without arming; the daemon owns watching.)** State it plainly, e.g.: *"I'll keep watching
+TaskDetailPanel on any device), continuing the instant it lands. **This is not optional and not automatic: you MUST arm the watch as a concrete action (§4c) before yielding the turn — never end the turn assuming the runtime will re-invoke you. "Surfaced the brief and stopped" is a bug; the only clean end-of-turn at a pause is an in-session answer you just received, or the ~90-min window expiry (graceful degradation). (Exception, B-693: in `--one-shot` the clean end-of-turn IS the exit — §4c's step-0 guard ends the run at this pause without arming; the conductor owns watching.)** State it plainly, e.g.: *"I'll keep watching
 for your decision — resolve it here in the terminal or from the browser (Accept / Reshape / Deny) and I'll
 continue automatically."* The watch is **bounded (~90 min, idle backoff)** and ends on **any** of three
 co-equal exits: a browser resolution, an in-session/terminal answer, or the ~90-min timeout. On timeout the
@@ -1238,26 +1238,26 @@ the session's lifetime — it **dies with the session** (`pkill`ed on re-arm and
 answers (the browser, on any device) versus requiring a session re-run; **it is orthogonal to delegation**
 (§4b) — the human still resolves **every** controlled gate. Auto-pickup never makes a decision the human
 didn't make; it routes the human's **actual** browser command to the owning gate skill, exactly as a
-same-session answer would. **Auto-watch is the default (B-500):** after every controlled pause the conductor
+same-session answer would. **Auto-watch is the default (B-500):** after every controlled pause the conduct loop
 enters this loop automatically — it does **not** ask the human to opt in and does **not** require a manual
 re-run. **The one exception is `--one-shot` (B-693): a one-shot run never enters this section — it exits at
-the pause via the step-0 guard below; the daemon owns watching.** The interactive default is otherwise
+the pause via the step-0 guard below; the conductor owns watching.** The interactive default is otherwise
 unchanged.
 
 **The poll loop (bounded, idle-backoff, default-on).** After surfacing the brief at a controlled pause, the
-conductor re-reads `mcp__harmony__get_task({ task_id })` on a bounded, idle-backoff schedule up to a **total
+conduct loop re-reads `mcp__harmony__get_task({ task_id })` on a bounded, idle-backoff schedule up to a **total
 watch window of ~90 minutes** — long enough for the human to step away and resolve from the browser later,
 bounded so an abandoned session doesn't spin forever.
 
 **You MUST ARM the watch — "wait" is NOT automatic.** Polling across turns does not happen on its own: after
-surfacing the brief you must schedule a *self-firing re-invocation* of this conductor before yielding the
+surfacing the brief you must schedule a *self-firing re-invocation* of this conduct loop before yielding the
 turn, then end the turn. Do **not** just stop and assume the runtime will call you back — it will not, and the
 watch silently dies (this is the B-531 bug). The *behaviour* — arm a self-firing watch after every
 controlled/hard-floor pause — is the **durable contract**; the concrete mechanism below is a **swappable
 recipe** (B-532 swapped the earlier Claude-Code `ScheduleWakeup` recipe for the bundled background poll
 script below — the *recipe* changed, the *contract* did not; a persistent cross-session daemon would be a
 further, separate change, still out of scope). (In `--one-shot` the arming imperative is inverted by the
-step-0 guard below: the run exits at the pause instead — the daemon owns watching.)
+step-0 guard below: the run exits at the pause instead — the conductor owns watching.)
 
 **Claude Code — how to actually arm (the current recipe, B-532).** The watch is a **plugin-bundled
 background poll script** — `dist/bin/poll.js`. It reads the ticket **IN-PROCESS** via the shared-core
@@ -1273,7 +1273,7 @@ brief (or an elicitation round) **launch it in the background and end the turn**
 
 0. **THE ONE-SHOT GUARD (B-693) — checked FIRST, at this sole spawn site.** If the run carries
    `--one-shot`, do **NOT** arm: no `pkill`, no spawn — surface the pause exactly as §4 renders it, state
-   the worker exit (*"exiting — the daemon owns watching; re-fire `harmony-conduct <ticket>` for the next
+   the worker exit (*"exiting — the conductor owns watching; re-fire `harmony-conduct <ticket>` for the next
    leg"*), and **END THE RUN**. This guard lives at the ONLY place poll.js is ever spawned, so it covers
    **every** pause path — forward controlled gates, the **release** and **verify** hard-floor pauses, a
    **stale-patch** pause, and **elicitation rounds** alike — and a future new pause path physically cannot
@@ -1288,7 +1288,7 @@ brief (or an elicitation round) **launch it in the background and end the turn**
 3. **End the turn.** The background process IS the watch — you do nothing between now and its exit.
 
 On the script's exit your `run_in_background` re-invocation fires: **re-read `get_task` yourself** — the
-script's stdout/exit code are *diagnostic only*; the conductor re-reads the ticket row and is the source of
+script's stdout/exit code are *diagnostic only*; the conduct loop re-reads the ticket row and is the source of
 truth. (These poll-exit re-reads may also use `view: 'meta'` — the classification fields below are all in
 meta, B-684.) The **canonical signal a human resolved is `awaiting_human_input` clearing (true→false)**; once it
 clears, classify what they did (state advanced / `pending_resolution` reshape / a Discuss request /
@@ -1309,7 +1309,7 @@ resolved (in the browser or terminal); classify which resolution it was:
    `false`. The web's accept/defer is the **mechanical** half (`resolve_brief` + the B-482 reconciliation
    guard). **The web already recorded the resolution as `human-in-browser`, and that record stands (B-734).**
    When you route to a gate skill's accept path below for the side effects, its `resolve_brief` is an
-   idempotent no-op on the already-resolved brief and writes **no second event** — so the conductor neither
+   idempotent no-op on the already-resolved brief and writes **no second event** — so the conduct loop neither
    re-records nor re-attributes a resolution it did not make. (`human-in-browser` is the web's value alone;
    the plugin's `resolve_brief` rejects it outright.) What remains is any **side effect** that only runs
    where the agent runs:
@@ -1321,7 +1321,7 @@ resolved (in the browser or terminal); classify which resolution it was:
      **`/harmony-plugin:harmony-design-decide <ticket>`'s accept path** so those writes land **in this
      running session**; its `resolve_brief` is idempotent on the already-resolved brief. Then continue the
      loop. If no session was running at the web accept, §1b's leg-start consume covers it on the next
-     pickup — that is the path a daemon leg takes, since this consume branch only exists inside a live
+     pickup — that is the path a conductor leg takes, since this consume branch only exists inside a live
      watch.
    - **Side-effecting CLARIFY** (`brief-review`, B-648): the web accept advanced Proposed→Clarified **but
      filed no ACs** (the web is mechanical-only; it cannot file the clarify-authored happy-path ACs).
@@ -1336,7 +1336,7 @@ resolved (in the browser or terminal); classify which resolution it was:
      created **in this running session**; its `resolve_brief` accept is idempotent on the already-advanced
      parent. Then continue the loop.
    - **Defer/deny** → ticket `Parked` ⇒ **TERMINAL** (§5). A browser deny is the human's defer; the
-     conductor never reverses it.
+     conduct loop never reverses it.
 2. **`pending_resolution` present — a browser reshape (iterate).** `get_task`/`get_brief` returns
    `pending_resolution = { command: 'iterate', detail: <feedback> }`; `awaiting_human_input` is `false`
    (ball → agent) and the active brief is unchanged (the web did NOT advance state — it left the brief
@@ -1356,8 +1356,8 @@ resolved (in the browser or terminal); classify which resolution it was:
    **re-invoke the owning gate skill** for the exchange's `gate` (e.g. `clarifying` →
    `/harmony-plugin:harmony-clarify <ticket>`) — its resume path reads the answers via
    `get_elicitation` and consumes them (files the next round, which re-sets the flag and re-arms the
-   watch; or concludes and proceeds to its draft). The conductor never answers, re-asks, or concludes
-   an exchange itself — the gate skill owns the exchange; the conductor only routes the wake-up.
+   watch; or concludes and proceeds to its draft). The conduct loop never answers, re-asks, or concludes
+   an exchange itself — the gate skill owns the exchange; the conduct loop only routes the wake-up.
 5. **Flag cleared, state unchanged, no `pending_resolution`, no exchange marker — a non-advancing accept
    (B-611).**
    `awaiting_human_input` went `false` but `workflow_state` did NOT move and there is no reshape marker. This
@@ -1390,7 +1390,7 @@ resolved (in the browser or terminal); classify which resolution it was:
      §4 and arm a fresh watch — the ordinary case, no human action needed;
    - otherwise **file a `worker-question` elicitation round** per §4e naming what happened: the run
      believed it was waiting on you, and it was not. This is the one channel that renders on both the
-     web and the terminal — the daemon discards worker stdout (B-697), and inventing a new
+     web and the terminal — the conductor discards worker stdout (B-697), and inventing a new
      `awaiting_human_reason` reaches only the Manual-override fallback (B-745), whose semantics are
      wrong for this. Then end the turn; the round is a clean human pause, not a failure.
 
@@ -1436,7 +1436,7 @@ handle BOTH, the B-611 swallow class). Handle it in two steps, strictly ordered:
      by a remark — when the veto fires, surface the gate and pause instead (state the veto's `why`).
    - **SUBSTANTIVE remark** — it would change the decision that was accepted: **NOT absorbed**. Write a
      trail comment and re-surface it to the human (the decision the human accepted stands until the human
-     revises it — the conductor never silently re-decides). A recompose made to answer the remark — here, or
+     revises it — the conduct loop never silently re-decides). A recompose made to answer the remark — here, or
      at a downstream gate that folds it in — passes `revision_cause: { source: 'accept-remark', lines: [<the
      remark, verbatim>] }` and no `iterate_feedback` (§Stating the cause of a redraft, B-1017).
 
@@ -1453,7 +1453,7 @@ exits**, whichever lands first.
 
 **Hard floor in the consume path (AC7).** release (`release-decision-pending`) and verify
 (`verification-ack-pending`) are consumed **ONLY from a human-submitted browser resolution — NEVER
-conductor-synthesized.** Auto-pickup does not change this: the conductor still never *synthesizes* a
+conduct-loop-synthesized.** Auto-pickup does not change this: the conduct loop still never *synthesizes* a
 release/verify accept (the §4b auto-advance excludes them in every mode). But when it detects that the
 **human** clicked Accept on a release/verify brief in the browser (the human IS the one accepting — the
 floor holds by construction), it consumes that human decision and runs the side effect **in the running
@@ -1467,26 +1467,26 @@ session** by routing to `/harmony-plugin:finish-work <ticket>`:
   the row shape; a live-observed flag flip here and that recorded entry are the same event seen twice.
 - **verify**: likewise route to `finish-work`'s verify step on a human browser-accept; it advances
   Deployed→Verified.
-If the human did NOT act (no browser accept), release/verify stay paused — the conductor waits or the watch
+If the human did NOT act (no browser accept), release/verify stay paused — the conduct loop waits or the watch
 window expires; it never advances them itself.
 
 ### The one-shot exit contract (B-693 — the worker half, joint with B-696)
 
-A `--one-shot` run is the Conductor Daemon's worker: it advances one leg and hands back. It writes **no
-separate exit status — the ticket row IS the contract**; the daemon classifies the outcome purely from the
+A `--one-shot` run is the Conductor's worker: it advances one leg and hands back. It writes **no
+separate exit status — the ticket row IS the contract**; the conductor classifies the outcome purely from the
 row shape the exit leaves behind (daemon spec §3 step 4):
 
 - **Clean human pause** — `awaiting_human_input: true` plus an active brief or elicitation exchange
-  (**release and verify pauses included** — the hard floor is a clean pause like any other) → the daemon
+  (**release and verify pauses included** — the hard floor is a clean pause like any other) → the conductor
   waits for the human.
 - **Terminal** — `Verified` / `Cancelled` → the conduction is done. A `Parked` ticket is still a clean
-  place to stop, but the daemon PARKS the conduction (`ticket-parked`, stays on Live with Resume) rather
+  place to stop, but the conductor PARKS the conduction (`ticket-parked`, stays on Live with Resume) rather
   than completing it (B-1107).
 - **Split-umbrella report-and-stop** — `Decomposed` with non-archived children, `awaiting_human_input:
-  false`, no active brief (§5's report-and-stop): a **legitimate clean exit** — the daemon must NOT
-  classify it as dirty; how the daemon proceeds from it (conduct the children / park-and-flag) is B-696's
+  false`, no active brief (§5's report-and-stop): a **legitimate clean exit** — the conductor must NOT
+  classify it as dirty; how the conductor proceeds from it (conduct the children / park-and-flag) is B-696's
   decision, not this skill's.
-- **Anything else = DIRTY** → the daemon parks the conduction and flags the human. This **explicitly
+- **Anything else = DIRTY** → the conductor parks the conduction and flags the human. This **explicitly
   includes a TORN pause: `workflow_state` advanced but no composed brief** (a crash in the
   advance→compose window). A torn pause must never be mistaken for a clean one — it is the same flag+row
   atomicity family as **B-498** (the browser reshape's single-RPC write); both exit-contract owners stay
@@ -1513,7 +1513,7 @@ mechanically; **the LLM iterate runs where the agent runs — here**. Consume it
    the current brief. **Surface a revise-scope RECOMMENDATION** by delegating to
    `/harmony-plugin:harmony-revise-scope <ticket>` (it drafts the target gate + broadened-scope summary +
    supersede-list vs keep-list and files a `revise-scope-review` brief). This is **a proposal the human
-   accepts like any other recommendation** — same brief surface, same accept verb; **the conductor never
+   accepts like any other recommendation** — same brief surface, same accept verb; **the conduct loop never
    reverts state itself** (only a human accept executes the back-up). After delegating, resume the loop at
    step 1: on accept the ticket is at the target discovery milestone and the loop drives forward from there; on
    reject the human declined the back-up, so fall through to the in-gate iterate (step 1 below) and address the
@@ -1531,20 +1531,20 @@ mechanically; **the LLM iterate runs where the agent runs — here**. Consume it
 2. **The consumed marker is cleared by the re-compose.** `compose_brief` nulls `pending_resolution` on the
    active brief as part of the in-place iterate write — so re-composing the brief (step 1) *is* the consume,
    and the same reshape is not re-consumed on the next poll. You do not clear the marker yourself (the
-   conductor owns no brief-write tool); the gate skill's re-compose does it for you. The invariant that
+   conduct loop owns no brief-write tool); the gate skill's re-compose does it for you. The invariant that
    matters: the marker must not survive to be re-consumed — and `compose_brief` guarantees it.
 3. **The iterate loop closes through the browser.** The re-composed brief (iteration+1) now reflects the
    feedback and the ball is back with the human ('Needs human'). **Resume §4 (surface the brief + pause)** —
    and you may again offer auto-pickup (§4c) so the human iterates entirely from the browser.
 
-The reshape is **not** an accept and **not** a state advance — it is a revise-and-resurface. The conductor
+The reshape is **not** an accept and **not** a state advance — it is a revise-and-resurface. The conduct loop
 never accepts on the human's behalf here; it only does the LLM work the browser deferred to the agent.
 
 ### 4e. Filing a worker-question — when the RUNNING SESSION itself hits a judgment call or capability denial (B-733)
 
-Everything in §4/§4c/§4d covers the human's decision on a brief the conductor (or a gate skill) has
+Everything in §4/§4c/§4d covers the human's decision on a brief the conduct loop (or a gate skill) has
 already drafted. This section covers the opposite direction: **the running session itself** — this
-conductor loop, or a gate skill it is currently delegating to — hits genuine mid-run uncertainty with
+conduct loop, or a gate skill it is currently delegating to — hits genuine mid-run uncertainty with
 no gate brief that fits: a load-bearing judgment call it cannot safely make alone, or a capability
 denial it correctly declines to route around (e.g. an `Edit` denial on a repo outside this skill's
 remit — never quietly route around a denial with a different tool). **"Should I build?" is never a
@@ -1555,13 +1555,13 @@ stdout and end the turn.** File a `worker-question` elicitation round instead, p
 `skills/harmony-shared/elicitation-engine.md` §The worker-question trigger — the SAME B-645 substrate
 every other trigger in this skill already uses, reused unchanged. `harmony-build`-delegated build work
 reports upward via the literal `WORKER-QUESTION:` marker (`start-work` parses it and files the round on
-`harmony-build`'s behalf); the conductor session files directly for its own judgment calls / denials.
+`harmony-build`'s behalf); the conduct loop session files directly for its own judgment calls / denials.
 
 **This is a clean pause, not a park.** Filing the round sets `awaiting_human_reason:
 'elicitation-round'` — loop step 2's existing "elicitation-round → ALWAYS wait" handling applies
 unchanged: surface the round, then **arm the §4c watch and end the turn** exactly as any other
 elicitation pause (in `--one-shot`, the step-0 guard exits here instead of arming — same clean pause,
-no watch; the daemon's worker-exit classifier already reads a filed round as `clean-pause` generically
+no watch; the conductor's worker-exit classifier already reads a filed round as `clean-pause` generically
 off `awaiting_human_input`, per the one-shot exit contract's "an active brief or elicitation exchange").
 Never `no-progress`, never a silent stall.
 
@@ -1576,17 +1576,17 @@ actionable resolution).
 exactly one of: state advanced normally, an explicit park with an authored reason, or an open
 elicitation round. No other voluntary stop exists — writing a question to stdout and exiting is never
 one of the three. (Involuntary termination — a SIGKILL/OOM'd worker — is out of scope for this
-invariant; that is the daemon's dirty-exit classifier's domain.)
+invariant; that is the conductor's dirty-exit classifier's domain.)
 
 This is the interactive-session instance of the shared **clean-exit contract**
-(`skills/harmony-shared/clean-exit-contract.md`) — read it for the full doctrine and its daemon-side
+(`skills/harmony-shared/clean-exit-contract.md`) — read it for the full doctrine and its conductor-side
 mechanical enforcement. Concretely, it ALSO requires: before ending the turn, leave at least a progress
 comment when real repo work landed (a commit, a branch push, a PR update) but no state-advancing write
 was yet possible — the state-advanced/park/elicitation-round trichotomy above covers the BOARD half of
 the invariant; this covers the REPO half, which the trichotomy alone cannot see (a leg can advance
 nothing on the board while still having pushed real, findable work). A ticket that silently carries
-finished work with no comment trail is indistinguishable from one where nothing happened — the daemon's
-`repo-active-board-silent` park reason (B-792) is what catches this mechanically for a daemon-driven
+finished work with no comment trail is indistinguishable from one where nothing happened — the conductor's
+`repo-active-board-silent` park reason (B-792) is what catches this mechanically for a conductor-driven
 leg; an interactive session has no such backstop and must self-enforce it here.
 
 ### 4f. The turn-end gate — the backstop is now MECHANICAL, not just discipline (B-870)
@@ -1597,7 +1597,7 @@ conduct breadcrumb (§0), the hook re-reads the ticket row and, unless the row i
 shapes, **blocks the turn-end and tells you which remedy to take**. The gate is a floor under the
 discipline, not a replacement for it — write the board first and the gate never fires.
 
-**The four shapes that let a turn end.** These are the SAME list the daemon's worker-exit classifier uses
+**The four shapes that let a turn end.** These are the SAME list the conductor's worker-exit classifier uses
 (`src/daemon/classify.ts`'s `isCleanRowShape`, shared verbatim — one list, not two paraphrases):
 
 1. **`awaiting_human_input: true`** — you composed a brief or filed an elicitation round and the ball is
@@ -1616,7 +1616,7 @@ allowed through and prints a loud line naming the row state it could not classif
 query erroring, timing out, a malformed payload, a broken CLI — **fails open**: the stop is allowed. And an
 operator can switch the gate off for their own session by exporting `HARMONY_STOP_GATE_OFF` in their shell
 profile; the hook logs a line whenever that switch is active. (It is deliberately absent from every
-daemon/container profile, so a worker can never run with the gate silently off.)
+conductor/container profile, so a worker can never run with the gate silently off.)
 
 **A milestone or finding comment mid-build is not a stopping point.** Posting *"tests are green, moving to
 the release gate"* or *"found an adjacent bug, rolled it into the follow-ups comment"* is a **progress
@@ -1627,7 +1627,7 @@ contract's clause (b) progress note, and even then the turn ends because the tic
 shapes above, not because the comment was posted.
 
 **`AskUserQuestion` is never a pause vehicle in a ticket-driving session.** Flat ban, no exceptions, at
-every gate and in every delegated gate skill. It is terminal-only: the board never sees it, a daemon worker
+every gate and in every delegated gate skill. It is terminal-only: the board never sees it, a conductor worker
 cannot render it, and its answer lands in no rounds history — so a question asked that way is invisible to
 the human on the web, unanswerable in an unattended run, and leaves no provenance trail. Every question that
 reaches the human from a conducted session goes through the board: a **composed brief** or a **filed
@@ -1642,18 +1642,18 @@ The loop **ends** (does not pause for resume) when, after re-reading the ticket 
   Verified."* (Even an unattended run reaches Verified only after the human resolved release + verify.)
 - `workflow_state === 'Parked'` or `'Cancelled'` → the human deferred/cancelled at a gate. Report where it
   parked and why, and stop. (A deferral authored its own `deferral` knowledge entry via the gate skill —
-  the conductor does not author it. Note: a deferral only ever happens at a controlled pause — the
-  conductor's synthesized accept never defers.)
+  the conduct loop does not author it. Note: a deferral only ever happens at a controlled pause — the
+  conduct loop's synthesized accept never defers.)
 
 - `workflow_state === 'Decomposed'` **with children** (split umbrella, loop step 5) → **report-and-stop**:
-  the conductor rendered the umbrella report and ends the run *on the parent*. This is a **third kind** of
+  the conduct loop rendered the umbrella report and ends the run *on the parent*. This is a **third kind** of
   stop, distinct from the two above and from a brief-pause: it is **not** a true terminal (the parent is not
   Verified/Parked/Cancelled — it will still complete via the roll-up) and **not** a controlled pause (no
   brief, `awaiting_human_input` stays false — there is nothing for the human to decide here). It simply ends
   *this run*, and is **resumable**: re-running `/harmony-conduct <umbrella>` reconstitutes from the ticket
   row — if the B-471 roll-up has since advanced the parent to Deployed, the loop resumes at the verify hard
   floor; to Verified → reports terminal; still Decomposed-with-children → re-renders the umbrella report. The
-  conductor never auto-advances it (dial-independent — no decision to delegate).
+  conduct loop never auto-advances it (dial-independent — no decision to delegate).
 
 Everything else is a **pause**, not an end: the loop is always resumable from the ticket row. (The umbrella
 report-and-stop above ends *the run* but is likewise resumable — it is a stop, not a dead end.)
@@ -1685,7 +1685,7 @@ Delegation is **opt-in per run**, **dial-capped**, and **floored**:
   the human reviews them at the hard floor. (Rationale: nothing executes irreversibly before release; the
   release+verify hard floor already covers irreversibility, so a mid-run pause would only override the human's
   explicit `--unattended` control choice.)
-- In `--escalate`, a gate the conductor judges genuinely worth a human opinion surfaces (and resumes on the
+- In `--escalate`, a gate the conduct loop judges genuinely worth a human opinion surfaces (and resumes on the
   next flagged re-run); a gate judged routine (and floor-clean) is decide-and-recorded with no pause.
 - An auto-advanced / decide-and-recorded gate records the SAME Accepted decision a controlled run would —
   only the human pause is skipped, via the owning gate skill's existing accept path (no new write path for
@@ -1695,7 +1695,7 @@ Delegation is **opt-in per run**, **dial-capped**, and **floored**:
 
 Browser auto-pickup (B-485) is **orthogonal and equally non-decisional**:
 
-- It is the **default at each pause** (B-500 — the conductor auto-watches without asking and without
+- It is the **default at each pause** (B-500 — the conduct loop auto-watches without asking and without
   requiring a re-run) and **session-scoped** (D4 — a session-/window-scoped background poll that **dies with
   the session** is permitted, via B-532's bundled `dist/bin/poll.js`; a persistent/cross-session daemon is
   still v2). The watch is **bounded (~90 min, idle backoff)** and ends on **any** of three co-equal exits — a
@@ -1707,7 +1707,7 @@ Browser auto-pickup (B-485) is **orthogonal and equally non-decisional**:
 - A reshape runs the LLM `iterate` (re-compose in place, iteration+1, ball back to 'Needs human') — it is
   **not** an accept and advances no state; the iterate loop closes through the browser.
 - **Hard floor unchanged:** release/verify are consumed ONLY from a human-submitted browser resolution,
-  never conductor-synthesized; their side effects (merge+deploy, prod-observe) run in the running session
+  never conduct-loop-synthesized; their side effects (merge+deploy, prod-observe) run in the running session
   via `finish-work`.
 - It is **orthogonal to the `--pause-at`/`--unattended` selector** — auto-pickup changes *where* the human
   answers a controlled gate, not *whether* a gate is controlled.
@@ -1718,7 +1718,7 @@ Browser auto-pickup (B-485) is **orthogonal and equally non-decisional**:
   delegation test, the risk-class floor, and the hard floor are untouched in every mode.
 - It never weakens B-500's interactive auto-watch default — a run without the flag arms exactly as today.
 - The exit leaves the decision surface intact: the pause persists on the ticket row (the no-session
-  degradation is the designed path), and the daemon — or a human re-run — picks it up from there. The row
+  degradation is the designed path), and the conductor — or a human re-run — picks it up from there. The row
   shapes it may leave are pinned in *The one-shot exit contract* (torn pause = dirty, B-498 family).
 
 ## Still out of scope (later phases)
@@ -1726,10 +1726,10 @@ Browser auto-pickup (B-485) is **orthogonal and equally non-decisional**:
 - **Quantitative risk *score* / circuit-breaker tuning** (B-458 phase 2d and beyond): the floor here is a
   deterministic, binary class detector (`detectRiskClasses` in `src/tools/risk-class.ts`) — present/absent
   per class, conservative-on-ambiguity by design (B-516 scope-aware: negation/word-sense/clean-diff
-  down-weight trim the *clear* false-positives only). The conductor does not compute a numeric risk score,
+  down-weight trim the *clear* false-positives only). The conduct loop does not compute a numeric risk score,
   learn a threshold, or trip a rate-limit-style circuit-breaker. The hard floor, the dial ceiling, the
   risk-class floor (now `--escalate`-scoped for its pause, B-516), and the `--escalate` judgment are the
   guards in 2c.
-- **Skills reading the dial generally** (F5 / B-355): the dial mirror here exists for the conductor's
+- **Skills reading the dial generally** (F5 / B-355): the dial mirror here exists for the conduct loop's
   cautious kill-switch; a shared/db-driven trust source replaces the hand-maintained mirror in
   `src/tools/trust-model.ts` (see its drift-sync note) later.

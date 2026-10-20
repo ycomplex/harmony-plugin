@@ -39,16 +39,16 @@ not a bug: the Record phase (step 4) is where a human attestation is actually re
 ### 2. Plan-lite phase
 
 Draft an inline plan of **at most 3 steps**, derived from the ticket's own title/description text —
-no brief, no `compose_brief` call. This is deliberately lighter than the conductor's plan gate: there
+no brief, no `compose_brief` call. This is deliberately lighter than the conduct loop's plan gate: there
 is no plan-draft brief to accept, because the ticket already read as small and clear enough to pass
 Check. Present the plan to the human and **wait for their explicit confirmation in-session** before
 touching the repo. This is the **one hard pause** in the whole skill before any repo work happens —
 never auto-proceed past it.
 
-**Daemon-driven fast-track conduction — do NOT wait; post instead (B-1073 fast-track-daemon-ending
+**Conductor-driven fast-track conduction — do NOT wait; post instead (B-1073 fast-track-daemon-ending
 round).** Detect this case via `mcp__harmony__get_project`'s `environment` block: BOTH
 `environment.conduction_id !== null` (this leg is running inside a conduction, B-743) AND
-`environment.fast_track === true` (this run's `run_config.fast_track`, B-1073). Under the daemon,
+`environment.fast_track === true` (this run's `run_config.fast_track`, B-1073). Under the conductor,
 nothing is in-session to wait on — the only way to "ask" would be filing an elicitation round, which
 costs a full extra worker leg for a confirmation the human already gave implicitly (they set
 `run_config.fast_track = true` and authored an operator note authorizing exactly this fast-track
@@ -63,10 +63,10 @@ as described above.
 
 ### 3. Build phase
 
-**Daemon resume check — runs FIRST, before any worktree creation or implementation (B-1073).** A
-daemon fast-track leg can be re-launched after an earlier leg already built and opened the PR but
+**Conductor resume check — runs FIRST, before any worktree creation or implementation (B-1073).** A
+conductor fast-track leg can be re-launched after an earlier leg already built and opened the PR but
 parked before landing (B-1092: `build_pr` = an OPEN PR, ticket still Proposed). Such a leg must NOT
-rebuild. Under the daemon detection signal (`environment.conduction_id !== null &&
+rebuild. Under the conductor detection signal (`environment.conduction_id !== null &&
 environment.fast_track === true`):
 
 1. `mcp__harmony__get_task` and read `field_values.build_pr`. Absent ⇒ no resume; continue below
@@ -78,7 +78,7 @@ environment.fast_track === true`):
      `gh pr view <n> --repo <repo> --json files` (additions/deletions per file); re-run the
      pre-PR-open eligibility re-check (`checkPrePrOpenEligibility`) and the scope guard
      (`checkFastTrackScopeBudget`) against that real diff — the same checks as the normal path, and
-     the same park-on-failure rule. If both pass, skip straight to the **Daemon** landing steps
+     the same park-on-failure rule. If both pass, skip straight to the **Conductor** landing steps
      below: call `record` with `to_gate: 'build'` and the existing PR as the evidence link, confirm
      `Built`, and compose the ordinary release-decision-pending brief. (`record`'s clarify step files
      one acceptance criterion itself when the ticket has none, so the resumed leg need not file ACs.)
@@ -115,17 +115,17 @@ Do not duplicate that prose here. This skill adds exactly **two deltas** on top 
   not a fast-tracked PR.
 
   **If both pass:** open the PR and record `build_pr` on the ticket exactly as O3 does. What happens
-  next branches on the SAME daemon-detection signal step 2 just used
+  next branches on the SAME conductor-detection signal step 2 just used
   (`environment.conduction_id !== null && environment.fast_track === true`):
 
   - **Interactive (unchanged)** — whenever either condition is false (no conduction, or `fast_track`
     not set): then **STOP** — never merge, never record, in the same invocation (per AC4). The merge
     is the human's; recording is this skill's own separate, later invocation (step 4).
 
-  - **Daemon (B-1073 fast-track-daemon-ending round) — land clarify..build, then compose the ordinary
-    release brief, in the SAME leg; never stop at a bare PR-open.** Under a daemon-driven fast-track
+  - **Conductor (B-1073 fast-track-daemon-ending round) — land clarify..build, then compose the ordinary
+    release brief, in the SAME leg; never stop at a bare PR-open.** Under a conductor-driven fast-track
     conduction, nothing re-invokes this skill later — a bare PR-open STOP leaves the ticket at
-    Proposed with no brief and no exchange, and the daemon's own park machinery eventually parks the
+    Proposed with no brief and no exchange, and the conductor's own park machinery eventually parks the
     conduction as "no-progress" instead of a human ever seeing a release decision. This closes the
     exact gap `src/daemon/recorded-walk-drain.ts`'s `WORKFLOW_STATE_TO_FROM_GATE` comment already
     assumed was true for `Built -> 'deploy'` — "a fast-track ticket already at Built has a REAL
@@ -138,7 +138,7 @@ Do not duplicate that prose here. This skill adds exactly **two deltas** on top 
        `author_is_bot`, all read from the just-verified `gh pr view <n> --json
        state,url,number,headRefOid,headRefName,baseRefName,createdAt,author`). Do not skip it: two live
        specimens (B-1106, B-1092) reached `Built` with `build_pr` missing or lacking `head_sha`, which
-       blinds `has_pushed_pr`, the release brief's bot-approval lint, and the daemon's merge check
+       blinds `has_pushed_pr`, the release brief's bot-approval lint, and the conductor's merge check
        below. (`runRecordedWalk` also backfills any missing keys for a walk bounded at or before
        `build`, best-effort — a safety net, not a substitute.)
     1. Call the `record` tool (or, equivalently, `runRecordedWalk` directly via MCP —
@@ -156,10 +156,10 @@ Do not duplicate that prose here. This skill adds exactly **two deltas** on top 
     2. Re-read the ticket (`mcp__harmony__get_task`) to confirm `workflow_state === 'Built'`.
     3. Compose the ORDINARY `release-decision-pending` brief directly — the same shape
        `skills/finish-work/SKILL.md`'s **O1** section composes for any other build leg (reuse/reference
-       that section's contract rather than restating it here). At minimum this daemon branch must
+       that section's contract rather than restating it here). At minimum this conductor branch must
        still satisfy: the release frame (B-876, `doc.frame.kind: 'release'` with `act`/`unproven`/
        `evidence_status`/`risk_classes`); the PR reference riding `doc.context` (never a typed field,
-       per B-876); the bot-approval attention line (this PR is daemon-authored, so
+       per B-876); the bot-approval attention line (this PR is conductor-authored, so
        `author.is_bot` is true — the human must approve on GitHub before the merge can happen); and
        the check-status section (one entry per pull request, per B-861). Populate `doc.why`/context
        with what THIS leg actually proved: the Check phase's five-item verdict as read from the
@@ -170,14 +170,14 @@ Do not duplicate that prose here. This skill adds exactly **two deltas** on top 
        further to do this turn.
 
     **The post-merge recording is NOT a worker leg (B-1073).** When the human accepts this release
-    brief, the **daemon** files the `recorded_walk_requests` row itself, under its lease
+    brief, the **conductor** files the `recorded_walk_requests` row itself, under its lease
     (`src/daemon/fasttrack-release-recording.ts`, called from the scheduler's `handleHeldConduction`)
     — only after it positively confirms the accept from the activity timeline AND that the recorded
     `build_pr` PR is **MERGED** (a bot-authored PR still needs the human's GitHub approval + merge;
     the release accept alone does not perform it). The accept remark becomes the walk attestation
     unless it says the walk was not done (`remarkAttestsWalk`); the in-process drain then lands
     deploy and composes the verify brief. If the PR is not merged yet, or anything is unconfirmable,
-    the daemon falls through to an ordinary worker leg (finish-work), which handles approval/merge
+    the conductor falls through to an ordinary worker leg (finish-work), which handles approval/merge
     waiting. See `docs/recorded-walk-contract.md` §1/§3.
 
     This also means the turn-end stop gate sees a sanctioned stopping point: see "No conduct-session
@@ -232,10 +232,10 @@ incomplete conduct session and incorrectly block it. **Do not "fix" this by addi
 future reader who notices the absence should read this paragraph, not add one back.
 
 This "don't write a breadcrumb" rule is about a **standalone interactive invocation** of this skill —
-no conduction, no conductor session around it. When this skill's logic instead runs **inline inside a
-`harmony-conduct` session** (the daemon case detected in steps 2/3 above), `harmony-conduct`'s own
+no conduction, no conduct loop session around it. When this skill's logic instead runs **inline inside a
+`harmony-conduct` session** (the conductor case detected in steps 2/3 above), `harmony-conduct`'s own
 breadcrumb is already in effect (written at its own step 0) — this file writes none of its own, on top
-of that one. The daemon branch added to the Build phase above is written specifically so that
+of that one. The conductor branch added to the Build phase above is written specifically so that
 breadcrumb's turn-end gate sees a sanctioned stopping point (`Built` + an active, freshly-composed
 release brief) at the end of this leg, rather than blocking the leg or forcing it through to a merge it
 should not perform.

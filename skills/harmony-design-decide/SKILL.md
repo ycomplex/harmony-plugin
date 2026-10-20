@@ -419,7 +419,7 @@ load-bearing handshake the cheapest *high-information* experiment is the live sm
 
 Show the rendered `content`. On the human's command:
 
-> **Provenance (B-734):** `human-in-session` below is the human deciding *here* — a conductor-synthesized
+> **Provenance (B-734):** `human-in-session` below is the human deciding *here* — a conduct-loop-synthesized
 > accept carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
 > §Resolution provenance).
 
@@ -463,7 +463,7 @@ Show the rendered `content`. On the human's command:
   ```
   — one human accept, two writes; report the ticket as **Verified (decision-only fast-forward, realization
   stays 'agreed')**. Idempotent guard: skip if the ticket is already Verified. A WEB accept with no session
-  running leaves the trailing fast-forward to the next running session (re-run the conductor to apply it).
+  running leaves the trailing fast-forward to the next running session (re-run the conduct loop to apply it).
 - **defer** → **deferral is knowledge** (knowledge-discipline.md §"Deferral is knowledge"). Author the
   deferral, then park:
   ```

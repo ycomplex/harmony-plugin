@@ -53,7 +53,7 @@ import { runCommand } from '../run-command.js';
 export function registerConductCommand(program: Command): void {
   program
     .command('conduct')
-    .description('Create a conduction for a ticket — the conductor daemon picks it up and drives the run')
+    .description('Create a conduction for a ticket — the conductor picks it up and drives the run')
     .argument('<ticket>', 'Task ID (UUID, number, or B-123)')
     .option('--unpark', 'Revive a Parked ticket and hand it to the conductor in this same call (B-964)', false)
     .option('--resume-to <state>', 'Target workflow_state override when reviving a Parked ticket (defaults to the ticket\'s own parked_from, else Proposed)')
@@ -168,7 +168,7 @@ export function registerConductCommand(program: Command): void {
         },
         (row: { id: string; status: string; mode: string }) =>
           `Conduction ${row.id} created for ${ticket} (${row.status}, mode: ${row.mode}).\n` +
-          `The conductor daemon will pick it up on its next pass.\n` +
+          `The conductor will pick it up on its next pass.\n` +
           `Note: the duplicate-guard can only detect an active conduction record — it can't see an ` +
           `in-progress terminal session, so make sure any in-session work on this ticket has stopped ` +
           `before handing it off.`,

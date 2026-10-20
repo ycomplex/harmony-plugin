@@ -20,7 +20,7 @@ build → release** — from a human-supplied summary + evidence links, with **Z
 produces the same gate-slot/knowledge-entry trail a conducted ticket would get, marked **"recorded,
 not conducted"** by two load-bearing markers (§4). B-1063's web "Record" action is a SECOND entry point
 into the exact same mechanism: instead of a human running the CLI/MCP tool directly, the web writes a
-row into `recorded_walk_requests` (§5), and the conductor daemon's drain (`src/daemon/recorded-walk-
+row into `recorded_walk_requests` (§5), and the conductor's drain (`src/daemon/recorded-walk-
 drain.ts`) picks it up and runs the identical gate-walk core (`runRecordedWalk`, `src/tools/record-
 walk.ts`) in-process.
 
@@ -30,26 +30,26 @@ Three surfaces, ONE implementation:
 |---|---|---|
 | CLI | `harmony record <ticket> --summary ... --evidence ...` | directly, in the CLI process |
 | MCP | the `record` tool | directly, in the MCP server process |
-| Web (B-1063) | writes a `recorded_walk_requests` row | the daemon's drain, `src/daemon/recorded-walk-drain.ts`, polling in-process |
+| Web (B-1063) | writes a `recorded_walk_requests` row | the conductor's drain, `src/daemon/recorded-walk-drain.ts`, polling in-process |
 
-**B-1073: there are now plugin-side writers of this table too — the DAEMON first, a hook as fallback.**
-A fast-track ticket's post-merge row is filed by **the daemon itself, with no worker leg**
+**B-1073: there are now plugin-side writers of this table too — the CONDUCTOR first, a hook as fallback.**
+A fast-track ticket's post-merge row is filed by **the conductor itself, with no worker leg**
 (`src/daemon/fasttrack-release-recording.ts`, called from the scheduler's `handleHeldConduction`,
 under the conduction lease). It intercepts only when ALL hold, each fail-closed (anything unconfirmable
 ⇒ the ordinary queue-a-worker path, unchanged): the conduction's `run_config.fast_track` is true; the
 ticket is at `Built` with the awaiting flag down; a `brief_resolved` accept for
 `release-decision-pending` is positively evidenced in the activity timeline AFTER the latest advance
 into `Built` (the finish-work O1 step 3 rule — never inferred from row shape); no request was already
-processed for that accept (a pending/processing one means "already filed", the daemon just holds); and
+processed for that accept (a pending/processing one means "already filed", the conductor just holds); and
 the recorded `field_values.build_pr` PR is **MERGED** per the injected `SchedulerDeps.getPrMergeState`
 (never `runCommand`; the walk's deploy step advances Built→Deployed without checking a merge, and a
 bot-authored PR still needs the human's GitHub approval + merge). It then inserts the row
-(summary = ticket title, evidence = `build_pr.pr_url`, `requested_by` = the daemon's user id), consumes
+(summary = ticket title, evidence = `build_pr.pr_url`, `requested_by` = the conductor's user id), consumes
 the accept remark with `skipRecordedWalkFiling` (so exactly one row exists), rolls the baseline, and
 queues no leg; the same loop's drain lands deploy and composes the verify brief.
 The fallback is `src/tools/briefs.ts`'s `consumeAcceptRemark` →
 `src/tools/fasttrack-release-remark.ts`'s `fileFastTrackReleaseRemarkRecordedWalkIfEligible`, which still
-files when a *worker* consumes a release-accept remark (the daemon declined). Both are plain `INSERT`s,
+files when a *worker* consumes a release-accept remark (the conductor declined). Both are plain `INSERT`s,
 same table, same RLS as the web's own write; neither changes the schema in §5 below.
 
 **Attestation rule (both writers, `remarkAttestsWalk`).** The accept remark is the walk's `attest_walk`
@@ -162,7 +162,7 @@ so the verify-walk attestation belongs to gates it does not land (the human atte
 `runRecordedWalk` then reports item (e) as `DEFERRED` (unless an attestation was supplied, which still
 reads `pass`), and `eligible` is computed over the non-deferred items — the other four must pass. A
 deferred item is never a blocker. A walk with no `to_gate`, or `release` or later, still refuses on an
-unattested (e); `record --check`, `fasttrack check`, and the daemon drain (which never pass `to_gate`)
+unattested (e); `record --check`, `fasttrack check`, and the conductor drain (which never pass `to_gate`)
 never produce `deferred`.
 
 **Amendment (B-1073, daemon-files-recording round) — item (e) is ALSO `deferred` for a resumed walk
@@ -247,13 +247,13 @@ create table recorded_walk_requests (
 - **`attest_walk`** is nullable text, never a boolean — the attestation's VALUE (who/what was walked)
   is itself the evidence; there is no separate "attested: true/false" flag to keep in sync with it.
 - **`status`** is the whole state machine, four values: `pending` (filed, not yet claimed) →
-  `processing` (claimed by a daemon, mid-walk) → `done` (walk completed — check `error IS NULL`, NOT
+  `processing` (claimed by a conductor, mid-walk) → `done` (walk completed — check `error IS NULL`, NOT
   the ticket's own state, to confirm success; see below) or `error` (walk refused OR failed mid-walk;
   `error` names why).
-- **No lease/token column.** The daemon claims a row with a single conditional
+- **No lease/token column.** The conductor claims a row with a single conditional
   `UPDATE ... SET status = 'processing' WHERE id = $1 AND status = 'pending'` and checks whether the
   update actually matched a row — Postgres's own row-level atomicity is the whole claim mechanism. A
-  peer daemon racing the same row loses cleanly (0 rows affected) rather than double-processing.
+  peer conductor racing the same row loses cleanly (0 rows affected) rather than double-processing.
 - **`result`** is nullable jsonb holding the drain's full `RecordWalkResult` (eligibility report,
   gates landed, the `refused` flag) — written on EVERY terminal status (`done` or `error`), null only
   if the walk threw before producing a result at all. This is what lets a web consumer render the five
@@ -293,9 +293,9 @@ Exits `0` iff every item is `pass`, else `1`. **Mutates nothing** — no task id
 the board (eligibility is evaluated purely from the CLI's own arguments plus a `gh` read of the
 evidence links).
 
-**B-1073: a SECOND declared evaluation point exists — the daemon's fast-track pre-build admission
+**B-1073: a SECOND declared evaluation point exists — the conductor's fast-track pre-build admission
 check.** `--check`/`harmony record` evaluate eligibility against the CLI's own arguments plus a `gh`
-read of evidence links, as above. The daemon's fast-track leg-gate has a DIFFERENT evaluation point:
+read of evidence links, as above. The conductor's fast-track leg-gate has a DIFFERENT evaluation point:
 before firing a fast-track leg, it evaluates over the TICKET TEXT + its declared repos (there is no
 diff yet — the leg has not run), via `admissibleForFastTrack` (`src/tools/record-eligibility.ts`) —
 `evaluateEligibility`'s own report re-interpreted so an `unattested` verify-walk item alone does not
@@ -326,8 +326,8 @@ out of this path; such a ticket should be walked live via `harmony conduct` inst
 
 ## 8. Propagation note
 
-`src/daemon/recorded-walk-drain.ts` lives under `src/daemon/**`, so it reaches the **live** daemon only
-after a `git pull` **and restart** on the daemon host's plugin checkout (which tracks `staging` — see
+`src/daemon/recorded-walk-drain.ts` lives under `src/daemon/**`, so it reaches the **live** conductor only
+after a `git pull` **and restart** on the conductor host's plugin checkout (which tracks `staging` — see
 the workspace `CLAUDE.md`'s propagation table). Merging this ticket does not, by itself, make the web
-"Record" action (B-1063) functional in production — both the daemon-host pull/restart AND B-1063's own
+"Record" action (B-1063) functional in production — both the conductor-host pull/restart AND B-1063's own
 migration/UI must also have landed and propagated.

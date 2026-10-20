@@ -296,7 +296,7 @@ export function loadDaemonConfig(
     if (unknown.length > 0) {
       throw new Error(
         `launch profile's "agents" names unregistered agent adapter(s): ${unknown.map((u) => `'${u}'`).join(', ')}. ` +
-          `Registered adapters: ${registered.join(', ')}. Fix the profile's "agents" list; the daemon will not boot with it.`,
+          `Registered adapters: ${registered.join(', ')}. Fix the profile's "agents" list; the conductor will not boot with it.`,
       );
     }
   }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # B-1163: one-time (and safely re-runnable) setup of everything a `gke` launch profile needs — the
-# GKE cluster, the autoscaling leg node pool, the namespace, the daemon service account's IAM, and the
+# GKE cluster, the autoscaling leg node pool, the namespace, the conductor service account's IAM, and the
 # two Kubernetes Secrets the legs read. Run it ONCE, by an operator who is already logged in to gcloud
 # with enough rights on the project:
 #
@@ -13,7 +13,7 @@
 #   4. creates the cluster and the leg node pool ONLY IF MISSING — an existing cluster or pool is
 #      never modified (REVISED by B-1169: steps 10-12 below make exactly three enable-only updates,
 #      and nothing else); a pool that differs from the expected settings is reported as `DRIFT:`;
-#   5. creates the namespace and the daemon service account's roles/container.developer binding if
+#   5. creates the namespace and the conductor service account's roles/container.developer binding if
 #      missing;
 #   6. syncs two Kubernetes Secrets from Secret Manager: an ENV Secret (HARMONY_API_TOKEN and
 #      CLAUDE_CODE_OAUTH_TOKEN) and a FILE Secret (auth.json, the Codex credential);
@@ -53,7 +53,7 @@ Usage: setup-cluster.sh --project <id> --daemon-sa <service-account-email> [opti
 
 Required:
   --project <id>          GCP project (falls back to $CLOUDSDK_CORE_PROJECT, then `gcloud config get-value project`)
-  --daemon-sa <email>     the service account the daemon runs kubectl as (gets roles/container.developer)
+  --daemon-sa <email>     the service account the conductor runs kubectl as (gets roles/container.developer)
 
 Options (defaults in brackets):
   --zone <zone>           [us-central1-a]
@@ -526,7 +526,7 @@ echo "Next steps:"
 if [ "$QUOTA_WARNED" -eq 1 ]; then
   echo "  - request an SSD_TOTAL_GB quota increase in $REGION (the warning above fired)."
 fi
-echo "  - on the daemon host (with kubectl and gke-gcloud-auth-plugin installed), as the daemon service account:"
+echo "  - on the conductor host (with kubectl and gke-gcloud-auth-plugin installed), as the conductor service account:"
 echo "      CLOUDSDK_CORE_ACCOUNT=$DAEMON_SA gcloud container clusters get-credentials $CLUSTER --zone $ZONE --project $PROJECT"
 echo "  - if you changed the defaults, tell the launcher: HARMONY_GKE_TRANSCRIPT_BUCKET=$TRANSCRIPT_BUCKET HARMONY_GKE_SERVICE_ACCOUNT=$LEG_KSA"
-echo "  - schedule container/gke/sweep-ticket-disks.sh on the daemon host (cron / launchd)."
+echo "  - schedule container/gke/sweep-ticket-disks.sh on the conductor host (cron / launchd)."

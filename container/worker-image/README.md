@@ -78,7 +78,7 @@ Node, pnpm and the .NET SDK together, per cold leg). The same project's unit sui
 files in headless Chromium, which needs its system libraries **and at least one font package** in the
 image — all `lib` entries; take the list from `playwright install-deps --dry-run chromium` rather
 than guessing, because a browser with no fonts does not fail to launch, it crashes mid-run. Two things to know: the URL is
-architecture-specific (Cloud Run workers are `linux/amd64`; a local-docker daemon on an Apple-silicon
+architecture-specific (Cloud Run workers are `linux/amd64`; a local-docker conductor on an Apple-silicon
 host needs the `linux-arm64` asset and its own checksum), and the download happens at every cold leg
 start — baking the toolchain into the image is a later optimisation, not part of this contract.
 
@@ -120,7 +120,7 @@ case — "the Harmony worker image plus these three tools" — needs no flag at 
 
 The emitted layer is `FROM` the shared worker image, so it inherits `git`, `gh`, `jq`, `python3`,
 `node`, `corepack`, `fnm`, the `worker` user, and — critically — the **entrypoint's mode dispatch
-contract** (`shell` / `headless <prompt>`), which the daemon's launch templates depend on. A forked
+contract** (`shell` / `headless <prompt>`), which the conductor's launch templates depend on. A forked
 base would have to re-establish all of that and would drift the first time the shared image moved.
 `container/smoke.sh` asserts exactly these properties, and the CI toolchain-contract job runs it
 against a generated image too.

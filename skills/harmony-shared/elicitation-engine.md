@@ -46,13 +46,13 @@ Split every question by how much a wrong answer steers the work:
   `file_elicitation_round` lints enforce ≤5 / load-bearing-must-be-open / validate-needs-statement —
   fix the round, don't fight the lint.
 - Filing a round hands the ball to the human: the task flags `awaiting_human_input` with reason
-  `elicitation-round`. Then WAIT (arm the conductor watch where one is running) — never answer your
+  `elicitation-round`. Then WAIT (arm the conduct loop watch where one is running) — never answer your
   own round.
 - **Front-load what you already know:** file every load-bearing unknown you can already name in round 1 — up to the unchanged ≤5 cap and the one-context-line rule. Round N+1 exists only for residual the round 1 answers surface, never for a question you could have asked in round 1.
 
 ## Consuming answers
 
-A web submit stamps `answers_submitted_at` and clears the task flag; the conductor watch classifies
+A web submit stamps `answers_submitted_at` and clears the task flag; the conduct loop watch classifies
 this as **`answers-landed`** (get_task's `active_exchange` projection carries the marker; the
 classification fires before `resolved`, so an exchange answer is never mistaken for a non-advancing
 accept). On pickup:
@@ -146,7 +146,7 @@ everything above:
   **`brief_id`** = the ACTIVE brief the discussion attaches to.
 - **Web capture:** the browser captures Discuss mechanically as
   `pending_resolution = { command: 'discuss', detail }` on the active brief (the same marker shape as
-  a reshape, distinguished by the command). The conductor watch classifies it **`discuss-requested`**.
+  a reshape, distinguished by the command). The conduct loop watch classifies it **`discuss-requested`**.
 - **Consume = `start_elicitation` + file round 1.** Opening the exchange and filing the first round
   (seeded by the `detail` remark) IS the consume: **filing round 1 clears the brief's
   `pending_resolution`** (engine amendment #1) in the same logical write, so the marker is never
@@ -204,7 +204,7 @@ engine unchanged:
   of treating the subagent's return as a completed or failed build.
 - **Filing the round is a clean pause, not an abandonment.** It sets `awaiting_human_reason:
   'elicitation-round'` exactly like any other round — the same first-class, web-visible pause every
-  other trigger in this file produces, and the same clean-pause outcome the daemon's worker-exit
+  other trigger in this file produces, and the same clean-pause outcome the conductor's worker-exit
   classifier already recognizes generically off `awaiting_human_input` (B-693's one-shot exit
   contract already lists "an active brief or elicitation exchange" as a clean pause).
 
@@ -212,11 +212,11 @@ engine unchanged:
 to stop rather than continue — it must leave the ticket in exactly one of: state advanced normally (a
 gate accepted/completed), an explicit park with an authored reason, or an open elicitation round. No
 other voluntary stop path exists; writing a question to stdout and exiting is never one of the three.
-**This is enforced mechanically on both sides now (B-870):** the daemon by its worker-exit classifier,
+**This is enforced mechanically on both sides now (B-870):** the conductor by its worker-exit classifier,
 an interactive session by the `Stop` hook turn-end gate — one shared clean-row list, named in
 `skills/harmony-shared/clean-exit-contract.md`.
 This does **not** cover involuntary termination (a SIGKILL/OOM'd worker, exit 137, no output) — that
-worker never chose to stop, and is squarely the daemon's dirty-exit classifier's domain, not this
+worker never chose to stop, and is squarely the conductor's dirty-exit classifier's domain, not this
 invariant's.
 
 ## Below load-bearing — DECIDE it, comment it, continue (B-870)
@@ -242,7 +242,7 @@ it genuinely steers the work, it IS load-bearing — file the worker-question ro
 whether the decision is cheaply reversible: cheaply reversible ⇒ decide and comment.
 
 **A non-blocking "proceeding unless redirected" round is REJECTED — do not file one.** It looks like the
-obvious middle path and it does not work: nothing can inject a redirect into a running daemon worker, so the
+obvious middle path and it does not work: nothing can inject a redirect into a running conductor worker, so the
 "unless redirected" half is unreachable by construction, and the round would sit on the board looking like
 an open question that the human's answer can no longer affect. The **comment** is the right vehicle for
 "here is what I decided, tell me if you disagree" — it is durable, web-visible, answerable at the human's
@@ -250,7 +250,7 @@ leisure, and it does not pretend the run is waiting.
 
 **`AskUserQuestion` is never a pause vehicle in a governed (ticket-driving) session.** Not for a
 load-bearing question (that is a round), and not for a small one (that is a decision + a comment). It is
-terminal-only: the board never sees it, a daemon worker cannot render it, and its answer lands in **no**
+terminal-only: the board never sees it, a conductor worker cannot render it, and its answer lands in **no**
 rounds history — so it produces a question the human may never see and an answer with no provenance. Every
 question that reaches a human from a ticket-driving session arrives on the board, as a **brief** or a
 **filed round**. Outside ticket-driving sessions it stays a perfectly good tool.

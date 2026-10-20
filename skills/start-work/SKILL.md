@@ -1,6 +1,6 @@
 ---
 name: start-work
-description: Use when the user wants to start working on a task, feature, or bug fix. Triggers on phrases like "work on", "start", "pick up", "implement", "fix", or any mention of a Harmony task ID (e.g., B-123). Also use when the user says "let's do X" or describes work they want to begin. In manual-mode projects this is the entry point for new development work — it behaves exactly as before. In opinionated-mode projects, /harmony-conduct is the entry point that drives the whole lifecycle; this skill implements the planning + building gates the conductor delegates to, and can be invoked directly to run just those gates.
+description: Use when the user wants to start working on a task, feature, or bug fix. Triggers on phrases like "work on", "start", "pick up", "implement", "fix", or any mention of a Harmony task ID (e.g., B-123). Also use when the user says "let's do X" or describes work they want to begin. In manual-mode projects this is the entry point for new development work — it behaves exactly as before. In opinionated-mode projects, /harmony-conduct is the entry point that drives the whole lifecycle; this skill implements the planning + building gates the conduct loop delegates to, and can be invoked directly to run just those gates.
 capabilities: harmony-mcp read write edit shell forbid:harmony-mcp:record_decision forbid:harmony-mcp:supersede_decision forbid:harmony-mcp:update_knowledge_entry
 allowed-tools: mcp__harmony__* Read Grep Glob Write Edit Bash
 disallowed-tools: mcp__harmony__record_decision mcp__harmony__supersede_decision mcp__harmony__update_knowledge_entry
@@ -130,12 +130,12 @@ visible `fast-track` label on the ticket at the SAME accept that authorizes the 
 can tell a fast-tracked ticket's build leg apart from an ordinary one without re-deriving it from
 `run_config`.
 
-**Pointer — a fast-track-DAEMON leg never reaches this O2 plan gate at all (B-1073
+**Pointer — a fast-track-CONDUCTOR leg never reaches this O2 plan gate at all (B-1073
 fast-track-daemon-ending round).** `resolveLegGate` routes a Captured/Proposed fast-track leg
 straight to **build**, so this section's own Designed→Planned sequence simply never fires for that
-leg; nothing here changes mechanics. When a daemon-driven fast-track build leg's Build phase ends, the
+leg; nothing here changes mechanics. When a conductor-driven fast-track build leg's Build phase ends, the
 build-ending behavior — landing clarify→build via the `record` tool's `to_gate` argument, then
-composing the release brief — is owned by `skills/harmony-fasttrack/SKILL.md`'s own daemon branch, not
+composing the release brief — is owned by `skills/harmony-fasttrack/SKILL.md`'s own conductor branch, not
 by this file's O2/O3 sequence.
 
 **On an iterate (round 2+), also author `doc.revision`** — `{ round, changes: [{ change, responds_to }] }`,
@@ -167,7 +167,7 @@ external_ref)`) is what makes a re-run after a crash mid-accept safe — report 
 count from `by_write_kind.checklist_item`, never a count computed from a manual write's own item list
 (there is none). The accept IS the "go" to build.
 
-> **Provenance (B-734):** `human-in-session` is the human deciding *here* — a conductor-synthesized accept
+> **Provenance (B-734):** `human-in-session` is the human deciding *here* — a conduct-loop-synthesized accept
 > carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
 > §Resolution provenance).
 **discuss <remark>** → open a discussion on this brief per `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (resolution suspends until it concludes).
@@ -216,7 +216,7 @@ floor exists to prevent.
 
 **Why pre-check rather than let the transition fail.** The DB guard refuses by RAISING, and neither
 `advance_workflow` nor `resolve_brief` catches it — the exception surfaces as an opaque tool error. In a
-daemon leg an uncaught refusal is a **dirty exit**, so the daemon parks the conduction and flags an
+conductor leg an uncaught refusal is a **dirty exit**, so the conductor parks the conduction and flags an
 operator, turning "this ticket needs criteria" into an incident. The pre-check is what makes the floor
 answerable; the guard is the backstop for paths that skip it. Never swallow the guard's error as a
 substitute for checking first.
@@ -241,7 +241,7 @@ substituted with a guess.
 
 **Surface-the-gap route (B-816) — seed the ask from the echoed plan, never an open re-dictation.** This
 is the one `payload-unrecognized` reason with no self-heal (`harmony-conduct` §1c: "no self-heal exists
-yet ... surface the gap to the human"), because when start-work runs standalone (no conductor loop
+yet ... surface the gap to the human"), because when start-work runs standalone (no conduct loop
 wrapping it) nothing else ever calls `consume_pending_acceptance_event` for this ticket. Before asking
 the human anything, call it here:
 ```
@@ -311,11 +311,11 @@ from inside the repo. This prints the manifest's `preconditions` list (declared 
 BOTH branches above: the `harmony-build` named delegation and the ordinary ad-hoc subagent. The harness
 backgrounds subagents by default, and in a headless one-shot leg that default plus wait-for-notification
 is fatal: the runtime's 600-second background-task ceiling kills the still-running build while the leg
-exits clean (B-688's build died exactly this way, twice, and the daemon parked the conduction as
+exits clean (B-688's build died exactly this way, twice, and the conductor parked the conduction as
 no-progress). Foreground is correct in every session type — the next O3 actions (evidence landing, PR
 verification) depend on the build result, so backgrounding buys nothing. As a safety net,
 `container/provision.sh` exports `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` in its headless branch so
-anything that still slips into the background is never killed mid-run; the daemon's 90-minute worker
+anything that still slips into the background is never killed mid-run; the conductor's 90-minute worker
 deadline (B-739) remains the outer bound.
 
 **Parse `harmony-build`'s final report for a `WORKER-QUESTION:` marker (B-733) — before treating it as
@@ -388,7 +388,7 @@ advance past a failed sub-step:
      author_login, author_is_bot
    } } })
    ```
-   (A daemon fast-track leg records this exact shape too — `skills/harmony-fasttrack/SKILL.md`, Build
+   (A conductor fast-track leg records this exact shape too — `skills/harmony-fasttrack/SKILL.md`, Build
    phase step 0 — right after `gh pr create` and before calling `record`.)
    The record IS the verification: `get_build_evidence_status` keys `has_pushed_pr` (and therefore
    `complete`) on this reference, so a ticket with no verified PR mechanically reads incomplete at the
@@ -410,16 +410,16 @@ advance past a failed sub-step:
    (O2) needs it to target the right repo. Only record this for a genuinely cross-repo dependency; a
    same-repo ordering dependency is ordinary PR-stacking, out of this ticket's scope.
 
-**Pointer — under the daemon case, this build's own ending is owned elsewhere (B-1073
+**Pointer — under the conductor case, this build's own ending is owned elsewhere (B-1073
 fast-track-daemon-ending round).** Sub-steps 1-6 above (commit/push/PR-open/record) run the same way
-for every build, fast-track included — but when THIS build is a daemon-driven fast-track leg
+for every build, fast-track included — but when THIS build is a conductor-driven fast-track leg
 (`environment.conduction_id !== null && environment.fast_track === true`), what happens immediately
 after sub-step 3 opens the PR — landing clarify→build via the `record` tool's `to_gate` argument, then
 composing the release brief, in the same leg — is owned by `skills/harmony-fasttrack/SKILL.md`'s own
-daemon branch, not by this O3 section's own Designed→Planned→Built sequence; a fast-track leg never
+conductor branch, not by this O3 section's own Designed→Planned→Built sequence; a fast-track leg never
 reaches Designed/Planned through the ordinary gates at all, so nothing here says it ends differently
 without this pointer.
-A re-launched daemon fast-track leg whose ticket already has an OPEN `build_pr` skips this section
+A re-launched conductor fast-track leg whose ticket already has an OPEN `build_pr` skips this section
 entirely (no worktree, no second PR) — the resume rule lives in `harmony-fasttrack`.
 
 **FAILURE PATH — preserve the work, then park; NEVER a PR-less release brief (B-722).** On ANY failure
@@ -449,7 +449,7 @@ build leg: a cold start, a fresh clone and install, and another leg's tokens.
 **The bounds — ALL THREE of them, checked BEFORE each new wait.** The loop is bounded by **two fix
 rounds**, a **~35-minute wall-clock budget for the whole wait-and-fix loop**, and — new, B-963 — **the
 leg's own credential horizon**, whichever binds first. Check all three *before starting a new wait*, never
-after: a leg killed mid-wait by the worker deadline is a DIRTY exit the daemon parks, which is strictly
+after: a leg killed mid-wait by the worker deadline is a DIRTY exit the conductor parks, which is strictly
 worse than a clean exhaustion hand-back. Each individual poll command must return well inside the
 600-second Bash cap, and **no part of this wait may be delegated to a background subagent** — background
 tasks are killed at 600 seconds (B-825), which would silently abandon the wait while the leg exits looking
@@ -638,7 +638,7 @@ CI evidence is FETCHED from the PR's own checks, not asserted from local/partial
 gh pr view <pr_number> --json author,reviewDecision,statusCheckRollup
 ```
 
-**If `author.is_bot` is true** (a daemon-built PR authored by the `harmony-daemon` App), the brief MUST
+**If `author.is_bot` is true** (a conductor-built PR authored by the `harmony-daemon` App), the brief MUST
 say that a human approval on GitHub is required before the merge can happen, name the PR, and surface
 the current `reviewDecision`. GitHub forbids a PR author approving its own PR, so the worker cannot
 merge it alone — a brief that omits this walks the human into accepting a release that then cannot
@@ -863,7 +863,7 @@ mcp__harmony__add_comment(task_id, "Started work on branch `feat/branch-name`")
 3. **Record the structured pre-PR work-branch reference** (B-792) — the comment above is free text and
    unparseable; this is the machine-readable record of "a leg is working on THIS branch" before a PR
    exists. Mirrors `build_pr`'s own structured-field pattern (§3 build step, `field_values.build_pr`) —
-   once `build_pr` lands the field is superseded (the daemon's repo-progress probe prefers
+   once `build_pr` lands the field is superseded (the conductor's repo-progress probe prefers
    `build_pr.branch`) but is left in place, matching `build_pr`'s own no-delete convention:
 
 ```
@@ -871,7 +871,7 @@ mcp__harmony__update_task({ task_id, field_values: { work_branch: { branch: "fea
 ```
 
    `update_task` merges `field_values` — other keys are preserved. This is what closes the "known work
-   branch" gap for the daemon's clean-exit contract (`skills/harmony-shared/clean-exit-contract.md`): a
+   branch" gap for the conductor's clean-exit contract (`skills/harmony-shared/clean-exit-contract.md`): a
    leg that pushes commits before ever opening a PR is otherwise invisible to the repo-progress probe.
 
 ### 4. Recommend execution route

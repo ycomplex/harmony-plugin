@@ -1,6 +1,6 @@
 ---
 name: harmony-orchestrate
-description: The orchestrator seat — drive MANY conductions through their gates concurrently, sitting between the conductor daemon (which runs the legs) and the human (who holds the release/verify floor). `harmony-conduct` takes one ticket to its terminal state; this skill is its many-ticket sibling — it never runs a gate itself, it REVIEWS and RESOLVES what the legs produce, serializes the PR pipeline the builds feed, and keeps the human's queue clean. Triggers on "orchestrate", "harmony orchestrate", "shepherd these tickets", "watch B-123 and B-456 through to verified", "pick up B-789" (when a watch loop is already running this session). Requires the B-894 conduction tools (`create_conduction`, `list_conductions`), a running conductor daemon whose log is readable, `gh` access to the repos, and the full resolve verb set.
+description: The orchestrator seat — drive MANY conductions through their gates concurrently, sitting between the conductor (which runs the legs) and the human (who holds the release/verify floor). `harmony-conduct` takes one ticket to its terminal state; this skill is its many-ticket sibling — it never runs a gate itself, it REVIEWS and RESOLVES what the legs produce, serializes the PR pipeline the builds feed, and keeps the human's queue clean. Triggers on "orchestrate", "harmony orchestrate", "shepherd these tickets", "watch B-123 and B-456 through to verified", "pick up B-789" (when a watch loop is already running this session). Requires the B-894 conduction tools (`create_conduction`, `list_conductions`), a running conductor whose log is readable, `gh` access to the repos, and the full resolve verb set.
 capabilities: harmony-mcp read shell:gh shell:git shell:node forbid:NotebookEdit
 allowed-tools: mcp__harmony__* Read Grep Glob Bash(gh *) Bash(git *) Bash(node *)
 disallowed-tools: NotebookEdit
@@ -9,13 +9,13 @@ disallowed-tools: NotebookEdit
 # Harmony Orchestrate (orchestrator seat — B-917)
 
 The orchestrator seat: drive MANY conductions through their gates concurrently, sitting between
-the conductor daemon (which runs the legs) and the human (who holds the release/verify floor).
+the conductor (which runs the legs) and the human (who holds the release/verify floor).
 `harmony-conduct` takes one ticket to its terminal state; this skill is its many-ticket sibling —
 it never runs a gate itself, it REVIEWS and RESOLVES what the legs produce, serializes the PR
 pipeline the builds feed, and keeps the human's queue clean.
 
 Prerequisites: the B-894 conduction tools (`mcp__harmony__create_conduction`,
-`mcp__harmony__list_conductions`), a running conductor daemon whose log is readable, `gh` access
+`mcp__harmony__list_conductions`), a running conductor whose log is readable, `gh` access
 to the repos, and the full resolve verb set. This skill writes directly to the board (comments,
 entry heals, corrections) rather than routing every write through a gate skill's accept path —
 unlike `harmony-conduct`, whose `disallowed-tools` keep it read-only between gates, this skill's
@@ -73,7 +73,7 @@ local file edit — and drops only `NotebookEdit`, which this seat never has cau
     ticket already shepherded by this session's loop refuses cleanly on the board's
     duplicate-conduction guard, so re-listing an already-picked-up ticket is harmless; just fold
     it into the existing grep sets and continue.
-  - > **Parallel watch loops on the same daemon log are forbidden — always, not just within one
+  - > **Parallel watch loops on the same conductor log are forbidden — always, not just within one
     > session.** Separate cursors double-fire and race each other's advances (§6's cursor
     > discipline assumes exactly one reader). Never arm a second watch against the same log while
     > one is already live.
@@ -86,7 +86,7 @@ local file edit — and drops only `NotebookEdit`, which this seat never has cau
     pattern, a recent orchestrator comment trail, ask the human) and if in doubt, ASK before
     standing up a second loop — do not assume you're the only one.
   - **Successor note:** a future session lease/lock mechanizes the one-orchestrator-seat-per-board
-    rule above (the daemon or the board itself refusing a second concurrent orchestrator session,
+    rule above (the conductor or the board itself refusing a second concurrent orchestrator session,
     the way `create_conduction`'s duplicate guard already mechanizes the same-ticket case); until
     it lands, the rule is enforced by discipline and this prose, not by the system.
 
@@ -97,8 +97,8 @@ watch → leg clean-pauses → re-read the row → review the artifact → resol
 
 Iron rules, each bought with a real failure:
 
-- **Never read or act on a brief before its leg's clean-pause** (the daemon log line
-  `worker exit code=0 → wait (clean-pause)`). The `awaiting_human_input` flag flips MID-LEG,
+- **Never read or act on a brief before its leg's clean-pause** (the conductor log line
+  `worker exit code=0 → conduction waiting (clean-pause)`). The `awaiting_human_input` flag flips MID-LEG,
   while the leg may still recompose; a resolution written into that window is silently discarded
   at recompose, and a brief read there may not be the brief that ends up active.
 - **Re-read the row immediately before EVERY resolve verb** and match BOTH the brief id in
@@ -106,7 +106,7 @@ Iron rules, each bought with a real failure:
   ACTIVE brief by task id — if the state moved under you (a browser accept, a recompose), your
   verb lands on the wrong brief. A message from whoever holds release authority, like "I merged it", is a tripwire: re-read
   before touching anything.
-- **One leg wakes per marker.** After a resolve/answer, the daemon wakes the leg on its next
+- **One leg wakes per marker.** After a resolve/answer, the conductor wakes the leg on its next
   pass (~1 min). Never double-drive: while a leg is running, make no writes against that ticket.
 - **You are a recovery substrate.** When a worker leg reports an environmental capability denial
   (no container runtime, no reachable service) and correctly refuses to fake its evidence, check
@@ -173,7 +173,7 @@ treat the plan gate as the throttle. Lanes are per repository:
   prefer the elder or the one other work depends on. State the queue to the human whenever it
   changes.
 
-A future daemon-enforced repo-lane lock supersedes this section's prose; prune it when that lands.
+A future conductor-enforced repo-lane lock supersedes this section's prose; prune it when that lands.
 
 ## 5. Release-brief verification — COMPLETE before the human sees the PR
 
@@ -203,7 +203,7 @@ package goes into the human's queue, with your independent findings summarized b
 ## 6. Watching effectively
 
 **The primary signal is your project's own board-watch subscriber** — a Realtime subscriber on
-the board's own private workspace topic, not the daemon's console log; if the project provides
+the board's own private workspace topic, not the conductor's console log; if the project provides
 one, its own orchestration guidance names it and gives the exact invocation. It runs from any
 machine holding the right credentials; the board's `awaiting_human_input` flag is still a trap
 when read directly (§2) — the subscriber exists precisely so you never have to poll it yourself.

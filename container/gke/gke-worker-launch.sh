@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # GKE node-pool LAUNCH wrapper — the "gke" launch profile.
 #
-# The daemon still runs one shell command per leg and reads only its exit code. Cloned from
+# The conductor still runs one shell command per leg and reads only its exit code. Cloned from
 # container/cloud-worker-launch.sh — same per-run App-token mint, same exec-env set, same Codex
 # refusals — but the leg is ONE Kubernetes Job on a tainted, autoscaled leg pool instead of an
 # execution of one shared Cloud Run job:
@@ -18,7 +18,7 @@
 #     FUSE CSI driver and reached via the Kubernetes service account $HARMONY_GKE_SERVICE_ACCOUNT
 #     (Workload Identity); setup-cluster.sh steps 10-16 provision all of that.
 #   * Exit. Polls the Job: Complete with clean pod evidence -> 0; Failed, gone, or Complete with pod
-#     evidence of a disruption (or evidence that cannot be read) -> 1. backoffLimit 0: the daemon's
+#     evidence of a disruption (or evidence that cannot be read) -> 1. backoffLimit 0: the conductor's
 #     ladder retries, never Kubernetes. Events are never read.
 #
 # usage: gke-worker-launch.sh <conduction_id> <ticket> [run_config_json] [model]

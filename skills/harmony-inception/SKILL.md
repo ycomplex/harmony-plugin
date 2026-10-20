@@ -149,7 +149,7 @@ title first; reuse the existing one if present.
 **Promote it to `Proposed` immediately, in the same step (B-796).** `create_task` lands the ticket at
 `Captured` (the `tasks_default_workflow_state` insert trigger), and the clarify gate REQUIRES `Proposed`
 — composing a `clarifying` brief from `Captured` raises, because the transition table only allows
-`('Captured','proposing','Proposed')` first. So mirror the conductor's own Captured self-advance:
+`('Captured','proposing','Proposed')` first. So mirror the conduct loop's own Captured self-advance:
 
 ```
 mcp__harmony__advance_workflow({ task_id: <proposition-root>, activity: 'proposing' })
@@ -191,7 +191,7 @@ nodes from the just-Accepted proposition claims:
 ```
 // B-1000: carries the SAME provenance the clarify accept declared when it promoted these persona/feature
 // claims (see harmony-clarify's own note) — 'human-in-session' for Day-1 inception's direct human
-// invocation, or 'agent-synthesized:<mode>' if that accept ever runs under a conductor delegation.
+// invocation, or 'agent-synthesized:<mode>' if that accept ever runs under a conduct loop delegation.
 // one thin node per persona named in the Accepted proposition
 mcp__harmony__create_entity({ kind: 'persona',  name: "<persona>",  description: "<ONE-line canonical identity>", provenance: 'human-in-session' })
 // one thin node per feature/capability named in the Accepted proposition
@@ -295,8 +295,8 @@ re-type the list here, which is exactly how the two authorings drifted before:
 
 **Bootstrap the stack additionally carries the repo-hygiene clause (§3f):**
 > *"Any repository this umbrella creates carries `.harmony-task.json` in its `.gitignore` from the first
-> commit. That file is per-ticket conductor working context, not product source: left untracked-but-
-> uncommitted it collides on every concurrent pair of workers, and committed it puts a conductor artifact
+> commit. That file is per-ticket conduct loop working context, not product source: left untracked-but-
+> uncommitted it collides on every concurrent pair of workers, and committed it puts a conduct loop artifact
 > in the product tree."*
 
 ### 3d. The canonical genesis DAG — ONE table, cited twice
@@ -394,9 +394,9 @@ lookup, because by then the founder may have renamed both.
 
 ### 3g. Repo hygiene — the ignore line, written where a repo first exists
 
-The conductor writes `.harmony-task.json` into a repo it is building in. That file is per-ticket worker
+The conduct loop writes `.harmony-task.json` into a repo it is building in. That file is per-ticket worker
 context, not product source: uncommitted it collides on every concurrent pair of workers, committed it
-leaves a conductor artifact in a team's product tree.
+leaves a conduct loop artifact in a team's product tree.
 
 **The primary write is a contract clause, not an action here** — because at stamp time there is usually
 **no repository yet**. How many repos exist, and where, is precisely what the *Decide the repo & workspace

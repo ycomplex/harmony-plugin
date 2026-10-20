@@ -721,6 +721,61 @@ export async function writeConductionQuotaState(
 }
 
 // ---------------------------------------------------------------------------
+// B-1171: conductions.leg_backend — which launch backend started the lease's leg.
+// ---------------------------------------------------------------------------
+//
+// Added by a harmony-web migration that promotes on its OWN schedule, so the column is deliberately NOT
+// in CONDUCTION_COLS / CONDUCTION_PATCHABLE_FIELDS (the B-846 precedent). Read and written ONLY through
+// the two accessors below, each of which reports "the column is absent" as a value rather than throwing.
+
+/** True when an error says conductions.leg_backend is unknown/missing. Must NAME the column (or be a
+ *  bare undefined-column code) so an unrelated failure is never mistaken for absence. */
+export function isMissingLegBackendColumn(
+  err: { code?: string; message?: string; details?: string } | null | undefined,
+): boolean {
+  if (!err) return false;
+  const text = `${err.message ?? ''} ${err.details ?? ''}`.toLowerCase();
+  const names = text.includes('leg_backend');
+  if (err.code === '42703' || err.code === 'PGRST204') return names || text.trim() === '';
+  return names && /(does not exist|could not find|schema cache|unknown)/.test(text);
+}
+
+/** Read ONE conduction's recorded launch backend. `{ absent: true }` = the column is not live yet. */
+export async function readConductionLegBackend(
+  client: SupabaseClient,
+  id: string,
+): Promise<{ absent: true } | { absent: false; backend: string | null }> {
+  const { data, error } = await client.from('conductions').select('leg_backend').eq('id', id).maybeSingle();
+  if (error) {
+    if (isMissingLegBackendColumn(error)) return { absent: true };
+    throw error;
+  }
+  const v = (data as { leg_backend?: string | null } | null)?.leg_backend;
+  return { absent: false, backend: typeof v === 'string' && v.length > 0 ? v : null };
+}
+
+/** Lease-guarded write of conductions.leg_backend. 'missing-column' = the migration is not live. */
+export async function writeConductionLegBackend(
+  client: SupabaseClient,
+  id: string,
+  expectedLeaseHolder: string,
+  backend: string,
+): Promise<'ok' | 'lease-lost' | 'missing-column'> {
+  const { data, error } = await client
+    .from('conductions')
+    .update({ leg_backend: backend })
+    .eq('id', id)
+    .eq('lease_holder', expectedLeaseHolder)
+    .select('id')
+    .maybeSingle();
+  if (error) {
+    if (isMissingLegBackendColumn(error)) return 'missing-column';
+    throw error;
+  }
+  return data ? 'ok' : 'lease-lost';
+}
+
+// ---------------------------------------------------------------------------
 // reviveParkedTicketIfNeeded — the B-964 unpark primitive
 // ---------------------------------------------------------------------------
 //

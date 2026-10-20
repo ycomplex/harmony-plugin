@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- B-696: launchd supervision for the Harmony conductor daemon.
+<!-- B-696: launchd supervision for the Harmony conductor.
 
      Install: fill in the three REPLACE-ME placeholders below (node path, absolute repo path,
      env values), copy to ~/Library/LaunchAgents/, then:
          launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.ycomplex.harmony-daemon.plist
-     See container/README.md § "Conductor daemon" for the full runbook.
+     See container/README.md § "Conductor" for the full runbook.
 
      Two-envelope credential rule (B-694): this environment carries ONLY the Harmony API token.
      Worker credentials (git, CLAUDE_CODE_OAUTH_TOKEN) live in the launch profile's env-file and
-     never enter the daemon process. -->
+     never enter the conductor process. -->
 <plist version="1.0">
 <dict>
     <key>Label</key>

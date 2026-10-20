@@ -1,6 +1,6 @@
 ---
 name: finish-work
-description: Use when the user wants to finish, complete, wrap up, land, or merge their current work. Triggers on phrases like "finish", "done", "wrap up", "land this", "merge", "ship it", or "we're done". In manual-mode projects this is the exit point for development work — it handles the full merge-and-cleanup sequence, exactly as before. In opinionated-mode projects, /harmony-conduct is the entry point that drives the whole lifecycle; this skill implements the release (merge + deploy) and verify gates the conductor delegates to, and your explicit invocation ("finish work" / "land it" / "merge it") is how the release gate is crossed.
+description: Use when the user wants to finish, complete, wrap up, land, or merge their current work. Triggers on phrases like "finish", "done", "wrap up", "land this", "merge", "ship it", or "we're done". In manual-mode projects this is the exit point for development work — it handles the full merge-and-cleanup sequence, exactly as before. In opinionated-mode projects, /harmony-conduct is the entry point that drives the whole lifecycle; this skill implements the release (merge + deploy) and verify gates the conduct loop delegates to, and your explicit invocation ("finish work" / "land it" / "merge it") is how the release gate is crossed.
 capabilities: harmony-mcp read shell shell:gh forbid:harmony-mcp:supersede_decision
 allowed-tools: mcp__harmony__* Read Grep Glob Bash Bash(gh *)
 disallowed-tools: mcp__harmony__supersede_decision
@@ -103,7 +103,7 @@ its own open PR/branch — it is a normal ticket: skip this section and continue
 
 **Resume-vs-draft check (run this FIRST, before anything else — B-714, closes the release-gate loop).**
 Every entry to O1 is one of two shapes: a **fresh** Built ticket that needs its release brief drafted, or a
-**re-entry** where the human already accepted the release out-of-band (the browser, or a daemon worker
+**re-entry** where the human already accepted the release out-of-band (the browser, or a conductor worker
 re-firing on the flag flip) and the accept just hasn't been *executed* yet. `resolve_brief({ command:
 "accept", … })` on a `pending_activity: null` brief only clears `awaiting_human_input` — it does NOT move
 `workflow_state` off `Built` (Built→Deployed is a SYSTEM transition triggered by the deploy actually
@@ -188,7 +188,7 @@ what authorises one.
 
 **Risk-class signal on the release brief (B-516).** Before surfacing the brief, compute a **path-based**
 risk signal from the build's changed paths and show it as an **attention line** above the decision, so the
-human reviews any high-consequence class at the release gate (the hard floor). This is where the conductor's
+human reviews any high-consequence class at the release gate (the hard floor). This is where the conduct loop's
 risk-class floor lands for `--unattended`/`--pause-at` runs: those runs do NOT pause mid-flight on a risk
 class — the signal surfaces *here* instead (see harmony-conduct §3a / §4 "release-brief risk signal").
 
@@ -214,7 +214,7 @@ collapse them:
 
 - **`frame.risk_classes`** — path-derived from THIS build's diff, computed by `compose_brief` (above).
 - **The classes recorded at gates this run AUTO-ADVANCED** under `--unattended` / the auto-advanced prefix
-  of `--pause-at`. Those runs deliberately do not pause mid-flight on a risk class; the conductor records
+  of `--pause-at`. Those runs deliberately do not pause mid-flight on a risk class; the conduct loop records
   the classes instead and this brief is where the human finally sees them (`harmony-conduct` §3a / §4b).
   They are **not** derived from any diff, so the diff-derived field above does not carry them and never
   will. Surface them as their own prose line on the brief, **explicitly labelled as carried from gates**,
@@ -231,7 +231,7 @@ every `OVERRIDE-GATE-EXECUTED gate=<gate> conduction_id=<id-or-"none">` marker (
 one per override-provenance auto-advance — see `skills/harmony-shared/gate-routing.md` §Resolution
 provenance and `harmony-conduct` §4b's own marker-posting paragraph). **Filter by `conduction_id`** when
 THIS run has one (`get_project`'s `environment.conduction_id`, from step 0's call — the common
-daemon-driven case): keep only markers whose `conduction_id` matches. **When `conduction_id` is `null`**
+conductor-driven case): keep only markers whose `conduction_id` matches. **When `conduction_id` is `null`**
 (an ad hoc interactive run with no conduction row), include **every** matching marker found on the ticket —
 a deliberate best-effort imprecision, acceptable because this is an FYI attention line, not a safety floor
 (unlike the risk-class signal above, which IS one). Render the matches as their own attention block on the
@@ -304,7 +304,7 @@ complement to that FLOOR read, not a replacement for it.
 
 **Prerequisite-PR attention line (B-783).** When `field_values.prerequisite_pr` is present, show its LIVE
 merge status as its own attention line, framed against the environment THIS release actually reaches —
-**prod** for a daemon-driven run (the standing `PLUGIN_REF=main` + prod-board posture, workspace
+**prod** for a conductor-driven run (the standing `PLUGIN_REF=main` + prod-board posture, workspace
 CLAUDE.md → "Sharpest case"), not staging:
 
 1. `gh pr view <prerequisite_pr.pr_number> --repo <prerequisite_pr.repo> --json state,url`.
@@ -333,7 +333,7 @@ gh pr view <pr_number> --json author,statusCheckRollup,headRefOid,state
 Make this call **once per pull request** the defensive `field_values.build_pr` read below names — the
 check-status section renders one entry per PR off exactly that list.
 
-**Bot-approval line.** A daemon-built PR is authored by the `harmony-daemon` App, and GitHub forbids a PR
+**Bot-approval line.** A conductor-built PR is authored by the `harmony-daemon` App, and GitHub forbids a PR
 author approving its own PR — so the merge cannot happen on the human's Harmony accept alone. If
 `author.is_bot` is true, add a second attention line alongside the risk signal, naming the PR:
 
@@ -481,7 +481,7 @@ mcp__harmony__resolve_brief({ task_id, command: "accept", provenance: "human-in-
 ```
 
 `provenance: "human-in-session"` is the human's decision, made here (B-734) — and it is the **only** value
-this gate can ever carry from the plugin: release is the hard floor, so the conductor never synthesizes it
+this gate can ever carry from the plugin: release is the hard floor, so the conduct loop never synthesizes it
 (`skills/harmony-shared/gate-routing.md` §Resolution provenance). That accept is also what writes the
 `brief_resolved` entry a later resume reads at the top of this section.
 
@@ -510,7 +510,7 @@ The release brief carries `pending_activity: null` (state-machine §6.1 — Buil
 SYSTEM-on-deploy-success, not human-accept). So accept is only the human's "go"; the ticket stays **Built**
 until the deploy actually succeeds (O2). In a live, synchronous session the accept above falls straight into
 O2 in this same invocation — no gap for the loop to occur. A *later* re-entry (the human accepted from the
-browser, or a daemon worker resumes on the flag flip after the fact) is exactly what the resume-vs-draft
+browser, or a conductor worker resumes on the flag flip after the fact) is exactly what the resume-vs-draft
 check at the top of this section catches — it skips redrafting and resumes straight into O2 there instead.
 (If the human defers, `resolve_brief({ command: "defer", provenance: "human-in-session" })` parks it — do
 not merge.)
@@ -594,11 +594,11 @@ gh pr view <prerequisite_pr.pr_number> --repo <prerequisite_pr.repo> --json stat
 
 **Branch on `field_values.build_pr`** (B-722's recorded pushed-PR reference — shape `{ branch, head_sha,
 pr_number, pr_url, base: "main", opened_at }`) to decide how to land the code. This is what makes O2 work
-for a daemon-built PR whose worktree is long gone by the time release runs (it was built inside an ephemeral
+for a conductor-built PR whose worktree is long gone by the time release runs (it was built inside an ephemeral
 `--rm` container) — the LOCAL-WORKTREE precondition is no longer a hard requirement, it's just one of three
 paths:
 
-- **`build_pr` present (the common case — daemon- or human-built, B-722 recorded it):** merge it via the
+- **`build_pr` present (the common case — conductor- or human-built, B-722 recorded it):** merge it via the
   REST endpoint already established for the bypass floor (B-712), directly — **no local worktree required:
   no checkout, no rebase, no force-push.**
 
@@ -647,7 +647,7 @@ paths:
     reads, backed by an independent enforcement mechanism. Reference this doctrine from here rather than
     restating it in harmony-conduct.
 
-  1a. **THE IDENTITY + APPROVAL GATE — FAILS CLOSED (B-732).** Daemon PRs are authored by the
+  1a. **THE IDENTITY + APPROVAL GATE — FAILS CLOSED (B-732).** Conductor PRs are authored by the
      `harmony-daemon` App so the B-695 merge floor actually engages on them. Read both signals in one call:
      `gh pr view <pr_number> --json author,reviewDecision`. Then branch on the **RUN CONTEXT**, never on the
      PR's author alone:
@@ -673,7 +673,7 @@ paths:
   1b. **Prompt the human and leave a wake trigger (B-732).** A PR waiting on approval must be something the
      human is TOLD about, not something they discover. Merely stopping would leave the ticket at `Built` with
      `awaiting_human_input: false` — in nobody's queue — and a GitHub approval touches no ticket row, so
-     nothing would ever wake the daemon to retry. That is a stall by design. So set the flag with the PR
+     nothing would ever wake the conductor to retry. That is a stall by design. So set the flag with the PR
      attached:
 
      ```
@@ -714,7 +714,7 @@ paths:
      - End the leg without advancing `workflow_state`.
 
      The ticket now appears in the human's queue with the PR linked, and their resolution produces the
-     `true → false` flag flip the daemon already wakes on. Under `--one-shot` this is a clean human pause:
+     `true → false` flag flip the conductor already wakes on. Under `--one-shot` this is a clean human pause:
      **exit here**. In an interactive session, surface the PR URL and wait. Either way, when the run resumes
      the O1 resume-vs-draft check routes straight back into O2 and retries the merge — no redraft, no new
      brief. (This is a *modeled* pause with a first-class reason, which is why it does not go through B-733's
@@ -998,7 +998,7 @@ repo O2's release-prep lookup already entered, and the same repo passed as `mani
 - **Present, declaring `verify.before_ack` steps** → run `harmony gates run verify.before_ack` from
   inside that repo. This reads the manifest's `verify.before_ack` steps and runs them, landing a
   `finish-work` evidence entry on the ticket when it actually runs steps (and the local gate-evidence
-  marker the PreToolUse hook's B-992 matcher checks before allowing a daemon worker's verify-brief
+  marker the PreToolUse hook's B-992 matcher checks before allowing a conductor worker's verify-brief
   accept). A non-zero exit is a real verification-readiness failure — surface it (a comment naming the
   failing step) and do NOT proceed to composing/accepting an ackable verify brief; this is a genuine
   gate, not a formality.
@@ -1065,7 +1065,7 @@ So before composing (and before resolving) the verify brief:
 
 This is the same predicate and the same surface the build gate uses (`start-work` O3) — one floor applied
 at the two edges where cost turns irreversible, never a second definition. As there, the pre-check exists
-so the refusal is answerable: the substrate guard would refuse by RAISING, which reaches a daemon leg as a
+so the refusal is answerable: the substrate guard would refuse by RAISING, which reaches a conductor leg as a
 dirty exit and an operator page.
 
 **4. The verify frame (B-876) — author `doc.frame` as the criteria LEDGER, and `frame.steps` as the

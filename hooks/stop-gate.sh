@@ -28,7 +28,7 @@ BREADCRUMB="$HARMONY_DIR/conduct-sessions/$SESSION_ID.json"
 [ -f "$BREADCRUMB" ] || exit 0
 
 # The operator's escape switch — a control only a human can set (their own shell profile), and its
-# use is always visible in the session log. Deliberately absent from every daemon/container profile.
+# use is always visible in the session log. Deliberately absent from every conductor/container profile.
 if [ -n "${HARMONY_STOP_GATE_OFF:-}" ]; then
   printf '[harmony stop-gate] DISABLED for this session via HARMONY_STOP_GATE_OFF — turn-end allowed without a board check.\n' >&2
   exit 0

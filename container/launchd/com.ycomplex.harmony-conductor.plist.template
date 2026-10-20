@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- B-1171: RENDERED by `harmony conductor start --local` (LaunchAgent) or `--at-boot` (LaunchDaemon) from
+     this template (src/daemon/supervisor-control.ts renderLaunchdPlist). Do not copy it by hand: the {{...}}
+     placeholders are filled in by the command. The hand-edited example is com.ycomplex.harmony-daemon.plist.
+
+     The job runs container/conductor-launch.sh, the ONE place that loads ~/.harmony/conductor.env, then
+     execs `node <plugin>/dist/bin/daemon.js`. The label is the same as the older example so the
+     conductor's own supervisor detection (XPC_SERVICE_NAME) keeps working. No credential lives here:
+     HARMONY_API_TOKEN and the rest come from conductor.env. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{{LABEL}}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+{{PROGRAM_ARGUMENTS}}
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>{{PLUGIN_DIR}}</string>
+{{USER_NAME_BLOCK}}
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>{{HOME}}</string>
+        <key>PATH</key>
+        <string>{{PATH}}</string>
+        <key>HARMONY_PLUGIN_DIR</key>
+        <string>{{PLUGIN_DIR}}</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>{{LOG_PATH}}</string>
+    <key>StandardErrorPath</key>
+    <string>{{LOG_PATH}}</string>
+</dict>
+</plist>

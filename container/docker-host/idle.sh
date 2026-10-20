@@ -4,7 +4,7 @@
 # harmony-docker-host-idle.timer.
 #
 # The host exists only to run workers, so it powers itself off when none has run for a while; the
-# launch wrapper on the daemon's machine (container/docker-host-worker-launch.sh) wakes it again.
+# launch wrapper on the conductor's machine (container/docker-host-worker-launch.sh) wakes it again.
 #
 # Configured by /etc/default/harmony-docker-host:
 #   HARMONY_HOST_USER   the SSH user the launch wrapper logs in as (required)

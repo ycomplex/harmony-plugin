@@ -89,7 +89,7 @@ function present(env: Readonly<Record<string, string | undefined>>, name: string
 }
 
 const LOGIN_HOWTO =
-  `On the daemon host run 'CODEX_HOME=~/.harmony/codex-automation codex login --device-auth' once, ` +
+  `On the conductor host run 'CODEX_HOME=~/.harmony/codex-automation codex login --device-auth' once, ` +
   `then mount that auth.json into the worker (container/README.md "Codex credential runbook").`;
 
 function resolveCodexCredential(env: Readonly<Record<string, string | undefined>>): CredentialResolution {

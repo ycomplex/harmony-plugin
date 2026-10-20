@@ -76,7 +76,7 @@ export function evaluateAgentEligibility(input: AgentEligibilityInput): AgentEli
 /** The ticket comment a refusal parks with. */
 export function formatAgentIneligibleComment(result: Extract<AgentEligibility, { eligible: false }>): string {
   return (
-    `harmony daemon refused to launch this leg — agent adapter not eligible on this launch profile.\n\n` +
+    `harmony conductor refused to launch this leg — agent adapter not eligible on this launch profile.\n\n` +
     `${result.reason}\n\n` +
     `Fix: set run_config.agent.adapter to an allowed adapter (or remove it to use the default, ` +
     `${DEFAULT_ADAPTER_ID}), or add the adapter to the profile's \`agents\` list once it is registered, ` +

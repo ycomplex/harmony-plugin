@@ -216,7 +216,7 @@ describe('doctor', () => {
     const r = runDoctor(deps({ HARMONY_CONDUCTOR_PROJECT_FILE: project, HARMONY_GKE_NAMESPACE: 'ns-legacy', HARMONY_GKE_CPU: '2' }));
     expect(r.exitCode).toBe(0);
     const out = r.lines.join('\n');
-    expect(out).toContain('environment wins at launch (deprecated) — unset it or remove it from daemon.env');
+    expect(out).toContain('environment wins at launch (deprecated) — unset it or remove it from conductor.env');
     expect(out).toMatch(/gke\.namespace: .*ns-project.*ns-legacy.* -> env HARMONY_GKE_NAMESPACE wins/);
     expect(out).toContain('LEGACY IN USE (2)');
     expect(out).toContain('env HARMONY_GKE_CPU is read as a legacy fallback; set gke.cpu in .harmony/conductor.json instead');

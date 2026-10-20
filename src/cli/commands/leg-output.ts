@@ -86,7 +86,7 @@ export function registerLegOutputCommands(program: Command): void {
     .description(
       "B-720 worker-output capture — the ONE place container/provision.sh records what a leg's " +
         '`claude` invocation actually wrote, from inside the container where it is genuinely the ' +
-        'WORKER\'s output on every launch profile. Capture for DISPLAY only: nothing the daemon ' +
+        'WORKER\'s output on every launch profile. Capture for DISPLAY only: nothing the conductor ' +
         'decides ever reads these rows.',
     );
 
