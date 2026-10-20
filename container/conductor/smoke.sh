@@ -14,7 +14,8 @@
 #   3. `harmony --version` runs (the bundle loads and the CLI parses);
 #   4. the label harmony.plugin_version is present (and equals the expected version when given);
 #   5. a host file loads: conductor-boot check-host against the baked conductor.host.example.json;
-#   6. the entrypoint dispatches: a plain command runs, and `--with-secrets` in remote mode with NO host file
+#   6. the leg-launch helpers are present and the token mint loads (prints its usage);
+#   7. the entrypoint dispatches: a plain command runs, and `--with-secrets` in remote mode with NO host file
 #      fails at the resolver's own guard (proving the resolver executes) without touching the network.
 # NOT proved: a real Secret Manager read, a real cluster, a real rollout.
 set -euo pipefail
@@ -45,6 +46,14 @@ for f in /opt/harmony-plugin/dist/bin/daemon.js /opt/harmony-plugin/dist/bin/har
   sh_in "[ -f $f ]" || fail "$f is missing (was the image built from a branch that carries dist/?)"
 done
 ok "entrypoint, CLI wrapper, daemon.js, conductor-boot.js and the sweep script present"
+
+# Every leg launch runs the token mint before it creates a Job, so an image without it launches nothing (0.15.88).
+# Run with no arguments it prints its usage and exits non-zero without a key or the network: proof it loads.
+for f in /opt/harmony-plugin/scripts/mint-installation-token.mjs /opt/harmony-plugin/scripts/resume-discovery.mjs; do
+  sh_in "[ -f $f ]" || fail "$f is missing: leg launches call it"
+done
+out="$(docker run --rm --entrypoint node "$IMAGE" /opt/harmony-plugin/scripts/mint-installation-token.mjs 2>&1)" || true
+case "$out" in *"Usage: mint-installation-token.mjs"*) ok "the token mint loads" ;; *) fail "the token mint did not load: $out" ;; esac
 
 version_out="$(docker run --rm --entrypoint harmony "$IMAGE" --version 2>&1)" || fail "harmony --version did not run: $version_out"
 [ -n "$version_out" ] || fail "harmony --version printed nothing"
