@@ -4437,3 +4437,149 @@ describe('B-1149: quota and rate-limit refusals', () => {
     expect(h.getConduction('cond-1').last_worker_exit_class).toBe('dirty-exit');
   });
 });
+
+// B-1171: record and honour the launching backend per lease (conductions.leg_backend). The column is
+// added by a web migration that promotes after the plugin, so every path must tolerate it being absent.
+describe('B-1171 leg_backend — recorded at launch, honoured at adoption', () => {
+  type LB = NonNullable<SchedulerDeps['legBackend']>;
+  const cloudTemplates = { reap: 'reap-cloud {conduction_id}', probe: 'probe-cloud {conduction_id}' };
+  const gkeTemplates = { reap: 'reap-gke {conduction_id}', probe: 'probe-gke {conduction_id}' };
+
+  function withBackend(
+    h: ReturnType<typeof makeHarness>,
+    over: Partial<LB> & { tag?: string } = {},
+  ): { read: ReturnType<typeof vi.fn>; write: ReturnType<typeof vi.fn> } {
+    const read = vi.fn(over.read ?? (async () => ({ absent: false as const, backend: null })));
+    const write = vi.fn(over.write ?? (async () => 'ok' as const));
+    h.deps.legBackend = {
+      tag: over.tag ?? 'gke',
+      resolveTemplates: over.resolveTemplates ?? ((t) => (t === 'cloud' ? cloudTemplates : t === 'gke' ? gkeTemplates : null)),
+      read: read as unknown as LB['read'],
+      write: write as unknown as LB['write'],
+    };
+    return { read, write };
+  }
+
+  /** A mid-leg row held by a dead conductor, stale by the time the pass runs. */
+  function staleMidLegHarness(profile: DaemonConfig['profile']) {
+    const h = makeHarness({
+      conductions: [
+        conduction({ lease_holder: 'this-host:1:dead0000', last_heartbeat_at: iso(T0 - 1_000), leg_started_at: iso(T0 - 500) }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }) },
+      config: { ...config, profile },
+    });
+    h.setNow(T0 + config.staleMs + 1_000);
+    return h;
+  }
+  const gkeOwn = { launch: 'launch {conduction_id} {ticket}', reap: 'reap-gke {conduction_id}', probe: 'probe-gke {conduction_id}' };
+  const cloudOwn = { launch: 'launch {conduction_id} {ticket}', reap: 'reap-cloud {conduction_id}', probe: 'probe-cloud {conduction_id}' };
+
+  it('column present: the launching backend tag is written (lease-guarded) when a leg is launched', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    const { write } = withBackend(h, { tag: 'gke' });
+    await wakeAndFire(h);
+    expect(h.launches()).toEqual(['launch cond-1 task-1']);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledWith('cond-1', ME, 'gke');
+  });
+
+  it('column present: the tag is NEVER part of the shared conduction patch', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    withBackend(h);
+    await wakeAndFire(h);
+    const patches = (h.deps.updateConductionIfHeld as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => c[2] as object);
+    expect(patches.some((p) => 'leg_backend' in p)).toBe(false);
+  });
+
+  it('column absent on write: no throw, the launch still fires, and no further write is attempted', async () => {
+    const h = makeHarness({
+      conductions: [conduction(), conduction({ id: 'cond-2', task_id: 'task-2' })],
+      tasks: { 'task-1': pausedTask(), 'task-2': pausedTask() },
+    });
+    const { write } = withBackend(h, { write: async () => 'missing-column' as const });
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    (h.tasks['task-2'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    expect(h.launches().sort()).toEqual(['launch cond-1 task-1', 'launch cond-2 task-2']);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(h.runtime.legBackendAbsent).toBe(true);
+  });
+
+  it('any other write error is logged and never blocks the launch (and is not cached as absent)', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    const { write } = withBackend(h, { write: async () => { throw new Error('network down'); } });
+    await wakeAndFire(h);
+    expect(h.launches()).toEqual(['launch cond-1 task-1']);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(h.runtime.legBackendAbsent).toBeUndefined();
+    expect(h.logs.some((l) => /could not record the launching backend/.test(l))).toBe(true);
+  });
+
+  it('without the legBackend dep, launch and adoption behave exactly as before', async () => {
+    const h = staleMidLegHarness(gkeOwn);
+    await h.pass();
+    expect(h.probes()).toEqual(['probe-gke cond-1']);
+    expect(h.reaps()).toEqual(['reap-gke cond-1']);
+  });
+
+  it('a cloud-launched leg adopted by a gke conductor is probed and reaped with the CLOUD templates', async () => {
+    const h = staleMidLegHarness(gkeOwn);
+    const { read } = withBackend(h, { tag: 'gke', read: async () => ({ absent: false as const, backend: 'cloud' }) });
+    await h.pass();
+    expect(read).toHaveBeenCalledWith('cond-1');
+    expect(h.probes()).toEqual(['probe-cloud cond-1']);
+    expect(h.reaps()).toEqual(['reap-cloud cond-1']);
+    expect(h.logs.some((l) => /cond-1: adopting a leg launched by the 'cloud' backend/.test(l))).toBe(true);
+  });
+
+  it('and vice versa: a gke-launched leg adopted by a cloud conductor uses the GKE reap', async () => {
+    const h = staleMidLegHarness(cloudOwn);
+    withBackend(h, { tag: 'cloud', read: async () => ({ absent: false as const, backend: 'gke' }) });
+    await h.pass();
+    expect(h.probes()).toEqual(['probe-gke cond-1']);
+    expect(h.reaps()).toEqual(['reap-gke cond-1']);
+  });
+
+  it('a recorded backend equal to the conductor\'s own, or a legacy null, uses today\'s own templates', async () => {
+    for (const backend of ['gke', null]) {
+      const h = staleMidLegHarness(gkeOwn);
+      withBackend(h, { tag: 'gke', read: async () => ({ absent: false as const, backend }) });
+      await h.pass();
+      expect(h.reaps()).toEqual(['reap-gke cond-1']);
+      expect(h.probes()).toEqual(['probe-gke cond-1']);
+    }
+  });
+
+  it('column absent on read: no throw, behaviour identical to today, and no further read is attempted', async () => {
+    const h = makeHarness({
+      conductions: [
+        conduction({ lease_holder: 'this-host:1:dead0000', last_heartbeat_at: iso(T0 - 1_000), leg_started_at: iso(T0 - 500) }),
+        conduction({ id: 'cond-2', task_id: 'task-2', lease_holder: 'this-host:1:dead0000', last_heartbeat_at: iso(T0 - 1_000), leg_started_at: iso(T0 - 500) }),
+      ],
+      tasks: { 'task-1': pausedTask({ awaiting_human_input: false }), 'task-2': pausedTask({ awaiting_human_input: false }) },
+      config: { ...config, profile: gkeOwn },
+    });
+    h.setNow(T0 + config.staleMs + 1_000);
+    const { read } = withBackend(h, { read: async () => ({ absent: true as const }) });
+    await h.pass();
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(h.reaps().sort()).toEqual(['reap-gke cond-1', 'reap-gke cond-2']);
+    expect(h.runtime.legBackendAbsent).toBe(true);
+  });
+
+  it('an unresolvable recorded backend: no probe, no reap, no launch, a conductor-worded warning, and it stays refused', async () => {
+    const h = staleMidLegHarness(gkeOwn);
+    withBackend(h, { tag: 'gke', read: async () => ({ absent: false as const, backend: 'mystery' }) });
+    await h.pass();
+    await h.pass();
+    expect(h.commands).toEqual([]);
+    const warn = h.logs.filter((l) => /NOT adopting/.test(l));
+    expect(warn).toHaveLength(1);
+    expect(warn[0]).toContain("'mystery'");
+    expect(warn[0]).toContain('cond-1');
+    expect(warn[0]).toMatch(/conductor/);
+    expect(warn[0]).not.toMatch(/daemon/);
+  });
+});

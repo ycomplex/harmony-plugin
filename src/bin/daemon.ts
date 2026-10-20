@@ -52,6 +52,8 @@ import {
   updateConductionIfHeld,
   markCleanShutdown,
   readConductionQuotaState,
+  readConductionLegBackend,
+  writeConductionLegBackend,
   writeConductionQuotaState,
 } from '../tools/conduction-record.js';
 // B-1149: the refusal verdict the worker's adapter recorded on the leg's last leg-cost row.
@@ -73,6 +75,8 @@ import { detectSupervisor, shutdownLine, shouldInspectWorkerImage } from '../dae
 import { createDaemonLogger } from '../daemon/conductor-logger.js';
 // B-1170: the two-file conductor config (project file from the config repo + host file) — all logic in the module.
 import { startConductorConfigRuntime, type ConductorConfigRuntime } from '../daemon/conductor-config-runtime.js';
+// B-1171: the launching-backend tag per lease (conductions.leg_backend), honoured at adoption.
+import { deriveBackendTag, resolveBackendTemplates } from '../daemon/leg-backend.js';
 import { quietLogLine } from '../daemon/quiet-reap.js';
 import { runBootPreflight, type PreflightProfile } from '../daemon/preflight.js';
 import {
@@ -609,6 +613,14 @@ async function main(): Promise<void> {
     getLastLegRefusal: (conductionId, sinceIso) => readLastLegRefusal(client, { conduction_id: conductionId, since: sinceIso }),
     readQuotaState: (ids) => readConductionQuotaState(client, ids),
     writeQuotaState: (id, patch) => writeConductionQuotaState(client, id, leaseHolder, patch),
+    // B-1171: record the launching backend per lease and reap/probe an adopted leg with ITS backend's
+    // templates. Both accessors tolerate the column being absent (pre-promote prod).
+    legBackend: {
+      tag: deriveBackendTag(preflightProfileName, config.profile),
+      resolveTemplates: (tag) => resolveBackendTemplates(deploymentConfig?.profiles, tag),
+      read: (id) => readConductionLegBackend(client, id),
+      write: (id, holder, backend) => writeConductionLegBackend(client, id, holder, backend),
+    },
   };
 
   const keeper = createHeartbeatKeeper({
