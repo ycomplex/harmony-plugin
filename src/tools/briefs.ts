@@ -111,7 +111,9 @@ export interface LandingShape {
   ordering?: string;
   /** `[]` is a meaningful, renderable answer ("nothing"). */
   irreversible: string[];
-  /** B-890 compatibility: additive PR links may land before or after the structural guard. */
+  /** B-890 — the pull requests this landing executes, in order (a prerequisite PR first, then the build
+   *  PR). OPTIONAL FOREVER: a missing `prs` is never malformed and no lint rule requires it — a skill
+   *  names the PRs it can read from the task and omits the rest. */
   prs?: Array<{ repo: string; number: number; url: string }>;
 }
 
@@ -1778,8 +1780,13 @@ function lintFrame(doc: BriefDoc, ctx: BriefLintContext, errors: string[], warni
 
 /** Does the rendered brief name a pull request the human can go and look at? (B-876 step 9)
  *  Generous about form — the recorded url, a `#123` number, or any `/pull/<n>` link all count. */
-function mentionsPullRequest(content: string, refs: BuildPrReference[]): boolean {
+function mentionsPullRequest(content: string, refs: BuildPrReference[], doc?: BriefDoc): boolean {
   if (/\/pull\/\d+/.test(content)) return true;
+  // B-890 — a release frame's typed `act.prs` names the PR just as well as prose does.
+  const framePrs = doc?.frame?.kind === 'release' ? doc.frame.act?.prs : undefined;
+  if (Array.isArray(framePrs) && framePrs.some((p) => p && (typeof p.url === 'string' || typeof p.number === 'number'))) {
+    return true;
+  }
   for (const ref of refs) {
     if (ref.pr_url && content.includes(ref.pr_url)) return true;
     if (typeof ref.pr_number === 'number' && new RegExp(`#${ref.pr_number}\\b`).test(content)) return true;
@@ -1825,7 +1832,7 @@ export function lintBrief(
   // same fetched fact the B-732 rule uses. A release manager whose structural value is NOT having built
   // the thing cannot go and look at a PR the brief never names.
   if (ctx.reason === 'release-decision-pending' && ctx.buildPrRefs?.length) {
-    if (!mentionsPullRequest(content, ctx.buildPrRefs)) {
+    if (!mentionsPullRequest(content, ctx.buildPrRefs, doc)) {
       const named = ctx.buildPrRefs
         .map((r) => r.pr_url ?? (typeof r.pr_number === 'number' ? `#${r.pr_number}` : r.key))
         .join(', ');
@@ -3225,7 +3232,7 @@ export const composeBriefTool = {
           frame: {
             type: 'object',
             description:
-              "B-876 — the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, floor_reviewed?[] } | 'release' { act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], steps?[{ref,action,expect,covers[]}], exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only — never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[] }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present — author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output.",
+              "B-876 — the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, floor_reviewed?[] } | 'release' { act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], steps?[{ref,action,expect,covers[]}], exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only — never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[], prs?[{repo,number,url}] (B-890, optional forever — populated from field_values.prerequisite_pr then build_pr) }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present — author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output.",
           },
           revision: {
             type: 'object',

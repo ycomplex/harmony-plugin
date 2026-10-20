@@ -3974,6 +3974,35 @@ describe('B-876 gate frame', () => {
       const r = lintBrief(doc, renderBrief(doc), { reason: 'plan-draft', buildPrRefs: refs });
       expect(r.warnings.join(' ')).not.toContain('names no PR reference');
     });
+
+    it('is silent once frame.act.prs names the PR (B-890)', () => {
+      const act = { ...(releaseFrame() as { act: object }).act, prs: [{ repo: 'harmony-plugin', number: 184, url: refs[0].pr_url }] };
+      const doc = baseDoc({ frame: releaseFrame({ act }) });
+      const r = lintBrief(doc, renderBrief(doc), { reason: 'release-decision-pending', buildPrRefs: refs });
+      expect(r.errors).toEqual([]);
+      expect(r.warnings.join(' ')).not.toContain('names no PR reference');
+    });
+
+    it('accepts prs on a release frame and on a plan landing, and an absent prs is fine (B-890)', () => {
+      const prs = [
+        { repo: 'harmony-web', number: 1, url: 'https://github.com/ycomplex/harmony-web/pull/1' },
+        { repo: 'harmony-plugin', number: 2, url: 'https://github.com/ycomplex/harmony-plugin/pull/2' },
+      ];
+      const landing = { repos: ['harmony-web'], pr_count: 2, lands_in: 'staging', atomicity: 'ordered', ordering: 'web first', irreversible: [] };
+      const withPrs = baseDoc({ frame: releaseFrame({ act: { ...landing, prs } }) });
+      const planWith = baseDoc({ frame: planFrame({ landing: { ...landing, prs } }) });
+      const without = baseDoc({ frame: releaseFrame({ act: { ...landing } }) });
+      for (const [doc, reason] of [
+        [withPrs, 'release-decision-pending'],
+        [planWith, 'plan-draft'],
+        [without, 'release-decision-pending'],
+      ] as const) {
+        const r = lintBrief(doc, renderBrief(doc), { reason });
+        expect(r.errors).toEqual([]);
+        expect(r.ok).toBe(true);
+        expect(r.warnings.join(' ')).not.toMatch(/prs/);
+      }
+    });
   });
 
   // ─────────────────────────────────────────────────────────────────────────────────────────────

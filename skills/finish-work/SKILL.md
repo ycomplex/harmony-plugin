@@ -143,13 +143,13 @@ by the shape of the ticket row.
      doc: { decide: "Release <ticket> — merge PR <pr_number> and deploy to staging?",
        // The release frame (B-876) — see "The release frame" below for every field.
        frame: { kind: "release",
-         act: { repos: ["<repo>"], pr_count: 1, lands_in: "staging", atomicity: "single", irreversible: [] },
+         act: { repos: ["<repo>"], pr_count: 1, lands_in: "staging", atomicity: "single", irreversible: [],
+                prs: [{ repo: "<owner/repo>", number: <pr_number>, url: "<pr_url>" }] },
          unproven: [], evidence_status: { proven_by_run: 0, walk_at_verify: 0, unproven: 0, total: 0 },
          risk_classes: [] },
        context: [
          "The prior acceptance wasn't recorded — please re-affirm.",
-         // The PR reference rides doc.context, never a new typed field — read build_pr defensively.
-         "PR: <pr_url> (branch <branch>, head <head_sha>)",
+         // The PR reference rides frame.act.prs (B-890), not doc.context — see "The release frame".
        ],
        items: [{ kind: "decision", text: "Re-affirm shipping the built artefact — PR <pr_url>", recommendation: "release" }] }
    })
@@ -384,7 +384,9 @@ frame: {
     lands_in: "staging",                  // 'staging' | 'production' | 'both' | 'merged-main'
     atomicity: "single",                  // 'single' | 'together' | 'ordered'
     // ordering: "<REQUIRED when atomicity is 'ordered' — web first, then plugin, ...>",
-    irreversible: []                      // [] renders as "nothing — every step is revertable"
+    irreversible: [],                     // [] renders as "nothing — every step is revertable"
+    // The PRs this accept executes (B-890) — OPTIONAL, see "The PR references ride act.prs" below.
+    prs: [{ repo: "<owner/repo>", number: 184, url: "<pr_url>" }]
   },
   // What will be LIVE BUT UNPROVEN when this lands, closed-enumeration, each with its reason. [] = nothing.
   unproven: [{ item: "<what is unproven>", reason: "<why the build did not prove it>" }],
@@ -419,19 +421,23 @@ it.** The `gh pr view` call above ("One `gh pr view` call…") already names thi
   still pending. This is the SAME `state === 'MERGED'` signal O2's own pre-merge read branches on (§O2 step
   1c above) — compose-time and merge-time read the same fact, just at two different moments.
 
-**The PR reference rides `doc.context`, NOT a typed field (B-876).** Read `field_values.build_pr` and put
-a PR line in `doc.context`, e.g. `"PR: <pr_url> (branch <branch>, head <head_sha>, reviewDecision
-<reviewDecision>)"`. Do **not** invent a new typed `doc` field for it: the shipped web cards renderer
-enumerates the recognized-kind fields by name, so a field it does not know is dropped on the floor with no
-error anywhere — the reader simply never sees it, in the view they use by default. `compose_brief` warns
-(never refuses) when the task records a pushed PR and the brief names none.
+**The PR references ride `frame.act.prs` (B-890), NOT `doc.context`.** `act.prs` is an optional typed
+list, `Array<{ repo, number, url }>`, on the release frame's `act` (`LandingShape` in `src/tools/briefs.ts`).
+Populate it from `field_values.prerequisite_pr` AND `field_values.build_pr`, **prerequisite PR first, then
+the build PR(s)**. Do **not** also put a `"PR: ..."` line in `doc.context` any more: the typed field is the
+one place the web card renders them from. `compose_brief` still warns (never refuses) when the task records a
+pushed PR and the brief names none; a non-empty `act.prs` satisfies that warning.
 
-Read `build_pr` **defensively**: its shape is not enforced and three divergent forms exist on the live
-board — sibling keys (`build_pr` + `build_pr_plugin`, B-740), nesting (`build_pr.web_pr` /
-`build_pr.plugin_pr`, B-743), and a non-PR sibling (`work_branch`, B-844). **Name what you can read and
-omit what you cannot**; never fail the compose over an unfamiliar key. (The multi-PR *merge* guard is a
-separate thing and still applies at O2 below — naming extra PRs on the brief is not permission to merge
-them.)
+Read these keys **defensively**: their shape is not enforced and four divergent live forms exist — sibling
+keys (`build_pr` + `build_pr_plugin`, B-740), nesting (`build_pr.web_pr` / `build_pr.plugin_pr`, B-743), a
+non-PR sibling (`work_branch`, B-844 — carries no `pr_url`/`pr_number`, so it is NOT a PR; skip it), and
+`prerequisite_pr`, which carries its own `repo` (B-783). For each entry map `repo` from the record's `repo`
+when present (else infer `owner/repo` from `pr_url`, else omit that entry's `repo` only if you cannot — and
+if `number` or `url` cannot be read, omit the whole entry), `number` from `pr_number`, `url` from `pr_url`.
+**Name what you can read and omit what you cannot**; never fail the compose over an unfamiliar key, and
+`prs` may be left off entirely. Keep `pr_count` consistent with the PRs this release merges. (The multi-PR
+*merge* guard is a separate thing and still applies at O2 below — naming extra PRs on the brief is not
+permission to merge them.)
 
 **The check-status section — one entry per pull request, never omitted (B-861).** Nobody is asked to
 authorise a merge blind, so the brief must say what each repository's own checks reported. The contract is
