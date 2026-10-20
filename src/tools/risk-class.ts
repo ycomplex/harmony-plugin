@@ -449,6 +449,21 @@ const PATH_REGEX_TABLE: Record<RiskClass, RegExp[]> = {
   'shared-core': PATH_GLOB_TABLE['shared-core'].map(globToRegExp),
 };
 
+// Migration directories always win over test exclusions, including non-SQL files.
+const MIGRATION_DIRECTORY_REGEXES = ['**/migrations/**', '**/migration/**'].map(globToRegExp);
+const SQL_TEST_REGEXES = [
+  '**/tests/**', '**/test/**', '**/__tests__/**', 'supabase/tests/**',
+  '**/*.test.sql', '**/*.spec.sql', '**/*_test.sql',
+].map(globToRegExp);
+
+/** Shared path-only migration floor for risk detection and record/fast-track eligibility.
+ * Keep broad SQL coverage: only recognized tests are excluded, never migration directories. */
+export function isMigrationRiskPath(path: string): boolean {
+  if (MIGRATION_DIRECTORY_REGEXES.some((re) => re.test(path))) return true;
+  return PATH_REGEX_TABLE['data-migration'].some((re) => re.test(path))
+    && !SQL_TEST_REGEXES.some((re) => re.test(path));
+}
+
 /** Normalize a free-form label into a known RiskClass, or null. Accepts the canonical class names
  *  plus common aliases (`risk:auth`, `migration`, `destructive`, `irreversible`, `core`). */
 export function labelToRiskClass(label: string): RiskClass | null {
@@ -522,6 +537,7 @@ function authBasenameHit(path: string): boolean {
  *  tokenization hits the shared auth/oauth word-sense regexes (checked AFTER the glob test, so a
  *  genuine glob match like `src/auth/middleware.ts` still trips regardless of basename tokenization). */
 function pathHitsClass(paths: string[], cls: RiskClass): boolean {
+  if (cls === 'data-migration') return paths.some(isMigrationRiskPath);
   const globs = PATH_REGEX_TABLE[cls];
   if (globs.length === 0) return false;
   return paths.some((p) => {
