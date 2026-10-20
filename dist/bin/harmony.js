@@ -22868,15 +22868,15 @@ var levelMapping = [
   "ansi16m"
 ];
 var styles2 = /* @__PURE__ */ Object.create(null);
-var applyOptions = (object, options = {}) => {
+var applyOptions = (object2, options = {}) => {
   if (options.level && !(Number.isInteger(options.level) && options.level >= 0 && options.level <= 3)) {
     throw new Error("The `level` option should be an integer from 0 to 3");
   }
   const colorLevel = stdoutColor ? stdoutColor.level : 0;
-  object.level = options.level === void 0 ? colorLevel : options.level;
+  object2.level = options.level === void 0 ? colorLevel : options.level;
 };
 var chalkFactory = (options) => {
-  const chalk2 = (...strings) => strings.join(" ");
+  const chalk2 = (...strings2) => strings2.join(" ");
   applyOptions(chalk2, options);
   Object.setPrototypeOf(chalk2, createChalk.prototype);
   return chalk2;
@@ -31476,10 +31476,10 @@ var util;
       return obj[e];
     });
   };
-  util2.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object) => {
+  util2.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object2) => {
     const keys = [];
-    for (const key in object) {
-      if (Object.prototype.hasOwnProperty.call(object, key)) {
+    for (const key in object2) {
+      if (Object.prototype.hasOwnProperty.call(object2, key)) {
         keys.push(key);
       }
     }
@@ -37790,6 +37790,99 @@ async function resolveAssignee(client, projectId, assignee) {
   throw new Error(`No member found matching "${assignee}". Use list_members to see available members.`);
 }
 
+// src/tools/brief-frame-schema.ts
+var object = (shape) => external_exports.object(shape).passthrough();
+var strings = external_exports.array(external_exports.string());
+var track = external_exports.enum(["product-design", "technical-design", "ux-ui-design"]);
+var unproven = external_exports.array(object({ item: external_exports.string(), reason: external_exports.string() }));
+var landing = object({
+  repos: strings,
+  pr_count: external_exports.number(),
+  lands_in: external_exports.enum(["staging", "production", "both", "merged-main"]),
+  atomicity: external_exports.enum(["single", "together", "ordered"]),
+  ordering: external_exports.string().optional(),
+  irreversible: strings,
+  prs: external_exports.array(object({ repo: external_exports.string(), number: external_exports.number(), url: external_exports.string() })).optional()
+});
+var floor = { floor_reviewed: strings.optional() };
+var briefFrameSchema = external_exports.discriminatedUnion("kind", [
+  object({
+    kind: external_exports.literal("clarify"),
+    solving: external_exports.string(),
+    in_scope: strings,
+    not_solving: external_exports.array(object({ item: external_exports.string(), lands: external_exports.string() })),
+    ...floor
+  }),
+  object({
+    kind: external_exports.literal("decompose"),
+    elements: external_exports.array(object({ text: external_exports.string(), surface: external_exports.string().optional(), covers: external_exports.string().optional() })),
+    coverage: external_exports.string(),
+    existing_children_checked: external_exports.boolean(),
+    ...floor
+  }),
+  object({
+    kind: external_exports.literal("design"),
+    track,
+    tracks: external_exports.array(object({ track, status: external_exports.enum(["accepted", "this-brief", "pending", "not-required"]), note: external_exports.string().optional() })),
+    reach: strings,
+    not_reopened: strings.optional(),
+    derisk: object({ run: strings, not_run: strings }).optional(),
+    files_on_accept: strings.optional(),
+    ...floor
+  }),
+  object({
+    kind: external_exports.literal("plan"),
+    scope: object({ repos: strings, surfaces: strings, has_migration: external_exports.boolean() }),
+    steps: strings,
+    attestation: object({ base_verified: external_exports.string(), derisked_by_running: external_exports.string().optional() }),
+    carried_unproven: unproven,
+    ac_coverage: external_exports.string(),
+    landing: landing.optional(),
+    design_delta: external_exports.string().optional(),
+    ...floor
+  }),
+  object({
+    kind: external_exports.literal("release"),
+    act: landing,
+    unproven,
+    evidence_status: object({ proven_by_run: external_exports.number(), walk_at_verify: external_exports.number(), unproven: external_exports.number(), total: external_exports.number(), detail: external_exports.string().optional() }),
+    // These values are overwritten by compose; callers need not author them.
+    risk_classes: strings.optional(),
+    contradiction_signal: external_exports.unknown().optional(),
+    pr_review_state: external_exports.string().optional(),
+    ...floor
+  }),
+  object({
+    kind: external_exports.literal("verify"),
+    environment: external_exports.enum(["staging", "production", "merged-main", "local"]),
+    criteria: external_exports.array(object({
+      ac_id: external_exports.string(),
+      text: external_exports.string(),
+      checked: external_exports.boolean(),
+      disposition: external_exports.enum(["walk", "blocked", "test-proven", "not-hand-checkable", "carried", "unproven", "manifest-declared", "manifest-attested"]),
+      step_ref: external_exports.string().optional(),
+      blocked_reason: external_exports.string().optional(),
+      carried_to: external_exports.string().optional(),
+      backed_by: external_exports.string().optional()
+    })),
+    steps: external_exports.array(object({ ref: external_exports.string(), action: external_exports.string(), expect: external_exports.string(), covers: strings })).optional(),
+    exempt_reason: external_exports.string().optional(),
+    evidence_status: external_exports.string(),
+    bounded_accept: object({ open_ac_ids: strings, closes_when: external_exports.string() }).optional()
+  })
+]);
+function validateBriefFrame(frame, expectedKind) {
+  if (frame == null) return;
+  const result = briefFrameSchema.safeParse(frame);
+  if (!result.success) {
+    throw new Error(`Invalid brief frame:
+${result.error.issues.map((issue) => `- doc.frame${issue.path.map((p) => typeof p === "number" ? `[${p}]` : `.${p}`).join("")}: ${issue.message}`).join("\n")}`);
+  }
+  if (expectedKind && result.data.kind !== expectedKind) {
+    throw new Error(`Invalid brief frame: doc.frame.kind must be '${expectedKind}', received '${result.data.kind}'`);
+  }
+}
+
 // src/tools/risk-class.ts
 var RISK_CLASSES = [
   "auth",
@@ -38620,9 +38713,9 @@ function frameUnits(frame) {
       return 0;
   }
 }
-function landingUnits(landing) {
-  if (!landing) return 0;
-  return (landing.repos?.length ?? 0) + (landing.irreversible?.length ?? 0);
+function landingUnits(landing2) {
+  if (!landing2) return 0;
+  return (landing2.repos?.length ?? 0) + (landing2.irreversible?.length ?? 0);
 }
 function softWordBudget(doc) {
   const units = doc.items.length + (doc.alternatives?.length ?? 0) + frameUnits(doc.frame);
@@ -38680,14 +38773,14 @@ function analyzeLegibility(content) {
     adjacentParens
   };
 }
-function renderLanding(landing) {
-  const repos = landing.repos?.length ? landing.repos.join(", ") : "no repo named";
-  const prs = `${landing.pr_count} pull request${landing.pr_count === 1 ? "" : "s"}`;
-  const atomicity = landing.atomicity === "ordered" ? `ordered${landing.ordering ? ` \u2014 ${landing.ordering}` : ""}` : landing.atomicity === "together" ? "landed together, not sequenced" : "a single landing";
-  return `${prs} across ${repos} \u2014 lands in ${landing.lands_in}, ${atomicity}`;
+function renderLanding(landing2) {
+  const repos = landing2.repos?.length ? landing2.repos.join(", ") : "no repo named";
+  const prs = `${landing2.pr_count} pull request${landing2.pr_count === 1 ? "" : "s"}`;
+  const atomicity = landing2.atomicity === "ordered" ? `ordered${landing2.ordering ? ` \u2014 ${landing2.ordering}` : ""}` : landing2.atomicity === "together" ? "landed together, not sequenced" : "a single landing";
+  return `${prs} across ${repos} \u2014 lands in ${landing2.lands_in}, ${atomicity}`;
 }
-function renderIrreversible(landing) {
-  return landing.irreversible?.length ? landing.irreversible.join("; ") : "nothing \u2014 every step is revertable";
+function renderIrreversible(landing2) {
+  return landing2.irreversible?.length ? landing2.irreversible.join("; ") : "nothing \u2014 every step is revertable";
 }
 function unprovenText(entry) {
   return `${entry.item} \u2014 ${entry.reason}`;
@@ -39714,6 +39807,7 @@ async function composeBrief(client, projectId, userId, args) {
   const mergedDecisionRef = args.decision_ref !== void 0 ? args.decision_ref ?? null : existingRow?.decision_ref ?? null;
   const priorDoc = existingRow?.doc ?? null;
   const mergedDoc = mergeBriefDoc(priorDoc, args.doc);
+  validateBriefFrame(mergedDoc.frame, FRAME_KIND_FOR_REASON[args.reason]);
   const priorRiskClasses = priorDoc?.frame?.kind === "release" ? priorDoc.frame.risk_classes : void 0;
   const pendingActivity = typeof args.pending_activity === "string" && args.pending_activity.trim().toLowerCase() === "null" ? null : args.pending_activity;
   const mergedPendingActivity = args.pending_activity !== void 0 ? pendingActivity ?? null : existingRow?.pending_activity ?? null;
