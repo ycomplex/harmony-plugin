@@ -31,6 +31,7 @@
 // Still zero-dependency: a plain `JSON.parse(readFileSync(...))` here, never the compiled
 // src/config/deployment-config.js loader — same reasoning as the AC5 note above.
 
+import { spawnSync } from 'node:child_process';
 import { createSign } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -137,17 +138,98 @@ export function serializeReposSection(reposSection) {
   return `HARMONY_REPOS_JSON=${encoded}\n`;
 }
 
+/** B-1183: how long one `harmony config get` may run before the mint script gives up on it. */
+const CONFIG_GET_TIMEOUT_MS = 20_000;
+
 /**
- * Resolve the base env-file CONTENT for composeEnvFile. B-800: when a deployment config file
- * exists at the resolved path, its `env` section WINS over `--base <file>` — the deployment
- * config is the new source of truth for the worker base env. Falls back to reading `--base <file>`
- * UNCHANGED when no deployment config exists at the resolved path (most machines today —
- * graceful degradation, same convention as src/config/deployment-config.ts's own loader). A
- * deployment config that EXISTS but is malformed JSON throws — a typo in a file you meant to be
- * read must never fail silently.
+ * B-1183: read one top-level section (`env`, `repos`) of the MERGED deployment config through
+ * `node $HARMONY_PLUGIN_DIR/dist/bin/harmony.js config get <key>` — the same channel the launch
+ * scripts use, so a host whose config lives in .harmony/conductor.json + the host file (no
+ * deployment.json) still hands its legs their env. Zero-dependency: a child process, not an import.
  *
- * `existsImpl`/`readImpl` are injectable so this is unit-testable without touching the real
- * filesystem (mirrors src/config/deployment-config.test.ts's fakeFs style).
+ * Returns { status: 'ok', stdout } | { status: 'unset' } (the CLI's clean "not configured" exit 1) |
+ * { status: 'failed', reason, unavailable? } (CLI missing, timeout, crash, any other exit, empty output). It never
+ * throws: the caller decides what a failure means.
+ */
+export function runConfigGet(key, { env = process.env, configPath, spawnImpl = spawnSync, existsImpl = existsSync } = {}) {
+  const pluginDir = env.HARMONY_PLUGIN_DIR;
+  if (!pluginDir) return { status: 'failed', unavailable: true, reason: 'HARMONY_PLUGIN_DIR is not set' };
+  const cli = join(pluginDir, 'dist', 'bin', 'harmony.js');
+  if (!existsImpl(cli)) return { status: 'failed', unavailable: true, reason: `${cli} does not exist` };
+  const timeout = Number(env.HARMONY_CONFIG_GET_TIMEOUT_MS) > 0 ? Number(env.HARMONY_CONFIG_GET_TIMEOUT_MS) : CONFIG_GET_TIMEOUT_MS;
+  const r = spawnImpl(process.execPath, [cli, 'config', 'get', key, ...(configPath ? ['--config', configPath] : [])], {
+    env,
+    encoding: 'utf8',
+    timeout,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (r.error) {
+    return { status: 'failed', reason: r.error.code === 'ETIMEDOUT' ? `timed out after ${timeout}ms` : `could not run (${r.error.message})` };
+  }
+  if (r.status === null) return { status: 'failed', reason: `killed by ${r.signal ?? 'a signal'}` };
+  if (r.status === 1 && /is not set in|no deployment config found/.test(r.stderr ?? '')) return { status: 'unset' };
+  if (r.status !== 0) return { status: 'failed', reason: `exited ${r.status}` };
+  if (!(r.stdout ?? '').trim()) return { status: 'failed', reason: 'printed nothing' };
+  return { status: 'ok', stdout: r.stdout };
+}
+
+const isEmptySection = (v) =>
+  v === undefined || v === null || (Array.isArray(v) && v.length === 0) || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);
+
+/** `KEY` of a `KEY=value` env line, or undefined for a blank/comment line. */
+const lineKey = (line) => /^\s*([^=\s#][^=\s]*)\s*=/.exec(line)?.[1];
+
+/**
+ * Overlay the merged env (key -> value) on `KEY=value` lines: a key already present is replaced IN
+ * PLACE, a new one is appended. Keeping the carrier's own order and its keys the loader does not know
+ * is what makes a legacy host's env-file byte-identical to what it was before B-1183.
+ */
+function overlayEnv(carrierLines, mergedEnv) {
+  const lines = [...carrierLines];
+  for (const [key, value] of Object.entries(mergedEnv)) {
+    if (value === undefined || value === null) continue;
+    const at = lines.findIndex((l) => lineKey(l) === key);
+    if (at >= 0) lines[at] = `${key}=${value}`;
+    else lines.push(`${key}=${value}`);
+  }
+  return lines;
+}
+
+/** The keys src/config/deployment-config.ts's RepoEntrySchema knows; any other key the loader strips. */
+const REPO_ENTRY_KEYS = ['url', 'ref', 'path', 'meta_repo_role', 'is_plugin'];
+
+/** True when the merged repos list says the same thing as the file's: same length, and each file entry,
+ *  cut down to the keys the loader keeps, equals the merged entry. (The loader re-orders keys and strips
+ *  unknown ones, so a plain string compare would call a legacy file "different".) */
+function sameRepos(fileRepos, mergedRepos) {
+  if (!Array.isArray(fileRepos) || !Array.isArray(mergedRepos) || fileRepos.length !== mergedRepos.length) return false;
+  return mergedRepos.every((m, i) => {
+    const f = fileRepos[i];
+    if (!f || typeof f !== 'object' || !m || typeof m !== 'object') return false;
+    return (
+      Object.keys(m).every((k) => JSON.stringify(f[k]) === JSON.stringify(m[k])) &&
+      Object.keys(f).every((k) => k in m || !REPO_ENTRY_KEYS.includes(k))
+    );
+  });
+}
+
+/**
+ * Resolve the base env-file CONTENT for composeEnvFile.
+ *
+ * B-1183: the env and repos come from the MERGED config (`harmony config get env` / `repos`, see
+ * runConfigGet) — project file < host file < deployment.json, the same view the launch scripts have —
+ * so a host that has no deployment.json at all still launches legs with its HARMONY_TARGET, repos, etc.
+ * When the CLI is unusable (missing, timeout, non-zero exit, empty output) AND deployment.json exists,
+ * its raw `env`/`repos` sections are used instead and the problem is logged ONCE on stderr: a leg is never
+ * launched with a silently smaller env. deployment.json is also the byte-order carrier: its own key
+ * order, and any key the loader would strip, survive, with the merged values overlaid on top.
+ *
+ * B-800 (unchanged): a deployment config that EXISTS but is malformed JSON throws. With neither a
+ * deployment config nor a usable merged config, `--base <file>` is read as before (most machines
+ * today); when only the merged config exists, that file's lines are the carrier.
+ *
+ * `existsImpl`/`readImpl`/`cliImpl`/`log` are injectable so this is unit-testable without touching the
+ * real filesystem or spawning a CLI (mirrors src/config/deployment-config.test.ts's fakeFs style).
  */
 export function resolveBaseContent({
   base,
@@ -155,8 +237,11 @@ export function resolveBaseContent({
   env = process.env,
   existsImpl = existsSync,
   readImpl = (p) => readFileSync(p, 'utf8'),
+  cliImpl = (key) => runConfigGet(key, { env, configPath }),
+  log = (message) => process.stderr.write(`${message}\n`),
 }) {
   const resolvedConfigPath = resolveDeploymentConfigPath({ configPath, env });
+  let parsed;
   if (existsImpl(resolvedConfigPath)) {
     let raw;
     try {
@@ -166,7 +251,6 @@ export function resolveBaseContent({
         cause: err,
       });
     }
-    let parsed;
     try {
       parsed = JSON.parse(raw);
     } catch (err) {
@@ -175,10 +259,62 @@ export function resolveBaseContent({
         { cause: err },
       );
     }
-    return `${flattenEnvSection(parsed.env)}${serializeReposSection(parsed.repos)}`;
   }
-  // No deployment config at the resolved path — fall back to --base <file>, unchanged behavior.
-  return base ? readImpl(base) : '';
+
+  // One section from the merged config: { value } when usable, { problem } when not, {} when the CLI
+  // cleanly says it is not configured.
+  const problems = [];
+  let loud = false; // a failure worth reporting even with no deployment.json to fall back on
+  const fromCli = (key) => {
+    const r = cliImpl(key);
+    if (r.status === 'unset') {
+      // The CLI only says "unset" for a file that has no such section; if ours has one, they disagree.
+      if (parsed && !isEmptySection(parsed[key])) problems.push(`\`config get ${key}\` said it is not set`);
+      return {};
+    }
+    if (r.status !== 'ok') {
+      problems.push(`\`config get ${key}\` ${r.reason}`);
+      if (!r.unavailable) loud = true;
+      return {};
+    }
+    let value;
+    try {
+      value = JSON.parse(r.stdout);
+    } catch {
+      problems.push(`\`config get ${key}\` printed something that is not JSON`);
+      loud = true;
+      return {};
+    }
+    if (isEmptySection(value) && parsed && !isEmptySection(parsed[key])) {
+      problems.push(`\`config get ${key}\` came back empty`);
+      return {};
+    }
+    return { value };
+  };
+  const mergedEnv = fromCli('env').value;
+  const mergedRepos = fromCli('repos').value;
+  if (problems.length > 0 && (parsed || loud)) {
+    log(
+      `mint-installation-token: ${problems.join('; ')}; ${parsed ? `using ${resolvedConfigPath} directly` : 'no deployment config to fall back on'}`,
+    );
+  }
+
+  if (!parsed && mergedEnv === undefined && mergedRepos === undefined) {
+    // No deployment config and nothing merged — fall back to --base <file>, unchanged behavior.
+    return base ? readImpl(base) : '';
+  }
+
+  const carrier = parsed
+    ? Object.entries(parsed.env && typeof parsed.env === 'object' ? parsed.env : {})
+        .filter(([, value]) => value !== undefined && value !== null)
+        .map(([key, value]) => `${key}=${value}`)
+    : base && existsImpl(base)
+      ? readImpl(base).split('\n').filter(Boolean)
+      : [];
+  const envLines = overlayEnv(carrier, isEmptySection(mergedEnv) ? {} : mergedEnv);
+  const envPart = envLines.length ? `${envLines.join('\n')}\n` : '';
+  const repos = mergedRepos !== undefined && !(parsed && sameRepos(parsed.repos, mergedRepos)) ? mergedRepos : parsed?.repos;
+  return `${envPart}${serializeReposSection(repos)}`;
 }
 
 /**
@@ -388,7 +524,7 @@ function parseArgs(argv) {
   return args;
 }
 
-export async function main(argv = process.argv.slice(2), env = process.env) {
+export async function main(argv = process.argv.slice(2), env = process.env, deps = {}) {
   const { base, out, config, conductionId, runConfig, runConfigPath, model, leg } = parseArgs(argv);
   // B-1020: --leg wins when given; otherwise fall back to this process's own inherited HARMONY_LEG
   // env var — how fireLaunch's per-call `env` option (scheduler.ts) reaches this script, since it
@@ -407,7 +543,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
   // B-800: the deployment config's `env` section wins over --base when present; see
   // resolveBaseContent's own doc comment for the full precedence + malformed-JSON behavior.
-  const baseContent = resolveBaseContent({ base, configPath: config, env });
+  const baseContent = resolveBaseContent({ base, configPath: config, env, ...deps });
   let envFileContent = composeEnvFile({ baseContent, token });
 
   // B-846: run-config seam. --run-config omitted entirely -> neither line below is appended,

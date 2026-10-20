@@ -178,6 +178,9 @@ describe('mintInstallationToken', () => {
 // src/config/deployment-config.test.ts's fakeFs style, for the same injectable-IO reason.
 function fakeFs(files: Record<string, string>) {
   return {
+    // B-1183: no `harmony config get` here (it would need a built CLI); these tests are about the file path.
+    cliImpl: () => ({ status: 'failed', unavailable: true, reason: 'not available in this test' }),
+    log: () => {},
     existsImpl: (path: string) => path in files,
     readImpl: (path: string) => {
       if (!(path in files)) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
