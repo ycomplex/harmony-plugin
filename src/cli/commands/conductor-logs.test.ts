@@ -75,11 +75,11 @@ describe('conductor logs', () => {
     expect(r.errLines[0]).toContain('PERMISSION_DENIED');
   });
 
-  it('attaches `logs` to the existing conductor group without touching `config`', () => {
+  it('attaches `logs` to the existing conductor group without touching `config` or the lifecycle verbs', () => {
     const program = new Command();
     registerConductorCommands(program);
     registerConductorLogsCommand(program, () => deps({}));
     const conductor = program.commands.find((c) => c.name() === 'conductor')!;
-    expect(conductor.commands.map((c) => c.name()).sort()).toEqual(['config', 'logs']);
+    expect(conductor.commands.map((c) => c.name()).sort()).toEqual(['config', 'logs', 'restart', 'start', 'status', 'stop']);
   });
 });

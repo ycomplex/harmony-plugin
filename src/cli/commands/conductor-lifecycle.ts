@@ -101,7 +101,7 @@ export function timingFromEnv(env: Env): Timing {
   };
 }
 
-const logPathOf = (s: ConductorSettings): string => join(s.paths.home, 'conductor.log');
+const logPathOf = (s: ConductorSettings): string => join(s.paths.home, 'conductor.out.log');
 
 async function findConductors(deps: LifecycleDeps, s: ConductorSettings): Promise<ConductorProcess[]> {
   const procs = await deps.listProcesses();

@@ -167,7 +167,7 @@ export function registerConductorLogsCommand(program: Command, makeDeps: () => C
   const conductor = program.commands.find((c) => c.name() === 'conductor') ?? program.command('conductor').description('Conductor operations');
   conductor
     .command('logs')
-    .description('Read the conductor daemon log (local JSON-lines file, else Cloud Logging via gcloud)')
+    .description('Read the conductor log (local JSON-lines file, else Cloud Logging via gcloud)')
     .requiredOption('--since <duration>', 'How far back: 30m, 1h, 2d')
     .option('--source <source>', 'local | cloud (default: local when the file exists)')
     .option('--limit <n>', `Maximum lines (default ${DEFAULT_LIMIT})`)

@@ -183,7 +183,7 @@ remove it from conductor.env*. Exit **1** when there is any issue; conflicts and
 
 ## Conductor logs (B-1174)
 
-The daemon writes **two outputs from one logger**:
+The conductor writes **two outputs from one logger**:
 
 - **stdout** keeps its text lines, `<ISO timestamp> <line>` (also appended to `HARMONY_DAEMON_LOG` when set).
   Only a remote conductor (`HARMONY_CONDUCTOR_REMOTE=1`, set by its pod spec; `KUBERNETES_SERVICE_HOST` is

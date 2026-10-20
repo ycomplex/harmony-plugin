@@ -124,7 +124,7 @@ supported by the matcher.
 `nohup` starts alike (`HARMONY_HOME` replaces `~/.harmony`). If only the old `~/.harmony/daemon.env` exists it is
 loaded and one line is printed: `conductor-launch: reading ~/.harmony/daemon.env — rename it to
 ~/.harmony/conductor.env`. `container/gke/switch-daemon-profile.sh` follows the same preference. The conductor's
-output goes to `~/.harmony/conductor.log` for every start these commands make.
+output goes to `~/.harmony/conductor.out.log` for every start these commands make.
 
 ## Adopting a nohup conductor into launchd (the Mac mini sequence)
 
@@ -155,7 +155,7 @@ Pre-flight
 Installed the LaunchAgent /Users/op/Library/LaunchAgents/com.ycomplex.harmony-daemon.plist.
   $ launchctl bootstrap gui/501 /Users/op/Library/LaunchAgents/com.ycomplex.harmony-daemon.plist
 
-Conductor started: host macmini, pid 9001, supervisor launchd-agent, plugin 0.15.80, log /Users/op/.harmony/conductor.log.
+Conductor started: host macmini, pid 9001, supervisor launchd-agent, plugin 0.15.80, log /Users/op/.harmony/conductor.out.log.
 It survives a reboot. Run `harmony conductor status` to confirm it holds its leases with a fresh heartbeat.
 ```
 
@@ -179,3 +179,9 @@ Adoption: every lease on this host is held by pid 9001 with a fresh heartbeat.
 If a lease is still held by the old pid, `status` prints `NOT YET ADOPTED: n lease(s) ...` and
 `adoption_complete` is false in `--json`; wait a poll interval and run it again. A macOS host that must start
 the conductor before anyone logs in uses `harmony conductor start --at-boot` instead of `--local` in step 2.
+
+## Logs
+
+`harmony conductor start` and `restart` send the conductor's raw stdout to `~/.harmony/conductor.out.log`. That is a
+different file from the structured JSON-lines log `~/.harmony/logs/conductor.log` that `harmony conductor logs`
+reads (B-1174; see [`conductor-config.md`](conductor-config.md#conductor-logs-b-1174)).
