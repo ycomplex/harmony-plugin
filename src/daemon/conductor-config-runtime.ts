@@ -82,6 +82,10 @@ export interface ConductorConfigRuntime {
   getModelPolicy(): ModelPolicy | undefined;
   /** The current log_shipping value (undefined = unset). Recorded here for the log-shipping consumer. */
   getLogShipping(): boolean | undefined;
+  /** B-1174: the current merged gcp.project (undefined = unset). The log shipper reads this live. */
+  getGcpProject(): string | undefined;
+  /** B-1174: the current merged gcloud.account (undefined = unset). */
+  getGcloudAccount(): string | undefined;
 }
 
 function inertRuntime(): ConductorConfigRuntime {
@@ -92,6 +96,8 @@ function inertRuntime(): ConductorConfigRuntime {
     async applyNow() {},
     getModelPolicy: () => undefined,
     getLogShipping: () => undefined,
+    getGcpProject: () => undefined,
+    getGcloudAccount: () => undefined,
   };
 }
 
@@ -179,6 +185,8 @@ export async function startConductorConfigRuntime(deps: ConductorConfigRuntimeDe
   let lastRestartLine = '';
   let modelPolicy = policyOf(first.merged);
   let logShipping = first.merged.log_shipping;
+  let gcpProject = first.merged.gcp?.project;
+  let gcloudAccount = first.merged.gcloud?.account;
 
   const pushLaunchEnv = (merged: ConductorConfig): string[] => applyLaunchEnv(env, launchEnvFromMerged(merged), applied);
   pushLaunchEnv(first.merged);
@@ -238,6 +246,8 @@ export async function startConductorConfigRuntime(deps: ConductorConfigRuntimeDe
         // Log-only for now: the log-shipping consumer reads getLogShipping().
         log(`conductor config: log_shipping ${logShipping === undefined ? 'unset' : String(logShipping)} (recorded)`);
       }
+      gcpProject = next.merged.gcp?.project;
+      gcloudAccount = next.merged.gcloud?.account;
       const changed = pushLaunchEnv(next.merged);
       if (changed.length) log(`conductor config: launch env updated: ${changed.join(', ')}`);
 
@@ -272,5 +282,7 @@ export async function startConductorConfigRuntime(deps: ConductorConfigRuntimeDe
     applyNow: tick,
     getModelPolicy: () => modelPolicy,
     getLogShipping: () => logShipping,
+    getGcpProject: () => gcpProject,
+    getGcloudAccount: () => gcloudAccount,
   };
 }

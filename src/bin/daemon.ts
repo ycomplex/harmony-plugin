@@ -34,7 +34,7 @@
 // same-host successor adopt them immediately instead of waiting out the full stale window), log,
 // and exit 0.
 
-import { appendFileSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { exec } from 'node:child_process';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -70,6 +70,7 @@ import { createHeartbeatKeeper } from '../daemon/heartbeat.js';
 import { formatDaemonError } from '../daemon/error-format.js';
 import { loadDaemonConfig, selectNamedProfile } from '../daemon/config.js';
 import { detectSupervisor, shutdownLine, shouldInspectWorkerImage } from '../daemon/supervisor.js';
+import { createDaemonLogger } from '../daemon/conductor-logger.js';
 // B-1170: the two-file conductor config (project file from the config repo + host file) — all logic in the module.
 import { startConductorConfigRuntime, type ConductorConfigRuntime } from '../daemon/conductor-config-runtime.js';
 import { quietLogLine } from '../daemon/quiet-reap.js';
@@ -205,10 +206,16 @@ async function main(): Promise<void> {
   let namedProfile: LaunchProfileConfig | null = null;
   // B-1170: stays inert (null deploymentConfig, no timer, env untouched) on a host with only legacy files.
   let conductorRuntime: ConductorConfigRuntime | undefined;
+  // B-1174: one logger, text on stdout (unchanged) + a rotating JSON-lines file + optional Cloud Logging.
+  const conductorLogger = createDaemonLogger({
+    env: process.env,
+    getTextLogPath: () => config?.logPath,
+    getRuntime: () => conductorRuntime,
+  });
   try {
     conductorRuntime = await startConductorConfigRuntime({
       env: process.env,
-      log: (line) => process.stdout.write(`${new Date().toISOString()} ${line}\n`),
+      log: (line) => conductorLogger.bootLine(line),
       // `config` (the DaemonConfig) is loaded below; the runtime only touches this after boot.
       config: {
         get maxConcurrentWorkers() { return config.maxConcurrentWorkers; },
@@ -248,17 +255,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const log = (line: string): void => {
-    const stamped = `${new Date().toISOString()} ${line}\n`;
-    process.stdout.write(stamped);
-    if (config.logPath) {
-      try {
-        appendFileSync(config.logPath, stamped);
-      } catch {
-        // The log file is best-effort; stdout (launchd's StandardOutPath) is the primary sink.
-      }
-    }
-  };
+  const log = (line: string): void => conductorLogger.line(line);
 
   /** Run a rendered launch/reap/probe command; consume ONLY the exit code. Worker output is
    *  discarded to the log (never parsed — the agent-portability guardrail), UNLESS `opts.quiet` is
@@ -454,6 +451,7 @@ async function main(): Promise<void> {
   // Deliberately its OWN read: get_task's view:'meta' projection is a pinned 20-key shape and the
   // key is a PROJECT field, not a task one.
   const projectKey = (await getProject(client, projectId)).key as string;
+  conductorLogger.setProjectKey(projectKey);
 
   const leaseHolder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 
@@ -641,6 +639,7 @@ async function main(): Promise<void> {
     // at all, so the marker just stays unset and the stale-window wait is unchanged).
     await markCleanShutdownBounded(client, leaseHolder, log, CLEAN_SHUTDOWN_TIMEOUT_MS);
     log(shutdownLine(signal, detectSupervisor(process.env)));
+    conductorLogger.stop(); // B-1174: stop the shipping timer; the local file already has every entry
     process.exit(0);
   };
   process.on('SIGTERM', () => {
