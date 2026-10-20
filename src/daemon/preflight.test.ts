@@ -90,6 +90,45 @@ describe('runBootPreflight — hard tool resolution (check 1)', () => {
     ).rejects.toThrow(/"reap" template/);
   });
 
+  // B-1173: the remote conductor pod has no kubeconfig, so kubectl never calls its gke credential helper.
+  const GKE_TOOLS = { launch: ['node', 'kubectl', 'gke-gcloud-auth-plugin'], reap: ['kubectl', 'gke-gcloud-auth-plugin'] };
+
+  it('a remote conductor (HARMONY_CONDUCTOR_REMOTE=1) boots without gke-gcloud-auth-plugin, and still checks the rest', async () => {
+    const runCommand = fakeRunCommand(['gke-gcloud-auth-plugin']);
+    await expect(
+      runBootPreflight(fakeConfig(), baseProfile({ required_tools: GKE_TOOLS }), {
+        runCommand,
+        env: { HARMONY_CONDUCTOR_REMOTE: '1' },
+        profileName: 'gke',
+        log: vi.fn(),
+      }),
+    ).resolves.toBeUndefined();
+    expect(runCommand).not.toHaveBeenCalledWith('command -v gke-gcloud-auth-plugin', { quiet: true });
+    expect(runCommand).toHaveBeenCalledWith('command -v kubectl', { quiet: true });
+  });
+
+  it('a remote conductor still refuses when a tool it does need (kubectl) is missing', async () => {
+    await expect(
+      runBootPreflight(fakeConfig(), baseProfile({ required_tools: GKE_TOOLS }), {
+        runCommand: fakeRunCommand(['kubectl']),
+        env: { HARMONY_CONDUCTOR_REMOTE: '1' },
+        profileName: 'gke',
+        log: vi.fn(),
+      }),
+    ).rejects.toThrow(/Missing required tool "kubectl"/);
+  });
+
+  it('a local conductor still requires gke-gcloud-auth-plugin (its kubeconfig entry calls it)', async () => {
+    await expect(
+      runBootPreflight(fakeConfig(), baseProfile({ required_tools: GKE_TOOLS }), {
+        runCommand: fakeRunCommand(['gke-gcloud-auth-plugin']),
+        env: {},
+        profileName: 'gke',
+        log: vi.fn(),
+      }),
+    ).rejects.toThrow(/Missing required tool "gke-gcloud-auth-plugin"/);
+  });
+
   it('never invokes runCommand at all when required_tools is absent (nothing declared to check)', async () => {
     const runCommand = fakeRunCommand();
     await runBootPreflight(fakeConfig(), baseProfile({ required_tools: undefined }), {

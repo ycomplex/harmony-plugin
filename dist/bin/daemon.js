@@ -38523,11 +38523,14 @@ function resolveLauncherVar(varName, env, deploymentConfig) {
   }
 }
 var TEMPLATE_KEYS = ["launch", "reap", "probe"];
+var NOT_NEEDED_REMOTE = /* @__PURE__ */ new Set(["gke-gcloud-auth-plugin"]);
 async function runBootPreflight(config, profile, opts) {
   void config;
+  const remote = opts.env.HARMONY_CONDUCTOR_REMOTE === "1";
   for (const templateKey of TEMPLATE_KEYS) {
     const tools = profile.required_tools?.[templateKey] ?? [];
     for (const tool of tools) {
+      if (remote && NOT_NEEDED_REMOTE.has(tool)) continue;
       const result = await opts.runCommand(`command -v ${tool}`, { quiet: true });
       if (result.exitCode !== 0) {
         throw new Error(
