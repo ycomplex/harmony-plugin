@@ -34,7 +34,8 @@ const hostOk = {
 };
 
 function deps(env: NodeJS.ProcessEnv = {}, extra: Partial<ConductorCliDeps> = {}): ConductorCliDeps {
-  return { ...defaultCliDeps(), env: { HARMONY_HOME: home, ...env }, ...extra };
+  // secretExists: undefined = skip the gcloud existence check (never spawn a real gcloud from a test).
+  return { ...defaultCliDeps(), secretExists: undefined, env: { HARMONY_HOME: home, ...env }, ...extra };
 }
 const write = (name: string, v: unknown) => {
   const p = join(dir, name);
@@ -57,9 +58,9 @@ const legacyDeployment = () => ({
 });
 
 describe('migrate', () => {
-  it('is a dry run by default: prints both files, dropped and warnings, and writes nothing', () => {
+  it('is a dry run by default: prints both files, dropped and warnings, and writes nothing', async () => {
     const legacy = write('deployment.json', legacyDeployment());
-    const r = runMigrate(deps(), { config: legacy });
+    const r = await runMigrate(deps(), { config: legacy });
     expect(r.exitCode).toBe(0);
     const out = r.lines.join('\n');
     expect(out).toContain('DRY RUN');
@@ -78,27 +79,27 @@ describe('migrate', () => {
     expect((r.data as { written: string[] }).written).toEqual([]);
   });
 
-  it('ambiguous profile is an error that says what to pass', () => {
+  it('ambiguous profile is an error that says what to pass', async () => {
     const legacy = write('deployment.json', { ...legacyDeployment(), profiles: { gke: BUILTIN_PROFILES.gke, cloud: BUILTIN_PROFILES.cloud } });
-    const r = runMigrate(deps(), { config: legacy });
+    const r = await runMigrate(deps(), { config: legacy });
     expect(r.exitCode).toBe(1);
     expect(r.errLines.join('\n')).toContain('--profile');
   });
 
-  it('--write requires --out-project and has no implicit default', () => {
+  it('--write requires --out-project and has no implicit default', async () => {
     const legacy = write('deployment.json', legacyDeployment());
-    const r = runMigrate(deps(), { config: legacy, write: true });
+    const r = await runMigrate(deps(), { config: legacy, write: true });
     expect(r.exitCode).toBe(1);
     expect(r.errLines.join('\n')).toContain('--out-project');
     expect(existsSync(join(home, 'conductor-host.json'))).toBe(false);
   });
 
-  it('--write creates both files (host 0600, default host path), never touching the legacy file', () => {
+  it('--write creates both files (host 0600, default host path), never touching the legacy file', async () => {
     const legacy = write('deployment.json', legacyDeployment());
     const before = readFileSync(legacy, 'utf8');
     const mtime = statSync(legacy).mtimeMs;
     const outProject = join(dir, 'out', 'conductor.json');
-    const r = runMigrate(deps(), { config: legacy, write: true, outProject });
+    const r = await runMigrate(deps(), { config: legacy, write: true, outProject });
     expect(r.exitCode).toBe(0);
     expect(JSON.parse(readFileSync(outProject, 'utf8')).profile).toBe('gke');
     const hostPath = join(home, 'conductor-host.json');
@@ -109,38 +110,117 @@ describe('migrate', () => {
     expect(r.lines.join('\n')).toContain('Old files left untouched');
   });
 
-  it('refuses to overwrite an existing output without --force, then overwrites with it', () => {
+  it('refuses to overwrite an existing output without --force, then overwrites with it', async () => {
     const legacy = write('deployment.json', legacyDeployment());
     const outProject = write('project-out.json', 'precious');
     const outHost = join(dir, 'host-out.json');
-    const r = runMigrate(deps(), { config: legacy, write: true, outProject, outHost });
+    const r = await runMigrate(deps(), { config: legacy, write: true, outProject, outHost });
     expect(r.exitCode).toBe(1);
     expect(r.errLines.join('\n')).toContain('--force');
     expect(readFileSync(outProject, 'utf8')).toBe('precious');
     expect(existsSync(outHost)).toBe(false); // nothing was written at all
-    const forced = runMigrate(deps(), { config: legacy, write: true, outProject, outHost, force: true });
+    const forced = await runMigrate(deps(), { config: legacy, write: true, outProject, outHost, force: true });
     expect(forced.exitCode).toBe(0);
     expect(JSON.parse(readFileSync(outProject, 'utf8')).version).toBe(1);
     expect(existsSync(outHost)).toBe(true);
   });
 
-  it('refuses to write over the legacy deployment config even with --force', () => {
+  it('refuses to write over the legacy deployment config even with --force', async () => {
     const legacy = write('deployment.json', legacyDeployment());
     const before = readFileSync(legacy, 'utf8');
-    const r = runMigrate(deps(), { config: legacy, write: true, outProject: legacy, force: true });
+    const r = await runMigrate(deps(), { config: legacy, write: true, outProject: legacy, force: true });
     expect(r.exitCode).toBe(1);
     expect(readFileSync(legacy, 'utf8')).toBe(before);
   });
 
-  it('an existing host file at the default path is protected too', () => {
+  it('an existing host file at the default path is protected too', async () => {
     const legacy = write('deployment.json', legacyDeployment());
     const hostPath = join(home, 'conductor-host.json');
     writeFileSync(hostPath, 'mine');
     chmodSync(hostPath, 0o600);
-    const r = runMigrate(deps(), { config: legacy, write: true, outProject: join(dir, 'p.json') });
+    const r = await runMigrate(deps(), { config: legacy, write: true, outProject: join(dir, 'p.json') });
     expect(r.exitCode).toBe(1);
     expect(readFileSync(hostPath, 'utf8')).toBe('mine');
     expect(existsSync(join(dir, 'p.json'))).toBe(false);
+  });
+
+  // B-1183
+  describe('secrets block, existence check and the "deployment.json still needed" warning', () => {
+    const mini = () => ({
+      ...legacyDeployment(),
+      profiles: { gke: { ...BUILTIN_PROFILES.gke, gcloud_project: 'old-proj' }, cloud: { ...BUILTIN_PROFILES.cloud, gcloud_project: 'old-proj' } },
+      env: { HARMONY_PLUGIN_POSTURE: 'ack:staging', HARMONY_TARGET: 'prod', CLAUDE_HEADLESS_FLAGS: '--verbose', HARMONY_API_TOKEN: 'secret-token-value', CLAUDE_CODE_OAUTH_TOKEN: 'oauth-secret-value' },
+      repos: [{ url: 'https://github.com/o/w.git', path: '/w', meta_repo_role: true }],
+    });
+    const checker = (missing: string[] = [], state: 'missing' | 'unchecked' = 'missing') => {
+      const calls: { name: string; ctx: { project?: string; account?: string } }[] = [];
+      const secretExists: ConductorCliDeps['secretExists'] = async (name, ctx) => {
+        calls.push({ name, ctx });
+        return missing.includes(name) ? state : 'exists';
+      };
+      return { calls, secretExists };
+    };
+
+    it('writes the project file four keys and the host secrets block, and checks each name by metadata', async () => {
+      const legacy = write('deployment.json', mini());
+      const c = checker();
+      const outProject = join(dir, 'out', 'conductor.json');
+      const r = await runMigrate(deps({}, { secretExists: c.secretExists }), { config: legacy, write: true, outProject, profile: 'gke' });
+      expect(r.exitCode).toBe(0);
+      const project = JSON.parse(readFileSync(outProject, 'utf8'));
+      expect(project).toMatchObject({ target: 'prod', agent_flags: { 'claude-code': '--verbose' }, repos: [{ path: '/w' }], profiles: { gke: {}, cloud: {} } });
+      const host = JSON.parse(readFileSync(join(home, 'conductor-host.json'), 'utf8'));
+      expect(host.secrets).toEqual({ api_token: 'HARMONY_API_TOKEN', github_app_private_key: 'harmony-daemon-app-private-key', claude_oauth_token: 'CLAUDE_CODE_OAUTH_TOKEN' });
+      expect(c.calls.map((x) => x.name)).toEqual(['HARMONY_API_TOKEN', 'harmony-daemon-app-private-key', 'CLAUDE_CODE_OAUTH_TOKEN']);
+      expect(c.calls[0].ctx.project).toBe('old-proj');
+      expect(r.lines.join('\n')).not.toContain('WARNING: secret');
+      // no value anywhere, in the files or the output
+      const everything = [readFileSync(outProject, 'utf8'), JSON.stringify(host), r.lines.join('\n'), JSON.stringify(r.data)].join('\n');
+      expect(everything).not.toContain('secret-token-value');
+      expect(everything).not.toContain('oauth-secret-value');
+    });
+
+    it('a missing secret is a WARNING printing the exact gcloud secrets create command; the files are still written', async () => {
+      const legacy = write('deployment.json', mini());
+      const c = checker(['HARMONY_API_TOKEN']);
+      const r = await runMigrate(deps({}, { secretExists: c.secretExists }), { config: legacy, write: true, outProject: join(dir, 'p.json'), profile: 'gke' });
+      expect(r.exitCode).toBe(0);
+      expect(r.lines.join('\n')).toContain('gcloud secrets create HARMONY_API_TOKEN --project=old-proj --replication-policy=automatic --data-file=-');
+      expect(existsSync(join(dir, 'p.json'))).toBe(true);
+    });
+
+    it('an unreachable gcloud is "could not check", never a create command', async () => {
+      const legacy = write('deployment.json', mini());
+      const c = checker(['HARMONY_API_TOKEN'], 'unchecked');
+      const r = await runMigrate(deps({}, { secretExists: c.secretExists }), { config: legacy, profile: 'gke' });
+      const out = r.lines.join('\n');
+      expect(out).toContain('could not check whether secret HARMONY_API_TOKEN');
+      expect(out).not.toContain('gcloud secrets create');
+    });
+
+    it('flags override each secret name', async () => {
+      const legacy = write('deployment.json', mini());
+      const c = checker();
+      const r = await runMigrate(deps({}, { secretExists: c.secretExists }), { config: legacy, profile: 'gke', secretApiToken: 'tok', secretGithubAppKey: 'key', secretClaudeOauthToken: 'oauth' });
+      expect((r.data as { host_file: { secrets: unknown } }).host_file.secrets).toEqual({ api_token: 'tok', github_app_private_key: 'key', claude_oauth_token: 'oauth' });
+      expect(c.calls.map((x) => x.name)).toEqual(['tok', 'key', 'oauth']);
+    });
+
+    it('--write with only secrets dropped prints no "still needed" warning', async () => {
+      const legacy = write('deployment.json', mini());
+      const r = await runMigrate(deps(), { config: legacy, write: true, outProject: join(dir, 'p.json'), profile: 'gke' });
+      expect(r.lines.join('\n')).not.toContain('STILL NEEDED');
+      expect((r.data as { deployment_json_still_needed: string[] }).deployment_json_still_needed).toEqual([]);
+    });
+
+    it('--write with a non-secret item left in dropped warns that deployment.json is still needed', async () => {
+      const legacy = write('deployment.json', { ...mini(), env: { ...mini().env, WEB_REF: 'main' }, launcher: { ...legacyDeployment().launcher, supabase_refs: { abc: 'prod' } } });
+      const r = await runMigrate(deps(), { config: legacy, write: true, outProject: join(dir, 'p.json'), profile: 'gke' });
+      const out = r.lines.join('\n');
+      expect(out).toContain('deployment.json is STILL NEEDED');
+      expect(out).toContain('env.WEB_REF');
+      expect(out).toContain('launcher.supabase_refs');
+    });
   });
 });
 

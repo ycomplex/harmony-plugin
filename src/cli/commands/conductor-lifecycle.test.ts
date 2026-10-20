@@ -34,6 +34,8 @@ interface Opts {
   procs?: Array<{ pid: number; tail?: string }>;
   held?: Array<[id: string, ticket: string]>;
   profile?: 'gke' | 'cloud';
+  /** the project file names no `profile`, and neither does anything else */
+  noProfile?: boolean;
   env?: Record<string, string>;
   envFile?: Record<string, string>;
   noToken?: boolean;
@@ -67,7 +69,7 @@ function makeWorld(o: Opts = {}) {
   const profile = o.profile ?? 'gke';
 
   vfs.set('/cfg/project.json', JSON.stringify({
-    version: 1, channel: 'staging', profile,
+    version: 1, channel: 'staging', ...(o.noProfile ? {} : { profile }),
     gcp: { project: 'proj', region: 'us-east1' },
     ...(profile === 'gke' ? { gke: { cluster: 'c', location: 'us-east1-b', namespace: 'harmony-legs' } } : { cloud_run: { job: 'crjob' } }),
   }));
@@ -308,6 +310,30 @@ describe('start', () => {
     expect(r.errLines.join('\n')).toContain('already running on this machine');
     expect(m.written).toEqual([]);
     expect(callsOf(m.calls, 'launchctl').filter((c) => c.args[0] === 'bootstrap')).toEqual([]);
+  });
+
+  it.each([
+    ['--local', { local: true }],
+    ['--at-boot', { atBoot: true }],
+    ['plain start', {}],
+  ])('B-1183: %s with no profile from --profile or the config files refuses before any supervisor job is written', async (_n, o) => {
+    const m = makeWorld({ noProfile: true });
+    const r = await runStart(m.deps, o);
+    expect(r.exitCode).toBe(1);
+    const err = r.errLines.join('\n');
+    expect(err).toContain('--profile');
+    expect(err).toContain('"profile" in .harmony/conductor.json');
+    expect(err).toContain('Nothing was started');
+    expect(m.written).toEqual([]);
+    expect(callsOf(m.calls, 'launchctl')).toEqual([]);
+    expect(callsOf(m.calls, 'sudo')).toEqual([]);
+    expect(r.data).toMatchObject({ started: false });
+  });
+
+  it('B-1183: --profile on the command line is enough when the config files name none', async () => {
+    const m = makeWorld({ noProfile: true });
+    const r = await runStart(m.deps, { local: true, profile: 'gke' });
+    expect(r.errLines.join('\n')).not.toContain('no launch profile');
   });
 
   it('--remote (B-1173): no registry client token -> refuses before touching the cluster', async () => {

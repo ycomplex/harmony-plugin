@@ -35378,6 +35378,31 @@ import { existsSync as fsExistsSync, readFileSync as fsReadFileSync } from "node
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
+// src/config/deployment-shared-schemas.ts
+var RequiredToolsSchema = external_exports.object({
+  launch: external_exports.array(external_exports.string().min(1)).optional(),
+  reap: external_exports.array(external_exports.string().min(1)).optional(),
+  probe: external_exports.array(external_exports.string().min(1)).optional()
+}).partial();
+var RepoEntrySchema = external_exports.object({
+  /** Clone URL. */
+  url: external_exports.string().min(1),
+  /** Clone ref. IGNORED for the is_plugin entry (see header comment) — HARMONY_PLUGIN_POSTURE wins
+   *  there. Optional for every other entry; falls back to the container's existing "main" default. */
+  ref: external_exports.string().optional(),
+  /** In-container clone destination, e.g. "/workspace/workspace/plugin". */
+  path: external_exports.string().min(1),
+  /** Marks this entry as the meta-repo/nesting parent. At most one entry may set this. */
+  meta_repo_role: external_exports.boolean().optional(),
+  /** Marks this entry as the one carrying the plugin. At most one entry may set this. */
+  is_plugin: external_exports.boolean().optional()
+});
+var ReposSchema = external_exports.array(RepoEntrySchema).refine((repos) => repos.filter((r) => r.meta_repo_role).length <= 1, {
+  message: "at most one repos[] entry may set meta_repo_role"
+}).refine((repos) => repos.filter((r) => r.is_plugin).length <= 1, {
+  message: "at most one repos[] entry may set is_plugin"
+});
+
 // src/config/worker-image-default.ts
 var WORKER_IMAGE_DEFAULT = "harmony-build-env";
 
@@ -35419,6 +35444,15 @@ var GkeSchema = external_exports.object({
 }).strict();
 var ConcurrencySchema = external_exports.object({ max_workers: external_exports.number().int().min(0).optional() }).strict();
 var ModelPolicySchema = external_exports.object({ default: external_exports.string().min(1).optional(), per_gate: external_exports.record(external_exports.string().min(1)).optional() }).strict();
+var TargetSchema = external_exports.enum(["prod", "staging", "custom"]);
+var AGENT_FLAG_ENV = { "claude-code": "CLAUDE_HEADLESS_FLAGS" };
+var AgentFlagsSchema = external_exports.object({ "claude-code": external_exports.string().min(1).optional() }).strict();
+var ProfileOverrideSchema = external_exports.object({
+  max_workers: external_exports.number().int().min(0).optional(),
+  agents: external_exports.array(external_exports.string().min(1)).min(1).optional(),
+  required_tools: RequiredToolsSchema.optional()
+}).strict();
+var ProfilesSchema = external_exports.object({ cloud: ProfileOverrideSchema.optional(), gke: ProfileOverrideSchema.optional() }).strict();
 var projectShape = {
   channel: ChannelSchema.optional(),
   profile: ProfileNameSchema.optional(),
@@ -35430,14 +35464,29 @@ var projectShape = {
   model_policy: ModelPolicySchema.optional(),
   /** Absent means "ship when gcp.project is named"; `false` switches shipping off. */
   log_shipping: external_exports.boolean().optional(),
-  agents: external_exports.array(external_exports.string().min(1)).min(1).optional()
+  agents: external_exports.array(external_exports.string().min(1)).min(1).optional(),
+  /** B-1183: which Supabase project the worker talks to (-> env.HARMONY_TARGET). */
+  target: TargetSchema.optional(),
+  /** B-1183: only with target "custom" (-> env.HARMONY_SUPABASE_URL). */
+  supabase_url: external_exports.string().min(1).optional(),
+  /** B-1183: the B-814 repo set, moved here unchanged from deployment.json (-> HARMONY_REPOS_JSON). */
+  repos: ReposSchema.optional(),
+  /** B-1183: adapter id -> headless flag string (claude-code -> env.CLAUDE_HEADLESS_FLAGS). */
+  agent_flags: AgentFlagsSchema.optional(),
+  /** B-1183: per-profile max_workers / agents / required_tools for built-in profiles. */
+  profiles: ProfilesSchema.optional()
 };
+var SUPABASE_URL_NEEDS_CUSTOM = 'supabase_url is only allowed with "target": "custom"';
 var ProjectFileSchema = external_exports.object({
   version: external_exports.literal(1),
   ...projectShape,
   channel: ChannelSchema,
   profile: ProfileNameSchema
-}).strict();
+}).strict().superRefine((p, ctx) => {
+  if (p.supabase_url !== void 0 && p.target !== "custom") {
+    ctx.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["supabase_url"], message: SUPABASE_URL_NEEDS_CUSTOM });
+  }
+});
 function looksLikeSecretValue(v) {
   return /^(ghp_|gho_|ghs_|github_pat_|sk-|eyJ)/.test(v) || v.includes("-----BEGIN") || /^\S{40,}$/.test(v);
 }
@@ -35611,7 +35660,7 @@ function zodIssuesToConfigIssues(file, issues, root) {
   return out;
 }
 function customFix(message) {
-  return message.includes("secret VALUE") ? "store the value in Secret Manager and put only the secret NAME here" : "correct the value to match the schema";
+  return message.includes("secret VALUE") ? "store the value in Secret Manager and put only the secret NAME here" : message === SUPABASE_URL_NEEDS_CUSTOM ? 'add "target": "custom" or remove supabase_url' : "correct the value to match the schema";
 }
 function lineColOf(text, pos) {
   const before = text.slice(0, pos);
@@ -35858,6 +35907,9 @@ function validateMerged(merged, env2 = {}) {
   if (!merged.channel) {
     need(PROJECT_FILE_LABEL, "channel", "required key is missing", 'add "channel": "staging" (or "prod") to .harmony/conductor.json');
   }
+  if (merged.supabase_url !== void 0 && merged.target !== "custom") {
+    need(PROJECT_FILE_LABEL, "supabase_url", SUPABASE_URL_NEEDS_CUSTOM, 'add "target": "custom" or remove supabase_url');
+  }
   if (!merged.profile) {
     need(PROJECT_FILE_LABEL, "profile", "required key is missing", 'add "profile": "cloud" (or "gke") to .harmony/conductor.json');
     return issues;
@@ -35898,29 +35950,48 @@ function projectToDeploymentConfig(merged, legacy = null, warnings = []) {
     worker_image: merged.images?.worker ?? legacy?.worker_image ?? WORKER_IMAGE_DEFAULT
   };
   const name = merged.profile;
-  if (name) {
-    const builtin = BUILTIN_PROFILES[name];
-    const existing = legacy?.profiles?.[name];
-    if (existing && !sameTemplate(existing, builtin)) {
-      warnings.push(`custom launch template in deployment.json profiles.${name} is ignored once conductor.json names profile ${name}`);
+  const listed = Object.keys(merged.profiles ?? {}).filter((n) => n in BUILTIN_PROFILES);
+  const names = [.../* @__PURE__ */ new Set([...name ? [name] : [], ...listed])];
+  if (names.length > 0) {
+    const profiles = { ...legacy?.profiles ?? {} };
+    for (const n of names) {
+      const builtin = BUILTIN_PROFILES[n];
+      const existing = legacy?.profiles?.[n];
+      if (existing && !sameTemplate(existing, builtin)) {
+        warnings.push(`custom launch template in deployment.json profiles.${n} is ignored once conductor.json names profile ${n}`);
+      }
+      const block = merged.profiles?.[n];
+      const active = n === name;
+      const entry = {
+        ...builtin,
+        maxConcurrentWorkers: block?.max_workers ?? (active ? merged.concurrency?.max_workers : void 0) ?? builtin.maxConcurrentWorkers,
+        agents: block?.agents ?? (active ? merged.agents : void 0) ?? builtin.agents
+      };
+      if (block?.required_tools) entry.required_tools = { ...builtin.required_tools, ...block.required_tools };
+      if (n === "cloud" && merged.gcp?.project) entry.gcloud_project = merged.gcp.project;
+      profiles[n] = entry;
     }
-    const entry = {
-      ...builtin,
-      maxConcurrentWorkers: merged.concurrency?.max_workers ?? builtin.maxConcurrentWorkers,
-      agents: merged.agents ?? builtin.agents
-    };
-    if (name === "cloud" && merged.gcp?.project) entry.gcloud_project = merged.gcp.project;
-    out.profiles = { ...legacy?.profiles ?? {}, [name]: entry };
+    out.profiles = profiles;
   }
+  if (merged.repos) out.repos = merged.repos;
   if (merged.plugin_dir || merged.github_app) {
     const launcher = { ...legacy?.launcher ?? {} };
     if (merged.plugin_dir) launcher.plugin_dir = merged.plugin_dir;
     if (merged.github_app) launcher.github_app = merged.github_app;
     out.launcher = launcher;
   }
-  if (merged.channel) {
-    out.env = { ...legacy?.env ?? {}, HARMONY_PLUGIN_POSTURE: merged.channel === "prod" ? "prod" : "ack:staging" };
-  }
+  const env2 = { ...legacy?.env ?? {} };
+  let envSet = false;
+  const putEnv = (k, v) => {
+    if (v === void 0) return;
+    env2[k] = v;
+    envSet = true;
+  };
+  if (merged.channel) putEnv("HARMONY_PLUGIN_POSTURE", merged.channel === "prod" ? "prod" : "ack:staging");
+  putEnv("HARMONY_TARGET", merged.target);
+  putEnv("HARMONY_SUPABASE_URL", merged.supabase_url);
+  putEnv(AGENT_FLAG_ENV["claude-code"], merged.agent_flags?.["claude-code"]);
+  if (envSet) out.env = env2;
   return out;
 }
 function launchEnvFromMerged(merged) {
@@ -35966,7 +36037,8 @@ var RESTART_ONLY_KEYS = [
   "gke.context",
   "cloud_run.job",
   "images.worker",
-  "images.codex"
+  "images.codex",
+  "profiles"
 ];
 var HOT_KEYS = ["concurrency.max_workers", "model_policy", "log_shipping"];
 var REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -36146,11 +36218,6 @@ var DeploymentEnvSchema = external_exports.object({
   ANTHROPIC_API_KEY: external_exports.string().optional(),
   CLAUDE_HEADLESS_FLAGS: external_exports.string().optional()
 }).partial();
-var RequiredToolsSchema = external_exports.object({
-  launch: external_exports.array(external_exports.string().min(1)).optional(),
-  reap: external_exports.array(external_exports.string().min(1)).optional(),
-  probe: external_exports.array(external_exports.string().min(1)).optional()
-}).partial();
 var DockerHostSchema = external_exports.object({
   /** Where the wrappers `ssh` to — a `user@host` or an ssh_config Host alias. Required inside the
    *  object: a docker_host block that names no host is a misconfiguration, not a default. */
@@ -36184,7 +36251,7 @@ var LaunchProfileSchema = external_exports.object({
   /** B-708: see DockerHostSchema above — present only on a Docker-host profile; every other
    *  profile omits it and is unaffected. */
   docker_host: DockerHostSchema.optional(),
-  /** B-801: see RequiredToolsSchema above — src/daemon/preflight.ts's hard tool-resolution check. */
+  /** B-801: see RequiredToolsSchema in ./deployment-shared-schemas.ts — src/daemon/preflight.ts's hard tool-resolution check. */
   required_tools: RequiredToolsSchema.optional(),
   /** B-801: true when this profile mints a worker credential via mint-installation-token.mjs before
    *  launch (container/README.md "The credential envelopes") — gates src/daemon/preflight.ts's hard
@@ -36202,24 +36269,6 @@ var LaunchProfileSchema = external_exports.object({
    *  run_config.agent.adapter is not in this list is parked at fire time, never launched. Mirrors
    *  src/daemon/config.ts's LaunchProfile field of the same name. */
   agents: external_exports.array(external_exports.string().min(1)).min(1).optional()
-});
-var RepoEntrySchema = external_exports.object({
-  /** Clone URL. */
-  url: external_exports.string().min(1),
-  /** Clone ref. IGNORED for the is_plugin entry (see header comment) — HARMONY_PLUGIN_POSTURE wins
-   *  there. Optional for every other entry; falls back to the container's existing "main" default. */
-  ref: external_exports.string().optional(),
-  /** In-container clone destination, e.g. "/workspace/workspace/plugin". */
-  path: external_exports.string().min(1),
-  /** Marks this entry as the meta-repo/nesting parent. At most one entry may set this. */
-  meta_repo_role: external_exports.boolean().optional(),
-  /** Marks this entry as the one carrying the plugin. At most one entry may set this. */
-  is_plugin: external_exports.boolean().optional()
-});
-var ReposSchema = external_exports.array(RepoEntrySchema).refine((repos) => repos.filter((r) => r.meta_repo_role).length <= 1, {
-  message: "at most one repos[] entry may set meta_repo_role"
-}).refine((repos) => repos.filter((r) => r.is_plugin).length <= 1, {
-  message: "at most one repos[] entry may set is_plugin"
 });
 var GithubAppSchema = external_exports.object({
   app_id: external_exports.string(),
@@ -36243,7 +36292,7 @@ var DeploymentConfigSchema = external_exports.object({
   env: DeploymentEnvSchema.optional(),
   profiles: external_exports.record(LaunchProfileSchema).optional(),
   launcher: LauncherSchema.optional(),
-  /** B-814: the ordered repo set — see the RepoEntrySchema/ReposSchema header comment above. */
+  /** B-814: the ordered repo set — see the RepoEntrySchema/ReposSchema header comment in ./deployment-shared-schemas.ts. */
   repos: ReposSchema.optional(),
   /** B-929 lever 2: which container image this deployment's workers run. THE one place the default
    *  is written — see the worker_image section comment above. */
@@ -43997,14 +44046,23 @@ function registerConfigCommands(program3) {
 }
 
 // src/cli/commands/conductor-config.ts
+import { execFile } from "node:child_process";
 import { chmodSync as chmodSync3, existsSync as fsExistsSync2, mkdirSync as mkdirSync3, readFileSync as fsReadFileSync2, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname as dirname5, resolve as resolve3 } from "node:path";
 
 // src/config/conductor-migrate.ts
+var DEFAULT_SECRET_NAMES = {
+  api_token: "HARMONY_API_TOKEN",
+  github_app_private_key: "harmony-daemon-app-private-key",
+  claude_oauth_token: "CLAUDE_CODE_OAUTH_TOKEN"
+};
+function nonSecretDrops(dropped) {
+  return dropped.filter((d) => d.reason !== SECRET_REASON);
+}
 var SECRET_REASON = "secret value: stays in Secret Manager / the service environment";
 var KEEPS_REASON = "no conductor.json key; deployment.json keeps supplying it";
 var SECRET_ENV_KEYS = ["HARMONY_API_TOKEN", "GIT_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "HARMONY_SUPABASE_ANON_KEY"];
-var PLAIN_ENV_KEYS = ["HARMONY_TARGET", "HARMONY_SUPABASE_URL", "GIT_USER_NAME", "GIT_USER_EMAIL", "WEB_REF", "WORKSPACE_REF", "CLAUDE_HEADLESS_FLAGS"];
+var PLAIN_ENV_KEYS = ["GIT_USER_NAME", "GIT_USER_EMAIL", "WEB_REF", "WORKSPACE_REF"];
 function buildMigration(input) {
   const { legacyDeployment: dep, env: env2 } = input;
   const dropped = [];
@@ -44012,10 +44070,10 @@ function buildMigration(input) {
   const askProfile = (problem) => new ConductorConfigError({ file: "deployment.json", key: "profiles", problem, fix: "pass --profile cloud (or --profile gke)" });
   let profile = input.profileName;
   if (!profile) {
-    const names = Object.keys(dep?.profiles ?? {});
-    if (names.length === 1) profile = names[0];
-    else if (names.length === 0) throw askProfile("no profile is defined, so the conductor profile is ambiguous");
-    else throw askProfile(`several profiles are defined (${names.join(", ")}), so the conductor profile is ambiguous`);
+    const names2 = Object.keys(dep?.profiles ?? {});
+    if (names2.length === 1) profile = names2[0];
+    else if (names2.length === 0) throw askProfile("no profile is defined, so the conductor profile is ambiguous");
+    else throw askProfile(`several profiles are defined (${names2.join(", ")}), so the conductor profile is ambiguous`);
   }
   if (!(profile in BUILTIN_PROFILES)) {
     throw askProfile(`profile ${JSON.stringify(profile)} has no conductor.json equivalent (only cloud and gke)`);
@@ -44039,6 +44097,34 @@ function buildMigration(input) {
   if (Object.keys(gkeProject).length) projectFile.gke = gkeProject;
   if (layer.concurrency) projectFile.concurrency = { ...layer.concurrency };
   if (layer.agents) projectFile.agents = [...layer.agents];
+  const depEnv = dep?.env ?? {};
+  if (depEnv.HARMONY_TARGET) projectFile.target = depEnv.HARMONY_TARGET;
+  if (depEnv.HARMONY_SUPABASE_URL) {
+    if (depEnv.HARMONY_TARGET === "custom") projectFile.supabase_url = depEnv.HARMONY_SUPABASE_URL;
+    else dropped.push({ item: "deployment.json \u203A env.HARMONY_SUPABASE_URL", reason: `supabase_url is only allowed with target "custom" (this deployment's target is ${depEnv.HARMONY_TARGET ?? "unset"}); deployment.json keeps supplying it` });
+  }
+  if (depEnv.CLAUDE_HEADLESS_FLAGS) projectFile.agent_flags = { "claude-code": depEnv.CLAUDE_HEADLESS_FLAGS };
+  if (dep?.repos) projectFile.repos = dep.repos.map((r) => ({ ...r }));
+  const profilesBlock = {};
+  for (const [name, p] of Object.entries(dep?.profiles ?? {})) {
+    if (!(name in BUILTIN_PROFILES)) continue;
+    const b = BUILTIN_PROFILES[name];
+    const block = {};
+    if (name !== profileName) {
+      if (p.maxConcurrentWorkers !== void 0) block.max_workers = p.maxConcurrentWorkers;
+      if (p.agents) block.agents = [...p.agents];
+    }
+    if (p.required_tools && JSON.stringify(p.required_tools) !== JSON.stringify(b.required_tools)) block.required_tools = { ...p.required_tools };
+    profilesBlock[name] = block;
+  }
+  if (Object.keys(profilesBlock).length) projectFile.profiles = profilesBlock;
+  const otherCloud = profileName !== "cloud" ? dep?.profiles?.cloud?.gcloud_project : void 0;
+  if (otherCloud) {
+    if (!projectFile.gcp?.project) projectFile.gcp = { ...projectFile.gcp ?? {}, project: otherCloud };
+    else if (projectFile.gcp.project !== otherCloud) {
+      dropped.push({ item: "deployment.json \u203A profiles.cloud.gcloud_project", reason: `differs from gcp.project (${projectFile.gcp.project}); the project file has one gcp.project, so deployment.json keeps supplying it` });
+    }
+  }
   const hostFile = { version: 1 };
   if (layer.plugin_dir) hostFile.plugin_dir = layer.plugin_dir;
   if (layer.github_app?.app_id && layer.github_app.installation_id && layer.github_app.private_key_path) {
@@ -44053,6 +44139,8 @@ function buildMigration(input) {
   if (layer.gcloud?.account) hostFile.gcloud = { account: layer.gcloud.account };
   if (context !== void 0) hostFile.gke = { context: String(context) };
   if (env2.HARMONY_CONDUCTOR_CONFIG_REPO) hostFile.config_repo = env2.HARMONY_CONDUCTOR_CONFIG_REPO;
+  const names = { ...DEFAULT_SECRET_NAMES, ...Object.fromEntries(Object.entries(input.secretNames ?? {}).filter(([, v]) => v)) };
+  hostFile.secrets = { api_token: names.api_token, github_app_private_key: names.github_app_private_key, claude_oauth_token: names.claude_oauth_token };
   for (const k of SECRET_ENV_KEYS) {
     if (dep?.env?.[k]) dropped.push({ item: `deployment.json \u203A env.${k}`, reason: SECRET_REASON });
   }
@@ -44062,20 +44150,16 @@ function buildMigration(input) {
   for (const k of PLAIN_ENV_KEYS) {
     if (dep?.env?.[k]) dropped.push({ item: `deployment.json \u203A env.${k}`, reason: KEEPS_REASON });
   }
-  if (dep?.repos) dropped.push({ item: "deployment.json \u203A repos", reason: KEEPS_REASON });
   if (dep?.launcher?.supabase?.url) dropped.push({ item: "deployment.json \u203A launcher.supabase.url", reason: KEEPS_REASON });
   if (dep?.launcher?.supabase_refs) dropped.push({ item: "deployment.json \u203A launcher.supabase_refs", reason: KEEPS_REASON });
   for (const [name, p] of Object.entries(dep?.profiles ?? {})) {
-    if (name !== profileName) {
-      dropped.push({ item: `deployment.json \u203A profiles.${name}`, reason: `profile ${name} has no conductor.json equivalent; deployment.json keeps supplying it` });
+    if (!(name in BUILTIN_PROFILES)) {
+      dropped.push({ item: `deployment.json \u203A profiles.${name}`, reason: `profile ${name} has no conductor.json equivalent (only cloud and gke); deployment.json keeps supplying it` });
       continue;
     }
-    const b = BUILTIN_PROFILES[profileName];
+    const b = BUILTIN_PROFILES[name];
     if (p.launch !== b.launch || p.reap !== b.reap || p.probe !== b.probe) {
       dropped.push({ item: `deployment.json \u203A profiles.${name} custom launch/reap/probe template`, reason: "conductor.json names a built-in template and ignores a custom one; deployment.json keeps it only until conductor.json takes over" });
-    }
-    if (p.required_tools && JSON.stringify(p.required_tools) !== JSON.stringify(b.required_tools)) {
-      dropped.push({ item: `deployment.json \u203A profiles.${name}.required_tools override`, reason: KEEPS_REASON });
     }
     if (p.docker_host) dropped.push({ item: `deployment.json \u203A profiles.${name}.docker_host`, reason: KEEPS_REASON });
   }
@@ -44606,6 +44690,7 @@ async function resolveConductorSecrets(deps) {
   }
   const secrets = parsed.data.secrets ?? {};
   const project = projectOf(parsed.data, deps.env);
+  const account = deps.env.CLOUDSDK_CORE_ACCOUNT ? void 0 : parsed.data.gcloud?.account;
   for (const { key, envVar } of SECRET_ENV_TARGETS) {
     const name = secrets[key];
     if (deps.target[envVar]) {
@@ -44619,7 +44704,7 @@ async function resolveConductorSecrets(deps) {
     if (!project) {
       throw new ConductorSecretsError(`cannot read secret "${name}": no GCP project (set gcp.project in the host file, or HARMONY_GCP_PROJECT)`);
     }
-    const r = await deps.exec("gcloud", ["secrets", "versions", "access", "latest", `--secret=${name}`, `--project=${project}`]);
+    const r = await deps.exec("gcloud", ["secrets", "versions", "access", "latest", `--secret=${name}`, `--project=${project}`, ...account ? [`--account=${account}`] : []]);
     if (r.code !== 0) {
       throw new ConductorSecretsError(`could not read secret "${name}" (for ${envVar}) from Secret Manager: gcloud exited ${r.code}${r.code === 127 ? " (gcloud is not installed)" : ""}`);
     }
@@ -45779,6 +45864,10 @@ async function runStart(deps, opts = {}, onLine) {
     return out.result(EXIT.failure, { error: out.errLines[0], started: false });
   }
   const s = await loadSettings(deps, { profile: opts.profile, config: opts.config });
+  if (!s.profile) {
+    out.err('no launch profile: pass --profile cloud (or --profile gke), or set "profile" in .harmony/conductor.json. Nothing was started.');
+    return out.result(EXIT.failure, { error: out.errLines[0], started: false, config_issues: s.configIssues });
+  }
   const host = deps.hostname();
   const procs = await findConductors(deps, s);
   const sup = await detectSupervisorState({ platform: deps.platform, uid: deps.uid, home: deps.home, exec: (f, a) => deps.exec(f, a), existsSync: deps.existsSync });
@@ -46154,11 +46243,19 @@ function registerConductorLifecycleCommands(program3, conductor, makeDeps = defa
 }
 
 // src/cli/commands/conductor-config.ts
+var gcloudSecretExists = (name, ctx) => new Promise((resolveCheck) => {
+  const args = ["secrets", "describe", name, "--format=value(name)", ...ctx.project ? [`--project=${ctx.project}`] : [], ...ctx.account ? [`--account=${ctx.account}`] : []];
+  execFile("gcloud", args, { timeout: 3e4 }, (err, _stdout, stderr) => {
+    if (!err) return resolveCheck("exists");
+    resolveCheck(/NOT_FOUND|not found/i.test(String(stderr)) ? "missing" : "unchecked");
+  });
+});
 function defaultCliDeps() {
   return {
     env: process.env,
     existsSync: fsExistsSync2,
-    readFileSync: (p) => fsReadFileSync2(p, "utf8")
+    readFileSync: (p) => fsReadFileSync2(p, "utf8"),
+    secretExists: gcloudSecretExists
   };
 }
 var fail = (message, extra = {}) => ({
@@ -46249,7 +46346,7 @@ async function runSync(deps) {
 }
 var pretty = (v) => `${JSON.stringify(v, null, 2)}
 `;
-function runMigrate(deps, opts) {
+async function runMigrate(deps, opts) {
   const legacyPath = resolveDeploymentConfigPath({ configPath: opts.config, env: deps.env });
   let migration;
   try {
@@ -46259,10 +46356,36 @@ function runMigrate(deps, opts) {
       existsSync: deps.existsSync,
       readFileSync: deps.readFileSync
     });
-    migration = buildMigration({ legacyDeployment: legacy, env: deps.env, profileName: opts.profile });
+    const secretNames = {
+      api_token: opts.secretApiToken,
+      github_app_private_key: opts.secretGithubAppKey,
+      claude_oauth_token: opts.secretClaudeOauthToken
+    };
+    migration = buildMigration({ legacyDeployment: legacy, env: deps.env, profileName: opts.profile, secretNames });
   } catch (err) {
     if (err instanceof ConductorConfigError) return fail(`${err.message}`, { issues: err.issues });
     return fail(err instanceof Error ? err.message : String(err));
+  }
+  const secretProject = migration.projectFile.gcp?.project;
+  const secretChecks = [];
+  if (deps.secretExists) {
+    for (const [key, name] of Object.entries(migration.hostFile.secrets ?? {})) {
+      const state = await deps.secretExists(name, { project: secretProject, account: migration.hostFile.gcloud?.account });
+      secretChecks.push({ key, name, state });
+      if (state === "missing") {
+        migration.warnings.push(
+          `secret ${name} (secrets.${key}) does not exist in ${secretProject ?? "the GCP project"}. Create it (the value comes on stdin, from you): gcloud secrets create ${name} --project=${secretProject ?? "<gcp-project>"} --replication-policy=automatic --data-file=-`
+        );
+      } else if (state === "unchecked") {
+        migration.warnings.push(`could not check whether secret ${name} (secrets.${key}) exists: gcloud is unavailable or refused. Check with: gcloud secrets describe ${name} --project=${secretProject ?? "<gcp-project>"}`);
+      }
+    }
+  }
+  const stillNeeded = nonSecretDrops(migration.dropped);
+  if (opts.write && stillNeeded.length > 0) {
+    migration.warnings.push(
+      `deployment.json is STILL NEEDED: ${stillNeeded.length} non-secret item(s) have no home in the new files (${stillNeeded.map((d) => d.item.replace(/^deployment\.json › /, "")).join(", ")}). Do not delete it yet.`
+    );
   }
   const paths = resolveConductorPaths(deps.env);
   const outHost = opts.outHost ? resolve3(opts.outHost) : paths.hostFile;
@@ -46322,6 +46445,8 @@ function runMigrate(deps, opts) {
       project_file: migration.projectFile,
       host_file: migration.hostFile,
       dropped: migration.dropped,
+      secret_checks: secretChecks,
+      deployment_json_still_needed: stillNeeded.map((d) => d.item),
       warnings: migration.warnings,
       written,
       legacy_untouched: true
@@ -46493,15 +46618,15 @@ function registerConductorCommands(program3, makeDeps = defaultCliDeps) {
   registerConductorLifecycleCommands(program3, conductor);
   const config = conductor.command("config").description("The two-file conductor config (.harmony/conductor.json + ~/.harmony/conductor-host.json)");
   config.command("sync").description("Fetch .harmony/conductor.json from config_repo main into the last-good snapshot now (needs the harmony-daemon App installation to include config_repo)").action(async () => emit(program3, await runSync(makeDeps())));
-  config.command("migrate").description("Propose the project + host files from the current deployment.json and env knobs. Dry run unless --write; never modifies the old files").option("--profile <name>", "Which deployment.json profile to migrate (cloud|gke)").option("--config <path>", "Explicit deployment.json path (overrides HARMONY_DEPLOYMENT_CONFIG)").option("--write", "Write the new files (requires --out-project)", false).option("--out-project <path>", "Where to write the project file (no default)").option("--out-host <path>", "Where to write the host file (default: the resolved host-file path)").option("--force", "Overwrite an existing output file", false).action(
-    (opts) => emit(program3, runMigrate(makeDeps(), opts))
+  config.command("migrate").description("Propose the project + host files from the current deployment.json and env knobs. Dry run unless --write; never modifies the old files").option("--profile <name>", "Which deployment.json profile to migrate (cloud|gke)").option("--config <path>", "Explicit deployment.json path (overrides HARMONY_DEPLOYMENT_CONFIG)").option("--write", "Write the new files (requires --out-project)", false).option("--out-project <path>", "Where to write the project file (no default)").option("--out-host <path>", "Where to write the host file (default: the resolved host-file path)").option("--force", "Overwrite an existing output file", false).option("--secret-api-token <name>", `Secret Manager secret NAME for HARMONY_API_TOKEN (default ${DEFAULT_SECRET_NAMES.api_token})`).option("--secret-github-app-key <name>", `Secret Manager secret NAME for the GitHub App private key (default ${DEFAULT_SECRET_NAMES.github_app_private_key})`).option("--secret-claude-oauth-token <name>", `Secret Manager secret NAME for the Claude OAuth token, a record for preflight/docs the conductor never reads (default ${DEFAULT_SECRET_NAMES.claude_oauth_token})`).action(
+    async (opts) => emit(program3, await runMigrate(makeDeps(), opts))
   );
   config.command("doctor").description("Explain the conductor config: sources, every issue, conflicts between layers, legacy sources in use. Exits 1 on any issue").option("--config <path>", "Explicit deployment.json path (overrides HARMONY_DEPLOYMENT_CONFIG)").action((opts) => emit(program3, runDoctor(makeDeps(), opts)));
 }
 
 // src/cli/commands/conductor-logs.ts
 import { existsSync as fsExistsSync3, readFileSync as fsReadFileSync3 } from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile as execFile2 } from "node:child_process";
 
 // src/daemon/conductor-logger.ts
 import { homedir as homedir4 } from "node:os";
@@ -46528,7 +46653,7 @@ function defaultLogsDeps() {
     existsSync: fsExistsSync3,
     readFileSync: (p) => fsReadFileSync3(p, "utf8"),
     runGcloud: (args) => new Promise((resolve5) => {
-      execFile("gcloud", args, { maxBuffer: 64 * 1024 * 1024, timeout: 6e4 }, (err, stdout, stderr) => {
+      execFile2("gcloud", args, { maxBuffer: 64 * 1024 * 1024, timeout: 6e4 }, (err, stdout, stderr) => {
         const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
         resolve5({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? err?.message ?? "") });
       });
@@ -48412,9 +48537,9 @@ function evaluateEligibility(input) {
 }
 var GITHUB_PR_URL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?/i;
 async function runGhCommand(args) {
-  const { execFile: execFile2 } = await import("node:child_process");
+  const { execFile: execFile3 } = await import("node:child_process");
   return await new Promise((resolve5, reject) => {
-    execFile2("gh", args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
+    execFile3("gh", args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
       else resolve5(stdout);
     });
@@ -48507,9 +48632,9 @@ function buildAttestation(args, userId) {
 }
 var GH_RELEASE_INFO_TIMEOUT_MS = 5e3;
 async function runGhForReleaseInfo(args) {
-  const { execFile: execFile2 } = await import("node:child_process");
+  const { execFile: execFile3 } = await import("node:child_process");
   return await new Promise((resolve5, reject) => {
-    execFile2("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+    execFile3("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
       else resolve5(String(stdout));
     });

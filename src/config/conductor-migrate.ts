@@ -7,6 +7,13 @@
 // in Secret Manager / the service environment. Anything with no new-schema home is also listed in
 // `dropped` with a reason — and migrate never deletes anything, so deployment.json keeps supplying those
 // (the loader overlays the new files on top of it; see projectToDeploymentConfig).
+//
+// B-1183: the project file now has a home for HARMONY_TARGET (`target`), HARMONY_SUPABASE_URL
+// (`supabase_url`), CLAUDE_HEADLESS_FLAGS (`agent_flags`), repos[] (`repos`) and every built-in profile
+// (`profiles`), and the host file's `secrets` block names the Secret Manager secrets the conductor reads. So
+// after migrate, `dropped` holds secret values (they stay where they are) and little else; anything else left
+// there — a custom template, docker_host, WEB_REF/WORKSPACE_REF, supabase_refs — means deployment.json is
+// STILL NEEDED, which `nonSecretDrops` lets the command say. Secret NAMES are written, never values.
 
 import {
   BUILTIN_PROFILES,
@@ -30,16 +37,29 @@ export interface Migration {
   warnings: string[];
 }
 
-const SECRET_REASON = 'secret value: stays in Secret Manager / the service environment';
+export const DEFAULT_SECRET_NAMES = {
+  api_token: 'HARMONY_API_TOKEN',
+  github_app_private_key: 'harmony-daemon-app-private-key',
+  claude_oauth_token: 'CLAUDE_CODE_OAUTH_TOKEN',
+} as const;
+export type SecretNameOverrides = Partial<Record<keyof typeof DEFAULT_SECRET_NAMES, string>>;
+
+/** Items in `dropped` that are not secret values: each one means deployment.json is still needed. */
+export function nonSecretDrops(dropped: MigrationDrop[]): MigrationDrop[] {
+  return dropped.filter((d) => d.reason !== SECRET_REASON);
+}
+
+export const SECRET_REASON = 'secret value: stays in Secret Manager / the service environment';
 const KEEPS_REASON = 'no conductor.json key; deployment.json keeps supplying it';
 
 const SECRET_ENV_KEYS = ['HARMONY_API_TOKEN', 'GIT_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'HARMONY_SUPABASE_ANON_KEY'];
-const PLAIN_ENV_KEYS = ['HARMONY_TARGET', 'HARMONY_SUPABASE_URL', 'GIT_USER_NAME', 'GIT_USER_EMAIL', 'WEB_REF', 'WORKSPACE_REF', 'CLAUDE_HEADLESS_FLAGS'];
+const PLAIN_ENV_KEYS = ['GIT_USER_NAME', 'GIT_USER_EMAIL', 'WEB_REF', 'WORKSPACE_REF'];
 
 export function buildMigration(input: {
   legacyDeployment: DeploymentConfig | null;
   env: NodeJS.ProcessEnv;
   profileName?: string;
+  secretNames?: SecretNameOverrides;
 }): Migration {
   const { legacyDeployment: dep, env } = input;
   const dropped: MigrationDrop[] = [];
@@ -95,6 +115,39 @@ export function buildMigration(input: {
   if (layer.concurrency) projectFile.concurrency = { ...layer.concurrency };
   if (layer.agents) projectFile.agents = [...layer.agents];
 
+  // --- B-1183: the keys that used to be dropped
+  const depEnv = dep?.env ?? {};
+  if (depEnv.HARMONY_TARGET) projectFile.target = depEnv.HARMONY_TARGET;
+  if (depEnv.HARMONY_SUPABASE_URL) {
+    if (depEnv.HARMONY_TARGET === 'custom') projectFile.supabase_url = depEnv.HARMONY_SUPABASE_URL;
+    else dropped.push({ item: 'deployment.json › env.HARMONY_SUPABASE_URL', reason: `supabase_url is only allowed with target "custom" (this deployment's target is ${depEnv.HARMONY_TARGET ?? 'unset'}); deployment.json keeps supplying it` });
+  }
+  if (depEnv.CLAUDE_HEADLESS_FLAGS) projectFile.agent_flags = { 'claude-code': depEnv.CLAUDE_HEADLESS_FLAGS };
+  if (dep?.repos) projectFile.repos = dep.repos.map((r) => ({ ...r }));
+  // Every built-in profile the deployment lists. The active one already has concurrency / agents at the top
+  // level (above), so its block carries only a required_tools override; any other carries all three.
+  const profilesBlock: NonNullable<ProjectFile['profiles']> = {};
+  for (const [name, p] of Object.entries(dep?.profiles ?? {})) {
+    if (!(name in BUILTIN_PROFILES)) continue;
+    const b = BUILTIN_PROFILES[name as BuiltinProfileName];
+    const block: NonNullable<ProjectFile['profiles']>['cloud'] = {};
+    if (name !== profileName) {
+      if (p.maxConcurrentWorkers !== undefined) block.max_workers = p.maxConcurrentWorkers;
+      if (p.agents) block.agents = [...p.agents];
+    }
+    if (p.required_tools && JSON.stringify(p.required_tools) !== JSON.stringify(b.required_tools)) block.required_tools = { ...p.required_tools };
+    profilesBlock[name as BuiltinProfileName] = block; // even an empty block: listing a profile is what makes it available
+  }
+  if (Object.keys(profilesBlock).length) projectFile.profiles = profilesBlock;
+  // gcp.project comes from the ACTIVE profile only; the cloud scripts read profiles.cloud.gcloud_project.
+  const otherCloud = profileName !== 'cloud' ? dep?.profiles?.cloud?.gcloud_project : undefined;
+  if (otherCloud) {
+    if (!projectFile.gcp?.project) projectFile.gcp = { ...(projectFile.gcp ?? {}), project: otherCloud };
+    else if (projectFile.gcp.project !== otherCloud) {
+      dropped.push({ item: 'deployment.json › profiles.cloud.gcloud_project', reason: `differs from gcp.project (${projectFile.gcp.project}); the project file has one gcp.project, so deployment.json keeps supplying it` });
+    }
+  }
+
   const hostFile: HostFile = { version: 1 };
   if (layer.plugin_dir) hostFile.plugin_dir = layer.plugin_dir;
   if (layer.github_app?.app_id && layer.github_app.installation_id && layer.github_app.private_key_path) {
@@ -109,6 +162,9 @@ export function buildMigration(input: {
   if (layer.gcloud?.account) hostFile.gcloud = { account: layer.gcloud.account };
   if (context !== undefined) hostFile.gke = { context: String(context) };
   if (env.HARMONY_CONDUCTOR_CONFIG_REPO) hostFile.config_repo = env.HARMONY_CONDUCTOR_CONFIG_REPO;
+  // Secret NAMES only. claude_oauth_token is a record for preflight / docs: the conductor never reads it.
+  const names = { ...DEFAULT_SECRET_NAMES, ...Object.fromEntries(Object.entries(input.secretNames ?? {}).filter(([, v]) => v)) };
+  hostFile.secrets = { api_token: names.api_token, github_app_private_key: names.github_app_private_key, claude_oauth_token: names.claude_oauth_token };
 
   // --- dropped: secrets
   for (const k of SECRET_ENV_KEYS) {
@@ -122,20 +178,16 @@ export function buildMigration(input: {
   for (const k of PLAIN_ENV_KEYS) {
     if (dep?.env?.[k as keyof NonNullable<DeploymentConfig['env']>]) dropped.push({ item: `deployment.json › env.${k}`, reason: KEEPS_REASON });
   }
-  if (dep?.repos) dropped.push({ item: 'deployment.json › repos', reason: KEEPS_REASON });
   if (dep?.launcher?.supabase?.url) dropped.push({ item: 'deployment.json › launcher.supabase.url', reason: KEEPS_REASON });
   if (dep?.launcher?.supabase_refs) dropped.push({ item: 'deployment.json › launcher.supabase_refs', reason: KEEPS_REASON });
   for (const [name, p] of Object.entries(dep?.profiles ?? {})) {
-    if (name !== profileName) {
-      dropped.push({ item: `deployment.json › profiles.${name}`, reason: `profile ${name} has no conductor.json equivalent; deployment.json keeps supplying it` });
+    if (!(name in BUILTIN_PROFILES)) {
+      dropped.push({ item: `deployment.json › profiles.${name}`, reason: `profile ${name} has no conductor.json equivalent (only cloud and gke); deployment.json keeps supplying it` });
       continue;
     }
-    const b = BUILTIN_PROFILES[profileName];
+    const b = BUILTIN_PROFILES[name as BuiltinProfileName];
     if (p.launch !== b.launch || p.reap !== b.reap || p.probe !== b.probe) {
       dropped.push({ item: `deployment.json › profiles.${name} custom launch/reap/probe template`, reason: 'conductor.json names a built-in template and ignores a custom one; deployment.json keeps it only until conductor.json takes over' });
-    }
-    if (p.required_tools && JSON.stringify(p.required_tools) !== JSON.stringify(b.required_tools)) {
-      dropped.push({ item: `deployment.json › profiles.${name}.required_tools override`, reason: KEEPS_REASON });
     }
     if (p.docker_host) dropped.push({ item: `deployment.json › profiles.${name}.docker_host`, reason: KEEPS_REASON });
   }

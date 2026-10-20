@@ -13,5 +13,13 @@
   "images": { "worker": "harmony-build-env" },
   "concurrency": { "max_workers": 2 },
   "model_policy": { "default": "claude-sonnet-5-5" },
-  "log_shipping": true
+  "log_shipping": true,
+  "target": "custom",
+  "supabase_url": "https://my-project-ref.supabase.co",
+  "repos": [
+    { "url": "https://github.com/my-org/my-workspace.git", "path": "/workspace/workspace", "meta_repo_role": true },
+    { "url": "https://github.com/my-org/my-plugin.git", "path": "/workspace/workspace/plugin", "is_plugin": true }
+  ],
+  "agent_flags": { "claude-code": "--output-format stream-json --verbose" },
+  "profiles": { "cloud": { "max_workers": 1 }, "gke": { "max_workers": 2 } }
 }

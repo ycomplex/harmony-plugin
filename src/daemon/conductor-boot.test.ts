@@ -4,7 +4,7 @@ import { runConductorBoot, type BootDeps } from './conductor-boot.js';
 const HOST = JSON.stringify({
   version: 1,
   gcp: { project: 'proj-x' },
-  secrets: { api_token: 'harmony-conductor-api-token' },
+  secrets: { api_token: 'HARMONY_API_TOKEN' },
 });
 const VALUE = 'SENTINEL-TOKEN-VALUE-1234567890';
 
@@ -41,7 +41,7 @@ describe('conductor-boot', () => {
     expect(t.ran[0]!.a).toEqual(['x.sh', '--flag']);
     expect(t.ran[0]!.env.HARMONY_API_TOKEN).toBe(VALUE);
     expect(t.d.env.HARMONY_API_TOKEN).toBeUndefined();
-    expect(t.calls[0]).toContain('--secret=harmony-conductor-api-token');
+    expect(t.calls[0]).toContain('--secret=HARMONY_API_TOKEN');
     expect(JSON.stringify([t.out, t.err, t.calls])).not.toContain(VALUE);
   });
 
@@ -49,7 +49,7 @@ describe('conductor-boot', () => {
     const t = deps({ exec: async () => ({ code: 1, stdout: '' }) });
     expect(await runConductorBoot(['exec', '--', 'true'], t.d)).toBe(1);
     expect(t.ran).toHaveLength(0);
-    expect(t.err.join('\n')).toContain('harmony-conductor-api-token');
+    expect(t.err.join('\n')).toContain('HARMONY_API_TOKEN');
   });
 
   it('exec outside remote mode with a host file naming no secrets just runs the command (no call)', async () => {
@@ -67,7 +67,7 @@ describe('conductor-boot', () => {
   it('check-host prints secret NAMES for a valid file and fails on an invalid one', async () => {
     const ok = deps();
     expect(await runConductorBoot(['check-host', '/x.json'], ok.d)).toBe(0);
-    expect(ok.out.join('\n')).toContain('api_token=harmony-conductor-api-token');
+    expect(ok.out.join('\n')).toContain('api_token=HARMONY_API_TOKEN');
     const bad = deps({ readFile: () => '{"version":1,"bogus":true}' });
     expect(await runConductorBoot(['check-host', '/x.json'], bad.d)).toBe(1);
     const garbled = deps({ readFile: () => 'nope' });

@@ -29765,6 +29765,31 @@ import { existsSync as fsExistsSync, readFileSync as fsReadFileSync } from "node
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
+// src/config/deployment-shared-schemas.ts
+var RequiredToolsSchema = external_exports.object({
+  launch: external_exports.array(external_exports.string().min(1)).optional(),
+  reap: external_exports.array(external_exports.string().min(1)).optional(),
+  probe: external_exports.array(external_exports.string().min(1)).optional()
+}).partial();
+var RepoEntrySchema = external_exports.object({
+  /** Clone URL. */
+  url: external_exports.string().min(1),
+  /** Clone ref. IGNORED for the is_plugin entry (see header comment) — HARMONY_PLUGIN_POSTURE wins
+   *  there. Optional for every other entry; falls back to the container's existing "main" default. */
+  ref: external_exports.string().optional(),
+  /** In-container clone destination, e.g. "/workspace/workspace/plugin". */
+  path: external_exports.string().min(1),
+  /** Marks this entry as the meta-repo/nesting parent. At most one entry may set this. */
+  meta_repo_role: external_exports.boolean().optional(),
+  /** Marks this entry as the one carrying the plugin. At most one entry may set this. */
+  is_plugin: external_exports.boolean().optional()
+});
+var ReposSchema = external_exports.array(RepoEntrySchema).refine((repos) => repos.filter((r) => r.meta_repo_role).length <= 1, {
+  message: "at most one repos[] entry may set meta_repo_role"
+}).refine((repos) => repos.filter((r) => r.is_plugin).length <= 1, {
+  message: "at most one repos[] entry may set is_plugin"
+});
+
 // src/config/worker-image-default.ts
 var WORKER_IMAGE_DEFAULT = "harmony-build-env";
 
@@ -29805,6 +29830,15 @@ var GkeSchema = external_exports.object({
 }).strict();
 var ConcurrencySchema = external_exports.object({ max_workers: external_exports.number().int().min(0).optional() }).strict();
 var ModelPolicySchema = external_exports.object({ default: external_exports.string().min(1).optional(), per_gate: external_exports.record(external_exports.string().min(1)).optional() }).strict();
+var TargetSchema = external_exports.enum(["prod", "staging", "custom"]);
+var AGENT_FLAG_ENV = { "claude-code": "CLAUDE_HEADLESS_FLAGS" };
+var AgentFlagsSchema = external_exports.object({ "claude-code": external_exports.string().min(1).optional() }).strict();
+var ProfileOverrideSchema = external_exports.object({
+  max_workers: external_exports.number().int().min(0).optional(),
+  agents: external_exports.array(external_exports.string().min(1)).min(1).optional(),
+  required_tools: RequiredToolsSchema.optional()
+}).strict();
+var ProfilesSchema = external_exports.object({ cloud: ProfileOverrideSchema.optional(), gke: ProfileOverrideSchema.optional() }).strict();
 var projectShape = {
   channel: ChannelSchema.optional(),
   profile: ProfileNameSchema.optional(),
@@ -29816,14 +29850,29 @@ var projectShape = {
   model_policy: ModelPolicySchema.optional(),
   /** Absent means "ship when gcp.project is named"; `false` switches shipping off. */
   log_shipping: external_exports.boolean().optional(),
-  agents: external_exports.array(external_exports.string().min(1)).min(1).optional()
+  agents: external_exports.array(external_exports.string().min(1)).min(1).optional(),
+  /** B-1183: which Supabase project the worker talks to (-> env.HARMONY_TARGET). */
+  target: TargetSchema.optional(),
+  /** B-1183: only with target "custom" (-> env.HARMONY_SUPABASE_URL). */
+  supabase_url: external_exports.string().min(1).optional(),
+  /** B-1183: the B-814 repo set, moved here unchanged from deployment.json (-> HARMONY_REPOS_JSON). */
+  repos: ReposSchema.optional(),
+  /** B-1183: adapter id -> headless flag string (claude-code -> env.CLAUDE_HEADLESS_FLAGS). */
+  agent_flags: AgentFlagsSchema.optional(),
+  /** B-1183: per-profile max_workers / agents / required_tools for built-in profiles. */
+  profiles: ProfilesSchema.optional()
 };
+var SUPABASE_URL_NEEDS_CUSTOM = 'supabase_url is only allowed with "target": "custom"';
 var ProjectFileSchema = external_exports.object({
   version: external_exports.literal(1),
   ...projectShape,
   channel: ChannelSchema,
   profile: ProfileNameSchema
-}).strict();
+}).strict().superRefine((p, ctx) => {
+  if (p.supabase_url !== void 0 && p.target !== "custom") {
+    ctx.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["supabase_url"], message: SUPABASE_URL_NEEDS_CUSTOM });
+  }
+});
 function looksLikeSecretValue(v) {
   return /^(ghp_|gho_|ghs_|github_pat_|sk-|eyJ)/.test(v) || v.includes("-----BEGIN") || /^\S{40,}$/.test(v);
 }
@@ -29991,7 +30040,7 @@ function zodIssuesToConfigIssues(file, issues, root) {
   return out;
 }
 function customFix(message) {
-  return message.includes("secret VALUE") ? "store the value in Secret Manager and put only the secret NAME here" : "correct the value to match the schema";
+  return message.includes("secret VALUE") ? "store the value in Secret Manager and put only the secret NAME here" : message === SUPABASE_URL_NEEDS_CUSTOM ? 'add "target": "custom" or remove supabase_url' : "correct the value to match the schema";
 }
 function lineColOf(text, pos) {
   const before = text.slice(0, pos);
@@ -30238,6 +30287,9 @@ function validateMerged(merged, env = {}) {
   if (!merged.channel) {
     need(PROJECT_FILE_LABEL, "channel", "required key is missing", 'add "channel": "staging" (or "prod") to .harmony/conductor.json');
   }
+  if (merged.supabase_url !== void 0 && merged.target !== "custom") {
+    need(PROJECT_FILE_LABEL, "supabase_url", SUPABASE_URL_NEEDS_CUSTOM, 'add "target": "custom" or remove supabase_url');
+  }
   if (!merged.profile) {
     need(PROJECT_FILE_LABEL, "profile", "required key is missing", 'add "profile": "cloud" (or "gke") to .harmony/conductor.json');
     return issues;
@@ -30278,29 +30330,48 @@ function projectToDeploymentConfig(merged, legacy = null, warnings = []) {
     worker_image: merged.images?.worker ?? legacy?.worker_image ?? WORKER_IMAGE_DEFAULT
   };
   const name = merged.profile;
-  if (name) {
-    const builtin = BUILTIN_PROFILES[name];
-    const existing = legacy?.profiles?.[name];
-    if (existing && !sameTemplate(existing, builtin)) {
-      warnings.push(`custom launch template in deployment.json profiles.${name} is ignored once conductor.json names profile ${name}`);
+  const listed = Object.keys(merged.profiles ?? {}).filter((n) => n in BUILTIN_PROFILES);
+  const names = [.../* @__PURE__ */ new Set([...name ? [name] : [], ...listed])];
+  if (names.length > 0) {
+    const profiles = { ...legacy?.profiles ?? {} };
+    for (const n of names) {
+      const builtin = BUILTIN_PROFILES[n];
+      const existing = legacy?.profiles?.[n];
+      if (existing && !sameTemplate(existing, builtin)) {
+        warnings.push(`custom launch template in deployment.json profiles.${n} is ignored once conductor.json names profile ${n}`);
+      }
+      const block = merged.profiles?.[n];
+      const active = n === name;
+      const entry = {
+        ...builtin,
+        maxConcurrentWorkers: block?.max_workers ?? (active ? merged.concurrency?.max_workers : void 0) ?? builtin.maxConcurrentWorkers,
+        agents: block?.agents ?? (active ? merged.agents : void 0) ?? builtin.agents
+      };
+      if (block?.required_tools) entry.required_tools = { ...builtin.required_tools, ...block.required_tools };
+      if (n === "cloud" && merged.gcp?.project) entry.gcloud_project = merged.gcp.project;
+      profiles[n] = entry;
     }
-    const entry = {
-      ...builtin,
-      maxConcurrentWorkers: merged.concurrency?.max_workers ?? builtin.maxConcurrentWorkers,
-      agents: merged.agents ?? builtin.agents
-    };
-    if (name === "cloud" && merged.gcp?.project) entry.gcloud_project = merged.gcp.project;
-    out.profiles = { ...legacy?.profiles ?? {}, [name]: entry };
+    out.profiles = profiles;
   }
+  if (merged.repos) out.repos = merged.repos;
   if (merged.plugin_dir || merged.github_app) {
     const launcher = { ...legacy?.launcher ?? {} };
     if (merged.plugin_dir) launcher.plugin_dir = merged.plugin_dir;
     if (merged.github_app) launcher.github_app = merged.github_app;
     out.launcher = launcher;
   }
-  if (merged.channel) {
-    out.env = { ...legacy?.env ?? {}, HARMONY_PLUGIN_POSTURE: merged.channel === "prod" ? "prod" : "ack:staging" };
-  }
+  const env = { ...legacy?.env ?? {} };
+  let envSet = false;
+  const putEnv = (k, v) => {
+    if (v === void 0) return;
+    env[k] = v;
+    envSet = true;
+  };
+  if (merged.channel) putEnv("HARMONY_PLUGIN_POSTURE", merged.channel === "prod" ? "prod" : "ack:staging");
+  putEnv("HARMONY_TARGET", merged.target);
+  putEnv("HARMONY_SUPABASE_URL", merged.supabase_url);
+  putEnv(AGENT_FLAG_ENV["claude-code"], merged.agent_flags?.["claude-code"]);
+  if (envSet) out.env = env;
   return out;
 }
 var emitted = /* @__PURE__ */ new Set();
@@ -30457,11 +30528,6 @@ var DeploymentEnvSchema = external_exports.object({
   ANTHROPIC_API_KEY: external_exports.string().optional(),
   CLAUDE_HEADLESS_FLAGS: external_exports.string().optional()
 }).partial();
-var RequiredToolsSchema = external_exports.object({
-  launch: external_exports.array(external_exports.string().min(1)).optional(),
-  reap: external_exports.array(external_exports.string().min(1)).optional(),
-  probe: external_exports.array(external_exports.string().min(1)).optional()
-}).partial();
 var DockerHostSchema = external_exports.object({
   /** Where the wrappers `ssh` to — a `user@host` or an ssh_config Host alias. Required inside the
    *  object: a docker_host block that names no host is a misconfiguration, not a default. */
@@ -30495,7 +30561,7 @@ var LaunchProfileSchema = external_exports.object({
   /** B-708: see DockerHostSchema above — present only on a Docker-host profile; every other
    *  profile omits it and is unaffected. */
   docker_host: DockerHostSchema.optional(),
-  /** B-801: see RequiredToolsSchema above — src/daemon/preflight.ts's hard tool-resolution check. */
+  /** B-801: see RequiredToolsSchema in ./deployment-shared-schemas.ts — src/daemon/preflight.ts's hard tool-resolution check. */
   required_tools: RequiredToolsSchema.optional(),
   /** B-801: true when this profile mints a worker credential via mint-installation-token.mjs before
    *  launch (container/README.md "The credential envelopes") — gates src/daemon/preflight.ts's hard
@@ -30513,24 +30579,6 @@ var LaunchProfileSchema = external_exports.object({
    *  run_config.agent.adapter is not in this list is parked at fire time, never launched. Mirrors
    *  src/daemon/config.ts's LaunchProfile field of the same name. */
   agents: external_exports.array(external_exports.string().min(1)).min(1).optional()
-});
-var RepoEntrySchema = external_exports.object({
-  /** Clone URL. */
-  url: external_exports.string().min(1),
-  /** Clone ref. IGNORED for the is_plugin entry (see header comment) — HARMONY_PLUGIN_POSTURE wins
-   *  there. Optional for every other entry; falls back to the container's existing "main" default. */
-  ref: external_exports.string().optional(),
-  /** In-container clone destination, e.g. "/workspace/workspace/plugin". */
-  path: external_exports.string().min(1),
-  /** Marks this entry as the meta-repo/nesting parent. At most one entry may set this. */
-  meta_repo_role: external_exports.boolean().optional(),
-  /** Marks this entry as the one carrying the plugin. At most one entry may set this. */
-  is_plugin: external_exports.boolean().optional()
-});
-var ReposSchema = external_exports.array(RepoEntrySchema).refine((repos) => repos.filter((r) => r.meta_repo_role).length <= 1, {
-  message: "at most one repos[] entry may set meta_repo_role"
-}).refine((repos) => repos.filter((r) => r.is_plugin).length <= 1, {
-  message: "at most one repos[] entry may set is_plugin"
 });
 var GithubAppSchema = external_exports.object({
   app_id: external_exports.string(),
@@ -30554,7 +30602,7 @@ var DeploymentConfigSchema = external_exports.object({
   env: DeploymentEnvSchema.optional(),
   profiles: external_exports.record(LaunchProfileSchema).optional(),
   launcher: LauncherSchema.optional(),
-  /** B-814: the ordered repo set — see the RepoEntrySchema/ReposSchema header comment above. */
+  /** B-814: the ordered repo set — see the RepoEntrySchema/ReposSchema header comment in ./deployment-shared-schemas.ts. */
   repos: ReposSchema.optional(),
   /** B-929 lever 2: which container image this deployment's workers run. THE one place the default
    *  is written — see the worker_image section comment above. */

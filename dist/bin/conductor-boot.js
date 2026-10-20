@@ -4059,6 +4059,31 @@ var coerce = {
 };
 var NEVER = INVALID;
 
+// src/config/deployment-shared-schemas.ts
+var RequiredToolsSchema = external_exports.object({
+  launch: external_exports.array(external_exports.string().min(1)).optional(),
+  reap: external_exports.array(external_exports.string().min(1)).optional(),
+  probe: external_exports.array(external_exports.string().min(1)).optional()
+}).partial();
+var RepoEntrySchema = external_exports.object({
+  /** Clone URL. */
+  url: external_exports.string().min(1),
+  /** Clone ref. IGNORED for the is_plugin entry (see header comment) — HARMONY_PLUGIN_POSTURE wins
+   *  there. Optional for every other entry; falls back to the container's existing "main" default. */
+  ref: external_exports.string().optional(),
+  /** In-container clone destination, e.g. "/workspace/workspace/plugin". */
+  path: external_exports.string().min(1),
+  /** Marks this entry as the meta-repo/nesting parent. At most one entry may set this. */
+  meta_repo_role: external_exports.boolean().optional(),
+  /** Marks this entry as the one carrying the plugin. At most one entry may set this. */
+  is_plugin: external_exports.boolean().optional()
+});
+var ReposSchema = external_exports.array(RepoEntrySchema).refine((repos) => repos.filter((r) => r.meta_repo_role).length <= 1, {
+  message: "at most one repos[] entry may set meta_repo_role"
+}).refine((repos) => repos.filter((r) => r.is_plugin).length <= 1, {
+  message: "at most one repos[] entry may set is_plugin"
+});
+
 // src/config/conductor-config.ts
 function resolveConductorPaths(env = process.env) {
   const home = env.HARMONY_HOME || join(homedir(), ".harmony");
@@ -4096,6 +4121,14 @@ var GkeSchema = external_exports.object({
 }).strict();
 var ConcurrencySchema = external_exports.object({ max_workers: external_exports.number().int().min(0).optional() }).strict();
 var ModelPolicySchema = external_exports.object({ default: external_exports.string().min(1).optional(), per_gate: external_exports.record(external_exports.string().min(1)).optional() }).strict();
+var TargetSchema = external_exports.enum(["prod", "staging", "custom"]);
+var AgentFlagsSchema = external_exports.object({ "claude-code": external_exports.string().min(1).optional() }).strict();
+var ProfileOverrideSchema = external_exports.object({
+  max_workers: external_exports.number().int().min(0).optional(),
+  agents: external_exports.array(external_exports.string().min(1)).min(1).optional(),
+  required_tools: RequiredToolsSchema.optional()
+}).strict();
+var ProfilesSchema = external_exports.object({ cloud: ProfileOverrideSchema.optional(), gke: ProfileOverrideSchema.optional() }).strict();
 var projectShape = {
   channel: ChannelSchema.optional(),
   profile: ProfileNameSchema.optional(),
@@ -4107,14 +4140,29 @@ var projectShape = {
   model_policy: ModelPolicySchema.optional(),
   /** Absent means "ship when gcp.project is named"; `false` switches shipping off. */
   log_shipping: external_exports.boolean().optional(),
-  agents: external_exports.array(external_exports.string().min(1)).min(1).optional()
+  agents: external_exports.array(external_exports.string().min(1)).min(1).optional(),
+  /** B-1183: which Supabase project the worker talks to (-> env.HARMONY_TARGET). */
+  target: TargetSchema.optional(),
+  /** B-1183: only with target "custom" (-> env.HARMONY_SUPABASE_URL). */
+  supabase_url: external_exports.string().min(1).optional(),
+  /** B-1183: the B-814 repo set, moved here unchanged from deployment.json (-> HARMONY_REPOS_JSON). */
+  repos: ReposSchema.optional(),
+  /** B-1183: adapter id -> headless flag string (claude-code -> env.CLAUDE_HEADLESS_FLAGS). */
+  agent_flags: AgentFlagsSchema.optional(),
+  /** B-1183: per-profile max_workers / agents / required_tools for built-in profiles. */
+  profiles: ProfilesSchema.optional()
 };
+var SUPABASE_URL_NEEDS_CUSTOM = 'supabase_url is only allowed with "target": "custom"';
 var ProjectFileSchema = external_exports.object({
   version: external_exports.literal(1),
   ...projectShape,
   channel: ChannelSchema,
   profile: ProfileNameSchema
-}).strict();
+}).strict().superRefine((p, ctx) => {
+  if (p.supabase_url !== void 0 && p.target !== "custom") {
+    ctx.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["supabase_url"], message: SUPABASE_URL_NEEDS_CUSTOM });
+  }
+});
 function looksLikeSecretValue(v) {
   return /^(ghp_|gho_|ghs_|github_pat_|sk-|eyJ)/.test(v) || v.includes("-----BEGIN") || /^\S{40,}$/.test(v);
 }
@@ -4251,6 +4299,7 @@ async function resolveConductorSecrets(deps) {
   }
   const secrets = parsed.data.secrets ?? {};
   const project = projectOf(parsed.data, deps.env);
+  const account = deps.env.CLOUDSDK_CORE_ACCOUNT ? void 0 : parsed.data.gcloud?.account;
   for (const { key, envVar } of SECRET_ENV_TARGETS) {
     const name = secrets[key];
     if (deps.target[envVar]) {
@@ -4264,7 +4313,7 @@ async function resolveConductorSecrets(deps) {
     if (!project) {
       throw new ConductorSecretsError(`cannot read secret "${name}": no GCP project (set gcp.project in the host file, or HARMONY_GCP_PROJECT)`);
     }
-    const r = await deps.exec("gcloud", ["secrets", "versions", "access", "latest", `--secret=${name}`, `--project=${project}`]);
+    const r = await deps.exec("gcloud", ["secrets", "versions", "access", "latest", `--secret=${name}`, `--project=${project}`, ...account ? [`--account=${account}`] : []]);
     if (r.code !== 0) {
       throw new ConductorSecretsError(`could not read secret "${name}" (for ${envVar}) from Secret Manager: gcloud exited ${r.code}${r.code === 127 ? " (gcloud is not installed)" : ""}`);
     }

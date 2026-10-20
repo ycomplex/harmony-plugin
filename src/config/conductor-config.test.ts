@@ -557,3 +557,112 @@ describe('built-in profiles cannot drift from the example profile JSON files', (
   it('cloud', () => expect(BUILTIN_PROFILES.cloud).toEqual(read('container/daemon-profile.cloud.example.json')));
   it('gke', () => expect(BUILTIN_PROFILES.gke).toEqual(read('container/gke/daemon-profile.gke.example.json')));
 });
+
+// B-1183: the project file carries target, supabase_url, repos, agent_flags and per-profile overrides, so a
+// conductor runs from the project file + one host file with no deployment.json.
+describe('B-1183 project-file keys: schema', () => {
+  const text = (extra: Record<string, unknown>) => JSON.stringify({ ...cloudProject, ...extra });
+  const issues = (extra: Record<string, unknown>) => {
+    const r = validateProjectFileText('conductor.json', text(extra));
+    return r.ok ? [] : r.issues;
+  };
+
+  it('accepts target, repos, agent_flags and cloud/gke profile blocks', () => {
+    const r = validateProjectFileText(
+      'conductor.json',
+      text({
+        target: 'prod',
+        repos: [{ url: 'https://github.com/o/w.git', path: '/workspace/w', meta_repo_role: true, ref: 'main' }, { url: 'https://github.com/o/p.git', path: '/workspace/w/p', is_plugin: true }],
+        agent_flags: { 'claude-code': '--output-format stream-json' },
+        profiles: { cloud: { max_workers: 1 }, gke: { max_workers: 4, agents: ['claude-code'], required_tools: { launch: ['node'] } } },
+      }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('accepts supabase_url with target custom', () => {
+    expect(validateProjectFileText('conductor.json', text({ target: 'custom', supabase_url: 'https://x.supabase.co' })).ok).toBe(true);
+  });
+
+  it.each([{}, { target: 'prod' }, { target: 'staging' }])('refuses supabase_url without target custom (%j)', (t) => {
+    const i = issues({ ...t, supabase_url: 'https://x.supabase.co' });
+    expect(i).toHaveLength(1);
+    expect(i[0]).toMatchObject({ key: 'supabase_url', problem: expect.stringContaining('"target": "custom"') });
+  });
+
+  it('refuses an agent_flags id that is not wired, naming the allowed ones', () => {
+    const i = issues({ agent_flags: { codex: '--x' } });
+    expect(i).toHaveLength(1);
+    expect(i[0]).toMatchObject({ key: 'agent_flags.codex', problem: 'unknown key' });
+    expect(i[0].fix).toContain('claude-code');
+  });
+
+  it('refuses a profiles key outside cloud and gke (no custom templates)', () => {
+    const i = issues({ profiles: { docker: { max_workers: 1 } } });
+    expect(i).toHaveLength(1);
+    expect(i[0]).toMatchObject({ key: 'profiles.docker', problem: 'unknown key' });
+    expect(i[0].fix).toContain('cloud, gke');
+  });
+
+  it('refuses a launch template inside a profile block and an invalid target', () => {
+    expect(issues({ profiles: { gke: { launch: 'bash x' } } })[0]).toMatchObject({ key: 'profiles.gke.launch', problem: 'unknown key' });
+    expect(issues({ target: 'dev' })[0]).toMatchObject({ key: 'target' });
+  });
+
+  it('refuses a supabase_url that reaches the merged config without target custom (host file supplies it)', () => {
+    const e = errorOf(() => load({ [P.project]: cloudProject, [P.host]: { ...host, supabase_url: 'https://x' } }, { HARMONY_CONDUCTOR_PROJECT_FILE: P.project, HARMONY_APP_PRIVATE_KEY: 'k' }));
+    expect(e.issues.map((i) => i.key)).toContain('supabase_url');
+  });
+});
+
+describe('B-1183 project-file keys: projection into the merged DeploymentConfig', () => {
+  const full = {
+    ...gkeProject,
+    target: 'custom',
+    supabase_url: 'https://x.supabase.co',
+    repos: [{ url: 'https://github.com/o/w.git', path: '/workspace/w', meta_repo_role: true }],
+    agent_flags: { 'claude-code': '--verbose' },
+    profiles: { cloud: { max_workers: 5, agents: ['claude-code'] }, gke: { required_tools: { launch: ['node', 'kubectl'] } } },
+  };
+
+  it('target, supabase_url and agent_flags land in env; repos lands in repos', () => {
+    const out = projectToDeploymentConfig(mergeLayers(full));
+    expect(out.env).toMatchObject({ HARMONY_PLUGIN_POSTURE: 'ack:staging', HARMONY_TARGET: 'custom', HARMONY_SUPABASE_URL: 'https://x.supabase.co', CLAUDE_HEADLESS_FLAGS: '--verbose' });
+    expect(out.repos).toEqual(full.repos);
+  });
+
+  it('emits an entry for every listed built-in profile, the top-level profile picking the active one', () => {
+    const out = projectToDeploymentConfig(mergeLayers(full));
+    expect(Object.keys(out.profiles ?? {}).sort()).toEqual(['cloud', 'gke']);
+    expect(out.profiles?.cloud).toMatchObject({ launch: BUILTIN_PROFILES.cloud.launch, maxConcurrentWorkers: 5, agents: ['claude-code'] });
+    expect(out.profiles?.gke?.required_tools).toEqual({ ...BUILTIN_PROFILES.gke.required_tools, launch: ['node', 'kubectl'] });
+  });
+
+  it('the top-level concurrency applies to the active profile when its block is silent, never to the other', () => {
+    const out = projectToDeploymentConfig(mergeLayers(full));
+    expect(out.profiles?.gke?.maxConcurrentWorkers).toBe(3);
+    expect(out.profiles?.cloud?.maxConcurrentWorkers).toBe(5);
+    const blockWins = projectToDeploymentConfig(mergeLayers({ ...full, profiles: { gke: { max_workers: 9 } } }));
+    expect(blockWins.profiles?.gke?.maxConcurrentWorkers).toBe(9);
+    expect(blockWins.profiles?.cloud?.maxConcurrentWorkers).toBeUndefined();
+  });
+
+  it('a project with none of the new keys projects exactly as before (only the active profile, no repos, posture only)', () => {
+    const out = projectToDeploymentConfig(mergeLayers(cloudProject));
+    expect(Object.keys(out.profiles ?? {})).toEqual(['cloud']);
+    expect(out.repos).toBeUndefined();
+    expect(out.env).toEqual({ HARMONY_PLUGIN_POSTURE: 'prod' });
+  });
+
+  it('flows through the loader: a files-only host (no deployment.json) serves the keys', () => {
+    const r = load({ [P.project]: full, [P.host]: { ...host, plugin_dir: '/plug' } }, { HARMONY_CONDUCTOR_PROJECT_FILE: P.project, HARMONY_APP_PRIVATE_KEY: 'k' });
+    expect(r?.deploymentConfig.env?.HARMONY_TARGET).toBe('custom');
+    expect(r?.deploymentConfig.repos).toEqual(full.repos);
+    expect(r?.deploymentConfig.profiles?.cloud).toBeDefined();
+  });
+
+  it('project < host: a host override of target wins', () => {
+    const r = load({ [P.project]: { ...full, target: 'custom' }, [P.host]: { ...host, target: 'custom', supabase_url: 'https://host' } }, { HARMONY_CONDUCTOR_PROJECT_FILE: P.project, HARMONY_APP_PRIVATE_KEY: 'k' });
+    expect(r?.deploymentConfig.env?.HARMONY_SUPABASE_URL).toBe('https://host');
+  });
+});

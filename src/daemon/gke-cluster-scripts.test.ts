@@ -826,7 +826,7 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh steps 18-26 — the remote conductor
 
     // secret accessor: on each NAMED secret, never project-level
     const sm = bindings(world).filter((c) => has(c, 'secrets'));
-    expect(sm.map((c) => c[c.indexOf('add-iam-policy-binding') + 1]).sort()).toEqual(['harmony-conductor-api-token', 'harmony-daemon-app-private-key']);
+    expect(sm.map((c) => c[c.indexOf('add-iam-policy-binding') + 1]).sort()).toEqual(['HARMONY_API_TOKEN', 'harmony-daemon-app-private-key']);
     for (const c of sm) {
       expect(c).toContain(`--member=serviceAccount:${CGSA}`);
       expect(c).toContain('--role=roles/secretmanager.secretAccessor');
@@ -875,9 +875,9 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh steps 18-26 — the remote conductor
     expect(g(world).some((c) => has(c, 'add-iam-policy-binding') || has(c, 'create') || has(c, 'update'))).toBe(false);
     expect(k(world).some((c) => has(c, 'create', 'namespace') || has(c, 'create', 'serviceaccount') || has(c, 'annotate'))).toBe(false);
     // it READ the policies before deciding
-    expect(findCall(g(world), 'secrets', 'get-iam-policy', 'harmony-conductor-api-token')).toBeDefined();
+    expect(findCall(g(world), 'secrets', 'get-iam-policy', 'HARMONY_API_TOKEN')).toBeDefined();
     expect(findCall(g(world), 'artifacts', 'repositories', 'get-iam-policy')).toBeDefined();
-    expect(second.stdout).toContain('already holds roles/secretmanager.secretAccessor on secret harmony-conductor-api-token');
+    expect(second.stdout).toContain('already holds roles/secretmanager.secretAccessor on secret HARMONY_API_TOKEN');
   });
 
   it('reads IAM policies as plain JSON (no --filter/--flatten) in the new steps', () => {
@@ -893,7 +893,7 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh steps 18-26 — the remote conductor
 
   it('only changes what differs: with one secret grant already held, only the other is bound', () => {
     const world = makeWorld();
-    writeFileSync(join(world.state, 'bindings'), `harmony-conductor-api-token|roles/secretmanager.secretAccessor|serviceAccount:${CGSA}\n`);
+    writeFileSync(join(world.state, 'bindings'), `HARMONY_API_TOKEN|roles/secretmanager.secretAccessor|serviceAccount:${CGSA}\n`);
     expect(setupAll(world).status).toBe(0);
     const sm = bindings(world).filter((c) => has(c, 'secrets'));
     expect(sm).toHaveLength(1);
@@ -916,7 +916,7 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh steps 18-26 — the remote conductor
     writeFileSync(join(world.bin, 'gcloud'), original.replace('policy_json "$3"; exit 0 ;;', 'echo "not json"; exit 0 ;;'), { mode: 0o755 });
     const r = setupAll(world);
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain('could not parse the IAM policy of secret harmony-conductor-api-token');
+    expect(r.stderr).toContain('could not parse the IAM policy of secret HARMONY_API_TOKEN');
     expect(bindings(world).some((c) => has(c, 'secrets'))).toBe(false);
   });
 
@@ -938,9 +938,9 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh steps 18-26 — the remote conductor
 
   it('the conductor secrets are checked in the preflight: a missing one fails before anything is created', () => {
     const world = makeWorld();
-    const r = setupAll(world, [], { STUB_MISSING_SECRETS: 'harmony-conductor-api-token' });
+    const r = setupAll(world, [], { STUB_MISSING_SECRETS: 'HARMONY_API_TOKEN' });
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain('harmony-conductor-api-token');
+    expect(r.stderr).toContain('HARMONY_API_TOKEN');
     expect(mutating(world)).toEqual([]);
   });
 
@@ -972,7 +972,7 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh steps 18-26 — the remote conductor
     for (const n of ['18.', '19.', '20.', '21.', '22.', '23.', '24.', '25.', '26.']) expect(r.stdout).toContain(`=== ${n} `);
     for (const needle of [
       'kubectl create namespace harmony-conductor',
-      'gcloud secrets add-iam-policy-binding harmony-conductor-api-token',
+      'gcloud secrets add-iam-policy-binding HARMONY_API_TOKEN',
       '--role=roles/secretmanager.secretAccessor',
       '--role=roles/run.developer',
       'gcloud artifacts repositories add-iam-policy-binding harmony-workers',
