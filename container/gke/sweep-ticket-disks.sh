@@ -4,8 +4,12 @@
 # daemon host on a schedule (cron / launchd). It uses the CURRENT kubeconfig and kubectl context — it
 # creates none.
 #
-#   bash container/gke/sweep-ticket-disks.sh [--namespace <ns>] [--dry-run]
+#   bash container/gke/sweep-ticket-disks.sh [--namespace <ns>] [--env-file <path>|none] [--dry-run]
 #
+#   --env-file <path>  the daemon's KEY=VALUE settings (HARMONY_API_TOKEN for the ticket-state reads), loaded
+#                      first. Default ~/.harmony/daemon.env, skipped when absent; `none` skips it. Under
+#                      launchd there is no login shell, so without it every state read fails and the sweep
+#                      keeps every disk (exit 3).
 #   --namespace <ns>   default $HARMONY_GKE_NAMESPACE, else harmony-legs
 #   --dry-run          print the `kubectl delete` it would run instead of running it (reads still run)
 #
@@ -30,15 +34,18 @@ set -euo pipefail
 
 NAMESPACE="${HARMONY_GKE_NAMESPACE:-harmony-legs}"
 DRY_RUN=0
+ENV_FILE="${HOME:-}/.harmony/daemon.env"
+ENV_FILE_EXPLICIT=0
 TAKE_AWAY_GRACE_S=86400
 
 usage() {
   cat <<'USAGE'
-Usage: sweep-ticket-disks.sh [--namespace <ns>] [--dry-run]
+Usage: sweep-ticket-disks.sh [--namespace <ns>] [--env-file <path>|none] [--dry-run]
 
 Deletes the per-ticket disk (PVC ticket-<key>-<number>) of every Verified, Cancelled or archived ticket,
 and of every ticket taken away from the conductor (conductor_excluded_at) more than 24 hours ago.
   --namespace <ns>   [$HARMONY_GKE_NAMESPACE, else harmony-legs]
+  --env-file <path>  load the daemon's settings first; `none` skips  [~/.harmony/daemon.env, if present]
   --dry-run          show the deletes instead of running them
   -h, --help         this text
 Exit codes: 0 ok; 1 could not list PVCs / pods; 2 bad usage; 3 some ticket's state could not be read (its disk was kept).
@@ -50,11 +57,27 @@ while [ $# -gt 0 ]; do
     --namespace)
       [ $# -ge 2 ] || { echo "sweep: --namespace needs a value" >&2; usage >&2; exit 2; }
       NAMESPACE="$2"; shift 2 ;;
+    --env-file)
+      [ $# -ge 2 ] || { echo "sweep: --env-file needs a value" >&2; usage >&2; exit 2; }
+      ENV_FILE="$2"; ENV_FILE_EXPLICIT=1; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h | --help) usage; exit 0 ;;
     *) echo "sweep: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if [ "$ENV_FILE" != "none" ]; then
+  if [ -f "$ENV_FILE" ]; then
+    bash -n "$ENV_FILE" >/dev/null 2>&1 || { echo "sweep: env file is not valid shell syntax: $ENV_FILE" >&2; exit 2; }
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE" 2>/dev/null || { set +a; echo "sweep: env file could not be loaded: $ENV_FILE" >&2; exit 2; }
+    set +a
+    echo "loaded env file $ENV_FILE (values not shown)"
+  elif [ "$ENV_FILE_EXPLICIT" -eq 1 ]; then
+    echo "sweep: env file not found: $ENV_FILE" >&2; exit 2
+  fi
+fi
 
 harmony_cmd() {
   if [ -n "${HARMONY_PLUGIN_DIR:-}" ]; then

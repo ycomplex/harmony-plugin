@@ -744,6 +744,41 @@ describe.skipIf(!CAPABLE)('container/gke/sweep-ticket-disks.sh (EXECUTED against
     });
   });
 
+  describe('the env file (launchd has no login shell, so the ticket-state reads need daemon.env)', () => {
+    // The stub harmony reads STUB_TASK_<KEY>; only the env file defines B-1007's, so its disk is deleted
+    // only when the file was really loaded into the environment the harmony CLI runs in.
+    const envLine = `STUB_TASK_B_1007='${task('Verified')}'\n`;
+
+    it('loads ~/.harmony/daemon.env by default, without printing values', () => {
+      const world = makeWorld();
+      mkdirSync(join(world.dir, 'home', '.harmony'), { recursive: true });
+      writeFileSync(join(world.dir, 'home', '.harmony', 'daemon.env'), envLine);
+      const r = sweep(world, ['ticket-b-1007']);
+      expect(r.status).toBe(0);
+      expect(deletes(world)).toEqual(['ticket-b-1007']);
+      expect(r.stdout).toContain('(values not shown)');
+      expect(r.stdout).not.toContain('Verified\'');
+    });
+
+    it('a missing DEFAULT env file is skipped; a missing --env-file path is an error (exit 2)', () => {
+      const skipped = sweep(makeWorld(), ['ticket-b-1004']);
+      expect(skipped.status).toBe(0);
+      expect(skipped.stdout).not.toContain('loaded env file');
+      const missing = sweep(makeWorld(), ['ticket-b-1004'], ['--env-file', '/nonexistent/daemon.env']);
+      expect(missing.status).toBe(2);
+      expect(missing.stderr).toContain('env file not found');
+    });
+
+    it('--env-file none skips it, so the state read fails closed and the disk is kept (exit 3)', () => {
+      const world = makeWorld();
+      mkdirSync(join(world.dir, 'home', '.harmony'), { recursive: true });
+      writeFileSync(join(world.dir, 'home', '.harmony', 'daemon.env'), envLine);
+      const r = sweep(world, ['ticket-b-1007'], ['--env-file', 'none']);
+      expect(deletes(world)).toEqual([]);
+      expect(r.status).toBe(3);
+    });
+  });
+
   it('rejects an unknown flag with usage on stderr (exit 2)', () => {
     const r = exec(makeWorld(), sweepPath, ['--nope']);
     expect(r.status).toBe(2);
