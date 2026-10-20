@@ -29,6 +29,8 @@
 #  14. grants it roles/storage.objectUser on the BUCKET only (never project-level);
 #  15. lets the Kubernetes service account impersonate it (roles/iam.workloadIdentityUser);
 #  16. creates that Kubernetes service account and annotates it with the Google one.
+#  17. creates StorageClass harmony-ticket-disk (pd-balanced, Immediate binding, pinned to the zone) for
+#      ticket disks, so a disk is made while the leg node boots; create-only, drift reported.
 #  Every one of 10-16 reads first and changes only what differs, so a re-run is a no-op.
 #
 # Guarantees:
@@ -97,6 +99,7 @@ SM_CODEX="harmony-codex-auth"
 LEG_GSA_NAME="harmony-gke-leg"
 LEG_KSA="harmony-leg"
 TRANSCRIPT_BUCKET="harmony-conductor-transcripts"
+TICKET_SC="harmony-ticket-disk"
 NO_CODEX=0
 SKIP_QUOTA=0
 DRY_RUN=0
@@ -461,6 +464,46 @@ if [ "$have_annot" = "$LEG_GSA_EMAIL" ]; then
   echo "service account $LEG_KSA: already annotated for $LEG_GSA_EMAIL"
 else
   run kubectl -n "$NAMESPACE" annotate serviceaccount "$LEG_KSA" "iam.gke.io/gcp-service-account=$LEG_GSA_EMAIL" --overwrite
+fi
+
+# --- Ticket disks are created while the leg node boots (2026-10-20). With WaitForFirstConsumer
+# (standard-rwo) the disk waits for the pod to land on the new node, then races its disk driver. The
+# leg pool is one zone, so the class pins that zone and binds Immediately. Create-only: a StorageClass's
+# parameters are immutable, so a drifted one is reported, never changed.
+step "17. StorageClass $TICKET_SC (ticket disks, Immediate binding in $ZONE)"
+if probe kubectl get storageclass "$TICKET_SC"; then
+  sc_line="$(capture kubectl get storageclass "$TICKET_SC" \
+    -o 'jsonpath={.volumeBindingMode}{"\t"}{.parameters.type}{"\t"}{.allowedTopologies[0].matchLabelExpressions[0].values[0]}' || true)"
+  if [ "$sc_line" = "$(printf 'Immediate\tpd-balanced\t%s' "$ZONE")" ]; then
+    echo "storage class $TICKET_SC: exists and matches"
+  else
+    echo "DRIFT: storage class $TICKET_SC is '$sc_line' (binding, disk type, zone), expected Immediate, pd-balanced, $ZONE"
+    echo "(nothing was changed — delete it and rerun once no ticket disk uses it, if the drift matters)"
+  fi
+else
+  run_apply_sc() {
+    cat <<SC | kubectl apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: $TICKET_SC
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: pd-balanced
+volumeBindingMode: Immediate
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: topology.gke.io/zone
+        values: [$ZONE]
+SC
+  }
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "would: kubectl apply StorageClass $TICKET_SC (pd.csi.storage.gke.io, pd-balanced, Immediate, zone $ZONE)"
+  else
+    run_apply_sc
+  fi
 fi
 
 step "Done. Values for the deployment config"
